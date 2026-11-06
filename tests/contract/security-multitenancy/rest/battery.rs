@@ -36,7 +36,23 @@ fn body_of(operation: &str) -> Option<Value> {
         // Feature 007: a dry run of the victim's draft with a document of the attacker's.
         "validateWorkflowDraft" => json!({"ir": flow("attacker-flow")}),
         "startRun" => json!({"workflowId": "{workflowId}", "input": {}}),
+        // Feature 018: the attacker signals-or-starts under the victim's workflow.
+        "signalWithStart" => json!({
+            "workflowId": "{workflowId}", "businessId": "battery-probe", "input": {},
+            "signal": {"name": "battery.probe", "payload": {}}
+        }),
+        // Feature 018: the attacker asks for the values of the input of the victim's schedule.
+        "discloseScheduleInput" => json!({}),
+        "updateWithStart" => json!({
+            "workflowId": "{workflowId}", "businessId": "battery-probe", "input": {},
+            "update": {"name": "battery.probe", "updateKey": "battery-probe-0001", "args": {}}
+        }),
         "operateRun" => json!({"action": "CANCEL", "reason": "cross-tenant battery probe"}),
+        // Feature 018: the attacker asks what a reset of the victim's run would do, and resets it.
+        "previewReset" => json!({"sequence": 1}),
+        "resetRun" => json!({
+            "sequence": 1, "reason": "cross-tenant battery probe", "acknowledgeReexecution": true
+        }),
         "inspectRunPayload" | "discloseRunPayload" => json!({"source": "input"}),
         "signalRun" => json!({"paid": true}),
         // Feature 014: a chain is addressed by its id; the head the attacker claims to have seen
@@ -232,7 +248,9 @@ fn is_resource_id(name: &str) -> bool {
             | "workflowId"
             | "runId"
             | "scheduleId"
+            | "businessId"
             | "batchId"
+            | "resetId"
             | "scriptId"
             | "executionId"
             | "requestId"
@@ -378,7 +396,10 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         "POST",
         "/runs",
         alice,
-        Some(&json!({"workflowId": wf, "input": {"victim": true}})),
+        Some(&json!({
+            "workflowId": wf, "input": {"victim": true},
+            "businessId": "victim-order-4471"
+        })),
     )
     .await;
     assert_eq!(status, 202, "{run}");
@@ -504,9 +525,35 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
     assert_eq!(status, 202, "{batch}");
     let batch = batch["batchId"].as_str().expect("batch id").to_owned();
 
+    // Feature 018: a reset the victim made from a run of their own that ended, so the register has an
+    // entry to be asked for.
+    let (status, ended) = send(
+        &api,
+        "POST",
+        &format!("/runs/{run}/operations"),
+        alice,
+        Some(&json!({"action": "CANCEL", "reason": "the victim ends its own run"})),
+    )
+    .await;
+    assert!(status == 200 || status == 202, "{status} {ended}");
+    let (status, reset) = send(
+        &api,
+        "POST",
+        &format!("/runs/{run}/resets"),
+        alice,
+        Some(&json!({
+            "sequence": 1, "reason": "the victim resets its own run", "acknowledgeReexecution": true
+        })),
+    )
+    .await;
+    assert_eq!(status, 202, "{reset}");
+    let reset = reset["resetId"].as_str().expect("reset id").to_owned();
+
     let victim = Victim {
         ids: BTreeMap::from([
+            ("resetId", reset.clone()),
             ("scheduleId", schedule.clone()),
+            ("businessId", "victim-order-4471".to_owned()),
             ("batchId", batch.clone()),
             ("backfillId", Uuid::now_v7().to_string()),
             ("scriptId", script.clone()),
@@ -559,7 +606,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
             .any(is_resource_id)
             || matches!(
                 operation.as_str(),
-                "startRun" | "recordScriptRunnerIncident"
+                "startRun" | "signalWithStart" | "updateWithStart" | "recordScriptRunnerIncident"
             );
         let body = body_of(&operation).map(|b| {
             // A body that names the victim's workflow (startRun) or namespace (a report from a
@@ -635,6 +682,7 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
                 "victim-pool",
                 "victim-script",
                 "victim-source",
+                "victim-order-4471",
             ] {
                 assert!(
                     !text.contains(needle),

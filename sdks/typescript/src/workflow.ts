@@ -21,6 +21,11 @@ export interface UpdateDefinition {
   readonly result: string;
   readonly resultSchema: Record<string, Json>;
   readonly disclosure: DisclosurePolicy;
+  /**
+   * Keeps the arguments of every applied instance of this Update, so a reset can validate and apply them
+   * again. Left out of the document unless true; a server publishes it only when its capability is on.
+   */
+  readonly reapplyOnReset?: boolean;
 }
 
 export interface StateDefinition {
@@ -596,6 +601,9 @@ export class WorkflowBuilder extends Flow {
         if (!OPERATION_NAME.test(name)) throw invalid(`update name ${JSON.stringify(name)} is invalid`);
         if (update === null || typeof update !== 'object') throw invalid(`update ${name} is required`);
         if (update.disclosure !== DISCLOSURE) throw invalid(`update ${name} needs disclosure ${DISCLOSURE}`);
+        if (update.reapplyOnReset !== undefined && typeof update.reapplyOnReset !== 'boolean') {
+          throw invalid(`update ${name}.reapplyOnReset must be a boolean`);
+        }
         return [name, clean({
           argsSchema: argsSchema(update.argsSchema, `update ${name}`),
           validate: update.validate === undefined ? undefined : expression(update.validate, `update ${name}.validate`),
@@ -603,6 +611,8 @@ export class WorkflowBuilder extends Flow {
           result: expression(update.result, `update ${name}.result`),
           resultSchema: resultSchema(update.resultSchema, `update ${name}.resultSchema`),
           disclosure: update.disclosure,
+          // the default is not written, so a document that does not opt in is the one made before the field
+          reapplyOnReset: update.reapplyOnReset === true ? true : undefined,
         })];
       }));
     }

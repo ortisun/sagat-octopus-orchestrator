@@ -70,6 +70,30 @@ describe('the run page: header', () => {
     expect(document.querySelector('time[title="2099-01-01 00:00:00 UTC"]')).not.toBeNull();
   });
 
+  it('shows the business identifier of the run, and no such fact for a run without one', async () => {
+    await open({ run: runOf({ businessId: 'order-1001' }) });
+    expect(await screen.findByText('Business id')).toBeInTheDocument();
+    expect(screen.getByText('order-1001')).toBeInTheDocument();
+  });
+
+  it('links a run that was started again, or reset, to the run it came from', async () => {
+    await open({ run: runOf({ rerunOf: '019b5d6e-0000-7000-8000-0000000000aa' }) });
+    expect(await screen.findByText('Started again from')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /run 019b5d6e/ })).toHaveAttribute('href', '/runs/019b5d6e-0000-7000-8000-0000000000aa');
+  });
+
+  it('has no such link for a run that was not started again', async () => {
+    await open();
+    await screen.findByText('Started by');
+    expect(screen.queryByText('Started again from')).not.toBeInTheDocument();
+  });
+
+  it('has no business identifier fact when the run has none', async () => {
+    await open();
+    await screen.findByText('Started by');
+    expect(screen.queryByText('Business id')).not.toBeInTheDocument();
+  });
+
   it('says "no trace" and "none" for what the run does not have', async () => {
     await open({ run: runOf({ traceId: null, correlationId: null, deadline: null, startedBy: undefined }) });
     expect(await screen.findByText('no trace')).toBeInTheDocument();
@@ -964,5 +988,20 @@ describe('the run page: who may do what', () => {
     await waitFor(() => card('pay'));
     expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled();
     expect(ADMIN).toContain('saga:override');
+  });
+});
+
+describe('the run page: a delayed start', () => {
+  it('says when the entry is released, and what the status means', async () => {
+    const { nodes, edges } = sagaRun();
+    await open({ run: runOf({ status: 'WAITING', startDelayedUntil: '2026-10-12T09:00:00Z' }), graph: graphOf(nodes, edges, { status: 'WAITING' }) });
+    expect(await screen.findByText('Starts at')).toBeInTheDocument();
+    expect(screen.getByText(/held by its start delay/i)).toBeInTheDocument();
+  });
+
+  it('says nothing of it for a run that was not delayed', async () => {
+    await open({ run: runOf({ status: 'WAITING' }) });
+    await screen.findByText('Started by');
+    expect(screen.queryByText('Starts at')).not.toBeInTheDocument();
   });
 });

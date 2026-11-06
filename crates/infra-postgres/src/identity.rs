@@ -737,6 +737,7 @@ fn record(mapped: StoreError) -> StoreError {
         | StoreError::IdempotencyKeyReused
         | StoreError::StateConflict(_)
         | StoreError::DatabaseUnavailable
+        | StoreError::BusinessIdHeld { .. }
         | StoreError::DatabaseLimit => {}
     }
     mapped

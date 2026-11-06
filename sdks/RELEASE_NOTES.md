@@ -8,6 +8,13 @@ the canonical IR. Rust joins the common conformance matrix and local `.crate`/co
 The coordinated release and its final gates remain tracked by features 014, 033 and 034.
 Registry publication remains disabled.
 
+Feature 018 adds to every SDK the client surface for schedules (create, describe, list, update, delete, pause,
+resume, trigger, backfill and the history), business identifiers on `start` and their lookup, a start delay,
+`signalWithStart` and `updateWithStart`, batch jobs over runs (preview, create, read, list, cancel and items) and the
+reset of a run that ended to a point of its journal. Nothing changes for a caller that does not use them: a `start`
+without the new options sends what it sent before. `Run` gains the nullable `businessId` and `startDelayedUntil`.
+Nine conformance scenarios (`sdks/SPEC.md` §3.1) hold the six languages to the same results.
+
 ## 0.2.0
 
 All five SDK packages use 0.2.0 and remain distributed through GitHub Release assets. Go uses

@@ -210,6 +210,7 @@ async fn create_declared_run(
     let created = w
         .store
         .create(NewRun {
+            business: None,
             schedule: None,
             retained: None,
             limits: RunLimits::UNLIMITED,
@@ -230,6 +231,7 @@ async fn create_declared_run(
                 parent: None,
                 depth: 0,
                 root: run,
+                business_id: None,
             },
             definition: std::sync::Arc::new(declared.parsed().definition.clone()),
             input,
@@ -247,9 +249,10 @@ async fn create_declared_run(
                 key: format!("declared-run-{}", Uuid::now_v7()),
                 fingerprint: run.as_uuid().as_bytes().to_vec(),
             },
+            reset_sequence: None,
         })
         .await?;
-    let Applied::Done(tx) = created else {
+    let sagat_application::runs::Admitted::Created(tx) = created else {
         panic!("fresh run cannot replay");
     };
     tx.commit().await?;
@@ -976,6 +979,7 @@ async fn applied_update_commits_state_receipt_journal_audit_and_outbox_together(
                 Ok(DeclaredUpdateDecision::Applied {
                     new_state: state_write,
                     result,
+                    arguments: None,
                 })
             },
         )
@@ -1183,7 +1187,13 @@ async fn outbox_failure_rolls_back_state_journal_receipt_and_audit() {
         .apply_update(
             &command,
             |_, _| Ok(()),
-            |_| Ok(DeclaredUpdateDecision::Applied { new_state, result }),
+            |_| {
+                Ok(DeclaredUpdateDecision::Applied {
+                    new_state,
+                    result,
+                    arguments: None,
+                })
+            },
         )
         .await
         .expect_err("duplicate outbox rolls back");
@@ -1325,6 +1335,7 @@ async fn concurrent_expected_revision_updates_apply_once_and_reject_once() {
                 Ok(DeclaredUpdateDecision::Applied {
                     new_state: state_a,
                     result: result_a,
+                    arguments: None,
                 })
             }
         ),
@@ -1335,6 +1346,7 @@ async fn concurrent_expected_revision_updates_apply_once_and_reject_once() {
                 Ok(DeclaredUpdateDecision::Applied {
                     new_state: state_b,
                     result: result_b,
+                    arguments: None,
                 })
             }
         ),
@@ -1825,6 +1837,7 @@ async fn an_applied_update_is_committed_by_the_least_privilege_runtime_role() {
                 Ok(DeclaredUpdateDecision::Applied {
                     new_state: state_write,
                     result,
+                    arguments: None,
                 })
             },
         )

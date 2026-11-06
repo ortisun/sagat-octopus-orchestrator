@@ -229,7 +229,7 @@ implemented first ships it.
 | `tenant_id`, `namespace_id`, `id` | uuid | PK `(tenant_id, id)`; `id` UUIDv7. |
 | `action` | text | Closed set (D1021). |
 | `params` | jsonb | Closed per action (step id, instance path, operation name, update key); protected. |
-| `payload_digest` | bytea null | Signal payload or update arguments → `payloads`; content via payload row. |
+| `payload_digest` | bytea null | Signal payload or the new state of an Update → `payloads`; content via payload row. The retained arguments of an Update are on its receipt, not here (D1975). |
 | `selector` | jsonb | Closed structured filter or run-id list (≤ 1,000 UUIDs); content (`businessIdPrefix`). |
 | `reason` | text | 8..2000 chars; content. |
 | `created_by` | text | Subject; protected. |
@@ -272,14 +272,17 @@ row carries `detail.restored = true` and the re-emitted `run.started` carries
 `reset_of {source_run_id, source_sequence}`, so a journal reader (telemetry, 020 analytics, ADR-0056's
 holder count) can skip restored history without reading another table. `wait.satisfied` gains an
 optional `via` (`signal`, `event`, `signal_with_start`) in `detail` for new writes; old rows decode
-unchanged. A `state.updated` row of an Update declared `reapplyOnReset: true` sets `payload_digest` to
-the retained canonical Update arguments (a `payloads` row, content class); other Updates retain
-nothing (`operation_update_receipts` keeps only a request hash).
+unchanged. A `state.updated` row already sets `payload_digest` to the new state, so the arguments of an
+Update declared `reapplyOnReset: true` are referenced from its receipt instead: the new nullable column
+`operation_update_receipts.arguments_digest` (migration `20270105000000`, a foreign key to `payloads`, set only
+on an `APPLIED` receipt) points at the canonical arguments (a `payloads` row, content class), and the row
+says `retained: true` in its `detail`. Other Updates retain nothing: `arguments_digest` is null and the row
+says `retained: false`; a row written before says nothing (D1975).
 
 ### Payload references (entries of 020's content-store registry)
 
 `schedule_revisions.input_digest`, `batch_jobs.payload_digest` and the retained-argument
-`run_events.payload_digest` of `state.updated` reference `payloads (tenant_id, digest)` by foreign key
+`operation_update_receipts.arguments_digest` reference `payloads (tenant_id, digest)` by foreign key
 and are registered as payload references in `storage-classification.json` and as entries of 020's
 content-store registry (`crates/infra-postgres/run-content-references.json`, owned by 020, see
 `specs/020-visibility-analytics-archival/data-model.md`): retained Update arguments go with the

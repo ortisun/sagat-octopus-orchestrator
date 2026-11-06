@@ -1,0 +1,55 @@
+{
+  "name": "business-ids",
+  "description": "Feature 018 US02: the business identifier of a run through the public start call. An open holder refuses a second start (FAIL) or answers the run it has (USE_EXISTING, started false); a closed holder is judged by the reuse policy; the lookup says who holds the identifier and until when a closed holder is remembered. An identifier is sent as given and the server judges it, so the same refusals are read in every language.",
+  "workflows": {
+    "hold": {
+      "name": "business-hold",
+      "description": "An activity nobody serves: the run stays open and holds its business identifier.",
+      "program": [
+        { "op": "step", "id": "hold", "activity": "business.hold" },
+        { "op": "end", "id": "done" }
+      ]
+    },
+    "quick": {
+      "name": "business-quick",
+      "description": "One activity the worker serves: the run ends, and its identifier is remembered.",
+      "program": [
+        { "op": "step", "id": "work", "activity": "business.work" },
+        { "op": "end", "id": "done" }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "business-worker",
+      "protocolVersion": "1.4",
+      "maxInflight": 2,
+      "activities": {
+        "business.work": { "behavior": { "returns": { "ok": true } } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "first", "op": "start", "workflow": "hold", "input": {}, "businessId": "order-{{unique}}-1", "idempotencyKey": "bid-first-{{unique}}" },
+    { "id": "read-first", "op": "get", "run": "first" },
+    { "id": "fail-on-open", "op": "start", "workflow": "hold", "input": {}, "businessId": "order-{{unique}}-1", "idempotencyKey": "bid-fail-{{unique}}" },
+    { "id": "explicit-fail", "op": "start", "workflow": "hold", "input": {}, "businessId": "order-{{unique}}-1", "businessIdConflictPolicy": "FAIL", "idempotencyKey": "bid-explicit-{{unique}}" },
+    { "id": "use-existing", "op": "start", "workflow": "hold", "input": {}, "businessId": "order-{{unique}}-1", "businessIdConflictPolicy": "USE_EXISTING", "idempotencyKey": "bid-use-{{unique}}" },
+    { "id": "binding-open", "op": "businessIdGet", "businessId": "order-{{unique}}-1" },
+    { "id": "case-is-not-folded", "op": "businessIdGet", "businessId": "ORDER-{{unique}}-1" },
+    { "id": "another-id", "op": "start", "workflow": "hold", "input": {}, "businessId": "order-{{unique}}-2", "idempotencyKey": "bid-other-{{unique}}" },
+    { "id": "invalid-id", "op": "start", "workflow": "hold", "input": {}, "businessId": "has a space", "idempotencyKey": "bid-invalid-{{unique}}" },
+    { "id": "policy-without-id", "op": "start", "workflow": "hold", "input": {}, "businessIdConflictPolicy": "USE_EXISTING", "idempotencyKey": "bid-noid-{{unique}}" },
+    { "id": "unknown-policy", "op": "start", "workflow": "hold", "input": {}, "businessId": "order-{{unique}}-3", "businessIdReusePolicy": "SOMETIMES", "idempotencyKey": "bid-policy-{{unique}}" },
+    { "id": "no-such-binding", "op": "businessIdGet", "businessId": "nobody-{{unique}}" },
+
+    { "id": "closed", "op": "start", "workflow": "quick", "input": {}, "businessId": "done-{{unique}}", "idempotencyKey": "bid-closed-{{unique}}" },
+    { "id": "closed-done", "op": "waitForCompletion", "run": "closed", "timeoutMs": 60000 },
+    { "id": "binding-closed", "op": "businessIdGet", "businessId": "done-{{unique}}" },
+    { "id": "reject-duplicate", "op": "start", "workflow": "quick", "input": {}, "businessId": "done-{{unique}}", "businessIdReusePolicy": "REJECT_DUPLICATE", "idempotencyKey": "bid-reject-{{unique}}" },
+    { "id": "failed-only-after-success", "op": "start", "workflow": "quick", "input": {}, "businessId": "done-{{unique}}", "businessIdReusePolicy": "ALLOW_DUPLICATE_FAILED_ONLY", "idempotencyKey": "bid-failedonly-{{unique}}" },
+    { "id": "allow-duplicate", "op": "start", "workflow": "quick", "input": {}, "businessId": "done-{{unique}}", "businessIdReusePolicy": "ALLOW_DUPLICATE", "idempotencyKey": "bid-allow-{{unique}}" },
+    { "id": "allowed-done", "op": "waitForCompletion", "run": "allow-duplicate", "timeoutMs": 60000 },
+    { "id": "replay-of-a-start", "op": "start", "workflow": "quick", "input": {}, "businessId": "done-{{unique}}", "businessIdReusePolicy": "ALLOW_DUPLICATE", "idempotencyKey": "bid-allow-{{unique}}" }
+  ]
+}

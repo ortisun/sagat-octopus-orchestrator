@@ -33,6 +33,7 @@ mod dto_exec;
 mod dto_gov;
 mod dto_ops;
 mod dto_primitives;
+mod dto_resets;
 mod dto_schedules;
 mod dto_scripts;
 mod dto_versioning;
@@ -594,6 +595,22 @@ where
                 .layer(RequestBodyLimitLayer::new(sc::SCHEDULE_MAX_BODY_BYTES)),
         );
     }
+    // The input of a schedule is disclosed only where the service for it is wired (feature 018).
+    if serves_schedules && state.schedule_input_disclosures().is_some() {
+        router = router.merge(
+            Router::new()
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/input-disclosures",
+                    axum::routing::post(routes::schedules::disclose_schedule_input::<B<S, C, G>>),
+                )
+                .layer(RequestBodyLimitLayer::new(
+                    routes::payload_disclosure::DISCLOSURE_MAX_BODY_BYTES,
+                ))
+                .route_layer(axum::middleware::from_fn(
+                    routes::payload_disclosure::no_store,
+                )),
+        );
+    }
     // Batch operations are deployment-gated: without the service the routes are not there at all.
     if serves_batches {
         use routes::batch as ba;
@@ -849,6 +866,7 @@ where
     ExecState<S, C, P, X, E>: Exec,
 {
     use routes::execution as ex;
+    use routes::resets;
     use routes::{health, identity};
 
     // One place configures every limit: the per-tenant cap comes from `limits`, like the global one.
@@ -1058,7 +1076,19 @@ where
             "/runs",
             get(ex::list_runs::<B<S, C, P, X, E>>).post(ex::start_run::<B<S, C, P, X, E>>),
         )
+        .route(
+            "/runs/signal-with-start",
+            axum::routing::post(ex::signal_with_start::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/update-with-start",
+            axum::routing::post(ex::update_with_start::<B<S, C, P, X, E>>),
+        )
         .route("/runs/{run_id}", get(ex::get_run::<B<S, C, P, X, E>>))
+        .route(
+            "/namespaces/{namespace_id}/business-ids/{business_id}",
+            get(ex::get_business_binding::<B<S, C, P, X, E>>),
+        )
         .route(
             "/runs/{run_id}/events",
             get(ex::run_journal::<B<S, C, P, X, E>>),
@@ -1090,6 +1120,23 @@ where
         .route(
             "/runs/{run_id}/signals/{signal_name}",
             axum::routing::post(ex::signal_run::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/reset-points",
+            get(resets::list_reset_points::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/reset-previews",
+            axum::routing::post(resets::preview_reset::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/resets",
+            get(resets::list_run_resets::<B<S, C, P, X, E>>)
+                .post(resets::reset_run::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/resets/{reset_id}",
+            get(resets::get_run_reset::<B<S, C, P, X, E>>),
         )
         .layer(RequestBodyLimitLayer::new(EXEC_MAX_BODY_BYTES))
         .route_layer(shed())

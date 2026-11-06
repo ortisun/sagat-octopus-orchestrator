@@ -12,6 +12,7 @@ mod approval_scheduler;
 mod batch;
 mod bindings;
 mod breaker;
+mod business_ids;
 mod capacity_acquire;
 mod capacity_discovery;
 mod capacity_finish;

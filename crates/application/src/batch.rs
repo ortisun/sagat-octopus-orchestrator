@@ -698,9 +698,8 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
                 "the Idempotency-Key must have 8 to 160 characters",
             ));
         }
-        if write.action.needs_feature_019() || write.action == Action::Update {
-            // an Update goes through the declared operations of a run, which a batch does not call yet
-            // (G1959); a job that asked for it would only fail every item
+        if write.action.needs_feature_019() {
+            // a job that asked for it would only fail every item
             return Err(invalid("BATCH_ACTION_UNAVAILABLE", "/action"));
         }
         let given = ParamsGiven {
@@ -728,6 +727,13 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
             .is_some_and(|signal| !valid_signal_name(&signal.name))
         {
             return Err(invalid("BATCH_ACTION_PARAMETERS", "/signal/name"));
+        }
+        // the operation an Update names is one a run can declare: a name that cannot be one would fail
+        // every item
+        if write.update.as_ref().is_some_and(|update| {
+            sagat_domain::workflow::ActivityName::parse(&update.name).is_err()
+        }) {
+            return Err(invalid("BATCH_ACTION_PARAMETERS", "/update/name"));
         }
         if !write.instance_path.is_empty() {
             // a step of an iteration of a collection or a loop needs its scope path resolved per run;

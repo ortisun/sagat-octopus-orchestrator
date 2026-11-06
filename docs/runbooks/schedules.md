@@ -56,7 +56,9 @@ No label is a tenant, a schedule or a run. The audit trail records `schedule.cre
 
 ## 5. The input
 
-The input of a schedule is charged content. It is **never returned**: a read gives its SHA-256 digest only, a change must send it whole, and the Studio asks for it again on every edit. Reading its values through an audited, classified disclosure (feature 016 audiences) is not built yet (T018-033).
+The input of a schedule is charged content. An ordinary read **never returns it**: it gives its SHA-256 digest only, a change must send it whole, and the Studio asks for it again on every edit.
+
+Its values come out through one route, `POST /namespaces/{namespaceId}/schedules/{scheduleId}/input-disclosures`, which needs `schedule:read` and applies the audiences of feature 016 to the input as `POST /runs/{runId}/payload-disclosures` does to a run's: `public` values to every reader, `internal` ones with `payload:read-internal`, `pii` ones only when the request says `{"reveal": ["pii"]}` and the caller has the namespace's reveal grant (otherwise `403` `PII_REVEAL_NOT_GRANTED`), and `secret` ones never. The classification is that of the input schema of the version the schedule would start now: the version it pins, or the workflow's active one. A workflow with no schema to classify by gives its structure to a caller with `run:payload:inspect` and nothing to the others. Every answer is `private, no-store`, and the read is on record before the values leave: `schedule.input_disclosed` for what an internal reader or an inspector got (the same read made again within five minutes is one record), and `payload.pii_revealed` for each reveal of personal data (never collapsed). A reader who sees only public values leaves no record. Look at the trail with `GET /audit?action=schedule.input_disclosed`.
 
 ## 6. What is not built yet
 

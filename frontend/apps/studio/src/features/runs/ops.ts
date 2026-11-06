@@ -10,6 +10,8 @@ export interface RunFacts {
   paused: boolean;
   /** The version of the run the page last read (the sequence of its journal), when it knows it. */
   version?: number | undefined;
+  /** The business identifier the run was started under, when it has one: a rerun may keep it or drop it. */
+  businessId?: string | undefined;
 }
 
 export type Permission = 'run:operate' | 'run:start' | 'saga:override';

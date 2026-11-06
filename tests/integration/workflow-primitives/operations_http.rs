@@ -838,6 +838,45 @@ async fn chain_update_keeps_one_receipt_across_handoff_and_cas_protects_new_keys
 }
 
 #[tokio::test]
+async fn an_update_key_of_the_platforms_own_is_not_for_a_caller() {
+    let fixture = fixture("http-declared-update-reserved").await;
+    for key in [
+        "batch:0194f5e2-job:0194f5e2-run",
+        "schedule:0194f5e2-action",
+    ] {
+        let refused = fixture
+            .api
+            .post_as(
+                &update_path(&fixture),
+                "alice",
+                "acme",
+                &json!({
+                    "updateKey": key,
+                    "args": {"allowed": true, "nextState": {"balance": 27}}
+                }),
+            )
+            .await;
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY, "{key}");
+        let refused = json_of(refused).await;
+        assert_eq!(refused["details"]["reason"], "INVALID_UPDATE_KEY", "{key}");
+    }
+    // and a key that merely contains the word is a key
+    let accepted = fixture
+        .api
+        .post_as(
+            &update_path(&fixture),
+            "alice",
+            "acme",
+            &json!({
+                "updateKey": "my-batch:key",
+                "args": {"allowed": true, "nextState": {"balance": 27}}
+            }),
+        )
+        .await;
+    assert_eq!(accepted.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn update_commits_once_and_replays_the_durable_result() {
     let fixture = fixture("http-declared-update").await;
     let body = json!({
@@ -1020,7 +1059,17 @@ async fn outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry() 
     assert_eq!(failed.headers()["cache-control"], "no-store");
     let failed = json_of(failed).await;
     assert_eq!(failed["code"], "INTERNAL");
-    assert!(!failed.to_string().contains("777"));
+    // The ids of the request are random hexadecimal: any three digits can be in them (this assertion failed in CI by
+    // reading `traceId` as if it were a leak), so what is searched is the error without them.
+    let mut told = failed.clone();
+    if let Some(object) = told.as_object_mut() {
+        object.remove("traceId");
+        object.remove("requestId");
+    }
+    assert!(
+        !told.to_string().contains("777"),
+        "the balance leaked: {told}"
+    );
     assert!(!failed.to_string().contains("injected"));
 
     let rolled_back: (i64, i64, i64, i64, i64) = sqlx::query_as(

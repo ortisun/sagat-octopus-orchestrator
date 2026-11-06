@@ -10,6 +10,9 @@ use sagat_application::payload_disclosure::{
 };
 use sagat_application::payloads::{ExternalContentKind, StoredPayload, StoredPayloadBytes};
 use sagat_application::runs::RunStore;
+use sagat_application::schedule_disclosure::{
+    ScheduleInputDisclosure, ScheduleInputRead, ScheduleInputRequest, ScheduleInputStore,
+};
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::blobs::{BlobDescriptor, BlobId, ContentType};
 use sagat_domain::classification::ClassificationRules;
@@ -25,6 +28,7 @@ use crate::execution::PgRunStore;
 use crate::identity::{best_effort_denial_audit, col, corrupt, insert_audit, store_error};
 use crate::pool::BeginSafely;
 use crate::reveal_grants::has_effective_payload_reveal_grant;
+use crate::schedules::PgScheduleStore;
 
 impl PayloadDisclosureStore for PgRunStore {
     async fn disclosure_run(
@@ -269,6 +273,197 @@ impl PayloadDisclosureStore for PgRunStore {
             }
             Err(DisclosureFailure::RunReadNotGranted) => {
                 DisclosureRead::Refused(DisclosureFailure::RunReadNotGranted)
+            }
+        };
+        tx.commit().await.map_err(store_error)?;
+        Ok(read)
+    }
+}
+
+/// The head revision of a schedule and the version it would start now, as one read.
+struct ScheduleInputCatalog {
+    revision: u32,
+    input_digest: Option<Vec<u8>>,
+    /// `None` when the workflow has no active version and the schedule pins none.
+    version: Option<ScheduleInputVersion>,
+}
+
+struct ScheduleInputVersion {
+    id: WorkflowVersionId,
+    number: u32,
+    rules: ClassificationRules,
+    document: Vec<u8>,
+}
+
+/// Reads the head revision of the schedule and the version its action would use now: the version it
+/// pins, or the workflow's active one. `None` is a schedule that is not in the namespace of the tenant,
+/// or that was deleted.
+async fn schedule_input_catalog(
+    conn: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    schedule: Uuid,
+) -> Result<Option<ScheduleInputCatalog>, StoreError> {
+    let Some(head) = sqlx::query(
+        "SELECT s.head_revision, r.action, r.input_digest \
+         FROM schedules s JOIN schedule_revisions r \
+           ON r.tenant_id = s.tenant_id AND r.schedule_id = s.id AND r.revision = s.head_revision \
+         WHERE s.tenant_id = $1 AND s.id = $2 AND s.namespace_id = $3 AND s.deleted_at IS NULL",
+    )
+    .bind(tenant.as_uuid())
+    .bind(schedule)
+    .bind(namespace.as_uuid())
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?
+    else {
+        return Ok(None);
+    };
+    let action: Value = col(&head, "action")?;
+    let text = |key: &str| action.get(key).and_then(Value::as_str).map(str::to_owned);
+    let workflow = text("workflowId")
+        .and_then(|id| id.parse::<Uuid>().ok())
+        .ok_or_else(|| corrupt("schedule action workflow"))?;
+    let pinned = match (text("versionPolicy").as_deref(), text("versionId")) {
+        (Some("PINNED"), Some(id)) => Some(
+            id.parse::<Uuid>()
+                .map_err(|_| corrupt("schedule action version"))?,
+        ),
+        _ => None,
+    };
+    let version = sqlx::query(
+        "SELECT v.id, v.version_number, v.document, v.classification_rules \
+         FROM workflow_versions v \
+         WHERE v.tenant_id = $1 AND v.id = COALESCE($2, \
+               (SELECT w.active_version_id FROM workflows w WHERE w.tenant_id = $1 AND w.id = $3))",
+    )
+    .bind(tenant.as_uuid())
+    .bind(pinned)
+    .bind(workflow)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?
+    .map(|row| -> Result<ScheduleInputVersion, StoreError> {
+        Ok(ScheduleInputVersion {
+            id: WorkflowVersionId::new(col(&row, "id")?),
+            number: u32::try_from(col::<i32>(&row, "version_number")?)
+                .map_err(|_| corrupt("workflow version number"))?,
+            rules: parse_rules(col::<i16>(&row, "classification_rules")?)?,
+            document: col(&row, "document")?,
+        })
+    })
+    .transpose()?;
+    Ok(Some(ScheduleInputCatalog {
+        revision: u32::try_from(col::<i32>(&head, "head_revision")?)
+            .map_err(|_| corrupt("schedule revision"))?,
+        input_digest: col(&head, "input_digest")?,
+        version,
+    }))
+}
+
+impl ScheduleInputStore for PgScheduleStore {
+    async fn disclose_and_audit(
+        &self,
+        request: &ScheduleInputRequest,
+        evaluator: &dyn DisclosureEvaluator,
+        audits: &sagat_application::payload_disclosure::DisclosureAudits,
+    ) -> Result<ScheduleInputRead, StoreError> {
+        let tenant = request.tenant_id();
+        let namespace = request.namespace_id();
+        let schedule = request.schedule().as_uuid();
+
+        // What costs CPU and needs no lock happens before the transaction (the compilation of the
+        // schema of the input); the transaction reads the schedule again and decides everything.
+        {
+            let mut conn = self.pool().acquire().await.map_err(store_error)?;
+            if let Some(ScheduleInputCatalog {
+                version: Some(version),
+                ..
+            }) = schedule_input_catalog(&mut conn, tenant, namespace, schedule).await?
+            {
+                off_worker(|| {
+                    evaluator.prepare(CarrierWarmup {
+                        workflow_version: version.id,
+                        carrier: &CarrierPointer::Input,
+                        rules: version.rules,
+                        definition: &version.document,
+                    });
+                });
+            }
+        }
+
+        let mut tx = self.pool().begin_safely().await.map_err(store_error)?;
+        let Some(catalog) = schedule_input_catalog(&mut tx, tenant, namespace, schedule).await?
+        else {
+            return Ok(ScheduleInputRead::Missing);
+        };
+        lock_namespace(&mut tx, tenant, namespace).await?;
+        let Some(current_role) = current_role(&mut tx, tenant, request.subject().as_str()).await?
+        else {
+            return Ok(ScheduleInputRead::Refused(
+                DisclosureFailure::RunReadNotGranted,
+            ));
+        };
+        let reveal_granted =
+            has_effective_payload_reveal_grant(&mut tx, tenant, namespace, request.subject())
+                .await?;
+
+        let payload = match &catalog.input_digest {
+            Some(digest) => StoredPayload::Inline(StoredPayloadBytes::new(
+                payload_content(&mut tx, tenant, digest).await?,
+            )),
+            None => StoredPayload::NoRetainedPayload,
+        };
+        let (workflow_version, version_number, rules, document, carrier) = match catalog.version {
+            Some(version) => (
+                version.id,
+                version.number,
+                version.rules,
+                version.document,
+                Some(CarrierPointer::Input),
+            ),
+            // no version to classify against: a reader gets what a payload with no schema gets
+            None => (
+                WorkflowVersionId::new(Uuid::nil()),
+                0,
+                ClassificationRules::NONE,
+                Vec::new(),
+                None,
+            ),
+        };
+        let selected = SelectedDisclosure {
+            run_version: u64::from(catalog.revision),
+            workflow_version,
+            version_number,
+            classification_rules: rules,
+            carrier,
+            node_id: None,
+            attempt: None,
+            definition: StoredDefinition::new(document),
+            payload,
+        };
+        // The projection is CPU work under open locks: keep it off the async worker.
+        let evaluated = off_worker(|| evaluator.evaluate(selected, current_role, reveal_granted));
+        let read = match evaluated {
+            Ok(decision) => {
+                if let Some(kind) = decision.audit {
+                    append_audit(&mut tx, audits.for_kind(kind)).await?;
+                }
+                ScheduleInputRead::Ready(ScheduleInputDisclosure {
+                    schedule: request.schedule(),
+                    revision: catalog.revision,
+                    caller: decision.disclosure.caller,
+                    result: decision.disclosure.result,
+                })
+            }
+            Err(DisclosureFailure::PiiRevealNotGranted) => {
+                best_effort_denial_audit(tx, &audits.reveal_denied).await;
+                return Ok(ScheduleInputRead::Refused(
+                    DisclosureFailure::PiiRevealNotGranted,
+                ));
+            }
+            Err(DisclosureFailure::RunReadNotGranted) => {
+                ScheduleInputRead::Refused(DisclosureFailure::RunReadNotGranted)
             }
         };
         tx.commit().await.map_err(store_error)?;

@@ -56,13 +56,22 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   machine is the diagram of `data-model.md`; a cancelling job does not fail (the cancel wins). The retry
   backoff (5 s doubling to 5 min, 10 attempts within 1 h) is D1045. Not here: selection, the horizon wait and
   the item adapters (T018-045..047).
-- [ ] T018-006 [P] Domain reset and events `run.start_delayed`, `run.start_released`, `run.reset`,
+- [x] T018-006 [P] Domain reset and events `run.start_delayed`, `run.start_released`, `run.reset`,
   `wait.satisfied.via`; eligibility over `RunState::replay` + suffix facts; `ResetPlan` —
   `crates/domain/src/execution/{reset.rs,event.rs,mod.rs}` — per-cause tests — FR-018-023, FR-018-035..039.
   *Deferred 2026-10-29 (reordered, not dropped).* It is not on the US01 path (it serves US03 start delay, US04 `via`
   and US06 reset) and it adds variants to `RunEvent`, which is matched exhaustively in about nine crates (event codec,
   projection, DTOs, telemetry) and in `execution/{mod,state}.rs`, files another session was changing for 014 (PR #59 has
   since merged). It follows US01 and US02, after a fresh merge of `develop`.
+  *Part done 2026-11-05, the task stays open:* the two events of the start delay, `run.start_delayed` and
+  `run.start_released` (D1968), are built with their reducer, command, planner hold and event codec: `start_delay.rs` in
+  `crates/domain/tests` 8 passed, and a replay of the journal equals the stored projection (`verify_run`) in every delay test.
+  *Done 2026-11-05 (D1975, D1976):* `wait.satisfied.via` (T018-043: `RunEvent::WaitSatisfied { node, via }`, written by
+  the signal, the chain signal, the event dispatch and Signal-with-Start), `run.reset` (`RunEvent::RunReset`, its reducer
+  arm, `ResetReapply`, the event codec with a closed detail and a round-trip test) and, in `reset.rs`, the eligibility of
+  a reset over the addressed journal (`reset_points`) and `ResetPlan` (`reset_plan`). Evidence: `cargo test -p
+  sagat-domain --test reset` 15 passed and the module unit tests (2), `event_codec` unit tests 26 passed, fifteen mutants
+  of the module and the reducer killed, clippy over the workspace.
 - [ ] T018-007 Permissions, audit actions and quota resources of the plan —
   `crates/domain/src/{identity.rs,audit.rs,quota.rs}` — role-grant and range tests — FR-018-041, FR-018-045.
   *Part done 2026-10-29 (task stays open).* Done: the four permissions (`schedule:read|write|operate`,
@@ -636,32 +645,157 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   role and label queries and the `jsx-a11y` lint rules, not by a contrast measurement (there is no axe harness in the
   Studio and no new colour was added); `npm run typecheck --workspace @sagat/e2e` needs the TypeScript SDK built first
   (`sdks/typescript/conformance/prepare.sh`) and was not run here, the one edit in `smoke.spec.ts` is a menu list.
-- [ ] T018-033 [P] [US2] Schedule input disclosure (016 audiences, `no-store`, audit) —
+- [x] T018-033 [P] [US2] Schedule input disclosure (016 audiences, `no-store`, audit) —
   `tests/integration/schedules-bulk-operations/disclosure.rs` — per-level cases — FR-018-042.
-  *Not started (2026-11-04).* It needs the route `discloseScheduleInput`
-  (`contracts/rest.openapi.yaml`, `/schedules/{scheduleId}/input-disclosures`), so it changes the canonical OpenAPI, the
-  generated reference and the Studio types and wires the route; it is done with the other REST leftovers.
+  *Done 2026-11-05 (D1973):* `POST /namespaces/{namespaceId}/schedules/{scheduleId}/input-disclosures`. Service tests
+  `disclosure::` (6) and REST tests `disclosure_rest::` (3) pass against a real PostgreSQL: each level to the audience that
+  may see it (a viewer the public values, a developer also the internal ones, nobody a secret, and no canary in a debug
+  print of the answer), personal data only with the explicit reveal and the grant (`PII_REVEAL_NOT_GRANTED`, the refusal
+  audited, each granted reveal its own record), the audit `schedule.input_disclosed` for an internal read and none for a
+  public one, the classification of the version the schedule pins against the one it follows, no schema to classify by
+  (structure for an inspector, nothing for a reader), another tenant, another namespace, a deleted and an unknown schedule
+  all `404`, `private, no-store`, the 1 KiB limit, an ordinary read of the schedule with no value in it, one token of the
+  namespace per request. Contract: path and schemas in the platform OpenAPI, reference blessed, Studio types regenerated
+  (`npm run check:api` passes), battery, runbook, and eleven answers of the live conformance test
+  `contract_schedules_bulk_operations rest::` (200 for an administrator and a viewer, 403 for a reveal nobody is granted,
+  422/400 for a request the contract does not take, 413 over 1 KiB, 401, 404 for another tenant and an unknown schedule),
+  which now counts thirteen implemented schedule operations. Gates: `integration_schedules_bulk_operations` 337 and
+  `fault_schedules_bulk_operations` 37 in both modes, `integration_payload_classification` 41 (the evaluator
+  refactor) and `integration_platform_foundation` 101 and `integration_security_multitenancy` 126 in both modes,
+  contract targets, clippy over the workspace. Mutants (9, over the query filters, the pinned version, the reveal grant, the audit action of a
+  reveal, the reveal parsing, admission, the 1 KiB limit and the permission of the policy): 8 killed (the deleted
+  schedule, the namespace filter, the pinned version, the grant taken as given, the collapsing reveal, the reveal never
+  asked for, the missing admission and the missing body limit); 1 equivalent today: the policy reading with `run:read` in
+  place of `schedule:read`, because every built-in role has both or neither (`Role::permissions`), so no role can tell
+  them apart; the day a role splits them that line needs a test.
 
 ## Phase 5: US03 — Business identifiers and start delay (P1)
 
-- [ ] T018-034 [US3] `BusinessIdStore` (insert-or-lock, holder status, claim in creation transaction,
+- [x] T018-034 [US3] `BusinessIdStore` (insert-or-lock, holder status, claim in creation transaction,
   lookup, `runs.business_id`, purge) — `crates/infra-postgres/src/{business_ids.rs,execution.rs}` —
   store tests — FR-018-018, FR-018-021, FR-018-022.
-- [ ] T018-035 [US3] Start options on `POST /runs` (`200` for `USE_EXISTING`), binding lookup, list
+  *Part done (2026-11-05), the task stays open:* migration `20270103000000_business_ids` (the binding table, `runs.business_id`,
+  grants for `sagat_app`, a down that refuses while a binding exists, storage classification, the `sagat_quota_row_delta`
+  trigger); `crates/infra-postgres/src/business_ids.rs` claims inside `PgRunStore::create` in the Aggregate slot
+  (`INSERT ... ON CONFLICT DO NOTHING`, else `SELECT ... FOR UPDATE`, holder status through the chain, takeover of a closed
+  holder, a holder that is gone holds nothing); the run and every segment of a chain carry the copy (D1961, D1963). Real
+  PostgreSQL, `integration_schedules_bulk_operations` 249 passed in both passes (the owner role and `sagat_app`), 15 of
+  them in `business_ids.rs`; mutation checks killed the binding row not locked, a closed holder not replaced, the claim
+  ignoring an open holder, the copy on the run not written, the claim skipped, a gone holder counted as open, the options
+  left out of the fingerprint, a chain judged by its first run, and a handoff that drops the identifier; the one survivor is the plain `continue_as_new` copy (G1970).
+  *Update 2026-11-05 (lookup):* the lookup is built (`GET /namespaces/{ns}/business-ids/{id}`, D1967): the store reads the
+  holder, the chain's current run, how it ended and `reusableAfter` without a lock, and answers nothing in the three cases in
+  which a start finds the identifier free. `business_id_lookup.rs` 6 passed (open holder, closed holder with its end and
+  window, past the window, unbound / purged holder / another namespace, a viewer, another tenant's principal with the
+  victim's namespace id), and the chain test checks the lookup on every segment. 7 of 9 mutants were killed on the first
+  pass; the 2 survivors each got a test and were then killed: the store's tenant filter
+  (`the_binding_of_a_tenant_is_not_read_by_another_even_with_its_namespace_id`) and the route's admission
+  (`a_binding_lookup_consumes_one_token_whether_it_finds_the_identifier_or_not`: the lookup debits the namespace's bucket
+  once, found or not).
+  *Update 2026-11-05 (purge):* housekeeping calls `business_ids_purge` (G1968, closed): `business_ids_purge.rs` 4 passed in
+  both modes (only a binding that holds nothing is purged: open, closed inside its window, closed past it, a holder that
+  is gone; a purge is bounded and goes on where it stopped; housekeeping makes it; the runtime role may run the function and
+  has no `DELETE` of its own), seen failing first with a stub that purged nothing.
+- [x] T018-035 [US3] Start options on `POST /runs` (`200` for `USE_EXISTING`), binding lookup, list
   filters, rerun `KEEP`/`DROP` — `crates/application/src/runs/business_id.rs`,
   `crates/api-http/src/routes/execution.rs`, `crates/api-http/src/dto.rs` — contract tests —
   FR-018-019, FR-018-020, FR-018-022, FR-018-040.
-- [ ] T018-036 [US3] 32-way race, policy table in/after window, terminal-commit race, chain continuity,
+  *Part done (2026-11-05), the task stays open:* `POST /runs` takes `businessId`, `businessIdConflictPolicy` (`FAIL`,
+  `USE_EXISTING`) and `businessIdReusePolicy` (`ALLOW_DUPLICATE`, `ALLOW_DUPLICATE_FAILED_ONLY`, `REJECT_DUPLICATE`); a held
+  identifier is `409` with `BUSINESS_ID_IN_USE`, a remembered one `409` with `BUSINESS_ID_REUSE_REJECTED` and the instant it
+  ends, `USE_EXISTING` answers `200` with the holder and creates nothing; an invalid identifier or option is `422` in
+  words and nothing is bound; the holder is named only to a caller with `run:read` (D1964); the options join the
+  idempotency fingerprint only when present (D1962); `GET /runs` filters by `businessId` and `businessIdPrefix` (a prefix has
+  no wildcards). Code is in `crates/application/src/runs.rs` (`StartOptions`, `start_with_options`) and
+  `crates/api-http/src/routes/execution.rs`, not in the `runs/business_id.rs` and `dto.rs` this line names. OpenAPI,
+  generated Studio types and `docs/reference/api.md` follow; `contract_schedules_bulk_operations` 3 passed (one is the
+  business-id contract on every answer), `integration` `business_ids_rest.rs` 6 passed.
+  *Update 2026-11-05 (rerun):* the rerun's `KEEP`/`DROP` (FR-018-040, D1966) is built: `RunService::rerun_with`, the
+  `businessId` of the operation request for `RERUN_AS_NEW` (422 for any other operation), the `dropBusinessId` of a batch
+  `RERUN` job, a held identifier failing the item as `CONFLICT`. `business_id_rerun.rs` 8 passed (seen failing first: 5 of
+  them, with the API stub that changed nothing), `business_ids_rest.rs` 9 passed (3 new over HTTP), 5 of 6 mutants killed and
+  the survivor, a fingerprint marker for `DROP`, removed because it distinguished nothing.
+  *Done 2026-11-05 (ticked):* the last two parts landed. The binding lookup `GET /namespaces/{ns}/business-ids/{id}`
+  (`getBusinessIdBinding`, D1967; over HTTP in `business_ids_rest.rs`: open and closed, an identifier with `/ % # ? + &` in it,
+  unbound, a namespace that is not one, another tenant's probe finds nothing and is recorded; the cross-tenant battery gives
+  the victim a real identifier and attacks the operation; the contract test checks its 200 and 404 against the schema) and
+  the `scheduleId` filter of `GET /runs` (`rest::the_runs_a_schedule_started_are_listed_by_it`, seen failing first: the
+  filter was ignored and 3 runs came back). The code is in `RunService::start_with_options`, `rerun_with` and
+  `business_binding` and in `crates/api-http/src/routes/execution.rs`, not in the `runs/business_id.rs` and `dto.rs` this
+  line names (D1961). Ticked from: `contract_schedules_bulk_operations` 3, `contract_rest_security_multitenancy` 18,
+  `business_ids_rest.rs` 13, `business_id_rerun.rs` 8, `business_id_lookup.rs` 6.
+- [x] T018-036 [US3] 32-way race, policy table in/after window, terminal-commit race, chain continuity,
   key replay/reuse, harness vs signal paths — `tests/{integration,fault}/schedules-bulk-operations/business_ids.rs`
   — SC-018-006 — FR-018-018..021.
+  *Part done (2026-11-05), the task stays open:* in `business_ids.rs` 32 concurrent starts of one identifier give one
+  open run, 32 over the binding of a closed holder give one new run, 32 with `USE_EXISTING` all get the one run; the policy
+  table inside the window and the free identifier after it; a retry under the same key gets the same run and another
+  identifier under that key is a different request; namespaces and tenants are independent; the tenant is charged once for
+  the binding and once for the run; a chain holds the identifier until it ends and every segment carries it; a refused
+  start, and a start the admission refuses after the claim, leave no binding. `fault_schedules_bulk_operations` (31 passed)
+  proves that the transitions of a run that holds an identifier never touch a schedule, batch or binding table
+  (`run_driven_locks.rs`), and `batch_locks.rs` accepts a plan with the binding row in the Aggregate slot, after the schedule
+  row and before the runs it acts on (the order of D1961; it checks a declared plan, not the claim itself).
+  *Done 2026-11-05 (ticked):* the rest of the line landed.
+  - The terminal-commit race (`business_ids.rs`): a start beside the end of its holder, written and not committed, does not
+    wait for it and finds it open (`BUSINESS_ID_IN_USE`), and takes the identifier over once the end commits; a claim in
+    flight, holding the row of the binding, blocks no transition of the run that holds it. A mutant that makes the claim lock
+    the holder it reads is killed (the start waits, and the stage limit names it).
+  - The signal and the other run-driven paths (`run_driven_locks.rs`, SC-018-016): with every table of the aggregates,
+    `business_ids` included, held in `ACCESS EXCLUSIVE`, a signal wakes a waiting run, a wait runs out and takes its
+    other way, and a chain hands off to its next segment, which carries the identifier, all without waiting. Mutants that make
+    a signal or the production hand-off read the binding table are killed; the one on the plain `continue_as_new` copy
+    survives, which is G1970.
+  - The crash matrix (`fault_schedules_bulk_operations` `business_ids.rs`): a start under an identifier is one transaction of
+    30 writing statements on 13 tables; the connection is killed after each in turn, and each time no table has changed,
+    there is neither a binding nor a run, and the same start sent again makes exactly one run that holds the identifier and a
+    third is a replay of it. A first start is made before the probe: its first counters are writes that later starts do not make.
+  `T018-012`'s slot cases for the admission paths of 019, 021, 022, 024, 025, 026 and 030 stay T018-012's, as those paths exist.
 - [ ] T018-037 [US3] Start delay (events, fenced release pass with `apply_if`, cancel/deadline, signal
   refused, Update admitted, quota; with 022 run-level concurrency the release acquires the permit or
   enqueues the run, FR-022-018) — `crates/scheduler/src/passes.rs`, `crates/infra-postgres/src/execution.rs`,
   `tests/{integration,fault}/schedules-bulk-operations/delay.rs` — SC-018-007 — FR-018-023, FR-018-050.
-- [ ] T018-038 [P] [US3] Studio business id, start fields, delayed status —
+  *Part done 2026-11-05, the task stays open:* a start with `startDelayMs` (1 ms to 366 days) creates the run `WAITING`
+  with its entry held and `startDelayedUntil` on the run, a fenced pass of the run shards releases the entry once at the
+  instant (D1968; migration `20270104000000_start_delay`, `RunStore`/`MaintenanceStore::due_start_releases`, the pass
+  `start_releases` with the condition read again under the run's lock), and a cancellation or a deadline ends it with no step
+  having run. `delay.rs` (integration) 9 passed in both modes: held entry and no task offered, released once and not
+  before, cancelled, past its deadline, a signal refused and then delivered, the active-run quota and the identifier,
+  the range in words, the key and its replay, and the race with a run that stopped qualifying between the candidate query and
+  the lock; `delay.rs` (fault) kills the release after each of its writing statements and the next pass releases it once;
+  the REST start and its refusals in `business_ids_rest.rs`. All 13 mutants of the domain, the store, the pass and the
+  application were killed (one needed the race test). Not done: a declared Update on a held run (G1972) and the release that
+  acquires or enqueues 022's run-level permit (blocked on feature 022, which is not approved).
+- [x] T018-038 [P] [US3] Studio business id, start fields, delayed status —
   `frontend/apps/studio/src/features/runs/` — component tests — FR-018-047.
-- [ ] T018-039 [US3] Business-id canaries absent from logs, spans, metrics, audit reasons, outbox —
+  *Part done (2026-11-05), the task stays open:* the start dialog has the optional identifier (checked in words before
+  anything is sent: 1 to 200 visible ASCII characters), the two policies once there is an identifier, only the policies that
+  are not the defaults are sent, the key changes with the identifier, and a `200` is announced as "already has an open run,
+  nothing was started" (the client now tells a caller the status of a success); the run list filters by the start of an
+  identifier (debounced, in the address, followed when the address changes by itself, cleared with the other filters) and
+  shows it on the row; the run header shows it as a fact; the rerun dialog of a run that has an identifier offers to keep it
+  (the default) or to start without it, and a held identifier is told in words with nothing to refresh. `npm test` 1346 passed (96 files), `npm run lint`, `typecheck`,
+  `build` and `check:api` clean; 14 mutants of this code, 13 killed and the survivor (a trim that the dialog already did)
+  removed.
+  *Done 2026-11-05 (ticked):* the delayed status landed with the start delay. The start dialog has an optional "Start after"
+  (a whole number of minutes, hours or days, at most 366 days, checked in words before anything is sent, sent as
+  `startDelayMs`, part of what a key stands for, and announced as "waits 1 hour before it starts"); a waiting run that has
+  `startDelayedUntil` says "Starts <time>" under its id in the list, and its header says so as a fact with the words "held
+  by its start delay" instead of the generic wait. `npm test` 1358 passed (97 files), `lint`, `typecheck`, `build` and
+  `check:api` clean. `npm run typecheck --workspace @sagat/e2e`
+  needs the TypeScript SDK built first (`sdks/typescript/conformance/prepare.sh`) and was not run here.
+- [x] T018-039 [US3] Business-id canaries absent from logs, spans, metrics, audit reasons, outbox —
   `tests/integration/schedules-bulk-operations/privacy.rs` — SC-018-014 — FR-018-042.
+  *Part done (2026-11-05), the task stays open:* `privacy.rs` takes a canary identifier through a start, a refusal, a returned
+  holder, a cancellation and the refusal of a reuse, and finds it, as text and as the hex of its bytes, in no table of the
+  schema except the binding and the run (audit trail, outbox, journal, dedupe records and payloads included), in no log line
+  at TRACE level, in no metric label and in the text of no error. The probe line proves the capture was listening, and the
+  tables are asserted after the run so a hit names the table.
+  *Done 2026-11-05 (ticked):* the spans are searched too. The capture (`capture_with_spans` in `tests/support/logs.rs`) writes
+  every span with its fields when it is created and when it closes, whether or not an event happens inside it, which is the
+  attribute set a trace exporter sends; the test proves it was listening with a span of its own, and the flow now includes the
+  lookup. A mutant that creates a span carrying the identifier is killed. What is left of G1971 is the wire conversion of an
+  OTLP exporter, which carries the same fields and belongs to T018-071's export canary.
 
 ## Phase 6: US04 — Signal-with-Start and Update-with-Start (P2)
 
@@ -669,16 +803,90 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   would queue, delay refused, timeout race, no stored signal without a waiting step) —
   `crates/application/src/runs/with_start.rs`, `crates/api-http/src/routes/execution.rs`,
   `tests/integration/schedules-bulk-operations/with_start.rs` — SC-018-008 — FR-018-024, FR-018-050.
-- [ ] T018-041 [US4] Update-with-Start (`USE_EXISTING`/`FAIL`, ADR-0031 receipts, `REJECTED` keeps the
+  *Done 2026-11-05 (not ticked: the 022 case is blocked, G1973):* `POST /runs/signal-with-start` (D1969). Service tests
+  `with_start::` (8) and REST tests `with_start_rest::` (5) pass against a real PostgreSQL: creation delivery and the
+  journal's `wait.satisfied`, a holder signalled with no second run, `NOT_WAITING` leaving the journal untouched, an entry
+  that waits for nothing rolling back the run and its binding (the identifier is then free), the reuse policy on a closed
+  holder, replay and `IDEMPOTENCY_KEY_REUSED` (also across a plain start and a with-start under one key), `run:start` and
+  `run:signal` both required, the delay refused (422), typed validation. Contract: path and schemas in the platform OpenAPI,
+  reference blessed, Studio types regenerated, the cross-tenant battery sends it, and a rate-admission test shows one token
+  per request. 11 mutants, one survived (the signal outside the start fingerprint) and a test now kills it. Not done: a
+  new run that 022's permit would queue (022 is not approved) and the timeout race at the creation instant (G1973). The
+  task names `crates/application/src/runs/with_start.rs`, which was not created: the code is in `runs.rs` next to `signal`,
+  whose core (`deliver_signal`) it shares.
+- [x] T018-041 [US4] Update-with-Start (`USE_EXISTING`/`FAIL`, ADR-0031 receipts, `REJECTED` keeps the
   run, nothing on pre-admission failure, `no-store`) — same files — US04 cases + replay — FR-018-025.
-- [ ] T018-042 [US4] With-start idempotency and authorization (fingerprint, replay after current auth,
+  *Done 2026-11-05 (D1970; the code is in `runs.rs`, `declared_operations.rs` of the application and of
+  infra-postgres, and `execution.rs` of the routes, not in the `runs/with_start.rs` the task names):*
+  `POST /runs/update-with-start`. Service tests `update_with_start::` (11) and REST tests
+  `update_with_start_rest::` (8) pass against a real PostgreSQL, both modes: the run and the Update in one
+  transaction (journal `run.started` then `state.updated`, audit, outbox, receipt, `verify_run`), an open holder
+  updated with no second run, `FAIL` as `BUSINESS_ID_IN_USE`, a validator that says no and a stale revision as a
+  `REJECTED` receipt that keeps the run, an undeclared operation and arguments the declaration refuses creating
+  nothing (the identifier stays free), replay with the same key and `IDEMPOTENCY_KEY_REUSED` for another
+  argument, update key, expected revision or a plain start under the key (and the other way round), a held run
+  admitting the Update (closes G1972), `run:start` and `run:update`, typed validation, `no-store`. Crash matrix
+  `fault_schedules_bulk_operations update_with_start`: the backend killed after each of the 43 writes of an
+  applied request and the 36 of a rejected one leaves every table as it was, and sending it again makes one
+  run and one receipt. Contract: path and schemas in the platform OpenAPI, reference blessed, Studio types
+  regenerated, cross-tenant battery, one token per request. 13 mutants: 12 killed (among them the Update in a
+  second transaction, killed by the crash matrix, and a commit after a refusal) and one equivalent (the handler's
+  own `no-store`, which the API sets on every response; removed). Open: a new run that 022's permit would queue
+  (blocked), and the two races of G1974.
+- [x] T018-042 [US4] With-start idempotency and authorization (fingerprint, replay after current auth,
   cross-tenant `NOT_FOUND`) — `tests/integration/schedules-bulk-operations/with_start.rs` — FR-018-026, FR-018-041.
-- [ ] T018-043 [US4] Write `via` on `wait.satisfied`; retain Update arguments on `state.updated` only for
+  *Done 2026-11-05:* the fingerprint of both requests covers every field (the signal; the Update's operation,
+  key, arguments and expected revision) and neither is a retry of a plain start under the same key
+  (`with_start::a_key_used_by_a_plain_start...`, `update_with_start::the_same_key_replays...` and
+  `a_key_used_by_a_plain_start...`, which kill the mutants that take the Update or the signal out of
+  the fingerprint); a retry
+  after the caller lost the right is refused `403` and writes nothing
+  (`with_start_rest::` and `update_with_start_rest::a_retry_after_the_caller_lost_the_right...`); another
+  tenant's workflow is `404` for both routes in the cross-tenant battery (`body_of`).
+- [x] T018-043 [US4] Write `via` on `wait.satisfied`; retain Update arguments on `state.updated` only for
   Updates declared `reapplyOnReset` — `crates/application/src/{runs.rs,chain_progress.rs,declared_operations.rs}`,
   `crates/scheduler/src/events.rs`, `crates/infra-postgres/src/event_codec.rs` — old/new codec round-trip,
   no payload written for undeclared Updates, content charge — FR-018-039.
-- [ ] T018-044 [US4] Error reasons and remediation rows — `crates/api-http/src/error.rs`,
+  *Done 2026-11-05 (D1975, G1978); the task text is amended in one place: the arguments are referenced from the
+  receipt of the Update, not from the `payload_digest` of the `state.updated` row, which already holds the new state.*
+  **`via`:** `RunEvent::WaitSatisfied { node, via: Option<WaitVia> }` and `satisfy_wait(.., via)`; `signal` for
+  `signalRun` and a chain signal, `event` for the dispatch of a published event (the scheduler and the scoped event
+  commands), `signal_with_start` for Signal-with-Start whether it created the run or found an open holder. Tests:
+  `wait_via::` (3, real PostgreSQL: signal, published event, Signal-with-Start in both branches), the chain signal test
+  of `integration_workflow_primitives` reads the row, the scoped event commands of `sagat-domain`
+  (`scoped_event_wait_lifecycle`), and the codec round trip (`event_codec::tests`: each name, an older row without
+  `via` decodes and is written back as it was, an unknown name decodes as none). **Arguments:** migration
+  `20270105000000_retained_update_arguments` (`operation_update_receipts.arguments_digest`, a foreign key to `payloads`,
+  `APPLIED` only; `down` refuses while any is set; classified; the three pinned upgrade oracles move), the evaluator
+  returns the canonical arguments only when the declaration opts in (`DeclaredUpdateDecision::Applied { .., arguments }`),
+  the store writes the `payloads` row, the receipt column and `detail.retained` in the transaction of the Update.
+  Tests `retained_arguments::` (3, real PostgreSQL): an Update that opts in keeps them (receipt, content equal to the
+  canonical arguments, journal `retained: true`) and one that does not writes no payload (`retained: false`); the
+  content charge differs by exactly the size of the arguments between an opting-in Update and a twin that does not; the
+  same arguments applied to two runs are one row, and a rejected Update keeps nothing and has no `state.updated`.
+  Seventeen mutants killed: nine for `via` (the plain signal, the with-start that creates the run and the one served by
+  a holder, the pass-through to the wait, the chain signal, the dispatch of an event, the scoped event command, and the
+  codec writing and reading it) and eight for the arguments (no Update and every Update keeping them, no content write,
+  no receipt reference, the journal row saying always `true` and saying nothing, the marker never written and never
+  read).
+  Gates, both modes where marked: `sagat-domain`, `-application`, `-infra-ir`, `-scheduler`, `-api-http`, `-cli`,
+  `-infra-postgres` unit suites; the 20 contract targets that read the journal, the API or the IR; integration
+  `schedules_bulk_operations` 343 (both roles), `platform_foundation` 101 (both; migrations and privilege audit),
+  `durable_execution` 179 (both), `workflow_primitives` 755 (both), `security_multitenancy` 126 (both),
+  `payload_classification` 41 (both), `events_webhooks_messaging` 111, `observability_operations` 20,
+  `sagas_compensations` 82, `gitops_versioning` 35; fault `schedules_bulk_operations` 37 (both) and
+  `workflow_primitives` 92; clippy over the workspace. The capability that lets a workflow opt in is still off in every
+  deployment (G1977), so nothing is retained yet outside these tests; the reapply that reads the arguments is the
+  reset (T018-053, T018-056).
+- [x] T018-044 [US4] Error reasons and remediation rows — `crates/api-http/src/error.rs`,
   `docs/quickstarts/errors.md` — `errors-018` contract test — FR-018-043.
+  *Done 2026-11-05 (D1971, G1975), for the reasons the built operations raise:* 29 reasons have a row of their own
+  in `ErrorCode::remediation`, each with the sentence of the contract's table, and are named in the OpenAPI;
+  `contract_schedules_bulk_operations errors::` (3 tests) fails when a sentence, a row, the OpenAPI mention or the
+  classification of a table row drifts (6 mutants killed), and `crates/api-http/tests/quota_reasons.rs` plus the
+  tightened quota assertions of `limits.rs`, `backfill.rs`, `batch.rs` and `rest.rs` tie the three ceilings'
+  `details.reason` to the labels the stores really pass. `docs/quickstarts/errors.md` is for definition
+  problems and is not touched (D1971). The reasons of reset, 020, 022, 029 and 031 are added with the tasks that raise them.
 
 ## Phase 7: US05 — Batch operations (P2)
 
@@ -774,8 +982,8 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-047 [US5] Item adapters for the eight actions through single-run use cases, skip reasons (incl.
   `TEST_RUN`), failed compensation of cancelled runs — `tests/integration/schedules-bulk-operations/batch_actions.rs`
   — one case per action and reason — FR-018-030, FR-018-031, FR-018-034, FR-018-050.
-  *Part done 2026-11-04 (task stays open for `UPDATE`, which a batch cannot apply yet (G1959), and `TEST_RUN`, which
-  needs feature 022, not approved).* `ItemActions` is implemented for the run service in
+  *Part done 2026-11-04 (task stays open for `TEST_RUN`, which needs feature 022, not approved; `UPDATE` was added on
+  2026-11-05, see the end of this note).* `ItemActions` is implemented for the run service in
   `application/src/runs/batch_items.rs` for cancel, pause, resume (`operate`), signal, retry-step and
   mark-manual-review (`review` with `Retry` and `Hold`) and rerun, each under the key of its item. Cases against real runs
   and workers, `batch_actions::` (4 passed) and the earlier `batch_executor::`: `CANCEL` of a running run and of one that
@@ -792,6 +1000,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   the strict parser; a step id that is no node is now `BATCH_ACTION_PARAMETERS` at `/stepId` when the job is created.
   Mutations that were caught: the strict parser, the missing `NotFound` mapping, every non-cancel skip as
   `ALREADY_TERMINAL`, and a missing signal wait as `NOT_APPLICABLE`.
+  *`UPDATE` added 2026-11-05 (D1972, G1959 closed):* `batch_actions::an_update_is_applied_to_the_runs_that_declare_it_and_skipped_for_the_others`
+  (two open runs `SUCCEEDED` with the declared state at revision 1; an ended run `SKIPPED ALREADY_TERMINAL` and untouched;
+  a run whose version declares no such Update `SKIPPED OPERATION_NOT_DECLARED`; a rule that says no `FAILED
+  VALIDATION_FAILED` with the state unchanged; another job applies again, once), the creation tests (an `UPDATE` without
+  its `update`, or with a name no operation can have, creates nothing), a unit test of the `Error.code` of a refused
+  Update, and 6 mutants killed. The task stays open for `TEST_RUN` only (feature 022).
 - [x] T018-048 [US5] Batch authorization and ceilings (no `run:batch`, missing action permission,
   mid-job revocation, foreign ids, job/item ceilings, zero quota) —
   `tests/integration/schedules-bulk-operations/batch_security.rs` — SC-018-010 — FR-018-033, FR-018-034,
@@ -867,27 +1081,118 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   parallel, saga, approval, collection, loop, child, unknown outcome, later compensation, one row per
   rule kind) — `crates/domain/src/execution/reset.rs`, `crates/domain/tests/reset.rs` — every point
   classified as the registry says — FR-018-035, FR-018-036.
+  *Part done 2026-11-05 (D1976, G1979), the task stays open:* the registry (66 event types, `rule_of` exhaustive, `RULES`
+  by name, a test that reads the names out of `RunEvent::name()`, a test typed from the contract) and the eligibility and
+  the plan over a corpus of: a sequential run, a parallel fork, a timer and a wait, a saga that aborts, a failure that is
+  resolved later, an unknown outcome inside and after its window, a paused run, a child, a collection, and the plan with
+  its effect markers. Not done: an approval run and a loop run in the corpus (their completions are not points under the
+  literal D1022 list, G1979, which asks the owner), and an end-to-end journal for the clause "compensated later", which
+  the reducer does not let exist (the predicate is unit-tested). The error `RESET_RULE_MISSING` is T018-054's.
 - [ ] T018-053 [US6] Reset store (prefix read/digest outside, verify and re-emit inside with `restored`,
   `reset_of`, `run.reset`, `rerun_of` + `reset_sequence`, guard after business-id row, `purged_at`/`test_tree`
   read, 022 permit acquire-or-refuse, 020 attribute fold) — `crates/infra-postgres/src/{resets.rs,execution.rs}`
   — content test — FR-018-037, FR-018-050, FR-018-051.
+  *Part done 2026-11-05 (D1977, G1980), the task stays open:* migration `20270106000000` (`runs.reset_sequence`,
+  immutable, `down` refuses while any run has it; the three pinned upgrade oracles moved), `restore_prefix` in
+  `crates/infra-postgres/src/execution/resets.rs` and the restored-row path of `persist`: the rows `1..=N` of the source are
+  copied verbatim (actor, time, trace, payload), the first one marked `restored` with `reset_of`, with none of the side
+  effects of the first time; the outputs of the prefix and the declared state are rebuilt; `run.reset` is recorded and the
+  run is settled. Proved by `reset::{a_run_is_reset_to_a_point_and_goes_on_from_there_with_the_history_it_had,
+  a_reset_to_the_start_is_a_run_of_its_own_and_the_refusals_are_typed,
+  the_declared_state_and_the_output_of_a_signal_in_the_prefix_are_restored,
+  the_same_key_is_the_same_reset_and_another_point_under_it_is_another_request}` (real PostgreSQL, owner and `sagat_app`)
+  and by a battery of 14 mutants of the store and the service, all killed. Not done: the 022 permit and the 020 attribute
+  fold (features not approved), scoped prefixes and the configurable ceiling (G1980). The `run_resets` register is
+  built (D1978, below).
 - [ ] T018-054 [US6] Reset service and routes (points, preview, reset, list/get) —
   `crates/application/src/runs/reset.rs`, `crates/api-http/src/routes/resets.rs` — contract tests —
   FR-018-035..037.
+  *Part done 2026-11-05 (D1977), the task stays open:* the service `reset_points`, `reset_preview` and `reset` in
+  `crates/application/src/runs/reset.rs` (permissions `run:operate` and `run:start`, justification of 8 to 2000
+  characters, the typed reasons `RESET_NOT_SUPPORTED_FOR_SOURCE`, `RESET_SOURCE_NOT_TERMINAL`, `RESET_POINT_NOT_ELIGIBLE`,
+  `RESET_PREFIX_TOO_LONG`, `RESET_RULE_MISSING`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED` as `AppError::ResetRefused`, mapped in
+  `crates/api-http/src/error.rs` to `422 VALIDATION_FAILED`, and `409 CONFLICT` for `RESET_SOURCE_NOT_TERMINAL`, as
+  `contracts/errors.md` says; the routes of 2026-11-06 below drive it) and the idempotency of the request. The four tests above prove the points, the
+  preview, the permission refusals, `RESET_SOURCE_NOT_TERMINAL`, `RESET_POINT_NOT_ELIGIBLE`,
+  `RESET_REEXECUTION_NOT_ACKNOWLEDGED` and the key; three more tests prove `RESET_PREFIX_TOO_LONG` (past the ceiling and
+  at it), `RESET_NOT_SUPPORTED_FOR_SOURCE` for a child run, and `RESET_RULE_MISSING` with the type named (a row of a
+  newer kind after the run's last event); a battery of 6 mutants of those three reasons was killed. A member of a
+  continuation chain (a row of either chain event in its journal) is also proved not to be a source, 2026-11-06.
+  The branch of `RESET_NOT_SUPPORTED_FOR_SOURCE` for a run of a database execution **has no test** (G1980 (5)).
+  *Also done 2026-11-05 (D1978):* the register `run_resets` (migration `20270107000000`: the table, a guard trigger, the
+  quota triggers for the justification, grants, the storage classification, the three upgrade oracles moved), written
+  in the transaction that creates the run (`RunTx::register_reset`), `reset()` answering `ResetMade { reset, run }`,
+  and `resets` / `reset_record` for the list and the get. Proved by `reset::{a_reset_is_recorded_with_what_was_asked_and_who_asked_and_a_refused_one_is_not,
+  the_register_lists_the_resets_of_a_run_newest_first_and_a_retry_adds_none,
+  the_register_is_private_to_the_tenant_and_to_the_run_that_made_the_reset,
+  what_a_reset_is_never_changes_and_a_completed_one_stays_as_it_completed}` and a battery of 17 mutants (13 of the
+  store and 4 of the guard trigger), all killed, then 3 more of the business policy after the runtime-privilege audit
+  (which reads a bare `"DROP"` in Rust as a statement) made the statement write the name: all killed.
+  *Also done 2026-11-06 (D1979):* the five routes (`listResetPoints`, `previewReset`, `resetRun`, `listRunResets`,
+  `getRunReset`) in `crates/api-http/src/routes/resets.rs` and `dto_resets.rs`, the OpenAPI operations
+  (`x-implemented: '018'`), the generated reference and the Studio types, the cross-tenant battery (a victim reset and
+  the two bodies), the six `RESET_*` reasons raised with the sentences of `contracts/errors.md`. Proved by
+  `reset_rest::*` (5 tests over a real API, a real worker and real tokens: the points by kind, node, time and cursor;
+  the preview; the reset, its retry and its refusals; the business identifier; the register and who may read it),
+  `contract_schedules_bulk_operations resets::every_reset_operation_conforms_to_the_contract_on_its_normal_and_error_paths`
+  (every answer has a documented status and schema), `errors::*`, the battery of `contract_rest_security_multitenancy`,
+  and the unit tests of the DTO and of the kinds of a point; a battery of 19 mutants of the routes, the DTO, the plan,
+  the admission and the chain refusal: 18 killed (one of them after the test of a page that ends at the limit was
+  added), 1 equivalent (the admission of the points asks `run:operate` and
+  the service asks it again). It also found and fixed a defect of the plan (D1979 (2)). Not done: the Studio dialog (T018-059), `CANCEL_SOURCE` and the reapply (T018-057, T018-056: both are
+  `422` in words); the branches of `RESET_NOT_SUPPORTED_FOR_SOURCE` for a run of a database execution (a trigger ties
+  `origin` to an internal workflow, so a test cannot make one with SQL) has no test, G1980.
 - [ ] T018-055 [US6] Replay = projection at every eligible point (corpus incl. a 022 run-permit holder and
   020 search-attribute upserts); outputs and attribute rows equal the source at N; holder count = open
   non-restored acquisitions; ceiling; crash during reset — `tests/integration/schedules-bulk-operations/reset.rs`
   — SC-018-011 — FR-018-037, FR-018-050.
+  *Part done 2026-11-06, the task stays open:* `reset::at_every_point_the_run_that_is_made_replays_to_its_projection_keeps_the_history_and_goes_on_to_the_end`
+  takes all four points of a sequential run (the start and the end of each of three steps): the projection of the new
+  run equals a replay of its journal before it goes on and after it ends, rows `1..N` are the source's as it stored
+  them (type, who, payload, when), the steps of the prefix hold the output the source gave them and no other step
+  does, the run finishes what is left (at the last point it ends with what it was given), and the source is
+  untouched. `tests/fault/schedules-bulk-operations/reset.rs` kills the connection after each of the 62 writing
+  statements of a reset (one transaction, 13 tables) in both roles: nothing changes in any table, and the request sent
+  again makes one run and one entry with the source's history, and sent a third time answers the first. A mutant
+  that makes a retry another request is killed by it. Not done: the other shapes of the corpus at every point
+  (parallel, saga, collection, loop, child, a wait), approvals, the 022 run-permit holder and the 020 attribute rows
+  (not approved), and a prefix at the ceiling (the ceiling is tested at its boundary by sequence, not with a journal
+  of 5,000 events).
 - [ ] T018-056 [US6] Reapply order, first-undeliverable stop, `LEGACY_EVENT`, ceiling, key replay, lost
   hint — `tests/integration/schedules-bulk-operations/reapply.rs` — report equals expectation — FR-018-039.
 - [ ] T018-057 [US6] `CANCEL_SOURCE` pending reset (fenced completion, eligibility re-check, races,
   crash, failed source compensation, pending quota) — `crates/scheduler/src/passes.rs`,
   `tests/fault/schedules-bulk-operations/reset.rs` — SC-018-012 — FR-018-038, FR-018-040.
-- [ ] T018-058 [US6] Telemetry projector skips the restored prefix and links the source span —
+- [x] T018-058 [US6] Telemetry projector skips the restored prefix and links the source span —
   `crates/application/src/telemetry.rs`, `crates/scheduler/src/telemetry.rs` — no duplicate attempt
   spans — FR-018-037, FR-018-044.
-- [ ] T018-059 [P] [US6] Studio reset dialog and provenance links — `frontend/apps/studio/src/features/runs/`
+  *Done 2026-11-06.* `RunFacts` carries `reset: Option<ResetOrigin { source, source_trace, restored_through }>`,
+  which the store reads from `runs.reset_sequence`, `rerun_of` and the trace of the source
+  (`crates/infra-postgres/src/telemetry.rs`; the projector of `crates/scheduler/src/telemetry.rs` needed no change).
+  `derive` takes the entries `1..=restored_through` as context whatever the progress of the projector says, so a
+  projector that starts again from the beginning does not tell them either; the run span tells only what happened
+  after them and links the span of the source when its trace is known. Proved by
+  `telemetry_derive::the_restored_prefix_of_a_reset_run_is_not_told_again_and_the_run_span_links_its_source` (spans,
+  measurements, span events, progress 0, 3 and 6, a source without a trace) and by
+  `reset_telemetry::the_attempts_of_the_restored_prefix_are_told_once_by_the_source_and_the_new_run_links_it` (the
+  real projector and an OTLP collector: the source tells three attempts, the new run one, its span links the
+  source's); 5 mutants killed, two of the store and three of `derive`. The progress of the note is not started at the
+  restored sequence: the projector reads the prefix once and derives nothing from it.
+- [x] T018-059 [P] [US6] Studio reset dialog and provenance links — `frontend/apps/studio/src/features/runs/`
   — component tests — FR-018-047.
+  *Done 2026-11-06.* `ResetRun.tsx`: "Reset to a point…" on a run that ended, for someone who may operate and start
+  runs; the points in words (the start, after a step, a child, a collection, a loop) with their time; what a reset to
+  the one chosen keeps and runs again, each step with what it declares in words; the acknowledgement that steps run
+  again, asked only when the plan says so and forgotten when another point is chosen; the choice about the business
+  identifier for a run that has one; a reason; the key of the request kept for an identical retry and changed with
+  the request; the platform's refusals in words; the person is taken to the new run. Nothing is sent before the plan
+  has been read. `ResetsMade` lists the resets made from the run with a link to each run they made (nothing for a
+  platform that does not serve the register), and the header of a run that was started again, or reset, links the run
+  it came from (the contract's `rerunOf`; it did not do so for a rerun either). Proved by `ResetRun.test.tsx` (17
+  tests) and two of `RunDetailPage.test.tsx`; the Studio gate: lint, typecheck, 1,377 tests in 98 files, build,
+  `check:api`; 21 mutants of the component, 20 killed and 1 not (the guard against a second submit while sending,
+  which the disabled button and the idempotency key make unreachable). The e2e workspace typecheck needs the TypeScript
+  SDK built and was not run; no browser journey covers the dialog.
 
 ## Phase 9: US07 — Existing cron triggers as schedules (P3)
 
@@ -904,22 +1209,54 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 
 ## Phase 10: Polish, SDKs and gates
 
-- [ ] T018-062 [P] Scenario files and expectations of `contracts/sdk-conformance.md` —
+- [x] T018-062 [P] Scenario files and expectations of `contracts/sdk-conformance.md` —
   `tests/contract/sdk-conformance/{scenarios,expected}/` — reviewed fixtures — FR-018-048.
-- [ ] T018-063 [P] TypeScript SDK — `sdks/typescript/src/` — unit tests + scenarios — FR-018-048.
-- [ ] T018-064 [P] Go SDK — `sdks/go/client/` — unit tests + scenarios — FR-018-048.
-- [ ] T018-065 [P] Python SDK — `sdks/python/sagat_octopus_orchestrator/{client.py,sync.py}` — unit tests +
+  *Done 2026-11-06 (D1981).* Nine scenarios (`schedules-crud`, `schedules-operate`, `schedules-overlap`, `business-ids`, `start-delay`, `signal-with-start`, `update-with-start`, `batch-operations`, `reset`) with their workflow and result goldens, blessed from the TypeScript SDK after every observation was read against the REST contract and then reproduced, equal, by the other five languages without bless. The draft's `errors-018.json` is not written (each reason is asserted where it is raised) and the concurrency-permit reset is not a scenario (T018-053's permit is not built). The harness gained `server.schedules` / `server.batches` for the engine passes. Found by them: the actions of a backfill never carried `backfillId` (fixed in `5cba87e0`, with tests) and G1981 (several refusals are a plain 422 without a reason; left open and pinned as they are).
+- [x] T018-063 [P] TypeScript SDK — `sdks/typescript/src/` — unit tests + scenarios — FR-018-048.
+  *Done 2026-11-06.* TypeScript: `src/operations.ts`, `src/wire.ts`, `src/client.ts`; 16 new unit tests (150 in all), 29 mutants of the client killed after four tests were strengthened (the first run let four survive). Nine scenarios equal to the goldens, twice in a row, by the agent that wrote it and again in the full run of T018-068.
+- [x] T018-064 [P] Go SDK — `sdks/go/client/` — unit tests + scenarios — FR-018-048.
+  *Done 2026-11-06.* Go: `client/{schedules,batch,businessids,withstart,reset,wire}.go`, runner `conformance/operations.go`; 17 new tests, `go test -race ./...`, `go vet`, `gofmt` clean; 13 mutants killed. Nine scenarios equal to the goldens, twice in a row, by the agent that wrote it and again in the full run of T018-068.
+- [x] T018-065 [P] Python SDK — `sdks/python/sagat_octopus_orchestrator/{client.py,sync.py}` — unit tests +
   scenarios — FR-018-048.
-- [ ] T018-066 [P] C# SDK — `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/` — unit tests + scenarios — FR-018-048.
-- [ ] T018-067 [P] Java SDK — `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/` — unit
+  *Done 2026-11-06.* Python: `operations.py`, `_wire.py`, `client.py`, `sync.py`; 26 new tests (297 in all), mypy strict, `ruff check` and `ruff format --check` clean; 13 mutants killed. Nine scenarios equal to the goldens, twice in a row, and again in the full run of T018-068.
+- [x] T018-066 [P] C# SDK — `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/` — unit tests + scenarios — FR-018-048.
+  *Done 2026-11-06.* C#: `Schedules.cs`, `Batch.cs`, `BusinessIds.cs`, `WithStart.cs`, `Resets.cs`, `SagatClient.Operations.cs`; 20 new test cases (472 in all), `dotnet format --verify-no-changes` clean; 13 mutants killed. `StartAsync` now returns `StartedRun` (a `Run` plus `Started`) and `ISagatClient` gained members: a custom implementer of the interface must add them. Nine scenarios equal to the goldens, twice in a row, by the agent that wrote it and again in the full run of T018-068.
+- [x] T018-067 [P] Java SDK — `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/` — unit
   tests + scenarios — FR-018-048.
-- [ ] T018-068 All five SDKs against one server build, skips stated — `sdk_conformance` output
+  *Done 2026-11-06.* Java: `Schedules`/`BatchOperations`/`BusinessIds` and the typed answers, blocking and `...Async` forms; 19 new tests (258 in all), `./mvnw -q verify` exits 0; 9 mutants killed. `start` now returns `StartedRun(run, started)` (`Run` is a final record), a source break for a caller that wrote `Run r = client.start(...)`. Nine scenarios equal to the goldens, twice in a row, and again in the full run of T018-068.
+- [x] T018-068 All five SDKs against one server build, skips stated — `sdk_conformance` output
   (SC-018-013) — FR-018-048.
-- [ ] T018-069 [P] CLI `sagat schedule …`, `sagat batch …`, `sagat workflow {reset,signal-with-start,update-with-start}`,
+  *Done 2026-11-06 (six languages, not five: D1040).* `cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture` over the whole suite, on one server build (the tree of this commit), without bless and without reuse: 75 scenarios, each in 6 languages, `test result: ok. 1 passed; 0 failed`, 1853 s; none skipped. The registry tests of the same target pass (3 passed). The unit suites and linters of the six SDKs were rerun by me after the agents reported: TypeScript 150, Go (`-race`, vet, gofmt), Python 297 (mypy, ruff), C# 472 (`dotnet format`), Java `./mvnw -q verify` exit 0, Rust 127 (fmt, clippy). That the goldens bite was shown by the Go agent, who forced `started` to true and saw `business-ids` fail at `/observations/4/result/started`.
+- [x] T018-069 [P] CLI `sagat schedule …`, `sagat batch …`, `sagat workflow {reset,signal-with-start,update-with-start}`,
   `--business-id`/`--if-exists`/`--start-delay` on `sagat workflow run` — `apps/cli/src/{args.rs,workflow.rs}`
   — CLI tests — FR-018-047.
-- [ ] T018-070 Cross-tenant battery over every new route and pass — `tests/contract/security-multitenancy/rest/battery.rs`
+  *Done 2026-11-06.* `workflow run` takes `--business-id`, `--if-exists fail|use-existing`, `--reuse …` and
+  `--start-delay <SECONDS>` (sent in milliseconds, once) and says when an open run already held the identifier;
+  `workflow signal-with-start` and `workflow update-with-start` (`apps/cli/src/with_start.rs`); the reset is three
+  commands, `workflow reset-points`, `reset-preview` and `reset` (`--acknowledge`, `--drop-business-id`;
+  `apps/cli/src/reset.rs`); `sagat schedule list|get|create|update|delete|pause|resume|trigger|backfill|actions`
+  (`schedule.rs`, the schedule is a JSON file given by `--definition`) and `sagat batch
+  preview|create|get|list|items|cancel` (`batch.rs`). Each command is one request of the REST API and its answer in
+  words; the tool decides nothing the platform decides, a refusal (403, 404, 409, 422, 429) is said and exits 1, a
+  business identifier is never echoed in an error, and every request that changes something carries a key (the one
+  given by `--key`, or one made for the call). Proved by `args.rs` (17 tests), `reset_and_with_start.rs` (11) and
+  `schedule_and_batch.rs` (12) over a mock platform; 40 mutants of the parser and the commands, all killed after the
+  tests that let 4 survive were strengthened (a space in an identifier, a request that must not be sent, a 403, the
+  filters of `batch items`). The generated `docs/reference/cli.md` follows the usage text. The auditing of the runtime
+  privileges reads every string literal of `apps/` too, so `businessId: DROP` is written by a serde derive.
+- [x] T018-070 Cross-tenant battery over every new route and pass — `tests/contract/security-multitenancy/rest/battery.rs`
   — battery output, audited probes — FR-018-041; NFR-018-002.
+  *Done 2026-11-05:* routes — `battery::every_implemented_operation_resists_an_administrator_of_another_tenant` walks every
+  `x-implemented` operation of the OpenAPI, so the 21 operations of this feature are in it as they land, each with a body
+  of its own in `body_of` (`signalWithStart` and `updateWithStart` among them; 20 tests of
+  `contract_rest_security_multitenancy` pass, both modes of the platform targets in the other suites) and the probe of
+  another tenant's binding is on record (`business_ids_rest::another_tenant_probing_a_binding_finds_nothing_and_the_probe_is_on_record`);
+  passes — the schedule pass serves another tenant's due schedule while one tenant has a backlog
+  (`pass::a_tenant_with_a_backlog_does_not_hold_back_another_tenants_due_schedule`), a batch job reaches only the runs of its own
+  namespace and tenant whatever ids it names (`batch_security::a_job_reaches_only_the_runs_of_its_own_namespace_whatever_ids_it_names`),
+  jobs, schedule decisions and bindings are never read across tenants (`batch::jobs_are_read_listed_newest_first_and_never_across_tenants`,
+  `actions::the_decisions_of_a_schedule_are_not_seen_by_another_tenant…`, `business_id_lookup::the_binding_of_a_tenant_is_not_read_by_another…`),
+  and the with-start routes name no holder to a caller who may not read runs.
 - [ ] T018-071 Observability gates (label closure, OTel export canary, audit rollback, alert rules
   `SagatSchedulesLate`/`SagatBatchesStalled`, alert kinds, quota exhaustion per resource) —
   `infra/observability/alerts.yaml`, `crates/domain/src/operations.rs`,
@@ -952,6 +1289,14 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   was read from the code (engine and control-plane settings, `Limits`, the quota defaults, the audit table, the roles); a link
   check of the relative links of both found none missing, and `check-design-docs.py` and `check-agent-config.py` pass. Not
   done: a review by an operator.
+  *More done 2026-11-06 (still open: the cron section of `events.md`, which belongs to US07, and a review by an operator).*
+  `docs/runbooks/run-reset.md` (what a reset copies and promises, the points and what blocks one, the preview to read before
+  acknowledging, the register, the refusals and what to do, what is not built) and `docs/runbooks/business-ids.md` (the one
+  promise of an identifier, the reuse window, the start delay, **the privacy warning: an identifier is customer content, use an
+  opaque reference**, the entry-wait pattern of signal-with-start, update-with-start, the refusals, what is not built). Every
+  reason, status, permission, limit and command they name was read from the code, the OpenAPI and the CLI usage; the relative links
+  of both resolve; `check-design-docs.py` and `check-agent-config.py` pass. The batch runbook's stale sentence about business
+  ids is corrected.
 - [ ] T018-074 Real-browser e2e of schedule, batch and reset flows, keyboard only, WCAG AA, failure states
   — `tests/e2e/schedules-bulk-operations/` — SC-018-015 — FR-018-047.
 - [ ] T018-076 Barrier test: every run-driven transition (completion, failure, timer, wait timeout,
@@ -979,10 +1324,27 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   test-tree refusals, restored rows skipped by 020 analytics, attribute fold on reset, `RUN_PURGED`
   before and during reset, `business_id` erasure — `tests/integration/schedules-bulk-operations/flow_visibility.rs`
   — SC-018-011, SC-018-012 — FR-018-050, FR-018-051, FR-018-021.
-- [ ] T018-078 IR field `reapplyOnReset` on Update declarations (capability-gated, ADR-0032) in the domain,
+- [x] T018-078 IR field `reapplyOnReset` on Update declarations (capability-gated, ADR-0032) in the domain,
   IR codec and five SDK builders, merged from `contracts/workflow-ir.fragment.schema.json` —
   `crates/domain/src/workflow.rs`, `crates/infra-ir/src/`, `specs/001-platform-foundation/contracts/workflow.schema.json`,
   `sdks/*/` — schema/codec tests and builder fixtures — FR-018-039, FR-018-046.
+  *Done 2026-11-05 (D1974, G1977):* the task text is amended: the Update declaration is in the IR codec
+  (`DeclaredUpdateDefinition`), not the domain crate, which is untouched, and the SDKs are six (D1040), not five.
+  Schema `$defs/update.reapplyOnReset` (boolean, default false) merged, the reference blessed after reading its one-line
+  diff, `ajv` validates the example. Codec: `crates/infra-ir/tests/reapply_on_reset.rs` (5) and
+  `reapply_on_reset_enabled.rs` (1): read by every parser, a non-boolean is a schema error, a new publication
+  (`parse` and `declared_state_publication`) is refused with `UnsupportedDeclaration { field: "reapplyOnReset" }` while the
+  capability is off, a stored version is still read, a document that does not write the field keeps the digest it had
+  (pinned `e6de3b4d…7354`, taken from the code before the change) and `false` equals not writing it; the switch is
+  `set_reset_reapply` of the process. Seven mutants of the codec killed (the two gates, the `== true` test, the refusal
+  itself, the inverted switch, the field never read, the digest without normalisation); the eighth, the codec's own
+  boolean check, is unreachable behind the schema's `type: boolean`. Six SDK builders write the field only when true, each
+  with tests and a mutant killed: TypeScript 134, Python (pytest, mypy, ruff), Go (`-race`, vet, gofmt), C# (`dotnet test`
+  and `format`), Java (`mvnw verify`), Rust (fmt, clippy, tests); the scenario `state-operation-builders` has the
+  workflow `retained-update` and `sdk_conformance` passes for its six languages against a golden that holds only the two
+  new entries. Server: infra-ir, application and cli unit suites, nine contract targets, `integration_workflow_primitives`
+  755, `integration_platform_foundation` 101, `integration_schedules_bulk_operations` 337, clippy over the workspace.
+  Nothing calls `set_reset_reapply` yet (G1977): a workflow cannot opt in on any deployment until T018-056.
 - [ ] T018-079 `REPIN` batch action when feature 019 is enabled (`BATCH_ACTION_UNAVAILABLE` otherwise;
   `deployment:manage` + `run:operate`; item = 019 single-run repin in slot order run → 019 fences → job →
   item; skip reasons) — `crates/application/src/batch.rs`,
@@ -994,8 +1356,9 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `apps/control-plane/`, `apps/execution-engine/src/lib.rs`, `tests/fault/schedules-bulk-operations/instances.rs`
   — activation-vs-registration race, stale-instance expiry, epoch change while serving (SC-018-017) —
   FR-018-052.
-- [ ] T018-081 [P] Rust SDK (D1040) — `sdks/rust/src/`, `sdks/rust/conformance/` — unit tests + scenarios —
+- [x] T018-081 [P] Rust SDK (D1040) — `sdks/rust/src/`, `sdks/rust/conformance/` — unit tests + scenarios —
   FR-018-048.
+  *Done 2026-11-06.* Rust: `src/client/{schedules,batch,business,resets,wire}.rs`, runner `conformance/src/runtime/operations.rs`; 16 new tests (127 in all), `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` clean; 12 mutants killed. `start` returns `StartedRun` (it dereferences to `Run`); a 200 answer is accepted only when the conflict policy is `USE_EXISTING`. Nine scenarios equal to the goldens, twice in a row, and again in the full run of T018-068.
 - [ ] T018-075 Quickstart demos, then fmt, clippy `-D warnings`, workspace tests,
   `scripts/check-architecture.py`, contract checks, runtime-role sweep, Studio build; record results —
   `specs/018-schedules-bulk-operations/verification.md` (created at implementation) — FR-018-046,

@@ -87,7 +87,7 @@ class SagatClientTest {
     @Test
     void aStartSendsTheHeadersAndTheBodyTheApiExpectsAndReturnsATypedRunThatKeepsTheRawAnswer() {
         server.prepare((req, reply) -> reply.send(202, run()));
-        Run result = client().start(
+        StartedRun started = client().start(
                 WORKFLOW,
                 Map.of("orderId", "o-1"),
                 StartOptions.create()
@@ -95,6 +95,8 @@ class SagatClientTest {
                         .correlationId("corr-1")
                         .traceparent(TRACE)
                         .deadline(Instant.parse("2030-01-01T00:00:00Z")));
+        Run result = started.run();
+        assertTrue(started.started(), "a 202 is a run this call created");
         FakeRestServer.Seen request = server.seen.get(0);
         assertEquals("POST", request.method());
         assertEquals("/v1/runs", request.path());
@@ -504,7 +506,7 @@ class SagatClientTest {
             return real.send(call);
         };
         server.prepare((req, reply) -> reply.send(202, run()));
-        Run result = client(b -> b.transport(lossy)).start(WORKFLOW, Map.of(), StartOptions.create().idempotencyKey("key-12345678"));
+        Run result = client(b -> b.transport(lossy)).start(WORKFLOW, Map.of(), StartOptions.create().idempotencyKey("key-12345678")).run();
         assertEquals(RunStatus.RUNNING, result.status());
         assertEquals(2, server.seen.size());
         assertEquals(server.seen.get(0).header("idempotency-key"), server.seen.get(1).header("idempotency-key"));

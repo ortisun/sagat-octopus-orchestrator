@@ -7,9 +7,19 @@ mod tls;
 mod token;
 mod types;
 pub use client::{
-    ApprovalDecisionRequest, CallOptions, ChainCommand, ChainQueryRequest, ChainUpdateRequest,
-    Client, ClientOptions, ListOptions, OperationOptions, PageOptions, PublishEvent, RetryPolicy,
-    RunDeadline, StartOptions, StepOutcome, UpdateRequest, UploadRunInputOptions, WaitOptions,
+    ApprovalDecisionRequest, BatchFilter, BatchItem, BatchJob, BatchJobCounts, BatchListFilter,
+    BatchOperations, BatchPreview, BatchRequest, BatchSelector, BatchSignal, BatchUpdate,
+    BusinessIdBinding, BusinessIdConflictPolicy, BusinessIdDisposition, BusinessIdReusePolicy,
+    BusinessIds, CallOptions, CatchupMode, ChainCommand, ChainQueryRequest, ChainUpdateRequest,
+    Client, ClientOptions, DstPolicy, ListOptions, Moment, OperationOptions, OverlapPolicy,
+    PageOptions, PublishEvent, ReapplyPolicy, ReexecutedStep, Reset, ResetPlan, ResetPoint,
+    ResetRequest, RestoredStep, RetryPolicy, RunDeadline, Schedule, ScheduleAction,
+    ScheduleActionDefinition, ScheduleActionFilter, ScheduleActionRecord, ScheduleBackfill,
+    ScheduleCalendar, ScheduleDescribeOptions, ScheduleDescription, ScheduleInterval,
+    ScheduleListFilter, SchedulePolicies, ScheduleRange, ScheduleSpec, ScheduleWrite, Schedules,
+    SignalWithStartResult, SourcePolicy, StartOptions, StartedRun, StepOutcome, UpcomingAction,
+    UpdateRequest, UpdateWithStartOptions, UpdateWithStartOutcome, UpdateWithStartResult,
+    UploadRunInputOptions, VersionPolicy, WaitOptions, WithStartOptions,
 };
 pub use error::SagatError;
 pub use serde_json::{Value, json};

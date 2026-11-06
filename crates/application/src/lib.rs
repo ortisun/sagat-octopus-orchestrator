@@ -49,6 +49,7 @@ pub mod runs;
 pub mod sandbox;
 pub mod schedule_api;
 pub mod schedule_codec;
+pub mod schedule_disclosure;
 pub mod schedule_firing;
 pub mod schedules;
 pub mod scope_frontier;

@@ -52,8 +52,35 @@ public final class SagatClient implements AutoCloseable {
     private final Map<String, CachedId> names = new ConcurrentHashMap<>();
     private final ExecutorService executor;
     private final boolean ownsExecutor;
+    private final Schedules schedules;
+    private final BatchOperations batch;
+    private final BusinessIds businessIds;
+    private final RunOperations runOperations;
 
     private record CachedId(String id, long atNanos) {}
+
+    /** What the groups of the client need of it; the token stays here and in the transport. */
+    private final class ClientCalls implements Calls {
+        @Override
+        public RestClient.Response send(RestClient.Request request) {
+            return http.request(request);
+        }
+
+        @Override
+        public String trace(String explicit) {
+            return SagatClient.this.trace(explicit);
+        }
+
+        @Override
+        public String resolveWorkflow(String workflow) {
+            return SagatClient.this.resolveWorkflow(workflow);
+        }
+
+        @Override
+        public <T> CompletableFuture<T> async(Callable<T> body) {
+            return SagatClient.this.async(body);
+        }
+    }
 
     public SagatClient(ClientConfig config) {
         this.config = config;
@@ -70,6 +97,11 @@ public final class SagatClient implements AutoCloseable {
             });
             this.ownsExecutor = true;
         }
+        Calls calls = new ClientCalls();
+        this.schedules = new Schedules(calls);
+        this.batch = new BatchOperations(calls);
+        this.businessIds = new BusinessIds(calls);
+        this.runOperations = new RunOperations(calls);
     }
 
     /** Never shows the token: only where the client talks to. */
@@ -187,8 +219,14 @@ public final class SagatClient implements AutoCloseable {
 
     // ------------------------------------------------------------------------------------------- runs
 
-    /** Starts a run of a published workflow, given by id or by name. {@code input} is any JSON value (an object by convention). */
-    public Run start(String workflow, Object input, StartOptions options) {
+    /**
+     * Starts a run of a published workflow, given by id or by name. {@code input} is any JSON value (an object by
+     * convention). The answer says whether this call created the run ({@link StartedRun#started()}): it is false only
+     * when {@link StartOptions#businessIdConflictPolicy} asked for {@link BusinessIdConflictPolicy#USE_EXISTING} and an
+     * open run already held the identifier. A call that gives none of the business identifier options and no start delay
+     * sends exactly what it sent before they existed.
+     */
+    public StartedRun start(String workflow, Object input, StartOptions options) {
         StartOptions opts = options == null ? StartOptions.create() : options;
         if (workflow == null || workflow.isEmpty()) {
             throw SagatException.invalid("start needs the name or the id of a workflow");
@@ -196,6 +234,8 @@ public final class SagatClient implements AutoCloseable {
         // Validated before the name is looked up: a call that cannot be made does not cost a request.
         String idempotencyKey = key(opts.idempotencyKey());
         String traceparent = trace(opts.traceparent());
+        // The delay is turned into whole milliseconds once, here: every retry sends the same number.
+        Long startDelayMs = Wire.delayMs(opts.startDelay());
         String workflowId = resolveWorkflow(workflow);
         Instant deadline = opts.deadline();
         if (opts.deadlineIn() != null) {
@@ -213,17 +253,31 @@ public final class SagatClient implements AutoCloseable {
         if (deadline != null) {
             body.put("deadline", Json.instant(deadline));
         }
+        // Sent as given: no trimming, no case folding, no local pattern. The server judges the identifier and the
+        // policies, and a caller that never gives them never sees the 200 of USE_EXISTING.
+        if (opts.businessId() != null) {
+            body.put("businessId", opts.businessId());
+        }
+        if (opts.businessIdConflictPolicy() != null) {
+            body.put("businessIdConflictPolicy", opts.businessIdConflictPolicy());
+        }
+        if (opts.businessIdReusePolicy() != null) {
+            body.put("businessIdReusePolicy", opts.businessIdReusePolicy());
+        }
+        if (startDelayMs != null) {
+            body.put("startDelayMs", startDelayMs.longValue());
+        }
         RestClient.Response response = http.request(new RestClient.Request(
                 "POST", "/runs", null, body, idempotencyKey, traceparent, true));
-        return toRun(response.body());
+        return new StartedRun(toRun(response.body()), response.status() != 200);
     }
 
     /** {@link #start(String, Object, StartOptions)} with the defaults. */
-    public Run start(String workflow, Object input) {
+    public StartedRun start(String workflow, Object input) {
         return start(workflow, input, null);
     }
 
-    public CompletableFuture<Run> startAsync(String workflow, Object input, StartOptions options) {
+    public CompletableFuture<StartedRun> startAsync(String workflow, Object input, StartOptions options) {
         return async(() -> start(workflow, input, options));
     }
 
@@ -858,6 +912,108 @@ public final class SagatClient implements AutoCloseable {
         if (options == null || options.expectedRunId() == null) throw SagatException.invalid("an expected run id is a UUID");
     }
 
+    // ------------------------------------------------------------------- schedules, batches, business ids
+
+    /** The schedules of the namespace: create, describe, list, update, delete, pause, resume, trigger, backfill. */
+    public Schedules schedules() {
+        return schedules;
+    }
+
+    /** The batch jobs of the namespace: preview, create, inspect, cancel and list the items. */
+    public BatchOperations batch() {
+        return batch;
+    }
+
+    /** How a business identifier stands in the namespace. */
+    public BusinessIds businessIds() {
+        return businessIds;
+    }
+
+    // -------------------------------------------------------------------------------- with start and reset
+
+    /**
+     * Signals the open run of a business identifier, or starts one and delivers the signal at its creation. A run none of
+     * whose steps waits for the signal is refused ({@code CONFLICT}) and nothing is created or changed. The identifier is
+     * sent as given. The call carries one idempotency key (the caller's, or one generated for it) that every retry reuses.
+     */
+    public SignalWithStartResult signalWithStart(
+            String workflow, String businessId, Object input, String signalName, Object payload, SignalWithStartOptions options) {
+        return runOperations.signalWithStart(workflow, businessId, input, signalName, payload, options);
+    }
+
+    public CompletableFuture<SignalWithStartResult> signalWithStartAsync(
+            String workflow, String businessId, Object input, String signalName, Object payload, SignalWithStartOptions options) {
+        return async(() -> signalWithStart(workflow, businessId, input, signalName, payload, options));
+    }
+
+    /**
+     * Applies a declared Update to the open run of a business identifier, starting the run first when none is open. The
+     * caller's {@code updateKey} (1 to 128 printable ASCII characters) is required and kept by every retry; one that is
+     * not valid is refused before anything is sent. A refusal of the validator or a stale revision is an answer
+     * ({@link UpdateWithStartResult.Update#outcome()} is {@code REJECTED}), not an error.
+     */
+    public UpdateWithStartResult updateWithStart(
+            String workflow, String businessId, Object input, String updateName, String updateKey, Object args,
+            UpdateWithStartOptions options) {
+        return runOperations.updateWithStart(workflow, businessId, input, updateName, updateKey, args, options);
+    }
+
+    public CompletableFuture<UpdateWithStartResult> updateWithStartAsync(
+            String workflow, String businessId, Object input, String updateName, String updateKey, Object args,
+            UpdateWithStartOptions options) {
+        return async(() -> updateWithStart(workflow, businessId, input, updateName, updateKey, args, options));
+    }
+
+    /** Where a run that ended can be reset to, by ascending sequence. */
+    public Page<ResetPoint> resetPoints(String runId, PageOptions options) {
+        return runOperations.resetPoints(runId, options);
+    }
+
+    public CompletableFuture<Page<ResetPoint>> resetPointsAsync(String runId, PageOptions options) {
+        return async(() -> resetPoints(runId, options));
+    }
+
+    /**
+     * What a reset to {@code sequence} would restore and run again; changes nothing.
+     *
+     * @param sequence the point, 1 or more
+     * @param reapply  what to apply again on top of the prefix ({@code NONE}, {@code CANCEL_SOURCE}); null for the default
+     */
+    public ResetPlan previewReset(String runId, long sequence, String reapply, CallOptions options) {
+        return runOperations.previewReset(runId, sequence, reapply, options);
+    }
+
+    public CompletableFuture<ResetPlan> previewResetAsync(String runId, long sequence, String reapply, CallOptions options) {
+        return async(() -> previewReset(runId, sequence, reapply, options));
+    }
+
+    /** Creates a new run from an eligible prefix of a run that ended. The same key and request answer the first reset. */
+    public Reset reset(String runId, ResetRequest request, CallOptions options) {
+        return runOperations.reset(runId, request, options);
+    }
+
+    public CompletableFuture<Reset> resetAsync(String runId, ResetRequest request, CallOptions options) {
+        return async(() -> reset(runId, request, options));
+    }
+
+    /** The resets made from a run, newest first (at most 200). */
+    public List<Reset> listResets(String runId, CallOptions options) {
+        return runOperations.listResets(runId, options);
+    }
+
+    public CompletableFuture<List<Reset>> listResetsAsync(String runId, CallOptions options) {
+        return async(() -> listResets(runId, options));
+    }
+
+    /** One reset of a run. */
+    public Reset getReset(String runId, String resetId, CallOptions options) {
+        return runOperations.getReset(runId, resetId, options);
+    }
+
+    public CompletableFuture<Reset> getResetAsync(String runId, String resetId, CallOptions options) {
+        return async(() -> getReset(runId, resetId, options));
+    }
+
     // ------------------------------------------------------------------------------------------- events
 
     /** Publishes an event to the inbox of the namespace, once per event id for the deduplication window. */
@@ -1062,6 +1218,8 @@ public final class SagatClient implements AutoCloseable {
                 parent,
                 toRunChain(raw.path("chain")),
                 optStr(raw, "rerunOf"),
+                optStr(raw, "businessId"),
+                optInstant(raw, "startDelayedUntil"),
                 raw);
     }
 

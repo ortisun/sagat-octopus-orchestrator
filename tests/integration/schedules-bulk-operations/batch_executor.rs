@@ -141,19 +141,26 @@ pub(crate) async fn status_of(f: &Fixture, run: Uuid) -> String {
 }
 
 /// Steps until the selection has taken a page. It waits, as it should, for a transaction of the time of
-/// creation that is still open (the world has loops of its own); each round is a database round trip.
+/// creation that is still open: the world has loops of its own, and the horizon it waits for is the
+/// whole server's, so a transaction of another test on the same server holds it too. The bound is
+/// therefore a time, not a number of round trips (500 of them passed in a few milliseconds on a busy
+/// runner and the test gave up while the other test's transaction was still open).
 pub(crate) async fn select(exec: &Executor, job: &JobRecord) {
-    for _ in 0..500 {
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
         if exec.step(&due(job), None).await.expect("step") == Stepped::Acted {
             return;
         }
-        tokio::task::yield_now().await;
+        assert!(
+            std::time::Instant::now() < give_up,
+            "the selection never started"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    panic!("the selection never started");
 }
 
 /// Steps the job until it has nothing more to do now; returns how many steps acted.
-async fn settle(exec: &Executor, job: &JobRecord) -> u32 {
+pub(crate) async fn settle(exec: &Executor, job: &JobRecord) -> u32 {
     let mut acted = 0;
     for _ in 0..200 {
         match exec.step(&due(job), None).await.expect("step") {

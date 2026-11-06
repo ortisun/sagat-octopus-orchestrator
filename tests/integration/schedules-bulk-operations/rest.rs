@@ -881,6 +881,10 @@ async fn a_backfill_is_asked_for_listed_and_stopped_over_http() {
         )
         .await;
     assert_eq!(status, 429, "{busy}");
+    assert_eq!(
+        busy["details"]["reason"], "BACKFILL_CONCURRENCY",
+        "the ceiling says which it is: {busy}"
+    );
 
     let cancel = format!("{backfills}/{backfill}/cancel");
     let (status, stopped) = r
@@ -960,4 +964,75 @@ async fn a_range_that_makes_no_sense_is_refused_and_the_roles_are_kept() {
             .await
             .expect("send");
     assert_eq!(response.status(), 404, "another tenant");
+}
+
+#[tokio::test]
+async fn the_runs_a_schedule_started_are_listed_by_it() {
+    let r = rig().await;
+    let first = Rig::id(&r.create("first").await);
+    let second = Rig::id(&r.create("second").await);
+    let run_of = |answer: &Value| answer["runId"].as_str().expect("a run").to_owned();
+    let (status, a) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &format!("{}/trigger", r.schedule(&first)),
+            "filter-key-0001",
+            None,
+        )
+        .await;
+    assert_eq!(status, 202, "{a}");
+    let (status, b) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &format!("{}/trigger", r.schedule(&second)),
+            "filter-key-0002",
+            None,
+        )
+        .await;
+    assert_eq!(status, 202, "{b}");
+    // and a run nobody scheduled
+    let (status, plain) =
+        r.p.rest(
+            Method::POST,
+            "/runs",
+            Some(&json!({"workflowId": r.workflow, "input": {}})),
+        )
+        .await;
+    assert_eq!(status, 202, "{plain}");
+
+    let listed = |query: String| {
+        let r = &r;
+        async move {
+            let (status, page) = r.p.rest(Method::GET, &format!("/runs?{query}"), None).await;
+            (status, page)
+        }
+    };
+    let ids = |page: &Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|run| run["runId"].as_str().expect("id").to_owned())
+            .collect()
+    };
+    let (status, page) = listed(format!("scheduleId={first}")).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(ids(&page), [run_of(&a)]);
+    let (status, page) = listed(format!("scheduleId={second}")).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(ids(&page), [run_of(&b)]);
+    let (_, everything) = listed(String::new()).await;
+    assert_eq!(
+        ids(&everything).len(),
+        3,
+        "the filter narrows, it does not replace"
+    );
+    // a schedule nobody has: no runs. one that is not an id: refused in words.
+    let (status, none) = listed(format!("scheduleId={}", uuid::Uuid::now_v7())).await;
+    assert_eq!(status, 200, "{none}");
+    assert!(ids(&none).is_empty());
+    let (status, refused) = listed("scheduleId=not-an-id".to_owned()).await;
+    assert_eq!(status, 422, "{refused}");
 }

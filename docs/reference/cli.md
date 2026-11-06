@@ -27,6 +27,21 @@ ONE WORKFLOW:
     workflow validate <FILE>             check a document: where each problem is, what to do, where it is explained
     workflow publish <FILE> [--notes <TEXT>] [--dry-run] [--accept-breaking]
     workflow run <NAME> [--input <JSON|@FILE>] [--wait] [--timeout <SECONDS>] [--key <KEY>]
+                         [--business-id <ID> [--if-exists fail|use-existing] [--reuse allow-duplicate|allow-duplicate-failed-only|reject-duplicate]]
+                         [--start-delay <SECONDS>]
+                          an identifier of your own makes the run findable and unique while it is open;
+                          --start-delay holds the run's first step for up to 366 days
+    workflow signal-with-start <NAME> --business-id <ID> --signal <NAME> [--payload <JSON|@FILE>] [--input <JSON|@FILE>] [--reuse <POLICY>] [--key <KEY>]
+                          signal the open run of the identifier, or start one that waits for the signal
+    workflow update-with-start <NAME> --business-id <ID> --update <NAME> --update-key <KEY> [--args <JSON|@FILE>] [--input <JSON|@FILE>]
+                         [--if-exists fail|use-existing] [--reuse <POLICY>] [--start-delay <SECONDS>] [--expected-revision <N>] [--key <KEY>]
+                          apply a declared Update to the open run of the identifier, or start one and apply it
+    workflow reset-points <RUN>          where a run that ended can be reset to
+    workflow reset-preview <RUN> --sequence <N>
+                          what a reset to that point keeps and runs again
+    workflow reset <RUN> --sequence <N> --reason <TEXT> [--acknowledge] [--drop-business-id] [--key <KEY>]
+                          a new run from that point of a run that ended; --acknowledge says you know the steps
+                          that completed will run again
     workflow runs <NAME> [--limit <N>]   the latest runs of a workflow (the ones an event or a schedule started too)
     workflow inspect <RUN> [--values [--reveal-pii] [--sequence N]]
                                           the status, journal and attempts; optionally disclosed values
@@ -49,6 +64,26 @@ ONE WORKFLOW:
     namespace reveal-grants grant <SUBJECT>
     namespace reveal-grants revoke <SUBJECT>
                           list or change the namespace's temporary PII reveal grants
+
+SCHEDULES AND BATCH JOBS:
+    schedule list [--state active|paused] [--limit <N>]
+    schedule get <ID>                    the schedule, its next times and its latest actions
+    schedule create --definition <FILE> [--key <KEY>]
+    schedule update <ID> --definition <FILE> --revision <N> [--key <KEY>]
+    schedule delete <ID> --revision <N> [--key <KEY>]
+    schedule pause <ID> --note <TEXT> [--key <KEY>]
+    schedule resume <ID> --note <TEXT> [--key <KEY>]
+    schedule trigger <ID> [--overlap skip|buffer-one|buffer-all|cancel-other|allow-all] [--key <KEY>]
+    schedule backfill <ID> --from <TIME> --to <TIME> [--overlap <POLICY>] [--key <KEY>]
+    schedule actions <ID> [--limit <N>]
+                          a schedule is a JSON document of the contract; --revision is the one you saw
+    batch preview --selector <JSON|@FILE> [--max-items <N>]
+    batch create --selector <JSON|@FILE> --action <ACTION> --reason <TEXT> [--max-items <N>] [--rate <PER SECOND>]
+                 [--signal <NAME> [--payload <JSON|@FILE>]] [--step-id <STEP>] [--drop-business-id] [--key <KEY>]
+    batch get <ID> | batch list [--state <STATE>] [--limit <N>] | batch cancel <ID> [--key <KEY>]
+    batch items <ID> [--state <STATE>] [--limit <N>]
+                          one action (cancel, signal, rerun, retry-step, pause, resume, mark-manual-review) over
+                          the runs a selector names, at a rate the platform bounds
 
 A MANIFEST KEPT IN GIT:
     validate              check the manifest and every document: locally, and against the server

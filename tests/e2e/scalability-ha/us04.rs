@@ -172,8 +172,13 @@ async fn without_fairness_the_same_tenant_waits_for_the_whole_burst() {
     // The negative control: it is what the test above would have seen before feature 010, and it
     // shows that the test above is sensitive to what it claims to prove.
     let noisy_done = noisy_then_quiet(false).await;
-    assert_eq!(
-        noisy_done, NOISY,
-        "with the oldest candidates taken first the quiet tenant is served after the burst"
+    // Not all of them: the passes of different shards run side by side, so the last timers of the
+    // burst on one shard can still be waiting when the quiet tenant's, on another, have fired (296 of
+    // 300 on a busy runner). What the control shows is that the quiet tenant waited for the burst
+    // (nearly all of it), against the half at most that the test above allows.
+    assert!(
+        noisy_done > NOISY * 9 / 10,
+        "with the oldest candidates taken first the quiet tenant is served after the burst, but \
+         only {noisy_done} of its {NOISY} timers had fired"
     );
 }

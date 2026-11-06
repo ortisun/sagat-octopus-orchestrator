@@ -476,6 +476,9 @@ paths:
         - {name: workflowId, in: query, schema: {type: string}}
         - {name: origin, in: query, schema: {$ref: '#/components/schemas/DatabaseExecutionOrigin'}}
         - {name: status, in: query, schema: {type: string, enum: [RUNNING, WAITING, PAUSED, CANCELLING, COMPENSATING, MANUAL_REVIEW, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT, COMPENSATED, PARTIAL, COMPENSATION_FAILED]}}
+        - {name: businessId, in: query, description: 'The runs started under this business identifier, whole.', schema: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$'}}
+        - {name: businessIdPrefix, in: query, description: 'The runs whose business identifier starts with this text. A literal: nothing in it is a wildcard.', schema: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$'}}
+        - {name: scheduleId, in: query, description: 'The runs this schedule started, whatever the kind of action (scheduled time, trigger now or backfill).', schema: {type: string, format: uuid}}
       responses:
         '200': {description: 'Page of runs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/RunPage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
@@ -499,7 +502,25 @@ paths:
         content:
           application/json:
             schema: {$ref: '#/components/schemas/StartRunRequest'}
+      description: |
+        With a `businessId`, at most one open execution holds it at any commit. An open holder is a
+        `409` `CONFLICT` with `details.reason` `BUSINESS_ID_IN_USE` (`details.runId` names it when the
+        caller may read runs), or, with `businessIdConflictPolicy` `USE_EXISTING`, the answer is `200`
+        with the holder's run and nothing is created. A closed holder inside the reuse window (30 days)
+        is decided by `businessIdReusePolicy`; `REJECT_DUPLICATE` and `ALLOW_DUPLICATE_FAILED_ONLY` (for a
+        holder that succeeded) are a `409` with `details.reason` `BUSINESS_ID_REUSE_REJECTED` and
+        `details.reusableAfter`. An identifier or a policy that is none is `422` with `details.reason`
+        `BUSINESS_ID_INVALID` and `details.field`. Not combinable with `inputBlobRef`.
+
+        With `startDelayMs` (1 ms to 366 days) the run is created `WAITING` with `startDelayedUntil`, and
+        its entry is held: no step is released, no timer starts, no worker is offered it. It counts toward
+        the active-run quotas and holds its business identifier meanwhile. A scheduler pass releases the
+        entry once, at the instant. Cancelled, or past its deadline, while it waits, it ends `CANCELLED` or
+        `TIMED_OUT` with no step having run; a signal is refused (`409`, nothing waits for it yet). A
+        delay out of range is `422` with `details.reason` `START_DELAY_INVALID` and `details.field`
+        `/startDelayMs`. The same key with another delay is another request (`409 IDEMPOTENCY_KEY_REUSED`).
       responses:
+        '200': {description: 'An open execution already holds the business identifier and the start asked for USE_EXISTING: nothing was created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
         '202': {description: 'Run durably accepted: its first steps exist and workers can claim them', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -507,6 +528,60 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/signal-with-start:
+    post:
+      operationId: signalWithStart
+      summary: Signal the open run of a business identifier, or start one and deliver the signal at creation
+      tags: [Runs]
+      x-implemented: '018'
+      description: |
+        Needs `run:start` and `run:signal`. Under the binding of the `businessId`: an open holder is signalled exactly as `signalRun` (`202` with `started: false`, or `409` `NOT_WAITING` when no step of it waits for the signal now, nothing changed); otherwise, subject to `businessIdReusePolicy`, a run is created and the signal is delivered to every step that waits for it after the initial reduction, in the same transaction (`202` with `started: true`). If no step of the new run waits for it the whole request is rolled back with `409` `SIGNAL_NOT_ACCEPTED_AT_START` and nothing is created. A signal is never buffered. `startDelayMs` is refused (`422` `START_DELAY_WITH_SIGNAL`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`.
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SignalWithStartRequest'}
+      responses:
+        '202': {description: 'The signal was delivered (and the run started when started is true)', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SignalWithStartResult'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/update-with-start:
+    post:
+      operationId: updateWithStart
+      summary: Apply a declared Update to the open run of a business id, starting it if needed
+      tags: [Runs]
+      x-implemented: '018'
+      description: |
+        Needs `run:start` and `run:update`. One transaction: the run (when this request creates it), the Update's state, receipt, journal event, audit and outbox notification commit together. Under the binding of the `businessId`: an open holder receives the Update exactly as `updateRun` applies it (`started: false`; `businessIdConflictPolicy: FAIL` makes an open holder `409 BUSINESS_ID_IN_USE` instead); otherwise, subject to `businessIdReusePolicy`, a run is created and the Update applied to it after its initial reduction (`started: true`; with `startDelayMs` the run is held and still admits the Update). A business rejection (the validator said no, the expected revision is stale) is an answer, `200` with `outcome: REJECTED`, and leaves the run started with a stable receipt; a failure before admission creates nothing and reads as it does on `updateRun` (an undeclared operation is `404`, arguments the declaration does not accept are `422 INVALID_ARGUMENTS`, an update key reused with another request is `409 IDEMPOTENCY_KEY_REUSED`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`. The result is business data: `Cache-Control: no-store` (ADR-0031).
+      parameters:
+        - {$ref: '#/components/parameters/Namespace'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateWithStartRequest'}
+      responses:
+        '200': {description: 'The Update was applied or rejected; the run was started when started is true', headers: {Cache-Control: {schema: {type: string, const: no-store}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/UpdateWithStartResult'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -523,6 +598,25 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/business-ids/{businessId}:
+    get:
+      operationId: getBusinessIdBinding
+      summary: How a business identifier stands in a namespace
+      tags: [Runs]
+      x-implemented: '018'
+      description: |
+        Needs `run:read`. Says who holds the identifier (a run, or the initial run of a continuation chain, with the run that carries the work now), whether that execution is still open, how it ended, and until when a closed holder is remembered (`reusableAfter`, the end plus the reuse window). An identifier that is unbound, whose holder is gone, or that has been free for longer than its window is `404`, as is one that cannot be an identifier and a namespace of another tenant.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {name: businessId, in: path, required: true, description: 'The business identifier, percent-encoded (1 to 200 visible ASCII characters).', schema: {type: string, minLength: 1, maxLength: 200}}
+      responses:
+        '200': {description: 'The binding', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BusinessIdBinding'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -866,7 +960,7 @@ paths:
       description: |
         CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). Feature 037: a step whose last outcome is unknown (a lost lease, a timeout, OUTCOME_UNKNOWN, a lookup that could not say or said `not_applied`) is never retried by anyone, administrators included: RETRY_STEP is refused with 409 and `details.reason` `OUTCOME_UNRESOLVED`; settle it with RESOLVE_STEP after checking with the provider. SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409.
 
-        Feature 008 adds: RETRY_STEP also asks for the attempt of a step that is only waiting out the delay of a retry, now and not when the delay ends (needs `run:operate`; the scheduler's own retry and the operator's cannot both start an attempt: the first to commit wins and the second is refused with 409). MARK_MANUAL_REVIEW holds a step that has not started (ready, or waiting out a retry delay) for a person to decide (needs `run:operate` and `stepId`; the run becomes MANUAL_REVIEW when no other step is still running, nothing more happens to the step until someone retries it or settles it, and what is known about its last attempt (a lost lease, a timeout) is kept, so a run that is stopped later keeps it for review instead of undoing it (feature 037); refused with 409 for a step in flight, one that already waits for a person or one that is done, and for a lookup, which is held by holding the step it is for). RERUN_AS_NEW starts a new run of the same version with the same input and correlation id from a run that ended (needs `run:operate` and `run:start`, takes no `stepId`; refused with 409 for a run that has not ended; the answer names the run in `newRunId`, which says where it came from in `rerunOf`). All of them need a justification in `reason` and are audited with it; the old attempts and the old run stay as they were.
+        Feature 008 adds: RETRY_STEP also asks for the attempt of a step that is only waiting out the delay of a retry, now and not when the delay ends (needs `run:operate`; the scheduler's own retry and the operator's cannot both start an attempt: the first to commit wins and the second is refused with 409). MARK_MANUAL_REVIEW holds a step that has not started (ready, or waiting out a retry delay) for a person to decide (needs `run:operate` and `stepId`; the run becomes MANUAL_REVIEW when no other step is still running, nothing more happens to the step until someone retries it or settles it, and what is known about its last attempt (a lost lease, a timeout) is kept, so a run that is stopped later keeps it for review instead of undoing it (feature 037); refused with 409 for a step in flight, one that already waits for a person or one that is done, and for a lookup, which is held by holding the step it is for). RERUN_AS_NEW starts a new run of the same version with the same input and correlation id from a run that ended (needs `run:operate` and `run:start`, takes no `stepId`; refused with 409 for a run that has not ended; the answer names the run in `newRunId`, which says where it came from in `rerunOf`; feature 018: the new run keeps the business identifier of the run it repeats unless the request says `businessId: DROP`). All of them need a justification in `reason` and are audited with it; the old attempts and the old run stay as they were.
       parameters:
         - {$ref: '#/components/parameters/RunId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -883,6 +977,114 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/reset-points:
+    get:
+      operationId: listResetPoints
+      summary: Where a run can be reset to, by ascending sequence
+      tags: [Operations]
+      x-implemented: '018'
+      description: |
+        Needs `run:operate` and `run:read`. A point is the start of the run or the end of a step, child, collection or loop at its root, where the run was quiet (nothing in flight, not paused or stopping) and nothing in the prefix is excluded from a reset. A child run, a member of a continuation chain and a run of a database execution are `422 VALIDATION_FAILED` with `details.reason` `RESET_NOT_SUPPORTED_FOR_SOURCE`. A point whose prefix holds an event of a kind this version has no reset rule for is not listed, and neither is one whose prefix holds an event of an iteration (a scope below the root): this version restores the events of the root only.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: 'Page of points', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/ResetPoint'}}, nextCursor: {type: [string, 'null']}}}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/reset-previews:
+    post:
+      operationId: previewReset
+      summary: What a reset to a point would restore and run again; changes nothing
+      tags: [Operations]
+      x-implemented: '018'
+      description: |
+        Needs `run:operate` and `run:read`. `restored` lists the steps the new run keeps as they were and `reexecuted` the steps the source ran after the point, which the new run runs again, with the effects each declares (`compensateWith`, `reconcileWith`, `irreversible`, `highRisk`) and whether it completed in the source; when any did, `requiresAcknowledgement` is true and the reset needs `acknowledgeReexecution`. A sequence that is not a point is `422` with `details.reason` `RESET_POINT_NOT_ELIGIBLE`, one beyond the ceiling of the prefix `RESET_PREFIX_TOO_LONG`, and one whose prefix holds an event this version has no rule for `RESET_RULE_MISSING` (with `details.eventType`). Delivering signals and updates again (`reapply` other than `NONE`) is not available in this version and is `422`.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResetPreviewRequest'}
+      responses:
+        '200': {description: 'Plan', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ResetPlan'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/resets:
+    get:
+      operationId: listRunResets
+      summary: The resets made from this run, newest first
+      tags: [Operations]
+      x-implemented: '018'
+      description: Needs `run:read`. At most 200 entries.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+      responses:
+        '200': {description: 'Resets', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, maxItems: 200, items: {$ref: '#/components/schemas/Reset'}}}}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: resetRun
+      summary: Create a new run from an eligible prefix of a run that ended
+      tags: [Operations]
+      x-implemented: '018'
+      description: |
+        Needs `run:operate` and `run:start`, and a justification in `reason` (8 to 2000 characters, audited with it). The new run has the version and the input of the source and re-emits its journal up to `sequence` as the source stored it (who did each thing and when are the source's), then goes on from there; the events it restored say so in their detail. The source must have ended: an open run is `409 CONFLICT` with `details.reason` `RESET_SOURCE_NOT_TERMINAL`. When steps that completed in the source run again (see `previewReset`) the request must say `acknowledgeReexecution: true`, else `422` with `RESET_REEXECUTION_NOT_ACKNOWLEDGED`. With `businessId: KEEP` (the default) the new run takes over the business identifier of the source, `409 BUSINESS_ID_IN_USE` if another open run holds it; `DROP` starts it without one. `sourcePolicy: CANCEL_SOURCE` and a `reapply` other than `NONE` are not available in this version and are `422`. The same `Idempotency-Key` with the same request answers the entry of the first one; with another sequence it is `409 IDEMPOTENCY_KEY_REUSED`. A reset is recorded in the register (`listRunResets`, `getRunReset`) in the transaction that creates the run.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ResetRequest'}
+      responses:
+        '202': {description: 'Reset created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Reset'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/resets/{resetId}:
+    get:
+      operationId: getRunReset
+      summary: One reset made from this run
+      tags: [Operations]
+      x-implemented: '018'
+      description: Needs `run:read`. A reset that another run made, or that does not exist, is `404`.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - {name: resetId, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: 'Reset', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Reset'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -3893,6 +4095,33 @@ paths:
         '429': {$ref: '#/components/responses/QuotaExceeded'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/input-disclosures:
+    post:
+      operationId: discloseScheduleInput
+      summary: Disclose the values of the input of a schedule under the classification of its target
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:read`. The input of a schedule is customer content: an ordinary read returns its digest and size, never its values. This is the one read that returns them. They are projected exactly as `discloseRunPayload` projects the input of a run, under the classification carrier of the input schema of the version the schedule would start now (the version it pins, or the workflow's active one) and for the same audiences: `public` is visible to every reader, `internal` also needs `payload:read-internal`, `pii` is returned only when `reveal: [pii]` is explicit and the caller has a namespace reveal grant, and `secret` is never returned. A workflow with no version to classify against, or an input the carrier does not fit, is answered with the structure only (to a caller with `run:payload:inspect`) or as not disclosable. The read is audited `schedule.input_disclosed` in the transaction that reads, before any value leaves; a refused reveal is audited `payload.reveal_denied`. The request is limited to 1 KiB and every response is `Cache-Control: private, no-store`. A schedule that is deleted, of another namespace or of another tenant is `404`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleInputDisclosureRequest'}
+      responses:
+        '200': {description: 'A classified projection, structural fallback or unavailable state', headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleInputDisclosure'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/schedules/{scheduleId}/actions:
     get:
       operationId: listScheduleActions
@@ -4532,6 +4761,48 @@ components:
                 reason: {type: string, enum: [NO_RETAINED_PAYLOAD, UNSUPPORTED_FORMAT, NOT_DISCLOSABLE]}
                 sizeBytes: {type: integer, minimum: 0}
       unevaluatedProperties: false
+    ScheduleInputDisclosureRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reveal:
+          type: array
+          maxItems: 1
+          items: {type: string, const: pii}
+    ScheduleInputDisclosure:
+      allOf:
+        - type: object
+          required: [scheduleId, revision, policy, caller]
+          properties:
+            scheduleId: {type: string, format: uuid}
+            revision: {type: integer, minimum: 1, description: 'The head revision of the schedule whose input this is.'}
+            policy: {type: string, const: classified-v1}
+            caller: {$ref: '#/components/schemas/PayloadDisclosureCaller'}
+        - oneOf:
+            - type: object
+              required: [kind, schema, truncated, tree]
+              properties:
+                kind: {type: string, const: disclosed}
+                schema: {$ref: '#/components/schemas/PayloadClassificationSchema'}
+                sizeBytes: {type: integer, minimum: 0, description: 'Size of the whole stored input. Present only for a caller with `run:payload:inspect`, because it includes personal and secret fields.'}
+                truncated: {type: boolean}
+                tree: {$ref: '#/components/schemas/PayloadDisclosureNode'}
+            - type: object
+              required: [kind, sizeBytes, truncated, reason, tree]
+              properties:
+                kind: {type: string, const: structure-only}
+                schema: {$ref: '#/components/schemas/PayloadClassificationSchema'}
+                sizeBytes: {type: integer, minimum: 0}
+                truncated: {type: boolean}
+                reason: {type: string, enum: [NO_SCHEMA, SCHEMA_MISMATCH, LEGACY_VERSION, SCHEMA_UNUSABLE]}
+                tree: {$ref: '#/components/schemas/PayloadStructure'}
+            - type: object
+              required: [kind, reason]
+              properties:
+                kind: {type: string, const: unavailable}
+                reason: {type: string, enum: [NO_RETAINED_PAYLOAD, UNSUPPORTED_FORMAT, NOT_DISCLOSABLE]}
+                sizeBytes: {type: integer, minimum: 0}
+      unevaluatedProperties: false
     PayloadRevealGrant:
       type: object
       additionalProperties: false
@@ -4583,6 +4854,19 @@ components:
             `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`;
             compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another
             attempt was asked of a step whose last outcome is unknown);
+            schedules, batch operations, business identifiers and start options (feature 018) refine
+            `VALIDATION_FAILED` with `SCHEDULE_SPEC_INVALID`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`,
+            `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_INPUT_INVALID`, `BACKFILL_RANGE_INVALID`, `BACKFILL_LIMIT`,
+            `BUSINESS_ID_INVALID`, `START_DELAY_INVALID`, `START_DELAY_WITH_SIGNAL`, `BATCH_SELECTOR_INVALID`,
+            `QUERY_UNSUPPORTED_OPERATOR`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`,
+            `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`,
+            `BATCH_SELECTOR_UNSUPPORTED`, `BATCH_ACTION_PARAMETERS`, `RESET_NOT_SUPPORTED_FOR_SOURCE`,
+            `RESET_POINT_NOT_ELIGIBLE`, `RESET_PREFIX_TOO_LONG`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED` and
+            `RESET_RULE_MISSING`, `CONFLICT` with `SCHEDULE_TRIGGER_OWNED`,
+            `SCHEDULE_TRIGGER_HANDOVER_PENDING`, `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`,
+            `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START`, `BATCH_NOT_CANCELLABLE` and
+            `RESET_SOURCE_NOT_TERMINAL`, and `QUOTA_EXCEEDED` with
+            `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY` and `BATCH_LIMIT`;
             they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts
             but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist
             first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`.
@@ -4731,6 +5015,142 @@ components:
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/WorkflowDraft'}}
         nextCursor: {type: [string, 'null']}
+    SignalWithStartRequest:
+      type: object
+      required: [workflowId, businessId, input, signal]
+      additionalProperties: false
+      properties:
+        workflowId: {type: string, format: uuid}
+        versionId: {type: string, format: uuid}
+        businessId: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$', description: 'The caller''s own identifier for the run. Customer content: it is not echoed in an error, a log or a metric.'}
+        businessIdReusePolicy: {type: string, enum: [ALLOW_DUPLICATE, ALLOW_DUPLICATE_FAILED_ONLY, REJECT_DUPLICATE], default: ALLOW_DUPLICATE, description: 'What to do when a closed execution still remembers the identifier. An open holder is always signalled.'}
+        input: {type: object}
+        correlationId: {type: string, maxLength: 160}
+        deadline: {type: string, format: date-time}
+        startDelayMs: {type: integer, description: 'Refused: a delayed run cannot accept a signal at creation (422 START_DELAY_WITH_SIGNAL).'}
+        signal:
+          type: object
+          additionalProperties: false
+          required: [name, payload]
+          properties:
+            name: {type: string, minLength: 1, maxLength: 128}
+            payload: {type: object, description: 'At most 256 KiB, as signalRun.'}
+    SignalWithStartResult:
+      type: object
+      required: [runId, started, deliveredTo]
+      properties:
+        runId: {type: string, format: uuid}
+        started: {type: boolean, description: 'Whether this request created the run.'}
+        deliveredTo: {type: array, items: {type: string}, description: 'The nodes the signal woke.'}
+    UpdateWithStartRequest:
+      type: object
+      required: [workflowId, businessId, input, update]
+      additionalProperties: false
+      properties:
+        workflowId: {type: string, format: uuid}
+        versionId: {type: string, format: uuid}
+        businessId: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$', description: 'The caller''s own identifier for the run. Customer content: it is not echoed in an error, a log or a metric.'}
+        businessIdConflictPolicy: {type: string, enum: [USE_EXISTING, FAIL], default: USE_EXISTING, description: 'What to do when an open execution holds the identifier: apply the Update to it, or refuse.'}
+        businessIdReusePolicy: {type: string, enum: [ALLOW_DUPLICATE, ALLOW_DUPLICATE_FAILED_ONLY, REJECT_DUPLICATE], default: ALLOW_DUPLICATE, description: 'What to do when a closed execution still remembers the identifier.'}
+        input: {type: object}
+        correlationId: {type: string, maxLength: 160}
+        deadline: {type: string, format: date-time}
+        startDelayMs: {type: integer, minimum: 1, maximum: 31622400000, description: 'Holds the entry of a new run; a declared Update is admitted to a run held this way.'}
+        update:
+          type: object
+          additionalProperties: false
+          required: [name, updateKey, args]
+          properties:
+            name: {type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]*$'}
+            updateKey: {type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$'}
+            args: {description: 'JSON value, at most 256 KiB, checked against the declared argument schema.'}
+            expectedStateRevision: {type: integer, minimum: 0}
+    ResetPoint:
+      type: object
+      required: [sequence, kind, occurredAt]
+      properties:
+        sequence: {type: integer, minimum: 1, description: 'The sequence of the last event of the run that a reset to this point keeps.'}
+        kind: {type: string, enum: [RUN_STARTED, STEP_COMPLETED, CHILD_FINISHED, COLLECTION_FINISHED, LOOP_FINISHED]}
+        node: {type: [string, 'null'], description: 'The node whose completion this is; null for the start of the run.'}
+        occurredAt: {type: string, format: date-time}
+    ReapplyPolicy:
+      type: string
+      enum: [NONE, SIGNALS, UPDATES, ALL]
+      default: NONE
+      description: 'What is delivered again after the point. Only NONE is available in this version.'
+    ResetPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [sequence]
+      properties:
+        sequence: {type: integer, minimum: 1}
+        reapply: {$ref: '#/components/schemas/ReapplyPolicy'}
+    ResetPlan:
+      type: object
+      required: [sequence, restored, reexecuted, reapply, requiresAcknowledgement, prefixEvents]
+      properties:
+        sequence: {type: integer, minimum: 1}
+        restored:
+          type: array
+          items:
+            type: object
+            required: [node, kind]
+            properties:
+              node: {type: string}
+              kind: {type: string, enum: [STEP, APPROVAL], description: 'APPROVAL is a decision the reset keeps instead of asking again.'}
+        reexecuted:
+          type: array
+          items:
+            type: object
+            required: [node, completedInSource, markers]
+            properties:
+              node: {type: string}
+              completedInSource: {type: boolean, description: 'It completed in the source, so running it again repeats an effect.'}
+              markers: {type: array, items: {type: string, enum: [compensateWith, reconcileWith, irreversible, highRisk]}}
+        reapply: {type: array, maxItems: 256, items: {type: object}, description: 'Always empty in this version: nothing is delivered again.'}
+        requiresAcknowledgement: {type: boolean}
+        prefixEvents: {type: integer, minimum: 1, description: 'How many events of the source the new run re-emits.'}
+    ResetRequest:
+      type: object
+      additionalProperties: false
+      required: [sequence, reason]
+      properties:
+        sequence: {type: integer, minimum: 1}
+        reason: {type: string, minLength: 8, maxLength: 2000}
+        reapply: {$ref: '#/components/schemas/ReapplyPolicy'}
+        sourcePolicy: {type: string, enum: [REQUIRE_TERMINAL, CANCEL_SOURCE], default: REQUIRE_TERMINAL, description: 'Only REQUIRE_TERMINAL is available in this version.'}
+        businessId: {type: string, enum: [KEEP, DROP], default: KEEP}
+        acknowledgeReexecution: {type: boolean, default: false}
+    Reset:
+      type: object
+      required: [resetId, sourceRunId, sequence, state]
+      properties:
+        resetId: {type: string, format: uuid}
+        sourceRunId: {type: string, format: uuid}
+        sequence: {type: integer, minimum: 1}
+        state: {type: string, enum: [PENDING_SOURCE, CREATED, FAILED]}
+        failureReason: {type: [string, 'null'], description: 'Why a reset that failed did (FAILED only).'}
+        newRunId: {type: [string, 'null'], format: uuid}
+        reapplyReport: {type: array, maxItems: 256, items: {type: object}, description: 'Always empty in this version.'}
+        createdAt: {type: string, format: date-time}
+    UpdateWithStartResult:
+      type: object
+      required: [runId, started, update]
+      properties:
+        runId: {type: string, format: uuid}
+        started: {type: boolean, description: 'Whether this request created the run.'}
+        update:
+          oneOf:
+            - type: object
+              required: [outcome, receipt]
+              properties:
+                outcome: {const: APPLIED}
+                receipt: {$ref: '#/components/schemas/DeclaredUpdateResponse'}
+            - type: object
+              required: [outcome, reason]
+              properties:
+                outcome: {const: REJECTED}
+                reason: {type: string, enum: [UPDATE_REJECTED, REVISION_CONFLICT]}
     StartRunRequest:
       type: object
       required: [workflowId]
@@ -4747,6 +5167,10 @@ components:
         inputBlobRef: {type: string, format: uuid, description: 'An unused run-input blob uploaded by this subject in this namespace. The run input is its canonical $blob descriptor.'}
         correlationId: {type: string, maxLength: 160}
         deadline: {type: string, format: date-time, description: 'Must be in the future and within a year; the run times out at this instant.'}
+        businessId: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$', description: 'The caller''s own identifier for the run: 1 to 200 visible ASCII characters. At most one open execution of a namespace holds it. Customer content: it is not echoed in an error, a log or a metric.'}
+        businessIdConflictPolicy: {type: string, enum: [FAIL, USE_EXISTING], default: FAIL, description: 'What to do when an open execution holds the identifier. There is no policy that terminates it. Needs businessId.'}
+        businessIdReusePolicy: {type: string, enum: [ALLOW_DUPLICATE, ALLOW_DUPLICATE_FAILED_ONLY, REJECT_DUPLICATE], default: ALLOW_DUPLICATE, description: 'What to do when a closed execution still remembers the identifier (30 days after it ended). Needs businessId.'}
+        startDelayMs: {type: integer, minimum: 1, maximum: 31622400000, description: 'Holds the entry of the run for this many milliseconds (1 ms to 366 days): the run is created WAITING with startDelayedUntil and released once, at the instant.'}
     BlobDescriptor:
       type: object
       required: [id, size, sha256, contentType]
@@ -4800,6 +5224,8 @@ components:
         traceId: {type: [string, 'null']}
         correlationId: {type: [string, 'null']}
         rerunOf: {type: string, format: uuid, description: 'The ended run this one was started again from (RERUN_AS_NEW), when it was.'}
+        startDelayedUntil: {type: string, format: date-time, description: 'The instant the entry of the run is held until, for a run started with startDelayMs that has not been released. Absent otherwise.'}
+        businessId: {type: string, minLength: 1, maxLength: 200, description: 'The business identifier the run was started under, when it was. Read by getRun and listRuns.'}
         depth: {type: integer, minimum: 0, maximum: 8, description: 'Nesting of child runs: 0 for a run started through the API.'}
         parent:
           type: [object, 'null']
@@ -5253,6 +5679,19 @@ components:
           items: {$ref: '#/components/schemas/ApprovalScope'}
         reason: {type: string, minLength: 8, maxLength: 2000, description: 'Counted after trimming; for the decisions of a saga it is kept whole in the audit trail.'}
         expectedRunVersion: {type: integer, minimum: 0, description: 'Optimistic concurrency: refused with 409 if the run moved on.'}
+        businessId: {type: string, enum: [KEEP, DROP], description: 'RERUN_AS_NEW only (refused with 422 for the others); KEEP when absent. KEEP binds the business identifier of the run to the new run unless another open execution holds it, then the rerun is refused with 409 BUSINESS_ID_IN_USE; DROP starts the new run without one. Changing it under the same idempotency key is another request (409 IDEMPOTENCY_KEY_REUSED).'}
+    BusinessIdBinding:
+      type: object
+      required: [businessId, executionId, currentRunId, open, workflowId, boundAt]
+      properties:
+        businessId: {type: string}
+        executionId: {type: string, format: uuid, description: 'The run that holds the identifier, or the initial run of the continuation chain that does.'}
+        currentRunId: {type: string, format: uuid, description: 'The run that carries the work now: the run itself, or the current segment of the chain.'}
+        open: {type: boolean, description: 'The holder has not reached a final outcome (a chain is open until it has one).'}
+        lastStatus: {type: string, description: 'How the holder ended. Absent while it is open.'}
+        workflowId: {type: string, format: uuid}
+        boundAt: {type: string, format: date-time}
+        reusableAfter: {type: string, format: date-time, description: 'When REJECT_DUPLICATE stops applying to a closed holder. Absent while it is open.'}
     OperationResult:
       type: object
       required: [operationId, accepted]

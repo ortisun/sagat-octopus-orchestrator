@@ -1,0 +1,253 @@
+{
+  "name": "reset",
+  "description": "Feature 018 US06: resetting a run that ended to a point of its journal. The points are listed and one is previewed (what the new run keeps, what it runs again, whether the caller must acknowledge it); a reset that runs completed steps again needs the acknowledgement; the reset creates a new run that finishes, is recorded in the register of the source and is read back by id; the same key answers the first reset; a run that is still open, a sequence that is not a point and a reapply policy this version does not offer are refused with their reasons.",
+  "workflows": {
+    "two": {
+      "name": "reset-two",
+      "description": "Two served activities in a row.",
+      "program": [
+        {
+          "op": "step",
+          "id": "a",
+          "activity": "reset.a"
+        },
+        {
+          "op": "step",
+          "id": "b",
+          "activity": "reset.b"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    },
+    "hold": {
+      "name": "reset-hold",
+      "description": "An activity nobody serves: the run stays open.",
+      "program": [
+        {
+          "op": "step",
+          "id": "hold",
+          "activity": "reset.hold"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "reset-worker",
+      "protocolVersion": "1.4",
+      "maxInflight": 2,
+      "activities": {
+        "reset.a": {
+          "behavior": {
+            "returns": {
+              "step": "a"
+            }
+          }
+        },
+        "reset.b": {
+          "behavior": {
+            "returns": {
+              "step": "b"
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "source",
+      "op": "start",
+      "workflow": "two",
+      "input": {},
+      "businessId": "reset-{{unique}}",
+      "idempotencyKey": "reset-source-{{unique}}"
+    },
+    {
+      "id": "source-done",
+      "op": "waitForCompletion",
+      "run": "source",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "points",
+      "op": "resetPoints",
+      "run": "source"
+    },
+    {
+      "id": "points-first-page",
+      "op": "resetPoints",
+      "run": "source",
+      "limit": 1
+    },
+    {
+      "id": "preview-start",
+      "op": "resetPreview",
+      "run": "source",
+      "sequence": 1
+    },
+    {
+      "id": "preview-after-a",
+      "op": "resetPreview",
+      "run": "source",
+      "sequence": 4
+    },
+    {
+      "id": "preview-not-a-point",
+      "op": "resetPreview",
+      "run": "source",
+      "sequence": 2
+    },
+    {
+      "id": "preview-signals",
+      "op": "resetPreview",
+      "run": "source",
+      "sequence": 4,
+      "reapply": "SIGNALS"
+    },
+    {
+      "id": "preview-unknown-policy",
+      "op": "resetPreview",
+      "run": "source",
+      "sequence": 4,
+      "reapply": "SOMETIMES"
+    },
+    {
+      "id": "not-acknowledged",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "idempotencyKey": "reset-first-{{unique}}"
+    },
+    {
+      "id": "reapply-refused",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "reapply": "SIGNALS",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-reapply-{{unique}}"
+    },
+    {
+      "id": "cancel-source-refused",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "sourcePolicy": "CANCEL_SOURCE",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-cancel-{{unique}}"
+    },
+    {
+      "id": "short-reason",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "no",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-short-{{unique}}"
+    },
+    {
+      "id": "reset",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "acknowledgeReexecution": true,
+      "businessId": "DROP",
+      "idempotencyKey": "reset-made-{{unique}}"
+    },
+    {
+      "id": "reset-again",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "acknowledgeReexecution": true,
+      "businessId": "DROP",
+      "idempotencyKey": "reset-made-{{unique}}"
+    },
+    {
+      "id": "reset-other-sequence",
+      "op": "reset",
+      "run": "source",
+      "sequence": 1,
+      "reason": "run b again after a",
+      "acknowledgeReexecution": true,
+      "businessId": "DROP",
+      "idempotencyKey": "reset-made-{{unique}}"
+    },
+    {
+      "id": "new-run-done",
+      "op": "waitForCompletion",
+      "run": "reset",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "register",
+      "op": "resets",
+      "run": "source"
+    },
+    {
+      "id": "register-entry",
+      "op": "getReset",
+      "run": "source",
+      "reset": "reset"
+    },
+    {
+      "id": "register-of-the-new-run",
+      "op": "resets",
+      "run": "reset"
+    },
+    {
+      "id": "events-of-the-new-run",
+      "op": "events",
+      "run": "reset"
+    },
+    {
+      "id": "open",
+      "op": "start",
+      "workflow": "hold",
+      "input": {},
+      "idempotencyKey": "reset-open-{{unique}}"
+    },
+    {
+      "id": "open-points",
+      "op": "resetPoints",
+      "run": "open"
+    },
+    {
+      "id": "open-source",
+      "op": "reset",
+      "run": "open",
+      "sequence": 1,
+      "reason": "this run has not ended",
+      "idempotencyKey": "reset-open-source-{{unique}}"
+    },
+    {
+      "id": "other-tenant",
+      "op": "resetPoints",
+      "run": "source",
+      "token": "other"
+    },
+    {
+      "id": "viewer-cannot-reset",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "a viewer may not do this",
+      "acknowledgeReexecution": true,
+      "token": "viewer",
+      "idempotencyKey": "reset-viewer-{{unique}}"
+    }
+  ]
+}

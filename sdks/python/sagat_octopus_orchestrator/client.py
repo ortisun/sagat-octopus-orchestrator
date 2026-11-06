@@ -17,8 +17,38 @@ from urllib.parse import quote
 
 from ._http import HttpRequest, HttpTransport
 from ._json import format_instant, parse_instant
+from ._wire import MAX_I64 as _MAX_I64
+from ._wire import UUID as _UUID
+from ._wire import id_of, idempotency_key_of
+from ._wire import int_of as _int
+from ._wire import namespace_id_of as _namespace_id
+from ._wire import object_of as _object
+from ._wire import opt_str as _opt_str
+from ._wire import revision as _revision
+from ._wire import run_id_of as _run_id
+from ._wire import str_of as _str
 from .config import ClientConfig
 from .errors import SagatError, invalid
+from .operations import (
+    BatchOperations,
+    BusinessIdConflictPolicy,
+    BusinessIdReusePolicy,
+    BusinessIds,
+    Page,
+    Reset,
+    ResetPlan,
+    ResetPoint,
+    ResetReapply,
+    ResetSourcePolicy,
+    Schedules,
+    SignalWithStartResult,
+    UpdateWithStartResult,
+    to_reset,
+    to_reset_plan,
+    to_reset_point,
+    to_signal_with_start,
+    to_update_with_start,
+)
 from .traceparent import check_traceparent
 from .worker.activity import BlobDescriptor
 
@@ -55,13 +85,10 @@ OperateAction = Literal[
 ApprovalDecision = Literal["APPROVE", "REJECT"]
 ApprovalStatus = Literal["PENDING", "APPROVED", "REJECTED", "EXPIRED", "CANCELLED"]
 
-_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
-_KEY = re.compile(r"[\x21-\x7e]{8,160}")
 _APPROVAL_DECISION_KEY = re.compile(r"[\x21-\x7e]{1,128}")
 _APPROVAL_REASON_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 _DECLARED_OPERATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _UPDATE_KEY = re.compile(r"[\x21-\x7e]{1,128}")
-_MAX_I64 = (1 << 63) - 1
 _NAME_TTL = 60.0
 
 
@@ -115,11 +142,26 @@ class Run:
     """The run's segment in its continuation chain; ``None`` for a run outside any chain."""
     rerun_of: str | None = None
     """The ended run this one was started again from (``RERUN_AS_NEW``); ``None`` for a run that is not a rerun."""
+    business_id: str | None = None
+    """The business identifier the run was started under, as it was given; ``None`` if it has none."""
+    start_delayed_until: datetime | None = None
+    """The instant the entry of a run started with a delay is held until; ``None`` once released or if never held."""
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def is_terminal(self) -> bool:
         return self.status in TERMINAL_STATUSES
+
+
+@dataclass(frozen=True)
+class StartedRun(Run):
+    """A run as ``start`` answers it.
+
+    ``started`` is ``False`` when an open run already held the business identifier and ``USE_EXISTING`` was asked:
+    nothing was created and the run is that holder (the server answered ``200`` instead of ``202``).
+    """
+
+    started: bool = True
 
 
 @dataclass(frozen=True)
@@ -282,60 +324,49 @@ class JournalPage:
 # ------------------------------------------------------------------------------------------------ parsing
 
 
-def _object(value: Any, what: str) -> Mapping[str, Any]:
-    if not isinstance(value, dict):
-        raise SagatError("PROTOCOL", f"{what} is not an object")
-    return value
-
-
-def _str(raw: Mapping[str, Any], key: str) -> str:
-    value = raw.get(key)
-    if not isinstance(value, str):
-        raise SagatError("PROTOCOL", f"{key} is missing from the answer")
-    return value
-
-
-def _opt_str(raw: Mapping[str, Any], key: str) -> str | None:
-    value = raw.get(key)
-    return value if isinstance(value, str) else None
-
-
-def _int(raw: Mapping[str, Any], key: str, fallback: int) -> int:
-    value = raw.get(key)
-    return value if isinstance(value, int) and not isinstance(value, bool) else fallback
-
-
 def to_run(value: Any) -> Run:
     """A ``Run`` from the server's JSON."""
+    return Run(**_run_fields(value))
+
+
+def to_started_run(value: Any, started: bool) -> StartedRun:
+    """A ``StartedRun``: the run as ``start`` answered it and whether this call created it."""
+    return StartedRun(**_run_fields(value), started=started)
+
+
+def _run_fields(value: Any) -> dict[str, Any]:
     raw = _object(value, "a run")
     created = parse_instant(raw.get("createdAt"))
     if created is None:
         raise SagatError("PROTOCOL", "createdAt is missing from the answer")
     parent = raw.get("parent")
-    return Run(
-        run_id=_str(raw, "runId"),
-        workflow_id=_str(raw, "workflowId"),
-        version_id=_str(raw, "versionId"),
-        status=_str(raw, "status"),
-        version=_int(raw, "version", 0),
-        paused=raw.get("paused") is True,
-        started_by=_opt_str(raw, "startedBy"),
-        created_at=created,
-        updated_at=parse_instant(raw.get("updatedAt")),
-        finished_at=parse_instant(raw.get("finishedAt")),
-        deadline=parse_instant(raw.get("deadline")),
-        trace_id=_opt_str(raw, "traceId"),
-        correlation_id=_opt_str(raw, "correlationId"),
-        depth=_int(raw, "depth", 0),
-        parent=(
+    fields: dict[str, Any] = {
+        "run_id": _str(raw, "runId"),
+        "workflow_id": _str(raw, "workflowId"),
+        "version_id": _str(raw, "versionId"),
+        "status": _str(raw, "status"),
+        "version": _int(raw, "version", 0),
+        "paused": raw.get("paused") is True,
+        "started_by": _opt_str(raw, "startedBy"),
+        "created_at": created,
+        "updated_at": parse_instant(raw.get("updatedAt")),
+        "finished_at": parse_instant(raw.get("finishedAt")),
+        "deadline": parse_instant(raw.get("deadline")),
+        "trace_id": _opt_str(raw, "traceId"),
+        "correlation_id": _opt_str(raw, "correlationId"),
+        "depth": _int(raw, "depth", 0),
+        "parent": (
             RunParent(str(parent.get("runId")), str(parent.get("node")), str(parent.get("cancelPolicy")))
             if isinstance(parent, dict)
             else None
         ),
-        chain=_to_run_chain(raw.get("chain")),
-        rerun_of=_opt_str(raw, "rerunOf"),
-        raw=raw,
-    )
+        "chain": _to_run_chain(raw.get("chain")),
+        "rerun_of": _opt_str(raw, "rerunOf"),
+        "business_id": _opt_str(raw, "businessId"),
+        "start_delayed_until": parse_instant(raw.get("startDelayedUntil")),
+        "raw": raw,
+    }
+    return fields
 
 
 def _completion_kind(value: Any) -> SegmentCompletionKind | None:
@@ -366,19 +397,6 @@ def _to_page(body: Any) -> RunPage:
     return RunPage(tuple(to_run(item) for item in items), _opt_str(raw, "nextCursor"))
 
 
-def _run_id(value: str) -> str:
-    """A run id is a UUID: nothing else is ever put in the path of a call about a run."""
-    if not isinstance(value, str) or not _UUID.fullmatch(value):
-        raise invalid("a run id is a UUID")
-    return value
-
-
-def _namespace_id(value: str) -> str:
-    if not isinstance(value, str) or not _UUID.fullmatch(value):
-        raise invalid("a namespace id is a UUID")
-    return value.lower()
-
-
 def _name(value: str, what: str) -> str:
     """A name (a signal, an event type, a workflow) is not empty and is not the path segment ``.`` or ``..``."""
     if not isinstance(value, str) or value in ("", ".", ".."):
@@ -392,15 +410,27 @@ def _declared_operation_name(value: str) -> str:
     return value
 
 
-def _revision(raw: Mapping[str, Any], key: str, minimum: int) -> int:
-    value = raw.get(key)
-    if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= _MAX_I64:
-        raise SagatError("PROTOCOL", f"{key} is invalid in the answer")
+def _seconds(value: float | timedelta) -> float:
+    return value.total_seconds() if isinstance(value, timedelta) else float(value)
+
+
+def _sequence(value: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= _MAX_I64:
+        raise invalid("sequence is a positive integer")
     return value
 
 
-def _seconds(value: float | timedelta) -> float:
-    return value.total_seconds() if isinstance(value, timedelta) else float(value)
+def _delay_ms(value: timedelta | None) -> int | None:
+    """A start delay as the integer milliseconds that are sent: truncated toward zero, once, before the first attempt.
+
+    The range (1 ms to 366 days) is the server's to judge; only what is not a duration is refused here.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, timedelta):
+        raise invalid("a start delay is a datetime.timedelta")
+    microseconds = value // timedelta(microseconds=1)
+    return abs(microseconds) // 1000 * (1 if microseconds >= 0 else -1)
 
 
 # ------------------------------------------------------------------------------------------------- client
@@ -419,6 +449,12 @@ class SagatClient:
         self._config = config
         self._http = HttpTransport(config)
         self._names: dict[str, tuple[str, float]] = {}
+        self.schedules = Schedules(self._http, self._trace)
+        """Schedules: create, describe, list, update, delete, pause, resume, trigger, backfill and their history."""
+        self.batch = BatchOperations(self._http, self._trace)
+        """Batch jobs over many runs: preview, create, inspect, cancel and list the items."""
+        self.business_ids = BusinessIds(self._http, self._trace)
+        """How a business identifier stands in a namespace."""
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -441,10 +477,7 @@ class SagatClient:
 
     @staticmethod
     def _key(given: str | None) -> str:
-        key = given if given is not None else str(uuid.uuid4())
-        if not _KEY.fullmatch(key):
-            raise invalid("an idempotency key is 8 to 160 printable ASCII characters")
-        return key
+        return idempotency_key_of(given)
 
     # --------------------------------------------------------------------------------------------- calls
 
@@ -487,12 +520,23 @@ class SagatClient:
         deadline: datetime | None = None,
         deadline_in: float | timedelta | None = None,
         traceparent: str | None = None,
-    ) -> Run:
+        business_id: str | None = None,
+        business_id_conflict_policy: BusinessIdConflictPolicy | None = None,
+        business_id_reuse_policy: BusinessIdReusePolicy | None = None,
+        start_delay: timedelta | None = None,
+    ) -> StartedRun:
         """Starts a run of a published workflow, given by id or by name.
 
         ``idempotency_key`` is 8 to 160 printable ASCII characters; a fresh one is made per call when
         absent and reused by every retry of that call. ``deadline`` is an aware instant; ``deadline_in`` is
         a duration from now (seconds or a ``timedelta``), computed once before the first attempt.
+
+        ``business_id`` is the caller's own identifier for the run (1 to 200 visible ASCII characters), sent as
+        given; at most one open execution of a namespace holds it. ``business_id_conflict_policy`` says what to do
+        when an open execution holds it: ``FAIL`` (the default; ``CONFLICT``) or ``USE_EXISTING`` (nothing is
+        created and ``started`` is ``False``). ``business_id_reuse_policy`` says what to do when a closed
+        execution still remembers it. ``start_delay`` holds the entry of the run for that long: a ``timedelta``,
+        turned once, before the first attempt, into integer milliseconds (truncated toward zero).
         """
         if deadline is not None and deadline_in is not None:
             raise invalid("give a deadline or a deadline_in, not both")
@@ -500,6 +544,7 @@ class SagatClient:
             raise invalid("the input of a run is a JSON object (a dict)")
         key = self._key(idempotency_key)
         trace = self._trace(traceparent)
+        delay_ms = _delay_ms(start_delay)
         if deadline_in is not None:
             deadline = datetime.now(timezone.utc) + timedelta(seconds=_seconds(deadline_in))
         workflow_id = await self.resolve_workflow(workflow)
@@ -510,10 +555,243 @@ class SagatClient:
             body["correlationId"] = correlation_id
         if deadline is not None:
             body["deadline"] = format_instant(deadline)
+        # Sent as given: no trimming, no case folding. The server judges the identifier and the policies, and an
+        # old caller that never sent them never sees the 200 of USE_EXISTING.
+        if business_id is not None:
+            body["businessId"] = business_id
+        if business_id_conflict_policy is not None:
+            body["businessIdConflictPolicy"] = business_id_conflict_policy
+        if business_id_reuse_policy is not None:
+            body["businessIdReusePolicy"] = business_id_reuse_policy
+        if delay_ms is not None:
+            body["startDelayMs"] = delay_ms
         response = await self._http.request(
             HttpRequest("POST", "/runs", body=body, idempotency_key=key, traceparent=trace)
         )
-        return to_run(response.body)
+        return to_started_run(response.body, response.status != 200)
+
+    @staticmethod
+    def _with_start_body(
+        body: dict[str, Any],
+        *,
+        version_id: str | None,
+        correlation_id: str | None,
+        deadline: datetime | None,
+        deadline_in: float | timedelta | None,
+        business_id_reuse_policy: BusinessIdReusePolicy | None,
+    ) -> None:
+        if deadline_in is not None:
+            deadline = datetime.now(timezone.utc) + timedelta(seconds=_seconds(deadline_in))
+        if version_id:
+            body["versionId"] = version_id
+        if correlation_id is not None:
+            body["correlationId"] = correlation_id
+        if deadline is not None:
+            body["deadline"] = format_instant(deadline)
+        if business_id_reuse_policy is not None:
+            body["businessIdReusePolicy"] = business_id_reuse_policy
+
+    async def signal_with_start(
+        self,
+        workflow: str,
+        business_id: str,
+        input: Mapping[str, Any] | None,
+        signal_name: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        version_id: str | None = None,
+        idempotency_key: str | None = None,
+        correlation_id: str | None = None,
+        deadline: datetime | None = None,
+        deadline_in: float | timedelta | None = None,
+        business_id_reuse_policy: BusinessIdReusePolicy | None = None,
+        traceparent: str | None = None,
+    ) -> SignalWithStartResult:
+        """Signals the open run of a business identifier, or starts one and delivers the signal at its creation.
+
+        A run none of whose steps waits for the signal is refused (``CONFLICT``) and nothing is created or
+        changed. ``started`` in the answer says whether this request created the run. The identifier is sent as
+        given.
+        """
+        if deadline is not None and deadline_in is not None:
+            raise invalid("give a deadline or a deadline_in, not both")
+        if input is not None and not isinstance(input, dict):
+            raise invalid("the input of a run is a JSON object (a dict)")
+        key = self._key(idempotency_key)
+        trace = self._trace(traceparent)
+        workflow_id = await self.resolve_workflow(workflow)
+        body: dict[str, Any] = {
+            "workflowId": workflow_id,
+            "businessId": business_id,
+            "input": input if input is not None else {},
+            "signal": {"name": signal_name, "payload": payload if payload is not None else {}},
+        }
+        self._with_start_body(
+            body,
+            version_id=version_id,
+            correlation_id=correlation_id,
+            deadline=deadline,
+            deadline_in=deadline_in,
+            business_id_reuse_policy=business_id_reuse_policy,
+        )
+        response = await self._http.request(
+            HttpRequest("POST", "/runs/signal-with-start", body=body, idempotency_key=key, traceparent=trace)
+        )
+        return to_signal_with_start(response.body)
+
+    async def update_with_start(
+        self,
+        workflow: str,
+        business_id: str,
+        input: Mapping[str, Any] | None,
+        update_name: str,
+        update_key: str,
+        args: Any,
+        *,
+        expected_state_revision: int | None = None,
+        version_id: str | None = None,
+        idempotency_key: str | None = None,
+        correlation_id: str | None = None,
+        deadline: datetime | None = None,
+        deadline_in: float | timedelta | None = None,
+        business_id_conflict_policy: BusinessIdConflictPolicy | None = None,
+        business_id_reuse_policy: BusinessIdReusePolicy | None = None,
+        start_delay: timedelta | None = None,
+        traceparent: str | None = None,
+    ) -> UpdateWithStartResult:
+        """Applies a declared Update to the open run of a business identifier, starting the run first if none is open.
+
+        The caller's ``update_key`` (1 to 128 printable ASCII characters) is required and kept by every retry. A
+        refusal of the validator or a stale revision is an answer (``update.outcome`` is ``REJECTED``), not an
+        error. The identifier is sent as given.
+        """
+        if not isinstance(update_key, str) or not _UPDATE_KEY.fullmatch(update_key):
+            raise invalid("an update key is 1 to 128 printable ASCII characters")
+        if expected_state_revision is not None and (
+            not isinstance(expected_state_revision, int)
+            or isinstance(expected_state_revision, bool)
+            or not 0 <= expected_state_revision <= _MAX_I64
+        ):
+            raise invalid("expected state revision is non-negative")
+        if deadline is not None and deadline_in is not None:
+            raise invalid("give a deadline or a deadline_in, not both")
+        if input is not None and not isinstance(input, dict):
+            raise invalid("the input of a run is a JSON object (a dict)")
+        key = self._key(idempotency_key)
+        trace = self._trace(traceparent)
+        delay_ms = _delay_ms(start_delay)
+        name = _declared_operation_name(update_name)
+        workflow_id = await self.resolve_workflow(workflow)
+        update: dict[str, Any] = {"name": name, "updateKey": update_key, "args": args}
+        if expected_state_revision is not None:
+            update["expectedStateRevision"] = expected_state_revision
+        body: dict[str, Any] = {
+            "workflowId": workflow_id,
+            "businessId": business_id,
+            "input": input if input is not None else {},
+            "update": update,
+        }
+        self._with_start_body(
+            body,
+            version_id=version_id,
+            correlation_id=correlation_id,
+            deadline=deadline,
+            deadline_in=deadline_in,
+            business_id_reuse_policy=business_id_reuse_policy,
+        )
+        if business_id_conflict_policy is not None:
+            body["businessIdConflictPolicy"] = business_id_conflict_policy
+        if delay_ms is not None:
+            body["startDelayMs"] = delay_ms
+        response = await self._http.request(
+            HttpRequest("POST", "/runs/update-with-start", body=body, idempotency_key=key, traceparent=trace)
+        )
+        return to_update_with_start(response.body)
+
+    async def reset_points(
+        self,
+        run_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        traceparent: str | None = None,
+    ) -> Page[ResetPoint]:
+        """Where a run that ended can be reset to, by ascending sequence."""
+        path = f"/runs/{quote(_run_id(run_id), safe='')}/reset-points"
+        response = await self._http.request(
+            HttpRequest("GET", path, query={"cursor": cursor, "limit": limit}, traceparent=self._trace(traceparent))
+        )
+        raw = _object(response.body, "a page of reset points")
+        items = raw.get("items")
+        if not isinstance(items, list):
+            raise SagatError("PROTOCOL", "items is missing from the page")
+        return Page(tuple(to_reset_point(item) for item in items), _opt_str(raw, "nextCursor"))
+
+    async def preview_reset(
+        self,
+        run_id: str,
+        sequence: int,
+        reapply: ResetReapply | None = None,
+        *,
+        traceparent: str | None = None,
+    ) -> ResetPlan:
+        """What a reset to ``sequence`` would restore and run again; changes nothing."""
+        path = f"/runs/{quote(_run_id(run_id), safe='')}/reset-previews"
+        body: dict[str, Any] = {"sequence": _sequence(sequence)}
+        if reapply is not None:
+            body["reapply"] = reapply
+        response = await self._http.request(HttpRequest("POST", path, body=body, traceparent=self._trace(traceparent)))
+        return to_reset_plan(response.body)
+
+    async def reset(
+        self,
+        run_id: str,
+        *,
+        sequence: int,
+        reason: str,
+        reapply: ResetReapply | None = None,
+        source_policy: ResetSourcePolicy | None = None,
+        business_id: Literal["KEEP", "DROP"] | None = None,
+        acknowledge_reexecution: bool | None = None,
+        idempotency_key: str | None = None,
+        traceparent: str | None = None,
+    ) -> Reset:
+        """Creates a new run from an eligible prefix of a run that ended.
+
+        The same key and request answer the first reset. What is not given is not sent.
+        """
+        path = f"/runs/{quote(_run_id(run_id), safe='')}/resets"
+        body: dict[str, Any] = {"sequence": _sequence(sequence), "reason": reason}
+        if reapply is not None:
+            body["reapply"] = reapply
+        if source_policy is not None:
+            body["sourcePolicy"] = source_policy
+        if business_id is not None:
+            body["businessId"] = business_id
+        if acknowledge_reexecution is not None:
+            body["acknowledgeReexecution"] = acknowledge_reexecution
+        response = await self._http.request(
+            HttpRequest(
+                "POST",
+                path,
+                body=body,
+                idempotency_key=self._key(idempotency_key),
+                traceparent=self._trace(traceparent),
+            )
+        )
+        return to_reset(response.body)
+
+    async def list_resets(self, run_id: str, *, traceparent: str | None = None) -> tuple[Reset, ...]:
+        """The resets made from a run, newest first (at most 200)."""
+        path = f"/runs/{quote(_run_id(run_id), safe='')}/resets"
+        response = await self._http.request(HttpRequest("GET", path, traceparent=self._trace(traceparent)))
+        items = _object(response.body, "a list of resets").get("items")
+        return tuple(to_reset(item) for item in items) if isinstance(items, list) else ()
+
+    async def get_reset(self, run_id: str, reset_id: str, *, traceparent: str | None = None) -> Reset:
+        path = f"/runs/{quote(_run_id(run_id), safe='')}/resets/{quote(id_of(reset_id, 'a reset id'), safe='')}"
+        response = await self._http.request(HttpRequest("GET", path, traceparent=self._trace(traceparent)))
+        return to_reset(response.body)
 
     async def upload_run_input(
         self,

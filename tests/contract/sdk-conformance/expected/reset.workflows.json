@@ -1,0 +1,56 @@
+{
+  "canonical": {
+    "hold": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"hold\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"An activity nobody serves: the run stays open.\",\"name\":\"reset-hold\"},\"nodes\":[{\"activity\":\"reset.hold\",\"id\":\"hold\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "two": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"a\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"Two served activities in a row.\",\"name\":\"reset-two\"},\"nodes\":[{\"activity\":\"reset.a\",\"id\":\"a\",\"next\":\"b\",\"type\":\"activity\"},{\"activity\":\"reset.b\",\"id\":\"b\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "hold": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "hold",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "An activity nobody serves: the run stays open.",
+        "name": "reset-hold"
+      },
+      "nodes": [
+        {
+          "activity": "reset.hold",
+          "id": "hold",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "two": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "a",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "Two served activities in a row.",
+        "name": "reset-two"
+      },
+      "nodes": [
+        {
+          "activity": "reset.a",
+          "id": "a",
+          "next": "b",
+          "type": "activity"
+        },
+        {
+          "activity": "reset.b",
+          "id": "b",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

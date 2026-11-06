@@ -147,6 +147,12 @@ pub struct Run {
     pub depth: u32,
     pub parent: Option<RunParent>,
     pub chain: Option<ChainSegment>,
+    /// The business identifier the run was started under, as it was given, or `None`.
+    pub business_id: Option<String>,
+    /// The instant the entry of a run started with a delay is held until, or `None` once it is
+    /// released (or if it never was held).
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub start_delayed_until: Option<OffsetDateTime>,
     #[serde(skip)]
     pub raw: Value,
 }
@@ -175,6 +181,7 @@ impl Run {
         run.updated_at = run.updated_at.map(|v| v.to_offset(UtcOffset::UTC));
         run.finished_at = run.finished_at.map(|v| v.to_offset(UtcOffset::UTC));
         run.deadline = run.deadline.map(|v| v.to_offset(UtcOffset::UTC));
+        run.start_delayed_until = run.start_delayed_until.map(|v| v.to_offset(UtcOffset::UTC));
         run.raw = raw;
         Ok(run)
     }

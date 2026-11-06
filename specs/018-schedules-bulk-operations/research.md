@@ -484,6 +484,314 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   and the state of the item, so a replica that lost its lease, a job that was cancelled or an item that has ended does not
   touch the run (what is left is G1961). (11) The fencing metric counts lost leases only. (12) The selection runs under a
   10 s statement timeout and is tried again.
+- **D1961** (2026-11-05, T018-034/035) A business identifier is claimed inside `PgRunStore::create`, in the slot of
+  the run-creating aggregates (after the schedule's row, before any run's, ADR-0050 decision 7), by `INSERT ... ON
+  CONFLICT DO NOTHING` and, when the id exists, `SELECT ... FOR UPDATE` of its row: a concurrent claim that has not
+  committed makes the insert wait for its outcome, so of 32 starts of a free identifier exactly one binds it, and of 32
+  that find a closed holder exactly one takes the binding over (the row lock makes the others read the new, open
+  holder). The holder's status is read from `runs` and, when the run is the initial run of a chain, from
+  `execution_chains` (open until a final outcome; ended when the last segment did) and never copied, so no run-driven
+  transition touches `business_ids`. A holder that is gone reads as free. The result of creating a run is a dedicated
+  `Admitted { Created, Replayed, Existing }` instead of a third variant of the generic `Applied` (28 users, most
+  unrelated): `Existing` is `USE_EXISTING` returning the open holder, answered `200`.
+- **D1962** (2026-11-05, T018-035) The business options join the idempotency fingerprint of a start only when there are
+  any (a second length-prefixed group appended), so the fingerprint of a start without them is what it always was and a
+  retry made before an upgrade still replays. The same key with another identifier or policy is `IDEMPOTENCY_KEY_REUSED`.
+- **D1963** (2026-11-05, T018-034) `business_ids.execution_id` has no foreign key to `runs`: a holder purged by a
+  retention policy leaves a binding that reads as free and that `business_ids_purge` removes (it is also what a
+  migration to feature 020's erasure needs). The identifier is charged twice (the binding and the copy on the run),
+  both as content, by the ALWAYS accounting triggers; `runs.business_id` is immutable after the insert.
+- **D1964** (2026-11-05, T018-035) The refusal names the holder (`details.runId`) only to a caller who may read runs
+  (`run:read`), as `errors.md` says; the identifier is never in an error, a log line, a metric label or any table but
+  the two that keep it (`privacy::`, which searches every table of the schema as text and as hex).
+- **D1965** (2026-11-05, T018-035) The identifier of a start is refused with `422 BUSINESS_ID_INVALID` and the place
+  (`/businessId`, `/businessIdConflictPolicy`, `/businessIdReusePolicy`) when it is not 1 to 200 visible ASCII
+  characters, when a policy comes without an identifier, or when it comes with `inputBlobRef`; a rerun and a schedule's
+  action take the identifier from the run they repeat (T018-035, built: D1966) or never carry one
+  (`BUSINESS_ID_NOT_APPLICABLE`). A prefix filter is a literal (`LIKE` with `\`, `%`, `_` escaped).
+- **D1966** (2026-11-05, T018-035, `FR-018-040`) A rerun (`RERUN_AS_NEW` and a batch `RERUN`) chooses what becomes of the
+  identifier of the run it repeats. `KEEP` is the default and claims it for the new run with `FAIL` and `ALLOW_DUPLICATE`:
+  the source has ended, so it is a closed holder inside its window and is taken over, while another open execution that
+  holds it by now refuses the rerun with `409 BUSINESS_ID_IN_USE` (the holder named only to a caller with `run:read`), never
+  a rerun that quietly lacks the identifier. `DROP` starts without one and asks nothing of the binding, so it succeeds when
+  the identifier is held. The choice is part of the request a key stands for: `KEEP` extends the fingerprint with the
+  identifier the same way a start does (D1962) and `DROP` leaves it as it is, so the same key under the other choice is
+  `IDEMPOTENCY_KEY_REUSED` in either order (a marker for `DROP` was tried and its mutant survived: it distinguished nothing). `businessId` (`KEEP`/`DROP`) of the operation request is refused with `422` for any other
+  operation. In a batch job a held identifier fails the item with `CONFLICT` (it is for the operator to read and settle, not
+  a state the item skips), and the job's `businessId: DROP` is the `dropBusinessId` its parameters already carried. A
+  rerun of a private (ad hoc) run never has an identifier.
+- **D1967** (2026-11-05, T018-034/035, `FR-018-022`) The lookup of a binding is `GET /namespaces/{namespaceId}/business-ids/
+  {businessId}` (`getBusinessIdBinding`, `run:read`), the path the feature contract named, read without a lock by the
+  runtime role. It answers `404` in exactly the cases in which a start finds the identifier free: unbound, a holder that is
+  gone (purged), and a closed holder past its window (`now >= finished + window`, one `Held::reusable_after` in the domain
+  that both the claim and the lookup use); an identifier that cannot be one and a namespace of another tenant are as absent
+  as one that never existed. `executionId` is the holder (the run, or the initial run of a chain), `currentRunId` the
+  segment that carries the work, `lastStatus` how the holder ended and `reusableAfter` when `REJECT_DUPLICATE` stops
+  applying; the last two are absent while it is open. `listRuns` also filters by `scheduleId` (the runs a schedule started,
+  whatever the kind of action), the third filter `FR-018-022` names.
+- **D1968** (2026-11-05, T018-006/037, `FR-018-023`) A start delay is two journal events and one column. `run.start_delayed
+  {until_us}` follows `run.started` in the creation transaction (the reducer accepts it only there, once) and
+  `run.start_released {until_us}` releases the entry, once, at that same instant; `RunState` holds `start_delayed_until_us`,
+  so a replay of the journal equals the stored projection (`verify_run`). While it is set the planner is idle, which is the
+  whole hold: the entry stays `PENDING`, no timer starts, no wait begins and no worker is offered a step; a stop is planned
+  before the hold, so a cancellation or a deadline still ends the run with no step having run, and the status is `WAITING`
+  until then. `runs.start_delayed_until` mirrors the state (written with the two events, in the same transaction) so the
+  release pass finds the due ones by a partial index on `(run_shard(id), start_delayed_until) WHERE ... status = 'WAITING'`;
+  a trigger lets it be set once and cleared, never changed. The pass (`start_releases`, after the deadlines) applies
+  `release_start` under the run's lock with the condition read again there (still delayed, due by the database clock,
+  not stopped, not paused), so a run cancelled since the candidate query is skipped; it is fenced by the run's shard lease
+  like every other pass. A signal is refused because nothing waits for it yet (the entry has not begun). Whether a declared Update is admitted to a
+  held run, as FR-018-023 says, is not tested yet (G1972). A schedule's action and a rerun never take the options of a start, so they cannot carry a delay;
+  the delay joins the idempotency fingerprint only when present (D1962). The run `WAITING` while held is a status that
+  already existed, and `startDelayedUntil` says why. The release of 022's run-level permit is the half this does not do
+  (T018-037, blocked on 022).
+  A schema that predates the delay (a rollback, or a rollout whose migration has not run) still works: the loader of a run
+  reads the column through a snapshot of the row, so a missing column is `NULL` and not an error for every pass of the
+  scheduler, and the pass that looks for due releases treats an undefined column as having none (the rollback tests keep
+  driving the scheduler on the schema they roll back to).
+- **D1969** (2026-11-05, T018-040, `FR-018-024`, `FR-018-026`) Signal-with-Start is one request over mechanisms that
+  already exist, and adds no table or event. The identifier is claimed with `UseExisting` whatever the caller wrote (an open
+  holder is always signalled; the reuse policy still governs a closed one). Then one of three things: the identifier has an
+  open holder, which is signalled by the ordinary `signal` use case (`202`, `started: false`; a holder that waits for
+  nothing is `409` `CONFLICT` with `details.reason` `NOT_WAITING` and nothing changes); the same key was already served,
+  and the answer is the first one, with the nodes it woke read from the receipt the signal left (`run.signal:{run}`); or a
+  run is created, and the signal is delivered by the same core as `signalRun` (`deliver_signal`) inside the creation
+  transaction, after the initial reduction, so it reaches every step that waits for it then. If none does the transaction is
+  dropped and the answer is `409` with `SIGNAL_NOT_ACCEPTED_AT_START`: no run, no binding, no stored signal and the
+  identifier is free (tested by taking it with an ordinary start afterwards). A signal is never buffered. The signal's name
+  and payload join the idempotency fingerprint, so the same key with another signal is `IDEMPOTENCY_KEY_REUSED`, and the
+  right is `run:start` and `run:signal` both (a Developer has the first, an Operator both). A start delay is refused at the
+  route (`422` `START_DELAY_WITH_SIGNAL`) because a held run waits for nothing. The answer is `202` `{runId, started,
+  deliveredTo}`; the route is admitted as `RunStart` (one token of the namespace, also for a request the engine refuses).
+  The signal marker in the fingerprint matters for a key shared by two operations: an ordinary start under key K and then a
+  with-start under K with the same body would otherwise replay the start and answer as if a signal had been delivered (the
+  receipt of the signal catches a changed signal, not a missing one). The task names `runs/with_start.rs`; the code is in
+  `runs.rs` beside `signal`, which it shares `deliver_signal` with.
+  *Amended 2026-11-05 after an independent review (security and correctness readers):* an open holder that serves the
+  request keeps, in the transaction of the signal, the receipt of the request itself (`run.start:{ns}` + key, naming the
+  run the signal reached) and a marker (`….served`, same key and fingerprint) that says a holder, not a new run, was the
+  answer. `create` replays the first before it claims anything, so a retry made after the holder has closed and the
+  identifier is free is answered by the holder, is not delivered to a new run, and says `started: false` as the first
+  answer did; the same key with another body is `IDEMPOTENCY_KEY_REUSED` whoever holds the identifier (`G1973` (1) closed).
+  A holder that is a continuation chain is its initial run; the signal goes to the segment that is current
+  (`RunStore::current_segment`), and `runId` names the run that was reached. A replay whose signal receipt is missing is an
+  internal error, not an empty answer.
+- **D1970** (2026-11-05, T018-041, `FR-018-025`, `FR-018-026`) Update-with-Start applies the declared Update in the
+  transaction that creates the run, through the code of `updateRun` and not a copy of it. `apply_update` of the PostgreSQL
+  store was split: `apply_update_in_tx` does everything between the begin and the commit (authorization, chain and run
+  locks, receipt replay, validation, evaluation, state, receipt, journal event, run version, audit, outbox) in a
+  transaction the caller owns, and the store method opens one and commits it. `RunTx` offers `apply_declared_update`, which
+  an adapter that cannot refuses (a wiring bug, 500); `PgRunTx` hands over its own transaction, and the result bytes are
+  read out of that same transaction (`update_result_in_tx`), so the route reads nothing a second time. The service
+  creates the run (claim of the identifier, initial reduction, persisted), applies the Update, and commits. A failure
+  before admission (an undeclared operation, arguments the declaration does not accept, an update key reused with
+  another request, a run that no longer admits updates) returns the error and drops the transaction: no run, no
+  binding, no receipt, and the identifier is free. A business rejection (the validator said no, the expected revision is
+  stale) is `Ok` with a `REJECTED` resolution and the commit keeps the run, its binding and the rejected receipt. An open
+  holder (`USE_EXISTING`, the default) and a retry of the same request go through a transaction of the run itself (`begin`
+  with the run lock), where the Update is applied or, for a retry, answered again from its receipt, even if the run has
+  closed since; `FAIL` makes an open holder `BUSINESS_ID_IN_USE`. The start's idempotency fingerprint carries the
+  operation name, the update key, the canonical arguments and the expected revision, so one key is neither a plain start
+  and an Update-with-Start nor two different Updates (`IDEMPOTENCY_KEY_REUSED`). The answer is `200` for an applied
+  and for a rejected Update (the contract; `updateRun` answers a rejection 409/422), `Cache-Control: no-store`, and says
+  `started`. The service serves it only when it holds an evaluator (`with_declared_updates`): the control plane and the
+  test platforms do, the engine's internal run services do not. A held run (`startDelayMs`) is `WAITING`, which an Update
+  admits (FR-018-023): G1972 is closed by `delayed run admits the update`.
+  *Amended 2026-11-05 after review:* the same receipt for an Update served by an open holder (one transaction with the
+  Update, its receipt, journal event, audit and outbox), the same current-segment targeting for a chain holder, the
+  journal event dated by the database clock of the run's own transaction (`tx.now()`, as its other events) instead of the
+  process clock, and a server that was not wired with an evaluator answers `500`, as this decision says, not `422`.
+  The Update is counted in the telemetry of declared operations as `updateRun` is (the `workflow.update` span,
+  `workflow_operation_duration_seconds{kind="update"}`, and `workflow_primitive_rejections_total` for a rejection, which is
+  an answer to the caller here and a rejection in the metrics). The platform's own update keys (`batch:`, `schedule:`) are
+  refused to callers of `updateRun` and `updateWithStart` (`INVALID_UPDATE_KEY`), so a caller cannot make the item of a
+  batch job fail by taking its key first.
+- **D1981** (2026-11-06, T018-062, T018-063, `FR-018-048`) The client surface of feature 018 in the SDKs and its nine
+  conformance scenarios. (1) The surface is the table of `contracts/sdk-conformance.md` and `sdks/SPEC.md` §3.1: three groups
+  on the client (`schedules`, `batch`, `businessIds`) and, on the client, `start` with the new options, `signalWithStart`,
+  `updateWithStart` and the five reset calls. (2) `start` answers whether it created the run (`started`, from the `202`
+  against the `200` of `USE_EXISTING`) and a `Run` carries `businessId` and `startDelayedUntil`; a call that uses none of
+  the new options sends what it sent before. (3) A business identifier is sent as given and never checked by the SDK
+  (the server's `BUSINESS_ID_INVALID` is what every language reads); only the lookup refuses locally what cannot be a path
+  segment. (4) A start delay is a duration converted once, before the first attempt, to integer milliseconds by truncation
+  toward zero; the SDK refuses only what is not a number and leaves the range to the server. (5) The scenarios assert each
+  `details.reason` in the scenario of the operation that raises it, so `errors-018.json` of the draft is not written; the
+  concurrency-permit reset is not a scenario because the permit is not built. (6) What a scenario cannot compare is made
+  comparable by the runner and not by hiding fields: instants that depend on the day are `<time>`, the ones a fixed spec
+  determines (January 2099) are epoch milliseconds, and the runs of a batch are named by the step that started them because
+  the order the server lists them in is not a promise. (7) The engine's schedule and batch passes are off until told to run,
+  so a scenario that waits on them says `"server": {"schedules": true, "batches": true}` and the harness sets
+  `SAGAT_SCHEDULES_ENABLED` and `SAGAT_BATCHES_ENABLED`; without it the scenario would only time out. (8) Found by the
+  scenarios and fixed in the server: the actions a backfill makes never carried `backfillId` (nothing wrote the column;
+  commit `5cba87e0`). (9) Found by the C# port: a business identifier of exactly `.` or `..` cannot be looked up by path
+  (every URL resolver, also for `%2E`, takes a whole dot segment as a step, so `GET …/business-ids/..` reaches
+  `…/` and not the identifier), so `businessIds.get` refuses those two locally in every SDK; the identifiers that merely
+  contain dots stay valid. An identifier like that can still be used in a start and found through `listRuns?businessId=`.
+- **D1979** (2026-11-06, T018-054, T018-052, `FR-018-036`, `FR-018-044`) The five reset routes and two amendments.
+  (1) `listResetPoints`, `previewReset`, `resetRun`, `listRunResets` and `getRunReset` (`x-implemented: '018'`) are
+  served from `crates/api-http/src/routes/resets.rs` straight from `RunService` (no new use case trait), behind the
+  admission of the run's namespace: `ResetInspect` (`run:operate` and `run:read`) for the points and the preview,
+  `RunReset` (the permissions of a rerun) for the reset, `run:read` for the register. The points page by a cursor
+  that is the sequence of the last one served, `limit` outside 1 to 200 is clamped like every list, the reset needs the
+  `Idempotency-Key` and answers `202` with the entry of the register. `CANCEL_SOURCE` and a `reapply` other than
+  `NONE` are `422` in words (T018-056 and T018-057 are not built). (2) **Defect in D1976 (4), found by the
+  contract test of the preview:** `reset_plan` listed as restored every step that existed in the replayed state of
+  the prefix, and at the start of a run the entry step exists (pending) before it has run, so a reset to the start
+  listed it as kept and left it out of the steps that run again: a source whose first step had completed needed no
+  `acknowledgeReexecution`. A step is restored only when it has a result (a terminal status); the others are the
+  new run's to do, and if the source ran them after the point they are in `reexecuted` with `completedInSource`. The
+  domain test accepted `all(node == "a")` for the start and hid it; it now asserts an empty `restored`, the three steps
+  in `reexecuted` and the acknowledgement. (3) Two sentences of `contracts/errors.md` are amended, and the API's
+  closed table with them: `RESET_NOT_SUPPORTED_FOR_SOURCE` also covers a run of a database execution, and
+  `RESET_SOURCE_NOT_TERMINAL` no longer sends the caller to `CANCEL_SOURCE`, which this version does not offer.
+- **D1978** (2026-11-05, T018-054, `FR-018-036`, `FR-018-037`) The register of resets is the table `run_resets`
+  (migration `20270107000000`, additive, the shape of `data-model.md`), and the API names a reset by its id.
+  (1) The entry is written by `RunTx::register_reset` in the transaction that creates the run, after the prefix is
+  restored and `run.reset` recorded, so a run made by a reset always has its entry and a refused reset leaves none;
+  it is `CREATED` with `new_run_id`, `completed_at = created_at`, `source_policy = REQUIRE_TERMINAL`, and keeps the
+  point, the digest of the prefix (the one `run.reset` carries), `reapply`, the business policy, the subject that
+  asked and the justification (content of the tenant, charged by the `ALWAYS` quota triggers). `PENDING_SOURCE` and
+  `FAILED` exist in the CHECKs for `CANCEL_SOURCE` (T018-057) and nothing writes them. (2) `RunService::reset` answers
+  `ResetMade { reset: ResetRecord, run: RunRecord }`; a retry of the same key is answered with the entry of the
+  first request (`reset_made` finds it by the new run). `resets` (newest first by the time-ordered id, at most 200)
+  and `reset_record` need `run:read` and a source the caller can see; another tenant, another source run and an id
+  nobody made are all `NotFound`, and the store filters by tenant and source on its own. (3) A trigger fixes what a
+  reset is (run, point, digest, policies, actor, justification, time) and a completed entry stays as it completed;
+  `DELETE` is refused for a pending one and the runtime role has no `DELETE` at all (no purge function yet: the
+  entry lives as long as the runs it names, and no code deletes runs). `reapply_report` is `[]`: nothing is
+  reapplied until T018-056. (4) The foreign keys to `runs` have no cascade, like `rerun_of`.
+- **D1977** (2026-11-05, T018-053, T018-054, `FR-018-037`, `FR-018-038`) The store and the service of the reset are
+  `crates/application/src/runs/reset.rs` (`reset_points`, `reset_preview`, `reset`), `crates/infra-postgres/src/execution/resets.rs`
+  (`read_source`, `restore`) and the `persist` of `crates/infra-postgres/src/execution.rs`. (1) The new run is created by
+  `start_with` as a rerun of the source (`rerun_of`), with `runs.reset_sequence = N` (migration `20270106000000`, additive,
+  immutable once set, a `down` that refuses while any run carries it; the check is the data model's with `N >= 1` added); the restored prefix is written in the creating
+  transaction, after the run row and before the settle that the domain's `record_reset` does, so no reader sees the run
+  with a half prefix. (2) A restored event is a **verbatim copy** of its source row: `event_type`, `detail`, `actor`,
+  `occurred_at`, `trace_id` and `payload_digest` are the source's (`Effects.restored` carries the rows, `persist` binds
+  them instead of the transaction's own actor and clock), so a reader of the new run's journal sees who did each thing and
+  when, and the first row adds `detail.restored = true` and `reset_of` (source run and sequence) to say where the history
+  came from. (3) A restored row has **none of the side effects of the first time**: `persist` takes the row, collects its
+  sagas and goes on (`continue`), so no `task.ready` is announced for a step that completed before the point and no signal
+  is delivered again. The `task.ready` of the first step the new run releases is the only announcement. (The telemetry
+  that skips the restored prefix is T018-058 and is not built: a metric derived from the journal would count it.)
+  (4) The projections the events would have written are rebuilt from the same prefix: the outputs of the steps it
+  completed are given to the new run's steps (same digest, same content), and the declared state is restored to the last
+  revision in the prefix (`restore_declared_state`), so the run goes on from the point with the state it had there. (5)
+  The service refuses before it writes, with typed reasons (`AppError::ResetRefused { reason, event_type }`, which the API
+  answers as `422 VALIDATION_FAILED` with `details.reason` (and `details.eventType`), except `RESET_SOURCE_NOT_TERMINAL`,
+  `409 CONFLICT`, as `contracts/errors.md` says):
+  `RESET_NOT_SUPPORTED_FOR_SOURCE` (a child run, a run of a database execution, a continuation chain),
+  `RESET_SOURCE_NOT_TERMINAL`, `RESET_POINT_NOT_ELIGIBLE` (not one of `reset_points`, which includes a prefix with a
+  scoped event, `ResetBlock::ScopedEvents`), `RESET_PREFIX_TOO_LONG` (more than `RESET_PREFIX_EVENTS`, 5,000 events),
+  `RESET_RULE_MISSING` (an event type this version has no rule for) and `RESET_REEXECUTION_NOT_ACKNOWLEDGED` (a step that
+  completed after the point declares an effect and the caller did not acknowledge it). A missing or malformed
+  justification and a `reapply` other than `NONE` are `NotAllowed`, not a reset reason. The request's fingerprint holds the
+  marker `run.reset` and the sequence, so the same key and point is the same reset (the first run is returned) and the key
+  of another point is not a retry. (6) v1 restores the **root** events only, `REQUIRE_TERMINAL` sources and
+  `reapply = NONE`; G1980 lists the rest.
+- **D1976** (2026-11-05, T018-006, T018-052, `FR-018-035`, `FR-018-036`) The domain half of the reset is
+  `crates/domain/src/execution/reset.rs`. (1) The registry of D1605 is one `registry!` table of the 66 event types of the
+  journal (`run.reset` included): an exhaustive `match` (`rule_of`), so a new event type without a rule does not compile,
+  and the same rows as a table by the name the journal stores (`RULES`, `rule_by_name`), the way a type written by a
+  version this one does not know is looked up (`RESET_RULE_MISSING` is the store's answer, T018-054). The test
+  `every_event_type_of_the_journal_has_exactly_one_rule` reads the names out of the source of `RunEvent::name()` and fails
+  when a name has no row or a row has no name; `the_rules_are_the_ones_of_the_contract` is typed from the contract, not
+  from the table. Of the 66, 52 are `COPY`, 12 `EXCLUDE` and 2 `REFUSE` (`reconciliation.requested` until
+  `reconciliation.concluded`, `run.start_delayed` until `run.start_released`); none is `REMATERIALIZE` yet, because the
+  side tables it re-creates belong to features that are not merged. (2) `run.reset` is `RunEvent::RunReset { source_run_id,
+  source_sequence, prefix_digest, reapply }` with the closed detail of the contract (`source_run_id`, `source_sequence`,
+  `prefix_sha256`, `reapply` as `NONE|SIGNALS|UPDATES|ALL`), and the reducer accepts it only after the restored prefix of a
+  run that has started, is open and is not stopping, with a prefix of at least one event. (3) `reset_points` implements D1022
+  over the addressed journal: the candidates are the root events `run.started`, `step.completed`, `child.finished`,
+  `collection.finished` and `loop.finished`; one is blocked by an `EXCLUDE` event or an open `REFUSE` window in its prefix,
+  by a state that is not quiet (the run not plainly `RUNNING`, paused or stopping; a step open; a collection or loop that
+  did not succeed), and by a later compensation, skip, resolution or reconciliation of an instance of its prefix. At
+  `run.started` the entry step has not been released yet, which is the clean start and not work in flight. (4) `reset_plan`
+  lists the steps restored (flagging approvals) and the declared steps the source ran after the point, each with the effects
+  it declares (`compensateWith`, `reconcileWith`, `irreversible`, `highRisk`) and whether it completed; any that did means the
+  caller must acknowledge the re-execution.
+- **D1975** (2026-11-05, T018-043, `FR-018-039`) The journal says what satisfied a wait and whether an Update kept
+  its arguments, and the arguments are kept on the receipt. (1) `wait.satisfied` carries `detail.via`
+  (`RunEvent::WaitSatisfied { node, via: Option<WaitVia> }`): `signal` for `signalRun` and a chain signal, `event` for
+  the dispatch of a published event (the one caller of the scoped event wait commands), `signal_with_start` for
+  Signal-with-Start whether it created the run or found an open holder (the route decides, as the contract's table
+  says); an older row has none and a name this version does not know decodes as none, so a later version cannot make
+  an older reader lose a row. (2) The contract of the draft put the retained arguments in the `payload_digest` of the
+  `state.updated` row, but that column of the row already holds the new state (the foreign key that keeps the state
+  referenced), so the arguments cannot go there. They are referenced from the receipt of the Update: the new nullable
+  column `operation_update_receipts.arguments_digest` (migration `20270105000000`, a foreign key to `payloads`, a SHA-256,
+  only on an `APPLIED` receipt, whose `down` refuses while any is set). The receipt is written in the same transaction as
+  the row, goes with the run (`ON DELETE CASCADE`) and is found by `(resolved_run_id, run_version)`, the sequence of the
+  row. (3) `state.updated` carries `detail.retained` (`RunEvent::StateUpdated { .., arguments_retained: Option<bool> }`):
+  `true` when the declaration opts in and the arguments were kept, `false` when it does not, none in a row written before.
+  That is what lets a reset report `NOT_RETAINED` (an Update that did not opt in) apart from `LEGACY_EVENT` (written before
+  the journal said so, or by a binary that did not know), which the receipt alone could not. (4) The evaluator decides:
+  `DeclaredUpdateDecision::Applied { .., arguments }` has the canonical arguments only when the declaration opts in, so an
+  Update that does not pays no payload write; the write is a `payloads` row, charged to `tenant_content_bytes` by the
+  trigger that charges every payload, deduplicated by digest (the same arguments applied twice are one row). The size is
+  within the ceiling by construction: the arguments of an Update are bounded by `MAX_OPERATION_VALUE_BYTES`, as a retained
+  value is.
+- **D1974** (2026-11-05, T018-078, `FR-018-039`, `FR-018-046`) `reapplyOnReset` on an Update declaration is an optional
+  boolean of the additive IR (ADR-0032), merged into `$defs/update` of `workflow.schema.json` from
+  `contracts/workflow-ir.fragment.schema.json`. The Update declaration lives in the IR codec
+  (`DeclaredUpdateDefinition`, `crates/infra-ir/src/declared_state.rs`), not in the domain crate the task named: the
+  domain holds no declared state, so `crates/domain/src/workflow.rs` is untouched (the task text is amended, as D300
+  did). The codec reads the field (absent is `false`; a value that is not a boolean is a schema error) and the digest of
+  the declaration ignores a default that is written, so a document made before the field keeps the digest it had
+  (pinned in `crates/infra-ir/tests/reapply_on_reset.rs`) and `false` is the same declaration as saying nothing. The
+  capability is the process's: `sagat_infra_ir::set_reset_reapply`, off by default. While it is off, a new publication
+  (`IrCodec::parse`, and `declared_state_publication`, which produces what a publication stores) is refused with
+  `UnsupportedDeclaration { field: "reapplyOnReset" }`, which the API answers as `422 UNSUPPORTED_NODE`; `parse_stored`,
+  `parse_stored_declared_state` and `parse_declared_state` read a version that was published while it was on, so closing
+  the capability never erases what was published under it (ADR-0032 decision 8). It is a switch of the process and not a
+  field of `JsonIrCodec` because that type is a unit struct built at about four hundred places. Six SDKs carry
+  `reapplyOnReset` on their `UpdateDefinition`, written only when true; the scenario `state-operation-builders` has the
+  workflow `retained-update` and its golden holds the document, which the six builders write alike.
+- **D1973** (2026-11-05, T018-033, `FR-018-042`) The input of a schedule is disclosed by `POST …/schedules/{scheduleId}/input-disclosures`
+  (`discloseScheduleInput`), through the policy of feature 016 and not a copy of it: `ServiceEvaluator` of
+  `payload_disclosure.rs` takes the permission that reads the owner of the payload (`schedule:read` here, `run:read` for a
+  run) and the labels of the answer from a `DisclosureSubject`, and everything else, the audiences, the reveal grant, the
+  projection, the structural fallback, is the same code. The store (`ScheduleInputStore`, `PgScheduleStore` in
+  `payload_disclosure.rs`) reads the head revision of the schedule and the version its action would use now (the one it pins,
+  or the workflow's `active_version_id`) in one transaction, rechecks the role and the reveal grant there, calls the
+  evaluator under the open transaction and appends the audit before it commits. The task's contract named
+  `PayloadDisclosureNode` as the response; the answer is `ScheduleInputDisclosure`, the envelope of `PayloadDisclosure` with
+  `scheduleId` and `revision` in place of the run's identifiers (the caller and the result variants are the same), because a
+  bare tree could not say which levels the caller saw or why a value is withheld. Audit: `schedule.input_disclosed` (collapsing
+  identical reads within five minutes, as the action was defined) for what an internal reader or an inspector got, and
+  `payload.pii_revealed` on the schedule for a reveal of personal data, which must never collapse with another; a refused reveal
+  is `payload.reveal_denied`. A reader who is shown only public values leaves no record, as for a run. The request is at
+  most 1 KiB and every response, a refusal for size included, is `private, no-store`. A deleted schedule, one of another
+  namespace and one of another tenant are the same `404`.
+- **D1972** (2026-11-05, T018-047, `FR-018-030`, `FR-018-031`) The `UPDATE` action of a batch applies the declared Update
+  to each run through the use case Update-with-Start uses for an existing run (`update_in_own_transaction`: begin on the
+  run under its lock, `apply_declared_update`, commit), as the creator with the role they hold now. The key of the item,
+  `batch:{job}:{run}` (80 printable ASCII characters), is the update key, so a repeat of an item answers from the receipt it
+  left and the Update is applied once; another job is another key and applies again. An applied Update is `SUCCEEDED`; a
+  rule that says no (the validator) is `FAILED` with `VALIDATION_FAILED`, as `updateRun` answers it (a stale revision,
+  `CONFLICT`, cannot happen: a batch carries no expected revision); an operation the run's version does not declare is
+  `SKIPPED` `OPERATION_NOT_DECLARED`; a run that ended `ALREADY_TERMINAL`; one that handed off `RUN_CONTINUED`; the other
+  refusals fail the item with the `Error.code` `updateRun` would answer (`declared_update_code`). The name the job gives
+  must be a name an operation can have (`BATCH_ACTION_PARAMETERS` at `/update/name`): found by a test that created a job
+  with the name `two words`, which would have failed every item as `INTERNAL`. The engine's batch run service holds the
+  evaluator (`with_declared_updates`). `REPIN` stays refused without feature 019.
+  *Amended 2026-11-05 after review:* the audit record of an Update a batch job made says so, `;batch=<job id>` after the
+  outcome (an identifier, never free text; `check_audit` still refuses a free-text reason), so the up to 100,000 changes of
+  a job can be attributed to it. A run that cannot take an Update now is `SKIPPED ALREADY_TERMINAL` only if it has ended,
+  `NOT_APPLICABLE` while it is winding down, compensating or waiting for a person; a failure of the platform (a pool or lock
+  timeout) defers the item as the other actions do, and a creator who lost the right ends the job (`AUTHORITY_REVOKED`)
+  instead of failing item by item; a run that vanished is `NOT_FOUND`, not an undeclared operation.
+- **D1971** (2026-11-05, T018-044, `FR-018-043`) The remediation of a reason of this feature is a row of the closed table
+  `ErrorCode::remediation` (`crates/api-http/src/error.rs`) whose sentence is the one in the feature's own
+  `contracts/errors.md`; the task also names `docs/quickstarts/errors.md`, which documents the problems the definition
+  codec returns (two tests keep it equal to the help of the CLI) and has no place for the reason of an API error, so it is
+  not touched. `contract_schedules_bulk_operations errors::` keeps the three apart from drifting: each reason an
+  operation raises (29 today) has exactly the table's sentence, a row of its own and a mention in the `Error.details`
+  description of the OpenAPI; each reason the table lists that nothing raises is on a named list (what it waits for), has
+  no row of its own, and the test fails when a row of the table is on neither list. The ceilings of schedules, backfills
+  and batch jobs now say which they are: a 429 at one of them carries `details.reason` (`SCHEDULE_LIMIT`,
+  `BACKFILL_CONCURRENCY`, `BATCH_LIMIT`) next to `details.limit`, chosen from the label the refusing store passes (a
+  resource's `limit_name`, or `schedule_backfills_per_schedule`); the other limits are refused as they always were.
 - **D1955** (2026-11-04, T018-028) The actions of a schedule are purged by a bounded function, visiting schedules in
   turn. Nothing deleted them: an hourly schedule writes 8,700 rows a year and one every minute 525,000. FR-018-013
   keeps "at least the last 1,000 or 30 days": an action goes when it is older than 30 days **and** beyond the
@@ -532,7 +840,7 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1956 | A batch job names root steps only (`RETRY_STEP`, `MARK_MANUAL_REVIEW`): a step of an iteration of a collection or a loop needs its scope path resolved per run, which the single-run `review_instance` takes as an exact instance and the job has no way to express across runs. A request with an `instancePath` is `BATCH_PARAMS_INVALID`. | Resolving a path per run (the iteration that waits is not the same in every run) is a design of its own. | Open |
 | G1957 | A transaction that began before a batch job was created and takes its identity only after it can commit a run whose `created_at` is before the job's bound after the selection read, and the run is not selected (D1958). | It is concurrent with the creation of the job, which commits first, so the run is not "before" the job in any order a caller can observe; the window is the milliseconds between reading the clock and the first write of a run creation. Closing it needs the selection to look at the oldest transaction that has not ended, not only at identities. | Open |
 | G1958 | The wait of an item for the lock of its run is not bounded to two seconds (`LOCK_WAIT` is never produced): the run service opens a run with `Lock::Wait`. A long transaction on one run delays the job's pass at that item. | Run transactions are short; a bounded wait needs a lock mode in the run store that gives up and an error to carry it. | Open |
-| G1959 | The `UPDATE` action of a batch is refused at creation: it needs the declared-operations evaluation of a run (its receipt, `reapplyOnReset`, the per-run update key), which no use case offers to a caller that is not the HTTP route. | A use case of the application layer for a declared Update, shared by the route and the batch. | Open |
+| G1959 | The `UPDATE` action of a batch is refused at creation: it needs the declared-operations evaluation of a run (its receipt, `reapplyOnReset`, the per-run update key), which no use case offers to a caller that is not the HTTP route. | A use case of the application layer for a declared Update, shared by the route and the batch. | **Closed 2026-11-05 (D1972):** the use case exists (`update_in_own_transaction`, the one Update-with-Start uses) and the `UPDATE` action is built. |
 | G1960 | `cancelBatchOperation` requires an `Idempotency-Key` and a `reason` (8 to 2,000 characters) but neither is kept: asking twice is asking once by the nature of the operation (the second answer is the job being cancelled), and the reason is checked and not stored, because the audit record names the action and never free text (D1957). | A cancellation reason in the audit trail needs a closed vocabulary or a redaction rule; the key would need a replay store (as G1014 for schedule writes). | Open |
 | G1961 | **The effect on a run and the record of its item are two transactions, which ADR-0050 decision 2 and FR-018-030 say they should not be.** `ensure_live` narrows the window to the duration of the effect, it does not close it: a replica that stalls after the look, a lease that lapses, or a cancel that commits in that window still lets one more effect through, and its record is then refused; a crash between the effect and its record followed by a cancel marks the item `CANCELLED` although the run was changed. Every effect is keyed, so a repeat changes nothing and the counters always equal the item rows, but an item can say less than what happened to its run. | Closing it means the single-run use cases take a hook that locks the fence, the job and the item inside the run transaction (ADR-0050 slot order: fence, run, job, item) and records the outcome there; that touches `operate`, `signal`, `review` and `rerun`, and ADR-0050 would then be followed instead of amended. The owner decides (O1951). | Open |
 | G1962 | The selection compares `runs.created_at`, stamped by the application clock of the host that created the run, with the bound read from the database clock. A host whose clock is ahead of the database's by δ stamps runs that are older than the job with a time after its bound, and the job never selects them; a host that is behind has runs created after the job selected. Not the window of G1957 (one host, between reading its clock and its first write). | Stamping `created_at` from the database in the run insert, or selecting by a column the database orders (commit order), is a change to run creation, which is not this feature's. Hosts of one deployment are expected to be within milliseconds. | Open |
@@ -540,6 +848,23 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1964 | `businessId: DROP` of `RERUN` is accepted and stored but the adapter does not read it: business ids are not bound to runs yet, so a rerun has none to keep or to drop. | It becomes a promise the code must keep when business ids land (US03). | Open |
 | G1965 | The control plane and the engine each have `SAGAT_BATCHES_ENABLED`. With it on in the control plane and off in the engine, jobs are accepted and never run, they stay `SELECTING` and hold their active-job places, and a cancellation waits for an engine to drain it. Turning the flag off in the control plane stops the routes, not the jobs already running; the engine's flag is the switch. | One flag per process kind is how schedules are gated too; the instance-capability registry of ADR-0050 decision 9 would refuse the mismatch and is not built. | Open |
 | G1966 | The Studio's backfill dialog has no preview of how many times the range holds: no route counts them without starting the backfill, so it states the bound (1,000 times, an end that is not in the future) and shows the platform's refusal in words. | A preview is a read of the schedule's spec over a range, which the platform alone computes (the Studio computes no time); it needs a route (`previewScheduleBackfill`) with the contract, the reference and the types. | Open |
+| G1967 | The reuse window of an identifier is the default (30 days) for every namespace: `ReuseWindow::default()` is frozen into each binding and no setting changes it. FR-018-020 makes it namespace-configurable up to 366 days. | A namespace setting is a table or a column of its own (and a Studio form); the binding already freezes the window it was made under, so adding the setting changes nothing that exists. | Open |
+| G1968 | `business_ids_purge(p_rows)` removes the bindings whose holder closed and whose window passed, or whose holder is gone. Housekeeping now calls it (2026-11-05, `MaintenanceStore::purge_business_ids`, up to 5,000 rows a round, at most 20 rounds), in the pass that purges the actions of schedules. It has no setting of its own: a binding holds nothing once its window has passed, so there is nothing to tune. | A binding that holds nothing is only a row, so the purge is an economy, not a rule; it runs with the other purges. | Closed |
+| G1969 | The Studio does not use the lookup of a binding (D1967): the run list filters by the whole identifier and by its prefix, which finds the same run. The lookup (holder, open, last status, reusable after) and the rerun's `KEEP`/`DROP` (D1966) are built. | A screen that shows `reusableAfter` or the chain behind an identifier is a design choice for the owner, not a gap in the contract. | Open (Studio only) |
+| G1970 | The plain `continue_as_new` of the chain store (the prepared handoff, used by tests; production uses `continue_evaluated`) copies the identifier to the successor too, and no test of it checks that. | Its callers are the unit tests of the continuation and the prepared-handoff integration test; the production path is under `a_chain_holds_the_identifier_until_it_ends_and_every_segment_carries_it` and a mutation that drops the copy fails it. | Open |
+| G1971 | The privacy check covers logs at every level, the fields of every span (created and closed, 2026-11-05), metrics, error texts and every table; what is not searched is the OTLP wire conversion of a span, which carries the same fields. `BusinessId`'s `Debug` hides the text, so a span field would show `BusinessId(..)`. | A real OTLP export canary (SC-018-014) belongs with the observability gates of T018-071. | Open (export only) |
+| G1972 | A declared Update on a delayed run (FR-018-023: "declared Updates are admitted") has no test: the fixtures of the declared operations create their runs with `NewRun` and a retained state, not through a start with options. Nothing in the reducer reads the hold when it applies an update, so the clause is believed, not proved. | A start with a delay and a declared initial state needs its own fixture; it belongs with Update-with-Start (T018-041), which needs the same one. | **Closed 2026-11-05 (D1970):** `update_with_start::a_delayed_run_admits_the_update` starts a held run with a declared state, applies an Update to it, and shows the run still held, `WAITING`, replay equal to the journal. |
+| G1973 | Three cases of Signal-with-Start (D1969) are not proved. (1) *Closed 2026-11-05 (D1969, amended):* a request served by an open holder now keeps the receipt of the request with the signal, so a retry after the holder closed is answered by the holder. (It was: the same key started a new run and signaled it.) (2) A new run that 022's run-level permit would queue instead of start: 022 is not approved, so the rollback of that case (FR-018-024) has no test and no code. (3) The race of a wait's timeout against the delivery at creation: the wait has a timer, but a run is created and signalled in one transaction, so the timer cannot fire between them; no test pins that with a clock at the boundary. | (1) is a retry after the first request succeeded and the world moved on; the same shape exists for `signalRun` and the answer is truthful about what happens now. (2) waits for the owner's approval of 022. (3) needs a wait whose timeout is the creation instant. | Open |
+| G1975 | The table of reasons lists two for operations that are built and that the API words otherwise: `NOMINAL_TIME_FIELD_INVALID` (a `nominalTimeField` that is not a top-level string property of the input schema is `SCHEDULE_SPEC_INVALID` with the field's pointer) and `SCHEDULE_DELETED` (a deleted schedule is `NOT_FOUND`, as one that never existed, which is what the contract's own preamble asks of a resource the caller cannot see). The rest that nothing raises waits on a feature (029, 031 `BINARY_CAPABILITY_MISSING`; US06 `PENDING_RESET_LIMIT` and the `RESET_*` reasons; 020 `RUN_PURGED`; 022 `CONCURRENCY_*`). | Changing either would give a caller more than the preamble allows or break a documented answer; the table should say what the API does. The contract test lists them as not raised, with the reason, so they are not forgotten. | Open (amend the table when T018-057/US06 touch it) |
+| G1976 | Three smaller points of the review of the with-start and batch `UPDATE` slices are left. (1) The route of Signal-with-Start has no operation telemetry of its own (the signal route does not either), and an Update a batch job applies is counted in no metric because the batch runs in the engine, where the API's telemetry does not: a job of 100,000 Updates is invisible in `workflow_operation_duration_seconds`. (2) The contract says the payload of a signal is an object; `signalWithStart` accepts any JSON, as `signalRun` does, and trims the name before it joins the fingerprint (a batch job refuses the names `valid_signal_name` refuses). (3) The holder of a business identifier is not compared with the request's `workflowId`: a request naming workflow A whose identifier is held by a run of workflow B in the same namespace acts on B, as `startRun` with `USE_EXISTING` already does. | (1) belongs to T018-071 (observability gates), which already lists the batch metrics; the rest are choices the owner may want to make once, for the whole family of signal and start routes, not per route. | Open |
+| G1981 | Several refusals reach the client as a plain `422` with no `details.reason`, though the contract promises one or the code could give one: (1) a negative `startDelayMs` (the body type is unsigned, so the JSON is refused before the range is checked, where `0` and `31622400001` are `START_DELAY_INVALID`); (2) an overlap policy or a reapply policy the server does not know (`WHENEVER`, `SOMETIMES`); (3) `reapply` other than `NONE` and `sourcePolicy` `CANCEL_SOURCE` on `resetRun`, which are not offered in this version; (4) a `reason` under 8 characters on `resetRun`. The scenarios pin each refusal as it is (a negative delay is left out of them, since pinning a defect is not a test of the contract). | A reason is what lets a client tell two 422s apart without parsing a sentence; an enum the deserializer rejects never reaches the code that names reasons. Closure: map the serde rejection of these fields to the reason of its field (`START_DELAY_INVALID` with `details.field`, `RESET_REAPPLY_NOT_AVAILABLE`, `RESET_SOURCE_POLICY_NOT_AVAILABLE`, `RESET_REASON_INVALID`) in `crates/api-http`, with a contract test, and then bless the goldens of `start-delay` and `reset` after reading the diff; breaking nothing, since only `details` gains a field. | open |
+| G1980 | Four limits of the first reset store (D1977) are not settled. (1) A prefix that holds a scoped event (an event of a child scope, a parallel branch, a collection item) is blocked (`ResetBlock::ScopedEvents`, answered `RESET_POINT_NOT_ELIGIBLE`): restoring it needs the side tables of those scopes (`REMATERIALIZE` in D1605) and none exists yet. Points after the first scoped event of a run therefore cannot be reset to, and `reset_points` says so for them. (2) The ceiling `RESET_PREFIX_EVENTS` is a constant of the application, not a setting of the deployment or the namespace: a longer prefix is refused, not truncated. (3) Only `REQUIRE_TERMINAL` sources and `reapply = NONE` exist: `CANCEL_SOURCE` (T018-057) and `SIGNALS`/`UPDATES`/`ALL` (T018-056) are not built. (4) *Closed 2026-11-06 (D1978, D1979):* the `run_resets` register, its reads and the five routes exist. (5) A run of a
+database execution is refused as a source (`origin` is set), and no test shows it: a trigger ties `origin` to an internal
+workflow, so a test cannot make such a run with SQL, and the ad-hoc database runner is not in this suite's fixtures. | (1) needs the scoped side tables, which belong to the features that own them; refusing is the honest answer and the refusal names the event type. (2) A setting is a product choice (how large a history may be copied in one transaction) that the owner decides with the namespace limits of 022. (3) and (4) are the next slices of US06 and each has its own task. | Open (T018-054, T018-056, T018-057) |
+| G1979 | Three things about the reset points of D1976 are not settled. (1) By D1022 a loop that succeeds is not a point: it ends at its last checkpoint (`loop.iteration_checkpointed` that completes it) and `loop.finished` is journaled only for a loop that failed or was cancelled; `timer.fired`, `wait.satisfied` and the decision of an approval complete a root node too and are not in the list. The literal list is implemented, which is the conservative reading: those completions are not offered, and the next completion after them is. (2) The clause "a prefix instance compensated, skipped, resolved or reconciled later" cannot be reached by a journal the reducer accepts: a compensation exists only inside a saga, whose node is parked while its body runs, so every point before a compensated instance is already refused for a waiting step. The clause is implemented and its predicate is unit-tested, but no end-to-end journal exercises its wiring. (3) The corpus of `tests/reset.rs` has no approval run and no loop run, for (1): their completions are not candidates; approval decisions are covered where real approval flows exist (T018-055). | (1) widening the points is a product choice (more places to reset to) and the owner decides it; (2) is a defence for event shapes a later feature may add. | Open (owner, for 1) |
+| G1978 | Two consequences of D1975 for the reset are not settled. (1) The retained arguments are on the receipt of the run that applied the Update. A reset re-emits the prefix of the source with its `retained: true` markers under a new run, so a reset of that reset run finds `retained: true` rows whose arguments sit on the receipts of the source: the reset must follow `reset_of` to the source's receipts, or copy the references. (2) A Signal-with-Start whose signal reaches an open holder is recorded `signal_with_start`, as the contract's table says, so a reset with `SIGNALS` (which re-delivers `via: signal`) does not deliver it again, although it is a signal to an open run; delivering it would make the reset re-signal what the caller asked for in one request that also may have started a run. | Both belong to the reset (T018-053, T018-054, T018-056): the rows are written now so the reset can choose; changing what `via` says later would need a rewrite of history. The reset reports a row it cannot reapply (`NOT_REAPPLIED`) with a reason. | Open (T018-053, T018-056) |
+| G1977 | The `reapplyOnReset` capability (D1974) has no setting of a deployment: `set_reset_reapply` is called by no binary, so a workflow that opts in cannot be published anywhere yet. And the CLI's `sagat check`, which has no deployment, accepts a document that the server will refuse. | Wiring it before the reset exists would let workflows opt in whose arguments nothing retains or reads; the setting arrives with the reset flag of US06 (T018-056, T018-057), where the retention (T018-043) and the reapply are proved together. A client cannot know the capabilities of a server (ADR-0032, consequences), and the refusal names the field. | Open (T018-043, T018-056) |
+| G1974 | Two cases of Update-with-Start (D1970) are not proved or are weaker than the clause. (1) With an open holder the Update runs in a transaction after the claim of the identifier has ended, not under it: if the holder closes in between, the answer is `409 RUN_NOT_MUTABLE`, not a new run. (2) A holder that is a continuation chain is served in the segment that is current when the claim ends (`current_segment`); if that run hands off to its successor between that read and the effect, the answer is `409 RUN_CONTINUED` or `NOT_WAITING`. And a new run that 022's permit would queue is not rolled back, for the reason of G1973 (2). | (1) and (2) are races the caller sees as a typed 409 that a retry resolves, and they are the answers `updateRun` gives to the same race; closing them needs the Update inside the claim's transaction for an existing holder too, which the binding lock order (ADR-0050) allows and a later slice may do. | Open |
 | G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
 
 ## 5. Owner questions (the plan implements the recommended defaults)

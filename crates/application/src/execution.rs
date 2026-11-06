@@ -632,6 +632,9 @@ pub struct RunInfo {
     pub depth: u8,
     /// The run at the top of the tree this run belongs to (itself for a run started through the API).
     pub root: RunId,
+    /// The business identifier the run was started under (feature 018). Read by `get` and `list`
+    /// only; the rows a command transaction reads do not carry it. Its `Debug` hides it.
+    pub business_id: Option<sagat_domain::business_ids::BusinessId>,
 }
 
 /// Where a run sits in its continuation chain, when it belongs to one. A segment that ended into
@@ -655,6 +658,9 @@ pub struct RunRecord {
     pub paused: bool,
     pub updated_at: OffsetDateTime,
     pub finished_at: Option<OffsetDateTime>,
+    /// The instant the entry of the run is held until, for a run created with a start delay that has
+    /// not been released (feature 018, `FR-018-023`); `None` otherwise.
+    pub start_delayed_until: Option<OffsetDateTime>,
     /// Set by the reads that serve the API (`get`, `list`); `None` for a run outside any chain and
     /// for a record loaded inside a command transaction.
     pub chain: Option<RunSegment>,
@@ -898,6 +904,10 @@ pub struct Effects {
     /// The lease whose holder reports its attempt in this transaction (G141): kept so that a
     /// heartbeat of that same lease arriving after the report can be told apart from a lost lease.
     pub reported: Option<ReportedLease>,
+    /// Set when the events of this write are the prefix of a source run that a reset re-emits (feature 018,
+    /// `FR-018-037`): their rows keep who did them, when and which payload they name, say `restored`, and
+    /// have none of the effects of the first time (no task is announced, no child settled, no breaker told).
+    pub restored: Option<std::sync::Arc<crate::runs::RestoredPrefix>>,
 }
 
 impl Effects {
@@ -916,6 +926,7 @@ impl Effects {
             children: Vec::new(),
             blobs: Vec::new(),
             reported: None,
+            restored: None,
         }
     }
 }
@@ -977,6 +988,80 @@ pub trait RunTx: Send {
         _event: &crate::dispatch::ClaimedEvent,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, StoreError>> + Send {
         async { Err(scoped_execution_adapter_required()) }
+    }
+
+    /// Keeps, in this transaction, the receipts of a start that an existing holder served instead of
+    /// a new run (Signal-with-Start and Update-with-Start, feature 018): `start` under the key of the
+    /// request, so that a retry is answered from it even after the holder has closed and the identifier
+    /// is free, and `marker`, which says that the holder, not a new run, was the answer. Both name
+    /// `holder`, the run the effect reached. An adapter that cannot refuses.
+    fn remember_start_served<'a>(
+        &'a mut self,
+        _start: &'a Idempotency,
+        _marker: &'a Idempotency,
+        _holder: RunId,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot keep the receipt of a start served by a holder".into(),
+            })
+        }
+    }
+
+    /// Writes, in this transaction, the events `1..=N` of a source run under this run (a run a reset
+    /// creates, feature 018, `FR-018-037`): they are applied to the state, written to the journal as they
+    /// were with the mark `restored`, and projected like any other, without the effects of the first time.
+    /// The run must be empty. An adapter that cannot refuses; the failure is the wiring's.
+    fn restore_prefix<'a>(
+        &'a mut self,
+        _prefix: &'a crate::runs::RestoredPrefix,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot restore the prefix of a source run".into(),
+            })
+        }
+    }
+
+    /// Writes, in this transaction, the entry of the register of resets for the run it creates (feature 018):
+    /// which run and point it was made from, by whom and why. It commits with the run or not at all. An
+    /// adapter that cannot refuses; the failure is the wiring's.
+    fn register_reset<'a>(
+        &'a mut self,
+        _registration: &'a crate::runs::ResetRegistration<'a>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot keep the register of resets".into(),
+            })
+        }
+    }
+
+    /// Applies a declared Update to this run inside this transaction, which the caller then commits
+    /// (a business rejection leaves its receipt with the run) or drops (nothing of it persists):
+    /// Update-with-Start, feature 018. Whatever the Update needs to read it reads here, so the
+    /// initial reduction of a run just created is visible to it. An adapter that cannot do this
+    /// refuses; the failure is the wiring's, not the caller's.
+    fn apply_declared_update<'a>(
+        &'a mut self,
+        _update: &'a crate::declared_operations::DeclaredUpdate,
+        _evaluator: &'a dyn crate::declared_operations::DeclaredOperationEvaluator,
+    ) -> impl Future<
+        Output = Result<
+            crate::declared_operations::AppliedInTx,
+            crate::declared_operations::DeclaredOperationStoreError,
+        >,
+    > + Send
+    + 'a {
+        async {
+            Err(
+                crate::declared_operations::DeclaredOperationStoreError::Storage(
+                    StoreError::Internal {
+                        detail: "this adapter cannot apply a declared Update inside a start".into(),
+                    },
+                ),
+            )
+        }
     }
 
     /// The database clock sampled after the required run lock is acquired: deadlines must not be

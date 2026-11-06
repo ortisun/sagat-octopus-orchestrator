@@ -229,7 +229,7 @@ paths:
         required: true
         content: {application/json: {schema: {type: object, additionalProperties: false, properties: {reveal: {type: array, maxItems: 1, items: {type: string, const: pii}}}}}}
       responses:
-        '200': {description: Classified projection, headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/PayloadDisclosureNode'}}}}
+        '200': {description: Classified projection, headers: {Cache-Control: {schema: {type: string, const: 'private, no-store'}}}, content: {application/json: {schema: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/ScheduleInputDisclosure'}}}}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         default: {$ref: '#/components/responses/InternalError'}

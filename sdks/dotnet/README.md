@@ -65,6 +65,36 @@ For a large run input, call `UploadRunInputAsync(onePassStream, options, ct)`, t
 accepted only after source EOF and matching local size/SHA-256. Blob-backed start keeps the normal start
 idempotency, correlation, deadline and trace behavior.
 
+## Schedules, business identifiers, batch jobs and reset
+
+`StartOptions` takes a `BusinessId` (sent exactly as given: no trimming, no case folding), a `BusinessIdConflictPolicy`
+(`BusinessIdConflictPolicies.Fail`, the default, or `UseExisting`), a `BusinessIdReusePolicy` and a `StartDelay`
+(a `TimeSpan`, turned once, before the first attempt, into whole milliseconds, truncated toward zero; the range is the server's to judge).
+`StartAsync` answers a `StartedRun`: `Started` is false when an open run already held the identifier and `UseExisting` was asked (HTTP 200).
+`Run.BusinessId` and `Run.StartDelayedUntil` are `null` when there is none.
+
+```csharp
+var run = await sagat.StartAsync("order-flow", new { orderId = "o-1" },
+    new StartOptions { BusinessId = "order-o-1", BusinessIdConflictPolicy = BusinessIdConflictPolicies.UseExisting, StartDelay = TimeSpan.FromMinutes(5) });
+var woke = await sagat.SignalWithStartAsync("order-flow", "order-o-1", new { orderId = "o-1" }, "payment.confirmed", new { paid = "12.50" });
+var update = await sagat.UpdateWithStartAsync("order-flow", "order-o-1", new { orderId = "o-1" }, "balance.set", "set-1", new { balance = 25 });
+var binding = await sagat.BusinessIds.GetAsync(namespaceId, "order-o-1");   // 1 to 200 visible ASCII characters, percent-encoded
+```
+
+- `sagat.Schedules` (`CreateAsync`, `GetAsync`, `ListAsync` / `ListAllAsync`, `UpdateAsync`, `DeleteAsync`, `PauseAsync`, `ResumeAsync`,
+  `TriggerAsync`, `BackfillAsync`, `CancelBackfillAsync`, `ListBackfillsAsync`, `ListActionsAsync`), `sagat.Batch` (`PreviewAsync`, `CreateAsync`,
+  `GetAsync`, `ListAsync`, `CancelAsync`, `ListItemsAsync`) and `sagat.BusinessIds`. Ids that become path segments (a namespace, a schedule, a batch
+  job, a backfill, a reset, a run) must be UUIDs; a revision is at least 1; a note is not empty: anything else is `ValidationFailed` and nothing is sent.
+- Every call that changes something carries one `Idempotency-Key`: `RequestOptions.IdempotencyKey`, or one generated for the call and kept by every
+  retry of it. `UpdateWithStartAsync` also needs the caller's `updateKey` (1 to 128 printable ASCII characters). A refusal of the update's validator
+  is an answer (`Update.Outcome` is `REJECTED`), not an exception.
+- An instant you send (`ScheduleSpec.StartAt` / `EndAt`, a backfill range, `BatchFilter.CreatedAfter` / `CreatedBefore`) is an `Instant`: a
+  `DateTimeOffset` converts to it, RFC 3339 text goes through `Instant.Parse` (which refuses anything else). It is always written in UTC with a `Z`.
+  The instants you read are `DateTimeOffset`.
+- A value of an enumeration a newer server adds (a schedule action `Outcome`, a batch item `State`, a reset point `Kind`) is kept as the string it
+  came as, never an error; every answer keeps the JSON it was read from in `Raw`.
+- `ResetPointsAsync`, `PreviewResetAsync`, `ResetAsync`, `ListResetsAsync` and `GetResetAsync` go back to a point of the journal of a run that ended.
+
 ## Register an activity
 
 As part of the application (`IHostedService`: it registers with the worker service when the host starts and stops

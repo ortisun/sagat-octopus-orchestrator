@@ -168,9 +168,11 @@ async fn every_batch_operation_conforms_to_the_contract_on_its_normal_and_error_
         (alice.clone(), cancel_all("clean up\nthe stuck runs"), 422),
         (
             alice.clone(),
-            json!({"selector": {"runIds": [nobody]}, "action": "UPDATE", "update": {"name": "u", "args": {}}, "reason": "clean up the stuck runs"}),
+            // an Update names the operation and carries its arguments
+            json!({"selector": {"runIds": [nobody]}, "action": "UPDATE", "reason": "clean up the stuck runs"}),
             422,
         ),
+
         (
             alice.clone(),
             json!({"selector": {"runIds": [nobody]}, "action": "RETRY_STEP", "reason": "clean up the stuck runs"}),

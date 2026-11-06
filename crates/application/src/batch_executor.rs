@@ -115,8 +115,12 @@ fn error_code(error: &AppError) -> &'static str {
         | AppError::InvalidSchedule { .. }
         | AppError::InvalidBatch { .. }
         | AppError::InvalidDefinition(_)
+        | AppError::InvalidStart { .. }
+        | AppError::ResetRefused { .. }
         | AppError::InvalidScript(_) => "VALIDATION_FAILED",
         AppError::StateConflict(_)
+        | AppError::BusinessIdConflict { .. }
+        | AppError::SignalRefused { .. }
         | AppError::Conflict(_)
         | AppError::RevisionConflict { .. }
         | AppError::ScheduleConflict { .. }
@@ -124,7 +128,38 @@ fn error_code(error: &AppError) -> &'static str {
         | AppError::OutcomeUnresolved => "CONFLICT",
         AppError::IdempotencyKeyReused => "IDEMPOTENCY_KEY_REUSED",
         AppError::PayloadTooLarge(_) => "PAYLOAD_TOO_LARGE",
+        AppError::DeclaredUpdate(error) => declared_update_code(error),
         _ => "INTERNAL",
+    }
+}
+
+/// The `Error.code` the single `updateRun` call would have answered for what an Update refused.
+fn declared_update_code(
+    error: &crate::declared_operations::DeclaredOperationStoreError,
+) -> &'static str {
+    use crate::declared_operations::DeclaredOperationStoreError as Refused;
+    use sagat_domain::execution::OperationError;
+    match error {
+        Refused::NotFound | Refused::DefinitionUnavailable => "NOT_FOUND",
+        Refused::Forbidden => "FORBIDDEN",
+        Refused::AddressUnavailable | Refused::ChainHeadChanged => "CONFLICT",
+        Refused::Operation(
+            OperationError::InvalidUpdateKey
+            | OperationError::InvalidArguments
+            | OperationError::EvaluationFailed
+            | OperationError::StateSchemaChanged
+            | OperationError::ValueTooLarge
+            | OperationError::UnsupportedDisclosure,
+        ) => "VALIDATION_FAILED",
+        Refused::Operation(
+            OperationError::UpdateKeyReused
+            | OperationError::RunContinued
+            | OperationError::RunNotMutable(_)
+            | OperationError::RevisionExhausted,
+        ) => "CONFLICT",
+        Refused::Operation(OperationError::InvalidStoredOperation)
+        | Refused::AuditMismatch
+        | Refused::Storage(_) => "INTERNAL",
     }
 }
 
@@ -440,5 +475,35 @@ fn count_items(action: Action, outcome: &'static str, n: u64) {
             "outcome" => outcome
         )
         .increment(n);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::declared_operations::DeclaredOperationStoreError as Refused;
+    use sagat_domain::execution::{OperationError, RunStatus};
+
+    /// A failed `UPDATE` item carries the `Error.code` the single `updateRun` call answers.
+    #[test]
+    fn a_refused_update_carries_the_code_of_the_single_call() {
+        let code = |error| error_code(&AppError::DeclaredUpdate(error));
+        assert_eq!(code(Refused::Forbidden), "FORBIDDEN");
+        assert_eq!(code(Refused::NotFound), "NOT_FOUND");
+        assert_eq!(
+            code(Refused::Operation(OperationError::InvalidArguments)),
+            "VALIDATION_FAILED"
+        );
+        assert_eq!(
+            code(Refused::Operation(OperationError::UpdateKeyReused)),
+            "CONFLICT"
+        );
+        assert_eq!(
+            code(Refused::Operation(OperationError::RunNotMutable(
+                RunStatus::Succeeded
+            ))),
+            "CONFLICT"
+        );
+        assert_eq!(code(Refused::AuditMismatch), "INTERNAL");
     }
 }

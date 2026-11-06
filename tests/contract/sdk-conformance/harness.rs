@@ -387,18 +387,25 @@ async fn boot(scenario: &Value) -> Run {
     let ring = format!("k1:{}", platform.api.key_k1);
     let lease_secs = lease.to_string();
     let blob_root = blob_dir.path().to_string_lossy().into_owned();
-    let mut env = engine_env(
-        &platform.api.db,
-        &platform.api.idp,
-        &[
-            ("SAGAT_SECRETS_KEYS", ring.as_str()),
-            ("SAGAT_LEASE_TTL_SECS", lease_secs.as_str()),
-            ("SAGAT_EVENT_POLL_MS", "50"),
-            ("SAGAT_DELIVERY_POLL_MS", "50"),
-            ("SAGAT_BLOB_PROVIDER", "fs"),
-            ("SAGAT_BLOB_FS_ROOT", blob_root.as_str()),
-        ],
-    );
+    let mut extra = vec![
+        ("SAGAT_SECRETS_KEYS", ring.as_str()),
+        ("SAGAT_LEASE_TTL_SECS", lease_secs.as_str()),
+        ("SAGAT_EVENT_POLL_MS", "50"),
+        ("SAGAT_DELIVERY_POLL_MS", "50"),
+        ("SAGAT_BLOB_PROVIDER", "fs"),
+        ("SAGAT_BLOB_FS_ROOT", blob_root.as_str()),
+    ];
+    // Feature 018: the passes that fire schedules, run backfills and apply batch jobs are the engine's loops and are
+    // off until a replica is told to run them. A scenario that exercises them says so (`server.schedules`,
+    // `server.batches`); the others keep the engine they always had.
+    if scenario["server"]["schedules"] == true {
+        extra.push(("SAGAT_SCHEDULES_ENABLED", "true"));
+        extra.push(("SAGAT_SCHEDULES_POLL_MS", "100"));
+    }
+    if scenario["server"]["batches"] == true {
+        extra.push(("SAGAT_BATCHES_ENABLED", "true"));
+    }
+    let mut env = engine_env(&platform.api.db, &platform.api.idp, &extra);
     if let Some(db) = &database {
         env.extend(db.engine_env());
     }

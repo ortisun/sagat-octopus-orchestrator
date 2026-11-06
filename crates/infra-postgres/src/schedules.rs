@@ -203,19 +203,21 @@ fn conflict_on_duplicate(error: sqlx::Error) -> StoreError {
     }
 }
 
-/// Inserts an action row that has no run.
+/// Inserts an action row that has no run. `backfill` is the backfill whose step made the decision, if one did: the
+/// record says so (`backfillId`), whatever the outcome.
 async fn insert_recorded(
     conn: &mut PgConnection,
     tenant: TenantId,
     schedule: ScheduleId,
     action: &RecordedAction,
+    backfill: Option<Uuid>,
     now: OffsetDateTime,
 ) -> Result<(), StoreError> {
     sqlx::query(
         "INSERT INTO schedule_actions \
          (tenant_id, schedule_id, origin, nominal_at, kind, revision, outcome, reason, decided_at, \
-          summary_count, summary_last_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+          summary_count, summary_last_at, backfill_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(tenant.as_uuid())
     .bind(schedule.as_uuid())
@@ -232,6 +234,7 @@ async fn insert_recorded(
             .map(|(n, _)| i32::try_from(n).unwrap_or(i32::MAX)),
     )
     .bind(action.summary.map(|(_, last)| last))
+    .bind(backfill)
     .execute(conn)
     .await
     .map_err(conflict_on_duplicate)?;
@@ -288,8 +291,9 @@ pub(crate) async fn record_start(
     if !released {
         sqlx::query(
             "INSERT INTO schedule_actions \
-             (tenant_id, schedule_id, origin, nominal_at, kind, revision, outcome, actual_at, decided_at, run_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'STARTED', $7, $7, $8)",
+             (tenant_id, schedule_id, origin, nominal_at, kind, revision, outcome, actual_at, decided_at, run_id, \
+              backfill_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'STARTED', $7, $7, $8, $9)",
         )
         .bind(tenant.as_uuid())
         .bind(admission.schedule.as_uuid())
@@ -299,6 +303,7 @@ pub(crate) async fn record_start(
         .bind(i32::try_from(admission.revision).unwrap_or(i32::MAX))
         .bind(now)
         .bind(run.as_uuid())
+        .bind(admission.backfill.as_ref().map(|progress| progress.id))
         .execute(&mut *conn)
         .await
         .map_err(conflict_on_duplicate)?;
@@ -312,8 +317,9 @@ pub(crate) async fn record_start(
             .await
             .map_err(store_error)?;
     bumped(&mut counters, Outcome::Started, 1);
+    // what rides along with a start (a summary of the times it stands for) is the schedule's own decision, not the backfill's
     for action in &admission.after.extra {
-        insert_recorded(conn, tenant, admission.schedule, action, now).await?;
+        insert_recorded(conn, tenant, admission.schedule, action, None, now).await?;
         bumped(
             &mut counters,
             action.outcome,
@@ -507,6 +513,12 @@ pub struct PgScheduleStore {
 }
 
 impl PgScheduleStore {
+    /// The pool, for the reads of this crate that cross the schedule and other tables (the input
+    /// disclosure of `payload_disclosure.rs`).
+    pub(crate) const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -1500,12 +1512,20 @@ impl ScheduleStore for PgScheduleStore {
                 .await
                 .map_err(store_error)?;
         let mut waiting: i32 = 0;
-        for action in decision.actions.iter().chain(&decision.after.extra) {
+        // the actions of the decision are the backfill step's when it has one; what rides along is the schedule's own
+        let by_backfill = decision.backfill.as_ref().map(|progress| progress.id);
+        for (made, action) in decision
+            .actions
+            .iter()
+            .map(|action| (by_backfill, action))
+            .chain(decision.after.extra.iter().map(|action| (None, action)))
+        {
             insert_recorded(
                 &mut tx,
                 decision.tenant_id,
                 decision.schedule,
                 action,
+                made,
                 decision.at,
             )
             .await?;

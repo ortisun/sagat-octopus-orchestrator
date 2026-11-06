@@ -87,6 +87,15 @@ pub enum StoreError {
     /// this build's to touch: callers that serve many runs skip it and go on (G460).
     #[error("a stored workflow version cannot be read by this build")]
     UnreadableDefinition,
+    /// A start's business identifier is held (feature 018, FR-018-019/020): `reason` is the closed
+    /// `details.reason` of the contract, `holder` the execution that holds it and `reusable_after`
+    /// the instant its window ends, for a closed holder.
+    #[error("business identifier held: {reason}")]
+    BusinessIdHeld {
+        reason: &'static str,
+        holder: uuid::Uuid,
+        reusable_after: Option<time::OffsetDateTime>,
+    },
 }
 
 /// Failure of a use case, already expressed in terms the API can translate one-to-one.
@@ -154,6 +163,44 @@ pub enum AppError {
     /// contract): a job that already ended cannot be cancelled.
     #[error("batch conflict: {reason}")]
     BatchConflict { reason: &'static str },
+    /// A start option (feature 018) that is not acceptable: `reason` is the closed `details.reason`
+    /// of the contract (`BUSINESS_ID_INVALID`) and `field` the place of the request it concerns.
+    /// Never the value.
+    #[error("invalid start option: {reason}")]
+    InvalidStart {
+        reason: &'static str,
+        field: Option<String>,
+    },
+    /// A signal that a with-start request cannot deliver (feature 018, `FR-018-024`): `reason` is the
+    /// closed `details.reason` of the contract, `NOT_WAITING` (the open run does not wait for it now)
+    /// or `SIGNAL_NOT_ACCEPTED_AT_START` (nothing in the new run waits for it, so nothing was
+    /// created). A signal is never buffered.
+    #[error("signal refused: {reason}")]
+    SignalRefused { reason: &'static str },
+    /// A reset to a point that cannot be made (feature 018, `FR-018-035`..`FR-018-039`): `reason` is the
+    /// closed `details.reason` of the contract (`RESET_POINT_NOT_ELIGIBLE`, `RESET_RULE_MISSING`,
+    /// `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, `RESET_SOURCE_NOT_TERMINAL`, ...) and `event_type` names the type
+    /// without a rule when that is the reason. Nothing was created.
+    #[error("reset refused: {reason}")]
+    ResetRefused {
+        reason: &'static str,
+        event_type: Option<String>,
+    },
+    /// A declared Update that an Update-with-Start request carried was refused before the run was
+    /// admitted (feature 018, `FR-018-025`): an undeclared operation, arguments the declaration
+    /// does not accept, a key reused with another request, a run that no longer admits updates.
+    /// Nothing was created. The API translates it as the declared-operations routes do.
+    #[error("declared update refused: {0}")]
+    DeclaredUpdate(#[from] crate::declared_operations::DeclaredOperationStoreError),
+    /// A business identifier that an open or remembered execution holds (`BUSINESS_ID_IN_USE`,
+    /// `BUSINESS_ID_REUSE_REJECTED`). `holder` names the execution; the API shows it only to a caller
+    /// who may read runs. `reusable_after` is when a remembered id is free again.
+    #[error("business identifier conflict: {reason}")]
+    BusinessIdConflict {
+        reason: &'static str,
+        holder: sagat_domain::execution::RunId,
+        reusable_after: Option<time::OffsetDateTime>,
+    },
     /// Another attempt was asked of a step whose last outcome is unknown; it must be settled
     /// (`RESOLVE_STEP`) before anything is repeated, by any role (feature 037).
     #[error("the step's last outcome is unknown and must be settled first")]
@@ -261,6 +308,15 @@ impl From<StoreError> for AppError {
             StoreError::QuotaExceeded { what } => Self::QuotaExceeded(what),
             StoreError::Unavailable { .. } => Self::Unavailable,
             StoreError::Internal { .. } | StoreError::UnreadableDefinition => Self::Internal,
+            StoreError::BusinessIdHeld {
+                reason,
+                holder,
+                reusable_after,
+            } => Self::BusinessIdConflict {
+                reason,
+                holder: sagat_domain::execution::RunId::new(holder),
+                reusable_after,
+            },
         }
     }
 }

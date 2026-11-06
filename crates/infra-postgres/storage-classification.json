@@ -446,6 +446,24 @@
       ]
     },
     {
+      "table": "business_ids",
+      "column": "business_id",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": null,
+        "evidence": "The caller's identifier, 1 to 200 visible ASCII characters by CHECK business_ids_visible_ascii; charged by the ALWAYS quota triggers. Customer content: it never reaches a log, a span, a metric label, an audit reason or the outbox."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/business_ids.rs"
+      ]
+    },
+    {
       "table": "capacity_group_finish_receipts",
       "column": "member_kind",
       "sql_type": "text",
@@ -2305,6 +2323,168 @@
       ]
     },
     {
+      "table": "run_resets",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The subject that asked for the reset: CHECK limits it to 1 to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "business_id_policy",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only KEEP or DROP."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "failure_reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only the five closed reasons of the contract and only when the state is FAILED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "prefix_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "A SHA-256 digest of the canonical encoding of the restored rows: CHECK requires exactly 32 bytes."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "reapply",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only NONE, SIGNALS, UPDATES or ALL."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "reapply_report",
+      "sql_type": "jsonb",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "A closed list of at most 256 objects of sequence, kind, outcome and reason code, no customer text: CHECK requires an array of at most 256 elements and 64 KiB."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": null,
+        "evidence": "The justification of the operator, 8 to 2,000 characters by CHECK; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "source_policy",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only REQUIRE_TERMINAL or CANCEL_SOURCE."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only PENDING_SOURCE, CREATED or FAILED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
       "table": "run_saga_entries",
       "column": "after",
       "sql_type": "_text",
@@ -2443,6 +2623,24 @@
         "kind": "protected_bound",
         "expression": null,
         "evidence": "Closed enum/code vocabulary selected by trusted persistence code and enforced by the named database CHECK where applicable. Writer/source: `crates/infra-postgres/src/execution.rs`. Database CHECK `run_sagas_outcome_only_when_done`, `run_sagas_phase_valid` also constrains the stored value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs"
+      ]
+    },
+    {
+      "table": "runs",
+      "column": "business_id",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": "octet_length(coalesce(business_id, ''))",
+        "evidence": "The copy of the identifier the run was started under, for listing and filtering; CHECK runs_business_id_visible_ascii bounds it to 200 visible ASCII characters and a trigger keeps it as it was created. Charged by the ALWAYS quota triggers."
       },
       "owner_paths": [
         "crates/infra-postgres/src/execution.rs"
@@ -7478,6 +7676,24 @@
         "kind": "protected_bound",
         "expression": null,
         "evidence": "Closed set of values the engine writes (an enumeration of the domain model), never caller text. Writer/source: `declared_operations.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/declared_operations.rs"
+      ]
+    },
+    {
+      "table": "operation_update_receipts",
+      "column": "arguments_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Fixed SHA-256 digest (32 bytes) of the canonical arguments of an Update that opted in with `reapplyOnReset`, kept in `payloads` (accounted there); the column never holds the content. Writer/source: `declared_operations.rs`."
       },
       "owner_paths": [
         "crates/infra-postgres/src/declared_operations.rs"

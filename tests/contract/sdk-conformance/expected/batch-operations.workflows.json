@@ -1,0 +1,28 @@
+{
+  "canonical": {
+    "hold": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"hold\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"An activity nobody serves: the run stays open until the batch cancels it.\",\"name\":\"batch-hold\"},\"nodes\":[{\"activity\":\"batch.hold\",\"id\":\"hold\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "hold": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "hold",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "An activity nobody serves: the run stays open until the batch cancels it.",
+        "name": "batch-hold"
+      },
+      "nodes": [
+        {
+          "activity": "batch.hold",
+          "id": "hold",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

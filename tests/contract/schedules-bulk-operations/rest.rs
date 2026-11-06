@@ -18,6 +18,7 @@ const PAUSE: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/pause";
 const RESUME: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/resume";
 const TRIGGER: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/trigger";
 const ACTIONS: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/actions";
+const DISCLOSE: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/input-disclosures";
 const BACKFILLS: &str = "/namespaces/{namespaceId}/schedules/{scheduleId}/backfills";
 const CANCEL_BACKFILL: &str =
     "/namespaces/{namespaceId}/schedules/{scheduleId}/backfills/{backfillId}/cancel";
@@ -577,6 +578,70 @@ async fn every_schedule_operation_conforms_to_the_contract_on_its_normal_and_err
         record((m, t, s));
     }
 
+    // ---- the values of the input (T018-033): the one read that returns them
+    let disclosure = format!("{one}/input-disclosures");
+    let unknown = format!("{list}/00000000-0000-7000-8000-000000000000/input-disclosures");
+    for (n, (path, who, doc, expect)) in [
+        // the workflow has no input schema, so an administrator gets the structure and a viewer is told
+        // the input is not disclosable; both answers are `private, no-store` and conform to the schema
+        (disclosure.clone(), alice.clone(), json!({}), 200),
+        (disclosure.clone(), vera.clone(), json!({}), 200),
+        // a reveal of personal data needs the namespace's grant, which nobody holds here
+        (
+            disclosure.clone(),
+            alice.clone(),
+            json!({"reveal": ["pii"]}),
+            403,
+        ),
+        (
+            disclosure.clone(),
+            vera.clone(),
+            json!({"reveal": ["pii"]}),
+            403,
+        ),
+        // the request takes nothing else: a level that cannot be revealed, a repeated one, an unknown field
+        (
+            disclosure.clone(),
+            alice.clone(),
+            json!({"reveal": ["secret"]}),
+            422,
+        ),
+        (
+            disclosure.clone(),
+            alice.clone(),
+            json!({"reveal": ["pii", "pii"]}),
+            422,
+        ),
+        (
+            disclosure.clone(),
+            alice.clone(),
+            json!({"include": "everything"}),
+            400,
+        ),
+        // larger than 1 KiB
+        (
+            disclosure.clone(),
+            alice.clone(),
+            json!({"reveal": [], "padding": "x".repeat(2048)}),
+            413,
+        ),
+        (disclosure.clone(), As::Anonymous, json!({}), 401),
+        (disclosure.clone(), bob.clone(), json!({}), 404),
+        (unknown, alice.clone(), json!({}), 404),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let n = u32::try_from(n).expect("small") + 120;
+        let (m, t, s, _) = check_body(
+            &api,
+            &spec,
+            &keyed(scenario("POST", DISCLOSE, &path, who, Some(doc), expect), n),
+        )
+        .await;
+        record((m, t, s));
+    }
+
     // ---- delete
     for (n, (path, who, expect)) in [
         (format!("{one}?expectedRevision=1"), alice.clone(), 409),
@@ -608,8 +673,8 @@ async fn every_schedule_operation_conforms_to_the_contract_on_its_normal_and_err
         .collect();
     assert_eq!(
         implemented.len(),
-        12,
-        "the contract names twelve schedule operations"
+        13,
+        "the contract names thirteen schedule operations"
     );
     for operation in &implemented {
         assert!(

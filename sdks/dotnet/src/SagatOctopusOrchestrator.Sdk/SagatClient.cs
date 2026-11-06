@@ -7,6 +7,7 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using SagatOctopusOrchestrator.Sdk.Internal;
+using static SagatOctopusOrchestrator.Sdk.Internal.Answers;
 
 namespace SagatOctopusOrchestrator.Sdk;
 
@@ -37,7 +38,19 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
 
         json = Wire.OptionsOf(this.options);
         transport = new HttpTransport(this.options, SafeLogger.Of(logger ?? (ILogger)NullLogger.Instance));
+        Schedules = new SchedulesClient(transport, json);
+        Batch = new BatchClient(transport, json);
+        BusinessIds = new BusinessIdsClient(transport);
     }
+
+    /// <inheritdoc/>
+    public SchedulesClient Schedules { get; }
+
+    /// <inheritdoc/>
+    public BatchClient Batch { get; }
+
+    /// <inheritdoc/>
+    public BusinessIdsClient BusinessIds { get; }
 
     /// <summary>The settings of the client, without any credential.</summary>
     public override string ToString() => $"SagatClient {{ ApiUrl = {SagatOptions.HostOf(options.ApiUrl)}, Namespace = {options.Namespace} }}";
@@ -46,7 +59,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     public void Dispose() => transport.Dispose();
 
     [GeneratedRegex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
-    private static partial Regex UuidPattern();
+    internal static partial Regex UuidPattern();
 
     [GeneratedRegex("^[\\x21-\\x7e]{8,160}\\z", RegexOptions.CultureInvariant)]
     private static partial Regex KeyPattern();
@@ -58,10 +71,10 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     private static partial Regex ApprovalReasonCodePattern();
 
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\\z", RegexOptions.CultureInvariant)]
-    private static partial Regex DeclaredOperationNamePattern();
+    internal static partial Regex DeclaredOperationNamePattern();
 
     [GeneratedRegex("^[\\x21-\\x7e]{1,128}\\z", RegexOptions.CultureInvariant)]
-    private static partial Regex UpdateKeyPattern();
+    internal static partial Regex UpdateKeyPattern();
 
     /// <inheritdoc/>
     public async Task<string> ResolveWorkflowAsync(string workflow, CancellationToken cancellationToken = default)
@@ -93,12 +106,12 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             var answer = await transport.SendAsync(
                 new HttpCall("resolve-workflow", HttpMethod.Get, "/workflows", "/workflows", query, null, null, null, SafeToRepeat: true),
                 cancellationToken).ConfigureAwait(false);
-            var page = Object(answer.Body, "a page");
+            var page = ObjectOf(answer.Body, "a page");
             if (page.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
             {
                 foreach (var item in items.EnumerateArray())
                 {
-                    var draft = Object(item, "a workflow");
+                    var draft = ObjectOf(item, "a workflow");
                     if (draft.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String && name.GetString() == workflow)
                     {
                         var id = Str(draft, "id");
@@ -120,11 +133,12 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     }
 
     /// <inheritdoc/>
-    public async Task<Run> StartAsync<TInput>(string workflow, TInput input, StartOptions? options = null, CancellationToken cancellationToken = default)
+    public async Task<StartedRun> StartAsync<TInput>(string workflow, TInput input, StartOptions? options = null, CancellationToken cancellationToken = default)
     {
         options ??= new StartOptions();
         var traceparent = TraceOf(options.Traceparent);
         var key = KeyOf(options.IdempotencyKey);
+        var startDelayMs = DelayMs(options.StartDelay);
         var workflowId = await ResolveWorkflowAsync(workflow, cancellationToken).ConfigureAwait(false);
         DateTimeOffset? deadline = options.Deadline;
         if (options.DeadlineIn is { } span)
@@ -153,12 +167,34 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
                 writer.WriteString("deadline", Wire.Instant(at));
             }
 
+            // Sent as given: no trimming, no case folding. The server judges the identifier and the policies, and a caller that never sends them
+            // never sees the 200 of USE_EXISTING.
+            if (options.BusinessId is not null)
+            {
+                writer.WriteString("businessId", options.BusinessId);
+            }
+
+            if (options.BusinessIdConflictPolicy is not null)
+            {
+                writer.WriteString("businessIdConflictPolicy", options.BusinessIdConflictPolicy);
+            }
+
+            if (options.BusinessIdReusePolicy is not null)
+            {
+                writer.WriteString("businessIdReusePolicy", options.BusinessIdReusePolicy);
+            }
+
+            if (startDelayMs is { } delay)
+            {
+                writer.WriteNumber("startDelayMs", delay);
+            }
+
             writer.WriteEndObject();
         });
         var answer = await transport.SendAsync(
             new HttpCall("start", HttpMethod.Post, "/runs", "/runs", [], body, key, traceparent, SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        return ToRun(answer.Body);
+        return new StartedRun(ToRun(answer.Body), started: answer.Status != 200);
     }
 
     /// <inheritdoc/>
@@ -198,7 +234,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("list", HttpMethod.Get, "/runs", "/runs", query, null, null, null, SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var page = Object(answer.Body, "a page");
+        var page = ObjectOf(answer.Body, "a page");
         if (!page.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
         {
             throw new SagatException(SagatErrorCode.Protocol, "items is missing from the page");
@@ -260,7 +296,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("operate", HttpMethod.Post, RunPath(runId) + "/operations", "/runs/{runId}/operations", [], body, key, traceparent, SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "an operation result");
+        var raw = ObjectOf(answer.Body, "an operation result");
         return new OperationResult(
             Str(raw, "operationId"),
             raw.TryGetProperty("accepted", out var accepted) && accepted.ValueKind == JsonValueKind.True,
@@ -301,7 +337,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("list approvals", HttpMethod.Get, RunPath(runId) + "/approvals", "/runs/{runId}/approvals", query, null, null, TraceOf(options.Traceparent), SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "an approval page");
+        var raw = ObjectOf(answer.Body, "an approval page");
         if (!raw.TryGetProperty("items", out var values) || values.ValueKind != JsonValueKind.Array || values.GetArrayLength() > 200)
         {
             throw new SagatException(SagatErrorCode.Protocol, "items is invalid in the answer");
@@ -310,7 +346,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var items = new List<ApprovalListItem>(values.GetArrayLength());
         foreach (var value in values.EnumerateArray())
         {
-            var item = Object(value, "an approval");
+            var item = ObjectOf(value, "an approval");
             var status = Str(item, "status") switch
             {
                 "PENDING" => ApprovalStatus.Pending,
@@ -329,7 +365,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             var scopes = new List<ApprovalScope>(path.GetArrayLength());
             foreach (var valueScope in path.EnumerateArray())
             {
-                var scope = Object(valueScope, "an approval scope");
+                var scope = ObjectOf(valueScope, "an approval scope");
                 if (!scope.TryGetProperty("iterationIndex", out var indexValue) || !indexValue.TryGetInt32(out var index) || index is < 0 or > 9_999)
                 {
                     throw new SagatException(SagatErrorCode.Protocol, "iterationIndex is invalid in the answer");
@@ -410,7 +446,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("decide approval", HttpMethod.Post, "/approvals/" + approvalId.ToLowerInvariant() + "/decisions", "/approvals/{approvalId}/decisions", [], body, null, TraceOf(options.Traceparent), SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "an approval decision receipt");
+        var raw = ObjectOf(answer.Body, "an approval decision receipt");
         var receivedDecision = Str(raw, "decision") switch
         {
             "APPROVE" => ApprovalDecision.Approve,
@@ -448,7 +484,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("query", HttpMethod.Post, path, "/runs/{runId}/queries/{name}", [], body, null, TraceOf(options?.Traceparent), SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "a query result");
+        var raw = ObjectOf(answer.Body, "a query result");
         if (!raw.TryGetProperty("result", out var result))
         {
             throw new SagatException(SagatErrorCode.Protocol, "result is missing from the answer");
@@ -483,7 +519,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("query chain", HttpMethod.Post, path, "/namespaces/{namespaceId}/chains/{chainId}/queries/{name}", [], body, null, TraceOf(options?.Traceparent), SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "a query result");
+        var raw = ObjectOf(answer.Body, "a query result");
         if (!raw.TryGetProperty("result", out var result))
         {
             throw new SagatException(SagatErrorCode.Protocol, "result is missing from the answer");
@@ -527,7 +563,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("update", HttpMethod.Post, path, "/runs/{runId}/updates/{name}", [], body, null, TraceOf(options.Traceparent), SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "an update receipt");
+        var raw = ObjectOf(answer.Body, "an update receipt");
         if (Str(raw, "status") != "APPLIED")
         {
             throw new SagatException(SagatErrorCode.Protocol, "status is invalid in the answer");
@@ -585,7 +621,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("update chain", HttpMethod.Post, path, "/namespaces/{namespaceId}/chains/{chainId}/updates/{name}", [], body, null, TraceOf(options.Traceparent), SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "an update receipt");
+        var raw = ObjectOf(answer.Body, "an update receipt");
         if (Str(raw, "status") != "APPLIED")
         {
             throw new SagatException(SagatErrorCode.Protocol, "status is invalid in the answer");
@@ -611,7 +647,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("signal", HttpMethod.Post, RunPath(runId) + "/signals/" + Segment(name), "/runs/{runId}/signals/{name}", [], body, key, traceparent, SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "a signal result");
+        var raw = ObjectOf(answer.Body, "a signal result");
         var delivered = raw.TryGetProperty("deliveredTo", out var list) && list.ValueKind == JsonValueKind.Array
             ? list.EnumerateArray().Select(item => item.ValueKind == JsonValueKind.String ? item.GetString()! : item.GetRawText()).ToList()
             : [];
@@ -624,7 +660,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("inspect chain", HttpMethod.Get, ChainPath(namespaceId, chainId), "/namespaces/{namespaceId}/chains/{chainId}", [], null, null, TraceOf(options?.Traceparent), SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "a chain inspection");
+        var raw = ObjectOf(answer.Body, "a chain inspection");
         if (!raw.TryGetProperty("segments", out var values) || values.ValueKind != JsonValueKind.Array || values.GetArrayLength() == 0)
         {
             throw new SagatException(SagatErrorCode.Protocol, "segments is invalid in the answer");
@@ -632,7 +668,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var segments = new List<ChainSegment>();
         foreach (var value in values.EnumerateArray())
         {
-            var segment = Object(value, "a chain segment");
+            var segment = ObjectOf(value, "a chain segment");
             var index = Revision(segment, "index", 0);
             if (index > ushort.MaxValue)
             {
@@ -663,7 +699,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("list chain runs", HttpMethod.Get, ChainPath(namespaceId, chainId) + "/runs", "/namespaces/{namespaceId}/chains/{chainId}/runs", query, null, null, TraceOf(options.Traceparent), SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "a chain run page");
+        var raw = ObjectOf(answer.Body, "a chain run page");
         if (!raw.TryGetProperty("items", out var values) || values.ValueKind != JsonValueKind.Array || values.GetArrayLength() > 200)
         {
             throw new SagatException(SagatErrorCode.Protocol, "items is invalid in the answer");
@@ -672,7 +708,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var items = new List<ChainRun>(values.GetArrayLength());
         foreach (var value in values.EnumerateArray())
         {
-            var item = Object(value, "a chain run");
+            var item = ObjectOf(value, "a chain run");
             var index = Revision(item, "index", 0);
             if (index > 9_999)
             {
@@ -722,7 +758,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(new HttpCall(
             "signal chain", HttpMethod.Post, ChainPath(namespaceId, chainId) + "/signals/" + Segment(name),
             "/namespaces/{namespaceId}/chains/{chainId}/signals/{name}", [], body, KeyOf(options.IdempotencyKey), TraceOf(options.Traceparent), SafeToRepeat: true), cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "a chain signal result");
+        var raw = ObjectOf(answer.Body, "a chain signal result");
         var delivered = raw.TryGetProperty("deliveredTo", out var list) && list.ValueKind == JsonValueKind.Array
             ? list.EnumerateArray().Select(item => item.GetString() ?? item.GetRawText()).ToList() : [];
         return new SignalResult(delivered);
@@ -787,7 +823,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("publish-event", HttpMethod.Post, "/events", "/events", [], body, null, traceparent, SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "an event answer");
+        var raw = ObjectOf(answer.Body, "an event answer");
         return new EventAccepted(Str(raw, "eventId"), Str(raw, "source"), Str(raw, "status"));
     }
 
@@ -808,9 +844,9 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         var answer = await transport.SendAsync(
             new HttpCall("events", HttpMethod.Get, RunPath(runId) + "/events", "/runs/{runId}/events", query, null, null, null, SafeToRepeat: true),
             cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "a page");
+        var raw = ObjectOf(answer.Body, "a page");
         var items = raw.TryGetProperty("items", out var list) && list.ValueKind == JsonValueKind.Array
-            ? list.EnumerateArray().Select(item => new JournalEvent(Object(item, "an event"))).ToList()
+            ? list.EnumerateArray().Select(item => new JournalEvent(ObjectOf(item, "an event"))).ToList()
             : [];
         return new JournalPage(items, OptStr(raw, "nextCursor"));
     }
@@ -908,9 +944,9 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
     };
 
     /// <summary>An explicit <c>traceparent</c> is checked before anything is sent; the ambient one is read at send time.</summary>
-    private static string? TraceOf(string? explicitValue) => explicitValue is null ? null : Traceparent.Check(explicitValue);
+    internal static string? TraceOf(string? explicitValue) => explicitValue is null ? null : Traceparent.Check(explicitValue);
 
-    private static string KeyOf(string? given)
+    internal static string KeyOf(string? given)
     {
         var key = given ?? Guid.NewGuid().ToString();
         return KeyPattern().IsMatch(key) ? key : throw SagatException.Invalid("an idempotency key is 8 to 160 printable ASCII characters");
@@ -928,36 +964,9 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
         Wire.WritePayload(writer, value, json);
     }
 
-    private static JsonElement Object(JsonElement? value, string what) =>
-        value is { ValueKind: JsonValueKind.Object } element
-            ? element
-            : throw new SagatException(SagatErrorCode.Protocol, $"{what} is not an object");
-
-    private static string Str(JsonElement raw, string key) =>
-        raw.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()!
-            : throw new SagatException(SagatErrorCode.Protocol, $"{key} is missing from the answer");
-
-    private static string? OptStr(JsonElement raw, string key) =>
-        raw.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
-
-    private static DateTimeOffset? OptDate(JsonElement raw, string key) =>
-        Wire.TryParseInstant(OptStr(raw, key), out var value) ? value : null;
-
-    private static long Num(JsonElement raw, string key) =>
-        raw.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Number
-            ? (value.TryGetInt64(out var integer) ? integer : (long)value.GetDouble())
-            : 0;
-
-    private static long Revision(JsonElement raw, string key, long minimum) =>
-        raw.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Number
-            && value.TryGetInt64(out var revision) && revision >= minimum
-                ? revision
-                : throw new SagatException(SagatErrorCode.Protocol, $"{key} is invalid in the answer");
-
     internal static Run ToRun(JsonElement? value)
     {
-        var raw = Object(value, "a run");
+        var raw = ObjectOf(value, "a run");
         var created = OptDate(raw, "createdAt") ?? throw new SagatException(SagatErrorCode.Protocol, "createdAt is missing from the answer");
         ParentRun? parent = null;
         if (raw.TryGetProperty("parent", out var p) && p.ValueKind == JsonValueKind.Object)
@@ -984,6 +993,8 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             Parent = parent,
             Chain = ToRunChain(raw),
             RerunOf = OptStr(raw, "rerunOf"),
+            BusinessId = OptStr(raw, "businessId"),
+            StartDelayedUntil = OptDate(raw, "startDelayedUntil"),
             Raw = raw,
         };
     }
@@ -1003,7 +1014,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             return null;
         }
 
-        var chain = Object(value, "a run chain segment");
+        var chain = ObjectOf(value, "a run chain segment");
         var index = Revision(chain, "segmentIndex", 0);
         if (index > 9_999)
         {

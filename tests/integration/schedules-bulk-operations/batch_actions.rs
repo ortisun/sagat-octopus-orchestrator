@@ -14,9 +14,11 @@ use time::Duration;
 use uuid::Uuid;
 
 use crate::batch_executor::{Executor, create, due, executor, live, select, service, write};
+use crate::business_ids::cancel;
 use crate::firing::{Fixture, fixture};
 use crate::support::engine::{
-    World, activity, document, effect_activities, effect_node, flaky, saga_node, wait_node, with,
+    DECLARED_OPERATION, World, activity, declared_waiter, document, effect_activities, effect_node,
+    flaky, saga_node, wait_node, with,
 };
 
 /// `(run, state, reason, error code, new run)` of an item as the store keeps it.
@@ -267,6 +269,132 @@ async fn a_signal_reaches_the_runs_that_wait_for_it_and_is_never_buffered_for_th
         item(&outcomes(&f, &again).await, waiting_one),
         ("SKIPPED", Some("NOT_WAITING"), None, None)
     );
+}
+
+/// The declared state of a run: `(revision, last changed run version)`.
+async fn state_revision(f: &Fixture, run: RunId) -> i64 {
+    sqlx::query_scalar("SELECT state_revision FROM workflow_operation_states WHERE run_id = $1")
+        .bind(run.as_uuid())
+        .fetch_one(&f.w.db.pool)
+        .await
+        .expect("the declared state")
+}
+
+fn update_job(allowed: bool, balance: i64) -> BatchWrite {
+    BatchWrite {
+        update: Some(NamedPayload {
+            name: DECLARED_OPERATION.to_owned(),
+            body: json!({"allowed": allowed, "nextState": {"balance": balance}})
+                .to_string()
+                .into_bytes(),
+        }),
+        ..write(
+            Action::Update,
+            Selector::filter(Filter::default()).expect("s"),
+        )
+    }
+}
+
+#[tokio::test]
+async fn an_update_is_applied_to_the_runs_that_declare_it_and_skipped_for_the_others() {
+    let f = fixture().await;
+    let exec = executor(&f);
+    let (declared, _) = f.w.publish(declared_waiter("accounts")).await;
+    let input = json!({"account": {"balance": 10}, "k": "s"});
+    let open_one = f.w.start(declared, &input).await;
+    let open_two = f.w.start(declared, &input).await;
+    let ended = f.w.start(declared, &input).await;
+    cancel(&f, ended).await;
+    // a run whose version declares no such Update
+    let undeclared = f.w.start(f.workflow, &json!({})).await;
+    let runs = [open_one, open_two, ended, undeclared];
+
+    let applied = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&runs),
+            ..update_job(true, 25)
+        },
+        "actions-update",
+    )
+    .await;
+
+    let done = outcomes(&f, &applied).await;
+    assert_eq!(item(&done, open_one), ("SUCCEEDED", None, None, None));
+    assert_eq!(item(&done, open_two), ("SUCCEEDED", None, None, None));
+    assert_eq!(
+        item(&done, ended),
+        ("SKIPPED", Some("ALREADY_TERMINAL"), None, None),
+        "an ended run admits no update"
+    );
+    assert_eq!(
+        item(&done, undeclared),
+        ("SKIPPED", Some("OPERATION_NOT_DECLARED"), None, None),
+        "the version of that run declares no such Update"
+    );
+    assert_eq!(counts(&applied), (4, 2, 2, 0, 0));
+    assert!(
+        applied.payload_digest.is_some(),
+        "the job shows that it has a payload, by digest"
+    );
+    assert_eq!(state_revision(&f, open_one).await, 1);
+    assert_eq!(state_revision(&f, open_two).await, 1);
+    assert_eq!(
+        state_revision(&f, ended).await,
+        0,
+        "the ended run was not touched"
+    );
+
+    // the change says which job made it, by its identifier, in the audit record of the run
+    let reasons: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE resource_id = $1 AND action = 'run.updated'",
+    )
+    .bind(open_one.to_string())
+    .fetch_all(&f.w.db.pool)
+    .await
+    .expect("audit");
+    let mark = format!("batch={}", applied.id);
+    assert!(
+        reasons.iter().any(|reason| reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains(&mark))),
+        "the audit of the change names the job: {reasons:?}"
+    );
+
+    // a validator that says no fails the item as the single call fails, and changes nothing
+    let rejected = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[open_one]),
+            ..update_job(false, 99)
+        },
+        "actions-update-rejected",
+    )
+    .await;
+    assert_eq!(
+        item(&outcomes(&f, &rejected).await, open_one),
+        ("FAILED", None, Some("VALIDATION_FAILED"), None)
+    );
+    assert_eq!(state_revision(&f, open_one).await, 1);
+
+    // another job is another request: its Update is applied again, once
+    let again = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[open_one]),
+            ..update_job(true, 30)
+        },
+        "actions-update-again",
+    )
+    .await;
+    assert_eq!(
+        item(&outcomes(&f, &again).await, open_one),
+        ("SUCCEEDED", None, None, None)
+    );
+    assert_eq!(state_revision(&f, open_one).await, 2);
 }
 
 /// A run whose only step lost its worker: the outcome is unknown and the step waits for a person.

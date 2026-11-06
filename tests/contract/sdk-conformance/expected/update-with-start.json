@@ -1,0 +1,339 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "applied",
+      "ok": true,
+      "op": "updateWithStart",
+      "result": {
+        "runId": "<uuid:1>",
+        "started": true,
+        "update": {
+          "outcome": "APPLIED",
+          "reason": null,
+          "receipt": {
+            "afterStateRevision": 1,
+            "beforeStateRevision": 0,
+            "operation": "balance.set",
+            "replayed": false,
+            "result": 25,
+            "runVersion": 3,
+            "status": "APPLIED",
+            "updateKey": "set-1-{{unique}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "balance",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": 25,
+        "runVersion": 3,
+        "stateRevision": 1
+      }
+    },
+    {
+      "id": "replay",
+      "ok": true,
+      "op": "updateWithStart",
+      "result": {
+        "runId": "<uuid:1>",
+        "started": true,
+        "update": {
+          "outcome": "APPLIED",
+          "reason": null,
+          "receipt": {
+            "afterStateRevision": 1,
+            "beforeStateRevision": 0,
+            "operation": "balance.set",
+            "replayed": true,
+            "result": 25,
+            "runVersion": 3,
+            "status": "APPLIED",
+            "updateKey": "set-1-{{unique}}"
+          }
+        }
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "IDEMPOTENCY_KEY_REUSED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:1>"
+      },
+      "id": "replay-other-request",
+      "ok": false,
+      "op": "updateWithStart"
+    },
+    {
+      "id": "to-open-holder",
+      "ok": true,
+      "op": "updateWithStart",
+      "result": {
+        "runId": "<uuid:1>",
+        "started": false,
+        "update": {
+          "outcome": "APPLIED",
+          "reason": null,
+          "receipt": {
+            "afterStateRevision": 2,
+            "beforeStateRevision": 1,
+            "operation": "balance.set",
+            "replayed": false,
+            "result": 30,
+            "runVersion": 4,
+            "status": "APPLIED",
+            "updateKey": "set-2-{{unique}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "rejected-by-validator",
+      "ok": true,
+      "op": "updateWithStart",
+      "result": {
+        "runId": "<uuid:1>",
+        "started": false,
+        "update": {
+          "outcome": "REJECTED",
+          "reason": "UPDATE_REJECTED",
+          "receipt": null
+        }
+      }
+    },
+    {
+      "id": "stale-revision",
+      "ok": true,
+      "op": "updateWithStart",
+      "result": {
+        "runId": "<uuid:1>",
+        "started": false,
+        "update": {
+          "outcome": "REJECTED",
+          "reason": "REVISION_CONFLICT",
+          "receipt": null
+        }
+      }
+    },
+    {
+      "id": "balance-after-rejections",
+      "ok": true,
+      "op": "query",
+      "result": {
+        "result": 30,
+        "runVersion": 4,
+        "stateRevision": 2
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "BUSINESS_ID_IN_USE",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:2>"
+      },
+      "id": "fail-policy-on-open",
+      "ok": false,
+      "op": "updateWithStart"
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:3>"
+      },
+      "id": "undeclared",
+      "ok": false,
+      "op": "updateWithStart"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "INVALID_ARGUMENTS",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:4>"
+      },
+      "id": "invalid-arguments",
+      "ok": false,
+      "op": "updateWithStart"
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:5>"
+      },
+      "id": "nothing-created",
+      "ok": false,
+      "op": "businessIdGet"
+    },
+    {
+      "id": "rejected-at-creation",
+      "ok": true,
+      "op": "updateWithStart",
+      "result": {
+        "runId": "<uuid:2>",
+        "started": true,
+        "update": {
+          "outcome": "REJECTED",
+          "reason": "UPDATE_REJECTED",
+          "receipt": null
+        }
+      }
+    },
+    {
+      "id": "delayed",
+      "ok": true,
+      "op": "updateWithStart",
+      "result": {
+        "runId": "<uuid:3>",
+        "started": true,
+        "update": {
+          "outcome": "APPLIED",
+          "reason": null,
+          "receipt": {
+            "afterStateRevision": 1,
+            "beforeStateRevision": 0,
+            "operation": "balance.set",
+            "replayed": false,
+            "result": 7,
+            "runVersion": 3,
+            "status": "APPLIED",
+            "updateKey": "set-9-{{unique}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "delayed-run",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "businessId": "uws-{{unique}}-5",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:3>",
+        "startDelayedUntil": "<time>",
+        "startedBy": "alice",
+        "status": "WAITING",
+        "traceId": "<trace:6>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:4>",
+        "workflowId": "<uuid:5>"
+      }
+    },
+    {
+      "id": "cancel-delayed",
+      "ok": true,
+      "op": "cancel",
+      "result": {
+        "accepted": true,
+        "runStatus": "CANCELLED"
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "BUSINESS_ID_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:7>"
+      },
+      "id": "invalid-id",
+      "ok": false,
+      "op": "updateWithStart"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:3>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "READY",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:2>",
+      "status": "RUNNING"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "READY",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "RUNNING"
+    }
+  ],
+  "workerLog": {}
+}
