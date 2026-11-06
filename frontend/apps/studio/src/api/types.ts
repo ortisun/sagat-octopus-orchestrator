@@ -25,6 +25,8 @@ export type OperationResult = Schemas['OperationResult'];
 export type ResetPoint = Schemas['ResetPoint'];
 export type ResetPlan = Schemas['ResetPlan'];
 export type ResetRequest = Schemas['ResetRequest'];
+export type ReapplyEntry = Schemas['ReapplyEntry'];
+export type ReapplyPolicy = Schemas['ReapplyPolicy'];
 export type Reset = Schemas['Reset'];
 export type ApiErrorBody = Schemas['Error'];
 

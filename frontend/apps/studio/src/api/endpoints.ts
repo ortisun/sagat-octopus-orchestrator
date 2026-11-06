@@ -1,7 +1,7 @@
 import type { ApiClient } from './client';
 import { path } from './client';
 import type { components } from './schema';
-import type { DefinitionDiff, GraphChanges, JournalEvent, OperationRequest, OperationResult, Page, Reset, ResetPlan, ResetPoint, ResetRequest, Run, RunTelemetry, RuntimeGraph, Validation, VersionSummary, Workflow, WorkflowVersion } from './types';
+import type { DefinitionDiff, GraphChanges, JournalEvent, OperationRequest, OperationResult, Page, ReapplyPolicy, Reset, ResetPlan, ResetPoint, ResetRequest, Run, RunTelemetry, RuntimeGraph, Validation, VersionSummary, Workflow, WorkflowVersion } from './types';
 
 type Schemas = components['schemas'];
 
@@ -33,6 +33,8 @@ export interface ScheduleWrite {
 export type ResetWrite = Omit<ResetRequest, 'reapply' | 'sourcePolicy' | 'businessId' | 'acknowledgeReexecution'> & {
   businessId?: ResetRequest['businessId'];
   acknowledgeReexecution?: boolean;
+  /** What is delivered again after the point; absent is `NONE`. */
+  reapply?: ReapplyPolicy;
 };
 export type BatchJob = Schemas['BatchJob'];
 export type BatchItem = Schemas['BatchItem'];
@@ -93,7 +95,8 @@ export function endpoints(api: ApiClient) {
 
     // Reset to a point (feature 018): where a run can be reset to, what it would do, the reset, and the register.
     resetPoints: (id: string, signal?: AbortSignal) => collectPages((cursor) => api.get<Page<ResetPoint>>(path`/runs/${id}/reset-points`, { query: { limit: 200, cursor }, signal })),
-    previewReset: (id: string, sequence: number, signal?: AbortSignal) => api.post<ResetPlan>(path`/runs/${id}/reset-previews`, { body: { sequence }, signal }),
+    previewReset: (id: string, sequence: number, reapply: ReapplyPolicy, signal?: AbortSignal) =>
+      api.post<ResetPlan>(path`/runs/${id}/reset-previews`, { body: reapply === 'NONE' ? { sequence } : { sequence, reapply }, signal }),
     resetRun: (id: string, request: ResetWrite, key: string, signal?: AbortSignal) => api.post<Reset>(path`/runs/${id}/resets`, { body: request, key, signal }),
     runResets: (id: string, signal?: AbortSignal) => api.get<{ items: Reset[] }>(path`/runs/${id}/resets`, { signal }),
 

@@ -6,7 +6,7 @@ import { path } from '../../api/client';
 import { isApiError } from '../../api/errors';
 import { isTerminal } from '../../api/follow';
 import type { ResetWrite } from '../../api/endpoints';
-import type { Reset, ResetPlan, ResetPoint } from '../../api/types';
+import type { ReapplyEntry, ReapplyPolicy, Reset, ResetPlan, ResetPoint } from '../../api/types';
 import { useApp, useCan, useNamespace, useSession } from '../../app/context';
 import { Banner } from '../../ui/Banner';
 import { Button } from '../../ui/Button';
@@ -42,6 +42,41 @@ const MARKERS: Record<string, string> = {
   irreversible: 'what it does cannot be undone',
   highRisk: 'it is marked high risk',
 };
+
+/** Why a signal or an Update was not delivered again, or was refused, in words. A reason this Studio does not know is shown as the platform wrote it. */
+const REASONS: Record<string, string> = {
+  LEGACY_EVENT: 'it was recorded before the platform said what it was',
+  NOT_RETAINED: 'its content is no longer kept',
+  PREVIOUS_SIGNAL_NOT_DELIVERED: 'an earlier signal was not delivered, and a later one would reach its wait',
+  NOT_WAITING: 'no step of the new run was waiting for it',
+  UPDATE_REJECTED: 'the validator of the update declined it',
+  REVISION_CONFLICT: 'the state was not at the revision the update was applied to',
+  UPDATE_NOT_ACCEPTED: 'the declaration does not accept the update',
+};
+
+const OUTCOMES: Record<string, string> = {
+  WILL_TRY: 'will be tried',
+  REAPPLIED: 'delivered',
+  REJECTED: 'rejected',
+  NOT_REAPPLIED: 'not delivered',
+};
+
+/** A signal or an Update a reset delivers again, or did, in words: its name and what came of it, never what was sent. */
+export function entryLabel(entry: ReapplyEntry): string {
+  // The names of kind, outcome and reason are open (a later platform may add one): what is not known is shown as written.
+  const what = entry.kind === 'SIGNAL' ? 'Signal' : entry.kind === 'UPDATE' ? 'Update' : clip(entry.kind, 30);
+  const name = clip(entry.kind === 'SIGNAL' ? (entry.name ?? '?') : entry.kind === 'UPDATE' ? (entry.operation ?? '?') : (entry.name ?? entry.operation ?? '?'), 60);
+  const because = entry.reason === undefined ? '' : `: ${REASONS[entry.reason] ?? clip(entry.reason, 60)}`;
+  return `${what} ${name} (event ${entry.sequence}): ${OUTCOMES[entry.outcome] ?? clip(entry.outcome, 30)}${because}`;
+}
+
+/** What the person may ask to have delivered again after the point, and what each choice means. */
+const POLICIES: { value: ReapplyPolicy; label: string }[] = [
+  { value: 'NONE', label: 'Nothing: the new run does not receive them' },
+  { value: 'SIGNALS', label: 'The signals the run received' },
+  { value: 'UPDATES', label: 'The updates whose arguments were kept' },
+  { value: 'ALL', label: 'Both, in the order they arrived' },
+];
 
 /**
  * Starts a new run from a point of a run that ended. The run offers it only to someone who may operate and start runs,
@@ -81,6 +116,8 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
   const [planError, setPlanError] = useState<unknown>(undefined);
   const [acknowledged, setAcknowledged] = useState(false);
   const [dropId, setDropId] = useState(false);
+  const [reapply, setReapply] = useState<ReapplyPolicy>('NONE');
+  const [made, setMade] = useState<Reset | undefined>(undefined);
   const [reason, setReason] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [sending, setSending] = useState(false);
@@ -110,7 +147,7 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
   useEffect(() => {
     if (chosen === undefined) return;
     const controller = new AbortController();
-    ep.previewReset(runId, chosen, controller.signal).then(
+    ep.previewReset(runId, chosen, reapply, controller.signal).then(
       (found) => {
         if (!controller.signal.aborted) setPlan(found);
       },
@@ -119,7 +156,7 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
       },
     );
     return () => controller.abort();
-  }, [ep, runId, chosen]);
+  }, [ep, runId, chosen, reapply]);
 
   // Choosing another point forgets what was read for the one before and what was acknowledged about it.
   const choose = (sequence: number) => {
@@ -127,6 +164,14 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
     setPlan(undefined);
     setPlanError(undefined);
     setAcknowledged(false);
+  };
+
+  // Asking for something else to be delivered again reads what the reset would do again; what was acknowledged about
+  // the steps is about the steps and stays.
+  const chooseReapply = (policy: ReapplyPolicy) => {
+    setReapply(policy);
+    setPlan(undefined);
+    setPlanError(undefined);
   };
 
   const reasonCheck = checkReason(reason, 'run');
@@ -142,6 +187,8 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
       acknowledgeReexecution: mustAcknowledge && acknowledged,
       // keeping the identifier is the default and is not sent (and only a run that has one offers the choice)
       ...(businessId !== undefined && dropId ? { businessId: 'DROP' as const } : {}),
+      // nothing delivered again is the default and is not sent
+      ...(reapply === 'NONE' ? {} : { reapply }),
     };
     const print = JSON.stringify(body);
     if (previous.current?.print !== print) previous.current = { print, key: crypto.randomUUID() };
@@ -152,12 +199,17 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
     setSending(true);
     setError(undefined);
     try {
-      const made: Reset = await ep.resetRun(runId, body, previous.current.key, controller.signal);
+      const done: Reset = await ep.resetRun(runId, body, previous.current.key, controller.signal);
       if (!current()) return;
       announce('The reset was made. The new run starts from that point.');
       void queries.invalidateQueries({ queryKey: ['run', runId] });
+      // what was delivered again is said before the person is taken away: it is the only place the report is read
+      if ((done.reapplyReport ?? []).length > 0) {
+        setMade(done);
+        return;
+      }
       onClose();
-      if (made.newRunId) void navigate(path`/runs/${made.newRunId}`);
+      if (done.newRunId) void navigate(path`/runs/${done.newRunId}`);
     } catch (cause) {
       if (current()) setError(cause);
     } finally {
@@ -177,6 +229,8 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
     if (mustAcknowledge && !acknowledged) return;
     void send();
   };
+
+  if (made !== undefined) return <ResetMade made={made} onClose={onClose} />;
 
   return (
     <form onSubmit={submit} noValidate className="rn-decision">
@@ -201,6 +255,17 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
           ))}
         </fieldset>
       ) : null}
+      {points !== undefined && points.length > 0 ? (
+        <fieldset className="rn-outcome">
+          <legend>Deliver again what the run received after that point</legend>
+          {POLICIES.map((policy) => (
+            <label key={policy.value}>
+              <input type="radio" name="reapply" value={policy.value} checked={reapply === policy.value} onChange={() => chooseReapply(policy.value)} /> {policy.label}
+            </label>
+          ))}
+          <span className="hint">They go to the new run in the order they arrived, when it is made. A signal that nothing waits for ends the signals; an update goes only to the state it was applied to.</span>
+        </fieldset>
+      ) : null}
       {submitted && chosen === undefined && points !== undefined && points.length > 0 ? (
         <span className="error" role="alert">
           Choose where to reset the run to.
@@ -209,7 +274,7 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
 
       {planError !== undefined ? <ErrorState error={planError} what="Reading what the reset would do" /> : null}
       {chosen !== undefined && plan === undefined && planError === undefined ? <p role="status">Reading what the reset would do…</p> : null}
-      {plan !== undefined ? <Plan plan={plan} /> : null}
+      {plan !== undefined ? <Plan plan={plan} policy={reapply} /> : null}
 
       {plan !== undefined && mustAcknowledge ? (
         <div>
@@ -253,7 +318,7 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
 }
 
 /** What a reset to the chosen point keeps and what it runs again, by step, with what each declares. */
-function Plan({ plan }: { plan: ResetPlan }) {
+function Plan({ plan, policy }: { plan: ResetPlan; policy: ReapplyPolicy }) {
   return (
     <section aria-label="What the reset does" className="rn-plan">
       <p>
@@ -273,7 +338,58 @@ function Plan({ plan }: { plan: ResetPlan }) {
           ))}
         </ul>
       ) : null}
+      {policy === 'NONE' ? null : plan.reapply.length === 0 ? (
+        <p>
+          <strong>Delivered again:</strong> nothing came after this point.
+        </p>
+      ) : (
+        <>
+          <p>
+            <strong>Delivered again, in this order:</strong>
+          </p>
+          <ul>
+            {plan.reapply.map((entry) => (
+              <li key={entry.sequence}>{entryLabel(entry)}</li>
+            ))}
+          </ul>
+        </>
+      )}
     </section>
+  );
+}
+
+/** What a reset that delivered signals and updates again says before the person goes to the new run: what came of each. */
+function ResetMade({ made, onClose }: { made: Reset; onClose: () => void }) {
+  const navigate = useNavigate();
+  const report = made.reapplyReport ?? [];
+  return (
+    <div className="rn-decision">
+      <p>The reset was made. The new run starts from that point.</p>
+      <section aria-label="What was delivered again" className="rn-plan">
+        <p>
+          <strong>Delivered again, in the order the run received them:</strong>
+        </p>
+        <ul>
+          {report.map((entry) => (
+            <li key={entry.sequence}>{entryLabel(entry)}</li>
+          ))}
+        </ul>
+      </section>
+      <div className="dialog-actions">
+        <Button onClick={onClose}>Close</Button>
+        {made.newRunId ? (
+          <Button
+            variant="primary"
+            onClick={() => {
+              onClose();
+              void navigate(path`/runs/${made.newRunId ?? ''}`);
+            }}
+          >
+            Open the new run
+          </Button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -306,6 +422,16 @@ export function ResetsMade({ runId }: { runId: string }) {
               ({reset.state.toLowerCase().replace('_', ' ')}
               {reset.createdAt ? `, ${formatLocal(reset.createdAt)}` : ''})
             </span>
+            {(reset.reapplyReport ?? []).length > 0 ? (
+              <details>
+                <summary>Delivered again ({(reset.reapplyReport ?? []).length})</summary>
+                <ul>
+                  {(reset.reapplyReport ?? []).map((entry) => (
+                    <li key={entry.sequence}>{entryLabel(entry)}</li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
           </li>
         ))}
       </ul>
