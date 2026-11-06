@@ -59,6 +59,14 @@ pub const CATALOG: &[(&str, &str)] = &[
         "Check the connection reference, the table, the record source (exactly one of inline, blobs or a database result), the mapping and the limits. An Apache Iceberg write cannot declare its own retries or effect, impersonate an ordinary activity, or name a field and a column twice.",
     ),
     (
+        "MODE_NOT_ALLOWED",
+        "The connection of this Apache Iceberg write does not allow the mode it writes in. Write in a mode the connection allows, or ask the owner of the connection to allow this one in a new revision.",
+    ),
+    (
+        "CLASSIFICATION_EGRESS_REFUSED",
+        "The connection of this Apache Iceberg write does not accept the classification of a field it would send, or the fields were never classified. Map fewer fields, classify the source with x-sagat-classification and refer to it directly (input.a.b or steps.<id>.output.a.b), or use a connection whose ceiling accepts them. A secret field never leaves.",
+    ),
+    (
         "ICEBERG_NODE_NOT_ROOT",
         "An Apache Iceberg write belongs to the root graph of a definition without loops, collections or a continuation policy, and never inside a body. Move the write out of the loop, or into a child workflow.",
     ),

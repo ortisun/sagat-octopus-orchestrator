@@ -9,7 +9,7 @@ pub use iceberg::{
     IcebergConfig, JdbcCatalog, JdbcEngine, LakeConfigError, LakeLimits, LakeStorage, RestAuth,
     RestCatalog, S3Storage, StorageCredentials, StorageKind, WriteMode,
 };
-pub use iceberg_egress::{EgressField, EgressRefusal};
+pub use iceberg_egress::{EgressField, EgressRefusal, LakeRefusal};
 pub use iceberg_write::{
     ColumnMapping, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
     IcebergWriteError, IcebergWriteParts, MAX_MAPPED_COLUMNS, MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS,
@@ -274,6 +274,15 @@ impl ConnectionConfig {
         }
         tls.validate()?;
         limits.validate()
+    }
+    /// The settings of an Apache Iceberg connection, or `None` for any other kind: a step that writes to a lake reads the
+    /// modes and the ceiling from them, and a connection of another kind is unusable to it.
+    #[must_use]
+    pub const fn as_iceberg(&self) -> Option<&IcebergConfig> {
+        match self {
+            Self::Postgres { .. } => None,
+            Self::Iceberg(config) => Some(config),
+        }
     }
     /// The logical secrets the connection refers to, for the checks that each exists with the right authority. A
     /// PostgreSQL connection has one; an Iceberg connection has a catalog secret, a storage secret, both or neither.

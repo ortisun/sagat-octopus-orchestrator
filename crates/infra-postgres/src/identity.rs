@@ -737,6 +737,7 @@ fn record(mapped: StoreError) -> StoreError {
         | StoreError::IdempotencyKeyReused
         | StoreError::StateConflict(_)
         | StoreError::RevealGrantRequired
+        | StoreError::LakeRefused { .. }
         | StoreError::DatabaseUnavailable
         | StoreError::DatabaseLimit => {}
     }

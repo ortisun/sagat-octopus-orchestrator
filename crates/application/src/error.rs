@@ -1,5 +1,6 @@
 //! Typed errors of the application layer and of its storage port (AGENTS.md rule 10).
 
+use sagat_domain::database::LakeRefusal;
 use sagat_domain::identity::{IdentityError, Permission};
 use sagat_domain::scripts::ScriptError;
 use sagat_domain::versioning::{RequestId, VersioningError};
@@ -67,6 +68,10 @@ pub enum StoreError {
     /// It is a refusal of the actor, not of the resource: the actor does manage connections, so nothing is hidden.
     #[error("setting the pii egress ceiling needs the payload reveal grant")]
     RevealGrantRequired,
+    /// The settings of an Apache Iceberg connection refuse a step: a mode it does not allow, or fields above its ceiling
+    /// (FR-035-005, FR-035-025). The step's author may use the connection, so nothing is hidden by saying which node.
+    #[error("an Apache Iceberg write is refused by the settings of its connection")]
+    LakeRefused { node: String, refusal: LakeRefusal },
     #[error("conflict with the current state: {0}")]
     StateConflict(&'static str),
     #[error("uniqueness conflict")]
@@ -252,6 +257,9 @@ impl From<StoreError> for AppError {
             StoreError::RevealGrantRequired => Self::Forbidden {
                 permission: Permission::PayloadRevealPii,
             },
+            StoreError::LakeRefused { node, refusal } => {
+                Self::InvalidDefinition(Box::new(IrError::LakeWriteRefused { node, refusal }))
+            }
             StoreError::StateConflict(reason) => Self::StateConflict(reason),
             StoreError::Conflict(kind) => Self::Conflict(kind),
             StoreError::MissingReference => Self::NotFound,

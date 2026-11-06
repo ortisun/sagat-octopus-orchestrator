@@ -54,12 +54,10 @@ pub(crate) async fn admit_definition(
     pinned: Option<RunId>,
     run_info: Option<&RunInfo>,
 ) -> Result<Vec<(NodeId, ConnectionId, u32)>, StoreError> {
-    // An Iceberg write has no admission yet (T035-054, T035-055: access, allowed modes, ceiling, credential pins). Until it
-    // has, a definition that holds one is refused, as a connection the author may not use is, instead of passing unchecked.
-    if definition.nodes().any(|n| n.iceberg_write().is_some()) {
-        return Err(StoreError::DatabaseUnavailable);
-    }
-    if !definition.nodes().any(|n| n.database_operation().is_some()) {
+    if !definition
+        .nodes()
+        .any(|n| n.database_operation().is_some() || n.iceberg_write().is_some())
+    {
         return Ok(Vec::new());
     }
     let started = std::time::Instant::now();
@@ -69,7 +67,11 @@ pub(crate) async fn admit_definition(
     .await;
     let outcome = match &result {
         Ok(_) => "authorized",
-        Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => "denied",
+        Err(
+            StoreError::DatabaseUnavailable
+            | StoreError::DatabaseLimit
+            | StoreError::LakeRefused { .. },
+        ) => "denied",
         Err(_) => "error",
     };
     metrics::counter!("database_admissions_total", "outcome" => outcome).increment(1);
@@ -115,8 +117,19 @@ async fn check_definition(
         .filter(|n| selected.is_none_or(|id| n.id() == id))
         .filter_map(|n| n.database_operation().map(|op| (n.id(), op)))
         .collect();
-    if operations.is_empty() {
+    let lake_writes: Vec<_> = definition
+        .nodes()
+        .filter(|n| selected.is_none_or(|id| n.id() == id))
+        .filter_map(|n| n.iceberg_write().map(|write| (n.id(), write)))
+        .collect();
+    if operations.is_empty() && lake_writes.is_empty() {
         return Ok(Vec::new());
+    }
+    // An Iceberg write is admitted for publication and for the author's feedback only. A run of one has no admission yet
+    // (T035-055: connection pins on the direct, child, event, rerun and ad hoc paths, and quota rows), so a run that would
+    // carry one is refused, as a connection nobody may use is, instead of starting and waiting for a worker that is not there.
+    if !lake_writes.is_empty() && (pinned.is_some() || run_info.is_some() || selected.is_some()) {
+        return Err(StoreError::DatabaseUnavailable);
     }
     // Same order as catalog/secret writes. Membership and existing ACL rows remain locked through
     // commit, so a revocation that has returned stops every subsequent admission.
@@ -139,9 +152,11 @@ async fn check_definition(
             ))
         })
         .collect::<Result<_, StoreError>>()?;
-    let writes = operations
-        .iter()
-        .any(|(_, op)| op.kind == OperationKind::Execute);
+    // Every Iceberg write is a write, so it needs `database:write` as an `execute` does.
+    let writes = !lake_writes.is_empty()
+        || operations
+            .iter()
+            .any(|(_, op)| op.kind == OperationKind::Execute);
     if actors.is_empty()
         || actors.iter().any(|a| {
             roles.get(*a).is_none_or(|r| {
@@ -177,7 +192,7 @@ async fn check_definition(
         BTreeMap::new()
     };
     let mut resolved = BTreeMap::new();
-    let mut result = Vec::with_capacity(operations.len());
+    let mut result = Vec::with_capacity(operations.len() + lake_writes.len());
     for (node, operation) in operations {
         let pin = if pinned.is_some() {
             Some(
@@ -195,36 +210,17 @@ async fn check_definition(
         let (id, revision, config) = if let Some(found) = resolved.get(&key) {
             found
         } else {
-            let row = sqlx::query(
-                "SELECT c.id,r.revision,r.config FROM database_connections c JOIN database_connection_revisions r ON r.tenant_id=c.tenant_id AND r.namespace_id=c.namespace_id AND r.connection_id=c.id WHERE c.tenant_id=$1 AND c.namespace_id=$2 AND c.name=$3 AND c.status='ACTIVE' AND r.revision=coalesce($4,c.current_revision) FOR SHARE OF c")
-                .bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(operation.connection.name.as_str()).bind(revision)
-                .fetch_optional(&mut *conn).await.map_err(store_error)?.ok_or(StoreError::DatabaseUnavailable)?;
-            let id: Uuid = row.try_get("id").map_err(store_error)?;
-            let revision: i32 = row.try_get("revision").map_err(store_error)?;
-            let config = super::config_from(&row.try_get("config").map_err(store_error)?)?;
-            // A SQL node can only use a SQL connection; a lake connection is unusable here.
-            let sql_secret = config.sql_secret().ok_or(StoreError::DatabaseUnavailable)?;
-            if config.requires_development() && environment != "dev" {
-                return Err(StoreError::DatabaseUnavailable);
-            }
-            let secret: Uuid = sqlx::query_scalar(
-                "SELECT id FROM secrets WHERE tenant_id=$1 AND namespace_id=$2 AND name=$3 AND authority='openbao' FOR SHARE")
-                .bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(sql_secret.as_str())
-                .fetch_optional(&mut *conn).await.map_err(store_error)?.ok_or(StoreError::DatabaseUnavailable)?;
-            let granted: Vec<String> =
-                sqlx::query_scalar("SELECT subject FROM public.sagat_lock_secret_access($1,$2,$3)")
-                    .bind(tenant.as_uuid())
-                    .bind(secret)
-                    .bind(actors)
-                    .fetch_all(&mut *conn)
-                    .await
-                    .map_err(store_error)?;
-            if roles.iter().any(|(subject, role)| {
-                !sagat_domain::secrets::may_use(*role, granted.contains(subject))
-            }) {
-                return Err(StoreError::DatabaseUnavailable);
-            }
-            resolved.entry(key).or_insert((id, revision, config))
+            let found = resolve_connection(
+                conn,
+                (tenant, namespace),
+                actors,
+                &roles,
+                &environment,
+                key.0,
+                revision,
+            )
+            .await?;
+            resolved.entry(key).or_insert(found)
         };
         if pin.is_some_and(|p| p != (*id, *revision))
             || operation
@@ -234,11 +230,10 @@ async fn check_definition(
         {
             return Err(StoreError::DatabaseUnavailable);
         }
+        // A SQL node can only use a SQL connection; a lake connection is unusable here.
+        let limits = config.sql_limits().ok_or(StoreError::DatabaseUnavailable)?;
         let mut effective = operation.clone();
-        effective.limits = effective
-            .limits
-            .intersect(config.sql_limits().ok_or(StoreError::DatabaseUnavailable)?)
-            .intersect(policy.limits);
+        effective.limits = effective.limits.intersect(limits).intersect(policy.limits);
         effective
             .validate()
             .map_err(|_| StoreError::DatabaseLimit)?;
@@ -248,5 +243,118 @@ async fn check_definition(
             u32::try_from(*revision).map_err(|_| corrupt("connection revision"))?,
         ));
     }
+    for (node, write) in lake_writes {
+        let name = write.connection().name.as_str();
+        let pinned_revision = write.connection().revision.map(i64::from);
+        let (id, revision, refusal) = {
+            let key = (name, pinned_revision);
+            let (id, revision, config) = if let Some(found) = resolved.get(&key) {
+                found
+            } else {
+                let found = resolve_connection(
+                    conn,
+                    (tenant, namespace),
+                    actors,
+                    &roles,
+                    &environment,
+                    key.0,
+                    key.1,
+                )
+                .await?;
+                resolved.entry(key).or_insert(found)
+            };
+            // A lake write can only use a lake connection; a SQL connection is unusable here, as a lake one is to a SQL node.
+            let iceberg = config.as_iceberg().ok_or(StoreError::DatabaseUnavailable)?;
+            (*id, *revision, write.refusal_by(iceberg))
+        };
+        // A step that pins a revision is judged by the current one too: a mode or a ceiling that was tightened since applies
+        // to it, so pinning an older revision cannot loosen what the connection says now.
+        let refusal = match (refusal, pinned_revision) {
+            (None, Some(_)) => {
+                let key = (name, None);
+                let (_, _, current) = if let Some(found) = resolved.get(&key) {
+                    found
+                } else {
+                    let found = resolve_connection(
+                        conn,
+                        (tenant, namespace),
+                        actors,
+                        &roles,
+                        &environment,
+                        key.0,
+                        key.1,
+                    )
+                    .await?;
+                    resolved.entry(key).or_insert(found)
+                };
+                let current = current
+                    .as_iceberg()
+                    .ok_or(StoreError::DatabaseUnavailable)?;
+                write.refusal_by(current)
+            }
+            (refusal, _) => refusal,
+        };
+        if let Some(refusal) = refusal {
+            return Err(StoreError::LakeRefused {
+                node: node.as_str().to_owned(),
+                refusal,
+            });
+        }
+        result.push((
+            node.clone(),
+            ConnectionId::new(id),
+            u32::try_from(revision).map_err(|_| corrupt("connection revision"))?,
+        ));
+    }
     Ok(result)
+}
+
+/// An active connection of the namespace at the requested revision (the current one when none is asked for), once the
+/// actors may use every secret it refers to and the namespace may reach what it reaches. Nothing leaves the database: no
+/// provider is contacted. Whatever stops it is the same refusal, so a connection that is missing, paused, of another kind of
+/// namespace or out of reach cannot be told apart.
+async fn resolve_connection(
+    conn: &mut PgConnection,
+    (tenant, namespace): (TenantId, NamespaceId),
+    actors: &[&str],
+    roles: &BTreeMap<String, Role>,
+    environment: &str,
+    name: &str,
+    revision: Option<i64>,
+) -> Result<(Uuid, i32, sagat_domain::database::ConnectionConfig), StoreError> {
+    let row = sqlx::query(
+        "SELECT c.id,r.revision,r.config FROM database_connections c JOIN database_connection_revisions r ON r.tenant_id=c.tenant_id AND r.namespace_id=c.namespace_id AND r.connection_id=c.id WHERE c.tenant_id=$1 AND c.namespace_id=$2 AND c.name=$3 AND c.status='ACTIVE' AND r.revision=coalesce($4,c.current_revision) FOR SHARE OF c")
+        .bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(name).bind(revision)
+        .fetch_optional(&mut *conn).await.map_err(store_error)?.ok_or(StoreError::DatabaseUnavailable)?;
+    let id: Uuid = row.try_get("id").map_err(store_error)?;
+    let revision: i32 = row.try_get("revision").map_err(store_error)?;
+    let config = super::config_from(&row.try_get("config").map_err(store_error)?)?;
+    if config.requires_development() && environment != "dev" {
+        return Err(StoreError::DatabaseUnavailable);
+    }
+    // Every secret the connection refers to: one for a SQL connection, the catalog's and the storage's for a lake one.
+    let mut seen = BTreeSet::new();
+    for secret_name in config.secrets() {
+        if !seen.insert(secret_name.as_str().to_owned()) {
+            continue;
+        }
+        let secret: Uuid = sqlx::query_scalar(
+            "SELECT id FROM secrets WHERE tenant_id=$1 AND namespace_id=$2 AND name=$3 AND authority='openbao' FOR SHARE")
+            .bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(secret_name.as_str())
+            .fetch_optional(&mut *conn).await.map_err(store_error)?.ok_or(StoreError::DatabaseUnavailable)?;
+        let granted: Vec<String> =
+            sqlx::query_scalar("SELECT subject FROM public.sagat_lock_secret_access($1,$2,$3)")
+                .bind(tenant.as_uuid())
+                .bind(secret)
+                .bind(actors)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(store_error)?;
+        if roles.iter().any(|(subject, role)| {
+            !sagat_domain::secrets::may_use(*role, granted.contains(subject))
+        }) {
+            return Err(StoreError::DatabaseUnavailable);
+        }
+    }
+    Ok((id, revision, config))
 }

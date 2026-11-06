@@ -4,6 +4,7 @@
 //! written field and attaches the list to the step; the publication check and the run admission read it back and
 //! compare it with the ceiling of the connection. A step that carries no list proves nothing, so nothing leaves.
 
+use super::WriteMode;
 use crate::classification::{EgressCeiling, Level, within};
 
 /// The level one written field carries by the time it leaves.
@@ -43,6 +44,16 @@ pub enum EgressRefusal {
     NotComputed,
     /// A field above the ceiling, or `secret`. The path and the class are reported, never the value.
     Field { path: String, level: Level },
+}
+
+/// Why the settings of a connection refuse a step (the contract codes are `MODE_NOT_ALLOWED` and
+/// `CLASSIFICATION_EGRESS_REFUSED`). It names a mode or the paths and classes of fields, never a value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LakeRefusal {
+    /// The connection does not allow the mode the step writes in.
+    ModeNotAllowed(WriteMode),
+    /// Fields the ceiling of the connection does not let leave, or that nobody classified.
+    Egress(Vec<EgressRefusal>),
 }
 
 /// Every field that may not leave through a connection whose ceiling is `ceiling`, in the order of `fields`.

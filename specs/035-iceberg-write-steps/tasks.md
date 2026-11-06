@@ -941,6 +941,14 @@ one commit carries the key.
   the definition service and the store (`CLASSIFICATION_EGRESS_REFUSED`), access (`database:use`, `database:write`), allowed modes
   (`MODE_NOT_ALLOWED`), the connection's kind, existence and pins, the audit of a denial, and the removal of the store's
   fail-closed guard; `publication.rs` (T035-048) is not written either.
+
+  *2026-11-06, second slice done, left unticked (D035-089, G035-038):* the store resolves the connection (active, lake kind, pinned
+  revision, secrets usable), needs `database:use` and `database:write`, and `IcebergWrite::refusal_by` refuses a mode the connection
+  does not allow (`MODE_NOT_ALLOWED`) and fields above its ceiling or never classified (`CLASSIFICATION_EGRESS_REFUSED`); validation
+  reports the same as problems; the HTTP answer, the CLI help and the quickstart have both reasons. The store's fail-closed guard is
+  gone from publication; a run of an Iceberg write is refused at creation until T035-055. Not done: `records.databaseResult` naming an
+  earlier root-level database step (G035-038 point 2). The cases of `publication.rs` (T035-048) are in the lifecycle scenario of
+  `integration_database_connections` (D035-089), where the world and the OpenBao secret are.
 - [ ] T035-055 [US02] Pin admission (T3) in `crates/application/src/runs.rs` and
   `crates/infra-postgres/src/database.rs`:
   - connection pins on direct, child, event, rerun and ad hoc paths;

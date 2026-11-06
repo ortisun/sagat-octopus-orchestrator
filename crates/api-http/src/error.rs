@@ -876,6 +876,47 @@ const fn script_reason(error: ScriptError) -> &'static str {
     }
 }
 
+/// The most refused fields one answer lists; the count of the rest is in `omitted`.
+const MAX_REFUSED_FIELDS: usize = 20;
+
+/// `details` of a refused Apache Iceberg write: the reason, the node, and the mode or the paths and classes of the
+/// fields, never a value (FR-035-025).
+fn lake_refusal_details(node: &str, refusal: &sagat_domain::database::LakeRefusal) -> Value {
+    use sagat_domain::database::{EgressRefusal, LakeRefusal};
+    match refusal {
+        LakeRefusal::ModeNotAllowed(mode) => {
+            json!({ "reason": "MODE_NOT_ALLOWED", "node": node, "mode": mode.as_str() })
+        }
+        LakeRefusal::Egress(refusals) => {
+            let fields: Vec<Value> = refusals
+                .iter()
+                .filter_map(|each| match each {
+                    EgressRefusal::Field { path, level } => {
+                        Some(json!({ "path": path, "level": level.as_str() }))
+                    }
+                    EgressRefusal::NotComputed => None,
+                })
+                .collect();
+            let unclassified = refusals
+                .iter()
+                .any(|each| matches!(each, EgressRefusal::NotComputed));
+            let omitted = fields.len().saturating_sub(MAX_REFUSED_FIELDS);
+            let mut details = json!({
+                "reason": "CLASSIFICATION_EGRESS_REFUSED",
+                "node": node,
+                "fields": fields.into_iter().take(MAX_REFUSED_FIELDS).collect::<Vec<_>>(),
+            });
+            if unclassified {
+                details["unclassified"] = json!(true);
+            }
+            if omitted > 0 {
+                details["omitted"] = json!(omitted);
+            }
+            details
+        }
+    }
+}
+
 /// Structured detail for a rejected workflow document: paths and node ids, never document values
 /// beyond the clipped fragments the codec already limited.
 fn definition_details(error: &IrError) -> Value {
@@ -927,6 +968,7 @@ fn definition_details(error: &IrError) -> Value {
             json!({ "reason": "EXPRESSION", "node": node, "field": field })
         }
         IrError::LakeDisabled { node } => json!({ "reason": "LAKE_DISABLED", "node": node }),
+        IrError::LakeWriteRefused { node, refusal } => lake_refusal_details(node, refusal),
         IrError::NameMismatch { .. } => json!({ "reason": "NAME_MISMATCH" }),
         IrError::UnknownScript { digest } => {
             json!({ "reason": "UNKNOWN_SCRIPT", "artifactDigest": digest })

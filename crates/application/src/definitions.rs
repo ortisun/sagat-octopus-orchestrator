@@ -125,6 +125,13 @@ pub enum IrError {
         "node '{node}' is an Apache Iceberg write, and this deployment has not enabled the lake"
     )]
     LakeDisabled { node: String },
+    /// The settings of the connection of an Apache Iceberg write refuse it: a mode it does not allow, or fields above its
+    /// ceiling (`MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`). The paths and classes are in the details.
+    #[error("{}", lake_refusal_message(node, refusal))]
+    LakeWriteRefused {
+        node: String,
+        refusal: sagat_domain::database::LakeRefusal,
+    },
     #[error("declaration '{field}' is not supported yet: {reason}")]
     UnsupportedDeclaration {
         field: &'static str,
@@ -224,6 +231,24 @@ impl Validation {
     }
 }
 
+/// The most problems one refused step reports, so the answer stays short however many fields it maps.
+const MAX_LAKE_REFUSAL_PROBLEMS: usize = 20;
+
+/// The message of a refused step. It names the node and the mode and never a field: the paths and classes travel in the
+/// details and in the problems.
+fn lake_refusal_message(node: &str, refusal: &sagat_domain::database::LakeRefusal) -> String {
+    use sagat_domain::database::LakeRefusal;
+    match refusal {
+        LakeRefusal::ModeNotAllowed(mode) => format!(
+            "node '{node}' writes in mode '{}', which its connection does not allow",
+            mode.as_str()
+        ),
+        LakeRefusal::Egress(_) => {
+            format!("node '{node}' writes fields its connection does not accept")
+        }
+    }
+}
+
 /// The problems that make `error` unpublishable, one per thing wrong that the codec found.
 #[must_use]
 pub fn problems_of(error: &IrError) -> Vec<Problem> {
@@ -261,6 +286,7 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
         IrError::LakeDisabled { node } => {
             vec![Problem::error("LAKE_DISABLED", error.to_string()).at_node(node.clone())]
         }
+        IrError::LakeWriteRefused { node, refusal } => lake_refusal_problems(node, refusal),
         IrError::UnsupportedDeclaration { field, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_path(format!("/{field}"))]
         }
@@ -349,6 +375,37 @@ fn warning_problem(warning: &DefinitionWarning) -> Problem {
         message: warning.to_string(),
         node: Some(node),
         path: None,
+    }
+}
+
+/// The problems of a refused Apache Iceberg write: one for a mode, one for each field above the ceiling (bounded).
+fn lake_refusal_problems(
+    node: &str,
+    refusal: &sagat_domain::database::LakeRefusal,
+) -> Vec<Problem> {
+    use sagat_domain::database::{EgressRefusal, LakeRefusal};
+    match refusal {
+        LakeRefusal::ModeNotAllowed(_) => vec![
+            Problem::error("MODE_NOT_ALLOWED", lake_refusal_message(node, refusal))
+                .at_node(node.to_owned()),
+        ],
+        LakeRefusal::Egress(refusals) => refusals
+            .iter()
+            .take(MAX_LAKE_REFUSAL_PROBLEMS)
+            .map(|each| {
+                let message = match each {
+                    EgressRefusal::Field { path, level } => format!(
+                        "field '{path}' is {} and its connection does not accept that",
+                        level.as_str()
+                    ),
+                    EgressRefusal::NotComputed => {
+                        "the fields of this step were never classified, so its connection cannot vouch for them"
+                            .to_owned()
+                    }
+                };
+                Problem::error("CLASSIFICATION_EGRESS_REFUSED", message).at_node(node.to_owned())
+            })
+            .collect(),
     }
 }
 
@@ -1165,6 +1222,9 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 "DATABASE_LIMIT_EXCEEDED",
                 "a database operation exceeds connection limits",
             )),
+            Err(StoreError::LakeRefused { node, refusal }) => {
+                problems.extend(lake_refusal_problems(&node, &refusal));
+            }
             Err(error) => return Err(error.into()),
         }
         let valid = problems.is_empty();
