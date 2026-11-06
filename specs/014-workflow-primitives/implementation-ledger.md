@@ -1840,6 +1840,43 @@ New work these decisions create, none of it started:
 
 Refs: T014-014, T014-015, T014-040, T014-042, T014-043.
 
+## Lock-graph ADR drafted — 2026-11-05
+
+Gap G721 required an ADR before any production caller of the capacity commands, and the delegated
+decision OD-2026-11-04-4 confirmed it. [ADR-0078](../../docs/adr/ADR-0078-capacity-group-lock-order-and-possession-protocol.md)
+is the draft, **Proposed**: a person accepts it. This entry changes no task state, and nothing was run.
+
+What it fixes: the capacity group header G is a leaf lock that no transaction waits for (native commands
+`NOWAIT`, worker claim an unlocked read and then `SKIP LOCKED`, the creator `NOWAIT` before the first
+member insert), so no cycle can include it; the orders already accepted by ADR-0030, ADR-0037 and
+ADR-0038 are left as they are; possession moves only through three fenced commands; the sweeper is the
+only caller and holds no lock on another connection while it calls a command.
+
+How it was reviewed: an architecture reviewer and a PostgreSQL reviewer read the draft against the code in
+three passes. The first rejected it (a rule that accepted handoff code already breaks; a "total order"
+claim that was false; a wrong foreign-key argument). The second found two errors the author had
+introduced: an operation key of group, epoch and kind that collides for `Finish` (the author confirmed it
+in `capacity.rs`), and the edit of ADR-0075, which became the withdrawal recorded in
+OD-2026-11-05-1. The third found no Blocker or Major.
+
+What it leaves open, as work and not as guarantees:
+
+1. The creator: who creates groups and members, its API, audit and grants, and the chain and run lock set
+   it holds, which must be reconciled with ADR-0030 §19, ADR-0037 §6 and the parent-first order of
+   child creation.
+2. The sweeper's coverage: `Finish` accepts any ACTIVE member with a FINAL head (confirmed in the code),
+   but D714 pages `HELD` groups, so a non-holder with a FINAL head, or a vacant group whose members are
+   all FINAL, is never finished or retired; the `possession='HELD'` index D714 assumes does not exist.
+3. The worker's complete lock sequence, read by the PostgreSQL review, to be written where a check can
+   read it and verified against rule 1.
+4. The checks that do not exist yet: the script extension, a real-PostgreSQL test per writer with G held
+   on another connection, both-order claim-versus-command barriers, the starvation test (ADR-0075 (j)).
+
+Needs a person: accept or decline ADR-0078, and confirm the delegate rows OD-2026-11-04-3 to -9 and
+OD-2026-11-05-1.
+
+Refs: T014-014, T014-015.
+
 ## ADR-0075 activation condition (j): unlocked header first — 2026-11-05
 
 Owner instruction, 2026-11-05: implement every remaining task (the first option of the release
