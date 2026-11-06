@@ -1466,3 +1466,52 @@ The other fixes were wording:
   *Exit condition:* either a PyIceberg that keeps the validity, or the host patches the two methods with the mask (a pinned version, a
   version guard and the same round trip), or the host writes its data files itself; until then a table with an optional list of structs
   takes only records that name the column.
+- **D035-100 — The append mode: one commit per search, a directory per try, and nothing deleted that a landed commit may reference.**
+  T035-057, sixth part (D035-030, D035-031, FR-035-018, FR-035-020). **Decided by: delegate** (the owner delegated the decisions of this
+  feature).
+  - *The flow* (`runners/lake/sagat_lake/modes/append.py`, `append(load_table, request)`). Load the table; check that it can be written
+    (D035-092); search the history of the ref for the effect key and, if it is there, return that commit's receipt without writing a file
+    (`foundByLookup`); otherwise write the files and commit once, asserting the head that was read (D035-093); then decide from the answer.
+  - *A refused commit* (`CommitFailedException`: the catalog says it did not land) deletes the files of that try, loads the table again,
+    searches again and commits again, up to `max_commit_retries`, then `ICEBERG_COMMIT_CONFLICT`. A race is tested for real (another writer
+    commits between the load and the commit), with the number of commit requests counted at the catalog.
+  - *An unknown outcome* (any error after the commit request was sent that is not a refusal: a 500, a lost connection) **deletes nothing**,
+    because the commit may have landed and may reference the files. The host loads again and searches: the key is there, and that commit is
+    the receipt; or it is not, and a new try asserts the head it reads, so a request still in flight and the new one cannot both land. Beyond
+    the bound, `OUTCOME_UNKNOWN`, with every try's files left in place (D035-031). Whether a commit was sent is not guessed: the catalog's
+    `commit_table` is wrapped for the duration of the try.
+  - *A directory per try* (`<attempt id>-<n>`, the attempt id at most 60 characters), so the files of a refused try can be deleted without
+    touching those of a try that is still unknown. When the step ends committed or found, the directories of the unknown tries are cleaned
+    of every file the landed commit does **not** reference (read from its manifests) and the files it does are kept. A file that cannot be
+    deleted, or a directory that cannot be listed, is counted in the receipt as `uncommittedFiles` and never raised.
+  - *Found by testing a failure in the middle of a stream: PyIceberg's writer threads outlive the exception.* `ThreadPoolExecutor.map`
+    consumes the whole iterable of write tasks before it returns anything, and when the reader raises (a bad record in the thousandth
+    line) it raises with writes still running; a deletion made at once missed two files (the test failed on every run, and passed as soon as
+    a debug print slowed the deletion down). Before deleting the files of a try that failed before its commit, the host waits for the pool
+    to be idle: one task per thread meets the others at a barrier, so none returns before every thread has finished what it had been given.
+    If they cannot be waited for within the time, **nothing is deleted** and the leftover is counted: a file deleted and then written again
+    is worse than one that stays. `ExecutorFactory.get_or_create()` is PyIceberg's public accessor; the number of threads is read from the
+    executor's `_max_workers`, and a missing attribute is treated as "cannot wait".
+  - *The receipt* is the `iceberg` branch of `receipts.schema.json`: `COMMITTED` with the snapshot id, sequence number, schema id, format
+    version, `rowLevelMode: NONE` and the counts read from the snapshot's own summary (`added-records`, `added-data-files`,
+    `added-files-size`), each checked against the contract's pattern for a count, so a summary written by someone else cannot put anything
+    else in a receipt; or `EMPTY_NO_COMMIT` with no snapshot. No records means `ICEBERG_SCOPE_VIOLATION` unless the step allows it.
+    `ignoredFields`, `uncommittedFiles` and `priorAttemptMayHaveLeftFiles` appear only when they are true or non-zero.
+  - *A stream or a table.* An unpartitioned table is written from a `RecordBatchReader` (bounded memory); a partitioned one from a whole Arrow
+    table (G035-045).
+  - *Evidence.* 53 tests in `test_append.py` through the REST catalog over real HTTP with a real SQL catalog behind it (the happy path, a
+    repeat, a key deep in the history, a race, conflicts past the bound, a lost response with the commit applied, a 500 and a closed
+    connection with it not applied, an outcome that stays unknown, an unknown try's files cleaned after a later commit, no records, a bad
+    record with and without files already written, a storage error among files, a budget too small, a table that cannot be written, a
+    missing ref, a partitioned table, a branch, hostile counts in a snapshot someone else wrote, and the leftovers in the receipt),
+    written first and seen failing (the module did not exist). 52 mutations of `append.py`: 11 survived the first tests and each got a
+    test (the length of an attempt id, negative retries, files deleted after an error that is not a `Failure`, a deletion made although
+    the writers could not be waited for, leftovers counted in the receipt, the ref passed to the commit, the batch bounds and the meter
+    reaching the batches, the check of a count); a twelfth, a distinction between a request library's error and a storage error, had
+    no case at all, because PyIceberg makes no catalog call while it writes, and the clause was removed. The files of `attempt.py` got 6
+    more (what is kept, what fails, what a directory is). All caught in the end. `runners/lake`: 655 passed, 1 skipped; `ruff check`,
+    `ruff format --check` and strict `mypy` clean.
+- **G035-047 — The host has no entry point yet.** `append(load_table, request)` is a function; nothing builds an `AppendRequest` from the
+  one JSON line of `sagat.lake.v1`, loads the catalog from the pinned connection (with `Hygiene.accept_table` and a request timeout,
+  G035-041 and G035-043), reads `inputs` in Parquet, or writes the result line. *Exit condition:* `host.py` gains the `icebergWrite`
+  operation that does, tested through the protocol; overwrite and upsert follow.

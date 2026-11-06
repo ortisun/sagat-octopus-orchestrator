@@ -27,6 +27,9 @@ from pyiceberg.table import CommitTableRequest
 NAMESPACE = "sales"
 TABLE = "orders"
 RESET = "reset"
+# The commit is applied to the real table and then the response is lost: the connection is closed, or a 500 is sent.
+LOST = "lost"
+LOST_500 = "lost-500"
 
 
 @dataclass
@@ -37,8 +40,11 @@ class Catalog:
     sql: SqlCatalog
     # The commit requests received, whatever the answer: the path of each.
     commits: list[str] = field(default_factory=list)
-    # ``None`` applies the commit to the real table; a status answers with it; ``RESET`` closes the connection.
+    # ``None`` applies the commit to the real table; a status answers with it; ``RESET`` closes the connection;
+    # ``LOST`` and ``LOST_500`` apply the commit and then lose the response.
     answer: int | str | None = None
+    # Answers for the next commit requests, one each, in order; when it is empty ``answer`` is used.
+    script: list[int | str | None] = field(default_factory=list)
     # Properties the catalog adds to the table it returns, as a table owner could.
     properties: dict[str, str] = field(default_factory=dict)
 
@@ -69,22 +75,36 @@ def _handler(state: Catalog) -> type[BaseHTTPRequestHandler]:
             else:
                 self._reply(404, _error(404))
 
+        def _apply(self, body: bytes) -> dict[str, Any] | None:
+            """The commit applied to the real table: the response, or ``None`` when the requirements fail."""
+            request = CommitTableRequest.model_validate_json(body)
+            table = state.sql.load_table(f"{NAMESPACE}.{TABLE}")
+            try:
+                response = state.sql.commit_table(table, request.requirements, request.updates)
+            except CommitFailedException:
+                return None
+            return dict(json.loads(response.model_dump_json(by_alias=True, exclude_none=True)))
+
         def do_POST(self) -> None:
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             state.commits.append(self.path)
-            if state.answer == RESET:
+            answer = state.script.pop(0) if state.script else state.answer
+            if answer == RESET:
                 self.connection.close()
-            elif isinstance(state.answer, int):
-                self._reply(state.answer, _error(state.answer))
+            elif answer in (LOST, LOST_500):
+                self._apply(body)
+                if answer == LOST:
+                    self.connection.close()
+                else:
+                    self._reply(500, _error(500))
+            elif isinstance(answer, int):
+                self._reply(answer, _error(answer))
             else:
-                request = CommitTableRequest.model_validate_json(body)
-                table = state.sql.load_table(f"{NAMESPACE}.{TABLE}")
-                try:
-                    response = state.sql.commit_table(table, request.requirements, request.updates)
-                except CommitFailedException:
+                applied = self._apply(body)
+                if applied is None:
                     self._reply(409, _error(409))
                 else:
-                    self._reply(200, json.loads(response.model_dump_json(by_alias=True, exclude_none=True)))
+                    self._reply(200, applied)
 
         def log_message(self, format: str, *args: object) -> None:
             """Nothing is logged: a test reads the counts, not the server's chatter."""

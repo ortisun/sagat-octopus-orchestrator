@@ -9,6 +9,7 @@ anything but a directory that is inside the warehouse and ends in the attempt's 
 from __future__ import annotations
 
 import pathlib
+from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
@@ -18,7 +19,7 @@ from pyiceberg.schema import Schema
 from pyiceberg.table import Table
 from pyiceberg.types import NestedField, StringType
 
-from sagat_lake.attempt import pin_attempt_directory, remove_attempt_files
+from sagat_lake.attempt import Removal, pin_attempt_directory, remove_attempt_files
 from sagat_lake.failures import Failure
 
 NAME = "sales.orders"
@@ -169,7 +170,7 @@ def test_what_is_in_the_directory_of_the_attempt_is_deleted_and_nothing_else(cat
 
     removed = remove_attempt_files(table, directory, "att-43", warehouse_locations=warehouse_of(table))
 
-    assert removed == 1
+    assert removed == Removal(deleted=1, failed=0)
     assert files_under(directory) == []
     assert [name for name in files_under(table.metadata.location) if not name.startswith("data/att-43/")] == kept
 
@@ -193,13 +194,16 @@ def test_the_files_of_another_attempt_are_not_touched(catalog: SqlCatalog) -> No
 def test_a_directory_that_does_not_exist_has_nothing_to_remove(catalog: SqlCatalog) -> None:
     table = create(catalog)
     directory = pin_attempt_directory(table, "never-written")
-    assert remove_attempt_files(table, directory, "never-written", warehouse_locations=warehouse_of(table)) == 0
+    assert remove_attempt_files(table, directory, "never-written", warehouse_locations=warehouse_of(table)) == Removal(
+        0, 0
+    )
 
 
 def test_a_directory_written_with_a_trailing_slash_is_the_same_directory(catalog: SqlCatalog) -> None:
     create(catalog)
     table, directory = refused_commit(catalog, "att-43")
-    assert remove_attempt_files(table, directory + "/", "att-43", warehouse_locations=warehouse_of(table)) == 1
+    removal = remove_attempt_files(table, directory + "/", "att-43", warehouse_locations=warehouse_of(table))
+    assert removal == Removal(1, 0)
     assert files_under(directory) == []
 
 
@@ -208,7 +212,7 @@ def test_removing_twice_is_the_same_as_removing_once(catalog: SqlCatalog) -> Non
     table, directory = refused_commit(catalog, "att-43")
     first = remove_attempt_files(table, directory, "att-43", warehouse_locations=warehouse_of(table))
     second = remove_attempt_files(table, directory, "att-43", warehouse_locations=warehouse_of(table))
-    assert (first, second) == (1, 0)
+    assert (first, second) == (Removal(1, 0), Removal(0, 0))
 
 
 def test_the_files_of_a_hash_layout_are_found_below_the_directory(catalog: SqlCatalog) -> None:
@@ -216,7 +220,9 @@ def test_the_files_of_a_hash_layout_are_found_below_the_directory(catalog: SqlCa
     directory = pin_attempt_directory(table, "att-42")
     table.append(ROWS)
     assert files_under(directory)
-    assert remove_attempt_files(table, directory, "att-42", warehouse_locations=warehouse_of(table)) >= 1
+    removal = remove_attempt_files(table, directory, "att-42", warehouse_locations=warehouse_of(table))
+    # the directories of the hash layout are not files, and not failures either
+    assert (removal.deleted, removal.failed) == (1, 0)
     assert files_under(directory) == []
 
 
@@ -284,3 +290,61 @@ def test_a_file_io_whose_listing_is_not_written_deletes_nothing(tmp_path: pathli
 
     assert refused.value.code == "WORKER_ERROR"
     assert files_under(directory)
+
+
+def test_files_that_a_commit_references_are_kept_and_the_others_are_deleted(catalog: SqlCatalog) -> None:
+    table = create(catalog)
+    directory = pin_attempt_directory(table, "att-42")
+    table.append(ROWS)
+    # a commit replaces the metadata of the table object with the catalog's, and the pin with it: pin again
+    pin_attempt_directory(table, "att-42")
+    table.append(ROWS)
+    root = directory.removeprefix("file://")
+    written = [f"file://{root}/{name}" for name in files_under(directory)]
+    assert len(written) == 2
+    kept, other = written
+
+    removal = remove_attempt_files(
+        table, directory, "att-42", warehouse_locations=warehouse_of(table), keep=frozenset({kept})
+    )
+
+    assert removal == Removal(deleted=1, failed=0)
+    assert [f"file://{root}/{name}" for name in files_under(directory)] == [kept]
+    assert other != kept
+
+
+class _FlakyFileSystem:
+    """A file system whose first deletion is refused, and which does the rest on the real one."""
+
+    def __init__(self, real: Any) -> None:
+        self._real = real
+        self.deletions = 0
+
+    def get_file_info(self, selector: Any) -> Any:
+        return self._real.get_file_info(selector)
+
+    def delete_file(self, path: str) -> None:
+        self.deletions += 1
+        if self.deletions == 1:
+            raise OSError("denied")
+        self._real.delete_file(path)
+
+
+def test_a_file_that_cannot_be_deleted_is_counted_and_the_others_still_go(
+    catalog: SqlCatalog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    table = create(catalog)
+    directory = pin_attempt_directory(table, "att-42")
+    table.append(ROWS)
+    pin_attempt_directory(table, "att-42")
+    table.append(ROWS)
+    assert len(files_under(directory)) == 2
+    io: Any = table.io
+    flaky = _FlakyFileSystem(io.fs_by_scheme("file", ""))
+    monkeypatch.setattr(io, "fs_by_scheme", lambda scheme, netloc: flaky)
+
+    removal = remove_attempt_files(table, directory, "att-42", warehouse_locations=warehouse_of(table))
+
+    assert removal == Removal(deleted=1, failed=1)
+    assert flaky.deletions == 2
+    assert len(files_under(directory)) == 1
