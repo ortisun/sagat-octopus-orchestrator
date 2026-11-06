@@ -6,9 +6,9 @@ Usage: python3 scripts/select-test-targets.py [--event E] [--ref-name N] [--ref-
 
 The rule (docs/constitution.md, CI gates; docs/test-strategy.md):
 
-  * On a pull request the CI runs only the unit tests of the changed packages, the unit
-    tests of the SDK, the Studio and the scripts whose files changed, and the integration suites (the
-    `sagat-tests` targets) that touch the affected code. Lints and the other verification jobs do not run.
+  * On a pull request the CI runs only the unit tests of the changed packages and of the packages that depend on them,
+    the unit tests of the SDK, the Studio and the scripts whose files changed, and the integration suites (the
+    `sagat-tests` targets) that were themselves changed. Lints and the other verification jobs do not run.
   * For a release the CI runs everything: every test, every lint, every verification job.
 
 A release is a push to main, release/** or hotfix/**, a push of a tag v*, a pull request into one of those
@@ -16,15 +16,16 @@ branches, a manual run (workflow_dispatch), a change of .github/workflows (the w
 it runs), and any run with no usable base commit (the safe default).
 
 Scoped selection:
-  unit tests    the workspace packages that contain a changed file (their dependents are covered by the integration
-                suites below and by the release). A change of Cargo.toml, Cargo.lock, rust-toolchain.toml, .cargo/,
-                clippy.toml, rustfmt.toml or vendor/ selects every package.
-  integration   a `sagat-tests` target runs when (a) a file of its directory, or its [[test]] entry, changed;
-                (b) its own sources (not tests/support) name a package that is affected, that is a changed package
-                or one that depends on it, directly or not; (c) a harness it drives changed (frontend/e2e,
-                sdks/*/conformance, examples/, runners/lake/ for the lake suites); or (d) tests/support,
-                tests/fixtures, runners/ (other than runners/lake/), a contract file under specs/, or a
-                dependency of tests/Cargo.toml changed, which selects every target.
+  unit tests    the workspace packages that contain a changed file and every package that depends on one of them,
+                directly or not (a break in a core package shows in the tests of what is built on it). A change of
+                Cargo.toml, Cargo.lock, rust-toolchain.toml, .cargo/, clippy.toml, rustfmt.toml or vendor/ selects every
+                package.
+  integration   a `sagat-tests` target runs only when it was itself changed: (a) a file of its directory, or its
+                [[test]] entry, changed; (b) a harness it drives changed (frontend/e2e, sdks/*/conformance, examples/,
+                runners/lake/ for the lake suites); or (c) tests/support, tests/fixtures, runners/ (other than
+                runners/lake/), a contract file under specs/, or a dependency of tests/Cargo.toml changed, which selects
+                every target. A changed package does not select a suite because the suite uses it, or uses something
+                that depends on it: the integration suites are expensive, and the release runs all of them.
   SDKs, Studio  an SDK's unit tests run when a file under sdks/<language>/ changed; the Studio's when a file under
                 frontend/ changed; the scripts' when a file under scripts/ changed; the lake runtime's (Python,
                 its lock and its image) when a file other than Markdown under runners/lake/ changed.
@@ -49,7 +50,6 @@ TARGET_NAME = re.compile(r"[a-z][a-z0-9_]*")
 RELEASE_BRANCH = re.compile(r"main|release/.+|hotfix/.+")
 RELEASE_TAG = re.compile(r"v[0-9].*")
 SHA = re.compile(r"[0-9a-f]{40}")
-IDENT = re.compile(r"\bsagat_[a-z0-9_]+\b")
 MANIFEST = "tests/Cargo.toml"
 TESTS_PACKAGE = "sagat-tests"
 SDK_LANGUAGES = ("typescript", "python", "go", "dotnet", "java", "rust")
@@ -170,23 +170,6 @@ def manifest_selection(root, base, targets, reasons):
     return chosen
 
 
-def referenced_packages(root, directory, workspace, nested=()):
-    """The workspace packages named (as sagat_* identifiers) by the Rust files under a target directory,
-    leaving out the directories of the targets nested below it, which own those files."""
-    found = set()
-    for current, subdirectories, names in os.walk(os.path.join(root, directory)):
-        subdirectories[:] = [d for d in subdirectories
-                             if os.path.relpath(os.path.join(current, d), root).replace(os.sep, "/") + "/" not in nested]
-        for name in names:
-            if name.endswith(".rs"):
-                try:
-                    with open(os.path.join(current, name), encoding="utf-8", errors="replace") as handle:
-                        found |= {workspace.ident[i] for i in IDENT.findall(handle.read()) if i in workspace.ident}
-                except OSError:
-                    continue
-    return found
-
-
 class Decision:
     def __init__(self, targets):
         self.targets = targets
@@ -271,18 +254,9 @@ def scope(root, base, head, targets, workspace):
     if decision.everything:
         decision.crates = {name for name in workspace.directory if name != TESTS_PACKAGE}
     else:
-        decision.crates = set(changed_packages)
-    affected = workspace.dependents(changed_packages)
-    if affected and decision.chosen != set(targets):
-        for name in sorted(targets):
-            if name in decision.chosen:
-                continue
-            nested = {d for d in directories.values() if d != directories[name] and d.startswith(directories[name])}
-            touched = referenced_packages(root, directories[name], workspace, nested) & affected
-            if touched:
-                decision.chosen.add(name)
-                decision.reasons.append(
-                    (name, f"it names {', '.join(sorted(touched))}, affected by {', '.join(sorted(changed_packages))}"))
+        # The changed packages and everything built on them. The integration crate is never one of them: its suites
+        # are chosen by their own files.
+        decision.crates = workspace.dependents(changed_packages) - {TESTS_PACKAGE}
     return decision
 
 
