@@ -772,6 +772,53 @@ async fn publication(
         .await
         .expect("revision 1 of lake-main is usable");
 
+    // A step that pins a revision is judged by the current one too: tightening the modes applies to it, so pinning an older
+    // revision cannot loosen what the connection says now.
+    let tightened = |expected_revision: u32, modes: Vec<WriteMode>| {
+        write(
+            "lake-tightened",
+            expected_revision,
+            ConnectionStatus::Active,
+            iceberg_in(
+                "https://catalog.example/api",
+                "db-credentials",
+                EgressCeiling::Internal,
+                modes,
+            ),
+        )
+    };
+    catalog
+        .put(
+            &w.admin,
+            ns,
+            tightened(0, vec![WriteMode::Append, WriteMode::Overwrite]),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let pinned_to_the_first = |name: &str| {
+        let mut document = append(name, "lake-tightened", &["/id"], Some(rows_schema()));
+        document["nodes"][0]["connectionRef"]["revision"] = json!(1);
+        document
+    };
+    publish_on_lake(w, &w.admin, pinned_to_the_first("lake-pinned-before"))
+        .await
+        .expect("the first revision is the current one and allows append");
+    catalog
+        .put(
+            &w.admin,
+            ns,
+            tightened(1, vec![WriteMode::Overwrite]),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        refusal_of(publish_on_lake(w, &w.admin, pinned_to_the_first("lake-pinned-after")).await),
+        LakeRefusal::ModeNotAllowed(WriteMode::Append),
+        "the first revision allowed append, the current one does not"
+    );
+
     // A developer holds `database:use` and may use the secret, but not `database:write`, which every Iceberg write needs:
     // the connection is as good as missing to them, and the refusal is audited.
     let developer = w.member("lake-publisher", Role::Developer).await;
@@ -787,10 +834,11 @@ async fn publication(
         .unwrap();
     let denials = || async {
         sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action=$2",
+            "SELECT count(*) FROM audit_records WHERE tenant_id=$1 AND action=$2 AND actor=$3",
         )
         .bind(w.admin.tenant_id().as_uuid())
         .bind(AuditAction::DatabaseDenied.as_str())
+        .bind(developer.subject().as_str())
         .fetch_one(&w.db.pool)
         .await
         .unwrap()

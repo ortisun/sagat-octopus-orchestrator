@@ -1098,8 +1098,14 @@ The other fixes were wording:
     columns) takes the level the schema gives it, and `written_level(inherited, None)` applies (D035-051: unmarked is `pii`). Everything
     else is `pii`: any other expression (an index, an operator, a call, an unknown name), a list of blobs, and a database result (which is
     `pii` by D035-051 whatever a schema says). A carrier with no schema, or a step that does not exist, is `pii`.
-  - *Strictest wins.* A field is as strict as the strictest level that can reach it: every record position the schema describes on its
-    own (`prefixItems`, then the remaining `items`), and everything inside a structure that one column receives.
+  - *Strictest wins, and what a schema does not say is `pii`.* A field is as strict as the strictest level that can reach it: every
+    record position the schema describes on its own (`prefixItems`, then the remaining `items`), and everything below the place that
+    answers, which is the schema that governs a name or an item the pointer did not spell out (`additionalProperties`, the remaining
+    items), not only the place the pointer names. A value that can hold more than one thing (a structure, a list, a whole record, any
+    schema that does not say its type is a scalar) is at least `pii`: a key or an element the schema does not name is `pii` under 016,
+    and nothing closes the object. A numeric segment may be a position or a property named by digits, so it reads everything under
+    what it indexes. A list described by more than 64 positions is read as `pii`, so the cost of the reading is bounded. (A review
+    found the first version read too low in four of these places; each has a test now.)
   - *Where it lives.* The codec computes it, once, for `parse` and `parse_stored` alike (it is the only place that holds the whole
     document), and attaches it to the step as derived data: `IcebergWrite::egress()`. It is not part of the canonical bytes, so no
     digest changes. A step that carries no list is refused whole (`EgressRefusal::NotComputed`), so a codec that forgot to classify
@@ -1108,15 +1114,17 @@ The other fixes were wording:
     ceiling (which needs the reveal grant of the namespace) until `recordSchema` (T035-085) lets them declare levels, and a write from
     blobs or a database result needs the same. That is FR-035-025's rule, now visible: the common safe shape is a plain reference to a
     classified schema.
-  - *Evidence.* 9 tests of the domain type and its check (`crates/domain/tests/iceberg_egress.rs`), 21 tests of the codec
-    (`crates/infra-ir/tests/iceberg_egress.rs`; publication and restore agree, the canonical bytes carry no level). 23 mutations
-    of the two modules; 4 survived the first tests (the last item winning, the `output` marker, a name that is not plain, a stricter
-    field of another carrier counted inside) and each has a test now, all 23 caught.
+  - *Evidence.* 9 tests of the domain type and its check (`crates/domain/tests/iceberg_egress.rs`), 32 tests of the codec
+    (`crates/infra-ir/tests/iceberg_egress.rs`; publication and restore agree, the canonical document is the document and nothing
+    more). Two mutation rounds: 23 mutations of the first version (4 survived the first tests and each got a test) and 24 of the
+    reading above (5 survived the first tests: a secret below an unnamed property, a schema with no type, a type given as a list,
+    the bound on positions, and a carrier counted into another; each got a test), all caught in the end.
 - **G035-037 — What the levels leave open.** (1) Nothing compares the levels with the ceiling of a connection yet: the publication
   check (access, allowed modes, `CLASSIFICATION_EGRESS_REFUSED`, connection kind and pins) is the rest of T035-054, and the store still
-  fails closed until it lands. (2) `recordSchema` declares levels that can only raise these (T035-085). (3) A mapped field that is an
-  array index (`/items/0/x`) is read as a property named `0`, which the schema does not name, so it is `pii`: conservative, and a
-  complaint to take up if authors need it. (4) A reference through a body-local step or `result` is not followed. *Exit condition:*
+  fails closed until it lands. (2) `recordSchema` declares levels that can only raise these (T035-085). (3) A numeric segment of
+  a mapped field (`/items/0/x`) reads everything under the list or object it indexes, and a structure or a whole record is at least
+  `pii` because the schema cannot say it is closed: conservative, and a complaint to take up if authors need a lower level (the
+  walk would have to expose `additionalProperties: false`, and `recordSchema` of T035-085 would let an author say it). (4) A reference through a body-local step or `result` is not followed. *Exit condition:*
   point 1 by the next slice of T035-054, with a test of a `pii` field against an `internal` ceiling and of a `secret` field.
 - **D035-089 — The settings of the connection decide a lake write at publication, and a run of one is refused until its admission
   exists.** The rest of T035-054. **Decided by: delegate** (the owner delegated the decisions of this feature).
@@ -1128,7 +1136,11 @@ The other fixes were wording:
     connection, a revision that does not exist, a developer who lacks `database:write`. It reads as not found and a denial is audited
     (`database.denied`). Only then does the connection's own word count: `IcebergWrite::refusal_by(config)` refuses first a mode the
     connection does not allow (`MODE_NOT_ALLOWED`, naming the mode), and only then fields above its ceiling or never classified
-    (`CLASSIFICATION_EGRESS_REFUSED`, listing path and class, never a value, at most 20 in the answer with a count of the rest).
+    (`CLASSIFICATION_EGRESS_REFUSED`, listing path and class, never a value; the HTTP details list at most 20 with a count of the
+    rest, and validation caps its problems at 20 as it does for every check). A step that **pins a revision** is judged by that
+    revision and by the current one, the stricter winning: a mode or a ceiling that was tightened since applies to it, so pinning an
+    older revision cannot loosen what the connection says now (a security review found it could). A refusal by the connection's
+    settings counts as `denied` in `database_admissions_total`, not as an error of the store.
     These are `VALIDATION_FAILED`, not hidden: the author may use the connection, so nothing is learned that they could not read.
     The domain decides (`refusal_by` is pure and tested without a database); the store finds the connection.
   - *Run creation.* `create` of a run, and the replay of a run that is already there, now see an Iceberg write: a definition that
@@ -1147,7 +1159,10 @@ The other fixes were wording:
     version to another namespace is refused with the lake off, not found without the target's connection, and published with it.
     Publication never contacts the catalog: `catalog.example` does not resolve and the publication succeeds. 26 mutations of the
     decision, the conversions, the HTTP details and the store; 25 caught, 1 survives (G035-038 point 1). It also closes the mutant
-    that survived in #115 (`PublishingService` forwarding the switch; G035-036 point 3), now caught by the promotion.
+    that survived in #115 (`PublishingService` forwarding the switch; G035-036 point 3), now caught by the promotion. Two more
+    mutations of the pinned-revision rule, both caught by the scenario case that tightens the modes of a connection and then
+    publishes a step pinned to the first revision. A correctness review and a security review read this change and the levels of
+    D035-088 before it merged; what they found is fixed (D035-088, D035-090) or recorded below.
 - **G035-038 — What the publication checks leave open.** (1) The replay of a run receipt (`check_database_replay`) sees an Iceberg
   write like the creation does, but no test reaches it: no run of an Iceberg write can exist yet, so there is no receipt to replay. It
   is defensive, and T035-055 gives it its test with the run admission. (2) `records.databaseResult` must name an earlier root-level
@@ -1156,8 +1171,14 @@ The other fixes were wording:
   creation (T035-055 decides each). (4) The ACL of the secrets cannot be told apart from the role at publication in the current role
   matrix (only an administrator holds `database:write`, and an administrator may use any secret), so a lake connection whose secret
   ACL excludes the publisher has no test of its own; it is the same code the SQL path runs. *Exit condition:* points 1 and 3 by T035-055;
-  point 2 by the next slice of T035-054 with a test of a `databaseResult` that names a later or missing step; point 4 when a role
-  other than an administrator can hold `database:write`.
+  point 2 closed by D035-090; point 4 when a role other than an administrator can hold `database:write`. (5) The deployment's
+  `allowUnauthenticatedMetastore` is checked when a connection is written (`crates/application/src/database.rs`) and not again at
+  admission, so turning the flag off later leaves an old Hive `tls: none` connection publishable. The run admission of T035-055 must
+  check it again. (6) The codec reads a mapped field's JSON pointer (`~1` before `~0`, a numeric segment as everything under what
+  it indexes). The host that writes the record (`runners/lake`, T035-057) must read the same property for `~0`, `~1` and a number
+  on an array, or the field that is written differs from the field that was classified; its tests must pin that. (7) An
+  egress refusal is not audited (a `database.denied` is for an access denial) and `validate` audits nothing, as for the SQL path;
+  a refusal to send `secret` data may deserve a record of its own when the audit vocabulary is next touched.
 - **D035-090 — A database result is read from a database step that runs before the write, and the graph checks it.** Closes point 2 of
   G035-035 and G035-038. **Decided by: delegate** (the owner delegated the decisions of this feature).
   - *The rule.* `records.databaseResult` names a node of the same graph. It has to exist, to be a managed database step, and control has

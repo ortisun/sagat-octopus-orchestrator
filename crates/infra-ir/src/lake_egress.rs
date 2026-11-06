@@ -9,9 +9,20 @@
 //! - `steps.<id>.output.a.b` reads the output schema of the root step `<id>`.
 //!
 //! Anything else (an index, an operator, a call, a name this module does not know), a database result and a list of
-//! blobs carry no schema the platform can follow, so their fields are `pii`. The strictest answer wins wherever a schema
-//! describes a position in more than one way: every positional item of a list, and everything inside a structure that a
-//! single column receives.
+//! blobs carry no schema the platform can follow, so their fields are `pii`.
+//!
+//! The reading is conservative where a schema cannot say enough:
+//!
+//! - the strictest answer wins wherever a schema describes a position more than one way (every positional item of a list
+//!   and the remaining items);
+//! - a value that can hold more than one thing (a structure, a list, a whole record, anything whose schema does not say it
+//!   is a scalar) is at least `pii`, because a key or an element the schema does not name is `pii` under 016, and nothing
+//!   closes the object;
+//! - a numeric segment may be a position of a list or a property that happens to be named by digits, so it reads
+//!   everything under the place it indexes;
+//! - a list described by more positions than [`MAX_POSITIONS`] is read as `pii`, so the cost of the reading is bounded.
+
+use std::collections::HashMap;
 
 use sagat_application::{
     classification::{CarrierPointer, ClassificationResolution, ClassificationSegment},
@@ -24,6 +35,9 @@ use sagat_domain::{
 };
 use serde_json::Value;
 
+/// The most positions of a list that are read one by one. A schema that describes more is read as `pii` instead.
+const MAX_POSITIONS: usize = 64;
+
 /// Gives every Iceberg write of `definition` the level of each field it writes, read from `document`.
 pub(crate) fn attach(document: &Value, definition: WorkflowDefinition) -> WorkflowDefinition {
     if !definition
@@ -32,13 +46,101 @@ pub(crate) fn attach(document: &Value, definition: WorkflowDefinition) -> Workfl
     {
         return definition;
     }
-    let index = ClassificationLocationIndex::build(|visitor| {
-        crate::classification_check::visit_locations(document, visitor)
-    });
-    definition.with_iceberg_egress(|_, step| levels(&index, step))
+    let schemas = Schemas::new(document);
+    definition.with_iceberg_egress(|_, step| levels(&schemas, step))
 }
 
-fn levels(index: &ClassificationLocationIndex, step: &IcebergWrite) -> Vec<EgressField> {
+/// The classification of one document, read once.
+struct Schemas<'a> {
+    document: &'a Value,
+    index: ClassificationLocationIndex,
+    /// The strictest level at or below each location, so that a question about a structure is a lookup, not a scan.
+    below: HashMap<(CarrierPointer, Vec<ClassificationSegment>), Level>,
+}
+
+impl<'a> Schemas<'a> {
+    fn new(document: &'a Value) -> Self {
+        let index = ClassificationLocationIndex::build(|visitor| {
+            crate::classification_check::visit_locations(document, visitor)
+        });
+        let mut below: HashMap<(CarrierPointer, Vec<ClassificationSegment>), Level> =
+            HashMap::new();
+        for location in index.locations() {
+            for depth in 0..=location.location.len() {
+                let key = (
+                    location.carrier.clone(),
+                    location.location[..depth].to_vec(),
+                );
+                below
+                    .entry(key)
+                    .and_modify(|level| *level = level.stricter(location.level))
+                    .or_insert(location.level);
+            }
+        }
+        Self {
+            document,
+            index,
+            below,
+        }
+    }
+
+    /// The level a value at `location` can carry, and `None` when the carrier says nothing a caller can rely on.
+    fn level_at(
+        &self,
+        carrier: &CarrierPointer,
+        location: &[ClassificationSegment],
+    ) -> Option<Level> {
+        match self.index.resolve_matched(carrier, location) {
+            (
+                ClassificationResolution::Resolved {
+                    level, source_path, ..
+                },
+                Some(matched),
+            ) => {
+                // Everything below the location that answered, including a location that governs a name or an item the
+                // request did not spell out.
+                let below = self
+                    .below
+                    .get(&(carrier.clone(), matched))
+                    .copied()
+                    .unwrap_or(level);
+                Some(if self.is_scalar(&source_path) {
+                    below
+                } else {
+                    below.stricter(Level::UNMARKED)
+                })
+            }
+            // Nothing is described there: the answer is the floor of the nearest named ancestor.
+            (ClassificationResolution::Resolved { level, .. }, None) => Some(level),
+            _ => None,
+        }
+    }
+
+    /// Whether the schema that governs a location says its value is a scalar (and so has no keys or elements the schema
+    /// does not name). A schema that cannot be found, or that says nothing of its type, is not.
+    fn is_scalar(&self, schema_path: &str) -> bool {
+        const SCALARS: [&str; 5] = ["string", "integer", "number", "boolean", "null"];
+        let Some(kind) = self
+            .document
+            .pointer(schema_path)
+            .and_then(|schema| schema.get("type"))
+        else {
+            return false;
+        };
+        match kind {
+            Value::String(name) => SCALARS.contains(&name.as_str()),
+            Value::Array(names) => {
+                !names.is_empty()
+                    && names
+                        .iter()
+                        .all(|name| name.as_str().is_some_and(|name| SCALARS.contains(&name)))
+            }
+            _ => false,
+        }
+    }
+}
+
+fn levels(schemas: &Schemas<'_>, step: &IcebergWrite) -> Vec<EgressField> {
     // A step that lists no columns writes the whole record, which is one entry with an empty path.
     let paths: Vec<&str> = if step.mapping().is_empty() {
         vec![""]
@@ -48,8 +150,10 @@ fn levels(index: &ClassificationLocationIndex, step: &IcebergWrite) -> Vec<Egres
             .map(|mapping| mapping.field())
             .collect()
     };
-    let source = match step.records() {
-        RecordSource::Inline(expression) => reference(expression.as_str()),
+    let list = match step.records() {
+        RecordSource::Inline(expression) => {
+            reference(expression.as_str()).and_then(|source| Records::new(schemas, source))
+        }
         RecordSource::Blobs(_) | RecordSource::DatabaseResult(_) => None,
     };
     paths
@@ -58,9 +162,9 @@ fn levels(index: &ClassificationLocationIndex, step: &IcebergWrite) -> Vec<Egres
             let level = match step.records() {
                 RecordSource::DatabaseResult(_) => DATABASE_RESULT,
                 RecordSource::Inline(_) | RecordSource::Blobs(_) => {
-                    let inherited = source
+                    let inherited = list
                         .as_ref()
-                        .and_then(|source| inherited_level(index, source, path));
+                        .and_then(|records| records.level_of(schemas, path));
                     written_level(inherited, None)
                 }
             };
@@ -105,62 +209,81 @@ fn plain_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// The strictest level the schema gives the field at `pointer` of any record of the list, or `None` when it cannot say.
-fn inherited_level(
-    index: &ClassificationLocationIndex,
-    source: &Source,
-    pointer: &str,
-) -> Option<Level> {
-    let tail = decode(pointer)?;
-    let mut strictest: Option<Level> = None;
-    for item in items(index, source) {
-        let mut location = source.list.clone();
-        location.push(item);
-        location.extend(tail.iter().cloned());
-        let level = strictest_at(index, &source.carrier, &location)?;
-        strictest = Some(strictest.map_or(level, |seen| seen.stricter(level)));
-    }
-    strictest
+/// The list of records a step reads, as the schema describes it: where it is, and every way a record is reached in it.
+struct Records {
+    carrier: CarrierPointer,
+    /// Each location a record can have: by the schema of the remaining items and by each position described on its own.
+    records: Vec<Vec<ClassificationSegment>>,
 }
 
-/// How a record is reached in the list: by the schema that describes the remaining items, and by each position the
-/// schema describes on its own.
-fn items(index: &ClassificationLocationIndex, source: &Source) -> Vec<ClassificationSegment> {
-    let mut items = vec![ClassificationSegment::RemainingItem];
-    for location in index.locations() {
-        if location.carrier == source.carrier
-            && location.location.len() == source.list.len() + 1
-            && location.location.starts_with(&source.list)
-            && let Some(item @ ClassificationSegment::Index(_)) = location.location.last()
-            && !items.contains(item)
-        {
-            items.push(item.clone());
+impl Records {
+    /// `None` when the schema says nothing a caller can rely on about the list, or describes too many of its positions.
+    fn new(schemas: &Schemas<'_>, source: Source) -> Option<Self> {
+        // The list may itself be reached through a name the schema leaves to `additionalProperties`: what is below is
+        // below the location that answered.
+        let (resolution, matched) = schemas.index.resolve_matched(&source.carrier, &source.list);
+        let (ClassificationResolution::Resolved { .. }, Some(list)) = (resolution, matched) else {
+            return None;
+        };
+        let mut records = vec![item(&list, ClassificationSegment::RemainingItem)];
+        for location in schemas.index.locations() {
+            if location.carrier == source.carrier
+                && location.location.len() == list.len() + 1
+                && location.location.starts_with(&list)
+                && let Some(position @ ClassificationSegment::Index(_)) = location.location.last()
+            {
+                if records.len() > MAX_POSITIONS {
+                    return None;
+                }
+                records.push(item(&list, position.clone()));
+            }
         }
+        Some(Self {
+            carrier: source.carrier,
+            records,
+        })
     }
-    items
+
+    /// The strictest level the schema gives the field at `pointer` of any record of the list, or `None` when it cannot say.
+    fn level_of(&self, schemas: &Schemas<'_>, pointer: &str) -> Option<Level> {
+        let names = decode(pointer)?;
+        let mut strictest: Option<Level> = None;
+        for record in &self.records {
+            let level = self.field_in(schemas, record, &names)?;
+            strictest = Some(strictest.map_or(level, |seen| seen.stricter(level)));
+        }
+        strictest
+    }
+
+    fn field_in(
+        &self,
+        schemas: &Schemas<'_>,
+        record: &[ClassificationSegment],
+        names: &[String],
+    ) -> Option<Level> {
+        let mut location = record.to_vec();
+        for name in names {
+            // A number may be a position of a list or the name of a property: either way the field is as strict as
+            // anything under what it indexes.
+            if !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit()) {
+                return schemas
+                    .level_at(&self.carrier, &location)
+                    .map(|level| level.stricter(Level::UNMARKED));
+            }
+            location.push(ClassificationSegment::Property(name.clone()));
+        }
+        schemas.level_at(&self.carrier, &location)
+    }
 }
 
-/// The level of one location, raised to that of everything inside it. `None` when the carrier has no schema or could not
-/// be walked completely.
-fn strictest_at(
-    index: &ClassificationLocationIndex,
-    carrier: &CarrierPointer,
-    location: &[ClassificationSegment],
-) -> Option<Level> {
-    let ClassificationResolution::Resolved { level, .. } = index.resolve(carrier, location) else {
-        return None;
-    };
-    Some(
-        index
-            .locations()
-            .iter()
-            .filter(|inside| inside.carrier == *carrier && inside.location.starts_with(location))
-            .fold(level, |strictest, inside| strictest.stricter(inside.level)),
-    )
+fn item(list: &[ClassificationSegment], at: ClassificationSegment) -> Vec<ClassificationSegment> {
+    let mut location = list.to_vec();
+    location.push(at);
+    location
 }
 
 /// The property names of a JSON pointer (`""` is the record itself), with the escapes of RFC 6901 undone.
-fn decode(pointer: &str) -> Option<Vec<ClassificationSegment>> {
+fn decode(pointer: &str) -> Option<Vec<String>> {
     if pointer.is_empty() {
         return Some(Vec::new());
     }
@@ -171,9 +294,7 @@ fn decode(pointer: &str) -> Option<Vec<ClassificationSegment>> {
             if segment.is_empty() {
                 return None;
             }
-            Some(ClassificationSegment::Property(
-                segment.replace("~1", "/").replace("~0", "~"),
-            ))
+            Some(segment.replace("~1", "/").replace("~0", "~"))
         })
         .collect()
 }
