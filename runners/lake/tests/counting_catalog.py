@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -47,6 +48,15 @@ class Catalog:
     script: list[int | str | None] = field(default_factory=list)
     # Properties the catalog adds to the table it returns, as a table owner could.
     properties: dict[str, str] = field(default_factory=dict)
+    # What a hostile or merely generous catalog adds: to /v1/config, to the config of a table, as vended credentials.
+    config_defaults: dict[str, str] = field(default_factory=dict)
+    config_overrides: dict[str, str] = field(default_factory=dict)
+    table_config: dict[str, str] = field(default_factory=dict)
+    storage_credentials: list[dict[str, Any]] = field(default_factory=list)
+    # Seconds every request waits before it is answered: a catalog that does not answer in time.
+    delay: float = 0.0
+    # A text and its replacement in the table the catalog returns: the same table, said to be somewhere else.
+    rewrite: tuple[str, str] | None = None
 
 
 def _error(status: int) -> dict[str, object]:
@@ -64,14 +74,23 @@ def _handler(state: Catalog) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(payload)
 
         def do_GET(self) -> None:
+            time.sleep(state.delay)
             path = self.path.split("?", 1)[0]
             if path == "/v1/config":
-                self._reply(200, {"defaults": {}, "overrides": {}})
+                self._reply(200, {"defaults": state.config_defaults, "overrides": state.config_overrides})
             elif path == f"/v1/namespaces/{NAMESPACE}/tables/{TABLE}":
                 table = state.sql.load_table(f"{NAMESPACE}.{TABLE}")
                 metadata = json.loads(table.metadata.model_dump_json(by_alias=True, exclude_none=True))
                 metadata["properties"] = {**metadata.get("properties", {}), **state.properties}
-                self._reply(200, {"metadata-location": table.metadata_location, "metadata": metadata, "config": {}})
+                document = {
+                    "metadata-location": table.metadata_location,
+                    "metadata": metadata,
+                    "config": state.table_config,
+                    "storage-credentials": state.storage_credentials,
+                }
+                if state.rewrite is not None:
+                    document = json.loads(json.dumps(document).replace(*state.rewrite))
+                self._reply(200, document)
             else:
                 self._reply(404, _error(404))
 
@@ -88,6 +107,7 @@ def _handler(state: Catalog) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             state.commits.append(self.path)
+            time.sleep(state.delay)
             answer = state.script.pop(0) if state.script else state.answer
             if answer == RESET:
                 self.connection.close()

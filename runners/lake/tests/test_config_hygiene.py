@@ -553,3 +553,68 @@ def _prefix(storage: StorageType) -> str:
         StorageType.GCS: "gs://lake/w/",
         StorageType.ADLS: "abfss://c@acct.dfs.core.windows.net/w/",
     }[storage]
+
+
+# -- storage credentials of a table --------------------------------------------------------------------------------
+def entry(prefix: object, config: object) -> dict[str, object]:
+    return {"prefix": prefix, "config": config}
+
+
+VENDED = {"s3.access-key-id": "k", "s3.secret-access-key": "s", "s3.session-token": "t"}
+
+
+def test_the_storage_credentials_of_the_warehouse_keep_only_the_keys_of_the_declared_storage() -> None:
+    hygiene = s3(vended=True)
+    kept = hygiene.storage_credentials(
+        [entry("s3://lake/warehouse/sales", {**VENDED, "s3.endpoint": "http://attacker", "py-io-impl": "evil.IO"})]
+    )
+    assert kept == [entry("s3://lake/warehouse/sales", VENDED)]
+    assert hygiene.denied[Denial.KEY_NOT_ALLOWED] == 2
+
+
+def test_a_credential_for_a_prefix_outside_the_warehouse_is_dropped_and_counted() -> None:
+    hygiene = s3(vended=True)
+    kept = hygiene.storage_credentials(
+        [
+            entry("s3://attacker-bucket/", VENDED),
+            entry("s3://lake/warehouse-evil/", VENDED),
+            entry("s3://lake/warehouse/../secret/", VENDED),
+            entry("s3://lake/warehouse/ok/", VENDED),
+        ]
+    )
+    assert kept == [entry("s3://lake/warehouse/ok/", VENDED)]
+    assert hygiene.denied[Denial.LOCATION_NOT_ALLOWED] == 3
+
+
+def test_the_warehouse_itself_and_a_prefix_without_a_trailing_slash_are_inside() -> None:
+    hygiene = s3(vended=True)
+    kept = hygiene.storage_credentials([entry("s3://lake/warehouse/", VENDED), entry("s3://lake/warehouse", VENDED)])
+    assert len(kept) == 2
+
+
+def test_without_vended_credentials_declared_no_credential_is_kept() -> None:
+    hygiene = s3(vended=False)
+    assert hygiene.storage_credentials([entry("s3://lake/warehouse/", VENDED)]) == []
+    assert hygiene.denied[Denial.KEY_NOT_ALLOWED] == 3
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        entry(5, VENDED),
+        entry(None, VENDED),
+        entry("s3://lake/warehouse/", "not a map"),
+        entry("s3://lake/warehouse/", None),
+        {"config": VENDED},
+        {"prefix": "s3://lake/warehouse/"},
+        {},
+    ],
+)
+def test_an_entry_that_is_not_a_prefix_with_a_config_is_dropped_and_counted(bad: dict[str, object]) -> None:
+    hygiene = s3(vended=True)
+    assert hygiene.storage_credentials([bad]) == []
+    assert hygiene.denials == 1
+
+
+def test_no_credentials_is_no_credentials() -> None:
+    assert s3(vended=True).storage_credentials([]) == []

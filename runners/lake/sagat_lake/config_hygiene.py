@@ -218,14 +218,34 @@ class Hygiene:
 
     # -- locations -------------------------------------------------------------------------------------------------
 
+    def _inside(self, location: str) -> bool:
+        candidate = location if location.endswith("/") else location + "/"
+        return any(
+            candidate.startswith(prefix) and clean_path(candidate[len(prefix) :])
+            for prefix in self._declaration.warehouse_locations
+        )
+
     def check_location(self, location: str) -> str:
         """`location` itself when it lies under a declared prefix. Otherwise the denial is counted and the attempt
         fails; the error does not say which location."""
-        candidate = location if location.endswith("/") else location + "/"
-        for prefix in self._declaration.warehouse_locations:
-            if candidate.startswith(prefix) and clean_path(candidate[len(prefix) :]):
-                return location
+        if self._inside(location):
+            return location
         raise self._refusal()
+
+    def storage_credentials(self, entries: Iterable[Mapping[str, object]]) -> list[dict[str, object]]:
+        """The `storage-credentials` of a `LoadTable` response: an entry is kept only for a prefix under the warehouse
+        and only with the keys `table_config` allows. Anything else is dropped and counted, never an error: a catalog
+        may vend more than the connection uses."""
+        accepted: list[dict[str, object]] = []
+        for entry in entries:
+            prefix, config = entry.get("prefix"), entry.get("config")
+            if not isinstance(prefix, str) or not isinstance(config, Mapping):
+                self._deny(Denial.KEY_NOT_ALLOWED)
+            elif not self._inside(prefix):
+                self._deny(Denial.LOCATION_NOT_ALLOWED)
+            elif kept := self.table_config(config):
+                accepted.append({"prefix": prefix, "config": kept})
+        return accepted
 
     def check_locations(self, locations: Iterable[str]) -> list[str]:
         """Every location, in order; the first one outside the declared prefixes stops the batch."""
