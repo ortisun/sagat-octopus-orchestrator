@@ -111,6 +111,16 @@ def test_an_unpartitioned_table_is_accepted() -> None:
         "file:///etc/passwd",
         "/warehouse/sales/orders",
         "",
+        # inside by text, but the object store reads another key: a fragment or a query is dropped, so every file of the
+        # table would land on one key; a backslash, an encoded dot or separator and a dot segment are read as a path
+        "s3://lake/warehouse/sales/data#",
+        "s3://lake/warehouse/sales/data?x=1",
+        "s3://lake/warehouse/sales\\..\\x",
+        "s3://lake/warehouse/sales/%2e%2e/x",
+        "s3://lake/warehouse/sales/%2E%2F/x",
+        "s3://lake/warehouse/sales/./x",
+        "s3://lake/warehouse/sales/a\x00b",
+        "s3://lake/warehouse/sales/a b",
     ],
 )
 def test_a_location_outside_the_warehouse_is_refused(location: str) -> None:
@@ -125,6 +135,17 @@ def test_a_table_that_names_its_own_location_provider_is_refused() -> None:
 
 def test_a_table_with_no_location_provider_of_its_own_is_accepted() -> None:
     assert verdict(facts(location_provider=None)) is None
+
+
+@pytest.mark.parametrize("root", ["s3://", "s3:///", "s3:", "://", "lake/warehouse"])
+def test_a_root_that_is_no_more_than_a_scheme_allows_nothing(root: str) -> None:
+    refused(facts(locations=("s3://anywhere/orders",)), "ICEBERG_LOCATION_NOT_ALLOWED", warehouse=[root])
+
+
+def test_only_what_is_below_the_root_is_checked_because_the_root_is_the_connections_own() -> None:
+    # the roots come from the declaration of the connection, which validated them; a location is judged by its path
+    # below one, so a root the connection declared stays usable whatever characters it has
+    assert verdict(facts(locations=("s3://lake/my warehouse/t",)), warehouse=["s3://lake/my warehouse/"]) is None
 
 
 def test_every_location_is_checked_not_only_the_table() -> None:

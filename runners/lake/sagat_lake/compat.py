@@ -15,6 +15,7 @@ import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
+from .config_hygiene import clean_path
 from .failures import Failure
 
 UNSUPPORTED_TABLE = "ICEBERG_UNSUPPORTED_TABLE"
@@ -81,11 +82,15 @@ def check(
 def inside(location: str, allowed: Sequence[str]) -> bool:
     """Whether ``location`` is one of the allowed locations or below one, by path and not by prefix of text.
 
-    ``s3://lake/warehouse-evil/t`` is not below ``s3://lake/warehouse/``, and a path that climbs out with ``..`` is
-    below nothing. With no allowed location nothing is inside, and a root that is empty once its slashes are taken
-    off allows nothing either, rather than everything.
+    ``s3://lake/warehouse-evil/t`` is not below ``s3://lake/warehouse/``. Below a root the path must be one the object
+    store reads as it is written: ``clean_path`` of the connection's own hygiene refuses a ``..`` or ``.`` segment, a
+    query or a fragment (dropped by the URL parser, so every file would land on one key), a backslash, an encoded dot or
+    separator and a control character. With no allowed location nothing is inside, and a root that is no more than a
+    scheme (or empty once its slashes are taken off) allows nothing either, rather than everything.
     """
-    if ".." in location.split("/"):
-        return False
-    roots = [root.rstrip("/") for root in allowed]
-    return any(root and (location == root or location.startswith(root + "/")) for root in roots)
+    for root in (root.rstrip("/") for root in allowed):
+        if not root.partition("://")[2]:
+            continue
+        if location == root or (location.startswith(root + "/") and clean_path(location[len(root) :])):
+            return True
+    return False
