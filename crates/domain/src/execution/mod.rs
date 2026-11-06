@@ -79,9 +79,9 @@ pub use path_state::{
 };
 pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed, plan_path};
 pub use reset::{
-    EffectMarkers, RULES as RESET_RULES, ReexecutedStep, ResetBlock, ResetPlan, ResetPoint,
-    ResetPoints, ResetRefusal, ResetRule, RestoredStep, reset_plan, reset_points, rule_by_name,
-    rule_of,
+    EffectMarkers, RULES as RESET_RULES, ReexecutedStep, ResetBlock, ResetId, ResetPlan,
+    ResetPoint, ResetPoints, ResetRefusal, ResetRule, RestoredStep, reset_plan, reset_points,
+    rule_by_name, rule_of,
 };
 pub use scoped_controls::{resolve_control_instance, resolve_control_path_instance};
 pub use scoped_event_waits::{

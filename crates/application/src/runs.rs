@@ -13,7 +13,8 @@ pub use ad_hoc::{
     AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
 };
 pub use reset::{
-    RESET_PREFIX_EVENTS, ResetRequest, ResetSource, RestoredPrefix, SourceEvent, prefix_digest,
+    RESET_PREFIX_EVENTS, ResetMade, ResetRecord, ResetRegistration, ResetRequest, ResetSource,
+    ResetState, RestoredPrefix, SourceEvent, prefix_digest,
 };
 
 use std::future::Future;
@@ -451,6 +452,28 @@ pub trait RunStore:
         run: RunId,
     ) -> impl Future<Output = Result<Option<ResetSource>, StoreError>> + Send;
 
+    /// The resets made from `source`, newest first, at most 200 (feature 018, the register `run_resets`).
+    fn run_resets(
+        &self,
+        tenant: TenantId,
+        source: RunId,
+    ) -> impl Future<Output = Result<Vec<ResetRecord>, StoreError>> + Send;
+
+    /// One reset made from `source`; `None` when there is none with that id or another run made it.
+    fn run_reset(
+        &self,
+        tenant: TenantId,
+        source: RunId,
+        reset: sagat_domain::execution::ResetId,
+    ) -> impl Future<Output = Result<Option<ResetRecord>, StoreError>> + Send;
+
+    /// The reset that created `run`; `None` when no reset did.
+    fn reset_made(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> impl Future<Output = Result<Option<ResetRecord>, StoreError>> + Send;
+
     /// Journal entries with `seq > after`, ascending. `None` when the run does not exist.
     fn journal(
         &self,
@@ -604,6 +627,10 @@ pub struct Rerun<'a> {
 pub struct ResetStart<'a> {
     pub prefix: &'a RestoredPrefix,
     pub reapply: sagat_domain::execution::ResetReapply,
+    /// The justification the caller gave, which the register keeps.
+    pub reason: &'a str,
+    /// What became of the business identifier of the source.
+    pub business: RerunBusinessId,
 }
 
 /// What a run started again does with the business identifier of the one it repeats: bound to it unless
@@ -1563,6 +1590,17 @@ where
                         })
                         .await
                         .map_err(engine_error)?;
+                    // the register says it in the same transaction, so a run made by a reset always has its entry
+                    tx.register_reset(&ResetRegistration {
+                        source: reset.prefix.source,
+                        sequence: reset.prefix.sequence(),
+                        prefix_digest: reset.prefix.digest(),
+                        reapply: reset.reapply,
+                        business: reset.business,
+                        actor: principal.subject().as_str(),
+                        reason: reset.reason,
+                    })
+                    .await?;
                 } else {
                     self.engine
                         .run(&mut tx, effects, |def, state, now| {

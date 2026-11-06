@@ -5,9 +5,11 @@
 
 use sagat_application::error::AppError;
 use sagat_application::execution::child_run_id;
-use sagat_application::runs::{RESET_PREFIX_EVENTS, RerunBusinessId, ResetRequest};
+use sagat_application::runs::{
+    RESET_PREFIX_EVENTS, RerunBusinessId, ResetRequest, ResetState, RunStore as _,
+};
 use sagat_domain::definition::WorkflowId;
-use sagat_domain::execution::{ResetReapply, RunId, RunStatus, StepStatus};
+use sagat_domain::execution::{ResetId, ResetReapply, RunId, RunStatus, StepStatus};
 use sagat_domain::identity::Role;
 use sagat_domain::workflow::NodeId;
 use serde_json::{Value, json};
@@ -151,7 +153,8 @@ async fn a_run_is_reset_to_a_point_and_goes_on_from_there_with_the_history_it_ha
         f.w.runs
             .reset(&f.w.admin, source, request(after_a, true), &key(), &ctx())
             .await
-            .expect("the reset");
+            .expect("the reset")
+            .run;
     let new = reset.info.run_id;
     assert_ne!(new, source);
     assert_eq!(reset.info.rerun_of, Some(source));
@@ -245,7 +248,8 @@ async fn a_reset_to_the_start_is_a_run_of_its_own_and_the_refusals_are_typed() {
         f.w.runs
             .reset(&f.w.admin, source, request(1, true), &key(), &ctx())
             .await
-            .expect("a reset to the start");
+            .expect("a reset to the start")
+            .run;
     assert_eq!(
         f.w.step_status(fresh.info.run_id, "a").await,
         Some(StepStatus::Ready)
@@ -364,7 +368,8 @@ async fn the_declared_state_and_the_output_of_a_signal_in_the_prefix_are_restore
         f.w.runs
             .reset(&f.w.admin, source, request(last, true), &key(), &ctx())
             .await
-            .expect("the reset");
+            .expect("the reset")
+            .run;
     let new = reset.info.run_id;
     f.w.assert_consistent(new).await;
 
@@ -416,7 +421,8 @@ async fn the_same_key_is_the_same_reset_and_another_point_under_it_is_another_re
                 &ctx(),
             )
             .await
-            .expect("first");
+            .expect("first")
+            .run;
     let again =
         f.w.runs
             .reset(
@@ -427,7 +433,8 @@ async fn the_same_key_is_the_same_reset_and_another_point_under_it_is_another_re
                 &ctx(),
             )
             .await
-            .expect("a retry");
+            .expect("a retry")
+            .run;
     assert_eq!(
         first.info.run_id, again.info.run_id,
         "a retry is answered with the run it created"
@@ -611,4 +618,325 @@ async fn a_point_past_an_event_this_version_cannot_read_has_no_rule() {
             Some("future.reset.observed".to_owned())
         )
     );
+}
+
+/// The sequences of the `step.completed` rows of a run, in order.
+async fn completions(f: &Fixture, run: RunId) -> Vec<u64> {
+    rows(f, run)
+        .await
+        .iter()
+        .filter(|row| row.1 == "step.completed")
+        .map(|row| u64::try_from(row.0).expect("small"))
+        .collect()
+}
+
+/// A row of the register as the database holds it: id, namespace, source, sequence, digest of the prefix in
+/// hex, reapply, business policy, source policy, state, failure reason, new run, actor, justification, and
+/// whether it has completed.
+type RegisterRow = (
+    uuid::Uuid,
+    uuid::Uuid,
+    uuid::Uuid,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<uuid::Uuid>,
+    String,
+    String,
+    bool,
+);
+
+async fn register(f: &Fixture, source: RunId) -> Vec<RegisterRow> {
+    sqlx::query_as(
+        "SELECT id, namespace_id, source_run_id, source_sequence, encode(prefix_digest, 'hex'), reapply, \
+                business_id_policy, source_policy, state, failure_reason, new_run_id, actor, reason, \
+                completed_at IS NOT NULL \
+         FROM run_resets WHERE source_run_id = $1 ORDER BY id",
+    )
+    .bind(source.as_uuid())
+    .fetch_all(&f.w.db.pool)
+    .await
+    .expect("the register")
+}
+
+#[tokio::test]
+async fn a_reset_is_recorded_with_what_was_asked_and_who_asked_and_a_refused_one_is_not() {
+    let f = fixture().await;
+    let source = ended_chain(&f).await;
+    let completed = completions(&f, source).await;
+
+    // a reset that is refused leaves nothing in the register
+    let refused =
+        f.w.runs
+            .reset(
+                &f.w.admin,
+                source,
+                request(completed[0], false),
+                &key(),
+                &ctx(),
+            )
+            .await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(register(&f, source).await.is_empty());
+
+    let made =
+        f.w.runs
+            .reset(
+                &f.w.admin,
+                source,
+                request(completed[0], true),
+                &key(),
+                &ctx(),
+            )
+            .await
+            .expect("the reset");
+    let record = made.reset;
+    assert_eq!(record.source, source);
+    assert_eq!(record.sequence, completed[0]);
+    assert_eq!(record.state, ResetState::Created);
+    assert_eq!(record.failure_reason, None);
+    assert_eq!(record.new_run, Some(made.run.info.run_id));
+    assert_eq!(record.reapply, ResetReapply::None);
+
+    // and the database says the same, with the digest the journal of the new run carries
+    let stored = register(&f, source).await;
+    assert_eq!(stored.len(), 1);
+    let row = &stored[0];
+    let journal_digest: String = sqlx::query_scalar(
+        "SELECT detail->>'prefix_sha256' FROM run_events WHERE run_id = $1 AND event_type = 'run.reset'",
+    )
+    .bind(made.run.info.run_id.as_uuid())
+    .fetch_one(&f.w.db.pool)
+    .await
+    .expect("the reset event");
+    assert_eq!(row.0, record.id.as_uuid());
+    assert_eq!(row.1, made.run.info.namespace_id.as_uuid(), "the namespace");
+    assert_eq!(row.2, source.as_uuid(), "the source");
+    assert_eq!(
+        row.3,
+        i64::try_from(completed[0]).expect("small"),
+        "the point"
+    );
+    assert_eq!(row.4, journal_digest, "the digest of the prefix");
+    assert_eq!(
+        (
+            row.5.as_str(),
+            row.6.as_str(),
+            row.7.as_str(),
+            row.8.as_str()
+        ),
+        ("NONE", "KEEP", "REQUIRE_TERMINAL", "CREATED")
+    );
+    assert_eq!(row.9, None);
+    assert_eq!(row.10, Some(made.run.info.run_id.as_uuid()), "the new run");
+    assert_eq!(row.11, f.w.admin.subject().as_str(), "who asked");
+    assert_eq!(row.12, request(0, false).reason, "why");
+    assert!(row.13, "it has completed");
+}
+
+#[tokio::test]
+async fn the_register_lists_the_resets_of_a_run_newest_first_and_a_retry_adds_none() {
+    let f = fixture().await;
+    let source = ended_chain(&f).await;
+    let completed = completions(&f, source).await;
+    let (first_key, second_key) = (key(), key());
+
+    let first =
+        f.w.runs
+            .reset(
+                &f.w.admin,
+                source,
+                request(completed[0], true),
+                &first_key,
+                &ctx(),
+            )
+            .await
+            .expect("first");
+    let second =
+        f.w.runs
+            .reset(
+                &f.w.admin,
+                source,
+                ResetRequest {
+                    business: RerunBusinessId::Drop,
+                    ..request(completed[1], true)
+                },
+                &second_key,
+                &ctx(),
+            )
+            .await
+            .expect("second");
+    assert_ne!(first.reset.id, second.reset.id);
+    // what was asked about the business identifier is what the register keeps
+    let policies: Vec<String> = register(&f, source)
+        .await
+        .into_iter()
+        .map(|row| row.6)
+        .collect();
+    assert_eq!(
+        policies,
+        ["KEEP", "DROP"],
+        "in the order the resets were made"
+    );
+
+    // a retry is answered with the entry of the first request
+    let retry =
+        f.w.runs
+            .reset(
+                &f.w.admin,
+                source,
+                request(completed[0], true),
+                &first_key,
+                &ctx(),
+            )
+            .await
+            .expect("a retry");
+    assert_eq!(retry.reset, first.reset);
+
+    let listed = f.w.runs.resets(&f.w.admin, source, &ctx()).await;
+    assert_eq!(
+        listed.expect("the list"),
+        vec![second.reset.clone(), first.reset.clone()],
+        "newest first, one entry for each reset"
+    );
+    assert_eq!(
+        f.w.runs
+            .reset_record(&f.w.admin, source, first.reset.id, &ctx())
+            .await
+            .expect("one reset"),
+        first.reset
+    );
+    // the run a reset created is not a source of anything yet
+    assert!(
+        f.w.runs
+            .resets(&f.w.admin, first.run.info.run_id, &ctx())
+            .await
+            .expect("none")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn the_register_is_private_to_the_tenant_and_to_the_run_that_made_the_reset() {
+    let f = fixture().await;
+    let source = ended_chain(&f).await;
+    let other_source = ended_chain(&f).await;
+    let completed = completions(&f, source).await;
+    let made =
+        f.w.runs
+            .reset(
+                &f.w.admin,
+                source,
+                request(completed[0], true),
+                &key(),
+                &ctx(),
+            )
+            .await
+            .expect("the reset");
+    let id = made.reset.id;
+
+    // the store itself filters by tenant, whatever the service asked before it
+    let stranger = f.w.other_admin.tenant_id();
+    assert!(
+        f.w.store
+            .run_resets(stranger, source)
+            .await
+            .expect("none")
+            .is_empty()
+    );
+    assert_eq!(f.w.store.run_reset(stranger, source, id).await, Ok(None));
+    assert_eq!(
+        f.w.store.reset_made(stranger, made.run.info.run_id).await,
+        Ok(None)
+    );
+    assert!(
+        f.w.store
+            .reset_made(f.w.admin.tenant_id(), made.run.info.run_id)
+            .await
+            .expect("found")
+            .is_some()
+    );
+    // another tenant sees neither the run nor its resets
+    assert_eq!(
+        f.w.runs.resets(&f.w.other_admin, source, &ctx()).await,
+        Err(AppError::NotFound)
+    );
+    assert_eq!(
+        f.w.runs
+            .reset_record(&f.w.other_admin, source, id, &ctx())
+            .await,
+        Err(AppError::NotFound)
+    );
+    // another run of the same tenant did not make it, and an id nobody made is not there
+    assert_eq!(
+        f.w.runs
+            .reset_record(&f.w.admin, other_source, id, &ctx())
+            .await,
+        Err(AppError::NotFound)
+    );
+    assert_eq!(
+        f.w.runs
+            .reset_record(&f.w.admin, source, ResetId::generate(), &ctx())
+            .await,
+        Err(AppError::NotFound)
+    );
+    assert!(
+        f.w.runs
+            .resets(&f.w.admin, other_source, &ctx())
+            .await
+            .expect("none")
+            .is_empty()
+    );
+    // a viewer reads the register, as it reads runs
+    let viewer = f.w.member("viewer-of-the-register", Role::Viewer).await;
+    assert_eq!(
+        f.w.runs
+            .reset_record(&viewer, source, id, &ctx())
+            .await
+            .expect("a viewer reads"),
+        made.reset
+    );
+}
+
+#[tokio::test]
+async fn what_a_reset_is_never_changes_and_a_completed_one_stays_as_it_completed() {
+    let f = fixture().await;
+    let source = ended_chain(&f).await;
+    let completed = completions(&f, source).await;
+    f.w.runs
+        .reset(
+            &f.w.admin,
+            source,
+            request(completed[0], true),
+            &key(),
+            &ctx(),
+        )
+        .await
+        .expect("the reset");
+
+    // the database refuses, whoever asks (the guard fires for the owner too)
+    for change in [
+        "UPDATE run_resets SET source_sequence = source_sequence + 1 WHERE source_run_id = $1",
+        "UPDATE run_resets SET reason = 'another justification altogether' WHERE source_run_id = $1",
+        "UPDATE run_resets SET actor = 'someone-else' WHERE source_run_id = $1",
+        "UPDATE run_resets SET state = 'FAILED', failure_reason = 'ADMISSION_REFUSED', new_run_id = NULL \
+         WHERE source_run_id = $1",
+    ] {
+        let refused = sqlx::query(change)
+            .bind(source.as_uuid())
+            .execute(&f.w.db.pool)
+            .await
+            .expect_err(change);
+        assert!(
+            refused.to_string().contains("never changes")
+                || refused.to_string().contains("stays as it completed")
+                || refused.to_string().contains("run_resets_"),
+            "{change}: {refused}"
+        );
+    }
+    assert_eq!(register(&f, source).await.len(), 1);
 }

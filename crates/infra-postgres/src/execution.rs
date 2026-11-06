@@ -1577,6 +1577,31 @@ impl RunStore for PgRunStore {
         resets::read_source(&self.pool, tenant, run).await
     }
 
+    async fn run_resets(
+        &self,
+        tenant: TenantId,
+        source: RunId,
+    ) -> Result<Vec<sagat_application::runs::ResetRecord>, StoreError> {
+        resets::list(&self.pool, tenant, source).await
+    }
+
+    async fn run_reset(
+        &self,
+        tenant: TenantId,
+        source: RunId,
+        reset: sagat_domain::execution::ResetId,
+    ) -> Result<Option<sagat_application::runs::ResetRecord>, StoreError> {
+        resets::get(&self.pool, tenant, source, reset).await
+    }
+
+    async fn reset_made(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> Result<Option<sagat_application::runs::ResetRecord>, StoreError> {
+        resets::made(&self.pool, tenant, run).await
+    }
+
     async fn rerun_source(
         &self,
         tenant: TenantId,
@@ -3696,6 +3721,13 @@ impl RunTx for PgRunTx {
         prefix: &'a sagat_application::runs::RestoredPrefix,
     ) -> Result<(), StoreError> {
         resets::restore(self, prefix).await
+    }
+
+    async fn register_reset<'a>(
+        &'a mut self,
+        registration: &'a sagat_application::runs::ResetRegistration<'a>,
+    ) -> Result<(), StoreError> {
+        resets::register(self, registration).await
     }
 
     async fn remember_start_served<'a>(

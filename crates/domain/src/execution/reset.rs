@@ -14,6 +14,12 @@ use super::{
 };
 use crate::workflow::{NodeId, NodeKind, WorkflowDefinition};
 
+uuid_id!(
+    /// Identifier of a reset: the entry of the register that says a run was created from the prefix of another
+    /// (`run_resets`, feature 018).
+    ResetId
+);
+
 /// What a reset does with an event type of the prefix it re-emits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetRule {

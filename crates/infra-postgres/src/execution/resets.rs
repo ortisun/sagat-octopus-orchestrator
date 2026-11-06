@@ -9,10 +9,14 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use sagat_application::execution::{Actor, Effects, RunTx as _};
-use sagat_application::runs::{ResetSource, RestoredPrefix, SourceEvent};
-use sagat_domain::execution::{AddressedRunEvent, RunEvent};
+use sagat_application::runs::{
+    RerunBusinessId, ResetRecord, ResetRegistration, ResetSource, ResetState, RestoredPrefix,
+    SourceEvent,
+};
+use sagat_domain::execution::{AddressedRunEvent, ResetId, ResetReapply, RunEvent};
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use sqlx::postgres::PgRow;
 
 use super::{
     NodeId, PgRunTx, StoreError, TenantId, Uuid, col, corrupt, decode, event_instance_path,
@@ -263,4 +267,118 @@ async fn restore_declared_state(
         return Err(corrupt("the declared state of a reset run"));
     }
     Ok(())
+}
+
+/// Writes the entry of the register for the run of `tx` (see
+/// [`sagat_application::execution::RunTx::register_reset`]): a reset of an ended source is recorded as
+/// created, in the transaction that creates its run.
+pub(super) async fn register(
+    tx: &mut PgRunTx,
+    registration: &ResetRegistration<'_>,
+) -> Result<(), StoreError> {
+    // the name of the policy is written by the statement: a string literal in Rust that reads like a command
+    // is audited as one
+    let dropped = matches!(registration.business, RerunBusinessId::Drop);
+    sqlx::query(
+        "INSERT INTO run_resets \
+         (tenant_id, namespace_id, id, source_run_id, source_sequence, prefix_digest, reapply, \
+          business_id_policy, source_policy, state, new_run_id, actor, reason, created_at, completed_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 THEN 'DROP' ELSE 'KEEP' END, \
+                 'REQUIRE_TERMINAL', 'CREATED', $9, $10, $11, $12, $12)",
+    )
+    .bind(tx.info.tenant_id.as_uuid())
+    .bind(tx.info.namespace_id.as_uuid())
+    .bind(ResetId::generate().as_uuid())
+    .bind(registration.source.as_uuid())
+    .bind(i64::try_from(registration.sequence).map_err(|_| corrupt("sequence"))?)
+    .bind(registration.prefix_digest.as_bytes().as_slice())
+    .bind(registration.reapply.as_str())
+    .bind(dropped)
+    .bind(tx.info.run_id.as_uuid())
+    .bind(registration.actor)
+    .bind(registration.reason)
+    .bind(tx.now)
+    .execute(&mut *tx.tx)
+    .await
+    .map_err(store_error)?;
+    Ok(())
+}
+
+fn record(row: &PgRow) -> Result<ResetRecord, StoreError> {
+    let state: String = col(row, "state")?;
+    let reapply: String = col(row, "reapply")?;
+    let sequence: i64 = col(row, "source_sequence")?;
+    let new_run: Option<Uuid> = col(row, "new_run_id")?;
+    Ok(ResetRecord {
+        id: ResetId::new(col(row, "id")?),
+        source: RunId::new(col(row, "source_run_id")?),
+        sequence: u64::try_from(sequence).map_err(|_| corrupt("reset sequence"))?,
+        state: ResetState::parse(&state).ok_or_else(|| corrupt("reset state"))?,
+        failure_reason: col(row, "failure_reason")?,
+        new_run: new_run.map(RunId::new),
+        reapply: ResetReapply::parse(&reapply).ok_or_else(|| corrupt("reset reapply"))?,
+        created_at: col(row, "created_at")?,
+    })
+}
+
+/// The resets made from `source`, newest first (the ids are time-ordered), at most 200.
+pub(super) async fn list(
+    pool: &PgPool,
+    tenant: TenantId,
+    source: RunId,
+) -> Result<Vec<ResetRecord>, StoreError> {
+    sqlx::query(
+        "SELECT id, source_run_id, source_sequence, state, failure_reason, new_run_id, reapply, created_at \
+         FROM run_resets WHERE tenant_id = $1 AND source_run_id = $2 ORDER BY id DESC LIMIT 200",
+    )
+    .bind(tenant.as_uuid())
+    .bind(source.as_uuid())
+    .fetch_all(pool)
+    .await
+    .map_err(store_error)?
+    .iter()
+    .map(record)
+    .collect()
+}
+
+/// One reset made from `source`.
+pub(super) async fn get(
+    pool: &PgPool,
+    tenant: TenantId,
+    source: RunId,
+    reset: ResetId,
+) -> Result<Option<ResetRecord>, StoreError> {
+    sqlx::query(
+        "SELECT id, source_run_id, source_sequence, state, failure_reason, new_run_id, reapply, created_at \
+         FROM run_resets WHERE tenant_id = $1 AND source_run_id = $2 AND id = $3",
+    )
+    .bind(tenant.as_uuid())
+    .bind(source.as_uuid())
+    .bind(reset.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(store_error)?
+    .as_ref()
+    .map(record)
+    .transpose()
+}
+
+/// The reset that created `run`.
+pub(super) async fn made(
+    pool: &PgPool,
+    tenant: TenantId,
+    run: RunId,
+) -> Result<Option<ResetRecord>, StoreError> {
+    sqlx::query(
+        "SELECT id, source_run_id, source_sequence, state, failure_reason, new_run_id, reapply, created_at \
+         FROM run_resets WHERE tenant_id = $1 AND new_run_id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_optional(pool)
+    .await
+    .map_err(store_error)?
+    .as_ref()
+    .map(record)
+    .transpose()
 }

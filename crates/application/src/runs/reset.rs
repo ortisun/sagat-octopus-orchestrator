@@ -4,8 +4,8 @@
 //! cases of the points, the preview and the reset.
 
 use sagat_domain::execution::{
-    AddressedRunEvent, ResetPlan, ResetPoint, ResetReapply, ResetRefusal, RunId, reset_plan,
-    reset_points,
+    AddressedRunEvent, ResetId, ResetPlan, ResetPoint, ResetReapply, ResetRefusal, RunId,
+    reset_plan, reset_points,
 };
 use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
@@ -37,6 +37,77 @@ fn refused(reason: &'static str) -> AppError {
         reason,
         event_type: None,
     }
+}
+
+/// Where a reset is (`state` of the contract). `Failed` and `PendingSource` are written by the reset that waits
+/// for its source to end (`CANCEL_SOURCE`); a reset of an ended source is `Created` when it is recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetState {
+    PendingSource,
+    Created,
+    Failed,
+}
+
+impl ResetState {
+    /// The closed name the register stores and the API answers.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PendingSource => "PENDING_SOURCE",
+            Self::Created => "CREATED",
+            Self::Failed => "FAILED",
+        }
+    }
+
+    /// The state a stored name stands for; `None` for a name this version does not know.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "PENDING_SOURCE" => Some(Self::PendingSource),
+            "CREATED" => Some(Self::Created),
+            "FAILED" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+/// An entry of the register of resets (`run_resets`, `Reset` of the contract): that a run was created from the
+/// prefix of another, from which point, by whom and with what outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResetRecord {
+    pub id: ResetId,
+    pub source: RunId,
+    /// The sequence of the last event of the source that the new run keeps.
+    pub sequence: u64,
+    pub state: ResetState,
+    /// Why a reset that failed did (`FAILED` only).
+    pub failure_reason: Option<String>,
+    /// The run the reset created (`CREATED` only).
+    pub new_run: Option<RunId>,
+    pub reapply: ResetReapply,
+    pub created_at: OffsetDateTime,
+}
+
+/// What a reset writes to the register in the transaction that creates its run.
+#[derive(Debug, Clone, Copy)]
+pub struct ResetRegistration<'a> {
+    pub source: RunId,
+    pub sequence: u64,
+    /// The digest of the prefix re-emitted, which `run.reset` carries too.
+    pub prefix_digest: sagat_domain::workflow::Digest,
+    pub reapply: ResetReapply,
+    pub business: RerunBusinessId,
+    /// The subject that asked.
+    pub actor: &'a str,
+    /// The justification, in plain text; the register keeps it as content of the tenant.
+    pub reason: &'a str,
+}
+
+/// What a reset answers: the entry of the register and the run it created.
+#[derive(Debug, Clone)]
+pub struct ResetMade {
+    pub reset: ResetRecord,
+    pub run: RunRecord,
 }
 
 /// One row of the journal of a source run, decoded, with what a reset keeps of it: who did it, when, which
@@ -242,7 +313,7 @@ where
         request: ResetRequest<'_>,
         key: &str,
         ctx: &RequestContext,
-    ) -> Result<RunRecord, AppError> {
+    ) -> Result<ResetMade, AppError> {
         principal.authorize(Permission::RunOperate)?;
         principal.authorize(Permission::RunStart)?;
         let reason = request.reason.trim();
@@ -277,34 +348,85 @@ where
         let Some(origin) = self.store.rerun_source(principal.tenant_id(), id).await? else {
             return Err(self.missing(principal, id, ctx).await);
         };
-        self.start_with(
-            principal,
-            &StartRun {
-                namespace: &origin.namespace,
-                workflow: record.info.workflow_id,
-                version: Some(record.info.version_id),
-                input: &origin.input,
-                correlation_id: record.info.correlation_id.as_deref(),
-                deadline: None,
-                key,
-            },
-            keep_business_id(record.info.business_id.as_ref(), request.business),
-            Some(Rerun {
-                of: id,
-                reason,
-                business: request.business,
-                reset: Some(ResetStart {
-                    prefix: &prefix,
-                    reapply: request.reapply,
+        let started = self
+            .start_with(
+                principal,
+                &StartRun {
+                    namespace: &origin.namespace,
+                    workflow: record.info.workflow_id,
+                    version: Some(record.info.version_id),
+                    input: &origin.input,
+                    correlation_id: record.info.correlation_id.as_deref(),
+                    deadline: None,
+                    key,
+                },
+                keep_business_id(record.info.business_id.as_ref(), request.business),
+                Some(Rerun {
+                    of: id,
+                    reason,
+                    business: request.business,
+                    reset: Some(ResetStart {
+                        prefix: &prefix,
+                        reapply: request.reapply,
+                        reason,
+                        business: request.business,
+                    }),
                 }),
-            }),
-            None,
-            None,
-            None,
-            ctx,
-        )
-        .await
-        .map(|started| started.run)
+                None,
+                None,
+                None,
+                ctx,
+            )
+            .await?;
+        let run = started.run;
+        // the entry of the register was written with the run, in the same transaction, so a retry finds the
+        // entry of the first request
+        let Some(reset) = self
+            .store
+            .reset_made(principal.tenant_id(), run.info.run_id)
+            .await?
+        else {
+            tracing::error!(run = %run.info.run_id, "a run created by a reset has no entry in the register");
+            return Err(AppError::Internal);
+        };
+        Ok(ResetMade { reset, run })
+    }
+
+    /// The resets made from a run, newest first (at most 200).
+    ///
+    /// # Errors
+    /// [`AppError::Forbidden`] without `run:read`; [`AppError::NotFound`] for a run the caller cannot see.
+    pub async fn resets(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        ctx: &RequestContext,
+    ) -> Result<Vec<ResetRecord>, AppError> {
+        principal.authorize(Permission::RunRead)?;
+        let record = self.get(principal, id, ctx).await?;
+        Ok(self
+            .store
+            .run_resets(principal.tenant_id(), record.info.run_id)
+            .await?)
+    }
+
+    /// One reset made from a run.
+    ///
+    /// # Errors
+    /// As [`Self::resets`]; [`AppError::NotFound`] for a reset that does not exist or that another run made.
+    pub async fn reset_record(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        reset: ResetId,
+        ctx: &RequestContext,
+    ) -> Result<ResetRecord, AppError> {
+        principal.authorize(Permission::RunRead)?;
+        let record = self.get(principal, id, ctx).await?;
+        self.store
+            .run_reset(principal.tenant_id(), record.info.run_id, reset)
+            .await?
+            .ok_or(AppError::NotFound)
     }
 }
 

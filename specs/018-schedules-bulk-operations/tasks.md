@@ -1102,7 +1102,8 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   the_declared_state_and_the_output_of_a_signal_in_the_prefix_are_restored,
   the_same_key_is_the_same_reset_and_another_point_under_it_is_another_request}` (real PostgreSQL, owner and `sagat_app`)
   and by a battery of 14 mutants of the store and the service, all killed. Not done: the 022 permit and the 020 attribute
-  fold (features not approved), the `run_resets` register, scoped prefixes and the configurable ceiling (G1980).
+  fold (features not approved), scoped prefixes and the configurable ceiling (G1980). The `run_resets` register is
+  built (D1978, below).
 - [ ] T018-054 [US6] Reset service and routes (points, preview, reset, list/get) —
   `crates/application/src/runs/reset.rs`, `crates/api-http/src/routes/resets.rs` — contract tests —
   FR-018-035..037.
@@ -1117,9 +1118,18 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   at it), `RESET_NOT_SUPPORTED_FOR_SOURCE` for a child run, and `RESET_RULE_MISSING` with the type named (a row of a
   newer kind after the run's last event); a battery of 6 mutants of those three reasons was killed. The branches of
   `RESET_NOT_SUPPORTED_FOR_SOURCE` for a member of a continuation chain and for a run of a database execution **have no
-  test yet**. Not done: the
-  routes (points, preview, reset, list/get), the OpenAPI operations and Studio types, the `run_resets` table that list/get
-  read, the contract tests and the rows of the error table.
+  test yet**.
+  *Also done 2026-11-05 (D1978):* the register `run_resets` (migration `20270107000000`: the table, a guard trigger, the
+  quota triggers for the justification, grants, the storage classification, the three upgrade oracles moved), written
+  in the transaction that creates the run (`RunTx::register_reset`), `reset()` answering `ResetMade { reset, run }`,
+  and `resets` / `reset_record` for the list and the get. Proved by `reset::{a_reset_is_recorded_with_what_was_asked_and_who_asked_and_a_refused_one_is_not,
+  the_register_lists_the_resets_of_a_run_newest_first_and_a_retry_adds_none,
+  the_register_is_private_to_the_tenant_and_to_the_run_that_made_the_reset,
+  what_a_reset_is_never_changes_and_a_completed_one_stays_as_it_completed}` and a battery of 17 mutants (13 of the
+  store and 4 of the guard trigger), all killed, then 3 more of the business policy after the runtime-privilege audit
+  (which reads a bare `"DROP"` in Rust as a statement) made the statement write the name: all killed. Not done: the five routes (`listResetPoints`, `previewReset`,
+  `resetRun`, `listRunResets`, `getRunReset`), the OpenAPI operations and Studio types, the battery body, the contract
+  tests and the rows of the error table; `PENDING_SOURCE` / `FAILED` entries (T018-057).
 - [ ] T018-055 [US6] Replay = projection at every eligible point (corpus incl. a 022 run-permit holder and
   020 search-attribute upserts); outputs and attribute rows equal the source at N; holder count = open
   non-restored acquisitions; ceiling; crash during reset — `tests/integration/schedules-bulk-operations/reset.rs`

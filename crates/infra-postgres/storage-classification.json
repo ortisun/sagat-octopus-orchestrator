@@ -2323,6 +2323,168 @@
       ]
     },
     {
+      "table": "run_resets",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The subject that asked for the reset: CHECK limits it to 1 to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "business_id_policy",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only KEEP or DROP."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "failure_reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only the five closed reasons of the contract and only when the state is FAILED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "prefix_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "A SHA-256 digest of the canonical encoding of the restored rows: CHECK requires exactly 32 bytes."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "reapply",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only NONE, SIGNALS, UPDATES or ALL."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "reapply_report",
+      "sql_type": "jsonb",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "A closed list of at most 256 objects of sequence, kind, outcome and reason code, no customer text: CHECK requires an array of at most 256 elements and 64 KiB."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": null,
+        "evidence": "The justification of the operator, 8 to 2,000 characters by CHECK; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "source_policy",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only REQUIRE_TERMINAL or CANCEL_SOURCE."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
+      "table": "run_resets",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only PENDING_SOURCE, CREATED or FAILED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/resets.rs"
+      ]
+    },
+    {
       "table": "run_saga_entries",
       "column": "after",
       "sql_type": "_text",
