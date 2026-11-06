@@ -1186,10 +1186,15 @@ The other fixes were wording:
     does not exist, one that is not a database step, the write itself, a database step after the write, and one on another branch
     (the two arms of a condition) are refused as `INVALID_ICEBERG_NODE`. It is a rule of the graph, so it is checked where the graph is
     built (`DefinitionGraph::new`, after the acyclic and reachable checks), for the codec and for any caller of
-    `WorkflowDefinition::new`; the help of `INVALID_ICEBERG_NODE` says it.
+    `WorkflowDefinition::new`; the help of `INVALID_ICEBERG_NODE` says it. Two things a review found are part of the rule: a join is
+    not an edge of the graph, so a database step inside a parallel branch or a saga body reaches what follows the node that owns
+    the branch (and not a sibling branch); and the error edge of the source itself is not a way past it, since a write reached
+    only when the source failed has no result to read (the error edge of a later step is fine).
   - *What it does not prove.* That a database step reaches the write does not mean it ran on every path (a condition can skip it), so the
     attempt that runs the write still has to cope with a result that is not there; that is not publication's to prove.
   - *Cost.* The search keeps the set of nodes it has been to; without it a chain of branches has an exponential number of paths, a risk
     at publication. A test builds forty diamonds with a limit of ten seconds.
-  - *Evidence.* 9 tests in `crates/domain/tests/iceberg_source.rs` and one in `crates/infra-ir/tests/iceberg_write.rs`, written first (the five
-    refusals failed). 7 mutations of the check; one survived the first tests (the visited set) and the linear-time test caught it.
+  - *Evidence.* 15 tests in `crates/domain/tests/iceberg_source.rs` and one in `crates/infra-ir/tests/iceberg_write.rs`, written first (the
+    refusals failed; so did the parallel, saga and failed-source cases once a review asked for them). Two rounds of mutation: 7 of the
+    first version (one survived: the visited set, caught by the linear-time test) and 13 of the version that follows a join and drops
+    the error edge of the source (one survived and showed a call that nothing needed, which is removed); all caught.

@@ -7,14 +7,14 @@
 
 mod common;
 
-use common::{activity, condition, end, expr, id};
+use common::{activity, condition, end, expr, id, saga};
 use sagat_domain::{
     database::{
         ColumnMapping, ConnectionRef, DatabaseLimits, DatabaseOperation, IcebergWrite,
         IcebergWriteParts, LakeLimits, OperationKind, RecordSource, TableIdentifier, WriteIntent,
     },
     identity::Slug,
-    workflow::{Node, WorkflowDefinition, WorkflowError},
+    workflow::{JoinPolicy, Node, WorkflowDefinition, WorkflowError},
 };
 
 fn query(node: &str, next: &str) -> Node {
@@ -179,4 +179,126 @@ fn a_long_chain_of_branches_is_searched_in_linear_time() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("the search must not try every path of a long chain of branches");
     assert_eq!(refused.err(), Some(WorkflowError::InvalidIcebergNode));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// What a review found: a join is not an edge, and the error edge of the source is not a way past it.
+
+/// A database step that ends its branch: it hands control back to the node that owns the branch, not to a successor.
+fn read_node(node: &str) -> Node {
+    let operation = DatabaseOperation::new(
+        ConnectionRef::new(Slug::parse("orders-db").expect("name"), None).expect("reference"),
+        OperationKind::Query,
+        "SELECT 1",
+        Vec::new(),
+        DatabaseLimits::default(),
+    )
+    .expect("a valid operation");
+    Node::database(id(node), operation)
+}
+
+fn parallel_of(branches: &[&str], next: &str) -> Node {
+    Node::new(
+        id("fork"),
+        sagat_domain::workflow::NodeKind::Parallel {
+            branches: branches.iter().map(|branch| id(branch)).collect(),
+            join: JoinPolicy::All,
+        },
+    )
+    .with_next(id(next))
+}
+
+#[test]
+fn a_database_step_inside_a_parallel_branch_is_a_source_after_the_join() {
+    // `read` ends its branch and the join hands control to `save`: the result is there when the write starts.
+    definition(
+        "fork",
+        vec![
+            parallel_of(&["read", "other"], "save"),
+            read_node("read"),
+            activity("other"),
+            save("read", "done"),
+            end("done"),
+        ],
+    )
+    .expect("a result produced in a branch is there after the join");
+}
+
+#[test]
+fn a_database_step_inside_a_saga_is_a_source_after_the_saga() {
+    definition(
+        "book",
+        vec![
+            saga("book", "read").with_next(id("save")),
+            read_node("read"),
+            save("read", "done"),
+            end("done"),
+        ],
+    )
+    .expect("a result produced in a saga is there after it");
+}
+
+#[test]
+fn a_database_step_in_a_sibling_branch_is_not_a_source() {
+    // The two branches run side by side: `read` does not run before `save`.
+    let refused = definition(
+        "fork",
+        vec![
+            parallel_of(&["read", "save"], "done"),
+            read_node("read"),
+            Node::iceberg(
+                id("save"),
+                save("read", "done").iceberg_write().expect("write").clone(),
+            ),
+            end("done"),
+        ],
+    );
+    assert_eq!(refused.err(), Some(WorkflowError::InvalidIcebergNode));
+}
+
+#[test]
+fn a_write_reached_only_when_the_source_failed_has_no_result_to_read() {
+    let refused = definition(
+        "read",
+        vec![
+            query("read", "done").with_on_error(id("save")),
+            save("read", "done"),
+            end("done"),
+        ],
+    );
+    assert_eq!(refused.err(), Some(WorkflowError::InvalidIcebergNode));
+}
+
+#[test]
+fn a_write_reached_through_the_error_edge_of_a_later_step_still_has_the_result() {
+    // `read` succeeded and `fetch` after it failed: the result of `read` is there.
+    definition(
+        "read",
+        vec![
+            query("read", "fetch"),
+            activity("fetch")
+                .with_next(id("done"))
+                .with_on_error(id("save")),
+            save("read", "done"),
+            end("done"),
+        ],
+    )
+    .expect("the source ran, and a later step failed");
+}
+
+#[test]
+fn a_database_step_early_in_a_branch_is_a_source_after_the_join() {
+    // `read` is not the last node of its branch: control goes on to `mid`, the branch ends there, and the join follows.
+    definition(
+        "fork",
+        vec![
+            parallel_of(&["read", "other"], "save"),
+            read_node("read").with_next(id("mid")),
+            activity("mid"),
+            activity("other"),
+            save("read", "done"),
+            end("done"),
+        ],
+    )
+    .expect("a result produced early in a branch is there after the join");
 }
