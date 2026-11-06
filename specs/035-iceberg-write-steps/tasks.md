@@ -949,6 +949,12 @@ one commit carries the key.
   gone from publication; a run of an Iceberg write is refused at creation until T035-055. Not done: `records.databaseResult` naming an
   earlier root-level database step (G035-038 point 2). The cases of `publication.rs` (T035-048) are in the lifecycle scenario of
   `integration_database_connections` (D035-089), where the world and the OpenBao secret are.
+
+  *2026-11-06, `records.databaseResult` done (D035-090):* the graph refuses a database result that names a node that does not
+  exist, is not a database step, is the write itself, runs after it or is on another branch. Still open before this can be ticked:
+  the levels declared by a `recordSchema` (the codec refuses it until T035-085, so the stricter-of rule reads the source's schema
+  alone), and the `upsert` case of T035-048 (upsert is refused by the codec until T035-080/085, so the mode case is tested with an
+  append against a connection that allows overwriting only).
 - [ ] T035-055 [US02] Pin admission (T3) in `crates/application/src/runs.rs` and
   `crates/infra-postgres/src/database.rs`:
   - connection pins on direct, child, event, rerun and ad hoc paths;

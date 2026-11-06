@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use crate::database::{
     DatabaseOperation, EgressField, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
-    MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind,
+    MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind, RecordSource,
 };
 use crate::execution::{ApprovalPolicy, ExecutionInstanceId};
 use crate::identity::{Slug, clip};
@@ -1762,6 +1762,7 @@ impl DefinitionGraph {
         check_reachable(&map, &entrypoint)?;
         let regions = parallel_regions(&map)?;
         let saga_regions = saga_regions(&map)?;
+        check_iceberg_sources(&map, &regions, &saga_regions)?;
         let scopes = innermost_scopes(&regions, &saga_regions);
         if kind == GraphKind::Body {
             check_body_return(&map, &entrypoint, &scopes)?;
@@ -1803,6 +1804,97 @@ fn scope_error(node: &NodeId, reason: &'static str) -> WorkflowError {
     WorkflowError::InvalidScope {
         node: node.clone(),
         reason,
+    }
+}
+
+/// The database step an Apache Iceberg write reads its records from runs before the write: it exists, it is a managed
+/// database step, and control can pass from it to the write, so its result is there when the write starts (G035-035 point 2).
+fn check_iceberg_sources(
+    map: &BTreeMap<NodeId, Node>,
+    parallels: &Regions,
+    sagas: &BTreeMap<NodeId, BTreeSet<NodeId>>,
+) -> Result<(), WorkflowError> {
+    // The owner of every branch and saga body a node is in: the join, or the end of the saga, hands control on from there.
+    let mut owners: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    for (owner, regions) in parallels {
+        for member in regions.iter().flatten() {
+            owners
+                .entry(member.clone())
+                .or_default()
+                .push(owner.clone());
+        }
+    }
+    for (owner, region) in sagas {
+        for member in region {
+            owners
+                .entry(member.clone())
+                .or_default()
+                .push(owner.clone());
+        }
+    }
+    for node in map.values() {
+        let Some(RecordSource::DatabaseResult(source)) =
+            node.iceberg_write().map(IcebergWrite::records)
+        else {
+            continue;
+        };
+        let runs_before = map
+            .get(source)
+            .is_some_and(|origin| origin.database_operation().is_some())
+            && can_reach(map, &owners, source, &node.id);
+        if !runs_before {
+            return Err(WorkflowError::InvalidIcebergNode);
+        }
+    }
+    Ok(())
+}
+
+/// Whether control can pass from `from` to `to` after `from` has succeeded: along the edges of the graph (which
+/// `check_acyclic` has shown finite), except the error edge of `from` itself, which is taken when there is no result, and
+/// from the end of a branch or of a saga body to the node that follows the node that owns it. A join is not an edge of the
+/// graph, so without the second rule a step in a branch could never reach what comes after the join.
+fn can_reach<'a>(
+    map: &'a BTreeMap<NodeId, Node>,
+    owners: &BTreeMap<NodeId, Vec<NodeId>>,
+    from: &NodeId,
+    to: &NodeId,
+) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut pending: Vec<&'a NodeId> = Vec::new();
+    if let Some(origin) = map.get(from) {
+        let mut successors = origin.successors();
+        // `successors` lists the error edge last.
+        if origin.on_error().is_some() {
+            successors.pop();
+        }
+        pending.extend(successors);
+    }
+    // Every branch and saga body the source is in, however deeply nested, is an owner of it, so once is enough: nothing the
+    // walk reaches afterwards is inside a region the source is not in, except by passing through the node that owns it.
+    push_continuations(map, owners, from, &mut pending);
+    while let Some(current) = pending.pop() {
+        if current == to {
+            return true;
+        }
+        if !seen.insert(current) {
+            continue;
+        }
+        if let Some(node) = map.get(current) {
+            pending.extend(node.successors());
+        }
+    }
+    false
+}
+
+/// What follows the nodes that own the branches or the saga body `node` is in, once they are done.
+fn push_continuations<'a>(
+    map: &'a BTreeMap<NodeId, Node>,
+    owners: &BTreeMap<NodeId, Vec<NodeId>>,
+    node: &NodeId,
+    pending: &mut Vec<&'a NodeId>,
+) {
+    for owner in owners.get(node).into_iter().flatten() {
+        pending.extend(map.get(owner).and_then(Node::next));
     }
 }
 

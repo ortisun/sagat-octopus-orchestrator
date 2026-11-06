@@ -400,3 +400,56 @@ fn an_invalid_iceberg_node_is_diagnosed_as_one_and_not_as_an_unknown_type() {
         "{issues:?}"
     );
 }
+
+/// `records.databaseResult` names a node, and the graph decides whether that node can be the source (G035-035 point 2):
+/// the codec reports it as the invalid Iceberg node it is.
+#[test]
+fn a_database_result_must_name_a_database_step_that_runs_before_the_write() {
+    let read = json!({"id": "read", "type": "database", "connectionRef": {"name": "orders-db"},
+        "operation": "query", "statement": "SELECT 1"});
+    let save = |source: &str| {
+        json!({"id": "save", "type": "icebergWrite", "connectionRef": {"name": "lake-main"},
+            "table": {"namespace": ["sales"], "name": "orders"}, "mode": "append",
+            "records": {"databaseResult": source}})
+    };
+    let end = json!({"id": "done", "type": "end"});
+    let with_next = |mut node: Value, next: &str| {
+        node["next"] = json!(next);
+        node
+    };
+    let cases = [
+        (
+            "a node that does not exist",
+            "save",
+            vec![with_next(save("ghost"), "done"), end.clone()],
+        ),
+        (
+            "the write itself",
+            "save",
+            vec![with_next(save("save"), "done"), end.clone()],
+        ),
+        (
+            "a database step that runs after the write",
+            "save",
+            vec![
+                with_next(save("read"), "read"),
+                with_next(read.clone(), "done"),
+                end.clone(),
+            ],
+        ),
+    ];
+    for (label, entrypoint, nodes) in cases {
+        let doc = json!({
+            "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+            "metadata": {"name": "lake-flow"}, "entrypoint": entrypoint, "nodes": nodes
+        });
+        let refused = JsonIrCodec.parse(doc.to_string().as_bytes());
+        assert!(
+            matches!(
+                refused,
+                Err(IrError::Invalid(WorkflowError::InvalidIcebergNode))
+            ),
+            "{label}: {refused:?}"
+        );
+    }
+}
