@@ -1059,7 +1059,17 @@ async fn outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry() 
     assert_eq!(failed.headers()["cache-control"], "no-store");
     let failed = json_of(failed).await;
     assert_eq!(failed["code"], "INTERNAL");
-    assert!(!failed.to_string().contains("777"));
+    // The ids of the request are random hexadecimal: any three digits can be in them (this assertion failed in CI by
+    // reading `traceId` as if it were a leak), so what is searched is the error without them.
+    let mut told = failed.clone();
+    if let Some(object) = told.as_object_mut() {
+        object.remove("traceId");
+        object.remove("requestId");
+    }
+    assert!(
+        !told.to_string().contains("777"),
+        "the balance leaked: {told}"
+    );
     assert!(!failed.to_string().contains("injected"));
 
     let rolled_back: (i64, i64, i64, i64, i64) = sqlx::query_as(
