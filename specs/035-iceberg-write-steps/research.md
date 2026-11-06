@@ -1358,3 +1358,33 @@ The other fixes were wording:
   - *Evidence.* 24 new tests in `test_config_hygiene.py` (the hostile table served over real HTTP, 14 keys that must not pass, the six
     families that must, a value that is not text, the provider) and 2 premise tests; 18 mutations of the filter, all caught (one needed a
     corrected mutation to be applied). `runners/lake`: 424 passed, 1 skipped; `ruff check`, `ruff format --check` and strict `mypy` clean.
+- **D035-095 — An attempt writes its data files under one directory, and the host deletes exactly that directory's files when a commit
+  is refused.** T035-057, third part (D035-030 step 4, FR-035-020). **Decided by: delegate** (the owner delegated the decisions of this
+  feature).
+  - *Measured* (2026-11-06, PyIceberg 0.12.0, a SQL catalog and a file warehouse). Setting `write.data.path` on the loaded table object, in
+    memory, to `<data location>/<attempt id>` puts every data file of the next append in that directory, and the stored table never has the
+    property. A commit that is refused (409) leaves **only the data file** there: PyIceberg removes the manifests it built for the refused
+    commit (the metadata directory is the same before and after) but cannot know the data files, which is the leak FR-035-020 asks the host
+    to close.
+  - *`pin_attempt_directory(table, attempt_id)`* (`runners/lake/sagat_lake/attempt.py`) sets it and returns the directory. The data
+    location is the table's own `write.data.path` or `<location>/data`, computed from the properties and not by asking PyIceberg for
+    its location provider, which imports the class a table names. The id is 1 to 64 letters, digits and hyphens and starts with a letter or a
+    digit, so it cannot name another directory. A table laid out by hash (`write.object-storage.enabled`) keeps its files below the directory.
+  - *`remove_attempt_files(table, directory, attempt_id, warehouse_locations=...)`* is the dangerous half and trusts nothing. It deletes
+    only below a directory that is inside the warehouse by path (the rule of D035-092, so a `..`, a `#`, an encoded dot are not) and whose
+    last segment is the attempt's own id: the whole data location, another attempt's directory, an id that starts or ends like the attempt's,
+    a directory below the attempt's and a way out are all refused with `WORKER_ERROR` before anything is listed, because they would be a bug
+    of the host and the host must not delete on the strength of one. A directory that does not exist has nothing in it; removing twice is
+    removing once.
+  - *Evidence.* 40 tests in `test_attempt.py` against a real SQLite catalog with a file warehouse, written first and seen failing (the module
+    did not exist); 21 mutations of `attempt.py`, all caught once the harness stopped caching bytecode (see below). `runners/lake`: 481
+    passed, 1 skipped; `ruff check`, `ruff format --check` and strict `mypy` clean.
+  - *The mutation harness had a flaw, found here.* Two mutants of the same size written within one second share a bytecode cache entry, so
+    the second was judged by the first one's code and was reported "caught" without being tried. With `PYTHONDONTWRITEBYTECODE=1` the
+    mutation suites of D035-092, D035-093 and D035-094 were run again: no survivor appeared in them (the trailing-slash survivor of this
+    module was the only one the flaw had hidden, and it got its test).
+- **G035-044 — Removing the files of an attempt is written only for PyIceberg's own file IO.** `remove_attempt_files` lists and deletes with
+  `pyarrow.fs` through `PyArrowFileIO`, which serves S3 and GCS. The file IO of ADLS is fsspec's (D035-050); for it the function refuses
+  with `WORKER_ERROR` and deletes nothing, a test shows it with the fsspec IO on a local warehouse. *Exit condition:* write the fsspec
+  listing and test it against an Azurite container (the compose file of the repository would need the component, pinned, with a healthcheck),
+  or decide that an ADLS attempt leaves its orphans to the lifecycle rule of the storage account.
