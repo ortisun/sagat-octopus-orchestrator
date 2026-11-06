@@ -506,6 +506,7 @@ async fn rollback_and_acl_fence(w: &World, existing: RunId, publisher: &str) {
             fingerprint: vec![1],
         },
         info,
+        reset_sequence: None,
     };
     let held = match w.store.create(new).await.unwrap() {
         sagat_application::runs::Admitted::Created(tx) => tx,

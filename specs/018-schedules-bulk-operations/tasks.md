@@ -1092,9 +1092,33 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `reset_of`, `run.reset`, `rerun_of` + `reset_sequence`, guard after business-id row, `purged_at`/`test_tree`
   read, 022 permit acquire-or-refuse, 020 attribute fold) — `crates/infra-postgres/src/{resets.rs,execution.rs}`
   — content test — FR-018-037, FR-018-050, FR-018-051.
+  *Part done 2026-11-05 (D1977, G1980), the task stays open:* migration `20270106000000` (`runs.reset_sequence`,
+  immutable, `down` refuses while any run has it; the three pinned upgrade oracles moved), `restore_prefix` in
+  `crates/infra-postgres/src/execution/resets.rs` and the restored-row path of `persist`: the rows `1..=N` of the source are
+  copied verbatim (actor, time, trace, payload), the first one marked `restored` with `reset_of`, with none of the side
+  effects of the first time; the outputs of the prefix and the declared state are rebuilt; `run.reset` is recorded and the
+  run is settled. Proved by `reset::{a_run_is_reset_to_a_point_and_goes_on_from_there_with_the_history_it_had,
+  a_reset_to_the_start_is_a_run_of_its_own_and_the_refusals_are_typed,
+  the_declared_state_and_the_output_of_a_signal_in_the_prefix_are_restored,
+  the_same_key_is_the_same_reset_and_another_point_under_it_is_another_request}` (real PostgreSQL, owner and `sagat_app`)
+  and by a battery of 14 mutants of the store and the service, all killed. Not done: the 022 permit and the 020 attribute
+  fold (features not approved), the `run_resets` register, scoped prefixes and the configurable ceiling (G1980).
 - [ ] T018-054 [US6] Reset service and routes (points, preview, reset, list/get) —
   `crates/application/src/runs/reset.rs`, `crates/api-http/src/routes/resets.rs` — contract tests —
   FR-018-035..037.
+  *Part done 2026-11-05 (D1977), the task stays open:* the service `reset_points`, `reset_preview` and `reset` in
+  `crates/application/src/runs/reset.rs` (permissions `run:operate` and `run:start`, justification of 8 to 2000
+  characters, the typed reasons `RESET_NOT_SUPPORTED_FOR_SOURCE`, `RESET_SOURCE_NOT_TERMINAL`, `RESET_POINT_NOT_ELIGIBLE`,
+  `RESET_PREFIX_TOO_LONG`, `RESET_RULE_MISSING`, `RESET_REEXECUTION_NOT_ACKNOWLEDGED` as `AppError::ResetRefused`, mapped to
+  409 in `crates/api-http/src/error.rs`) and the idempotency of the request. The four tests above prove the points, the
+  preview, the permission refusals, `RESET_SOURCE_NOT_TERMINAL`, `RESET_POINT_NOT_ELIGIBLE`,
+  `RESET_REEXECUTION_NOT_ACKNOWLEDGED` and the key; three more tests prove `RESET_PREFIX_TOO_LONG` (past the ceiling and
+  at it), `RESET_NOT_SUPPORTED_FOR_SOURCE` for a child run, and `RESET_RULE_MISSING` with the type named (a row of a
+  newer kind after the run's last event); a battery of 6 mutants of those three reasons was killed. The branches of
+  `RESET_NOT_SUPPORTED_FOR_SOURCE` for a member of a continuation chain and for a run of a database execution **have no
+  test yet**. Not done: the
+  routes (points, preview, reset, list/get), the OpenAPI operations and Studio types, the `run_resets` table that list/get
+  read, the contract tests and the rows of the error table.
 - [ ] T018-055 [US6] Replay = projection at every eligible point (corpus incl. a 022 run-permit holder and
   020 search-attribute upserts); outputs and attribute rows equal the source at N; holder count = open
   non-restored acquisitions; ceiling; crash during reset — `tests/integration/schedules-bulk-operations/reset.rs`

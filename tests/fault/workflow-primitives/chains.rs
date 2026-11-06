@@ -1162,6 +1162,7 @@ async fn grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root
             fingerprint: info.run_id.as_uuid().as_bytes().to_vec(),
         },
         info,
+        reset_sequence: None,
     };
     let mut guard = world.db.pool.begin().await.expect("tree gate");
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")

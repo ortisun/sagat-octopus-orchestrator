@@ -356,10 +356,11 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
                 origin,
                 workflow_limit,
             }),
+            reset_sequence: None,
         };
         let result = match self.store.create(new).await {
             Ok(created) => self
-                .finish_start(principal, run_id, created, false, None, None, ctx)
+                .finish_start(principal, run_id, created, false, None, None, None, ctx)
                 .await
                 .map(|started| started.run),
             Err(error) => {

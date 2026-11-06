@@ -461,6 +461,7 @@ where
                 key: firing.key.clone(),
                 fingerprint: firing.fingerprint.clone(),
             },
+            reset_sequence: None,
         };
         match self.store.create(new).await {
             // An earlier dispatch of this event already started it.

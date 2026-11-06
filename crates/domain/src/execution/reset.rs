@@ -155,6 +155,9 @@ pub enum ResetBlock {
     OpenWork(NodeId),
     /// A collection or a loop has not finished successfully.
     ActiveScope,
+    /// The prefix holds an event of an iteration (an instance below the root). This version restores the
+    /// events of the root of a run only: a reset needs the writers of a scope to re-emit one (G1980).
+    ScopedEvents,
     /// An instance of the prefix is compensated, skipped, resolved or reconciled later in the source, so a
     /// reset run, which would not have had that happen, cannot inherit it.
     ChangedLater {
@@ -293,10 +296,12 @@ pub fn reset_points(
 ) -> Result<ResetPoints, ExecutionError> {
     let mut state = RunState::new(run_id);
     let mut excluded: Option<&'static str> = None;
+    let mut scoped = false;
     let mut windows: Vec<Window> = Vec::new();
     let mut candidates: Vec<Candidate> = Vec::new();
     for (index, addressed) in journal.iter().enumerate() {
         state.apply_addressed(addressed)?;
+        scoped |= !addressed.path().is_root();
         let event = addressed.event();
         match rule_of(event) {
             ResetRule::Exclude => {
@@ -325,6 +330,7 @@ pub fn reset_points(
                     .first()
                     .map(|window| ResetBlock::OpenWindow(window.opened))
             })
+            .or_else(|| scoped.then_some(ResetBlock::ScopedEvents))
             .or_else(|| state_block(&state, name == "run.started"));
         candidates.push(Candidate {
             point: ResetPoint {

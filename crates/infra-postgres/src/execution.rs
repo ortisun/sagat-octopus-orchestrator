@@ -12,6 +12,7 @@ mod ad_hoc;
 mod database;
 mod path;
 mod path_read;
+mod resets;
 mod scoped_events;
 mod worker_capacity;
 use scoped_events::EventWaitReadState;
@@ -1214,9 +1215,9 @@ impl RunStore for PgRunStore {
                  deadline_at, created_at, updated_at, parent_run_id, parent_node, cancel_policy, \
                  depth, root_run_id, trace_parent_span, rerun_of, input_blob_id, origin, \
                  schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision, \
-                 business_id) \
+                 business_id, reset_sequence) \
                  VALUES ($1, $2, $3, $4, $5, 'RUNNING', 0, false, $6, $7, $8, $9, $10, $11, $11, \
-                         $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)",
+                         $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)",
             )
             .bind(info.run_id.as_uuid())
             .bind(tenant.as_uuid())
@@ -1247,6 +1248,12 @@ impl RunStore for PgRunStore {
                     .map(|s| i32::try_from(s.revision).unwrap_or(i32::MAX)),
             )
             .bind(new.business.as_ref().map(|b| b.id.as_str()))
+            .bind(
+                new.reset_sequence
+                    .map(i64::try_from)
+                    .transpose()
+                    .map_err(|_| corrupt("reset sequence"))?,
+            )
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -1560,6 +1567,14 @@ impl RunStore for PgRunStore {
         id: &sagat_domain::business_ids::BusinessId,
     ) -> Result<Option<sagat_application::runs::BusinessBinding>, StoreError> {
         crate::business_ids::binding(&self.pool, tenant, namespace, id).await
+    }
+
+    async fn reset_source(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> Result<Option<sagat_application::runs::ResetSource>, StoreError> {
+        resets::read_source(&self.pool, tenant, run).await
     }
 
     async fn rerun_source(
@@ -3676,6 +3691,13 @@ fn micros(duration: Duration) -> i64 {
 }
 
 impl RunTx for PgRunTx {
+    async fn restore_prefix<'a>(
+        &'a mut self,
+        prefix: &'a sagat_application::runs::RestoredPrefix,
+    ) -> Result<(), StoreError> {
+        resets::restore(self, prefix).await
+    }
+
     async fn remember_start_served<'a>(
         &'a mut self,
         start: &'a Idempotency,
@@ -4569,7 +4591,17 @@ impl RunTx for PgRunTx {
             let seq = i64::try_from(self.persisted + 1 + offset as u64)
                 .map_err(|_| corrupt("sequence"))?;
             let mut encoded = encode(event);
-            if let RunEvent::StepLeased { node, .. } = event
+            // The row of a source run that a reset re-emits (feature 018): it is the row the source stored,
+            // who did it and when included, marked `restored`; the first one says where the history came from.
+            let restored = effects
+                .restored
+                .as_deref()
+                .and_then(|prefix| prefix.events.get(offset));
+            if let (Some(prefix), Some(row)) = (effects.restored.as_deref(), restored) {
+                encoded.detail = resets::restored_detail(row, prefix, offset)?;
+            }
+            if restored.is_none()
+                && let RunEvent::StepLeased { node, .. } = event
                 && let Some(pins) = self.script_retention.get(node)
             {
                 let detail =
@@ -4615,23 +4647,28 @@ impl RunTx for PgRunTx {
                   trace_id, occurred_at, instance_id, instance_path_nodes, instance_path_indices) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
             );
+            let actor = restored.map_or_else(|| effects.actor.label(), |row| row.actor.clone());
             insert
                 .bind(tenant.as_uuid())
                 .bind(run.as_uuid())
                 .bind(seq)
-                .bind(encoded.event_type)
-                .bind(encoded.node.as_deref())
-                .bind(encoded.attempt)
+                .bind(restored.map_or(encoded.event_type, |row| row.event_type.as_str()))
+                .bind(restored.map_or(encoded.node.as_deref(), |row| row.node.as_deref()))
+                .bind(restored.map_or(encoded.attempt, |row| row.attempt))
                 .bind(&encoded.detail)
-                .bind(payload.map(Vec::as_slice))
-                .bind(effects.actor.label())
-                .bind(
-                    effects
+                .bind(match restored {
+                    Some(row) => row.payload_digest.as_deref(),
+                    None => payload.map(Vec::as_slice),
+                })
+                .bind(actor)
+                .bind(match restored {
+                    Some(row) => row.trace_id.as_deref(),
+                    None => effects
                         .trace_id
                         .as_deref()
                         .or(self.info.trace_id.as_deref()),
-                )
-                .bind(self.now)
+                })
+                .bind(restored.map_or(self.now, |row| row.occurred_at))
                 .bind(root_instance_id)
                 .bind(root_instance_id.map(|_| Vec::<String>::new()))
                 .bind(root_instance_id.map(|_| Vec::<i32>::new()))
@@ -4642,6 +4679,19 @@ impl RunTx for PgRunTx {
             // The steps the event created or changed, from the one definition of them the platform has
             // (the Studio's changes of the graph are made of the same list).
             touched.extend(event.changed_nodes());
+            if restored.is_some() {
+                // History has none of the effects it had the first time: no task is announced, no child
+                // settled, no breaker told, no signal sent. What the state says of a saga is written.
+                if let RunEvent::SagaEntered { node, .. }
+                | RunEvent::SagaCompleted { node }
+                | RunEvent::SagaAborting { node, .. }
+                | RunEvent::SagaCompensated { node, .. }
+                | RunEvent::CompensationPlanned { node, .. } = event
+                {
+                    sagas.insert(node.clone());
+                }
+                continue;
+            }
             self.signals.extend(of_event(event));
             match event {
                 RunEvent::SagaEntered { node, .. }

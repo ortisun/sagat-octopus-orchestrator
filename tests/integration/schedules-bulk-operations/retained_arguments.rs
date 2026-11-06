@@ -28,7 +28,7 @@ fn opting_in(name: &str) -> Value {
 
 /// Publishes a workflow whose declaration does (or does not) opt in. The capability is the deployment's;
 /// these tests are the deployment that turned it on.
-async fn publish(f: &Fixture, opt_in: bool) -> WorkflowId {
+pub(crate) async fn publish(f: &Fixture, opt_in: bool) -> WorkflowId {
     sagat_infra_ir::set_reset_reapply(true);
     let name = format!("retained-arguments-{}", uuid::Uuid::now_v7());
     let definition = if opt_in {
@@ -39,7 +39,7 @@ async fn publish(f: &Fixture, opt_in: bool) -> WorkflowId {
     f.w.publish(definition).await.0
 }
 
-fn arguments(allowed: bool, balance: i64) -> DeclaredOperationArguments {
+pub(crate) fn arguments(allowed: bool, balance: i64) -> DeclaredOperationArguments {
     DeclaredOperationArguments::parse(
         json!({"allowed": allowed, "nextState": {"balance": balance}})
             .to_string()
@@ -49,7 +49,7 @@ fn arguments(allowed: bool, balance: i64) -> DeclaredOperationArguments {
 }
 
 /// One Update-with-Start request that creates a run and applies the Update to it.
-async fn apply(
+pub(crate) async fn apply(
     f: &Fixture,
     workflow: WorkflowId,
     business: &str,

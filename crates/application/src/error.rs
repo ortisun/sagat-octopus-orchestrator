@@ -177,6 +177,15 @@ pub enum AppError {
     /// created). A signal is never buffered.
     #[error("signal refused: {reason}")]
     SignalRefused { reason: &'static str },
+    /// A reset to a point that cannot be made (feature 018, `FR-018-035`..`FR-018-039`): `reason` is the
+    /// closed `details.reason` of the contract (`RESET_POINT_NOT_ELIGIBLE`, `RESET_RULE_MISSING`,
+    /// `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, `RESET_SOURCE_NOT_TERMINAL`, ...) and `event_type` names the type
+    /// without a rule when that is the reason. Nothing was created.
+    #[error("reset refused: {reason}")]
+    ResetRefused {
+        reason: &'static str,
+        event_type: Option<String>,
+    },
     /// A declared Update that an Update-with-Start request carried was refused before the run was
     /// admitted (feature 018, `FR-018-025`): an undeclared operation, arguments the declaration
     /// does not accept, a key reused with another request, a run that no longer admits updates.

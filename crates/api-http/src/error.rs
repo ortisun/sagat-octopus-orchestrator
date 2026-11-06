@@ -774,6 +774,22 @@ impl ApiError {
                 error,
                 sagat_domain::identity::Permission::RunUpdate,
             ),
+            AppError::ResetRefused { reason, event_type } => {
+                let mut e = if reason == "RESET_SOURCE_NOT_TERMINAL" {
+                    Self::new(
+                        StatusCode::CONFLICT,
+                        ErrorCode::Conflict,
+                        "the run has not ended: wait for it or reset it while cancelling it",
+                    )
+                } else {
+                    Self::validation(format!("the reset cannot be made: {reason}"))
+                };
+                e.parts.details = Some(match event_type {
+                    Some(event_type) => json!({ "reason": reason, "eventType": event_type }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
             AppError::SignalRefused { reason } => {
                 let mut e = Self::new(
                     StatusCode::CONFLICT,

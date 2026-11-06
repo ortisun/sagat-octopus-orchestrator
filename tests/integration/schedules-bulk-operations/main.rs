@@ -34,6 +34,7 @@ mod migration;
 mod pass;
 mod privacy;
 mod purge;
+mod reset;
 mod rest;
 mod retained_arguments;
 mod schedules;

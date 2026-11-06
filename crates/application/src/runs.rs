@@ -7,9 +7,13 @@
 
 mod ad_hoc;
 mod batch_items;
+mod reset;
 pub(crate) use ad_hoc::audit_denied as audit_database_execution_denied;
 pub use ad_hoc::{
     AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
+};
+pub use reset::{
+    RESET_PREFIX_EVENTS, ResetRequest, ResetSource, RestoredPrefix, SourceEvent, prefix_digest,
 };
 
 use std::future::Future;
@@ -209,6 +213,9 @@ pub struct NewRun {
     pub schedule: Option<crate::schedules::ScheduleAdmission>,
     /// The business identifier claimed in the creation transaction (feature 018).
     pub business: Option<BusinessStart>,
+    /// Set when the run is created by a reset: the events `1..=N` of `info.rerun_of` are re-emitted under
+    /// it, and this is `N` (feature 018, `FR-018-037`).
+    pub reset_sequence: Option<u64>,
 }
 
 /// One journal entry as the API shows it.
@@ -435,6 +442,15 @@ pub trait RunStore:
         run: RunId,
     ) -> impl Future<Output = Result<Option<RerunSource>, StoreError>> + Send;
 
+    /// The whole journal of a run as a reset reads it (feature 018, `FR-018-035`): every row that decodes, in
+    /// order, with what a reset keeps of it, and the type of the first row that does not. `None` when the
+    /// run does not exist.
+    fn reset_source(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+    ) -> impl Future<Output = Result<Option<ResetSource>, StoreError>> + Send;
+
     /// Journal entries with `seq > after`, ascending. `None` when the run does not exist.
     fn journal(
         &self,
@@ -579,6 +595,33 @@ pub struct Rerun<'a> {
     pub of: RunId,
     pub reason: &'a str,
     pub business: RerunBusinessId,
+    /// Set when the run is a reset: the prefix of the source it re-emits (feature 018, `FR-018-037`).
+    pub reset: Option<ResetStart<'a>>,
+}
+
+/// The prefix a reset re-emits under the run it creates, and what it delivers again after it.
+#[derive(Debug, Clone, Copy)]
+pub struct ResetStart<'a> {
+    pub prefix: &'a RestoredPrefix,
+    pub reapply: sagat_domain::execution::ResetReapply,
+}
+
+/// What a run started again does with the business identifier of the one it repeats: bound to it unless
+/// another open execution holds it by now (then it is refused rather than started without the identifier it
+/// was asked to keep), or without one. The source has ended, so its identifier may be taken over.
+fn keep_business_id(business_id: Option<&BusinessId>, business: RerunBusinessId) -> StartOptions {
+    match (business_id, business) {
+        (Some(id), RerunBusinessId::Keep) => StartOptions {
+            business: Some(BusinessStart {
+                id: id.clone(),
+                conflict: ConflictPolicy::Fail,
+                reuse: ReusePolicy::AllowDuplicate,
+                window: ReuseWindow::default(),
+            }),
+            start_delay: None,
+        },
+        _ => StartOptions::default(),
+    }
 }
 
 /// What starting a run needs from the caller.
@@ -976,6 +1019,7 @@ where
                         of: id,
                         reason,
                         business,
+                        reset: None,
                     },
                     key,
                     ctx,
@@ -985,18 +1029,7 @@ where
         // The new run is bound to the identifier of the one it repeats, which has ended and so may be
         // taken over, unless another open execution holds it by now: then the rerun is refused
         // rather than started without the identifier it was asked to keep.
-        let options = match (&original.info.business_id, business) {
-            (Some(id), RerunBusinessId::Keep) => StartOptions {
-                business: Some(BusinessStart {
-                    id: id.clone(),
-                    conflict: ConflictPolicy::Fail,
-                    reuse: ReusePolicy::AllowDuplicate,
-                    window: ReuseWindow::default(),
-                }),
-                start_delay: None,
-            },
-            _ => StartOptions::default(),
-        };
+        let options = keep_business_id(original.info.business_id.as_ref(), business);
         self.start_with(
             principal,
             &StartRun {
@@ -1013,6 +1046,7 @@ where
                 of: id,
                 reason,
                 business,
+                reset: None,
             }),
             None,
             None,
@@ -1160,6 +1194,7 @@ where
             (requested, chain) => requested.or(chain),
         };
         let run_id = RunId::generate();
+        let reset = rerun.and_then(|rerun| rerun.reset);
         let info = RunInfo {
             origin: None,
             run_id,
@@ -1188,6 +1223,23 @@ where
                 ctx.trace_id.clone(),
                 now,
             ),
+            Some(Rerun {
+                reset: Some(reset),
+                of,
+                reason,
+                ..
+            }) => AuditRecord::by(
+                principal,
+                AuditAction::RunReset,
+                ResourceType::Run,
+                run_id.to_string(),
+                ctx.trace_id.clone(),
+                now,
+            )
+            .with_reason(format!(
+                "reset from {of} at {}: {reason}",
+                reset.prefix.sequence()
+            )),
             Some(rerun) => AuditRecord::by(
                 principal,
                 AuditAction::RunRerun,
@@ -1249,6 +1301,16 @@ where
             idempotency.fingerprint.extend(fingerprint(&[
                 b"run.start_delay",
                 &delay.as_millis().to_be_bytes(),
+            ]));
+        }
+        // A reset is the same request only for the same point of the same prefix with the same delivery after
+        // it: the key of another point is another request, not a replay of this one.
+        if let Some(reset) = rerun.and_then(|rerun| rerun.reset) {
+            idempotency.fingerprint.extend(fingerprint(&[
+                b"run.reset",
+                &reset.prefix.sequence().to_be_bytes(),
+                reset.prefix.digest().as_bytes(),
+                reset.reapply.as_str().as_bytes(),
             ]));
         }
         if let Some(business) = &options.business {
@@ -1339,6 +1401,7 @@ where
             idempotency,
             schedule: scheduled,
             business: options.business,
+            reset_sequence: reset.map(|reset| reset.prefix.sequence()),
         };
         let scheduled_start = new.schedule.is_some();
         let start_receipt = new.idempotency.clone();
@@ -1367,6 +1430,7 @@ where
             scheduled_start,
             held_until_us,
             with.map(|with| (with, &start_receipt)),
+            reset,
             ctx,
         )
         .await
@@ -1381,6 +1445,7 @@ where
         scheduled: bool,
         held_until_us: Option<i64>,
         with: Option<(WithStart<'_>, &Idempotency)>,
+        reset: Option<ResetStart<'_>>,
         ctx: &RequestContext,
     ) -> Result<Started, AppError> {
         match created {
@@ -1479,19 +1544,40 @@ where
                     Actor::Principal(principal.subject().as_str().to_owned()),
                     ctx.trace_id.clone(),
                 );
-                self.engine
-                    .run(&mut tx, effects, |def, state, now| {
-                        let (started, progress) = match held_until_us {
-                            Some(until_us) => {
-                                execution::start_run_delayed(def, run_id, now, until_us)?
-                            }
-                            None => execution::start_run(def, run_id, now)?,
-                        };
-                        *state = started;
-                        Ok(((), progress))
-                    })
-                    .await
-                    .map_err(engine_error)?;
+                if let Some(reset) = reset {
+                    // the events of the source up to the point are written as they were, and the run goes on
+                    // from there: the reset is recorded and the successors of the point are released
+                    tx.restore_prefix(reset.prefix).await?;
+                    self.engine
+                        .run(&mut tx, effects, |def, state, now| {
+                            let progress = execution::record_reset(
+                                def,
+                                state,
+                                now,
+                                reset.prefix.source,
+                                reset.prefix.sequence(),
+                                reset.prefix.digest(),
+                                reset.reapply,
+                            )?;
+                            Ok(((), progress))
+                        })
+                        .await
+                        .map_err(engine_error)?;
+                } else {
+                    self.engine
+                        .run(&mut tx, effects, |def, state, now| {
+                            let (started, progress) = match held_until_us {
+                                Some(until_us) => {
+                                    execution::start_run_delayed(def, run_id, now, until_us)?
+                                }
+                                None => execution::start_run(def, run_id, now)?,
+                            };
+                            *state = started;
+                            Ok(((), progress))
+                        })
+                        .await
+                        .map_err(engine_error)?;
+                }
                 let mut delivered_to = Vec::new();
                 let mut update_applied = None;
                 if let Some((WithStart::Update(update), _)) = with {

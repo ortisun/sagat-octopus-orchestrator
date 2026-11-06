@@ -12,10 +12,10 @@ use common::{
     with_effect,
 };
 use sagat_domain::execution::{
-    AddressedRunEvent, ChildOutcome, CollectionOutcome, EffectMarkers, ExecutionInstanceId, Expiry,
-    InstancePath, RESET_RULES, ResetBlock, ResetPoints, ResetReapply, ResetRefusal, ResetRule,
-    RunEvent, RunId, RunState, RunStatus, StopReason, reset_plan, reset_points, rule_by_name,
-    rule_of,
+    AddressedRunEvent, ChildOutcome, CollectionDrainReason, CollectionOutcome, EffectMarkers,
+    ExecutionInstanceId, Expiry, InstancePath, RESET_RULES, ResetBlock, ResetPoints, ResetReapply,
+    ResetRefusal, ResetRule, RunEvent, RunId, RunState, RunStatus, StopReason, reset_plan,
+    reset_points, rule_by_name, rule_of,
 };
 use sagat_domain::saga::{EffectPolicy, ReconcileVerdict};
 use sagat_domain::workflow::{CancelPolicy, Digest, JoinPolicy, NodeId};
@@ -524,6 +524,58 @@ fn the_reapply_modes_name_what_is_delivered_again() {
     assert_eq!(ResetReapply::default(), ResetReapply::None);
 }
 
+#[test]
+fn a_reset_run_goes_on_from_the_point_as_the_source_did_and_replays_to_its_state() {
+    let mut source = Harness::start(build(
+        "a",
+        vec![
+            activity("a").with_next(id("b")),
+            activity("b").with_next(id("c")),
+            activity("c"),
+        ],
+    ));
+    for node in ["a", "b", "c"] {
+        let fence = source.lease(node);
+        source.complete(node, fence).expect("complete");
+    }
+    let after_a = sequences(&source, "step.completed")[0];
+    let prefix: Vec<AddressedRunEvent> = addressed(&source)
+        .into_iter()
+        .take(usize::try_from(after_a).expect("small"))
+        .collect();
+
+    // the new run: the prefix applied, then the reset and the settle reduction
+    let reset_run = RunId::generate();
+    let mut state = RunState::replay_addressed(reset_run, &prefix).expect("the prefix replays");
+    let progress = sagat_domain::execution::record_reset(
+        &source.def,
+        &mut state,
+        source.now,
+        source.state.run_id(),
+        after_a,
+        Digest::new([0x42; 32]),
+        ResetReapply::None,
+    )
+    .expect("the reset applies");
+    let names: Vec<_> = progress.events.iter().map(|event| event.name()).collect();
+    // the successor of the point is routed and released, as it was when `a` completed in the source
+    assert_eq!(
+        names,
+        ["run.reset", "step.routed", "step.released"],
+        "{names:?}"
+    );
+    assert_eq!(
+        state.step(&id("b")).map(|step| step.status()),
+        Some(sagat_domain::execution::StepStatus::Ready)
+    );
+
+    // the journal alone rebuilds the state
+    let mut journal: Vec<RunEvent> = prefix.iter().map(|event| event.event().clone()).collect();
+    journal.extend(progress.events);
+    let replayed = RunState::replay(reset_run, &journal).expect("the journal replays");
+    assert_eq!(replayed, state);
+}
+
 fn items() -> NodeId {
     NodeId::parse("items").expect("a node")
 }
@@ -591,4 +643,56 @@ fn a_collection_is_a_point_when_it_has_finished_and_never_while_it_is_open() {
     let open = reset_points(run, &collection_journal(false)).expect("a journal that replays");
     assert_eq!(eligible(&open), [1], "{open:?}");
     assert!(open.blocked.is_empty());
+}
+
+#[test]
+fn a_prefix_with_an_event_of_an_iteration_is_not_offered_in_this_version() {
+    // the body step of the one item was released at the path of its iteration, below the root, and the
+    // collection was then cancelled and drained
+    let body = ExecutionInstanceId::in_path(
+        InstancePath::root().child(items(), 0).expect("a path"),
+        NodeId::parse("work").expect("a node"),
+    );
+    let journal: Vec<AddressedRunEvent> = vec![
+        AddressedRunEvent::root(RunEvent::RunStarted {
+            entrypoint: items(),
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionEntered {
+            node: items(),
+            item_count: 1,
+            max_items: 1,
+            max_concurrency: 1,
+            snapshot_digest: Digest::new([0x51; 32]),
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionIterationAdmitted {
+            node: items(),
+            index: 0,
+            entry: body.clone(),
+            item_digest: Digest::new([0; 32]),
+        }),
+        AddressedRunEvent::in_path(
+            body.path().clone(),
+            RunEvent::StepReleased {
+                node: NodeId::parse("work").expect("a node"),
+            },
+        )
+        .expect("an address"),
+        AddressedRunEvent::root(RunEvent::CollectionDrainStarted {
+            node: items(),
+            reason: CollectionDrainReason::Cancelled,
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionIterationDrained {
+            node: items(),
+            index: 0,
+        }),
+        AddressedRunEvent::root(RunEvent::CollectionFinished {
+            node: items(),
+            outcome: CollectionOutcome::Cancelled,
+            result_digest: None,
+        }),
+    ];
+    let found = reset_points(RunId::generate(), &journal).expect("a journal that replays");
+    // the start has no scoped event before it; the finish of the collection has one
+    assert_eq!(eligible(&found), [1], "{found:?}");
+    assert_eq!(blocked(&found, 7), Some(&ResetBlock::ScopedEvents));
 }

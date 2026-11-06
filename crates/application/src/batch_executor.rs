@@ -116,6 +116,7 @@ fn error_code(error: &AppError) -> &'static str {
         | AppError::InvalidBatch { .. }
         | AppError::InvalidDefinition(_)
         | AppError::InvalidStart { .. }
+        | AppError::ResetRefused { .. }
         | AppError::InvalidScript(_) => "VALIDATION_FAILED",
         AppError::StateConflict(_)
         | AppError::BusinessIdConflict { .. }

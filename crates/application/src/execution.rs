@@ -904,6 +904,10 @@ pub struct Effects {
     /// The lease whose holder reports its attempt in this transaction (G141): kept so that a
     /// heartbeat of that same lease arriving after the report can be told apart from a lost lease.
     pub reported: Option<ReportedLease>,
+    /// Set when the events of this write are the prefix of a source run that a reset re-emits (feature 018,
+    /// `FR-018-037`): their rows keep who did them, when and which payload they name, say `restored`, and
+    /// have none of the effects of the first time (no task is announced, no child settled, no breaker told).
+    pub restored: Option<std::sync::Arc<crate::runs::RestoredPrefix>>,
 }
 
 impl Effects {
@@ -922,6 +926,7 @@ impl Effects {
             children: Vec::new(),
             blobs: Vec::new(),
             reported: None,
+            restored: None,
         }
     }
 }
@@ -999,6 +1004,21 @@ pub trait RunTx: Send {
         async {
             Err(StoreError::Internal {
                 detail: "this adapter cannot keep the receipt of a start served by a holder".into(),
+            })
+        }
+    }
+
+    /// Writes, in this transaction, the events `1..=N` of a source run under this run (a run a reset
+    /// creates, feature 018, `FR-018-037`): they are applied to the state, written to the journal as they
+    /// were with the mark `restored`, and projected like any other, without the effects of the first time.
+    /// The run must be empty. An adapter that cannot refuses; the failure is the wiring's.
+    fn restore_prefix<'a>(
+        &'a mut self,
+        _prefix: &'a crate::runs::RestoredPrefix,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot restore the prefix of a source run".into(),
             })
         }
     }

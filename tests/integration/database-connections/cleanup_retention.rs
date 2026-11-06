@@ -338,6 +338,7 @@ async fn rerun_source_and_cleanup_barrier(
             fingerprint: vec![1],
         },
         info,
+        reset_sequence: None,
     };
     assert!(matches!(
         store.create(new).await,
