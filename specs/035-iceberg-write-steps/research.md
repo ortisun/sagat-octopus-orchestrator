@@ -2527,6 +2527,33 @@ The other fixes were wording:
     nothing serves lake activities yet.
   - *Not done.* Slices B, C and D of D035-123 (prepare, driver, shell). Whether `workRoot` exists and is a directory and whether the socket answers is
     checked when the lake runner starts serving, not by this validation (it is pure).
+- **D035-125 — Preparing an attempt: staged, built and refused with a code before any container (slice B of D035-123).** **Decided by:
+  delegate**. No `Cargo.lock` change (the edge came with D035-124).
+  - *What.* `apps/database-runner/src/lake/prepare.rs`: `prepare(input, connection, blobs, settings, attempt)` takes the lease input
+    (`AttemptInput`, D035-121), the connection `convert` read (D035-115, **consumed**: its secrets are moved into the request's connection), a `Blobs`
+    port (`ReadBlob` under the lease in production, `open(blob) -> reader`), the settings (D035-124) and what is particular to the attempt (`Attempt`:
+    its id, the slot, when the host must be done, the development flag), and returns a `Prepared` (the staged directory, the request line as a
+    `Zeroizing` buffer, the `RelayConfig` for the user of the slot, the bytes staged for the choice of the class) or a `PrepareError`. Order: the mode is
+    one the connection allows; the relay's allowance is derived from the connection (a connection the host cannot open is refused before anything is
+    made); the token and the directory; the sources are staged against the effective limit; the request is built from the input with
+    `write_append` and encoded. Every path out drops the directory, which removes itself.
+  - *Decisions.* **Effective limits** (`effective`) are the strictest of the step's, the connection's and the settings': records are the least of the
+    three, the bytes are the settings' (neither the step nor the connection has a total), the timeout is the least of the step's and the connection's
+    (none when neither says: the lease's own deadline is then the only one). **Codes** (`PrepareError::code`, a closed table, none retryable): a mode the
+    connection does not allow, a connection the host cannot open, a request the host would refuse (and a slot outside the range): `DATABASE_CONFIGURATION_INVALID`;
+    over the limit or more than 32 files: `ICEBERG_LIMIT_EXCEEDED`; a blob that cannot be opened or a file that cannot be written (and a directory that is
+    there already, which is never reused or removed): `WORKER_ERROR`. The attempt directory that was there is not ours: it is left alone.
+  - *Evidence.* 14 unit tests in `prepare.rs`, against a real temporary work root and a held-in-memory set of blobs: inline records staged and the
+    request line is the one the host reads (the effect key, the table, the inputs, the deadline to the millisecond, the credentials, the relay socket
+    path, and **the token in the request is the token in the file the relay checks**); blobs staged in the order written with their formats and
+    counted; a mode not allowed, an over-the-limit source, a blob that fails, an endless blob (stopped at the limit), a connection the relay cannot
+    allow and a slot out of range all leave **nothing on disk**; the step's and the connection's limits apply before the settings'; the relay serves only
+    the user of the slot; a `Debug` of the attempt shows the size of the request and not the request. `cargo test -p sagat-database-runner`: 49 passed;
+    `cargo clippy -p sagat-database-runner --all-targets --locked -- -D warnings` clean. **Twelve hand mutations, all killed** (the mode unchecked, each
+    limit ignored in turn, the loosest timeout, any peer served, another token, milliseconds dropped, a limit read as a source failure, the secrets
+    swapped, bytes not counted, blobs backwards, a retryable limit failure).
+  - *Not covered.* That the development flag reaches the relay: `RelayConfig` does not expose it, so only a relay that connects to a loopback target
+    can show it (the driver's test, slice C). The per-record size limit (G035-068). A blob source over the real `ReadBlob` (slice D).
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

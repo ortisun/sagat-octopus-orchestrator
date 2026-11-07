@@ -755,6 +755,11 @@ three conditions pass.
   *2026-11-07, sixteenth step, left unticked (D035-124):* slice A of that plan: the `lake` section of the runner's configuration
   (`apps/database-runner/src/lake/settings.rs`), validated whole at start, absent meaning off, an empty relay allowance refused outside
   development. Nothing serves a lake activity yet.
+
+  *2026-11-07, seventeenth step, left unticked (D035-125):* "create `/work/<attempt-id>/`", "stream inline records, `ReadBlob` blobs and 017 results
+  into `in/`, checking the effective limit while streaming; going over fails `ICEBERG_LIMIT_EXCEEDED` before any container starts" and "serve the
+  request line" are joined in `prepare` (`apps/database-runner/src/lake/prepare.rs`), with the closed table of codes and nothing left on disk on any
+  refusal. Not done: the driver that runs it (slice C), the real `ReadBlob` source, and a 017 result as a source (G035-067).
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
