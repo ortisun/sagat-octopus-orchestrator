@@ -1895,8 +1895,9 @@ The other fixes were wording:
   too large, `LAKE_HOST_PROTOCOL` says the host broke). Whichever, the next attempt's effect-key lookup settles what was already sent
   (D035-030), so none of them is `OUTCOME_UNKNOWN`. *Exit condition:* the supervisor's table, with a test for each row, and `errors.md` if a
   code is added.
-- **G035-055 — The sandbox-runner API for the lake runner (the open half of G035-022).** See the recommendation in D035-110 (d). *Exit
-  condition:* the ADR, the API, the per-node ceiling, and T035-015 run through it on Compose, and on Kubernetes under T035-029.
+- **G035-055 — The sandbox-runner API for the lake runner (the open half of G035-022).** See the recommendation in D035-110 (d). The ADR
+  is written and Proposed (ADR-0079, D035-116, 2026-11-07). *Exit condition:* the ADR accepted, the API, the engine additions, the per-node
+  ceiling, and T035-015 run through it on Compose, and on Kubernetes under T035-029.
 - **G035-056 — The relay does not require `peer_uid`, and `CONTROL` is the first request that gives the peer something.** Whoever
   presents the token first receives the request line with the credentials; the token file is group-readable (D035-086). *Exit condition:*
   the driver sets `RelayConfig::with_peer_uid` to the slot's user, with a test that a peer of another user is refused (D035-110, review).
@@ -2225,3 +2226,16 @@ The other fixes were wording:
   can zeroise what it owns (D035-115) but not what `infra-lake` copies. *Exit condition:* `zeroize` in `infra-lake`'s manifest (a
   `Cargo.lock` change, so the whole CI: do it once, with the `database-runner` → `infra-lake` edge), secrets as `Zeroizing`, the body
   scrubbed on drop, and `encode_request` returning a `Zeroizing<Vec<u8>>`, each with a test.
+- **D035-116 — The lake runner asks the sandbox runner for an attempt, never for a container (ADR-0079, Proposed).** Closes the API half of
+  G035-022 / G035-055 as a decision; **Decided by: delegate** (the owner's delegation for feature 035), to be accepted by a person because it
+  adds a server to the process that holds the engine socket. *What it is:* a node-local Unix-socket API of three calls on a **lake-mode**
+  sandbox runner (`POST /v1/attempts/{id}`, `GET .../wait`, `DELETE`), the request an attempt id, a **slot** in a range, a closed budget
+  **class** and a deadline, nothing else; the lake runner links neither `bollard` nor `infra-sandbox`. *What the reviews changed* (a security
+  and an architecture review of the first draft, each claim checked against the code): the relay is built, and needs the container's user,
+  **before** `start`, so the slot is the lake runner's choice in a range the sandbox validates (a sandbox-allocated uid could not satisfy
+  `with_peer_uid`); all lifecycle state is rebuilt from engine labels (the deadline is a label, swept every 30 s, because the existing
+  sweeper runs every 300 s by age since creation); no tombstones; the deadline is refused, not clamped; one budget became two classes (the
+  plan has 2 GiB and 6 GiB); lake mode is exclusive (ADR-0071 and the plan say a lake sandbox runner serves only lake containers);
+  the `lstat` check is advisory and the engine's sub-path confinement is a tested precondition; drain, wire-type ownership and version
+  skew are specified. *Not built:* everything; the ADR lists the checks it needs and the `LakeEngine` additions (list, inspect, wait, kill
+  by label reading the out-of-memory flag first). Kubernetes (T035-029) stays open and rules 2 and 3 are conditional on it.
