@@ -512,6 +512,36 @@ fn a_table_names_one_to_eight_namespace_levels_and_a_name_within_255_bytes() {
     );
 }
 
+/// An HTTP client removes `.` and `..` from the path of a request (RFC 3986, 5.2.4), so a namespace level or a table
+/// named by one would send the catalog request to another endpoint than the one meant. The lake host refuses them too
+/// (`request.py`, G035-052); the domain refuses them where the step is written.
+#[test]
+fn a_dot_segment_is_not_a_namespace_level_or_a_table_name() {
+    for dot in [".", ".."] {
+        assert_eq!(
+            TableIdentifier::new(vec![dot.to_owned()], "t").err(),
+            Some(IcebergWriteError::Table),
+            "level {dot}"
+        );
+        assert_eq!(
+            TableIdentifier::new(vec!["a".to_owned(), dot.to_owned()], "t").err(),
+            Some(IcebergWriteError::Table),
+            "second level {dot}"
+        );
+        assert_eq!(
+            TableIdentifier::new(vec!["a".to_owned()], dot).err(),
+            Some(IcebergWriteError::Table),
+            "name {dot}"
+        );
+    }
+    for name in ["...", "..a", "a..", ".a", "a.b"] {
+        assert!(
+            TableIdentifier::new(vec![name.to_owned()], name).is_ok(),
+            "{name}"
+        );
+    }
+}
+
 #[test]
 fn a_target_ref_is_one_to_255_characters_without_control_characters() {
     for ok in ["main", "audit-branch", &"r".repeat(255)] {

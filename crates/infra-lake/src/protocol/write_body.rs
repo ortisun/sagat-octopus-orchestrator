@@ -8,19 +8,28 @@
 //! The builder takes the domain's own [`TableIdentifier`] and [`ColumnMapping`], which already refuse what the contract
 //! refuses, and the connection as the platform stored it (`catalog` and `storage` documents are forwarded untouched, so
 //! the storage format stays defined in one place). What the domain does not own it checks here, against the bounds the
-//! host enforces: a body the host would refuse is a fault of the runner and is found before a container is started,
-//! not as `LAKE_HOST_PROTOCOL` from inside one.
+//! host enforces: a body the host would refuse for its size, its shape or its bounds is a fault of the runner and is
+//! found before a container is started, not as `LAKE_HOST_PROTOCOL` from inside one.
+//!
+//! One thing is **not** checked: which connections the host serves. A Glue, Hive or JDBC catalog, GCS or ADLS storage,
+//! an assumed role, remote signing and an `http` S3 endpoint are refused by `connection.py` today (G035-048). That list
+//! shrinks as loaders are added, and a copy of it here would have to move with the host; the host is the one place that
+//! knows what it can open, and admission is where a connection it cannot open should be refused with a name.
 //!
 //! The members are spelled once, here, and the fixture `tests/contract/iceberg-writes/fixtures/requests/` is read by a
-//! test on each side, so the two halves of the line cannot drift without a test failing.
+//! test on each side, so the two halves of the line cannot drift without a test failing. The ceilings are pinned on both
+//! sides too (`write_body.rs` here, `test_wire_request.py` on the host): the last value allowed is taken and the next is
+//! refused.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use sagat_domain::database::{
     ColumnMapping, MAX_MAPPED_COLUMNS, MAX_RECORD_BLOBS, TableIdentifier,
 };
 use serde_json::{Map, Value, json};
+
+use super::Body;
 
 /// The members of a snapshot summary the platform writes (D035-016); the host accepts no other.
 pub const SNAPSHOT_PROPERTIES: [&str; 5] = [
@@ -47,7 +56,7 @@ pub enum BodyError {
         "a record file name is not 1 to 128 characters of letters, digits, '.', '_' and '-' that start without a dot"
     )]
     InputName,
-    #[error("a write needs 1 to 32 record files")]
+    #[error("a write needs 1 to 32 record files, each named once")]
     Inputs,
     #[error(
         "a limit is outside the range the host accepts, or the deadline is not an RFC 3339 instant in UTC"
@@ -59,7 +68,7 @@ pub enum BodyError {
     Connection,
     #[error("a snapshot property is not one the platform writes, or its value is out of bounds")]
     SnapshotProperty,
-    #[error("the mapping names more columns than the ceiling")]
+    #[error("the mapping names more columns than the ceiling, or a field or a column twice")]
     Mapping,
 }
 
@@ -120,11 +129,11 @@ pub struct Limits {
 
 impl Limits {
     /// `deadline_at` is an RFC 3339 instant in UTC (`2026-11-05T10:10:00.000Z`) that the caller formats from a real
-    /// clock; only its shape is checked here.
+    /// clock.
     ///
     /// # Errors
     /// [`BodyError::Limits`] for more than 16 commit retries, a byte ceiling above `i64::MAX`, or a deadline that is not
-    /// `YYYY-MM-DDTHH:MM:SS` with up to six fractional digits and a `Z`.
+    /// `YYYY-MM-DDTHH:MM:SS` with up to six fractional digits and a `Z`, or is not a moment in the calendar.
     pub fn new(
         max_commit_retries: u32,
         max_decoded_bytes: u64,
@@ -159,24 +168,48 @@ impl Limits {
     }
 }
 
-fn is_instant(text: &str) -> bool {
+const fn days_in_month(year: u32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => {
+            29
+        }
+        _ => 28,
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SS[.f{1,6}]Z` and a moment that exists: the host reads it with a pattern and then with
+/// `datetime.fromisoformat`, which refuses year 0, a 30th of February, hour 24 and second 60.
+pub(super) fn is_instant(text: &str) -> bool {
     let bytes = text.as_bytes();
-    let digits = |range: std::ops::Range<usize>| {
-        bytes
-            .get(range)
-            .is_some_and(|part| part.iter().all(u8::is_ascii_digit))
+    let number = |range: std::ops::Range<usize>| -> Option<u32> {
+        bytes.get(range)?.iter().try_fold(0_u32, |value, byte| {
+            byte.is_ascii_digit()
+                .then_some(value * 10 + u32::from(byte - b'0'))
+        })
     };
     let separators = [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')]
         .iter()
         .all(|&(at, expected)| bytes.get(at) == Some(&expected));
-    if !(separators
-        && digits(0..4)
-        && digits(5..7)
-        && digits(8..10)
-        && digits(11..13)
-        && digits(14..16)
-        && digits(17..19))
-    {
+    let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
+        number(0..4),
+        number(5..7),
+        number(8..10),
+        number(11..13),
+        number(14..16),
+        number(17..19),
+    ) else {
+        return false;
+    };
+    let exists = separators
+        && year >= 1
+        && (1..=12).contains(&month)
+        && (1..=days_in_month(year, month)).contains(&day)
+        && hour < 24
+        && minute < 60
+        && second < 60;
+    if !exists {
         return false;
     }
     match bytes.get(19..) {
@@ -190,7 +223,7 @@ fn is_instant(text: &str) -> bool {
 }
 
 /// Text of 1 to `limit` bytes without a control character, as the domain's and the host's `plain`.
-fn plain(text: &str, limit: usize) -> bool {
+pub(super) fn plain(text: &str, limit: usize) -> bool {
     !text.is_empty() && text.len() <= limit && !text.chars().any(char::is_control)
 }
 
@@ -351,14 +384,24 @@ impl WriteAppend {
     ///
     /// # Errors
     /// A [`BodyError`] for the first part the host would refuse.
-    pub fn into_body(self) -> Result<Map<String, Value>, BodyError> {
+    pub fn into_body(self) -> Result<Body, BodyError> {
         if !plain(&self.reference, MAX_REFERENCE_BYTES) {
             return Err(BodyError::Reference);
         }
-        if !(1..=MAX_RECORD_BLOBS).contains(&self.inputs.len()) {
+        // a name twice is a file read twice, and the host does not deduplicate: the rows would be written twice
+        let mut names = BTreeSet::new();
+        if !(1..=MAX_RECORD_BLOBS).contains(&self.inputs.len())
+            || !self.inputs.iter().all(|input| names.insert(&input.name))
+        {
             return Err(BodyError::Inputs);
         }
-        if self.mapping.len() > MAX_MAPPED_COLUMNS {
+        let (mut fields, mut columns) = (BTreeSet::new(), BTreeSet::new());
+        let distinct = self.mapping.iter().all(|pair| {
+            let new_field = fields.insert(pair.field());
+            let new_column = columns.insert(pair.column());
+            new_field && new_column
+        });
+        if self.mapping.len() > MAX_MAPPED_COLUMNS || !distinct {
             return Err(BodyError::Mapping);
         }
         if !self.snapshot_properties.iter().all(|(key, value)| {
@@ -398,10 +441,12 @@ impl WriteAppend {
             ),
             ("limits", self.limits.to_value()),
         ];
-        Ok(members
-            .into_iter()
-            .map(|(name, value)| (name.to_owned(), value))
-            .collect())
+        Ok(Body::from(
+            members
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect::<serde_json::Map<_, _>>(),
+        ))
     }
 }
 

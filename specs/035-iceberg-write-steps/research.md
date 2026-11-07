@@ -1755,22 +1755,53 @@ The other fixes were wording:
     stays defined in one place, and carries the resolved secrets as two text-to-text documents that are left out when empty. Mode sections
     that are not served (`overwrite`, `upsert`) are `null`. `Debug` shows no secret and no value of the body.
   - *What the builder checks that the domain does not own.* The record file name (one path component, 1 to 128 bytes, no leading dot), 1 to
-    32 files, at most 16 commit retries, byte ceilings up to `i64::MAX` (sent as decimal strings), the shape of the deadline instant, the
-    ref, the 5 snapshot properties the platform writes (D035-016), at most 1024 mapped columns, 1 to 16 warehouse locations of at most 2048
-    bytes and secrets of at most 16384 bytes without a byte below `0x20` or `DEL` (the host's own rule for a secret).
+    32 files each named once, at most 16 commit retries, byte ceilings up to `i64::MAX` (sent as decimal strings), the deadline as an
+    instant that exists in the calendar (not only its shape), the ref, the 5 snapshot properties the platform writes (D035-016), at most
+    1024 mapped columns with no field and no column twice, 1 to 16 warehouse locations of at most 2048 bytes and secrets of at most 16384
+    bytes without a byte below `0x20` or `DEL` (the host's own rule for a secret). Every ceiling is in **bytes**, as the host counts.
+    `encode_request` also refuses an effect key or a first-attempt instant the host would refuse (`EncodeError::Envelope`) and a line
+    longer than the host reads, 4 MiB without its newline (`EncodeError::TooLong`): the `catalog` and `storage` documents are forwarded as
+    stored, so that size bound is the only one on them.
+  - *What it does not check.* Which connections the host serves. A Glue, Hive or JDBC catalog, GCS or ADLS, an assumed role, remote
+    signing and an `http` S3 endpoint are refused by `connection.py` as `LAKE_HOST_PROTOCOL` today (G035-048); a copy of that list in Rust
+    would have to move with the host, so the host stays the one place that knows, and admission is where a connection it cannot open
+    should be refused with a name. The module doc says so; an earlier draft of it claimed the opposite.
   - *What it found (G035-051, closed).* `ColumnMapping::new` accepted `/a~2`, `/a~` and `/~x`, which RFC 6901 does not allow and the host
     refuses as a protocol break, so a step that validated and published would have failed at run time with `LAKE_HOST_PROTOCOL`. The domain
     now refuses a `~` that does not start `~0` or `~1` (`IcebergWriteError::Field`), at the place the step is written. The contract
     schema's pattern (`^(/[^/]+)+$`) is looser and is left as it is: changing a contract file selects the whole stack, and the domain is where
     the rule is enforced. Test written first and seen failing (`/a~` was accepted).
-  - *Evidence.* `cargo test -p sagat-infra-lake`: 84 passed (16 in `write_body.rs`); `cargo test -p sagat-domain`: 847 passed, 0 failed
-    (the new test is `a_tilde_in_a_field_starts_only_the_two_escapes_of_a_json_pointer`); `runners/lake`: 1036 passed, 1 skipped, `ruff`
-    and strict `mypy` clean; `cargo fmt --check` and `cargo clippy -p sagat-infra-lake -p sagat-domain --all-targets -- -D warnings`
-    clean; `check-architecture.py` passes. The Python test passed on its first run because the fixture was written to the host's
-    contract; it cannot be seen failing for another reason, and I am reporting that and not presenting it as a failing-first test. The
-    Rust test failed first because the builder did not exist (a compile error), and one of its tests was wrong once (the base builder
-    already maps `/amount`) and was corrected, not the builder. No mutation pass (OD-2026-11-06-2).
-  - *Not done.* The secrets are `String`s in a `Map`, so they are not zeroised when the request is dropped. Zeroising belongs to the
-    driver, which owns the buffer of the encoded line and the resolved secret values (T035-035, next slice); this slice does not claim it.
-    The overwrite and upsert sections come with the host modes.
+  - *Independent review (security and correctness reviewers, given the files and the contract, not my conclusion).* No path was found by
+    which a value that a person controls changes the structure of the line, leaves `in/` or reaches an envelope member; the file-name
+    rule and the pointer rule agree with the host's patterns. Each claim below was checked against the code before I acted on it:
+    - *Done.* `into_body()` returned a bare `Map` whose `Debug` prints every secret: it is now a `Body` that shows only a member count
+      (also used by `Request`). The deadline was checked for shape only (`2026-02-30`, hour 25, second 60 and year 0 passed the Rust check
+      and failed `fromisoformat` in the container); it is now a calendar check, and `firstAttemptStartedAt` and the effect key are
+      checked the same way. Ceilings were pinned by ASCII examples only, so swapping bytes for characters would have passed; the tests now
+      use `é` at the edge of the ref, the location, the secret and the property value. Two inputs of the same name would have been read
+      twice and written twice (the host does not deduplicate); a field or a column mapped twice likewise: both are refused. A request line
+      over 4 MiB was bounded nowhere before the host dropped it: refused in `encode_request`.
+    - *Host defects found by the review, fixed here (G035-052, G035-053).* `mapping.py` read an array index with `str.isdigit()`:
+      `"²"` raises `ValueError` (reported as `WORKER_ERROR`, not as a schema mismatch), `"٣"` selected element 3, and `"01"` selected
+      element 1, which RFC 6901 forbids. It is now `0|[1-9][0-9]*` in ASCII. A namespace level or a table named `.` or `..` was
+      accepted, and `requests` removes dot segments from the path (checked: namespace `..` and table `t` is sent to `/v1/p/tables/t`, not
+      to a namespace); the host refuses them in `request.py` and the domain refuses them in `TableIdentifier::new`. Each test was seen
+      failing first (`ValueError` on `²`; five dot-segment cases accepted with the check disabled).
+    - *Cross-language ceilings.* `test_wire_request.py` takes the last value the builder allows and the first it refuses for each
+      ceiling, the calendar lists, and the envelope, on the host's own parser. It passed on the first run: the host already agreed on all of
+      them. That is the intent of the test (it fails the day one side moves a number alone), not a finding.
+    - *Not done.* `encode_request` returns a plain `Vec<u8>` that holds the relay token and every secret, and its `Debug` would print
+      them; as before, zeroising and not showing it belong to the driver that owns the buffer (T035-035, next slice). A definition
+      stored before this change with a mapped field such as `/a~x`, or a table named `..`, now fails to load in `infra-ir`; the feature
+      is unreleased and `lake.enabled` is off by default, so none is expected, and I did not search a database for one.
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 90 passed (22 in `write_body.rs`); `cargo test -p sagat-domain`: 848 passed, 0 failed
+    (new: `a_tilde_in_a_field_starts_only_the_two_escapes_of_a_json_pointer`, `a_dot_segment_is_not_a_namespace_level_or_a_table_name`);
+    `runners/lake`: 1084 passed, 1 skipped, `ruff check`, `ruff format --check` and strict `mypy` clean; `cargo fmt --check` and
+    `cargo clippy --workspace --all-targets --locked -- -D warnings` clean (the only warnings are the vendored `rskafka`'s);
+    `check-architecture.py`, `check-design-docs.py`, `check-agent-config.py` pass; unit tests of `sagat-infra-ir` and
+    `sagat-application` (76 and 7) pass. The Rust tests failed first (the builder or the field did not exist, a compile error), and one
+    of them was wrong once (the base builder already maps `/amount`) and was corrected, not the code. No mutation pass (OD-2026-11-06-2).
+    Not run: `crates/application/tests/definition_service.rs` (Docker); it holds no `~` pointer and no dot-segment name.
 - **G035-051 — Closed by D035-109.** A mapped field with a `~` that is not `~0` or `~1` validated in the domain and failed in the host.
+- **G035-052 — Closed by D035-109.** `mapping.py` accepted Unicode digits and leading zeros as array indexes and crashed on `"²"`.
+- **G035-053 — Closed by D035-109.** A namespace level or table named `.` or `..` changed the path of the catalog request.

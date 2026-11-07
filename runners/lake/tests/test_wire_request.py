@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -115,3 +116,113 @@ def test_the_fixture_is_not_changed_by_reading_it(tmp_path: Path) -> None:
     before = copy.deepcopy(line())
     parse_write(before, attempt_dir=tmp_path / "attempt-1")
     assert before == line()
+
+
+# The builder in Rust refuses what is outside these numbers (``crates/infra-lake/tests/write_body.rs`` pins the same
+# ones). The constants live once on each side, so a test has to say that the host takes the last value the builder lets
+# through and refuses the first it does not: if either side moves a ceiling alone, one of the two tests fails.
+def put(*path: str | int) -> Callable[[dict[str, Any], Any], None]:
+    def apply(document: dict[str, Any], value: Any) -> None:
+        target: Any = document
+        for step in path[:-1]:
+            target = target[step]
+        target[path[-1]] = value
+
+    return apply
+
+
+def files(count: int) -> list[dict[str, str]]:
+    return [{"file": f"in/f{index}.ndjson", "format": "ndjson"} for index in range(count)]
+
+
+def pairs(count: int) -> list[dict[str, str]]:
+    return [{"field": f"/f{index}", "column": f"c{index}"} for index in range(count)]
+
+
+def named(length: int) -> list[dict[str, str]]:
+    return [{"file": "in/" + "a" * length, "format": "ndjson"}]
+
+
+INT64 = 2**63 - 1
+LOCATION = "s3://lake/warehouse/"
+CEILINGS = [
+    ("effect key, in bytes", put("effectKey"), "é" * 256, "é" * 256 + "a"),
+    ("retries", put("limits", "maxCommitRetries"), 16, 17),
+    ("decoded bytes", put("limits", "maxDecodedBytes"), str(INT64), str(INT64 + 1)),
+    ("metadata bytes", put("limits", "maxMetadataBytes"), str(INT64), str(INT64 + 1)),
+    ("ref, in bytes", put("ref"), "é" * 127 + "a", "é" * 128),
+    ("inputs", put("inputs"), files(32), files(33)),
+    ("file name", put("inputs"), named(128), named(129)),
+    ("mapped columns", put("mapping"), pairs(1024), pairs(1025)),
+    ("property value, in bytes", put("snapshotProperties", "sagat.run-id"), "é" * 512, "é" * 512 + "a"),
+    ("warehouse locations", put("connection", "warehouseLocations"), [LOCATION] * 16, [LOCATION] * 17),
+    # the catalog's own warehouse has to stay inside a declared location, so the long one comes in addition to it
+    (
+        "a location, in bytes",
+        put("connection", "warehouseLocations"),
+        [LOCATION, "s3://" + "é" * 1021 + "a"],
+        [LOCATION, "s3://" + "é" * 1022],
+    ),
+    ("a secret", put("connection", "credentials", "storage", "secretAccessKey"), "x" * 16384, "x" * 16385),
+]
+
+
+def taken(document: dict[str, Any], tmp_path: Path) -> bool:
+    try:
+        request = parse_write(document, attempt_dir=tmp_path / "attempt-1")
+        open_connection(request.connection)
+    except Failure:
+        return False
+    return True
+
+
+@pytest.mark.parametrize(("name", "setter", "last", "first_over"), CEILINGS, ids=[row[0] for row in CEILINGS])
+def test_the_host_takes_the_last_value_the_builder_allows_and_refuses_the_next(
+    name: str, setter: Callable[[dict[str, Any], Any], None], last: Any, first_over: Any, tmp_path: Path
+) -> None:
+    inside = line()
+    setter(inside, last)
+    assert taken(inside, tmp_path), f"{name}: the last allowed value was refused"
+
+    over = line()
+    setter(over, first_over)
+    assert not taken(over, tmp_path), f"{name}: the first value over the ceiling was taken"
+
+
+@pytest.mark.parametrize(
+    "deadline",
+    [
+        "2026-02-30T10:10:00Z",
+        "2025-02-29T10:10:00Z",
+        "2100-02-29T10:10:00Z",
+        "2026-04-31T10:10:00Z",
+        "2026-13-01T10:10:00Z",
+        "2026-00-10T10:10:00Z",
+        "2026-11-05T25:00:00Z",
+        "2026-11-05T10:60:00Z",
+        "2026-11-05T10:10:60Z",
+        "0000-01-01T00:00:00Z",
+    ],
+)
+def test_the_host_refuses_the_instants_the_builder_refuses(deadline: str, tmp_path: Path) -> None:
+    for setter in (put("limits", "deadlineAt"), put("firstAttemptStartedAt")):
+        document = line()
+        setter(document, deadline)
+        assert not taken(document, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "deadline",
+    [
+        "2024-02-29T23:59:59Z",
+        "2000-02-29T00:00:00Z",
+        "2026-12-31T23:59:59.999999Z",
+        "9999-12-31T23:59:59Z",
+        "0001-01-01T00:00:00Z",
+    ],
+)
+def test_the_host_takes_the_instants_the_builder_takes(deadline: str, tmp_path: Path) -> None:
+    for setter in (put("limits", "deadlineAt"), put("firstAttemptStartedAt")):
+        document = line()
+        setter(document, deadline)
+        assert taken(document, tmp_path)

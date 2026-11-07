@@ -668,8 +668,8 @@ three conditions pass.
   Refs: FR-035-009, FR-035-023, contracts/lake-runtime.md "One attempt".
 
   *2026-11-06, first slice, left unticked (D035-109):* "serve the request line" has its typed body: `WriteAppend` in
-  `crates/infra-lake/src/protocol/write_body.rs`, checked against the line the host parses (one fixture, read by a Rust test and a
-  Python test). Not done: the directory, streaming into `in/` with the limit, the relay and the container request, the supervisor and
+  `crates/infra-lake/src/protocol/write_body.rs`, checked against the line the host parses (one fixture and the ceilings of every
+  member, read by a Rust test and a Python test), with `encode_request` refusing an envelope or a line the host would refuse. Not done: the directory, streaming into `in/` with the limit, the relay and the container request, the supervisor and
   its kill conditions, the receipt rebuild, zeroising and cleanup. They need `apps/sandbox-runner` to start, stop and kill a container of
   the lake profile, which it does not offer yet (G035-022).
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
