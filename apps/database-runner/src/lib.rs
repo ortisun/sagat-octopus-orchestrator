@@ -2,6 +2,11 @@
 mod attempt;
 mod capability;
 pub mod config;
+#[expect(
+    dead_code,
+    reason = "the lake attempt driver calls it in the next slice (T035-035); it is built and tested first"
+)]
+mod lake;
 mod rpc;
 mod runner;
 mod slots;

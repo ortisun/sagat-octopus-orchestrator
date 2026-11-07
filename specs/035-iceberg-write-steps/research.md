@@ -2172,3 +2172,32 @@ The other fixes were wording:
   characters), and I did not measure whether PyArrow with `us-east-1` asks for the legacy global host `s3.amazonaws.com` instead of
   `s3.us-east-1.amazonaws.com` (a test asserts the legacy host is not allowed). *Exit condition:* measure it against the pinned
   PyArrow, and either allow the host or write down why not; decide the other partitions with the loaders.
+- **D035-115 — The runner reads the Iceberg connection of `ResolveDatabase` into the documents the host reads, and zeroises the
+  secret bytes as it parses them.** Seventh slice of T035-035, and the runner's half of T035-044. **Decided by: delegate**.
+  - *Why.* The server answers `ResolveDatabase` with the typed message `IcebergConnection` (`worker.proto`, already in the contract):
+    the settings of one revision and `credentials`, a map with one entry per secret (`catalog`, `storage`), each the JSON document of the
+    data model. The host reads the documents as the platform *stores* them (`to_json`). Something has to turn the one into the other,
+    and it is the place where the secret bytes first sit in the runner.
+  - *What it is.* `apps/database-runner/src/lake/connection.rs`, `convert(&mut pb::IcebergConnection) -> Converted`. A REST catalog over
+    S3 becomes the stored documents (`{"type":"rest","rest":{...}}`, `{"type":"s3","s3":{...},"credentials":"static"|"vended"}`); an
+    empty string is "not set" (protobuf has no other); the allowed modes and the limits are carried (`0` is not set). Glue, Hive, JDBC,
+    GCS and ADLS are `Unsupported`, with a name, before a container is started (G035-048); an incomplete connection is `Shape`. **A test
+    holds the result to the wire fixture** that the Rust request builder and the Python host both read, so the stored JSON of the domain,
+    the protobuf and the request line agree on this connection.
+  - *Secrets.* Each entry of `credentials` must be a JSON object of text to text, at most 16 KiB; the bytes are zeroised in place as
+    soon as they are parsed, **also when the connection is refused for another reason and also when a secret is refused** (the secrets
+    are read first for that), and the parsed values are `Zeroizing` strings. A key other than `catalog` and `storage` is refused: a secret
+    the connection does not have would sit in the runner for nothing. `Converted` shows no secret and no address; an error repeats nothing.
+  - *Evidence.* `cargo test -p sagat-database-runner`: 16 passed (12 new); `cargo fmt --check` and `cargo clippy --workspace
+    --all-targets --locked -- -D warnings` clean. Module and tests were written together and passed at once. One mutation by hand:
+    removing the `zeroize` call fails the test that the bytes are gone.
+  - *Not done, and why this slice has no new dependency.* The server does not fill `iceberg` yet (T035-044: nothing in `service.rs` or
+    `worker/database.rs` mentions Iceberg). `Converted` is not yet turned into `infra_lake::Connection`: that needs
+    `sagat-infra-lake` as a dependency of `sagat-database-runner`, and **a new dependency edge changes `Cargo.lock`, which the CI
+    selector treats as an input of every package (every unit test and every integration target)**. The same goes for `zeroize` in
+    `infra-lake` (G035-063). Both are one deliberate change, taken together with the driver, rather than one expensive CI run each.
+- **G035-063 — `infra-lake` holds the secrets as plain strings.** `Connection` keeps them in `BTreeMap<String, String>`, the body in
+  `serde_json::Value` strings, and `encode_request` returns a `Vec<u8>` of the whole line; none is zeroised when it is dropped. The runner
+  can zeroise what it owns (D035-115) but not what `infra-lake` copies. *Exit condition:* `zeroize` in `infra-lake`'s manifest (a
+  `Cargo.lock` change, so the whole CI: do it once, with the `database-runner` → `infra-lake` edge), secrets as `Zeroizing`, the body
+  scrubbed on drop, and `encode_request` returning a `Zeroizing<Vec<u8>>`, each with a test.
