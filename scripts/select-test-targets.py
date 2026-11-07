@@ -21,11 +21,11 @@ Scoped selection:
                 Cargo.toml, Cargo.lock, rust-toolchain.toml, .cargo/, clippy.toml, rustfmt.toml or vendor/ selects every
                 package.
   integration   a `sagat-tests` target runs only when it was itself changed: (a) a file of its directory, or its
-                [[test]] entry, changed; (b) a harness it drives changed (frontend/e2e, sdks/*/conformance, examples/,
-                runners/lake/ for the lake suites); or (c) tests/support, tests/fixtures, runners/ (other than
-                runners/lake/), a contract file under specs/, or a dependency of tests/Cargo.toml changed, which selects
-                every target. A changed package does not select a suite because the suite uses it, or uses something
-                that depends on it: the integration suites are expensive, and the release runs all of them.
+                [[test]] entry, changed; or (b) a harness it drives changed (frontend/e2e, sdks/*/conformance, examples/,
+                runners/lake/ for the lake suites). Nothing else selects a suite: not a changed package that the suite
+                uses or that depends on it, and not a shared input (tests/support, tests/fixtures, runners/ other than
+                runners/lake/, a contract file under specs/, a dependency of tests/Cargo.toml, Cargo.lock): the
+                integration suites are expensive, and the release runs all of them.
   SDKs, Studio  an SDK's unit tests run when a file under sdks/<language>/ changed; the Studio's when a file under
                 frontend/ changed; the scripts' when a file under scripts/ changed; the lake runtime's (Python,
                 its lock and its image) when a file other than Markdown under runners/lake/ changed.
@@ -63,9 +63,10 @@ HARNESSES = (
     # The lake runtime is driven by these suites; the contract suite reads the contract fragments, not the runtime.
     (re.compile(r"runners/lake/"), LAKE_SUITES),
 )
-# Inputs of every Rust package: a change selects every package and every target.
+# Inputs of every Rust package: a change selects the unit tests of every package, and no suite.
 RUST_ROOT_INPUTS = re.compile(r"Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|\.cargo/.*|vendor/.*")
-# Inputs of the integration suites that cannot be tied to one of them: every target runs. The lake runtime is not
+# Inputs of the integration suites that cannot be tied to one of them. They select no suite on their own: a pull
+# request runs the suites that were changed, and the release runs the rest (OD-2026-11-06-2). The lake runtime is not
 # one of them: it is tied to the lake suites (HARNESSES) and to its own job.
 SHARED_INPUTS = re.compile(r"runners/(?!lake/).*|specs/.*/contracts/.*")
 LAKE_RUNTIME = re.compile(r"runners/lake/.*")
@@ -150,20 +151,20 @@ def parse_manifest(text):
 
 
 def manifest_selection(root, base, targets, reasons):
-    """Targets whose [[test]] entry is new or changed, or None when every target must run."""
+    """Targets whose [[test]] entry is new or changed, or None when the manifests cannot be compared and every
+    target must run (the safe default of a run that cannot know what changed)."""
     shown = git(root, "show", f"{base}:{MANIFEST}")
     try:
         if shown.returncode != 0:
             raise ValueError("the base has no manifest")
-        old_rest, old_tests = parse_manifest(shown.stdout.decode("utf-8"))
+        _, old_tests = parse_manifest(shown.stdout.decode("utf-8"))
         with open(os.path.join(root, MANIFEST), encoding="utf-8") as handle:
-            new_rest, new_tests = parse_manifest(handle.read())
+            _, new_tests = parse_manifest(handle.read())
     except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError):
         reasons.append(("every target", f"{MANIFEST} cannot be compared with the base"))
         return None
-    if old_rest != new_rest:
-        reasons.append(("every target", f"{MANIFEST} changed beyond its [[test]] entries"))
-        return None
+    # A dependency or a setting of the crate (all of the manifest that is not a [[test]] entry) is shared by the
+    # suites: it selects none of them.
     chosen = {name for name, entry in new_tests.items() if old_tests.get(name) != entry and name in targets}
     for name in sorted(chosen):
         reasons.append((name, f"{MANIFEST} adds or changes its [[test]] entry"))
@@ -209,13 +210,12 @@ def scope(root, base, head, targets, workspace):
             continue
         if RUST_ROOT_INPUTS.fullmatch(rel):
             decision.everything = True
-            decision.chosen = set(targets)
-            decision.reasons.append(("every target", f"{rel} is an input of every Rust package"))
+            decision.reasons.append(("every package", f"{rel} is an input of every Rust package"))
             continue
         if SHARED_INPUTS.fullmatch(rel):
-            decision.chosen = set(targets)
-            decision.reasons.append(("every target", f"{rel} is shared by the suites"))
-            continue
+            # Said in the log so that nobody wonders why no suite ran; the file still goes through the rest, since a
+            # runner may be a workspace package whose own unit tests (and its dependents') are due.
+            decision.reasons.append(("no suite", f"{rel} is shared by the suites; the release runs them"))
         for language in SDK_LANGUAGES:
             if rel.startswith(f"sdks/{language}/"):
                 decision.sdks.add(language)
@@ -240,8 +240,7 @@ def scope(root, base, head, targets, workspace):
         elif rel.startswith("tests/"):
             owners = [name for name, directory in directories.items() if rel.startswith(directory)]
             if not owners:
-                decision.chosen = set(targets)
-                decision.reasons.append(("every target", f"{rel} is shared by the suites"))
+                decision.reasons.append(("no suite", f"{rel} is shared by the suites; the release runs them"))
                 continue
             depth = max(len(directories[name]) for name in owners)
             for name in sorted(n for n in owners if len(directories[n]) == depth):
