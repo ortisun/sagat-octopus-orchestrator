@@ -22,6 +22,7 @@ pub fn settings(work_root: &Path) -> Settings {
         sandbox_uid: 10_002,
         slots: 8,
         relay_allow: vec!["0.0.0.0/0".parse().unwrap()],
+        relay_deny: vec!["10.0.0.0/8".parse().unwrap()],
         max_bytes: 1 << 20,
         max_records: 1000,
         max_commit_retries: 4,
@@ -86,4 +87,10 @@ pub fn input_json(edit: impl FnOnce(&mut Value)) -> Vec<u8> {
     let mut document = base();
     edit(&mut document);
     serde_json::to_vec(&document).unwrap()
+}
+
+/// The user this test runs as: a scripted host in the test's own process is reported by the kernel as that peer.
+pub fn my_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt as _;
+    tempfile::tempfile().unwrap().metadata().unwrap().uid()
 }

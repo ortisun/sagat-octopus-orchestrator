@@ -451,11 +451,10 @@ impl AttemptDir {
     /// Lets go of the directory **without removing it**, and says where it is. For an attempt whose container the sandbox did
     /// not confirm gone: the container may still have the directory mounted, and the credentials it was given are still good
     /// until its deadline, so the directory stays until whoever sweeps leftovers finds it past that time. After this the
-    /// handle's `Drop` removes nothing.
-    #[must_use]
-    pub fn release(mut self) -> PathBuf {
+    /// handle's `Drop` removes nothing, and a handle can be kept from a `Drop` of its own owner.
+    pub fn keep(&mut self) -> PathBuf {
         self.removed = true;
-        std::mem::take(&mut self.path)
+        self.path.clone()
     }
 }
 

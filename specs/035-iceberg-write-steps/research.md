@@ -2517,7 +2517,8 @@ The other fixes were wording:
   - *Decisions.* Paths are absolute and may not climb. The sandbox runner's user is neither root nor one of the containers' users (the lake range,
     both edges tested). `slots` is 1 to 4096. **`relayAllowCidrs` is required and non-empty outside development** (an empty list reaches nothing,
     so a configuration that left it out could not work and is refused instead of being left to fail at the first attempt); `0.0.0.0/0` and
-    `::/0` are an explicit, valid answer (the relay always denies loopback, link-local, metadata and platform state endpoints), and at most 256
+    `::/0` are an explicit, valid answer (*corrected by D035-127:* the relay itself refuses loopback, link-local, metadata and other special-use addresses, and no private
+    network; the platform's own ranges are the operator's `relayDenyCidrs`), and at most 256
     ranges. A bare address is not a range. A section that is not valid stops the runner at start.
   - *Evidence.* 9 unit tests in `settings.rs` and one in `config.rs` (absent means off; present is validated whole; an unknown member, a bad
     value and an empty allowance stop the runner; development allows the empty allowance); `database-runner` library tests: 35 passed;
@@ -2561,8 +2562,8 @@ The other fixes were wording:
     slot, calls `run_attempt` behind the `LakeSandbox` port and says what to report (`Report::{Complete, Fail, Abandon}`) with the facts the runner
     keeps (the request was sent, the container was confirmed gone, the relay's denials, the sandbox's refusal, where the directory was left). It
     does **not** talk to the control plane: the connection is already resolved, the signals are the lease's, and the report is the caller's to send.
-    `infra-lake` gains `AttemptDir::release`, which lets go of a directory without removing it.
-  - *Decisions.* **The directory is removed only when the sandbox confirmed the container gone**; otherwise it is released and its path is returned in
+    `infra-lake` gains `AttemptDir::keep` (first written as `release`, D035-127), which lets go of a directory without removing it.
+  - *Decisions (the deadline, the slot and the dropped future were corrected by D035-127).* **The directory is removed only when the sandbox confirmed the container gone**; otherwise it is released and its path is returned in
     `Finished::left`, because the container may still have it mounted and its credentials are good until its deadline (the sweep, slice D, takes it
     once its deadline is past). A removal that fails is also released, not forgotten. **The slot is free when the attempt is over,** whatever the
     outcome (the sandbox is the one that refuses a slot still in use). **Slots are taken in turn,** not the lowest free, so that the user of the
@@ -2585,6 +2586,65 @@ The other fixes were wording:
   - *Not covered.* That the development flag reaches the relay (needs a relay that connects to a loopback target). A directory whose removal fails (it
     needs a subdirectory the runner cannot enter, made by another user: G035-060). The metrics of an attempt. The sweep of released directories, the
     shared heartbeat and report loop, the registration and the real `ReadBlob` source (slice D).
+- **D035-127 — Corrections after the independent review of the stack D035-120..126.** **Decided by: delegate**. A security and a correctness
+  reviewer were given the patch and the documents, not my conclusion (the rule of D035-119), and every claim was read against the code before it was
+  taken. **No Blocker; six Majors between them, all taken.** No `Cargo.lock` change. As in D035-119, the findings were fixed together with their cases,
+  so those were not seen failing first; **nineteen hand mutations of the fixes stand in for that, and all are killed.**
+  - *The relay had no deny list (Major, security).* `prepare` never called `with_deny`, and the network check the relay uses refuses loopback,
+    `0.0.0.0/8`, multicast and reserved ranges, link-local, `192.0.0.0/24`, 6to4 and Teredo, and the metadata addresses: **not the private ranges, not
+    the pod and service networks, not the platform's own state.** A tenant declares the endpoints of its connection, so a catalog at an address inside the platform would have been reached by a compromised
+    host through a raw TCP tunnel. The SQL runner closes this with `deployment.denyCidrs`, required outside development; the lake relay had no
+    counterpart, and the sentence of the contract ("deny … platform state endpoints") and of D035-124 that said the relay did it by itself was wrong:
+    the operator's list is the only thing that can name the platform. **`relayDenyCidrs`**, required and non-empty outside development, is applied
+    with `with_deny`; a deny range wins over an allow range. Tested with a real relay: a declared host that resolves to `10.0.0.5` is refused
+    (`403`, counted as `address_forbidden`) and, with the list empty, the same name and address are let through, so the list is what refuses it.
+    Found with it: **the development flag was never shown to reach the relay**; now it is (loopback refused, and opened only in development).
+  - *Staging had no deadline and ignored the lease (Major, both).* A `ReadBlob` that stalls held a slot, a blocking thread and the resolved
+    credentials for as long as it liked, and a cancellation or a lost lease was not seen until staging ended. `prepare` now runs under a `select!`
+    with the lost lease, the cancellation and the step's deadline; dropping it removes the directory. Three tests over a source that never answers.
+  - *The lease's end was the attempt's deadline (Major, correctness).* A lease is renewed by its heartbeats, so a step of ten minutes would have been
+    cut at the first lease TTL, and reported `OUTCOME_UNKNOWN` (not retried) once the request was sent. **The deadline is `now + the step's timeout`
+    (the connection's may lower it)**, staging included; a lease that is lost is its own signal. `Job` is gone: `run(input_json, connection, …)`.
+  - *Permanent refusals of the sandbox were retryable (Major, correctness).* A step whose timeout is above the node's ceiling, a class the node does
+    not have and a directory the node does not accept were all `LAKE_SANDBOX_UNAVAILABLE`: the step was retried, restaged and refused again until its
+    policy ran out. `Deadline`, `Class` and `Directory` are now `DATABASE_CONFIGURATION_INVALID`; `Ceiling` and `Slot` stay retryable.
+  - *A dropped `run` left a container running, removed its directory and freed its slot (Major in effect, both).* A `Running` guard now owns the
+    directory and the slot from the moment a container may be running: settled, it removes the directory only if the container is confirmed gone
+    (once more if the removal fails) and gives the slot back; **dropped, it keeps the directory and holds the slot back until the container's deadline
+    and the sandbox's sweep have passed** (a minute and a half). The container is still not killed by a drop (that needs an `await`; the label
+    deadline is the backstop, as `attempt.rs` says). The same hold applies to a container the sandbox did not confirm gone.
+  - *The receipt was not held to the request (security, Minor).* A receipt of another effect key, another ref, another mode or another kind is
+    `LAKE_HOST_PROTOCOL`, not a commit of this step: a compromised host could otherwise have the server record a snapshot the step did not write.
+  - *Settings.* `sandboxUid` refuses 65534, the user the kernel reports for an unmapped one; `workRoot` is bounded so that
+    `<workRoot>/<attempt id>/relay.sock` fits a socket path (longer, every attempt would fail to bind, which is retryable and would retry for ever).
+  - *Also taken.* The attempt id is `UUIDv4` (ADR-0079 rule 10: opaque and random; v7 is time-ordered). The inline records are **moved** out of the
+    input (`AttemptInput::take_records`), not cloned. `Driver`'s fields are private (`Driver::new` for production; the peer function is a test
+    seam inside the module). `Finished::cause` says why no container was asked for (`Input`, `Over`, `NoSlot`, `NoUser`, `Prepare(kind)`, `Relay`).
+    Four tests that could not fail for the thing they named are replaced: the relay is shown to serve the user it was built for and no other, the
+    host is told the end of the step (`deadlineAt`, parsed and compared), and the peer function is shown to matter.
+  - *Not taken, with the reason.* `Body::into_map` stays public: it hands over what the caller already holds (the caller built the secrets), the
+    tests of another crate use it, and a feature gate would be a seam of its own. `SocketSandbox::expecting_server` stays optional in the type,
+    because the driver is generic over the sandbox: **the shell (slice D) must build it with `settings.sandbox_uid`** (an obligation, not code).
+  - *Said for the next slices.* The egress ceiling is carried and not re-checked by the runner: the lease input has no classification, and
+    publication checks it against the pinned revision, which cannot change under a run (T035-055 pins it). `ReadBlob` must be scoped to the run by
+    the server, or an author could load another workflow's output into a lower-ceiling table (T035-056/slice D). The resolved secrets live across the
+    staging awaits; the shell may resolve **after** staging to shorten that window, which is a decision for slice D.
+  - *Evidence.* `cargo test -p sagat-database-runner -p sagat-infra-lake`: 352 passed, 0 failed; `cargo clippy --workspace --all-targets --locked -- -D
+    warnings` and `cargo fmt --check` clean; the three repository checkers clean.
+- **G035-069 — A transient fault while staging is a permanent failure.** A `ReadBlob` network error or `ENOSPC` while writing becomes
+  `StagingError::Io`, then `WORKER_ERROR`, which the contract does not retry; and `Blobs::open` returns `Err(())`, so a missing blob (permanent) and a
+  timeout (transient) look alike. Nothing was sent to the host, so a retry would be safe. One tenant filling the work volume fails other tenants'
+  steps for good. *Exit condition:* a typed error from `Blobs::open`, `ENOSPC` told apart in staging, and a retryable code for them in
+  `contracts/errors.md` (a contract change, so the whole CI): decided with the real `ReadBlob` source in slice D.
+- **G035-070 — Numbers in inline records go through `f64`.** `serde_json` without `arbitrary_precision` or `float_roundtrip` reads an integer above
+  `u64::MAX` as a float and some decimals one unit off in the last place; `1e5` is staged as `100000.0`. The server builds the document with the same
+  crate, so this is the platform's behaviour already, not a regression of the reader. *Exit condition:* a corpus case for each, and either the two
+  features turned on workspace-wide or a sentence in the guide that exact numbers travel in a blob.
+- **G035-071 — What cancellation can leave behind, and what a big document costs.** An `AttemptDir` dropped while a `spawn_blocking` writer of
+  `stage_*` is still running can lose to the file it creates (`ENOTEMPTY`, ignored by `Drop`): the directory, with the token and part of the
+  records, stays with no handle. A 4 MiB document of `{},` is about a million and a half values in the reader, tens of megabytes, and the input is
+  read before a slot is taken, so it is bounded by the runner's `maxConcurrent` (64) and not by the slots. *Exit condition:* the sweep of slice D
+  (by age, past the attempt's deadline) takes the leftovers; the memory is measured there, and the parse moves after the slot if it matters.
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

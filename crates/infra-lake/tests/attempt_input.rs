@@ -120,6 +120,20 @@ fn the_document_the_corpus_is_built_on_is_read_into_what_it_says() {
 }
 
 #[test]
+fn the_records_can_be_taken_out_and_the_rest_of_the_input_is_still_whole() {
+    let mut input = AttemptInput::read(&bytes(&base())).unwrap();
+    match input.take_records() {
+        Records::Inline(records) => assert_eq!(records, [json!({"amount": "12.50", "sku": "A-1"})]),
+        other => panic!("not inline: {other:?}"),
+    }
+    assert!(matches!(input.records(), Records::Inline(left) if left.is_empty()));
+    // what the request is made from does not depend on the records
+    assert_eq!(input.effect_key(), "run-7f3a/load/1");
+    assert_eq!(input.table().name(), "orders");
+    assert_eq!(input.mapping().len(), 1);
+}
+
+#[test]
 fn blobs_are_read_with_their_ids_and_formats_in_the_order_written() {
     let document = edited(&[json!({"set": "/records", "value": {"blobs": [
         {"id": "0192f5aa-0000-7000-8000-000000000002", "format": "parquet"},

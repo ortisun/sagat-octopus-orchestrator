@@ -80,7 +80,8 @@ the runner starts, and a value outside its bounds stops the runner: nothing is d
   "sandboxSocket": "/run/sagat/lake-sandbox.sock",
   "sandboxUid": 10002,
   "slots": 8,
-  "relayAllowCidrs": ["0.0.0.0/0", "::/0"]
+  "relayAllowCidrs": ["0.0.0.0/0", "::/0"],
+  "relayDenyCidrs": ["10.96.0.0/12", "10.244.0.0/16"]
 }
 ```
 
@@ -89,9 +90,12 @@ the runner starts, and a value outside its bounds stops the runner: nothing is d
   (`40000` to `44095`).
 - `slots` is how many containers' users there are, 1 to 4096; the lake runner picks the slot of an attempt.
 - `relayAllowCidrs` are the ranges the relay may connect to for a destination's catalog and storage. **An empty list
-  reaches nothing and is refused**, except with `developmentLoopback`. The relay itself always denies loopback, link-local
-  and metadata addresses and the platform's own state endpoints, so `0.0.0.0/0` and `::/0` mean the public internet less
-  those; list narrower ranges to keep the destinations to yours.
+  reaches nothing and is refused**, except with `developmentLoopback`.
+- `relayDenyCidrs` are the ranges it may never connect to, and a deny range wins over an allow range. **The relay itself
+  refuses loopback, link-local, metadata and other special-use addresses, and no private network.** A tenant declares the endpoints of its connection, so the
+  platform's own state (PostgreSQL, the broker, the secret store, the Kubernetes API) and your pod and service networks must
+  be listed here, exactly as `denyCidrs` is for the SQL runner. It is required and non-empty, except with
+  `developmentLoopback`.
 - Optional, with the defaults of the contract: `maxBytes` (1 GiB, staged input of one attempt), `maxRecords` (10 million),
   `maxCommitRetries` (4, at most 16), `maxDecodedBytes` (16 GiB), `maxMetadataBytes` (64 MiB), `hostStartSecs` (30),
   `killLimitSecs` (20) and `largeAboveBytes` (none).

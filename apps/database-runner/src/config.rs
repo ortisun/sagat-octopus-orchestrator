@@ -319,7 +319,7 @@ mod tests {
         let parse = |value: &serde_json::Value| Config::parse(&serde_json::to_vec(value).unwrap());
         let section = json!({
             "workRoot": "/work", "sandboxSocket": "/run/sagat/lake-sandbox.sock", "sandboxUid": 10002,
-            "slots": 8, "relayAllowCidrs": ["0.0.0.0/0"]
+            "slots": 8, "relayAllowCidrs": ["0.0.0.0/0"], "relayDenyCidrs": ["10.0.0.0/8"]
         });
         let mut value = document();
         assert!(parse(&value).unwrap().lake.is_none(), "absent means off");
@@ -338,6 +338,13 @@ mod tests {
         value["lake"] = section;
         value["lake"]["relayAllowCidrs"] = json!([]);
         assert!(parse(&value).is_err());
+        // and the platform's own ranges must be named: the relay denies nothing but loopback, link-local and metadata
+        value["lake"]["relayAllowCidrs"] = json!(["0.0.0.0/0"]);
+        value["lake"]["relayDenyCidrs"] = json!([]);
+        assert!(parse(&value).is_err());
+        value["lake"]["relayDenyCidrs"] = json!(["10.0.0.0/8"]);
+        assert!(parse(&value).is_ok());
+        value["lake"]["relayAllowCidrs"] = json!([]);
         value["developmentLoopback"] = json!(true);
         value["grpcUrl"] = json!("http://127.0.0.1:8443");
         assert!(parse(&value).unwrap().lake.is_some());

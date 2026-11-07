@@ -342,6 +342,12 @@ impl AttemptInput {
         &self.records
     }
 
+    /// Takes the records out, leaving an empty inline list behind. A document can hold millions of small values, so the
+    /// caller that stages them moves them instead of making a second copy of the whole tree.
+    pub fn take_records(&mut self) -> Records {
+        std::mem::replace(&mut self.records, Records::Inline(Vec::new()))
+    }
+
     #[must_use]
     pub fn mapping(&self) -> &[ColumnMapping] {
         &self.mapping

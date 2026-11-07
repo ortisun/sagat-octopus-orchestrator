@@ -535,14 +535,15 @@ async fn a_stage_that_is_dropped_midway_leaves_no_file_and_the_name_can_be_used_
 }
 
 #[test]
-fn a_released_attempt_leaves_its_directory_where_it_is_and_says_where() {
+fn a_kept_attempt_leaves_its_directory_where_it_is_and_says_where() {
     let work = tempfile::tempdir().unwrap();
-    let attempt = made(work.path(), roomy());
-    let released = attempt.release();
-    assert_eq!(released, work.path().join(ATTEMPT));
+    let mut attempt = made(work.path(), roomy());
+    let kept = attempt.keep();
+    assert_eq!(kept, work.path().join(ATTEMPT));
+    drop(attempt);
     assert!(
-        released.join("relay.token").is_file(),
-        "release is not a removal: the container may still be using it"
+        kept.join("relay.token").is_file(),
+        "keeping is not a removal, and dropping the handle after it is not one either: the container may still be using it"
     );
 }
 

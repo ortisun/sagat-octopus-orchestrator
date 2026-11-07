@@ -76,9 +76,10 @@ impl PrepareError {
 pub struct Effective {
     pub max_records: u64,
     pub max_bytes: u64,
-    /// How long the attempt may take from the moment it starts, or `None` when neither the step nor the connection says (the
-    /// lease's own deadline then is the only one).
-    pub timeout: Option<Duration>,
+    /// How long the attempt may take from the moment the runner starts on it, staging included: the step always names one,
+    /// and the connection's may lower it. (The lease's own end is not a bound: a lease is renewed by its heartbeats, and one
+    /// that is lost is a signal of its own.)
+    pub timeout: Duration,
 }
 
 /// The intersection. A limit that is not set by the step or the connection is the next one up; the settings always set one.
@@ -97,7 +98,10 @@ pub fn effective(step: NodeLimits, connection: ConnectionLimits, settings: &Sett
         .into_iter()
         .flatten()
         .min()
-        .map(|milliseconds| Duration::from_millis(u64::from(milliseconds)));
+        .map_or(
+            Duration::from_millis(u64::from(step.timeout_ms)),
+            |milliseconds| Duration::from_millis(u64::from(milliseconds)),
+        );
     Effective {
         max_records: records,
         max_bytes: settings.max_bytes,
@@ -122,7 +126,7 @@ pub struct Prepared {
     pub directory: AttemptDir,
     /// The request line, newline included. It holds the credentials, and is zeroed when dropped.
     pub request: Zeroizing<Vec<u8>>,
-    /// The relay for this attempt: its allowance, and the user of the slot as the only peer it serves.
+    /// The relay for this attempt: its allowance and its deny list, and the user of the slot as the only peer it serves.
     pub relay: RelayConfig,
     /// What was staged, for the choice of the class: the bytes of every source.
     pub staged_bytes: u64,
@@ -195,7 +199,7 @@ pub struct Attempt<'a> {
 /// # Errors
 /// [`PrepareError`], with nothing left on disk.
 pub async fn prepare<B: Blobs>(
-    input: &AttemptInput,
+    mut input: AttemptInput,
     connection: Converted,
     blobs: &B,
     settings: &Settings,
@@ -232,16 +236,13 @@ pub async fn prepare<B: Blobs>(
         .map_err(staging)?;
 
     let mut staged_bytes = 0_u64;
-    match input.records() {
+    match input.take_records() {
         Records::Inline(records) => {
-            let staged = directory
-                .stage_inline(records.clone())
-                .await
-                .map_err(staging)?;
+            let staged = directory.stage_inline(records).await.map_err(staging)?;
             staged_bytes = staged_bytes.saturating_add(staged.bytes);
         }
         Records::Blobs(list) => {
-            for blob in list {
+            for blob in &list {
                 let reader = blobs
                     .open(blob.id)
                     .await
@@ -281,6 +282,7 @@ pub async fn prepare<B: Blobs>(
     .map_err(|_| PrepareError::Request)?;
 
     let relay = RelayConfig::new(token, endpoints, settings.relay_allow.iter().copied())
+        .with_deny(settings.relay_deny.iter().copied())
         .development(attempt.development)
         .with_peer_uid(attempt.peer_uid);
     Ok(Prepared {
@@ -302,7 +304,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::super::connection::convert;
-    use super::super::fixtures::{SECRET, base, converted, message, settings};
+    use super::super::fixtures::{SECRET, base, converted, message, my_uid, settings};
     use super::*;
 
     const ATTEMPT: &str = "0192f5aa-1111-7000-8000-000000000001";
@@ -366,7 +368,7 @@ mod tests {
     async fn inline_records_are_staged_and_the_request_is_the_one_the_host_reads() {
         let work = tempfile::tempdir().unwrap();
         let prepared = prepare(
-            &input(|_| {}),
+            input(|_| {}),
             converted(),
             &nothing(),
             &settings(work.path()),
@@ -420,7 +422,7 @@ mod tests {
             ]});
         });
         let prepared = prepare(
-            &document,
+            document,
             converted(),
             &blobs,
             &settings(work.path()),
@@ -454,7 +456,7 @@ mod tests {
         let mut connection = converted();
         connection.allowed_modes = vec!["overwrite".to_owned()];
         let error = prepare(
-            &input(|_| {}),
+            input(|_| {}),
             connection,
             &nothing(),
             &settings(work.path()),
@@ -474,7 +476,7 @@ mod tests {
             |d: &mut Value| d["records"] = json!({"inline": [{"a": 1}, {"a": 2}, {"a": 3}]});
         let mut small = settings(work.path());
         small.max_records = 2;
-        let error = prepare(&input(three), converted(), &nothing(), &small, attempt(0))
+        let error = prepare(input(three), converted(), &nothing(), &small, attempt(0))
             .await
             .unwrap_err();
         assert_eq!(error, PrepareError::Limit);
@@ -487,7 +489,7 @@ mod tests {
 
         // the last record that fits is taken
         small.max_records = 3;
-        let prepared = prepare(&input(three), converted(), &nothing(), &small, attempt(0))
+        let prepared = prepare(input(three), converted(), &nothing(), &small, attempt(0))
             .await
             .unwrap();
         drop(prepared);
@@ -505,7 +507,7 @@ mod tests {
             d["limits"]["maxRecords"] = json!(2);
         };
         let error = prepare(
-            &input(three),
+            input(three),
             converted(),
             &nothing(),
             &settings(work.path()),
@@ -522,7 +524,7 @@ mod tests {
             timeout_ms: 0,
         });
         let error = prepare(
-            &input(|d| d["records"] = json!({"inline": [{"a": 1}, {"a": 2}]})),
+            input(|d| d["records"] = json!({"inline": [{"a": 1}, {"a": 2}]})),
             convert(&mut message).unwrap(),
             &nothing(),
             &settings(work.path()),
@@ -552,7 +554,7 @@ mod tests {
             by_settings.max_records, 500,
             "the step is under the settings' 1000"
         );
-        assert_eq!(by_settings.timeout, Some(Duration::from_secs(60)));
+        assert_eq!(by_settings.timeout, Duration::from_secs(60));
         assert_eq!(by_settings.max_bytes, 1 << 20);
 
         let tight = ConnectionLimits {
@@ -562,7 +564,7 @@ mod tests {
         };
         let by_connection = effective(step, tight, &settings(work));
         assert_eq!(by_connection.max_records, 10);
-        assert_eq!(by_connection.timeout, Some(Duration::from_secs(5)));
+        assert_eq!(by_connection.timeout, Duration::from_secs(5));
 
         let mut low = settings(work);
         low.max_records = 7;
@@ -577,7 +579,7 @@ mod tests {
             d["records"] = json!({"blobs": [{"id": BLOB_A, "format": "ndjson"}]});
         };
         let error = prepare(
-            &input(by_blob),
+            input(by_blob),
             converted(),
             &nothing(),
             &settings(work.path()),
@@ -592,7 +594,7 @@ mod tests {
         // an endless blob costs one chunk past the limit and no more
         let mut small = settings(work.path());
         small.max_bytes = 4096;
-        let error = prepare(&input(by_blob), converted(), &Endless, &small, attempt(0))
+        let error = prepare(input(by_blob), converted(), &Endless, &small, attempt(0))
             .await
             .unwrap_err();
         assert_eq!(error, PrepareError::Limit);
@@ -606,7 +608,7 @@ mod tests {
         connection.storage =
             json!({"type": "gcs", "gcs": {"project": "p"}, "credentials": "static"});
         let error = prepare(
-            &input(|_| {}),
+            input(|_| {}),
             connection,
             &nothing(),
             &settings(work.path()),
@@ -623,7 +625,7 @@ mod tests {
     async fn the_relay_serves_the_user_of_the_slot_and_only_that_user() {
         let work = tempfile::tempdir().unwrap();
         let prepared = prepare(
-            &input(|_| {}),
+            input(|_| {}),
             converted(),
             &nothing(),
             &settings(work.path()),
@@ -648,7 +650,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
         std::fs::create_dir(work.path().join(ATTEMPT)).unwrap();
         let error = prepare(
-            &input(|_| {}),
+            input(|_| {}),
             converted(),
             &nothing(),
             &settings(work.path()),
@@ -678,7 +680,7 @@ mod tests {
     async fn what_is_debugged_shows_the_size_of_the_request_and_not_the_request() {
         let work = tempfile::tempdir().unwrap();
         let prepared = prepare(
-            &input(|_| {}),
+            input(|_| {}),
             converted(),
             &nothing(),
             &settings(work.path()),
@@ -707,5 +709,146 @@ mod tests {
                 "{error}: a preparation failure is not retried blindly"
             );
         }
+    }
+
+    // -- the relay of a prepared attempt, reached as the host reaches it ----------------------------------------------
+
+    struct Resolves(std::net::IpAddr);
+
+    impl sagat_infra_lake::relay::Resolver for Resolves {
+        async fn resolve(&self, _host: &str, _port: u16) -> std::io::Result<Vec<std::net::IpAddr>> {
+            Ok(vec![self.0])
+        }
+    }
+
+    struct NoNetwork;
+
+    impl sagat_infra_lake::relay::Connector for NoNetwork {
+        type Stream = tokio::io::DuplexStream;
+
+        async fn connect(&self, _address: std::net::SocketAddr) -> std::io::Result<Self::Stream> {
+            Err(std::io::Error::other("no network in this test"))
+        }
+    }
+
+    /// What the relay of `prepared` answers when the host (this process, so `my_uid`) asks it to open the catalog's own endpoint,
+    /// which the connection declares, and the name resolves to `address`; and what it counted as refused.
+    async fn ask_the_relay(
+        prepared: Prepared,
+        address: std::net::IpAddr,
+    ) -> (String, sagat_infra_lake::relay::RelayDenials) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let token = std::fs::read_to_string(prepared.directory.path().join("relay.token")).unwrap();
+        let socket = prepared.directory.socket_path();
+        let relay = Relay::new(prepared.relay, Resolves(address), NoNetwork).unwrap();
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let stop = tokio_util::sync::CancellationToken::new();
+        let serving = tokio::spawn({
+            let (relay, stop) = (relay.clone(), stop.clone());
+            async move { relay.serve(listener, stop).await }
+        });
+        let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "SAGAT-RELAY/1 {}\nCONNECT catalog.example:443 HTTP/1.1\r\n\r\n",
+                    token.trim_end()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut answer = Vec::new();
+        let _ = stream.read_to_end(&mut answer).await;
+        stop.cancel();
+        let _ = serving.await;
+        let denials = relay.denials();
+        drop(prepared.directory);
+        (String::from_utf8_lossy(&answer).into_owned(), denials)
+    }
+
+    /// A short work root: a Unix socket's path is limited to about a hundred bytes.
+    fn short_work() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("pr")
+            .tempdir_in("/tmp")
+            .unwrap()
+    }
+
+    async fn relay_prepared(
+        work: &std::path::Path,
+        configure: impl FnOnce(&mut Settings),
+        peer_uid: u32,
+        development: bool,
+    ) -> Prepared {
+        let mut settings = settings(work);
+        configure(&mut settings);
+        prepare(
+            input(|_| {}),
+            converted(),
+            &nothing(),
+            &settings,
+            Attempt {
+                peer_uid,
+                development,
+                ..attempt(0)
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_relay_refuses_an_address_the_operator_denied_even_when_a_declared_host_resolves_to_it()
+     {
+        let private: std::net::IpAddr = "10.0.0.5".parse().unwrap();
+
+        // the platform's range is denied: the endpoint is declared by the connection and resolves into it
+        let work = short_work();
+        let prepared = relay_prepared(work.path(), |_| {}, my_uid(), false).await;
+        let (answer, denials) = ask_the_relay(prepared, private).await;
+        assert!(answer.starts_with("HTTP/1.1 403"), "{answer:?}");
+        assert_eq!(denials.address_forbidden, 1);
+
+        // without the deny list the same name and the same address are let through: the list is what refuses it
+        let work = short_work();
+        let prepared = relay_prepared(work.path(), |s| s.relay_deny.clear(), my_uid(), false).await;
+        let (answer, denials) = ask_the_relay(prepared, private).await;
+        assert!(!answer.starts_with("HTTP/1.1 403"), "{answer:?}");
+        assert_eq!(denials.address_forbidden, 0);
+    }
+
+    #[tokio::test]
+    async fn the_development_flag_opens_the_loopback_interface_and_only_in_development() {
+        let loopback: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let work = short_work();
+        let prepared = relay_prepared(work.path(), |_| {}, my_uid(), false).await;
+        let (answer, denials) = ask_the_relay(prepared, loopback).await;
+        assert!(answer.starts_with("HTTP/1.1 403"), "{answer:?}");
+        assert_eq!(denials.address_forbidden, 1);
+
+        let work = short_work();
+        let prepared = relay_prepared(work.path(), |_| {}, my_uid(), true).await;
+        let (answer, denials) = ask_the_relay(prepared, loopback).await;
+        assert!(!answer.starts_with("HTTP/1.1 403"), "{answer:?}");
+        assert_eq!(denials.address_forbidden, 0);
+    }
+
+    #[tokio::test]
+    async fn the_relay_serves_the_user_it_was_built_for_and_nobody_else() {
+        let public: std::net::IpAddr = "93.184.216.34".parse().unwrap();
+        let work = short_work();
+        let prepared = relay_prepared(work.path(), |_| {}, my_uid(), false).await;
+        let (answer, _) = ask_the_relay(prepared, public).await;
+        assert!(
+            answer.starts_with("HTTP/1.1"),
+            "the user of the slot is served: {answer:?}"
+        );
+
+        // the same host, as another user than the one the relay was built for: closed before a byte is read
+        let work = short_work();
+        let prepared = relay_prepared(work.path(), |_| {}, my_uid().wrapping_add(1), false).await;
+        let (answer, _) = ask_the_relay(prepared, public).await;
+        assert_eq!(answer, "", "another user is not served");
     }
 }
