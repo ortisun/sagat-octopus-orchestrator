@@ -473,15 +473,15 @@ mod tests {
             body.len()
         );
         let mut stream = UnixStream::connect(path).await.expect("a connection");
-        stream
-            .write_all(request.as_bytes())
-            .await
-            .expect("a request");
+        let _ = stream.write_all(request.as_bytes()).await;
         let mut got = Vec::new();
-        tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut got))
-            .await
-            .expect("an answer")
-            .expect("a read");
+        // a reset after the answer (Linux) is the end of the stream, as a plain end is (macOS)
+        match tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut got)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            Ok(Err(error)) => panic!("a read: {error}"),
+            Err(_) => panic!("the server did not answer"),
+        }
         let split = got
             .windows(4)
             .position(|w| w == b"\r\n\r\n")

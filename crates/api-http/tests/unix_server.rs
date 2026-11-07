@@ -74,12 +74,17 @@ fn quick() -> ServerConfig {
     }
 }
 
+/// What the server said before it closed the connection. A server that closes with request bytes it never read (a peer it
+/// refused) ends the stream, on Linux, with a reset after whatever was already sent; on macOS with a plain end. Both are "closed",
+/// and what was read before stands: found when CI ran this on Linux.
 async fn read_all(stream: &mut UnixStream) -> String {
     let mut got = Vec::new();
-    tokio::time::timeout(BOUND, stream.read_to_end(&mut got))
-        .await
-        .expect("the server answers or closes")
-        .expect("a read");
+    match tokio::time::timeout(BOUND, stream.read_to_end(&mut got)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Ok(Err(error)) => panic!("a read: {error}"),
+        Err(_) => panic!("the server neither answered nor closed"),
+    }
     String::from_utf8_lossy(&got).into_owned()
 }
 

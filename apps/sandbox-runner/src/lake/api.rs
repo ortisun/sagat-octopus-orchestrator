@@ -256,12 +256,16 @@ mod tests {
             let mut stream = UnixStream::connect(&self.socket)
                 .await
                 .expect("a connection");
-            stream.write_all(request).await.expect("a request");
+            // A server that refuses a request without reading all of it closes with bytes unread; on Linux the stream then ends
+            // with a reset *after* the answer, on macOS with a plain end. What was sent before it stands, in both.
+            let _ = stream.write_all(request).await;
             let mut got = Vec::new();
-            tokio::time::timeout(BOUND, stream.read_to_end(&mut got))
-                .await
-                .expect("an answer")
-                .expect("a read");
+            match tokio::time::timeout(BOUND, stream.read_to_end(&mut got)).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                Ok(Err(error)) => panic!("a read: {error}"),
+                Err(_) => panic!("the server did not answer"),
+            }
             let split = got
                 .windows(4)
                 .position(|window| window == b"\r\n\r\n")
