@@ -2,11 +2,9 @@
 mod attempt;
 mod capability;
 pub mod config;
-#[expect(
-    dead_code,
-    reason = "the lake attempt driver calls it in the next slice (T035-035); it is built and tested first"
-)]
-mod lake;
+/// The lake profile of the runner (feature 035). Public so that what is built here, and not yet called by the driver, is not
+/// a dead-code allowance that would outlive the driver: an item of a public module is part of the crate's surface.
+pub mod lake;
 mod rpc;
 mod runner;
 mod slots;

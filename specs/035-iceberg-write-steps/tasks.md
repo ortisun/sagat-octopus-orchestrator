@@ -702,8 +702,9 @@ three conditions pass.
   open 018 branches also change.
 
   *2026-11-07, seventh slice, left unticked (D035-115):* the runner's half of "resolve the Iceberg connection" (T035-044):
-  `apps/database-runner/src/lake/connection.rs` reads `pb::IcebergConnection` into the documents the host reads and zeroises the
-  secret bytes, checked against the wire fixture. Not done: the server filling `iceberg` (T035-044's `service.rs` and
+  `apps/database-runner/src/lake/connection.rs` reads `pb::IcebergConnection` into the documents the host reads (and carries the
+  allowed modes, the limits and the egress ceiling; it refuses what the host cannot open) and zeroises the secret bytes, checked
+  against the wire fixture. Not done: the server filling `iceberg` (T035-044's `service.rs` and
   `worker/database.rs`), the edge `database-runner` → `infra-lake` and `zeroize` in `infra-lake` (G035-063), which change `Cargo.lock`
   and so select the whole CI: they come together, with the driver.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
