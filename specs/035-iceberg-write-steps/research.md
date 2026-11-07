@@ -1971,3 +1971,37 @@ The other fixes were wording:
     equality assertions on the code of each row. No mutation pass (OD-2026-11-06-2).
   - *Not done.* Nothing calls `dispose` yet: the driver (`lake.rs`) gathers the facts and acts on the answer, and the container's
     `memory_killed` comes from the sandbox API (G035-055).
+- **D035-112 — The attempt directory and the record files are made by `AttemptDir`, with the modes of D035-086 and the limit counted while
+  the bytes stream.** Fourth slice of T035-035. **Decided by: delegate**.
+  - *What it is.* `crates/infra-lake/src/staging.rs`. `AttemptDir::create(work_root, attempt_id, token, limits)` makes
+    `<work>/<attempt id>/` (0770, which must not exist), `in/` (0770) and `relay.token` (0640, the token and a newline, which is what the
+    host's `read_token` reads). The modes are set explicitly after each creation, because a umask only takes bits away. The attempt id is
+    the intersection of the host's pattern and the lake profile's (1 to 60 lower-case hexadecimal digits and hyphens, starting with a
+    digit), so it cannot name another path. `stage_inline(records)` writes `in/inline.ndjson`, one compact JSON value a line;
+    `stage_blob(format, stream)` writes `in/blob-<n>.<ndjson|parquet>` byte for byte; `inputs()` is the list the request builder takes
+    (`WriteAppend`, D035-109). `remove()` deletes the directory with the token in it, and `Drop` does it if the driver forgot.
+  - *The limit.* Bytes of every file together, and records (the inline records and the lines of NDJSON blobs, counted with or without a last
+    newline; a blank line counts). Going over is `StagingError::LimitExceeded`, which the driver reports as `ICEBERG_LIMIT_EXCEEDED` before
+    any container starts; the partial file is removed. A blob is read in 64 KiB chunks and stopped at the limit, so a stream that never
+    ends costs one chunk past it (tested with `tokio::io::repeat`). A limit of zero is refused (zero is not unlimited). At most 32 files
+    (`MAX_RECORD_BLOBS`), inline included.
+  - *No new dependency.* A `Cargo.toml` change selects every package in CI, so the file work is `std::fs` and the streams go through a
+    bounded channel to a blocking task: no `tokio` feature is added.
+  - *Errors name no path and no token*: `StagingError` is a closed kind (`AttemptId`, `Exists`, `Io`, `LimitExceeded`, `TooManyFiles`,
+    `ZeroLimit`), with a test that no error shows either.
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 24 new tests in `staging.rs` (modes, one directory per attempt, thirteen refused ids,
+    exact byte and record limits for inline and blob sources, an endless blob, a failing stream, a refused blob leaves no file, 32 files,
+    the inputs feed `WriteAppend`, removal and drop); `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D
+    warnings` clean. The module and the tests were written together before the first run, so they were not seen failing for the absence of
+    the module; the first run failed to compile on two type slips of mine in the tests. No mutation pass (OD-2026-11-06-2).
+  - *Not done.* The zeroising of the token and of the encoded request line is the driver's, in `apps/database-runner` where `zeroize` is
+    already a dependency (adding it here would change a manifest). Nothing calls staging yet.
+- **G035-058 — A Parquet blob counts toward the bytes and not toward the records.** The runner does not parse a footer, so
+  `max_records` is not enforced on Parquet input by the runner; the host's decoded-bytes budget (8 times the byte ceiling, D035-107) is the
+  bound. *Exit condition:* read the row count from the footer in the runner (a Thrift read of a bounded tail), or accept the budget as the
+  bound and say so in `lake-runtime.md` with the next contract change.
+- **G035-059 — The contract stages a 017 database result as `result.json`, and the host reads only NDJSON and Parquet.** `lake-runtime.md`
+  step 2 says "a 017 database result as `result.json`"; `request.py` accepts the formats `ndjson` and `parquet` only. A step has exactly one
+  record source (`RecordSource`), so the driver turns the result's rows into JSON values and stages them with `stage_inline`; the file the
+  contract names is not one the host reads. *Exit condition:* the driver does so, with a test, and `lake-runtime.md` says it with the next
+  contract change.

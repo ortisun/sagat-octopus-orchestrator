@@ -682,6 +682,11 @@ three conditions pass.
   *2026-11-07, third slice, left unticked (D035-111):* "kill the container on lease loss, cancellation, deadline, a missing heartbeat
   or `memory.max`" and "parse the result" have their decision table: `crates/infra-lake/src/supervisor.rs` (`dispose`, `Ended::strongest`),
   one test per row; G035-054 is closed. Nothing calls it yet.
+
+  *2026-11-07, fourth slice, left unticked (D035-112):* "create `/work/<attempt-id>/`" and "stream inline records, `ReadBlob` blobs and 017
+  results into `in/`, checking the effective limit while streaming; going over fails `ICEBERG_LIMIT_EXCEEDED` before any container
+  starts" have `crates/infra-lake/src/staging.rs` (`AttemptDir`, `StagingLimits`). Not done there: the `ReadBlob` stream itself (a source
+  the driver gives it), the conversion of a 017 result into rows (G035-059), Parquet record counting (G035-058), zeroising.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
