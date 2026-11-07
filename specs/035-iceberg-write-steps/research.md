@@ -2239,3 +2239,58 @@ The other fixes were wording:
   the `lstat` check is advisory and the engine's sub-path confinement is a tested precondition; drain, wire-type ownership and version
   skew are specified. *Not built:* everything; the ADR lists the checks it needs and the `LakeEngine` additions (list, inspect, wait, kill
   by label reading the out-of-memory flag first). Kubernetes (T035-029) stays open and rules 2 and 3 are conditional on it.
+- **D035-117 — The engine lists, finds, waits for and ends a lake container by its labels (ADR-0079, rule 7).** Eighth slice of T035-035 and
+  the engine half of what G035-055 depends on. **Decided by: delegate**.
+  - *What.* `container_config` writes `sagat.lake.slot`, `.class` and `.deadline` beside the owner and attempt labels (`LakeSpec` gains
+    `class` and `deadline_epoch_secs`); `LakeEngine` gains `launch`, `list`, `find`, `wait`, `end`, `sweep_expired` and `connect_unix`,
+    with `LakeInfo`, `Wait`, `EndedContainer` and `Sweep`, and `EngineError::{Exists, Invalid}`. Nothing calls it yet: the API is the next
+    slice. `crates/infra-sandbox/src/lake.rs`, `lake/engine.rs`; tests in `tests/integration/iceberg-writes/lifecycle.rs`.
+  - *Semantics, stated.* `end` kills, **reads the out-of-memory flag before the forced removal**, and `confirmed` is true only when the
+    removal succeeded, the engine said there was none (404), or the listing showed none; an engine that cannot be asked, that refuses a
+    removal, or that does not answer in time is `confirmed: false`, so the lake runner's "the credentials may still be up" report is never
+    dropped by an answer the engine did not give. An engine that cannot **inspect** still removes (the credentials come first) and does
+    not invent a memory kill: the supervisor then sees a host that broke (retryable) where a limit was exceeded (not), which is the price
+    of a flaky engine. `end` and the sweep are tasks of their own: a caller that gives up (the lake runner bounds its kill) does not stop
+    a removal halfway. A state the engine did not name counts as not ended. The sweep ends a running container at its label deadline
+    (`now >= deadline`) and keeps an exited one for `retain` after it (so its facts can be read), up to four at a time, and its result
+    separates removed, failed, unlabelled and "could not list".
+  - *Found while designing.* A container named after its attempt makes a second launch of the attempt refuse itself at the engine
+    (`Exists`), and also when two arrive at once, but then **the removal guard must not be armed before the create**: a guard armed first
+    removes the container of the first launch when the second is refused. It is armed after, for names made of an attempt; the existing
+    fresh-id names keep it armed first. A test fails if it is armed first (`a_second_launch…first_is_untouched`).
+  - *Tightened by the review.* `attempt_id_ok` is the ADR's rule 10 (1 to 60 characters, a hexadecimal digit first; it was 64 and any
+    first character); `owner_ok` is `[A-Za-z0-9._-]{1,128}`; a deadline label is 1 to the year 2100 (`u64::MAX` is refused, a label that
+    is not one reads as none); `launch` refuses a body without the profile's labels (`Invalid`); the owner and attempt are validated
+    before they reach a label filter, and an invalid name finds, lists, ends and sweeps nothing without asking the engine.
+  - *Independent review (correctness-reviewer and security-reviewer, given the files and the ADR, not my conclusion).* No Blocker from
+    either. **Major (correctness), checked and confirmed:** `a_start_that_fails_leaves_nothing_behind` could not fail: a missing image
+    fails at `create`, so the cleanup it is named for was never reached; it now starts a real container whose command is missing with the
+    engine's init off, so that the **start** fails (with init, the container starts and exits 127). **Taken:** a failed start whose
+    removal the engine refused let go of its guard (now retried in the background; also in `run` and `stop`); `start_container` had no
+    timeout; `end` was cancellable halfway; a missing, malformed or never-reached deadline label was invisible and `u64::MAX` accepted;
+    `sweep_expired` hid a failure behind `0`; the memory flag could be overwritten by a later answer; a `hold` of `Duration::MAX`
+    panicked; the poll interval 250 ms to 500 ms. **Tests:** the flaky wait (`sleep 3` against a 500 ms wait) became two cases, a vacuous
+    user-id assertion was dropped, and the fixture now ends what a failed case leaves. **Not taken:** one poller for all waiters (their
+    number is bounded by the ceiling, ADR-0079 rule 4; G035-064); a lifetime parameter on `sweep_expired` (the age sweep `sweep` runs
+    beside it and takes the unlabelled, see the doc); a paused container on a real engine (`LakeEngine` cannot pause one; a paused
+    state counts as not ended, which is unit-tested).
+  - *Obligations on the API slice, from the reviews.* The handler MUST refuse a deadline above `now + ceiling` using its own clock and
+    pass `now_epoch_secs` from its own clock, never from a request; the label deadline is the attempt's deadline **rounded up** plus the
+    time the lake runner has to end the container, never earlier (a container ended by the label under a host still writing is reported
+    as a host that went silent, not as `OUTCOME_UNKNOWN`); `start` and `end` of one attempt are serialised; `LakeInfo.name` is not echoed;
+    `class` is looked up in a closed set the node configures; both `sweep_expired` and `sweep` (by age, with the longest lifetime) run.
+  - *Evidence.* `cargo test -p sagat-infra-sandbox`: 28 unit tests (6 new, in `label_tests`; 5 more need an engine and are ignored there) and 21 profile tests
+    (1 new, 4 changed); the integration cases against the project's Docker 29.5.2 (arm64), `isolation::` and `lifecycle::`: 34 passed (25
+    new: 13 on the real engine, one of them against a socket nobody listens on, and 12 on a scripted one that speaks the engine's HTTP API
+    over a Unix socket and ignores the label filters, so that an empty answer proves the engine was not asked). `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and the three
+    repository checkers clean. **Not seen failing first:** the profile-label and validation tests were (red before the labels and checks
+    existed); the lifecycle cases were written before the API and failed to compile against it, and the fixes of the review were written
+    with their tests together. Instead 21 single mutations were run by hand, 20 killed by a test: the one that survived (`end` skipping
+    its own attempt check) is equivalent, because `find`, which it calls, validates the same name and the answer is the same. No mutation
+    pass (OD-2026-11-06-2).
+  - *Not done.* The sandbox-runner API itself; the production `LakeSandbox` client; the lake-mode exclusivity; the work-volume mount read
+    only; the Compose service. The cases leave a few seconds of real time (the grace of the engine's kill, 5 s, twice).
+- **G035-064 — The engine calls poll.** `wait` is one scan of the engine's containers per waiter every 500 ms, and `end` and the sweep end
+  containers one engine call at a time (four at once in the sweep). That is nothing at the plan's 2 to 8 containers per node and a cost at
+  hundreds. *Exit condition:* measure it with the API under its ceiling (the canaries of T035-031), and put one poller per owner behind
+  the waiters if the scans show.

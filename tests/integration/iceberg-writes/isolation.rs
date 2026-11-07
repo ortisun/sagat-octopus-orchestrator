@@ -40,6 +40,14 @@ fn image() -> String {
     std::env::var("SAGAT_LAKE_ISOLATION_IMAGE").unwrap_or_else(|_| "python:3.13-alpine".to_owned())
 }
 
+/// A deadline label far enough away that no sweep of these cases acts on it.
+fn far_deadline() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+        + 24 * 3600
+}
+
 fn limits() -> LakeLimits {
     LakeLimits {
         memory_bytes: 256 * MIB,
@@ -94,6 +102,8 @@ impl Work {
             },
             limits: limits(),
             owner: format!("{owner}-holder"), // not the probes' label: their sweep must not take the holder
+            class: "small".to_owned(),
+            deadline_epoch_secs: far_deadline(),
         })
         .expect("a valid profile");
         body.user = Some("0:0".to_owned());
@@ -133,6 +143,8 @@ impl Work {
             },
             limits,
             owner: self.owner.clone(),
+            class: "small".to_owned(),
+            deadline_epoch_secs: far_deadline(),
         }
     }
 
