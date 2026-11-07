@@ -598,6 +598,8 @@ fn the_usage_names_every_command_the_parser_takes() {
         "workflow reset-points",
         "workflow reset-preview",
         "workflow reset",
+        "workflow resets",
+        "--cancel-source",
         "--reapply",
         "--business-id",
         "--if-exists",
@@ -829,6 +831,7 @@ fn the_with_start_and_reset_commands_take_the_words_and_flags_they_document() {
                 acknowledge: false,
                 drop_business_id: false,
                 reapply: Some(expected),
+                cancel_source: false,
                 key: None,
             },
             "{word}"
@@ -851,6 +854,7 @@ fn the_with_start_and_reset_commands_take_the_words_and_flags_they_document() {
             acknowledge: true,
             drop_business_id: true,
             reapply: None,
+            cancel_source: false,
             key: Some("k-0123456789".into()),
         }
     );
@@ -867,8 +871,33 @@ fn the_with_start_and_reset_commands_take_the_words_and_flags_they_document() {
             acknowledge: false,
             drop_business_id: false,
             reapply: None,
+            cancel_source: false,
             key: None,
         }
+    );
+    // `--cancel-source` is a switch that asks for the policy of the same name
+    assert_eq!(
+        parse(&argv(&format!(
+            "workflow reset {RUN} --sequence 5 --reason x --cancel-source --acknowledge"
+        )))
+        .expect("parses")
+        .command,
+        Command::WorkflowReset {
+            run: RUN.into(),
+            sequence: 5,
+            reason: "x".into(),
+            acknowledge: true,
+            drop_business_id: false,
+            reapply: None,
+            cancel_source: true,
+            key: None,
+        }
+    );
+    assert_eq!(
+        parse(&argv(&format!("workflow resets {RUN}")))
+            .expect("parses")
+            .command,
+        Command::WorkflowResets { run: RUN.into() }
     );
 }
 
@@ -910,6 +939,11 @@ fn what_the_with_start_and_reset_commands_get_wrong_is_named() {
         (
             "workflow reset-points not-an-id",
             "the run is given by its id",
+        ),
+        ("workflow resets not-an-id", "the run is given by its id"),
+        (
+            "workflow reset-preview 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8 --sequence 5 --cancel-source",
+            "--cancel-source is not a flag of this command",
         ),
         (
             "workflow reset-preview 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8",

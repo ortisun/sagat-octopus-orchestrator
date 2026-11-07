@@ -39,10 +39,14 @@ ONE WORKFLOW:
                           what a reset to that point keeps and runs again; --reapply also lists the signals and
                           Updates the run received after the point that the reset would deliver again
     workflow reset <RUN> --sequence <N> --reason <TEXT> [--acknowledge] [--drop-business-id]
-                         [--reapply none|signals|updates|all] [--key <KEY>]
+                         [--reapply none|signals|updates|all] [--cancel-source] [--key <KEY>]
                           a new run from that point of a run that ended; --acknowledge says you know the steps
                           that completed will run again; --reapply delivers again, in order, the signals the run
-                          received after the point and the Updates that kept their arguments, and reports each
+                          received after the point and the Updates that kept their arguments, and reports each;
+                          --cancel-source also resets a run that has not ended: it is cancelled, and the new run is
+                          made when it has ended (the answer says it waits; `workflow resets` says how it went);
+                          there --acknowledge is also needed for a step in flight, and without it nothing is cancelled
+    workflow resets <RUN>                the resets made from a run, and the ones that wait for it to end
     workflow runs <NAME> [--limit <N>]   the latest runs of a workflow (the ones an event or a schedule started too)
     workflow inspect <RUN> [--values [--reveal-pii] [--sequence N]]
                                           the status, journal and attempts; optionally disclosed values
@@ -229,7 +233,13 @@ pub enum Command {
         acknowledge: bool,
         drop_business_id: bool,
         reapply: Option<Reapply>,
+        /// Cancel the run if it has not ended and make the new run when it has (`sourcePolicy: CANCEL_SOURCE`).
+        cancel_source: bool,
         key: Option<String>,
+    },
+    /// The resets made from a run, with how each went.
+    WorkflowResets {
+        run: String,
     },
     WorkflowRuns {
         name: String,
@@ -1091,7 +1101,11 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
                 acknowledge: flags.take_switch("--acknowledge"),
                 drop_business_id: flags.take_switch("--drop-business-id"),
                 reapply: reapply(&mut flags)?,
+                cancel_source: flags.take_switch("--cancel-source"),
                 key: flags.take_value(&["--key"]),
+            },
+            Some((sub, tail)) if sub == "resets" => Command::WorkflowResets {
+                run: run_id(argument(tail, "the run (its id)")?)?,
             },
             Some((sub, tail)) if sub == "runs" => Command::WorkflowRuns {
                 name: argument(tail, "the name of the workflow")?.to_owned(),
@@ -1132,12 +1146,12 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
             },
             Some((other, _)) => {
                 return Err(UsageError(format!(
-                    "'workflow {other}' is not a command (validate, publish, run, runs, inspect, cancel, rerun, signal-with-start, update-with-start, reset-points, reset-preview, reset)"
+                    "'workflow {other}' is not a command (validate, publish, run, runs, inspect, cancel, rerun, signal-with-start, update-with-start, reset-points, reset-preview, reset, resets)"
                 )));
             }
             None => {
                 return Err(UsageError(
-                    "workflow needs a command (validate, publish, run, runs, inspect, cancel, rerun, signal-with-start, update-with-start, reset-points, reset-preview, reset)"
+                    "workflow needs a command (validate, publish, run, runs, inspect, cancel, rerun, signal-with-start, update-with-start, reset-points, reset-preview, reset, resets)"
                         .to_owned(),
                 ));
             }

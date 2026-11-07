@@ -526,6 +526,41 @@ fn a_preview_says_what_is_kept_what_runs_again_and_what_to_acknowledge() {
 }
 
 #[test]
+fn a_preview_of_a_run_that_has_not_ended_says_a_step_in_flight_is_why_it_asks_to_acknowledge() {
+    // nothing completed after the point, yet the reset asks: the step is still in flight and may complete before the
+    // cancellation takes effect, and then it runs again (D2008)
+    let (code, out, err, _) = run(
+        &["workflow", "reset-preview", RUN, "--sequence", "1"],
+        vec![Reply::ok(
+            json!({
+                "sequence": 1, "prefixEvents": 1, "reapply": [], "requiresAcknowledgement": true,
+                "restored": [],
+                "reexecuted": [{"node": "charge", "completedInSource": false, "markers": []}]
+            })
+            .to_string(),
+        )],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("run again: charge"), "{out}");
+    assert!(out.contains("in flight"), "{out}");
+    assert!(out.contains("add --acknowledge"), "{out}");
+    // and when a step did complete, it is the completed step that is named, not the other reason
+    let (_, out, _, _) = run(
+        &["workflow", "reset-preview", RUN, "--sequence", "1"],
+        vec![Reply::ok(
+            json!({
+                "sequence": 1, "prefixEvents": 1, "reapply": [], "requiresAcknowledgement": true,
+                "restored": [],
+                "reexecuted": [{"node": "charge", "completedInSource": true, "markers": []}]
+            })
+            .to_string(),
+        )],
+    );
+    assert!(!out.contains("in flight"), "{out}");
+    assert!(out.contains("add --acknowledge"), "{out}");
+}
+
+#[test]
 fn a_reset_sends_the_request_with_a_key_and_names_the_run_it_made() {
     let (code, out, err, requests) = run(
         &[
@@ -866,4 +901,225 @@ fn what_an_entry_names_is_a_name_and_never_what_was_sent() {
     // a control character in a name is not passed to the terminal
     assert!(!out.contains('\u{1b}'), "{out:?}");
     assert!(out.contains("signal"), "{out}");
+}
+
+// ----------------------------------------------------------------------------------- `--cancel-source`
+
+#[test]
+fn a_reset_that_cancels_its_source_sends_the_policy_and_says_the_run_is_made_later() {
+    let (code, out, err, requests) = run(
+        &[
+            "workflow",
+            "reset",
+            RUN,
+            "--sequence",
+            "5",
+            "--reason",
+            "wrong price list",
+            "--acknowledge",
+            "--cancel-source",
+            "--key",
+            "reset-key-0002",
+        ],
+        vec![reply(
+            202,
+            &json!({"resetId": "r-3", "sourceRunId": RUN, "sequence": 5, "state": "PENDING_SOURCE", "newRunId": null, "failureReason": null, "reapplyReport": []}),
+        )],
+    );
+    assert_eq!(code, 0, "{err}");
+    let raw: Vec<_> = requests.try_iter().collect();
+    assert_eq!(
+        request_body(&raw[0]),
+        json!({"sequence": 5, "reason": "wrong price list", "acknowledgeReexecution": true, "sourcePolicy": "CANCEL_SOURCE"})
+    );
+    // it says that the run is being cancelled and that nothing was made yet, and where to look
+    assert!(
+        out.contains(&format!(
+            "reset r-3: run {RUN} is being cancelled; the new run is made from point 5 when it has ended"
+        )),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!(
+            "see how it went with: sagat workflow resets {RUN}"
+        )),
+        "{out}"
+    );
+    assert!(!out.contains("was made from point"), "{out}");
+    assert!(!out.contains("sagat workflow inspect"), "{out}");
+    assert!(!format!("{out}{err}").contains(TOKEN));
+}
+
+#[test]
+fn a_reset_without_the_switch_never_sends_the_policy() {
+    let (code, _, err, requests) = run(
+        &["workflow", "reset", RUN, "--sequence", "9", "--reason", "x"],
+        vec![reply(
+            202,
+            &json!({"resetId": "r-4", "newRunId": NEW, "state": "CREATED"}),
+        )],
+    );
+    assert_eq!(code, 0, "{err}");
+    let raw: Vec<_> = requests.try_iter().collect();
+    assert!(request_body(&raw[0]).get("sourcePolicy").is_none());
+}
+
+#[test]
+fn a_retry_that_finds_the_reset_failed_says_why_in_words_and_fails() {
+    for (reason, words) in [
+        (
+            "BOUNDARY_NO_LONGER_ELIGIBLE",
+            "the point is not one the run can be reset to on the history it ended with",
+        ),
+        (
+            "ADMISSION_REFUSED",
+            "the platform did not admit the new run",
+        ),
+        (
+            "BUSINESS_ID_IN_USE",
+            "another open run holds the business identifier (reset with --drop-business-id",
+        ),
+        (
+            "AUTHORITY_REVOKED",
+            "the member who asked no longer may reset runs",
+        ),
+        (
+            "REEXECUTION_NOT_ACKNOWLEDGED",
+            "(ask again with --acknowledge)",
+        ),
+        (
+            "REAPPLY_TOO_MANY",
+            "more signals and updates after the point than a reset delivers again",
+        ),
+        (
+            "CONCURRENCY_PERMIT_UNAVAILABLE",
+            "had no free place for the new run",
+        ),
+        ("RUN_PURGED", "the history of the run is no longer kept"),
+        // a reason a later version added is said as the platform wrote it
+        ("SOMETHING_NEWER", "SOMETHING_NEWER"),
+    ] {
+        let (code, out, err, _) = run(
+            &[
+                "workflow",
+                "reset",
+                RUN,
+                "--sequence",
+                "5",
+                "--reason",
+                "x",
+                "--cancel-source",
+                "--key",
+                "reset-key-0003",
+            ],
+            vec![reply(
+                202,
+                &json!({"resetId": "r-5", "state": "FAILED", "newRunId": null, "failureReason": reason}),
+            )],
+        );
+        assert_eq!(code, 1, "{reason}: {out}{err}");
+        let all = format!("{out}{err}");
+        assert!(
+            all.contains("reset r-5: no run was made: ") && all.contains(words),
+            "{reason}\n{all}"
+        );
+        assert!(!all.contains(TOKEN));
+    }
+}
+
+#[test]
+fn the_resets_of_a_run_are_listed_in_words_with_how_each_stands() {
+    let (code, out, err, requests) = run(
+        &["workflow", "resets", RUN],
+        vec![Reply::ok(
+            json!({"items": [
+                {"resetId": "r-9", "sequence": 7, "state": "PENDING_SOURCE", "newRunId": null, "failureReason": null},
+                {"resetId": "r-8", "sequence": 5, "state": "FAILED", "newRunId": null, "failureReason": "AUTHORITY_REVOKED"},
+                {"resetId": "r-7", "sequence": 3, "state": "CREATED", "newRunId": NEW, "failureReason": null},
+                {"resetId": "r-6", "sequence": 2, "state": "SOMETHING_NEWER", "newRunId": null, "failureReason": null}
+            ]})
+            .to_string(),
+        )],
+    );
+    assert_eq!(code, 0, "{err}");
+    let raw: Vec<_> = requests.try_iter().collect();
+    assert_eq!(
+        request_line(&raw[0]),
+        format!("GET /v1/runs/{RUN}/resets HTTP/1.1")
+    );
+    let lines: Vec<String> = vec![
+        format!("resets made from run {RUN}, newest first:"),
+        format!(
+            "r-9  from point 7: waits for run {RUN} to end; the new run is made then, if the point is still one"
+        ),
+        "r-8  from point 5: no run was made: the member who asked no longer may reset runs"
+            .to_owned(),
+        format!("r-7  from point 3: run {NEW} was made"),
+        // a state a later version added is said as the platform wrote it
+        "r-6  from point 2: is SOMETHING_NEWER".to_owned(),
+    ];
+    for line in &lines {
+        assert!(out.contains(line.as_str()), "{line}\n{out}");
+    }
+
+    // none, and a run that is not there
+    let (code, out, _, _) = run(
+        &["workflow", "resets", RUN],
+        vec![Reply::ok(json!({"items": []}).to_string())],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        out.contains(&format!("no reset was made from run {RUN}")),
+        "{out}"
+    );
+    let (code, out, err, _) = run(
+        &["workflow", "resets", RUN],
+        vec![reply(
+            404,
+            &json!({"code": "NOT_FOUND", "message": "No such run.", "retryable": false}),
+        )],
+    );
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(format!("{out}{err}").contains("the resets could not be read"));
+}
+
+#[test]
+fn a_refusal_to_cancel_for_a_reset_is_said_with_its_sentence() {
+    for (status, body) in [
+        (
+            422,
+            error(
+                "VALIDATION_FAILED",
+                "RESET_CANCEL_SOURCE_NOT_AVAILABLE",
+                "Wait for the run to end and reset it then, or ask the operator of the platform to enable resets that cancel their source.",
+            ),
+        ),
+        (
+            429,
+            error(
+                "QUOTA_EXCEEDED",
+                "PENDING_RESET_LIMIT",
+                "A namespace or tenant ceiling is reached; free capacity or ask an administrator.",
+            ),
+        ),
+    ] {
+        let (code, out, err, _) = run(
+            &[
+                "workflow",
+                "reset",
+                RUN,
+                "--sequence",
+                "5",
+                "--reason",
+                "x",
+                "--cancel-source",
+            ],
+            vec![reply(status, &body)],
+        );
+        assert_eq!(code, 1, "{status}: {out}{err}");
+        assert!(
+            format!("{out}{err}").contains(body["message"].as_str().expect("message")),
+            "{status}: {out}{err}"
+        );
+    }
 }

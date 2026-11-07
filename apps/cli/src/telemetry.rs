@@ -374,6 +374,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::WorkflowResetPoints { .. } => "workflow.reset_points",
         Command::WorkflowResetPreview { .. } => "workflow.reset_preview",
         Command::WorkflowReset { .. } => "workflow.reset",
+        Command::WorkflowResets { .. } => "workflow.resets",
         Command::RevealGrantsList => "namespace.reveal_grants.list",
         Command::RevealGrant { .. } => "namespace.reveal_grants.grant",
         Command::RevealRevoke { .. } => "namespace.reveal_grants.revoke",

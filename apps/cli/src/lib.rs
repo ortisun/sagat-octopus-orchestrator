@@ -482,6 +482,7 @@ async fn run_with(
         Command::Schedule(command) => schedule::run(&common, env, &command, &mut io).await,
         Command::Batch(command) => batch::run(&common, env, &command, &mut io).await,
         Command::WorkflowResetPoints { run } => reset::points(&common, env, &run, &mut io).await,
+        Command::WorkflowResets { run } => reset::resets(&common, env, &run, &mut io).await,
         Command::WorkflowResetPreview {
             run,
             sequence,
@@ -494,6 +495,7 @@ async fn run_with(
             acknowledge,
             drop_business_id,
             reapply,
+            cancel_source,
             key,
         } => {
             reset::reset(
@@ -506,6 +508,7 @@ async fn run_with(
                     acknowledge,
                     drop_business_id,
                     reapply,
+                    cancel_source,
                     key: key.as_deref(),
                 },
                 &mut io,
