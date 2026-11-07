@@ -2846,6 +2846,35 @@ The other fixes were wording:
     builders were checked). No test lets a lake step through the lease paths, since none can start: the proof for the lake side is the check, the
     domain test and the reading above; the end-to-end test waits for admission (E).
   - *Not done.* B (registration profiles), C (resolve for a lake step and the two-secret pin), E, F and G of D035-130.
+- **D035-135 — A lake runner may register: one profile per registration, by activity set (slice B of D035-130, the first half).** **Decided by:
+  delegate**. No migration, no contract file of the API, no `Cargo.lock` change. A lake step still cannot start (the admission guard is closed), so a
+  runner that registers waits for nothing, and the SQL profile is unchanged.
+  - *What.* `managed_capabilities_allowed` (`crates/application/src/worker.rs`, called by the application and by the store's `create_session`) accepts a
+    `DatabaseRunner` that offers `sagat.database.postgresql` alone or `sagat.database.iceberg.write` alone, from the managed minor (1.6), and refuses
+    a mix of the two, an ordinary activity beside either, an empty list, and every activity the server does not serve yet: the revert, the
+    destinations, the probe and the browse. Every other role is still refused the reserved prefix. The binding's patterns decide, as always, whether the
+    subject may register that activity at all.
+  - *What this is not.* **It does not replace D035-057.** That decision persists the profile on the binding (`worker_bindings.profile`, T035-025), so
+    that an identity is of one profile whatever it is bound to. This slice judges the profile per registration: a runner bound to a wildcard can still
+    register as one profile in one session and as the other in the next, which the persisted profile would forbid, and which matters for "a stolen lake
+    token cannot reach PostgreSQL credentials" (D035-058). With no lake work in existence that costs nothing today, and it is **a condition on the
+    next step**: admission of a lake run (D035-130 E) does not open before the profile is persisted (T035-025, T035-026) or a decision accepts this form
+    with its consequence written. `contracts/worker-protocol.md` says so.
+  - *Decisions.* The minor stays 1.6 and is not raised for the lake profile: the `ResolvedDatabase` fields it needs are already in the 1.6 schema, the lake
+    runner is first-party, an old server refuses the new activity at registration (`NotBound`: the reverted rule answered it in the red run) and an old runner never
+    offers it. *Exit condition:* the first lake wire difference, or a second lake runner of another version, takes the next free minor (the drafts 020, 021, 025
+    and 026 also name 1.7). The revert is not accepted yet because the compensation node it runs is not a managed step (`managed_kind` is `None` for a
+    derived compensation node), so it would be leased as an ordinary activity: that belongs with completion and compensation (D035-130 F).
+  - *Evidence.* `crates/application/tests/managed_registration.rs` (4 tests: both profiles accepted at the managed minor and above, a mix, an ordinary
+    activity beside either, an empty list, every unserved activity and the minor below the managed one refused, no other role admitted; **seen failing
+    first** on the lake acceptance, the refusals already held) and `lake::registration` in `tests/integration/database-connections/lake.rs` (the
+    real store, the membership role, the binding patterns, the negotiated minor: unbound, bound to the SQL activity only, too old a minor, the SQL
+    activity under a lake binding, a mix, an ordinary activity, the revert and the probe refused; the write activity accepted at 1.6; an ordinary worker
+    and a runner identity refused; **seen failing** with the rule reverted, at the lake registration that must succeed). fmt and clippy `-D warnings` for the
+    application, store, gRPC and test crates; the tests of `sagat-application` and `sagat-api-grpc`; `integration_database_connections` 7 and again as the
+    runtime role 7, `integration_database_runner` 1 (1 ignored), `integration_iceberg_writes` 50; `contract_iceberg_writes` after the contract note.
+  - *Not done.* The persisted profile and `ResolveDatabase` refusing a kind outside it (T035-025, T035-026, slice C); the lease of lake work, which is
+    admission (E); the runner's own offering of the activity by the agreed minor (`apps/database-runner/src`, slice G).
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

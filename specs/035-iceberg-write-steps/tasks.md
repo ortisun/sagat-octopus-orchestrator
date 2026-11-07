@@ -348,7 +348,10 @@ three conditions pass.
   - every new column is classified.
 
   Refs: D035-044, D035-059.
-- [ ] T035-014 [P] Write the failing profile tests in `tests/integration/iceberg-writes/profiles.rs`:
+- [ ] T035-014 [P] Write the failing profile tests in `tests/integration/iceberg-writes/profiles.rs`
+  (*2026-11-07, D035-135: the registration half is written, in `crates/application/tests/managed_registration.rs` and `lake::registration` of
+  `tests/integration/database-connections`, and was seen failing; the lease half and `ResolveDatabase` wait for E and C, so `profiles.rs` is not created
+  yet*):
   - a `database` binding cannot lease a lake activity, and a `lake` binding cannot lease a database
     activity;
   - `ResolveDatabase` refuses a connection kind outside the caller's profile;
@@ -539,6 +542,11 @@ three conditions pass.
   - `apps/database-runner/src/{profile.rs,config.rs,runner.rs}` offer activities by the agreed minor.
 
   T035-014 passes. Refs: D035-057.
+
+  *2026-11-07, partly done, left unticked (D035-135):* `managed_capabilities_allowed` accepts one profile at a time by the activities offered
+  (`sagat.database.postgresql` alone or `sagat.database.iceberg.write` alone, from minor 1.6; the unserved activities are refused). Not done, and a
+  condition of admission (D035-130 E): `worker_bindings.profile` (T035-025), `ResolveDatabase` refusing a kind outside the profile, and the runner offering
+  the activity by the agreed minor. The task text names `worker/database.rs`; the function is in `worker.rs`.
 - [ ] T035-027 [P] Separate the lake build:
   - a `lake` cargo feature in `apps/database-runner/Cargo.toml`;
   - a new workspace crate `crates/infra-lake/`, the only crate that enables `object_store` 0.14.2

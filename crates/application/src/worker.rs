@@ -85,13 +85,24 @@ pub const BLOB_PROTOCOL_MINOR: u32 = 3;
 pub const STREAM_PROTOCOL_MINOR: u32 = 4;
 
 /// Reserved managed activities require the dedicated machine identity and capability protocol.
+///
+/// A dedicated runner is of one **profile**, and the profile is the set of activities it registers (feature 035,
+/// D035-135): the SQL profile is `sagat.database.postgresql`, the lake profile is `sagat.database.iceberg.write`. The two
+/// are never mixed and an ordinary activity is never offered beside them; the patterns of the runner's binding decide
+/// which of the two it may register, as they decide every other registration. An activity the server does not serve yet
+/// (the revert, the destinations, the probe and the browse) is refused here, so that a runner is not left waiting for
+/// work that cannot come.
 #[must_use]
 pub fn managed_capabilities_allowed(role: Role, activities: &[String], minor: u32) -> bool {
-    use sagat_domain::database::{MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX};
+    use sagat_domain::database::{
+        ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX,
+    };
     if role == Role::DatabaseRunner {
         minor >= DATABASE_PROTOCOL_MINOR
             && !activities.is_empty()
-            && activities.iter().all(|a| a == MANAGED_DATABASE_ACTIVITY)
+            && [MANAGED_DATABASE_ACTIVITY, ICEBERG_WRITE_ACTIVITY]
+                .iter()
+                .any(|profile| activities.iter().all(|a| a == profile))
     } else {
         activities
             .iter()
