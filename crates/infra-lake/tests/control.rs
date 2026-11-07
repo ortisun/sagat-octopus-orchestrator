@@ -495,6 +495,115 @@ async fn a_line_that_arrives_with_the_result_in_one_write_is_a_break() {
     );
 }
 
+// -- what the caller is told while the conversation runs ---------------------------------------------------------------
+
+use sagat_infra_lake::control::Observer;
+use sagat_infra_lake::protocol::HostResult;
+
+/// Records what the conversation tells its caller, and when (the clock is paused, so a time is the grace that had run).
+#[derive(Default)]
+struct Told {
+    sent_at: Option<Duration>,
+    result_at: Option<Duration>,
+    beats: u32,
+    started: Option<Instant>,
+}
+
+struct Watcher(Arc<std::sync::Mutex<Told>>);
+
+impl Observer for Watcher {
+    fn heartbeat(&mut self) {
+        self.0.lock().unwrap().beats += 1;
+    }
+    fn request_sent(&mut self) {
+        let mut told = self.0.lock().unwrap();
+        let started = told.started.unwrap_or_else(Instant::now);
+        told.sent_at = Some(started.elapsed());
+    }
+    fn result(&mut self, _: &HostResult) {
+        let mut told = self.0.lock().unwrap();
+        let started = told.started.unwrap_or_else(Instant::now);
+        told.result_at = Some(started.elapsed());
+    }
+}
+
+async fn watched<F, Fut>(script: F) -> (Told, Result<HostResult, ControlFailure>, Duration)
+where
+    F: FnOnce(BufReader<DuplexStream>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let (runner, host) = duplex(1 << 20);
+    let host = tokio::spawn(async move {
+        let mut host = BufReader::new(host);
+        let mut request = Vec::new();
+        host.read_until(b'\n', &mut request).await.unwrap();
+        script(host).await;
+    });
+    let told = Arc::new(std::sync::Mutex::new(Told {
+        started: Some(Instant::now()),
+        ..Told::default()
+    }));
+    let began = Instant::now();
+    let outcome = converse(runner, REQUEST, config(), began, Watcher(Arc::clone(&told))).await;
+    let total = began.elapsed();
+    host.abort();
+    let told = std::mem::take(&mut *told.lock().unwrap());
+    (told, outcome, total)
+}
+
+/// The result is told the moment it is decoded, not when the grace for the host to close has run out: a caller that
+/// races the conversation against a cancellation must not lose a receipt it already holds.
+#[tokio::test(start_paused = true)]
+async fn the_result_is_told_at_once_and_not_after_the_grace() {
+    let (told, outcome, total) = watched(|mut host| async move {
+        say(&mut host, &result_line()).await;
+        sleep(Duration::from_secs(3600)).await;
+    })
+    .await;
+    assert!(outcome.is_ok());
+    assert_eq!(told.result_at, Some(Duration::ZERO));
+    // the conversation itself waited the grace for the host to close
+    assert_eq!(total, config().result_grace);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_request_is_told_as_sent_before_it_is_written() {
+    let (told, outcome, _) = watched(|mut host| async move {
+        say(&mut host, &result_line()).await;
+    })
+    .await;
+    assert!(outcome.is_ok());
+    assert_eq!(told.sent_at, Some(Duration::ZERO));
+    assert_eq!(told.result_at, Some(Duration::ZERO));
+}
+
+/// "Sent" means the runner began to hand the request over, so it holds when the write fails: the host may have read part.
+#[tokio::test(start_paused = true)]
+async fn a_request_whose_write_fails_is_still_told_as_sent() {
+    let (runner, host) = duplex(64);
+    drop(host);
+    let told = Arc::new(std::sync::Mutex::new(Told::default()));
+    let outcome = converse(
+        runner,
+        REQUEST,
+        config(),
+        Instant::now(),
+        Watcher(Arc::clone(&told)),
+    )
+    .await;
+    assert!(outcome.is_err());
+    assert!(told.lock().unwrap().sent_at.is_some());
+    assert!(told.lock().unwrap().result_at.is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn nothing_is_told_about_a_result_the_host_never_gave() {
+    let (told, outcome, _) = watched(|_host| async move {}).await;
+    assert!(outcome.is_err());
+    assert!(told.sent_at.is_some());
+    assert!(told.result_at.is_none());
+}
+
 #[test]
 fn the_failure_of_a_conversation_is_always_a_host_protocol_failure() {
     use sagat_domain::database::DatabaseFailure;

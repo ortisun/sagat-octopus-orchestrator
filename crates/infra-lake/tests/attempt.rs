@@ -80,9 +80,26 @@ impl Connector for NoNetwork {
     }
 }
 
+/// A signal the scripted host fires at the moment it has asked for `CONTROL`, before it reads anything.
+#[derive(Clone)]
+enum Signal {
+    Cancel(CancellationToken),
+    LoseLease(CancellationToken),
+}
+
+impl Signal {
+    fn fire(&self) {
+        match self {
+            Self::Cancel(token) | Self::LoseLease(token) => token.cancel(),
+        }
+    }
+}
+
 /// What the scripted host does once it is connected, or instead of connecting.
 #[derive(Clone)]
 enum Script {
+    /// Asks for `CONTROL`, fires the signal in the same breath, then waits for a request that should not come.
+    ConnectsThenSignals(Signal),
     /// Reads the request, answers with these bytes (a beat first if asked), and closes.
     Answer { beats: usize, line: Vec<u8> },
     /// Reads the request and then says nothing, with the connection open.
@@ -101,6 +118,13 @@ struct Scripted {
     work: PathBuf,
     script: Script,
     start_fails: Option<SandboxError>,
+    start_hangs: bool,
+    kill_hangs: bool,
+    kill_unconfirmed: bool,
+    /// Lost during the kill, as a lease can be while a slow container is being ended.
+    lose_lease_in_kill: Option<CancellationToken>,
+    /// Whether the relay still accepted a connection when the container was ended.
+    relay_up_in_kill: Arc<Mutex<Option<bool>>>,
     memory_killed: bool,
     starts: AtomicUsize,
     kills: AtomicUsize,
@@ -119,6 +143,11 @@ impl Scripted {
             work: work.to_path_buf(),
             script,
             start_fails: None,
+            start_hangs: false,
+            kill_hangs: false,
+            kill_unconfirmed: false,
+            lose_lease_in_kill: None,
+            relay_up_in_kill: Arc::default(),
             memory_killed: false,
             starts: AtomicUsize::new(0),
             kills: AtomicUsize::new(0),
@@ -178,6 +207,10 @@ async fn host(
         .await
         .unwrap();
     let mut asked = Vec::new();
+    stream.get_mut().flush().await.unwrap();
+    if let Script::ConnectsThenSignals(signal) = &script {
+        signal.fire();
+    }
     stream.read_until(b'\n', &mut asked).await.unwrap();
     *request.lock().unwrap() = asked;
     has_request.notify_waiters();
@@ -195,7 +228,7 @@ async fn host(
             stream.get_mut().write_all(&answer).await.unwrap();
             stream.get_mut().shutdown().await.unwrap();
         }
-        Script::Silent => std::future::pending().await,
+        Script::Silent | Script::ConnectsThenSignals(_) => std::future::pending().await,
         Script::DiesAfterTheRequest | Script::NeverConnects | Script::ExitsAtOnce => {}
     }
 }
@@ -205,6 +238,9 @@ impl LakeSandbox for Scripted {
         self.starts.fetch_add(1, Ordering::SeqCst);
         if let Some(error) = self.start_fails {
             return Err(error);
+        }
+        if self.start_hangs {
+            return std::future::pending().await;
         }
         assert!(request.deadline > Duration::ZERO);
         let task = tokio::spawn(host(
@@ -232,13 +268,23 @@ impl LakeSandbox for Scripted {
         }
     }
 
-    async fn kill(&self, _attempt_id: &str) -> ContainerExit {
+    async fn kill(&self, attempt_id: &str) -> ContainerExit {
         self.kills.fetch_add(1, Ordering::SeqCst);
+        // is the relay still there to be reached? The runner stops it before it ends the container
+        let socket = self.work.join(attempt_id).join("relay.sock");
+        *self.relay_up_in_kill.lock().unwrap() = Some(UnixStream::connect(&socket).await.is_ok());
+        if let Some(lease) = &self.lose_lease_in_kill {
+            lease.cancel();
+        }
+        if self.kill_hangs {
+            return std::future::pending().await;
+        }
         if let Some(task) = self.host.lock().unwrap().take() {
             task.abort();
         }
         ContainerExit {
             memory_killed: self.memory_killed,
+            ended: !self.kill_unconfirmed,
         }
     }
 }
@@ -262,10 +308,23 @@ fn world() -> World {
     World { work, attempt }
 }
 
-fn relay() -> Relay<NoDns, NoNetwork> {
+/// The user this test runs as: the scripted host is in this process, so the kernel reports it as the peer.
+fn my_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt as _;
+    tempfile::tempfile().unwrap().metadata().unwrap().uid()
+}
+
+fn relay_for(peer: Option<u32>) -> Relay<NoDns, NoNetwork> {
     let endpoints = EndpointPolicy::new([Endpoint::new("catalog.example", 443).unwrap()]);
-    let config = RelayConfig::new(RelayToken::new(TOKEN).unwrap(), endpoints, Vec::new());
+    let mut config = RelayConfig::new(RelayToken::new(TOKEN).unwrap(), endpoints, Vec::new());
+    if let Some(uid) = peer {
+        config = config.with_peer_uid(uid);
+    }
     Relay::new(config, NoDns, NoNetwork).unwrap()
+}
+
+fn relay() -> Relay<NoDns, NoNetwork> {
+    relay_for(Some(my_uid()))
 }
 
 fn control(silence_ms: u64) -> ControlConfig {
@@ -281,6 +340,7 @@ fn plan(deadline_ms: u64, host_start_ms: u64, silence_ms: u64) -> Plan<'static> 
         deadline: Instant::now() + Duration::from_millis(deadline_ms),
         host_start: Duration::from_millis(host_start_ms),
         control: control(silence_ms),
+        kill_limit: Duration::from_secs(30),
     }
 }
 
@@ -577,16 +637,23 @@ async fn a_sandbox_that_cannot_start_the_container_is_unavailable_and_nothing_is
 
 // -- the clock, a person and the lease ---------------------------------------------------------------------------------
 
+/// The clock is paused once the host has the request, and the runtime then jumps to the deadline: nothing more will arrive
+/// on the socket, so the jump is safe, and the test does not depend on how fast a loaded machine connects.
 #[tokio::test]
 async fn the_deadline_after_the_request_was_sent_is_an_unknown_outcome() {
     let world = world();
     let sandbox = Scripted::new(world.work.path(), Script::Silent);
+    let has_request = Arc::clone(&sandbox.has_request);
+    tokio::spawn(async move {
+        has_request.notified().await;
+        tokio::time::pause();
+    });
+    // the deadline is an hour away and every other limit two: only the deadline can end this
     let outcome = run_attempt(
         &sandbox,
         &world.attempt,
         relay(),
-        // long enough for the host to connect and read its request on a loaded machine; the deadline ends the rest
-        &plan(2_000, 60_000, 60_000),
+        &plan(3_600_000, 7_200_000, 7_200_000),
         &signals(),
         || {},
     )
@@ -595,6 +662,7 @@ async fn the_deadline_after_the_request_was_sent_is_an_unknown_outcome() {
         failed(&outcome.disposition),
         DatabaseFailure::OutcomeUnknown
     );
+    assert_eq!(outcome.ended, Ended::DeadlinePassed);
     assert!(outcome.request_sent);
     assert_eq!(sandbox.kills(), 1);
 }
@@ -722,10 +790,134 @@ async fn a_lost_lease_beats_a_cancellation_that_is_ready_with_it() {
     assert_eq!(outcome.ended, Ended::LeaseLost);
 }
 
-// -- what the outcome shows -------------------------------------------------------------------------------------------
+// -- what the review asked for ----------------------------------------------------------------------------------------
+
+/// A signal the host fires the moment it asks for `CONTROL` is seen, and the request never goes out. On this runtime the
+/// signal wakes the attempt before the relay has handed the stream over, so the signal wins the wait for the host: this is
+/// the end-to-end behaviour, not the race. The race (the stream and a signal ready at the same poll) is entered directly by
+/// the unit tests of `attempt.rs`, which I checked fail when the protections are removed.
+#[tokio::test]
+async fn a_signal_that_is_ready_when_the_host_connects_stops_the_request_from_going_out() {
+    for round in 0..40 {
+        for lose_lease in [false, true] {
+            let world = world();
+            let signals = signals();
+            let signal = if lose_lease {
+                Signal::LoseLease(signals.lease_lost.clone())
+            } else {
+                Signal::Cancel(signals.cancelled.clone())
+            };
+            let sandbox = Scripted::new(world.work.path(), Script::ConnectsThenSignals(signal));
+            let outcome =
+                run_attempt(&sandbox, &world.attempt, relay(), &easy(), &signals, || {}).await;
+            assert!(
+                !outcome.request_sent,
+                "round {round}, lease lost: {lose_lease}"
+            );
+            assert!(
+                sandbox.request.lock().unwrap().is_empty(),
+                "the host was given the request (round {round}, lease lost: {lose_lease})"
+            );
+            if lose_lease {
+                assert!(matches!(outcome.disposition, Disposition::Abandon));
+            } else {
+                assert_eq!(failed(&outcome.disposition), DatabaseFailure::Cancelled);
+            }
+        }
+    }
+}
+
+/// The clock is paused from the start: a start that hangs leaves no real I/O to wait for, so the runtime jumps to the
+/// deadline when it is idle, and the deadline cannot pass before the attempt has reached `start` however loaded the machine.
+#[tokio::test(start_paused = true)]
+async fn a_start_that_never_returns_is_ended_by_the_deadline() {
+    let world = world();
+    let mut sandbox = Scripted::new(world.work.path(), Script::NeverConnects);
+    sandbox.start_hangs = true;
+    let outcome = run_attempt(
+        &sandbox,
+        &world.attempt,
+        relay(),
+        &plan(200, 60_000, 60_000),
+        &signals(),
+        || {},
+    )
+    .await;
+    assert_eq!(failed(&outcome.disposition), DatabaseFailure::Timeout);
+    assert!(!outcome.request_sent);
+    // a start that did not return may have left a container: it is ended
+    assert_eq!(sandbox.kills(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_start_that_never_returns_is_ended_by_a_cancellation_and_by_a_lost_lease() {
+    for lose_lease in [false, true] {
+        let world = world();
+        let mut sandbox = Scripted::new(world.work.path(), Script::NeverConnects);
+        sandbox.start_hangs = true;
+        let signals = signals();
+        let token = if lose_lease {
+            signals.lease_lost.clone()
+        } else {
+            signals.cancelled.clone()
+        };
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            token.cancel();
+        });
+        let outcome =
+            run_attempt(&sandbox, &world.attempt, relay(), &easy(), &signals, || {}).await;
+        if lose_lease {
+            assert!(matches!(outcome.disposition, Disposition::Abandon));
+        } else {
+            assert_eq!(failed(&outcome.disposition), DatabaseFailure::Cancelled);
+        }
+        assert_eq!(sandbox.kills(), 1);
+    }
+}
 
 #[tokio::test]
-async fn the_outcome_shows_no_secret_and_no_request() {
+async fn a_kill_that_never_returns_is_given_up_on_and_the_outcome_says_so() {
+    let world = world();
+    let mut sandbox = Scripted::new(
+        world.work.path(),
+        Script::Answer {
+            beats: 0,
+            line: result(),
+        },
+    );
+    sandbox.kill_hangs = true;
+    let plan = Plan {
+        kill_limit: Duration::from_millis(150),
+        ..easy()
+    };
+    let started = StdInstant::now();
+    let outcome = run_attempt(&sandbox, &world.attempt, relay(), &plan, &signals(), || {}).await;
+    assert!(started.elapsed() < Duration::from_secs(20));
+    // the receipt is the host's and stands; that the container may still be up is said, not hidden
+    assert!(matches!(outcome.disposition, Disposition::Complete(_)));
+    assert!(!outcome.container_ended);
+}
+
+#[tokio::test]
+async fn a_kill_the_sandbox_cannot_confirm_is_said() {
+    let world = world();
+    let mut sandbox = Scripted::new(world.work.path(), Script::DiesAfterTheRequest);
+    sandbox.kill_unconfirmed = true;
+    let outcome = run_attempt(
+        &sandbox,
+        &world.attempt,
+        relay(),
+        &easy(),
+        &signals(),
+        || {},
+    )
+    .await;
+    assert!(!outcome.container_ended);
+}
+
+#[tokio::test]
+async fn a_container_that_was_ended_is_said_to_be() {
     let world = world();
     let sandbox = Scripted::new(
         world.work.path(),
@@ -743,7 +935,169 @@ async fn the_outcome_shows_no_secret_and_no_request() {
         || {},
     )
     .await;
+    assert!(outcome.container_ended);
+}
+
+/// The relay is the container's only route out, so it stops first: a container that is being ended, or that cannot be, has
+/// no tunnels left.
+#[tokio::test]
+async fn the_relay_is_stopped_before_the_container_is_ended() {
+    let world = world();
+    let sandbox = Scripted::new(
+        world.work.path(),
+        Script::Answer {
+            beats: 0,
+            line: result(),
+        },
+    );
+    run_attempt(
+        &sandbox,
+        &world.attempt,
+        relay(),
+        &easy(),
+        &signals(),
+        || {},
+    )
+    .await;
+    assert_eq!(*sandbox.relay_up_in_kill.lock().unwrap(), Some(false));
+}
+
+#[tokio::test]
+async fn a_lease_lost_while_the_container_is_being_ended_reports_nothing() {
+    let world = world();
+    let signals = signals();
+    let mut sandbox = Scripted::new(
+        world.work.path(),
+        Script::Answer {
+            beats: 0,
+            line: result(),
+        },
+    );
+    sandbox.lose_lease_in_kill = Some(signals.lease_lost.clone());
+    let outcome = run_attempt(&sandbox, &world.attempt, relay(), &easy(), &signals, || {}).await;
+    assert!(matches!(outcome.disposition, Disposition::Abandon));
+    assert_eq!(outcome.ended, Ended::LeaseLost);
+}
+
+/// Dropping the call (the caller's own deadline, a panic) must not leave the relay serving an unlinked socket. The
+/// container is the sandbox's to end at its deadline; the relay is ours.
+#[tokio::test]
+async fn dropping_the_attempt_midway_stops_the_relay() {
+    let world = world();
+    let sandbox = Scripted::new(world.work.path(), Script::NeverConnects);
+    let (plan, signals) = (easy(), signals());
+    tokio::select! {
+        biased;
+        _ = run_attempt(&sandbox, &world.attempt, relay(), &plan, &signals, || {}) => {
+            panic!("the attempt ended by itself")
+        }
+        () = async {} => {}
+    }
+    let mut stopped = false;
+    for _ in 0..500 {
+        if UnixStream::connect(world.attempt.socket_path())
+            .await
+            .is_err()
+        {
+            stopped = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        stopped,
+        "the relay was still serving after the attempt was dropped"
+    );
+}
+
+#[tokio::test]
+async fn a_relay_that_does_not_check_its_peer_is_not_run() {
+    let world = world();
+    let sandbox = Scripted::new(
+        world.work.path(),
+        Script::Answer {
+            beats: 0,
+            line: result(),
+        },
+    );
+    let outcome = run_attempt(
+        &sandbox,
+        &world.attempt,
+        relay_for(None),
+        &easy(),
+        &signals(),
+        || {},
+    )
+    .await;
+    assert_eq!(
+        failed(&outcome.disposition),
+        DatabaseFailure::LakeSandboxUnavailable
+    );
+    assert_eq!(sandbox.starts.load(Ordering::SeqCst), 0);
+    assert!(!outcome.request_sent);
+}
+
+#[tokio::test]
+async fn a_process_of_another_user_that_has_the_token_is_not_given_the_request() {
+    let world = world();
+    // the kernel says the scripted host runs as `my_uid()`; the relay is told to serve another user only
+    let sandbox = Scripted::new(world.work.path(), Script::Silent);
+    let outcome = run_attempt(
+        &sandbox,
+        &world.attempt,
+        relay_for(Some(my_uid() + 1)),
+        &plan(60_000, 300, 60_000),
+        &signals(),
+        || {},
+    )
+    .await;
+    assert_eq!(
+        failed(&outcome.disposition),
+        DatabaseFailure::LakeHostProtocol
+    );
+    assert!(!outcome.request_sent);
+    assert!(sandbox.request.lock().unwrap().is_empty());
+    assert_eq!(outcome.relay_denials.token_refused, 1);
+}
+
+#[tokio::test]
+async fn the_plan_shows_the_size_of_the_request_and_not_the_request() {
+    let shown = format!("{:?}", easy());
+    assert!(!shown.contains("icebergWrite"), "{shown}");
+    assert!(shown.contains(&REQUEST.len().to_string()), "{shown}");
+}
+
+/// The host chooses the column of a failure. `dispose` keeps it only if it is a plain name, and the outcome must not hand
+/// the raw text back through `Debug`.
+#[tokio::test]
+async fn the_outcome_shows_no_text_of_the_hosts_and_no_secret() {
+    let world = world();
+    let hostile = line(&json!({
+        "failure": {"code": "ICEBERG_SCHEMA_MISMATCH", "column": "YWJj+/=ZGVm", "reason": "TYPE"},
+        "relayDenials": 0
+    }));
+    let sandbox = Scripted::new(
+        world.work.path(),
+        Script::Answer {
+            beats: 0,
+            line: hostile,
+        },
+    );
+    let outcome = run_attempt(
+        &sandbox,
+        &world.attempt,
+        relay(),
+        &easy(),
+        &signals(),
+        || {},
+    )
+    .await;
     let shown = format!("{outcome:?}");
-    assert!(!shown.contains(TOKEN));
-    assert!(!shown.contains("icebergWrite"));
+    assert!(!shown.contains("YWJj"), "{shown}");
+    assert!(!shown.contains(TOKEN), "{shown}");
+    // what is reported is still there, with the column dropped
+    match &outcome.disposition {
+        Disposition::Fail(failure) => assert_eq!(failure.column, None),
+        other => panic!("{other:?}"),
+    }
 }

@@ -2063,9 +2063,52 @@ The other fixes were wording:
     it starts, a lost lease beating a cancellation, the relay's denials counted and returned, the socket's mode, the relay stopped with the
     attempt, no secret in the outcome. Times are real and short (a paused clock does not advance while real socket I/O is pending); the
     only margin that matters is the deadline after the request, 2 s.
-  - *Evidence.* `cargo test -p sagat-infra-lake`: 194 passed (20 in `attempt.rs`); six runs in a row and 48 copies at once pass;
-    `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` clean. The module and the tests were written
-    together before the first run; the 19 then written passed at once. No mutation pass (OD-2026-11-06-2).
-  - *Not done.* The production `LakeSandbox` (a client of the sandbox runner: G035-055 and its ADR), the `peer_uid` of the relay (the
-    caller builds the `Relay`: G035-056), zeroising the request buffer, the lease heartbeat that feeds `on_heartbeat`, `ResolveDatabase`,
-    `ReadBlob`, and the report to the control plane (`apps/database-runner/src/lake.rs`).
+  - *Independent review (security and correctness reviewers, given the files and the contract, not my conclusion).* No path was found by
+    which the request reaches a recipient other than the authenticated control stream of this attempt's host, a late `CONTROL` after the
+    receiver is gone, or the relay's `serving.await` hanging on a hostile host; the token reaches no `Debug` or error; `request_sent` is
+    conservative. Findings, each checked by reading the code, and what I did:
+    - *Fixed. The request could be written after the attempt was over.* The stream and a signal (a cancellation, a lost lease, the
+      deadline) can both be ready when the host connects, `select!` polls its arms in no fixed order, and the first poll of `converse`
+      writes the credentials. The conversation stage (`conversation`, which takes any stream) now checks the signals first and its
+      `select!` is `biased` with the signals first; `request_sent` is no longer "the branch was reached" but set by the conversation
+      itself when it begins to write (an `Observer`, `control.rs`), so a cancel that wins is `DATABASE_CANCELLED` and not
+      `OUTCOME_UNKNOWN`. **My first test of this did not test it**: with the protections disabled it still passed, because on this
+      runtime the host's signal wakes the attempt before the relay hands over the stream, so the signal wins the earlier wait. The
+      race (a live stream and a signal ready at the same poll) is entered directly by two unit tests in `attempt.rs`, run 60 rounds each
+      way; with the protections removed both fail, which I did to see it.
+    - *Fixed. A receipt that was already decoded could be dropped.* `converse` returns only after the host's grace to close (up to 2
+      s), and a cancellation or the deadline in that window dropped the future and the receipt with it, although `supervisor.rs` says a
+      receipt stands. The conversation now tells its caller the moment a result is decoded (`Observer::result`), and the join keeps it
+      against everything but a lost lease (unit tests; a byte after the result is still a break and the result does not replace it).
+    - *Fixed. `start` and `kill` were unbounded.* `start` is raced against the signals and the deadline (a hung sandbox runner no longer
+      holds the worker); `kill` has a limit (`Plan::kill_limit`) and the outcome says whether the container is gone
+      (`container_ended`, from `ContainerExit::ended`): a kill that cannot be confirmed is said, not hidden, because a host with the
+      credentials may still be up until its life time runs out. The relay now stops **before** the container is ended (its tunnels are
+      the container's only route out), and a lease lost while it is being ended still reports nothing.
+    - *Fixed. `kill` was called when nothing had been started* (the path with no time left), and no signal was checked between the first
+      check and the start. A start is now preceded by the same check, and `kill` follows only a start that was attempted.
+    - *Fixed. Dropping the future left the relay serving.* The relay's task is held by a guard that stops it and aborts the task. The
+      container is not killed on a drop (that needs an `await`); the backstop is the life time in `StartRequest::deadline`, which the
+      sandbox enforces even if the runner is gone, and this is now in the module doc.
+    - *Fixed. `peer_uid` was not required* (G035-056, the part that belongs to `run_attempt`): a relay that does not check its peer is
+      refused (`Relay::requires_peer`, `SandboxUnavailable`, nothing started), and a process of another user that has the token is
+      refused by the relay and counted. The slot's user is still the caller's to pass to the relay.
+    - *Fixed. `Plan` and `AttemptOutcome` derived `Debug`* over the request bytes and over `Ended`, which holds the raw column of a
+      failure that `dispose` filters. Both are manual now: the plan shows the size of the request, the outcome omits `ended`.
+    - *Not changed, recorded.* The `chmod` of the socket is by path after `bind`; a member of the runner's group could race it with a
+      symlink before any container exists (nothing else mounts the work root), a low residual. A failure of `bind` or `take_control`
+      is reported as the retryable `LAKE_SANDBOX_UNAVAILABLE`, which hides a runner-local fault; a panic in the relay's task is swallowed
+      by `let _ =`; a sandbox whose `exited` resolves spuriously fails every attempt as `LAKE_HOST_PROTOCOL` (visibly). The container's
+      life time is read before `start` returns, so it can outlive the plan's deadline by the start latency.
+    - *Tests.* Two of mine depended on the machine: the deadline after the request (a 2 s window) now pauses the clock once the host has
+      the request, and the three tests of a hung start run with a paused clock from the start (a hung start leaves no real I/O to wait
+      for); with 3 of 32 copies at once failing before that, 0 of 32 and 0 of 48 (twice) fail after. The test that "the outcome shows no
+      secret" could not fail (`AttemptOutcome` held none) and was replaced by two that can.
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 217 passed (32 in `attempt.rs`, 8 unit tests in `attempt.rs`, 28 in `control.rs`); 32
+    copies at once and 48 copies at once, twice, pass; `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D
+    warnings` clean. The first 19 tests were written with the module and passed at once; the observer tests of `control.rs` were
+    written first and failed to compile; the rest of the review's tests were written before the fixes and failed to compile for the new
+    API, and their runtime failures were not all seen before the fix, except as the mutation above. No mutation pass (OD-2026-11-06-2).
+  - *Not done.* The production `LakeSandbox` (a client of the sandbox runner: G035-055 and its ADR), the slot's user for the relay's
+    `peer_uid` (the caller), zeroising the request buffer, the lease heartbeat that feeds `on_heartbeat`, `ResolveDatabase`, `ReadBlob`,
+    and the report to the control plane (`apps/database-runner/src/lake.rs`).

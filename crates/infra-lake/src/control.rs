@@ -72,6 +72,24 @@ impl ControlFailure {
     }
 }
 
+/// What the caller is told while the conversation runs. A closure that takes no argument is an observer of the beats, which
+/// is all most callers need; the driver also wants to know when the request was handed over and the moment the result was
+/// decoded, because the conversation goes on after the result (the host's grace to close) and may be dropped there.
+pub trait Observer {
+    /// A beat the host sent in time.
+    fn heartbeat(&mut self) {}
+    /// The runner is about to write the request: from here the host may hold some of it.
+    fn request_sent(&mut self) {}
+    /// The result line was decoded.
+    fn result(&mut self, _result: &HostResult) {}
+}
+
+impl<F: FnMut()> Observer for F {
+    fn heartbeat(&mut self) {
+        self();
+    }
+}
+
 /// What one read of a line came to.
 enum Read {
     /// A complete line, without its terminator, in the buffer.
@@ -125,13 +143,15 @@ pub async fn converse<S>(
     request: &[u8],
     config: ControlConfig,
     began: Instant,
-    mut on_heartbeat: impl FnMut(),
+    mut observer: impl Observer,
 ) -> Result<HostResult, ControlFailure>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let (read, mut write) = tokio::io::split(stream);
     let mut reader = BufReader::new(read);
+    // told before the write, not after: from here the host may hold part of the request, whatever happens to the write
+    observer.request_sent();
     let sent = timeout(config.silence, async {
         write.write_all(request).await?;
         write.flush().await
@@ -154,8 +174,11 @@ where
             Read::Closed | Read::Partial => return Ok(decoder.finish()?),
             Read::TooLong => return Err(ProtocolFailure::LineTooLong.into()),
             Read::Line => match decoder.line(&line, began.elapsed())? {
-                Event::Heartbeat => on_heartbeat(),
+                Event::Heartbeat => observer.heartbeat(),
                 Event::Result(result) => {
+                    // told now, before the wait for the host to close: a caller that races this future against a
+                    // cancellation must not lose a receipt that was already decoded
+                    observer.result(&result);
                     return after_result(&mut reader, config.result_grace, result).await;
                 }
             },
