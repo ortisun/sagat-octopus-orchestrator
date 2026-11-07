@@ -1971,3 +1971,70 @@ The other fixes were wording:
     equality assertions on the code of each row. No mutation pass (OD-2026-11-06-2).
   - *Not done.* Nothing calls `dispose` yet: the driver (`lake.rs`) gathers the facts and acts on the answer, and the container's
     `memory_killed` comes from the sandbox API (G035-055).
+- **D035-112 — The attempt directory and the record files are made by `AttemptDir`, with the modes of D035-086 and the limit counted while
+  the bytes stream.** Fourth slice of T035-035. **Decided by: delegate**.
+  - *What it is.* `crates/infra-lake/src/staging.rs`. `AttemptDir::create(work_root, attempt_id, token, limits)` makes
+    `<work>/<attempt id>/` (0770, which must not exist), `in/` (0770) and `relay.token` (0640, the token and a newline, which is what the
+    host's `read_token` reads). The modes are set explicitly after each creation, because a umask only takes bits away. The attempt id is
+    the intersection of the host's pattern and the lake profile's (1 to 60 lower-case hexadecimal digits and hyphens, starting with a
+    digit), so it cannot name another path. `stage_inline(records)` writes `in/inline.ndjson`, one compact JSON value a line;
+    `stage_blob(format, stream)` writes `in/blob-<n>.<ndjson|parquet>` byte for byte; `inputs()` is the list the request builder takes
+    (`WriteAppend`, D035-109). `remove()` deletes the directory with the token in it, and `Drop` does it if the driver forgot.
+  - *The limit.* Bytes of every file together, and records (the inline records and the lines of NDJSON blobs, counted with or without a last
+    newline; a blank line counts). Going over is `StagingError::LimitExceeded`, which the driver reports as `ICEBERG_LIMIT_EXCEEDED` before
+    any container starts; the partial file is removed. A blob is read in 64 KiB chunks and stopped at the limit, so a stream that never
+    ends costs one chunk past it (tested with `tokio::io::repeat`). A limit of zero is refused (zero is not unlimited). At most 32 files
+    (`MAX_RECORD_BLOBS`), inline included.
+  - *No new dependency.* A `Cargo.toml` change selects every package in CI, so the file work is `std::fs` and the streams go through a
+    bounded channel to a blocking task: no `tokio` feature is added.
+  - *Errors name no path and no token*: `StagingError` is a closed kind (`AttemptId`, `Exists`, `Io`, `LimitExceeded`, `TooManyFiles`,
+    `ZeroLimit`), with a test that no error shows either.
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 26 new tests in `staging.rs` (modes, one directory per attempt, thirteen refused ids,
+    exact byte and record limits for inline and blob sources, an endless blob, a failing stream, a refused blob leaves no file, 32 files,
+    the inputs feed `WriteAppend`, removal and drop, a removal that fails and is retried, a call dropped midway); `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D
+    warnings` clean. The module and the tests were written together before the first run, so they were not seen failing for the absence of
+    the module; the first run failed to compile on two type slips of mine in the tests. No mutation pass (OD-2026-11-06-2).
+  - *Independent review (security reviewer, given the files and the contract, not my conclusion).* No tenant string reaches a path (the id
+    is `[0-9a-f-]`, names come from a counter and an enum); `create` returns `Exists` before the value exists, so `Drop` never removes a
+    directory the runner did not make; a planted symlink cannot make `remove_dir_all` leave the directory (the pinned toolchain unlinks
+    symlinks); the token is written only to `relay.token`; memory is one 64 KiB buffer and four queued chunks; the counting is right at
+    chunk boundaries. Findings, each checked by reading the code:
+    - *Fixed.* **`remove` consumed the handle and `Drop` swallowed its error**, so a removal that failed left the tree, the token possibly
+      among it, with nobody to say so. `remove` now takes `&mut self` and keeps the attempt on failure, so the driver can retry, report
+      and count the leftover, and `Drop` tries once more (test: a directory the runner cannot enter, skipped when run as root). The
+      directories are now made with their final mode (`DirBuilder`), so there is no instant at which they are wider than 0770; the file's
+      mode is set on the open file (`fchmod`), not on a path. The additions that bound the counts are saturating, because a limit can be
+      any non-zero `u64` (no test can feed 2^64 bytes, so this one is by reading). A call dropped midway (the caller's deadline on a
+      stalled source) removes the half-made blob and leaves its name usable (`Partial`); with the guard's removal disabled three tests
+      fail, which I did to see that they are real. The id's doc said "starts with a digit"; it starts with a hexadecimal digit.
+    - *Not fixed, because it changes an owner decision: O035-006.* The container has the directories read-write in the runner's group
+      (D035-086, OD-2026-11-05-2), so a compromised host can create in them a directory the runner cannot enter (owned by the slot's user,
+      mode 0700, or 000) and `remove_dir_all` stops at it. Repeated, that fills the size-limited work volume and the effect crosses
+      tenants (G035-060). The host writes nothing in the directory (I searched `runners/lake`: it reads `relay.token` and `in/*` and
+      connects to `relay.sock`, which needs search on the directory and write on the socket, not write on the directory), so 0750 on
+      `<attempt>/` and `in/` would take the ability away and nothing else. That tightens a mode the owner chose, and `lake-runtime.md` and
+      the isolation tests state it, so it waits for an answer; 0770 stays until then.
+    - *For the driver.* Wrap `stage_*` in a timeout (a stalled source holds a blocking thread); the attempt directory takes the group of the
+      work root if that is setgid, so the volume's manifest says it must not be; zeroising is the driver's (above). The wording of the
+      slice list in D035-110 (b) said "removal and zeroising at the end": zeroising is not here.
+  - *Not done.* The zeroising of the token and of the encoded request line is the driver's, in `apps/database-runner` where `zeroize` is
+    already a dependency (adding it here would change a manifest). Nothing calls staging yet.
+- **O035-006** — Should the attempt directories be 0750 instead of 0770? (D035-086 chose 0770 in the runner's group.) *Recommendation: yes.*
+  The container reads `relay.token` and `in/*` and connects to `relay.sock`; it never writes in `<attempt>/` or `in/`. With 0770 a
+  compromised host can create a directory the runner cannot enter, which cannot be removed (G035-060). With 0750 it cannot create
+  anything. The token (0640), the record files (0640) and the socket (0660) keep their modes. It changes the amended text of
+  `lake-runtime.md`, the isolation tests of T035-015 and the `container_config` test that states the group, so it needs the owner's word.
+  *Until answered:* 0770, as decided.
+- **G035-060 — A compromised host can leave a tree on the work volume that the runner cannot remove.** See O035-006 and the review in
+  D035-112. `AttemptDir::remove` keeps the handle on failure so the driver can retry and report; what the runner cannot enter, it cannot
+  delete. *Exit condition:* the owner answers O035-006 (0750 closes it), or a cleanup through the engine (a container as the slot's user
+  that deletes the directory) is built, and the work volume's free space is a metric.
+- **G035-058 — A Parquet blob counts toward the bytes and not toward the records.** The runner does not parse a footer, so
+  `max_records` is not enforced on Parquet input by the runner; the host's decoded-bytes budget (8 times the byte ceiling, D035-107) is the
+  bound. *Exit condition:* read the row count from the footer in the runner (a Thrift read of a bounded tail), or accept the budget as the
+  bound and say so in `lake-runtime.md` with the next contract change.
+- **G035-059 — The contract stages a 017 database result as `result.json`, and the host reads only NDJSON and Parquet.** `lake-runtime.md`
+  step 2 says "a 017 database result as `result.json`"; `request.py` accepts the formats `ndjson` and `parquet` only. A step has exactly one
+  record source (`RecordSource`), so the driver turns the result's rows into JSON values and stages them with `stage_inline`; the file the
+  contract names is not one the host reads. *Exit condition:* the driver does so, with a test, and `lake-runtime.md` says it with the next
+  contract change.

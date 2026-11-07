@@ -97,6 +97,12 @@ pub struct InputFile {
 }
 
 impl InputFile {
+    /// The name under `in/`, without the directory.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// # Errors
     /// [`BodyError::InputName`] for a name that is empty, longer than 128 bytes, starts with a dot, or has a character
     /// outside `A-Z a-z 0-9 . _ -`.
