@@ -568,6 +568,14 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
         })
     }
 
+    /// Whether the relay only serves a peer whose kernel-reported user is the one configured. `CONTROL` is the request that
+    /// is handed the credentials, and the token alone (a file readable by the runner's group) is what stands between the
+    /// socket and a process that is not the host; the driver refuses to run an attempt on a relay without this (G035-056).
+    #[must_use]
+    pub fn requires_peer(&self) -> bool {
+        self.inner.peer_uid.is_some()
+    }
+
     /// Where the host's `CONTROL` connection arrives, once. The driver takes it when it builds the relay, before it
     /// starts the container, and waits on it for the time the host has to start. A second call gives `None`.
     ///
