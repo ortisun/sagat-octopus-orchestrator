@@ -991,6 +991,30 @@ describe('the run page: who may do what', () => {
   });
 });
 
+describe('the run page: reset to a point', () => {
+  const MAY_RESET = [...OPERATOR, 'run:start'];
+
+  it('offers the reset of a run that has not ended as cancelling it, only to someone who may operate and start runs', async () => {
+    const { unmount } = await open({ run: runOf({ status: 'RUNNING' }) }, MAY_RESET);
+    expect(await screen.findByRole('button', { name: 'Cancel and reset to a point…' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Reset to a point…' })).not.toBeInTheDocument();
+    unmount();
+    // operating a run is not enough to start another from it
+    await open({ run: runOf({ status: 'RUNNING' }) }, OPERATOR);
+    await screen.findByText('Started by');
+    expect(screen.queryByRole('button', { name: /reset to a point/i })).not.toBeInTheDocument();
+  });
+
+  it('offers the plain reset for a run that ended, and lists the resets made from it, one of them waiting', async () => {
+    const waiting = { resetId: 'r-1', sourceRunId: RUN_ID, sequence: 5, state: 'PENDING_SOURCE', failureReason: null, newRunId: null, reapplyReport: [], createdAt: at(3) };
+    const { nodes, edges } = sagaRun();
+    await open({ run: runOf({ status: 'SUCCEEDED', finishedAt: at(75) }), graph: graphOf(nodes, edges, { status: 'SUCCEEDED' }), routes: { [`GET /runs/${RUN_ID}/resets`]: () => ({ items: [waiting] }) } }, MAY_RESET);
+    expect(await screen.findByRole('button', { name: 'Reset to a point…' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Cancel and reset to a point…' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: 'Resets made from this run' })).toHaveTextContent('A reset to point 5 (waiting for this run to end');
+  });
+});
+
 describe('the run page: a delayed start', () => {
   it('says when the entry is released, and what the status means', async () => {
     const { nodes, edges } = sagaRun();

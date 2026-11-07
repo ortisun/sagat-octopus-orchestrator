@@ -1,9 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { path } from '../../api/client';
-import { isApiError } from '../../api/errors';
+import { ApiError, isApiError } from '../../api/errors';
 import { isTerminal } from '../../api/follow';
 import type { ResetWrite } from '../../api/endpoints';
 import type { ReapplyEntry, ReapplyPolicy, Reset, ResetPlan, ResetPoint } from '../../api/types';
@@ -70,6 +70,55 @@ export function entryLabel(entry: ReapplyEntry): string {
   return `${what} ${name} (event ${entry.sequence}): ${OUTCOMES[entry.outcome] ?? clip(entry.outcome, 30)}${because}`;
 }
 
+/** Why a reset that waited for its run to end was not made, in words. A name this Studio does not know is shown as the platform wrote it. */
+const FAILURES = new Map<string, string>([
+  ['BOUNDARY_NO_LONGER_ELIGIBLE', 'the point is not one the run could be reset to once it had ended'],
+  ['ADMISSION_REFUSED', 'a quota or the platform refused the new run'],
+  ['BUSINESS_ID_IN_USE', 'another open run holds the business identifier'],
+  ['AUTHORITY_REVOKED', 'the person who asked no longer has the permissions a reset needs'],
+  ['REEXECUTION_NOT_ACKNOWLEDGED', 'steps completed after the point and the request did not say they may run again'],
+  ['REAPPLY_TOO_MANY', 'there were too many signals and updates to deliver again'],
+  ['CONCURRENCY_PERMIT_UNAVAILABLE', 'the limit on runs at once left no room for the new run'],
+  ['RUN_PURGED', 'the run was deleted before the new run could be made'],
+]);
+
+function failureWords(reason: string | null | undefined): string {
+  if (reason === null || reason === undefined || reason === '') return 'no reason was recorded';
+  return FAILURES.get(reason) ?? clip(reason, 60);
+}
+
+/** What a reset is, in words, for the list of resets made from a run. The names of the states are open: what is not known is shown as written. */
+function stateWords(reset: Reset): string {
+  switch (reset.state) {
+    case 'CREATED':
+      return 'created';
+    case 'PENDING_SOURCE':
+      return 'waiting for this run to end';
+    case 'FAILED':
+      return `could not be made: ${failureWords(reset.failureReason)}`;
+    default:
+      return clip(String(reset.state), 30);
+  }
+}
+
+/** A reset that has no new run: the run it came from is still being cancelled, or the reset failed. */
+function notMade(reset: Reset): boolean {
+  return reset.state === 'PENDING_SOURCE' || reset.state === 'FAILED';
+}
+
+/** The refusals the Studio words itself, because the advice of the platform is for someone who writes requests, not for someone who uses this screen. */
+const REFUSALS = new Map<string, { message: string; remediation: string }>([
+  ['RESET_CANCEL_SOURCE_NOT_AVAILABLE', { message: 'This platform has not been set up to cancel a run for a reset.', remediation: 'Wait for the run to end, then reset it.' }],
+  ['PENDING_RESET_LIMIT', { message: 'This namespace already has as many resets waiting for a run to end as it may.', remediation: 'Wait until one of them has been made or has failed, then try again.' }],
+]);
+
+function resetRefusal(error: unknown): unknown {
+  if (!isApiError(error) || error.reason === undefined) return refusal(error);
+  const words = REFUSALS.get(error.reason);
+  if (words === undefined) return refusal(error);
+  return new ApiError({ code: error.code, status: error.status, message: words.message, remediation: words.remediation, traceId: error.traceId, details: error.details });
+}
+
 /** What the person may ask to have delivered again after the point, and what each choice means. */
 const POLICIES: { value: ReapplyPolicy; label: string }[] = [
   { value: 'NONE', label: 'Nothing: the new run does not receive them' },
@@ -79,8 +128,9 @@ const POLICIES: { value: ReapplyPolicy; label: string }[] = [
 ];
 
 /**
- * Starts a new run from a point of a run that ended. The run offers it only to someone who may operate and start runs,
- * and only when the run is over; the form belongs to one authenticated context and one run and never persists anything.
+ * Starts a new run from a point of a run. The run offers it only to someone who may operate and start runs. For a run
+ * that ended it is a reset now; for a run that has not ended it cancels the run and makes the new run when it has
+ * ended. The form belongs to one authenticated context and one run and never persists anything.
  */
 export function ResetRun({ runId, status, businessId }: { runId: string; status: string; businessId?: string | null }) {
   const operate = useCan('run:operate');
@@ -88,23 +138,26 @@ export function ResetRun({ runId, status, businessId }: { runId: string; status:
   const namespace = useNamespace();
   useSession();
   const { session } = useApp();
-  if (!operate || !start || !isTerminal(status)) return null;
-  return <ScopedReset key={`${namespace ?? ''}|${session.revision()}|${runId}`} runId={runId} businessId={businessId ?? undefined} />;
+  if (!operate || !start) return null;
+  return <ScopedReset key={`${namespace ?? ''}|${session.revision()}|${runId}`} runId={runId} businessId={businessId ?? undefined} cancelSource={!isTerminal(status)} />;
 }
 
-function ScopedReset({ runId, businessId }: { runId: string; businessId?: string }) {
-  const [open, setOpen] = useState(false);
+function ScopedReset({ runId, businessId, cancelSource }: { runId: string; businessId?: string; cancelSource: boolean }) {
+  // What the dialog was opened for stays what it is until it is closed: if the run ends meanwhile (the cancellation
+  // this very form asked for), a request sent again after a lost answer must still be the same request.
+  const [opened, setOpened] = useState<'cancel' | 'plain' | undefined>(undefined);
+  const close = () => setOpened(undefined);
   return (
     <>
-      <Button onClick={() => setOpen(true)}>Reset to a point…</Button>
-      <Dialog open={open} title="Reset to a point" onClose={() => setOpen(false)}>
-        {open ? <ResetForm runId={runId} {...(businessId === undefined ? {} : { businessId })} onClose={() => setOpen(false)} /> : null}
+      <Button onClick={() => setOpened(cancelSource ? 'cancel' : 'plain')}>{cancelSource ? 'Cancel and reset to a point…' : 'Reset to a point…'}</Button>
+      <Dialog open={opened !== undefined} title={opened === 'cancel' ? 'Cancel the run and reset it when it ends' : 'Reset to a point'} onClose={close}>
+        {opened !== undefined ? <ResetForm runId={runId} cancelSource={opened === 'cancel'} {...(businessId === undefined ? {} : { businessId })} onClose={close} /> : null}
       </Dialog>
     </>
   );
 }
 
-function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?: string; onClose: () => void }) {
+function ResetForm({ runId, businessId, cancelSource, onClose }: { runId: string; businessId?: string; cancelSource: boolean; onClose: () => void }) {
   const { ep, session } = useApp();
   const queries = useQueryClient();
   const announce = useAnnounce();
@@ -122,6 +175,7 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
   const [submitted, setSubmitted] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<unknown>(undefined);
+  const cannotTellId = useId();
   // The key goes with the exact request: sending the same thing again (after a timeout) keeps it, so the platform
   // makes one reset; changing anything makes a new one.
   const previous = useRef<{ print: string; key: string } | undefined>(undefined);
@@ -176,8 +230,11 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
 
   const reasonCheck = checkReason(reason, 'run');
   const reasonProblem = submitted ? reasonCheck.problem : undefined;
-  const mustAcknowledge = plan?.requiresAcknowledgement === true;
-  const acknowledgeProblem = submitted && mustAcknowledge && !acknowledged ? 'Confirm that you know these steps will run again.' : undefined;
+  // The steps of a run that has not ended go on while it is cancelled, and the Studio cannot know whether one that is in
+  // flight will complete after the point: the acknowledgement is asked for whatever the plan says (the platform looks at
+  // it again on the journal the run ended with).
+  const mustAcknowledge = cancelSource || plan?.requiresAcknowledgement === true;
+  const acknowledgeProblem = submitted && mustAcknowledge && !acknowledged ? (cancelSource ? 'Confirm that you know steps may run again.' : 'Confirm that you know these steps will run again.') : undefined;
 
   const send = async () => {
     if (chosen === undefined) return;
@@ -185,6 +242,8 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
       sequence: chosen,
       reason: reason.trim(),
       acknowledgeReexecution: mustAcknowledge && acknowledged,
+      // a run that ended is reset at once and an older platform does not know the field: only a run that has not ended says it
+      ...(cancelSource ? { sourcePolicy: 'CANCEL_SOURCE' as const } : {}),
       // keeping the identifier is the default and is not sent (and only a run that has one offers the choice)
       ...(businessId !== undefined && dropId ? { businessId: 'DROP' as const } : {}),
       // nothing delivered again is the default and is not sent
@@ -201,8 +260,16 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
     try {
       const done: Reset = await ep.resetRun(runId, body, previous.current.key, controller.signal);
       if (!current()) return;
-      announce('The reset was made. The new run starts from that point.');
+      // the run, and the list of the resets made from it (a query under the run's own key), are read again
       void queries.invalidateQueries({ queryKey: ['run', runId] });
+      // a run that is still being cancelled has no new run to go to, and a reset that failed will never have one:
+      // the person is told what happened and stays where they are
+      if (notMade(done)) {
+        announce(done.state === 'FAILED' ? 'The reset could not be made.' : 'The run is being cancelled. The new run is made when it has ended.');
+        setMade(done);
+        return;
+      }
+      announce('The reset was made. The new run starts from that point.');
       // what was delivered again is said before the person is taken away: it is the only place the report is read
       if ((done.reapplyReport ?? []).length > 0) {
         setMade(done);
@@ -230,11 +297,16 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
     void send();
   };
 
-  if (made !== undefined) return <ResetMade made={made} onClose={onClose} />;
+  if (made !== undefined) return notMade(made) ? <ResetNotMade made={made} onClose={onClose} /> : <ResetMade made={made} onClose={onClose} />;
 
   return (
     <form onSubmit={submit} noValidate className="rn-decision">
-      <p>A reset starts a new run from a point of this run: what the run had done up to the point is kept as it was, and the new run goes on from there. This run stays as it is.</p>
+      {cancelSource ? (
+        <Banner tone="warn" title="This run has not ended.">
+          Confirming cancels it, in the ordinary way. The new run is made once it has ended; if the reset can no longer be made by then, it fails and the list of resets made from this run says why.
+        </Banner>
+      ) : null}
+      <p>A reset starts a new run from a point of this run: what the run had done up to the point is kept as it was, and the new run goes on from there.{cancelSource ? '' : ' This run stays as it is.'}</p>
       <p className="rn-audit">This decision is recorded with your name and reason.</p>
 
       {pointsError !== undefined ? <ErrorState error={pointsError} what="Reading where this run can be reset to" /> : null}
@@ -279,8 +351,16 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
       {plan !== undefined && mustAcknowledge ? (
         <div>
           <label>
-            <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} /> I know that these steps ran before and will run again, and that running them again repeats what they did.
+            <input type="checkbox" checked={acknowledged} aria-describedby={cancelSource ? cannotTellId : undefined} onChange={(event) => setAcknowledged(event.target.checked)} />{' '}
+            {cancelSource
+              ? 'I know that steps that completed after the point, including any that complete before this run ends, will run again, and that running them again repeats what they did.'
+              : 'I know that these steps ran before and will run again, and that running them again repeats what they did.'}
           </label>
+          {cancelSource ? (
+            <span id={cannotTellId} className="hint">
+              The Studio cannot tell which steps will complete while the run is being cancelled, so this is always asked.
+            </span>
+          ) : null}
           {acknowledgeProblem ? (
             <span className="error" role="alert">
               {acknowledgeProblem}
@@ -305,12 +385,13 @@ function ResetForm({ runId, businessId, onClose }: { runId: string; businessId?:
         <textarea ref={reasonRef} value={reason} rows={4} onChange={(event) => setReason(event.target.value)} />
       </Field>
 
-      {error !== undefined ? <ErrorState error={refusal(error)} what="Resetting the run" /> : null}
+      {error !== undefined ? <ErrorState error={resetRefusal(error)} what="Resetting the run" /> : null}
 
       <div className="dialog-actions">
-        <Button onClick={onClose}>Cancel</Button>
+        {/* "Cancel" beside a button that cancels the run would be read as the run being cancelled */}
+        <Button onClick={onClose}>{cancelSource ? 'Do not cancel the run' : 'Cancel'}</Button>
         <Button type="submit" variant="primary" disabled={sending} aria-disabled={plan === undefined ? true : undefined}>
-          {sending ? 'Sending…' : 'Confirm: reset the run'}
+          {sending ? 'Sending…' : cancelSource ? 'Confirm: cancel the run and reset it when it ends' : 'Confirm: reset the run'}
         </Button>
       </div>
     </form>
@@ -358,6 +439,27 @@ function Plan({ plan, policy }: { plan: ResetPlan; policy: ReapplyPolicy }) {
   );
 }
 
+/** What the person is told when the reset is not a new run yet (the run is being cancelled), or never will be (it failed). */
+function ResetNotMade({ made, onClose }: { made: Reset; onClose: () => void }) {
+  return (
+    <div className="rn-decision">
+      {made.state === 'FAILED' ? (
+        <p>The reset could not be made: {failureWords(made.failureReason)}.</p>
+      ) : (
+        <>
+          <p>The run is being cancelled.</p>
+          <p>The new run is made once it has ended; you will find it under Resets made from this run. If the reset can no longer be made by then, that list says why.</p>
+        </>
+      )}
+      <div className="dialog-actions">
+        <Button variant="primary" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** What a reset that delivered signals and updates again says before the person goes to the new run: what came of each. */
 function ResetMade({ made, onClose }: { made: Reset; onClose: () => void }) {
   const navigate = useNavigate();
@@ -393,7 +495,11 @@ function ResetMade({ made, onClose }: { made: Reset; onClose: () => void }) {
   );
 }
 
-/** The resets made from a run, each with a link to the run it made. */
+/**
+ * The resets made from a run, each with a link to the run it made; one that waits for this run to end, or that failed, says so.
+ * The engine makes a waiting reset when its run has ended and nothing tells this page, so the list is read again when the
+ * window is focused again (whatever the age of the last read) and after a reset is made from the page. It is not read on a timer.
+ */
 export function ResetsMade({ runId }: { runId: string }) {
   const { ep } = useApp();
   const allowed = useCan('run:read');
@@ -402,6 +508,7 @@ export function ResetsMade({ runId }: { runId: string }) {
     queryKey: ['run', runId, 'resets', namespace ?? ''],
     queryFn: ({ signal }) => ep.runResets(runId, signal),
     enabled: allowed,
+    refetchOnWindowFocus: 'always',
   });
   if (!allowed) return null;
   if (query.isError) {
@@ -419,7 +526,7 @@ export function ResetsMade({ runId }: { runId: string }) {
           <li key={reset.resetId}>
             {reset.newRunId ? <Link to={path`/runs/${reset.newRunId}`}>A run reset to point {reset.sequence}</Link> : <>A reset to point {reset.sequence}</>}{' '}
             <span className="hint">
-              ({reset.state.toLowerCase().replace('_', ' ')}
+              ({stateWords(reset)}
               {reset.createdAt ? `, ${formatLocal(reset.createdAt)}` : ''})
             </span>
             {(reset.reapplyReport ?? []).length > 0 ? (

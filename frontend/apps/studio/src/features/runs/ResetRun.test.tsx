@@ -1,7 +1,8 @@
-import { screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { useLocation } from 'react-router';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/render';
 import type { Routes } from '../../../test/render';
 import { createApp } from '../../app/context';
@@ -32,6 +33,12 @@ function planAt(sequence: number) {
 }
 
 const RESET = { resetId: 'reset-1', sourceRunId: 'run-1', sequence: 5, state: 'CREATED', failureReason: null, newRunId: 'run-2', reapplyReport: [], createdAt: '2026-11-06T10:05:00Z' };
+/** A reset asked for on a run that has not ended: the source is being cancelled and there is no new run yet. */
+const PENDING = { ...RESET, state: 'PENDING_SOURCE', newRunId: null };
+const FAILED = { ...RESET, state: 'FAILED', newRunId: null, failureReason: 'BOUNDARY_NO_LONGER_ELIGIBLE' };
+
+const CANCEL = 'Cancel and reset to a point…';
+const CONFIRM_CANCEL = 'Confirm: cancel the run and reset it when it ends';
 
 function json(body: unknown, status: number) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -41,7 +48,21 @@ function Where() {
   return <p data-testid="where">{useLocation().pathname}</p>;
 }
 
-async function mount({ permissions = ['run:operate', 'run:start', 'run:read'], status = 'SUCCEEDED', businessId, routes = {}, holdPreview = false }: { permissions?: string[]; status?: string; businessId?: string; routes?: Routes; holdPreview?: boolean } = {}) {
+/** The run as the page holds it: a button stands for the run ending while the dialog is open. */
+function Run({ status, businessId, withList }: { status: string; businessId: string | null; withList: boolean }) {
+  const [current, setCurrent] = useState(status);
+  return (
+    <>
+      <button type="button" onClick={() => setCurrent('CANCELLED')}>
+        the run ended
+      </button>
+      <ResetRun runId="run-1" status={current} businessId={businessId} />
+      {withList ? <ResetsMade runId="run-1" /> : null}
+    </>
+  );
+}
+
+async function mount({ permissions = ['run:operate', 'run:start', 'run:read'], status = 'SUCCEEDED', businessId, routes = {}, holdPreview = false, withList = false }: { permissions?: string[]; status?: string; businessId?: string; routes?: Routes; holdPreview?: boolean; withList?: boolean } = {}) {
   let release = () => {};
   const held = holdPreview ? new Promise<void>((resolve) => { release = resolve; }) : undefined;
   const platform = fakePlatform({
@@ -58,7 +79,7 @@ async function mount({ permissions = ['run:operate', 'run:start', 'run:read'], s
   app.namespace.set('payments');
   const view = renderApp(
     <>
-      <ResetRun runId="run-1" status={status} businessId={businessId ?? null} />
+      <Run status={status} businessId={businessId ?? null} withList={withList} />
       <Where />
     </>,
     { app },
@@ -71,23 +92,48 @@ async function open(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByRole('radio', { name: /The start of the run/ });
 }
 
+/** Opens the dialog of a run that has not ended. */
+async function openCancel(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: CANCEL }));
+  await screen.findByRole('radio', { name: /The start of the run/ });
+}
+
 /** The requests that changed something, in order. */
 function posts(platform: Awaited<ReturnType<typeof mount>>['platform'], suffix: string) {
   return platform.calls.filter((call) => call.method === 'POST' && call.url.split('?')[0]!.endsWith(suffix));
 }
 
 describe('Reset to a point', () => {
-  it('is offered only to someone who may operate and start runs, and only for a run that ended', async () => {
-    for (const permissions of [['run:operate'], ['run:start'], ['run:read']]) {
-      const { unmount } = await mount({ permissions });
+  it('is offered for a run that ended only to someone who may operate and start runs', async () => {
+    for (const status of ['SUCCEEDED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'COMPENSATED', 'PARTIAL', 'COMPENSATION_FAILED']) {
+      for (const permissions of [['run:operate'], ['run:start'], ['run:read']]) {
+        const { unmount } = await mount({ permissions, status });
+        expect(screen.queryByRole('button', { name: 'Reset to a point…' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: CANCEL })).not.toBeInTheDocument();
+        unmount();
+      }
+      const { unmount } = await mount({ status });
+      expect(screen.getByRole('button', { name: 'Reset to a point…' })).toBeVisible();
+      // a run that ended is never asked to be cancelled
+      expect(screen.queryByRole('button', { name: CANCEL })).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it('is offered for a run that has not ended, as cancelling it and resetting it when it ends, to the same people', async () => {
+    for (const status of ['RUNNING', 'WAITING', 'PAUSED', 'CANCELLING', 'COMPENSATING', 'MANUAL_REVIEW']) {
+      for (const permissions of [['run:operate'], ['run:start'], ['run:read'], []]) {
+        const { unmount } = await mount({ permissions, status });
+        expect(screen.queryByRole('button', { name: CANCEL })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Reset to a point…' })).not.toBeInTheDocument();
+        unmount();
+      }
+      const { unmount } = await mount({ status });
+      expect(screen.getByRole('button', { name: CANCEL })).toBeVisible();
+      // the plain offer is for a run that ended
       expect(screen.queryByRole('button', { name: 'Reset to a point…' })).not.toBeInTheDocument();
       unmount();
     }
-    const { unmount } = await mount({ status: 'RUNNING' });
-    expect(screen.queryByRole('button', { name: 'Reset to a point…' })).not.toBeInTheDocument();
-    unmount();
-    await mount();
-    expect(screen.getByRole('button', { name: 'Reset to a point…' })).toBeVisible();
   });
 
   it('names each point by where it is in the run and shows what a reset to it keeps and runs again', async () => {
@@ -99,7 +145,10 @@ describe('Reset to a point', () => {
     const plan = await screen.findByRole('region', { name: 'What the reset does' });
     expect(plan).toHaveTextContent('Kept as it was: charge');
     expect(plan).toHaveTextContent('ship (it completed in this run: running it again repeats what it did); what it does cannot be undone; it is marked high risk');
-    expect(screen.getByRole('checkbox', { name: /will run again/ })).not.toBeChecked();
+    const box = screen.getByRole('checkbox', { name: /will run again/ });
+    expect(box).not.toBeChecked();
+    // the explanation of the cancelling form is not pointed at when there is none
+    expect(box).not.toHaveAttribute('aria-describedby');
   });
 
   it('forgets what was acknowledged for a point when another is chosen', async () => {
@@ -255,6 +304,274 @@ describe('Reset to a point', () => {
   });
 });
 
+/** A platform that has the reset made by the answer given: the list of the register is empty until then. */
+function register(answer: unknown) {
+  let made = false;
+  return {
+    'POST /runs/run-1/resets': () => {
+      made = true;
+      return json(answer, 202);
+    },
+    'GET /runs/run-1/resets': () => ({ items: made ? [answer] : [] }),
+  };
+}
+
+describe('Cancel the run and reset it when it ends', () => {
+  /** Opens the dialog of a run that has not ended and gets it ready to send: a point, its plan and a reason. */
+  async function ready(user: ReturnType<typeof userEvent.setup>, point: RegExp = /After step ship/) {
+    await openCancel(user);
+    await user.click(screen.getByRole('radio', { name: point }));
+    await screen.findByRole('region', { name: 'What the reset does' });
+    await user.type(screen.getByLabelText('Reason'), REASON);
+  }
+  /** As above, and the acknowledgement of the steps that run again given. */
+  async function readyAcknowledged(user: ReturnType<typeof userEvent.setup>) {
+    await ready(user);
+    await user.click(screen.getByRole('checkbox', { name: /before this run ends/ }));
+  }
+  const confirm = () => screen.getByRole('button', { name: CONFIRM_CANCEL });
+
+  it('says plainly that the run is cancelled and that the new run is made when it has ended', async () => {
+    const { user } = await mount({ status: 'RUNNING' });
+    await openCancel(user);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Cancel the run and reset it when it ends' })).toBeVisible();
+    expect(dialog).toHaveTextContent('This run has not ended. Confirming cancels it, in the ordinary way.');
+    expect(dialog).toHaveTextContent('The new run is made once it has ended; if the reset can no longer be made by then, it fails and the list of resets made from this run says why.');
+    expect(within(dialog).getByRole('button', { name: CONFIRM_CANCEL })).toBeVisible();
+    // the run stays as it is only in the plain reset
+    expect(dialog).not.toHaveTextContent('This run stays as it is.');
+    expect(within(dialog).queryByRole('button', { name: 'Confirm: reset the run' })).not.toBeInTheDocument();
+    // "Cancel" next to a button that cancels the run would be read as cancelling the run
+    expect(within(dialog).queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Do not cancel the run' }));
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+  });
+
+  it('keeps the plain dialog, with no talk of cancelling, for a run that ended', async () => {
+    const { user } = await mount({ status: 'SUCCEEDED' });
+    await open(user);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Reset to a point' })).toBeVisible();
+    expect(dialog).toHaveTextContent('This run stays as it is.');
+    expect(dialog).not.toHaveTextContent(/has not ended|cancels it/);
+    expect(within(dialog).getByRole('button', { name: 'Confirm: reset the run' })).toBeVisible();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeVisible();
+  });
+
+  it('asks for the acknowledgement whatever the plan says, because it cannot know what will complete, and sends it with the cancellation', async () => {
+    const { user, platform } = await mount({ status: 'RUNNING' });
+    // at `ship` the plan says nothing runs again
+    await ready(user);
+    expect(screen.getByRole('region', { name: 'What the reset does' })).toHaveTextContent('Runs again: nothing');
+    const box = screen.getByRole('checkbox', { name: /including any that complete before this run ends/ });
+    expect(box).not.toBeChecked();
+    expect(screen.getByText(/The Studio cannot tell which steps will complete while the run is being cancelled/)).toBeVisible();
+    await user.click(confirm());
+    expect(await screen.findByText('Confirm that you know steps may run again.')).toBeVisible();
+    expect(posts(platform, '/resets')).toHaveLength(0);
+    await user.click(box);
+    await user.click(confirm());
+    await waitFor(() => expect(posts(platform, '/resets')).toHaveLength(1));
+    const sent = posts(platform, '/resets')[0]!;
+    expect(JSON.parse(sent.init.body as string)).toEqual({ sequence: 9, reason: REASON, acknowledgeReexecution: true, sourcePolicy: 'CANCEL_SOURCE' });
+    expect(new Headers(sent.init.headers).get('Idempotency-Key')).toBeTruthy();
+    // the plan is read as it is for any reset: the policy is not part of what is previewed
+    expect(JSON.parse(posts(platform, '/reset-previews')[0]!.init.body as string)).toEqual({ sequence: 9 });
+  });
+
+  it('explains why it asks, to someone using a screen reader as well, and not before the plan of the point has been read', async () => {
+    const { user, release } = await mount({ status: 'RUNNING', holdPreview: true });
+    await openCancel(user);
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('radio', { name: /After step ship/ }));
+    expect(await screen.findByText('Reading what the reset would do…')).toBeVisible();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    release();
+    const box = await screen.findByRole('checkbox', { name: /before this run ends/ });
+    expect(box).toHaveAccessibleDescription('The Studio cannot tell which steps will complete while the run is being cancelled, so this is always asked.');
+  });
+
+  it('asks once, not twice, when the plan asks for the acknowledgement as well', async () => {
+    const { user, platform } = await mount({ status: 'RUNNING' });
+    await ready(user, /After step charge/);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1);
+    await user.click(screen.getByRole('checkbox', { name: /including any that complete before this run ends/ }));
+    await user.click(confirm());
+    await waitFor(() => expect(posts(platform, '/resets')).toHaveLength(1));
+    expect(JSON.parse(posts(platform, '/resets')[0]!.init.body as string)).toEqual({ sequence: 5, reason: REASON, acknowledgeReexecution: true, sourcePolicy: 'CANCEL_SOURCE' });
+  });
+
+  it('forgets the acknowledgement when another point is chosen, as the plain reset does', async () => {
+    const { user, platform } = await mount({ status: 'RUNNING' });
+    await readyAcknowledged(user);
+    await user.click(screen.getByRole('radio', { name: /The start of the run/ }));
+    await waitFor(() => expect(posts(platform, '/reset-previews')).toHaveLength(2));
+    expect(await screen.findByRole('checkbox', { name: /before this run ends/ })).not.toBeChecked();
+  });
+
+  it('never sends the source policy for a run that ended, so an older platform never sees the field', async () => {
+    const { user, platform } = await mount({ status: 'SUCCEEDED' });
+    await open(user);
+    await user.click(screen.getByRole('radio', { name: /After step ship/ }));
+    await screen.findByRole('region', { name: 'What the reset does' });
+    await user.type(screen.getByLabelText('Reason'), REASON);
+    await user.click(screen.getByRole('button', { name: 'Confirm: reset the run' }));
+    await waitFor(() => expect(posts(platform, '/resets')).toHaveLength(1));
+    const body = JSON.parse(posts(platform, '/resets')[0]!.init.body as string) as object;
+    expect(body).not.toHaveProperty('sourcePolicy');
+    // and, for a run that ended, asks for no acknowledgement the plan did not ask for
+    expect(body).toHaveProperty('acknowledgeReexecution', false);
+  });
+
+  it('does not take the person anywhere when the run is only being cancelled, and says what happens next', async () => {
+    const { user, platform } = await mount({ status: 'RUNNING', withList: true, routes: register(PENDING) });
+    await readyAcknowledged(user);
+    await user.click(confirm());
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(dialog).toHaveTextContent('The run is being cancelled.'));
+    expect(dialog).toHaveTextContent('The new run is made once it has ended; you will find it under Resets made from this run. If the reset can no longer be made by then, that list says why.');
+    // there is no new run to go to, and the person is not told one was made
+    expect(screen.getByTestId('where')).toHaveTextContent('/');
+    expect(within(dialog).queryByRole('button', { name: 'Open the new run' })).not.toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent('The reset was made');
+    expect(document.querySelector('[aria-live="polite"]')).toHaveTextContent('The run is being cancelled. The new run is made when it has ended.');
+    // the register is read again, and shows the reset as waiting
+    const list = await screen.findByRole('region', { name: 'Resets made from this run' });
+    expect(list).toHaveTextContent('A reset to point 5');
+    expect(list).toHaveTextContent('waiting for this run to end');
+    expect(platform.calls.filter((call) => call.method === 'GET' && call.url.endsWith('/runs/run-1/resets'))).toHaveLength(2);
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByText('The run is being cancelled.')).not.toBeInTheDocument();
+    expect(screen.getByTestId('where')).toHaveTextContent('/');
+  });
+
+  it('goes to the new run when the run had ended by the time the request was answered', async () => {
+    const { user } = await mount({ status: 'RUNNING', routes: register(RESET) });
+    await readyAcknowledged(user);
+    await user.click(confirm());
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/runs/run-2'));
+    expect(screen.queryByText('The run is being cancelled.')).not.toBeInTheDocument();
+  });
+
+  it('goes to the new run for an answer in a state it does not know, when the answer has a run', async () => {
+    const { user } = await mount({ status: 'RUNNING', routes: register({ ...RESET, state: 'SOMETHING_NEWER' }) });
+    await readyAcknowledged(user);
+    await user.click(confirm());
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/runs/run-2'));
+    expect(screen.queryByText('The run is being cancelled.')).not.toBeInTheDocument();
+  });
+
+  it('says why in words when the answer is a reset that failed, and shows a reason it does not know as written', async () => {
+    for (const [failureReason, words] of [
+      ['BOUNDARY_NO_LONGER_ELIGIBLE', 'the point is not one the run could be reset to once it had ended'],
+      ['SOMETHING_NEWER', 'SOMETHING_NEWER'],
+    ] as const) {
+      const { user, unmount } = await mount({ status: 'RUNNING', routes: register({ ...FAILED, failureReason }) });
+      await readyAcknowledged(user);
+      await user.click(confirm());
+      const dialog = await screen.findByRole('dialog');
+      await waitFor(() => expect(dialog).toHaveTextContent(`The reset could not be made: ${words}.`));
+      expect(screen.getByTestId('where')).toHaveTextContent('/');
+      expect(dialog).not.toHaveTextContent('The reset was made');
+      expect(within(dialog).queryByRole('button', { name: 'Open the new run' })).not.toBeInTheDocument();
+      await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+      expect(screen.queryByText(/The reset could not be made: /)).not.toBeInTheDocument();
+      // what is announced is the short sentence, and it is announced
+      expect(document.querySelector('[aria-live="polite"]')).toHaveTextContent('The reset could not be made.');
+      unmount();
+    }
+  });
+
+  it('says in words that the platform has not enabled it, tells the person to wait for the run to end, and stays open', async () => {
+    const { user } = await mount({
+      status: 'RUNNING',
+      routes: {
+        'POST /runs/run-1/resets': () =>
+          json({ code: 'VALIDATION_FAILED', message: 'The reset cannot be made.', retryable: false, remediation: 'Ask for `sourcePolicy: REQUIRE_TERMINAL`.', details: { reason: 'RESET_CANCEL_SOURCE_NOT_AVAILABLE' } }, 422),
+      },
+    });
+    await readyAcknowledged(user);
+    await user.click(confirm());
+    const alert = await screen.findByText(/This platform has not been set up to cancel a run for a reset\./);
+    expect(alert).toHaveTextContent('Wait for the run to end, then reset it.');
+    expect(alert).toHaveTextContent('RESET_CANCEL_SOURCE_NOT_AVAILABLE');
+    // the words are the Studio's: the platform's advice is for someone who writes requests
+    expect(alert).not.toHaveTextContent('REQUIRE_TERMINAL');
+    expect(alert).not.toHaveTextContent('The reset cannot be made.');
+    expect(screen.getByRole('radio', { name: /After step ship/ })).toBeVisible();
+    expect(screen.getByTestId('where')).toHaveTextContent('/');
+  });
+
+  it('says in words that the namespace has as many resets waiting as it may, and stays open', async () => {
+    const { user } = await mount({
+      status: 'RUNNING',
+      routes: { 'POST /runs/run-1/resets': () => json({ code: 'QUOTA_EXCEEDED', message: 'Too many.', retryable: true, traceId: 'c'.repeat(32), details: { reason: 'PENDING_RESET_LIMIT', limit: 16 } }, 429) },
+    });
+    await readyAcknowledged(user);
+    await user.click(confirm());
+    const alert = await screen.findByText(/This namespace already has as many resets waiting for a run to end as it may\./);
+    expect(alert).toHaveTextContent('Wait until one of them has been made or has failed, then try again.');
+    expect(alert).toHaveTextContent('QUOTA_EXCEEDED');
+    expect(alert).toHaveTextContent('PENDING_RESET_LIMIT');
+    // what a person quotes to whoever runs the platform is kept
+    expect(alert).toHaveTextContent(`Trace ${'c'.repeat(32)}`);
+    expect(alert).not.toHaveTextContent('Too many.');
+    expect(screen.getByRole('radio', { name: /After step ship/ })).toBeVisible();
+  });
+
+  it('shows any other refusal as the platform worded it', async () => {
+    const { user } = await mount({
+      status: 'RUNNING',
+      routes: { 'POST /runs/run-1/resets': () => json({ code: 'VALIDATION_FAILED', message: 'That point cannot be used.', retryable: false, details: { reason: 'RESET_POINT_NOT_ELIGIBLE' } }, 422) },
+    });
+    await readyAcknowledged(user);
+    await user.click(confirm());
+    expect(await screen.findByText(/That point cannot be used\./)).toBeVisible();
+    expect(screen.queryByText(/has not been set up to cancel/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/as many resets waiting/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the key of an identical request sent again, with the policy in it, and changes it when the request changes', async () => {
+    const { user, platform } = await mount({ status: 'RUNNING', routes: { 'POST /runs/run-1/resets': () => json({ code: 'UNAVAILABLE', message: 'Try again.', retryable: true }, 503) } });
+    await readyAcknowledged(user);
+    await user.click(confirm());
+    await screen.findByText(/Try again\./);
+    await user.click(confirm());
+    await waitFor(() => expect(posts(platform, '/resets')).toHaveLength(2));
+    const key = (index: number) => new Headers(posts(platform, '/resets')[index]!.init.headers).get('Idempotency-Key');
+    const body = (index: number) => JSON.parse(posts(platform, '/resets')[index]!.init.body as string) as Record<string, unknown>;
+    expect(key(0)).toBeTruthy();
+    expect(key(1)).toBe(key(0));
+    expect(body(1)).toEqual(body(0));
+    expect(body(1)['sourcePolicy']).toBe('CANCEL_SOURCE');
+    await user.type(screen.getByLabelText('Reason'), ' Again.');
+    await user.click(confirm());
+    await waitFor(() => expect(posts(platform, '/resets')).toHaveLength(3));
+    expect(key(2)).not.toBe(key(0));
+    expect(body(2)['sourcePolicy']).toBe('CANCEL_SOURCE');
+  });
+
+  it('keeps asking for the cancellation when the run ends while the dialog is open, so a retry after a lost answer is the same request', async () => {
+    const { user, platform } = await mount({ status: 'RUNNING', routes: { 'POST /runs/run-1/resets': () => json({ code: 'UNAVAILABLE', message: 'Try again.', retryable: true }, 503) } });
+    await readyAcknowledged(user);
+    await user.click(confirm());
+    await screen.findByText(/Try again\./);
+    // the cancellation the first request asked for has ended the run
+    await user.click(screen.getByRole('button', { name: 'the run ended' }));
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Cancel the run and reset it when it ends' })).toBeVisible();
+    await user.click(confirm());
+    await waitFor(() => expect(posts(platform, '/resets')).toHaveLength(2));
+    const key = (index: number) => new Headers(posts(platform, '/resets')[index]!.init.headers).get('Idempotency-Key');
+    expect(key(1)).toBe(key(0));
+    expect(JSON.parse(posts(platform, '/resets')[1]!.init.body as string)).toEqual(JSON.parse(posts(platform, '/resets')[0]!.init.body as string));
+    // once the dialog is closed, the offer is the one for a run that ended
+    await user.click(screen.getByRole('button', { name: 'Do not cancel the run' }));
+    expect(screen.getByRole('button', { name: 'Reset to a point…' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: CANCEL })).not.toBeInTheDocument();
+  });
+});
+
 describe('Resets made from a run', () => {
   async function list({ permissions = ['run:read'], items = [RESET], answer }: { permissions?: string[]; items?: unknown[]; answer?: () => Response } = {}) {
     const platform = fakePlatform({ 'GET /runs/run-1/resets': answer ?? (() => ({ items })) });
@@ -289,6 +606,80 @@ describe('Resets made from a run', () => {
     const denied = await list({ permissions: [] });
     expect(denied.platform.calls).toHaveLength(0);
     expect(screen.queryByRole('region')).not.toBeInTheDocument();
+  });
+
+  it('shows a reset that waits for its run to end as waiting, a reset that failed with why, and links only the one that made a run', async () => {
+    await list({ items: [PENDING, { ...FAILED, resetId: 'reset-2', sequence: 3 }, { ...RESET, resetId: 'reset-3', sequence: 1 }] });
+    const section = await screen.findByRole('region', { name: 'Resets made from this run' });
+    const [waiting, failed, created] = Array.from(section.querySelectorAll('li')) as HTMLElement[];
+    expect(waiting).toHaveTextContent('A reset to point 5 (waiting for this run to end');
+    expect(within(waiting!).queryByRole('link')).not.toBeInTheDocument();
+    expect(failed).toHaveTextContent('A reset to point 3 (could not be made: the point is not one the run could be reset to once it had ended');
+    expect(within(failed!).queryByRole('link')).not.toBeInTheDocument();
+    expect(created).toHaveTextContent('A run reset to point 1 (created');
+    expect(within(created!).getByRole('link', { name: 'A run reset to point 1' })).toHaveAttribute('href', '/runs/run-2');
+    // the state is said by words, not by the name the platform gives it
+    expect(section).not.toHaveTextContent(/PENDING|pending source|FAILED/);
+  });
+
+  it('words every reason a reset can fail for, and shows a name it does not know as written', async () => {
+    const reasons: [string | null, string][] = [
+      ['BOUNDARY_NO_LONGER_ELIGIBLE', 'the point is not one the run could be reset to once it had ended'],
+      ['ADMISSION_REFUSED', 'a quota or the platform refused the new run'],
+      ['BUSINESS_ID_IN_USE', 'another open run holds the business identifier'],
+      ['AUTHORITY_REVOKED', 'the person who asked no longer has the permissions a reset needs'],
+      ['REEXECUTION_NOT_ACKNOWLEDGED', 'steps completed after the point and the request did not say they may run again'],
+      ['REAPPLY_TOO_MANY', 'there were too many signals and updates to deliver again'],
+      ['CONCURRENCY_PERMIT_UNAVAILABLE', 'the limit on runs at once left no room for the new run'],
+      ['RUN_PURGED', 'the run was deleted before the new run could be made'],
+      ['SOMETHING_NEWER', 'SOMETHING_NEWER'],
+      // a name that is also a property of every object is still only a name
+      ['constructor', 'constructor'],
+      ['x'.repeat(200), 'x'.repeat(60) + '…'],
+      [null, 'no reason was recorded'],
+      ['', 'no reason was recorded'],
+    ];
+    await list({ items: reasons.map(([failureReason], index) => ({ ...FAILED, resetId: `reset-${index}`, sequence: index + 1, failureReason })) });
+    const section = await screen.findByRole('region', { name: 'Resets made from this run' });
+    const items = Array.from(section.querySelectorAll('li')).map((item) => item.querySelector('.hint')?.textContent ?? '');
+    expect(items).toHaveLength(reasons.length);
+    reasons.forEach(([, words], index) => expect(items[index]).toMatch(new RegExp(`^\\(could not be made: ${words}, `)));
+  });
+
+  it('shows a state it does not know as written, and not as an error', async () => {
+    await list({ items: [{ ...RESET, state: 'SNOOZED', newRunId: null }] });
+    expect(await screen.findByRole('region', { name: 'Resets made from this run' })).toHaveTextContent('A reset to point 5 (SNOOZED');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('reads the list again when the window is focused again, even right after it was read, and shows what the engine made meanwhile', async () => {
+    let items: unknown[] = [PENDING];
+    const { platform } = await list({ answer: () => json({ items }, 200) });
+    expect(await screen.findByText(/waiting for this run to end/)).toBeVisible();
+    expect(platform.calls).toHaveLength(1);
+    items = [RESET];
+    fireEvent(document, new Event('visibilitychange', { bubbles: true }));
+    expect(await screen.findByRole('link', { name: 'A run reset to point 5' })).toHaveAttribute('href', '/runs/run-2');
+    expect(platform.calls).toHaveLength(2);
+    expect(screen.queryByText(/waiting for this run to end/)).not.toBeInTheDocument();
+  });
+
+  it('does not read the list on a timer', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { platform, app } = await list({ items: [PENDING] });
+      expect(await screen.findByText(/waiting for this run to end/)).toBeVisible();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+      });
+      expect(platform.calls).toHaveLength(1);
+      // nor is a timer asked for: the register is read again when the person looks, not while nobody does
+      const observers = app.queries.getQueryCache().find({ queryKey: ['run', 'run-1', 'resets', 'payments'] })?.observers ?? [];
+      expect(observers).toHaveLength(1);
+      expect(observers[0]!.options.refetchInterval).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

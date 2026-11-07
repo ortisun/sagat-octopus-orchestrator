@@ -35,6 +35,8 @@ export type ResetWrite = Omit<ResetRequest, 'reapply' | 'sourcePolicy' | 'busine
   acknowledgeReexecution?: boolean;
   /** What is delivered again after the point; absent is `NONE`. */
   reapply?: ReapplyPolicy;
+  /** What to do with a run that has not ended; absent is `REQUIRE_TERMINAL` (the run is refused), and a run that ended is reset whatever it says. */
+  sourcePolicy?: ResetRequest['sourcePolicy'];
 };
 export type BatchJob = Schemas['BatchJob'];
 export type BatchItem = Schemas['BatchItem'];
