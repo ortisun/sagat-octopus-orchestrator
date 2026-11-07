@@ -52,19 +52,30 @@ fn series(page: &str, name: &str, labels: &[(&str, &str)]) -> Option<f64> {
         .and_then(|value| value.parse().ok())
 }
 
+/// How long a step may be asked again for a job that has not moved. A selecting job waits for the oldest
+/// open transaction of the whole server, not of its database, so a test running beside this one can hold
+/// it back for a while: the bound is a time, not a number of steps (50 or 400 of them pass in a few
+/// milliseconds, as in the CI run that failed `254170ce`'s two waits).
+const GIVE_UP_AFTER: StdDuration = StdDuration::from_secs(120);
+
 /// Steps the job, a second at a time, until it has the state `until`.
 async fn drive(f: &Fixture, id: uuid::Uuid, until: JobState) {
     let exec = executor(f);
     let record = job(f, id).await;
-    for _ in 0..400 {
+    let give_up = std::time::Instant::now() + GIVE_UP_AFTER;
+    loop {
         if exec.step(&due(&record), None).await.expect("step") != Stepped::Acted {
             f.clock.advance(Duration::seconds(1));
+            tokio::time::sleep(StdDuration::from_millis(20)).await;
         }
         if job(f, id).await.state == until {
             return;
         }
+        assert!(
+            std::time::Instant::now() < give_up,
+            "the job never reached {until:?}"
+        );
     }
-    panic!("the job never reached {until:?}");
 }
 
 /// No label on a series of the passes is anything but a closed set: no tenant, schedule, job or run.
@@ -208,12 +219,18 @@ fn the_items_a_cancelled_job_marks_are_counted_as_cancelled_and_the_one_that_ran
         let job_ = create(&f, write(Action::Cancel, everything()), "counted-cancelled").await;
         // the selection, then one item
         let exec = executor(&f);
-        for _ in 0..50 {
+        let give_up = std::time::Instant::now() + GIVE_UP_AFTER;
+        loop {
             exec.step(&due(&job_), None).await.expect("step");
-            if job(&f, job_.id).await.counts.succeeded == 1 {
+            if job(&f, job_.id).await.counts.succeeded >= 1 {
                 break;
             }
+            assert!(
+                std::time::Instant::now() < give_up,
+                "the first item never ran"
+            );
             f.clock.advance(Duration::seconds(1));
+            tokio::time::sleep(StdDuration::from_millis(20)).await;
         }
         assert_eq!(job(&f, job_.id).await.counts.succeeded, 1);
         service(&f)
