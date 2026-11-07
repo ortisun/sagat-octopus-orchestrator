@@ -296,9 +296,12 @@ mod tests {
         }
 
         async fn delete(&self, attempt: &str) -> (u16, Vec<u8>, String) {
+            // The method is a value, not the start of the literal: the runtime-privilege audit of the stores reads every string that
+            // starts like a SQL statement, and `DELETE /v1/attempts/{attempt}` is one to it (found by CI on the pull request).
+            let method = "DELETE";
             self.send(
                 format!(
-                    "DELETE /v1/attempts/{attempt} HTTP/1.1\r\nHost: node\r\nConnection: close\r\n\r\n"
+                    "{method} /v1/attempts/{attempt} HTTP/1.1\r\nHost: node\r\nConnection: close\r\n\r\n"
                 )
                 .as_bytes(),
             )
