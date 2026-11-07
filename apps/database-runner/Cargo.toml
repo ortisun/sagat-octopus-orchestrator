@@ -20,6 +20,7 @@ sagat-api-grpc.workspace = true
 sagat-application.workspace = true
 sagat-domain.workspace = true
 sagat-infra-database.workspace = true
+sagat-infra-lake.workspace = true
 sagat-infra-secrets.workspace = true
 sagat-telemetry.workspace = true
 serde.workspace = true

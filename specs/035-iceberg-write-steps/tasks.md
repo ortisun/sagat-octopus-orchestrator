@@ -751,6 +751,10 @@ three conditions pass.
   *2026-11-07, fifteenth step (documentation only), left unticked (D035-123, G035-068):* the rest of this task is planned in four slices
   (settings, prepare, driver, shell) with the failure mapping, the intersection of limits and the fail-closed relay allowance decided; the
   per-record size limit turned out to be enforced nowhere (G035-068).
+
+  *2026-11-07, sixteenth step, left unticked (D035-124):* slice A of that plan: the `lake` section of the runner's configuration
+  (`apps/database-runner/src/lake/settings.rs`), validated whole at start, absent meaning off, an empty relay allowance refused outside
+  development. Nothing serves a lake activity yet.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.

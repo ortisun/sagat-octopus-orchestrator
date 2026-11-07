@@ -5734,6 +5734,7 @@ dependencies = [
  "sagat-application",
  "sagat-domain",
  "sagat-infra-database",
+ "sagat-infra-lake",
  "sagat-infra-secrets",
  "sagat-telemetry",
  "serde",

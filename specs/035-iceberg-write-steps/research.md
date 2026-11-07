@@ -2508,6 +2508,25 @@ The other fixes were wording:
   step's, and now in the attempt input, but staging counts the **total** bytes and the number of records, and the host's `maxDecodedBytes` is a
   total too. A record of 1 GiB inside a 2 GiB total passes every check. *Exit condition:* the staging of inline records and of NDJSON blobs refuses a
   line over the limit (`ICEBERG_LIMIT_EXCEEDED`), with a test at the edge; a Parquet row is not parsed by the runner and stays with the host's total.
+- **D035-124 — The `lake` section of the runner's configuration (slice A of D035-123).** **Decided by: delegate**. It changes `Cargo.lock` by one
+  line (the edge `sagat-database-runner` → `sagat-infra-lake`, which this slice uses for the slot constants).
+  - *What.* `apps/database-runner/src/lake/settings.rs`: `LakeSettings` (the file's section, `deny_unknown_fields`) and `Settings` (validated and
+    parsed), wired into `Config` as an optional member that `Config::validate` checks whole. Absent is off. What a deployment must say has no
+    default (`workRoot`, `sandboxSocket`, `sandboxUid`, `slots`, `relayAllowCidrs`); the numbers have the contract's defaults and are bounded on
+    both sides.
+  - *Decisions.* Paths are absolute and may not climb. The sandbox runner's user is neither root nor one of the containers' users (the lake range,
+    both edges tested). `slots` is 1 to 4096. **`relayAllowCidrs` is required and non-empty outside development** (an empty list reaches nothing,
+    so a configuration that left it out could not work and is refused instead of being left to fail at the first attempt); `0.0.0.0/0` and
+    `::/0` are an explicit, valid answer (the relay always denies loopback, link-local, metadata and platform state endpoints), and at most 256
+    ranges. A bare address is not a range. A section that is not valid stops the runner at start.
+  - *Evidence.* 9 unit tests in `settings.rs` and one in `config.rs` (absent means off; present is validated whole; an unknown member, a bad
+    value and an empty allowance stop the runner; development allows the empty allowance); `database-runner` library tests: 35 passed;
+    `cargo clippy -p sagat-database-runner --all-targets --locked -- -D warnings` clean. **Nine hand mutations, all killed** (the section not
+    validated by `Config`, the empty allowance taken, a path that climbs, each edge of the lake users, root as the sandbox user, zero slots, too
+    many ranges, a threshold above the ceiling). The runbook `docs/runbooks/database-runner.md` documents the section and says plainly that
+    nothing serves lake activities yet.
+  - *Not done.* Slices B, C and D of D035-123 (prepare, driver, shell). Whether `workRoot` exists and is a directory and whether the socket answers is
+    checked when the lake runner starts serving, not by this validation (it is pure).
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.
