@@ -26,6 +26,7 @@ use sagat_infra_lake::attempt::{
 use sagat_infra_lake::control::ControlConfig;
 use sagat_infra_lake::protocol::RelayToken;
 use sagat_infra_lake::relay::{Connector, Endpoint, EndpointPolicy, Relay, RelayConfig, Resolver};
+use sagat_infra_lake::sandbox_api::{Class, Reason};
 use sagat_infra_lake::staging::{AttemptDir, StagingLimits};
 use sagat_infra_lake::supervisor::{Disposition, Ended};
 use serde_json::{Value, json};
@@ -128,6 +129,8 @@ struct Scripted {
     memory_killed: bool,
     starts: AtomicUsize,
     kills: AtomicUsize,
+    /// What the sandbox was asked, in order.
+    asked: Mutex<Vec<StartRequest>>,
     host: Mutex<Option<JoinHandle<()>>>,
     /// What the host read as its request line.
     request: Arc<Mutex<Vec<u8>>>,
@@ -151,6 +154,7 @@ impl Scripted {
             memory_killed: false,
             starts: AtomicUsize::new(0),
             kills: AtomicUsize::new(0),
+            asked: Mutex::new(Vec::new()),
             host: Mutex::new(None),
             request: Arc::default(),
             has_request: Arc::default(),
@@ -236,6 +240,7 @@ async fn host(
 impl LakeSandbox for Scripted {
     async fn start(&self, request: &StartRequest) -> Result<(), SandboxError> {
         self.starts.fetch_add(1, Ordering::SeqCst);
+        self.asked.lock().unwrap().push(request.clone());
         if let Some(error) = self.start_fails {
             return Err(error);
         }
@@ -338,6 +343,8 @@ fn plan(deadline_ms: u64, host_start_ms: u64, silence_ms: u64) -> Plan<'static> 
     Plan {
         request: REQUEST,
         deadline: Instant::now() + Duration::from_millis(deadline_ms),
+        slot: 1,
+        class: Class::Small,
         host_start: Duration::from_millis(host_start_ms),
         control: control(silence_ms),
         kill_limit: Duration::from_secs(30),
@@ -611,7 +618,10 @@ async fn a_container_that_is_gone_before_it_connected_is_not_waited_for() {
 
 #[tokio::test]
 async fn a_sandbox_that_cannot_start_the_container_is_unavailable_and_nothing_is_sent() {
-    for error in [SandboxError::Unavailable, SandboxError::Refused] {
+    for error in [
+        SandboxError::Unavailable,
+        SandboxError::Refused(Reason::Ceiling),
+    ] {
         let world = world();
         let mut sandbox = Scripted::new(world.work.path(), Script::NeverConnects);
         sandbox.start_fails = Some(error);
@@ -1100,4 +1110,71 @@ async fn the_outcome_shows_no_text_of_the_hosts_and_no_secret() {
         Disposition::Fail(failure) => assert_eq!(failure.column, None),
         other => panic!("{other:?}"),
     }
+}
+
+/// The sandbox is asked for the slot and the class of the plan and for nothing else: the class is the only thing of the budget
+/// that the lake runner chooses, and the slot is the user the container runs as. That the relay admits **that** user is the
+/// driver's to build (`with_peer_uid(uid_for_slot(slot))`) and its to test: this case, whose host connects as the user of the
+/// test, does not show it.
+#[tokio::test]
+async fn the_sandbox_is_asked_for_the_slot_and_the_class_of_the_plan() {
+    let world = world();
+    let sandbox = Scripted::new(world.work.path(), Script::ExitsAtOnce);
+    let plan = Plan {
+        slot: 4095,
+        class: Class::Large,
+        ..easy()
+    };
+    let _ = run_attempt(&sandbox, &world.attempt, relay(), &plan, &signals(), || {}).await;
+    let asked = sandbox.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].slot, 4095);
+    assert_eq!(asked[0].class, Class::Large);
+    assert_eq!(asked[0].attempt_id, world.attempt.id());
+    assert!(asked[0].deadline > Duration::ZERO);
+}
+
+/// A refusal of the sandbox keeps its reason in the error, for the driver's metrics and the failure's detail, and ends the
+/// attempt as the sandbox being unavailable (retryable) whatever the reason.
+#[tokio::test]
+async fn a_refusal_of_the_sandbox_keeps_its_reason_and_ends_the_attempt_as_unavailable() {
+    for reason in [
+        Reason::Ceiling,
+        Reason::Slot,
+        Reason::Class,
+        Reason::Deadline,
+        Reason::Directory,
+    ] {
+        let error = SandboxError::Refused(reason);
+        assert!(error.to_string().contains(reason.as_str()), "{error}");
+        let world = world();
+        let mut sandbox = Scripted::new(world.work.path(), Script::NeverConnects);
+        sandbox.start_fails = Some(error);
+        let outcome = run_attempt(
+            &sandbox,
+            &world.attempt,
+            relay(),
+            &easy(),
+            &signals(),
+            || {},
+        )
+        .await;
+        assert_eq!(outcome.ended, Ended::SandboxUnavailable, "{reason:?}");
+        assert_eq!(outcome.sandbox_refusal, Some(reason), "{reason:?}");
+    }
+    // an outage is not a refusal
+    let world = world();
+    let mut sandbox = Scripted::new(world.work.path(), Script::NeverConnects);
+    sandbox.start_fails = Some(SandboxError::Unavailable);
+    let outcome = run_attempt(
+        &sandbox,
+        &world.attempt,
+        relay(),
+        &easy(),
+        &signals(),
+        || {},
+    )
+    .await;
+    assert_eq!(outcome.ended, Ended::SandboxUnavailable);
+    assert_eq!(outcome.sandbox_refusal, None);
 }

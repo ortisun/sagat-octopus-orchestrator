@@ -535,6 +535,19 @@ async fn a_stage_that_is_dropped_midway_leaves_no_file_and_the_name_can_be_used_
 }
 
 #[test]
+fn a_kept_attempt_leaves_its_directory_where_it_is_and_says_where() {
+    let work = tempfile::tempdir().unwrap();
+    let mut attempt = made(work.path(), roomy());
+    let kept = attempt.keep();
+    assert_eq!(kept, work.path().join(ATTEMPT));
+    drop(attempt);
+    assert!(
+        kept.join("relay.token").is_file(),
+        "keeping is not a removal, and dropping the handle after it is not one either: the container may still be using it"
+    );
+}
+
+#[test]
 fn dropping_the_attempt_removes_the_directory_too() {
     let work = tempfile::tempdir().unwrap();
     let dir = {

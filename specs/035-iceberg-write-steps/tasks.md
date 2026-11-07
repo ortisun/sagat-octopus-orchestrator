@@ -724,6 +724,61 @@ three conditions pass.
   *2026-11-07, tenth step, left unticked (D035-118):* "request the container" has the wire of the sandbox API: `crates/infra-lake/src/sandbox_api.rs`
   (the request, the answers, the strict readers a client reads them with) and one corpus of 76 cases that the server will read too.
   Nothing has a socket yet: the server, the client behind `LakeSandbox` and the dependency edges that select the whole CI are the next step.
+
+  *2026-11-07, eleventh step, left unticked (D035-119):* "request the container" and "fail `LAKE_SANDBOX_UNAVAILABLE` when the sandbox runner
+  is unreachable" have their server: `sandbox-runner lake` (`apps/sandbox-runner/src/lake/`) serves the API of ADR-0079 on a node-local
+  socket, and `sagat_api_http::serve_unix` serves it with the peer's user checked at accept. Reviewed by a security and a correctness
+  reviewer (a Blocker found and fixed). Not done: the client behind `LakeSandbox`, the run of the two over a real socket and a real engine,
+  and the Compose and Kubernetes shapes.
+
+  *2026-11-07, twelfth step, left unticked (D035-120):* "request the container" has its client: `SocketSandbox`
+  (`crates/infra-lake/src/sandbox_api/client.rs`) reaches the socket of D035-119 with the three calls, believes only an exact answer, and
+  is run against the real router by 19 cases and, with the node and a real Docker engine on a real socket, by 2 (`sandbox_api.rs`). A
+  refusal now reaches the report with its reason. Reviewed by a security reviewer (no Blocker, no Major). Not done: a held-up container
+  through the API against the real engine, the `database-runner` edge and `zeroize` (G035-063), the driver, and the Compose and
+  Kubernetes shapes.
+
+  *2026-11-07, thirteenth step, left unticked (D035-121):* "stream inline records, `ReadBlob` blobs and 017 results into `in/`" and "serve the
+  request line" have their input: `AttemptInput` (`crates/infra-lake/src/protocol/attempt_input.rs`), the document the lease carries (no
+  credential, no relay, no deadline), read strictly and held to one corpus of 101 cases that the server's builder (T035-056) will read too; the
+  request built from it is the fixture the host parses. A 017 result as the source is refused by name (G035-067). Not done: the builder, the
+  driver that reads it, and the contract sentence.
+
+  *2026-11-07, fourteenth step, left unticked (D035-122):* "zeroise the credentials" has what `infra-lake` could not do before
+  (G035-063): the connection's secrets, the relay token, the request body and the request line are `Zeroizing` or scrubbed, with the
+  escape-scratch residual written down. Not done: the `database-runner` → `infra-lake` edge and the driver that uses all of it.
+
+  *2026-11-07, fifteenth step (documentation only), left unticked (D035-123, G035-068):* the rest of this task is planned in four slices
+  (settings, prepare, driver, shell) with the failure mapping, the intersection of limits and the fail-closed relay allowance decided; the
+  per-record size limit turned out to be enforced nowhere (G035-068).
+
+  *2026-11-07, sixteenth step, left unticked (D035-124):* slice A of that plan: the `lake` section of the runner's configuration
+  (`apps/database-runner/src/lake/settings.rs`), validated whole at start, absent meaning off, an empty relay allowance refused outside
+  development. Nothing serves a lake activity yet.
+
+  *2026-11-07, seventeenth step, left unticked (D035-125):* "create `/work/<attempt-id>/`", "stream inline records, `ReadBlob` blobs and 017 results
+  into `in/`, checking the effective limit while streaming; going over fails `ICEBERG_LIMIT_EXCEEDED` before any container starts" and "serve the
+  request line" are joined in `prepare` (`apps/database-runner/src/lake/prepare.rs`), with the closed table of codes and nothing left on disk on any
+  refusal. Not done: the driver that runs it (slice C), the real `ReadBlob` source, and a 017 result as a source (G035-067).
+
+  *2026-11-07, eighteenth step, left unticked (D035-126):* "open the relay and request the container; serve the request line; map heartbeats to
+  lease heartbeats; kill the container on lease loss, cancellation, deadline, a missing heartbeat or `memory.max`; parse the result and rebuild the
+  receipt; zeroise the credentials and remove the directory; fail `LAKE_SANDBOX_UNAVAILABLE`" are joined in `Driver::run`
+  (`apps/database-runner/src/lake/driver.rs`), tested against a scripted host on the real relay socket. Not done: the shell that calls it with a
+  real lease (slice D): the heartbeat and report loop, the registration of the lake activities, the real `ReadBlob`, the sweep of released
+  directories and the metrics.
+
+  *2026-11-07, nineteenth step, left unticked (D035-127):* the stack was reviewed by a security and a correctness reviewer; six Majors were
+  taken, the first of them that the relay had no deny list (`relayDenyCidrs` is required outside development), then staging under the signals
+  and the step's deadline, the lease's end no longer being the attempt's, permanent sandbox refusals not being retryable, and a dropped `run` keeping
+  the directory and holding the slot. Gaps G035-069..071 register what is not fixed. Slice D must build the sandbox client with the settings' user.
+
+  *2026-11-07, twentieth step, left unticked (D035-128):* "remove the directory" has the sweep for what no attempt removed
+  (`apps/database-runner/src/lake/sweep.rs`): by age, real attempt directories only, a link never followed. Not scheduled yet (the shell).
+
+  *2026-11-07, twenty-first step, left unticked (D035-129):* "stream … `ReadBlob` blobs … into `in/`" has its source
+  (`apps/database-runner/src/lake/blobs.rs`): the blob is checked against its header, whole or an error, and a corrupt one leaves no file.
+  Not done: the call itself in an end-to-end run, and the shell that hands it to the driver.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.

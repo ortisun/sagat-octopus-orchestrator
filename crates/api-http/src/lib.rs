@@ -59,7 +59,7 @@ pub use limits::{
 };
 pub use routes::declared_operations::DeclaredOperationApiState;
 pub use routes::primitives::ApprovalApiState;
-pub use server::{HttpTlsConfig, ServerConfig, serve, serve_tls};
+pub use server::{HttpTlsConfig, ServerConfig, serve, serve_tls, serve_unix};
 
 /// Shared handler state. Cloning is cheap (a few `Arc`s).
 pub struct AppState<S, C> {

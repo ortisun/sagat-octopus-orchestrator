@@ -264,7 +264,12 @@ fn nothing_is_logged_and_the_container_is_labelled_for_the_sweep() {
         labels.get("sagat.lake.deadline").map(String::as_str),
         Some("1800000000")
     );
-    assert_eq!(labels.len(), 6);
+    // what a restarted sandbox runner adds up: the limit the container was made with, not the node's settings of today
+    assert_eq!(
+        labels.get("sagat.lake.memory").map(String::as_str),
+        Some("2147483648")
+    );
+    assert_eq!(labels.len(), 7);
 }
 
 #[test]

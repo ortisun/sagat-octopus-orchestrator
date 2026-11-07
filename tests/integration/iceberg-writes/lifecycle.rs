@@ -218,6 +218,8 @@ async fn a_launched_container_is_found_by_the_labels_it_was_made_with() {
     assert_eq!(info.slot, Some(11));
     assert_eq!(info.class.as_deref(), Some("small"));
     assert_eq!(info.deadline_epoch_secs, Some(deadline));
+    // the limit the container was made with, which a restarted process adds up
+    assert_eq!(info.memory_bytes, Some(128 * MIB));
     assert!(info.running, "{info:?}");
 
     // the owner's whole list is what a restarted process rebuilds its slots and reservations from
@@ -232,6 +234,17 @@ async fn a_launched_container_is_found_by_the_labels_it_was_made_with() {
         within("end", STAGE, fixture.engine.end(&fixture.owner, attempt)).await;
     }
     fixture.nothing_is_left().await;
+}
+
+/// The sub-path mount, which is what keeps a lake container to its own attempt directory, came with API 1.45. The engine
+/// these cases run on says what it speaks, and the sandbox runner refuses to start against one that is older.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_engine_says_which_api_it_speaks_and_it_has_sub_path_mounts() {
+    let fixture = Fixture::new().await;
+    let version = within("version", STAGE, fixture.engine.api_version())
+        .await
+        .expect("the engine answers");
+    assert!(version >= (1, 45), "{version:?}");
 }
 
 /// The container is made and then fails to start (the command is not there and there is no init to hide it), so the cleanup
@@ -653,6 +666,8 @@ struct Script {
     deadline: &'static str,
     /// A second container of the attempt, whose removal the engine always refuses and which was not killed by memory.
     duplicate: bool,
+    /// `GET /version`: the API version the engine says it speaks.
+    version: &'static str,
 }
 
 impl Script {
@@ -668,6 +683,7 @@ impl Script {
             state: "running",
             deadline: "1900000000",
             duplicate: false,
+            version: "1.52",
         }
     }
 }
@@ -752,6 +768,13 @@ impl ScriptedEngine {
                         )
                     };
                     let (status, body) = match (method, segments.as_slice()) {
+                        ("GET", ["version"]) => (
+                            200,
+                            format!(
+                                r#"{{"Version":"29.0.0","ApiVersion":"{}"}}"#,
+                                script.version
+                            ),
+                        ),
                         ("GET", ["containers", "json"]) => {
                             let mut listed = vec![container(SCRIPTED_ID, script.state)];
                             if script.duplicate {
@@ -1196,4 +1219,36 @@ async fn names_the_profile_refuses_never_reach_the_engine() {
             .is_err(),
         "a refused name led to a removal"
     );
+}
+
+/// The sandbox runner refuses an engine older than the sub-path mount; what the engine says is read as `major.minor` and nothing
+/// else is taken for a version.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_api_version_is_what_the_engine_says_and_nothing_made_up() {
+    for (said, expected) in [
+        ("1.52", Ok((1, 52))),
+        ("1.44", Ok((1, 44))),
+        ("1.45", Ok((1, 45))),
+    ] {
+        let scripted = ScriptedEngine::start(Script {
+            version: said,
+            ..Script::ok()
+        });
+        assert_eq!(
+            within("version", STAGE, scripted.engine.api_version()).await,
+            expected,
+            "{said}"
+        );
+    }
+    for garbage in ["", "latest", "1", "1.45.2"] {
+        let scripted = ScriptedEngine::start(Script {
+            version: garbage,
+            ..Script::ok()
+        });
+        assert_eq!(
+            within("version", STAGE, scripted.engine.api_version()).await,
+            Err(EngineError::Unavailable),
+            "{garbage:?}"
+        );
+    }
 }

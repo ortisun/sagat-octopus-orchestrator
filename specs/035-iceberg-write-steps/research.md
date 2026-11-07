@@ -2226,6 +2226,8 @@ The other fixes were wording:
   can zeroise what it owns (D035-115) but not what `infra-lake` copies. *Exit condition:* `zeroize` in `infra-lake`'s manifest (a
   `Cargo.lock` change, so the whole CI: do it once, with the `database-runner` → `infra-lake` edge), secrets as `Zeroizing`, the body
   scrubbed on drop, and `encode_request` returning a `Zeroizing<Vec<u8>>`, each with a test.
+  *Closed by D035-122* (the scrub on drop and the type of the secrets are not observable by a test without `unsafe`, which the workspace forbids;
+  the escape-scratch residual stays).
 - **D035-116 — The lake runner asks the sandbox runner for an attempt, never for a container (ADR-0079, Proposed).** Closes the API half of
   G035-022 / G035-055 as a decision; **Decided by: delegate** (the owner's delegation for feature 035), to be accepted by a person because it
   adds a server to the process that holds the engine socket. *What it is:* a node-local Unix-socket API of three calls on a **lake-mode**
@@ -2319,3 +2321,374 @@ The other fixes were wording:
   - *Not done.* Everything with a socket: the server (lake mode, the listener and its limits, admission over `LakeEngine`), the client
     behind `LakeSandbox`, the equality of `uid_for_slot` here and in `crates/infra-sandbox` (a test in the sandbox runner, which will
     depend on both: the `tests` crate depends on only one of them, and an edge there would select the whole CI for one assertion).
+- **D035-119 — Lake mode of the sandbox runner serves the API of ADR-0079.** Tenth slice of T035-035 and the server half of the API:
+  `sandbox-runner lake`. **Decided by: delegate**. It changes `Cargo.lock` (the sandbox runner depends on `sagat-infra-lake` and on
+  `rustix`; `tempfile` is a dev-dependency of two crates), which selects the whole CI: one deliberate run. The client (and so the HTTP
+  client's dependencies), the `database-runner` → `infra-lake` edge and `zeroize` are the next lock change.
+  - *What.* `apps/sandbox-runner/src/lake/`: `config` (the settings, and what is refused at start), `engine` (the port, the Docker adapter
+    and an in-memory fake), `admission` (start, wait, kill, the sweeps, the drain), `api` (the router: a closed body for every answer and
+    every refusal), `serve` (the socket, the lock, the sweeper, the drain); the `lake` subcommand and its help; and
+    `sagat_api_http::serve_unix`: the HTTP loop of the platform generalised over a private `Acceptor` (TCP and TLS unchanged), with the
+    peer's user checked at accept, before a byte is read.
+  - *Decisions the ADR left open, taken here.* Occupancy is read from the engine's labels on each start, never kept; the check and the
+    reservation are made under one lock held across the list and not the launch; the reservation is a **guard** on a plain mutex, and
+    `start` runs in a task of its own; an idempotent start is keyed on the attempt label and compares slot and class; a start and a kill of
+    one attempt never run at once; waits are as many as the ceiling; ended containers that are kept are capped at twice the ceiling; the
+    memory a container is charged is the **label it was created with** (`sagat.lake.memory`), the largest class when there is none; the
+    deadline label is the attempt's rounded up plus a grace, refused above the node's ceiling and never cut; the sweep (30 s, at most 60)
+    is the deadline's only clock, with the age sweep beside it as the backstop for a label that is wrong or missing; the drain refuses
+    starts, answers waits and kills for 30 s, and leaves the containers to their labels.
+  - *Refused at start-up.* Any `SAGAT_RUNNER_*` variable (by prefix, over the whole environment); a peer that is root, the overflow id, a user
+    of the lake containers' range, or (outside development) the user of the process; a group of root or of the overflow id; no owner; an image
+    by tag outside development; a limit of zero or past its cap (the plan's table: 2 and at most 8 containers, 10 and at most 60 minutes,
+    at most 16 GiB per container, and a cap on each other limit that catches a number written in bytes); a node with less memory than its
+    largest class; a work root that is not a directory; an engine whose API is older than 1.45 (the sub-path mount that confines a
+    container to its attempt directory); a socket directory that is a link, is not the process's, holds anything but the socket and the lock,
+    or whose lock is held (one process to a socket).
+  - *Independent review (security-reviewer and correctness-reviewer, given the files and the ADR, not my conclusion; every claim checked
+    before it was taken).* **Blocker, from both:** a start whose client gave up leaked its reservation for good (hyper's `half_close` is
+    off by default, so a closed connection drops the handler), and the ADR's "a start runs in a task of its own" was not implemented; after
+    `ceiling` abandoned starts every start was refused until a restart. Fixed by the spawn and the guard, with four cases: the start dropped
+    inside the engine, the caller going away, a launch that panics, and a real client that closes its connection mid-start (two cases over
+    the socket). **Majors taken:** a second process took a live socket and its exit deleted the next one's (an exclusive lock, and the
+    directory is checked, not trusted); the socket directory followed links and its owner was not checked; exited containers were not bounded
+    and a peer chooses their deadline; the config defaults and caps contradicted the plan's table; the ADR's "in-process timer" did not exist
+    (the ADR now says the sweep is the clock); memory was charged by the settings of today. **Minors taken:** the admission lock is waited
+    for a bounded time; a reservation and its container are counted once; `Exists` is `started` only for the same slot and class; the admin
+    listener is bound before the socket; the body is read within five seconds; the gauge falls when containers end;
+    the large class's file limit is not the small one's; the work root is checked; the engine's API version is checked.
+    **Not taken:** a configurable slot range (G035-065); ending the drain early when idle, the comparison of the node's memory with the
+    machine's, and a bound on hyper's header buffer, which holds the 4 KiB limit as policy after the head is parsed (G035-066); an overlap
+    check of the socket directory with the work root; a suspicion about the per-attempt lock map that is a few bytes at worst.
+  - *Found by the cases themselves.* A mutation of the ceiling check made a case **hang** (the second start waited on a gate nobody opened):
+    the gates of the fake now give way after five seconds and the waits of the cases are bounded, so that a missing protection fails a suite
+    instead of stalling it; `/v1/attempts//wait` is a malformed attempt id (400), not an unknown route; the fake kept a memory flag after a
+    removal that the engine does not.
+  - *Evidence.* `cargo test` of `sagat-api-http`, `sagat-infra-lake`, `sagat-infra-sandbox` and `sagat-sandbox-runner`: 487 passed, 0 failed
+    (71 cases in `lake`, 3 of the command line, 6 of `serve_unix` over a real socket); the whole workspace's unit tests: 526 passed, 0 failed;
+    `integration_iceberg_writes` against the project's Docker (29.5.2): 48 passed (27 of the lifecycle, two of them new: the engine's API
+    version, real and scripted); `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and the three repository
+    checkers clean. **Mutations by hand: 32 on the server and 3 on `serve_unix`, all killed by a test.** The reviews' findings were fixed
+    together with their cases, so those were not seen failing first; the mutations stand in for that. No mutation pass (OD-2026-11-06-2).
+  - *Not done.* The client behind `LakeSandbox` and the case that runs it against this server and a real engine over the real socket
+    (ADR-0079 rule 14); the Compose service and the Kubernetes shape (T035-029); the isolation cases through this API.
+- **D035-120 — The lake runner reaches the sandbox API through a client that believes only an exact answer.** Eleventh slice of T035-035 and
+  the client half of the API of ADR-0079: `SocketSandbox` in `crates/infra-lake/src/sandbox_api/client.rs`, behind the `LakeSandbox` port.
+  **Decided by: delegate**. It changes `Cargo.lock` by the dependencies of `sagat-infra-lake` (`hyper` with its client feature,
+  `hyper-util`, `http-body-util`, `bytes`; four lines, no new package), which selects the whole CI.
+  - *What.* One connection to the node-local socket per call (connect within 2 s; optionally the kernel's word that the process at the other
+    end runs as the expected user, `expecting_server`; `Connection: close`; the answer read through a bound of `MAX_BODY_BYTES`; the whole call
+    under a limit, a start and a kill shorter than a wait, which the server holds for `WAIT_HOLD`). The three calls: `start`, `exited` (the
+    wait) and `kill`. The port changed with it: `StartRequest` carries the slot and the budget class the lake runner chose (the relay needs
+    the peer's user `uid_for_slot(slot)` before the container starts), `SandboxError::Refused(Reason)` keeps the reason of a refusal, and
+    `AttemptOutcome.sandbox_refusal` carries it to the report, so that a refusal is not shown as an outage.
+  - *Rules of the client (ADR-0079 rule 6, held by cases).* An answer that is not exactly one of those the wire defines is never read as
+    started or as ended (the strict readers of D035-118). A wait never resolves on a transport error, a timeout or a malformed answer: it
+    pauses (at least 250 ms after "running", so a server that answers at once is not asked in a loop; backing off to 2 s after an error)
+    and asks again, and an attempt id the API would refuse is pending for ever instead of being sent. A kill is "not confirmed" unless the
+    server says `ended: true`. The deadline goes in whole milliseconds, rounded up and never zero. An id that fails `attempt_id_ok` is
+    never sent: it is a defect of the caller, and the API would only refuse it.
+  - *Independent review (security-reviewer, given the client, the port and the ADR, not my conclusion).* No Blocker and no Major. Its findings
+    were fixed together with their cases (the round-trip file), so those cases were not seen failing first; the hand mutations below stand
+    in for that. **Obligations it left, not code of this slice:**
+    the relay of an attempt is built with `with_peer_uid(uid_for_slot(slot))` (G035-056); the trace context and the failure-kind metric are
+    the driver's (`apps/database-runner/src/lake.rs`). **Residual, accepted and written down:** a `kill` and the `start` before it are on
+    separate connections, so the kill may reach the server first; the relay is already stopped by then and the container ends by its
+    deadline label (the sweep is the clock), and the driver may kill again.
+  - *Evidence.* 19 round-trip cases in `apps/sandbox-runner/src/lake/roundtrip.rs` (the real router on a real socket with the fake engine,
+    and a scripted server that answers bytes, closes, holds, or never stops): the request as the API reads it, the rounding of the deadline,
+    ids never sent, each refusal and the outage with its reason, a wait that ends only when the container has, a cancelled start ended by the
+    kill that follows, a wrong server not believed (another user, a wrong framing, a chunk, `100-Continue`), an answer cut at its bound, a
+    server that never answers given up on. `cargo test -p sagat-infra-lake -p sagat-sandbox-runner`: 110 passed in the sandbox runner's
+    library, 34 in `attempt`, 0 failed; `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and the three repository
+    checkers clean. **Mutations by hand on the client: all killed by a test but one**, "the abort of the connection's driver removed", which
+    survives because hyper itself ends a connection whose request was dropped: an equivalent mutant today, kept as a guarantee that does
+    not depend on the library (its comment says so). Several of my own cases were wrong the first time (an id that is not hexadecimal, the
+    size of a chunk, a counter read before the call it counted) and were corrected, not retried. No mutation pass (OD-2026-11-06-2).
+  - *Against a real engine (ADR-0079 rule 14).* `tests/integration/iceberg-writes/sandbox_api.rs`: the client, the node (`serve::run` with the
+    Docker adapter) and the project's Docker (29.5.2, API 1.54) on a real socket, with a real memory-backed work volume and a real sub-path
+    mount. Two cases: an attempt is started, the engine holds one container of it in the slot, the class and the deadline label that were
+    asked for, the wait ends when the container has, and the kill removes it and says so; an attempt without its directory is refused as
+    `directory` and makes no container. `integration_iceberg_writes`: 50 passed, 0 failed (the two new; `isolation.rs` now takes its holder
+    container from a shared function, and its cases pass). **Four hand mutations of the node, all killed by these cases:** the slot of the
+    container, the class label, a directory that is never missing, a deadline label that ignores the attempt's deadline. (The first run of the
+    mutations said all four survived: my reading of the output looked for `FAILED` at the end of a line, which `--nocapture` moves; read again
+    from the failures list, all four were killed.) `cargo clippy -p sagat-tests --all-targets -- -D warnings` clean.
+  - *Not done.* A container that is held up, through the API and the real engine (the ceiling, the deadline sweep, a kill of one that runs):
+    the stand-in image has no host program, so the container the API starts ends by itself; those are `lifecycle.rs` (the engine) and
+    `roundtrip.rs` (the router). That the work root the node checks and the volume the container mounts are one volume (they are two in
+    these cases so that they run against an engine in another machine; the deployment is T035-029). The `database-runner` → `infra-lake`
+    edge, `zeroize` (G035-063) and the driver; the Compose service and the Kubernetes shape (T035-029).
+- **D035-121 — The attempt input of a lake step has one wire, a strict reader and one corpus.** Twelfth slice of T035-035 and the shape that
+  T035-056 will build. **Decided by: delegate**. No `Cargo.lock` change: the reader is in `sagat-infra-lake`, which already links what it uses.
+  - *What.* `crates/infra-lake/src/protocol/attempt_input.rs`: `AttemptInput::read(input_json)`, a document of schema
+    `sagat.lake.attempt-input.v1` with the effect key, the instant of the first attempt, the five snapshot properties the platform writes, the
+    table, the ref, the mode, the records, the mapping, three flags (`ignoreUnknownFields`, `allowEmpty`, `priorAttemptMayHaveLeftFiles`) and the
+    effective limits (`maxRecordBytes`, `maxRecords`, `timeoutMs`). **No credential, no relay, no connection and no deadline**: the credentials
+    come from `ResolveDatabase`, the relay is the runner's, and the deadline is the lease's. `AttemptInput::write_append` joins it with what the
+    runner owns (the resolved connection, the staged files, the host limits) into the `WriteAppend` of D035-109.
+  - *Decisions.* The reader is **strict in the way the host's request is**: one object of at most 4 MiB in which **no name is written twice at
+    any depth** (`serde_json::Value` keeps the last of a name written twice and drops the first, which is how a limit or a mapping could be read
+    as one the author did not write), every member present and of its type, no member the contract does not name. The records are exactly one
+    of `inline` (objects; the size is the document's) and `blobs` (1 to 32, a UUID and `ndjson` or `parquet` each, each once). What the contract
+    names and this runner does not serve is refused **as unsupported by name**, not read as something else: the operations other than
+    `icebergWrite`, the modes other than `append`, and a 017 database result as the source (G035-067). The limits are the intersection that the
+    server computes, as it does for a SQL step (`database_snapshot`); the runner may still lower them with its own deployment ceilings. An
+    error names the member and never a value, and a `Debug` shows how many records and not the records.
+  - *A cost I accepted.* The ranges of the three limits (1 KiB to 2 GiB, 1 to 100 million records, 1 to 3600 s) are copied from the domain's
+    `LakeLimits`, whose own check is private to the domain's module; the corpus holds each edge, so a change on one side fails a test here, but it
+    is two places to change.
+  - *Evidence.* `crates/infra-lake/tests/attempt_input.rs`: 9 tests, 101 cases of
+    `tests/contract/iceberg-writes/fixtures/attempt-input/cases.json` (12 accepted, 11 not a document, the rest by member), the edges (32 blobs and
+    the 33rd, an effect key of 512 bytes and 513, a ref of 255 and 256, a document of exactly 4 MiB and one byte more), no value in an error or in a
+    `Debug`, and the request built from the base document is, as JSON, **the fixture the host's own tests parse**
+    (`requests/iceberg-write-append.json`), so the lease input and the host's request cannot drift apart. **Hand mutations of the reader: 17,
+    all killed by a test**; two checks (`is_empty` of the effect key and of the ref) were redundant with `plain` (an equivalent mutant), so they
+    were removed and not tested. (The first mutation of a name twice was built wrongly, `false && insert(..)` skips the insert, so other tests
+    killed it for another reason; rebuilt as `insert(..).is_some() && false`, it is killed by the corpus.) `cargo clippy -p sagat-infra-lake
+    --all-targets -- -D warnings` clean. No mutation pass (OD-2026-11-06-2).
+  - *Not done.* The server that builds the document (T035-056; its test reads this corpus), the driver that reads it
+    (`apps/database-runner/src/lake`), and the sentence in `contracts/worker-protocol.md`, which still names the content in prose (a contract
+    edit selects the whole stack in CI: it goes with the driver). The other modes and operations (T035-080, T035-085, revert, probe, browse).
+- **D035-122 — `infra-lake` holds the secrets zeroising (closes G035-063).** Thirteenth slice of T035-035. **Decided by: delegate**. It changes
+  `Cargo.lock` by one line (`zeroize` in `sagat-infra-lake`, already in the lock), which selects the whole CI: it goes with the client's PR.
+  - *What.* `Connection` keeps the catalog's and the storage's secrets as `Zeroizing<String>` (the caller's `String` is **moved** in, not
+    copied, so the signature of `Connection::new` is unchanged and a caller that holds `Zeroizing` text hands over the string inside, the same
+    allocation); `RelayToken` is a `Zeroizing<String>` and `generate` builds it digit by digit into its final allocation (the old way left
+    two-digit temporary strings and the 32 random bytes on the stack); `Body` zeroes the text of every string of its members when it is
+    dropped (`scrub`), and `into_map` hands the members over whole; `encode_request` returns a **`Zeroizing<Vec<u8>>` made at its exact
+    size** (measured first, then written, so it never grows and never leaves the credentials in a freed block) and scrubs the copy of the body
+    that the line is made from, on the error path too (`line_of`).
+  - *Tests.* Five unit tests in `protocol.rs`: the scrub empties every string at any depth and leaves numbers, booleans, nulls and the names of
+    the members; the line holds the secrets and the document is scrubbed after; the document is scrubbed when the line is too long; the line's
+    capacity is its length; `into_map` gives the members back whole. **Five hand mutations, all killed:** the document not scrubbed after the
+    line, arrays not scrubbed, objects not scrubbed, the line allocated without its size, the limit not checked before the line.
+    `cargo clippy --workspace --all-targets --locked -- -D warnings` clean; `cargo test -p sagat-infra-lake`: all suites pass.
+  - *What no test can show, and what remains.* That the memory is zeroed **is the `zeroize` crate's and the `Drop` impls'**: reading a freed
+    block needs `unsafe` (a spying allocator, or a pointer kept past the drop), and the workspace forbids it (`unsafe_code = "forbid"`), so
+    `Drop for Body` and the `Zeroizing` fields are held by their types and by review, not by a test. A mutation that removes `Drop for Body`
+    would survive; it is an unobservable one, not an equivalent one. **Residual, written down:** `serde_json` writes a string that holds an
+    escape (`"`, `\`, a control character) through a scratch buffer of its own that is freed unscrubbed; a secret with one leaves a short-lived
+    copy in freed memory. A hand-written writer or a scrubbing allocator could close it; neither is in this slice.
+- **D035-123 — The plan for the lake attempt driver, in the order that keeps each piece testable (the rest of T035-035).** Documentation only.
+  **Decided by: delegate**. What is built is in D035-109..122; this is how the pieces are joined, so that the next slices do not have to decide it
+  again after a context is lost. Nothing here is built.
+  - *Edge and lock.* `apps/database-runner` depends on `sagat-infra-lake` (one `Cargo.lock` line); added with the first slice that uses it, because
+    an unused dependency is a lint failure.
+  - *Slice A, settings (`apps/database-runner/src/lake/settings.rs`).* A `lake` section of the runner's file configuration (`deny_unknown_fields`;
+    absent means the lake profile is off and the lake activities are not registered): `workRoot` (absolute, exists), `sandboxSocket` (absolute) and
+    the user the sandbox runner must run as (`SocketSandbox::expecting_server`), `slots` (how many; the lake runner picks the slot, ADR-0079 rule 5),
+    `relayAllowCidrs` (**required and non-empty outside development: an empty list reaches nothing**, fail closed, because the relay's own denial list
+    removes loopback, link-local and metadata but cannot say which public ranges a deployment trusts), `maxBytes` and `maxRecords` of one attempt's
+    staging, the host's ceilings (`maxCommitRetries` at most 16, `maxDecodedBytes`, `maxMetadataBytes`), `hostStartSecs`, `killLimitSecs`, and the byte
+    count above which an attempt asks for the `large` class (when the node has one).
+  - *Slice B, prepare (`lake/prepare.rs`).* From the lease input (`AttemptInput`, D035-121), the connection (`connection::convert`, D035-115), a
+    source of blobs (a port over `ReadBlob`) and the settings, to a `Prepared` (the staged attempt directory, the request line as a `Zeroizing`
+    buffer, the relay's configuration for the user of the slot, the plan) or a failure. Order: the mode is one the connection allows; the limits are
+    the **intersection** of the step's, the connection's and the settings'; the token is generated and the directory created; the sources are staged
+    (a `LimitExceeded` is `ICEBERG_LIMIT_EXCEEDED` before any container); the connection is built and the policy derived; the request is encoded. Every
+    path that returns drops the directory and the buffer.
+  - *Failure mapping (closed).* An input that is not an attempt input, a connection the runner cannot open, an endpoint policy that refuses, a mode the
+    connection does not allow: `DATABASE_CONFIGURATION_INVALID`. Staging over the limit: `ICEBERG_LIMIT_EXCEEDED`. A `ReadBlob` that fails:
+    `DATABASE_CAPABILITY_UNAVAILABLE`. A directory that cannot be made or written: `WORKER_ERROR`. The sandbox: `LAKE_SANDBOX_UNAVAILABLE` (retryable);
+    a refusal for `ceiling` is the same code with the reason in the metric, not in the failure.
+  - *Slice C, driver (`lake/driver.rs`).* Behind ports: the control plane (`resolve`, `read_blob`, heartbeat) and `LakeSandbox`. It prepares, builds the
+    `Relay` for the user of the slot (`with_peer_uid(uid_for_slot(slot))`, G035-056, which `run_attempt` already refuses to run without), calls
+    `run_attempt`, takes `Disposition`, removes the directory, and returns what to report. A start refused for the slot is tried once with another
+    slot; any other refusal ends the attempt. Tested with a scripted host on the real socket, as `crates/infra-lake/tests/attempt.rs` does; that
+    scaffold moves behind a `test-support` feature of `infra-lake` rather than being copied.
+  - *Slice D, the shell.* The heartbeat and the report loop of `attempt.rs` (`Heartbeat`, `report_until_ack`, `upload`) are made shared, not copied; the
+    poll loop dispatches on `lease.activity_name`; the registration offers the lake activities only when the section is present and the negotiated
+    protocol minor includes them. The `contracts/worker-protocol.md` sentence about the lease input goes in this slice (a contract edit selects the
+    whole stack in CI, so it is made once).
+  - *Not decided here.* The server's builder of the input and the resolution of two pinned secrets (T035-044, T035-056; a migration, because the SQL
+    runner pins one secret per attempt), the admission of a lake run (T035-055; `runs.rs`, which the open 018 branches change), and the completion of the
+    step (T035-059).
+- **G035-068 — The per-record size limit is carried and enforced nowhere.** `maxRecordBytes` is in the connection's limits (`LakeLimits`), in the
+  step's, and now in the attempt input, but staging counts the **total** bytes and the number of records, and the host's `maxDecodedBytes` is a
+  total too. A record of 1 GiB inside a 2 GiB total passes every check. *Exit condition:* the staging of inline records and of NDJSON blobs refuses a
+  line over the limit (`ICEBERG_LIMIT_EXCEEDED`), with a test at the edge; a Parquet row is not parsed by the runner and stays with the host's total.
+- **D035-124 — The `lake` section of the runner's configuration (slice A of D035-123).** **Decided by: delegate**. It changes `Cargo.lock` by one
+  line (the edge `sagat-database-runner` → `sagat-infra-lake`, which this slice uses for the slot constants).
+  - *What.* `apps/database-runner/src/lake/settings.rs`: `LakeSettings` (the file's section, `deny_unknown_fields`) and `Settings` (validated and
+    parsed), wired into `Config` as an optional member that `Config::validate` checks whole. Absent is off. What a deployment must say has no
+    default (`workRoot`, `sandboxSocket`, `sandboxUid`, `slots`, `relayAllowCidrs`); the numbers have the contract's defaults and are bounded on
+    both sides.
+  - *Decisions.* Paths are absolute and may not climb. The sandbox runner's user is neither root nor one of the containers' users (the lake range,
+    both edges tested). `slots` is 1 to 4096. **`relayAllowCidrs` is required and non-empty outside development** (an empty list reaches nothing,
+    so a configuration that left it out could not work and is refused instead of being left to fail at the first attempt); `0.0.0.0/0` and
+    `::/0` are an explicit, valid answer (*corrected by D035-127:* the relay itself refuses loopback, link-local, metadata and other special-use addresses, and no private
+    network; the platform's own ranges are the operator's `relayDenyCidrs`), and at most 256
+    ranges. A bare address is not a range. A section that is not valid stops the runner at start.
+  - *Evidence.* 9 unit tests in `settings.rs` and one in `config.rs` (absent means off; present is validated whole; an unknown member, a bad
+    value and an empty allowance stop the runner; development allows the empty allowance); `database-runner` library tests: 35 passed;
+    `cargo clippy -p sagat-database-runner --all-targets --locked -- -D warnings` clean. **Nine hand mutations, all killed** (the section not
+    validated by `Config`, the empty allowance taken, a path that climbs, each edge of the lake users, root as the sandbox user, zero slots, too
+    many ranges, a threshold above the ceiling). The runbook `docs/runbooks/database-runner.md` documents the section and says plainly that
+    nothing serves lake activities yet.
+  - *Not done.* Slices B, C and D of D035-123 (prepare, driver, shell). Whether `workRoot` exists and is a directory and whether the socket answers is
+    checked when the lake runner starts serving, not by this validation (it is pure).
+- **D035-125 — Preparing an attempt: staged, built and refused with a code before any container (slice B of D035-123).** **Decided by:
+  delegate**. No `Cargo.lock` change (the edge came with D035-124).
+  - *What.* `apps/database-runner/src/lake/prepare.rs`: `prepare(input, connection, blobs, settings, attempt)` takes the lease input
+    (`AttemptInput`, D035-121), the connection `convert` read (D035-115, **consumed**: its secrets are moved into the request's connection), a `Blobs`
+    port (`ReadBlob` under the lease in production, `open(blob) -> reader`), the settings (D035-124) and what is particular to the attempt (`Attempt`:
+    its id, the slot, when the host must be done, the development flag), and returns a `Prepared` (the staged directory, the request line as a
+    `Zeroizing` buffer, the `RelayConfig` for the user of the slot, the bytes staged for the choice of the class) or a `PrepareError`. Order: the mode is
+    one the connection allows; the relay's allowance is derived from the connection (a connection the host cannot open is refused before anything is
+    made); the token and the directory; the sources are staged against the effective limit; the request is built from the input with
+    `write_append` and encoded. Every path out drops the directory, which removes itself.
+  - *Decisions.* **Effective limits** (`effective`) are the strictest of the step's, the connection's and the settings': records are the least of the
+    three, the bytes are the settings' (neither the step nor the connection has a total), the timeout is the least of the step's and the connection's
+    (none when neither says: the lease's own deadline is then the only one). **Codes** (`PrepareError::code`, a closed table, none retryable): a mode the
+    connection does not allow, a connection the host cannot open, a request the host would refuse (and a slot outside the range): `DATABASE_CONFIGURATION_INVALID`;
+    over the limit or more than 32 files: `ICEBERG_LIMIT_EXCEEDED`; a blob that cannot be opened or a file that cannot be written (and a directory that is
+    there already, which is never reused or removed): `WORKER_ERROR`. The attempt directory that was there is not ours: it is left alone.
+  - *Evidence.* 14 unit tests in `prepare.rs`, against a real temporary work root and a held-in-memory set of blobs: inline records staged and the
+    request line is the one the host reads (the effect key, the table, the inputs, the deadline to the millisecond, the credentials, the relay socket
+    path, and **the token in the request is the token in the file the relay checks**); blobs staged in the order written with their formats and
+    counted; a mode not allowed, an over-the-limit source, a blob that fails, an endless blob (stopped at the limit), a connection the relay cannot
+    allow and a slot out of range all leave **nothing on disk**; the step's and the connection's limits apply before the settings'; the relay serves only
+    the user of the slot; a `Debug` of the attempt shows the size of the request and not the request. `cargo test -p sagat-database-runner`: 49 passed;
+    `cargo clippy -p sagat-database-runner --all-targets --locked -- -D warnings` clean. **Twelve hand mutations, all killed** (the mode unchecked, each
+    limit ignored in turn, the loosest timeout, any peer served, another token, milliseconds dropped, a limit read as a source failure, the secrets
+    swapped, bytes not counted, blobs backwards, a retryable limit failure).
+  - *Not covered.* That the development flag reaches the relay: `RelayConfig` does not expose it, so only a relay that connects to a loopback target
+    can show it (the driver's test, slice C). The per-record size limit (G035-068). A blob source over the real `ReadBlob` (slice D).
+- **D035-126 — The lake driver: one attempt from the lease's input to what is reported (slice C of D035-123).** **Decided by: delegate**. No
+  `Cargo.lock` change (`tokio`'s `net` feature is a dev-dependency of the database runner, already in the lock through `infra-lake`).
+  - *What.* `apps/database-runner/src/lake/driver.rs`: `Driver::run(job, connection, signals, on_heartbeat) -> Finished`. It reads the input
+    (`AttemptInput`), takes a slot from the `SlotPool`, derives the deadline, prepares the attempt (D035-125), builds the `Relay` for the user of the
+    slot, calls `run_attempt` behind the `LakeSandbox` port and says what to report (`Report::{Complete, Fail, Abandon}`) with the facts the runner
+    keeps (the request was sent, the container was confirmed gone, the relay's denials, the sandbox's refusal, where the directory was left). It
+    does **not** talk to the control plane: the connection is already resolved, the signals are the lease's, and the report is the caller's to send.
+    `infra-lake` gains `AttemptDir::keep` (first written as `release`, D035-127), which lets go of a directory without removing it.
+  - *Decisions (the deadline, the slot and the dropped future were corrected by D035-127).* **The directory is removed only when the sandbox confirmed the container gone**; otherwise it is released and its path is returned in
+    `Finished::left`, because the container may still have it mounted and its credentials are good until its deadline (the sweep, slice D, takes it
+    once its deadline is past). A removal that fails is also released, not forgotten. **The slot is free when the attempt is over,** whatever the
+    outcome (the sandbox is the one that refuses a slot still in use). **Slots are taken in turn,** not the lowest free, so that the user of the
+    container that has just ended is not the user of the next. **The deadline is the least of the lease's end and the step's timeout** (the strictest
+    of the step's and the connection's). **The class is `large`** when the staged bytes are *over* `largeAboveBytes` and the settings name one; the
+    threshold itself is `small`. **No retry with another slot** (this amends D035-123 slice C, which said to try once more): the code
+    `LAKE_SANDBOX_UNAVAILABLE` is retryable, the server retries the step, and the next attempt takes the next slot; a retry inside would need a second
+    relay and a second preparation of the same sources for a case that, with one lake runner to a node, comes only from a leftover container whose
+    label deadline will remove it. The peer of the relay is `peer_for_slot(slot)`: `40000 + slot` in production (`Driver::new`), the test's own user in a
+    test, where the scripted host is in the same process.
+  - *Evidence.* 17 tests in `driver.rs` against a scripted sandbox whose host plays the wire on the **real relay socket** (token file, `CONTROL`,
+    request line, heartbeat, one ending): an attempt that commits reports the receipt and leaves the work root empty, the slot free and the request the
+    host read; a failure of the host arrives with its code and column; a heartbeat reaches the caller; an input that is not an attempt input, no free
+    slot, a slot with no user, a mode the connection does not allow, a sandbox that cannot start or refuses (the reason kept), a cancellation before the
+    start and a lost lease each leave nothing taken or made; a container not confirmed gone leaves its directory; the deadline is the least of the
+    lease and the step; the large class at the threshold and a byte over. `cargo test -p sagat-database-runner -p sagat-infra-lake`: 338 passed;
+    clippy for both crates clean. **Twelve hand mutations, all killed** (the directory removed or kept whatever the sandbox said, the slot never given
+    back, each side of the deadline, the threshold, the slots always the lowest, a failure abandoned, the request reported unsent, the refusal lost, the
+    code of no slot, the large class never asked).
+  - *Not covered.* That the development flag reaches the relay (needs a relay that connects to a loopback target). A directory whose removal fails (it
+    needs a subdirectory the runner cannot enter, made by another user: G035-060). The metrics of an attempt. The sweep of released directories, the
+    shared heartbeat and report loop, the registration and the real `ReadBlob` source (slice D).
+- **D035-127 — Corrections after the independent review of the stack D035-120..126.** **Decided by: delegate**. A security and a correctness
+  reviewer were given the patch and the documents, not my conclusion (the rule of D035-119), and every claim was read against the code before it was
+  taken. **No Blocker; six Majors between them, all taken.** No `Cargo.lock` change. As in D035-119, the findings were fixed together with their cases,
+  so those were not seen failing first; **nineteen hand mutations of the fixes stand in for that, and all are killed.**
+  - *The relay had no deny list (Major, security).* `prepare` never called `with_deny`, and the network check the relay uses refuses loopback,
+    `0.0.0.0/8`, multicast and reserved ranges, link-local, `192.0.0.0/24`, 6to4 and Teredo, and the metadata addresses: **not the private ranges, not
+    the pod and service networks, not the platform's own state.** A tenant declares the endpoints of its connection, so a catalog at an address inside the platform would have been reached by a compromised
+    host through a raw TCP tunnel. The SQL runner closes this with `deployment.denyCidrs`, required outside development; the lake relay had no
+    counterpart, and the sentence of the contract ("deny … platform state endpoints") and of D035-124 that said the relay did it by itself was wrong:
+    the operator's list is the only thing that can name the platform. **`relayDenyCidrs`**, required and non-empty outside development, is applied
+    with `with_deny`; a deny range wins over an allow range. Tested with a real relay: a declared host that resolves to `10.0.0.5` is refused
+    (`403`, counted as `address_forbidden`) and, with the list empty, the same name and address are let through, so the list is what refuses it.
+    Found with it: **the development flag was never shown to reach the relay**; now it is (loopback refused, and opened only in development).
+  - *Staging had no deadline and ignored the lease (Major, both).* A `ReadBlob` that stalls held a slot, a blocking thread and the resolved
+    credentials for as long as it liked, and a cancellation or a lost lease was not seen until staging ended. `prepare` now runs under a `select!`
+    with the lost lease, the cancellation and the step's deadline; dropping it removes the directory. Three tests over a source that never answers.
+  - *The lease's end was the attempt's deadline (Major, correctness).* A lease is renewed by its heartbeats, so a step of ten minutes would have been
+    cut at the first lease TTL, and reported `OUTCOME_UNKNOWN` (not retried) once the request was sent. **The deadline is `now + the step's timeout`
+    (the connection's may lower it)**, staging included; a lease that is lost is its own signal. `Job` is gone: `run(input_json, connection, …)`.
+  - *Permanent refusals of the sandbox were retryable (Major, correctness).* A step whose timeout is above the node's ceiling, a class the node does
+    not have and a directory the node does not accept were all `LAKE_SANDBOX_UNAVAILABLE`: the step was retried, restaged and refused again until its
+    policy ran out. `Deadline`, `Class` and `Directory` are now `DATABASE_CONFIGURATION_INVALID`; `Ceiling` and `Slot` stay retryable.
+  - *A dropped `run` left a container running, removed its directory and freed its slot (Major in effect, both).* A `Running` guard now owns the
+    directory and the slot from the moment a container may be running: settled, it removes the directory only if the container is confirmed gone
+    (once more if the removal fails) and gives the slot back; **dropped, it keeps the directory and holds the slot back until the container's deadline
+    and the sandbox's sweep have passed** (a minute and a half). The container is still not killed by a drop (that needs an `await`; the label
+    deadline is the backstop, as `attempt.rs` says). The same hold applies to a container the sandbox did not confirm gone.
+  - *The receipt was not held to the request (security, Minor).* A receipt of another effect key, another ref, another mode or another kind is
+    `LAKE_HOST_PROTOCOL`, not a commit of this step: a compromised host could otherwise have the server record a snapshot the step did not write.
+  - *Settings.* `sandboxUid` refuses 65534, the user the kernel reports for an unmapped one; `workRoot` is bounded so that
+    `<workRoot>/<attempt id>/relay.sock` fits a socket path (longer, every attempt would fail to bind, which is retryable and would retry for ever).
+  - *Also taken.* The attempt id is `UUIDv4` (ADR-0079 rule 10: opaque and random; v7 is time-ordered). The inline records are **moved** out of the
+    input (`AttemptInput::take_records`), not cloned. `Driver`'s fields are private (`Driver::new` for production; the peer function is a test
+    seam inside the module). `Finished::cause` says why no container was asked for (`Input`, `Over`, `NoSlot`, `NoUser`, `Prepare(kind)`, `Relay`).
+    Four tests that could not fail for the thing they named are replaced: the relay is shown to serve the user it was built for and no other, the
+    host is told the end of the step (`deadlineAt`, parsed and compared), and the peer function is shown to matter.
+  - *Not taken, with the reason.* `Body::into_map` stays public: it hands over what the caller already holds (the caller built the secrets), the
+    tests of another crate use it, and a feature gate would be a seam of its own. `SocketSandbox::expecting_server` stays optional in the type,
+    because the driver is generic over the sandbox: **the shell (slice D) must build it with `settings.sandbox_uid`** (an obligation, not code).
+  - *Said for the next slices.* The egress ceiling is carried and not re-checked by the runner: the lease input has no classification, and
+    publication checks it against the pinned revision, which cannot change under a run (T035-055 pins it). `ReadBlob` must be scoped to the run by
+    the server, or an author could load another workflow's output into a lower-ceiling table (T035-056/slice D). The resolved secrets live across the
+    staging awaits; the shell may resolve **after** staging to shorten that window, which is a decision for slice D.
+  - *Evidence.* `cargo test -p sagat-database-runner -p sagat-infra-lake`: 352 passed, 0 failed; `cargo clippy --workspace --all-targets --locked -- -D
+    warnings` and `cargo fmt --check` clean; the three repository checkers clean.
+- **G035-069 — A transient fault while staging is a permanent failure.** A `ReadBlob` network error or `ENOSPC` while writing becomes
+  `StagingError::Io`, then `WORKER_ERROR`, which the contract does not retry; and `Blobs::open` returns `Err(())`, so a missing blob (permanent) and a
+  timeout (transient) look alike. Nothing was sent to the host, so a retry would be safe. One tenant filling the work volume fails other tenants'
+  steps for good. *Exit condition:* a typed error from `Blobs::open`, `ENOSPC` told apart in staging, and a retryable code for them in
+  `contracts/errors.md` (a contract change, so the whole CI): decided with the real `ReadBlob` source in slice D.
+- **G035-070 — Numbers in inline records go through `f64`.** `serde_json` without `arbitrary_precision` or `float_roundtrip` reads an integer above
+  `u64::MAX` as a float and some decimals one unit off in the last place; `1e5` is staged as `100000.0`. The server builds the document with the same
+  crate, so this is the platform's behaviour already, not a regression of the reader. *Exit condition:* a corpus case for each, and either the two
+  features turned on workspace-wide or a sentence in the guide that exact numbers travel in a blob.
+- **G035-071 — What cancellation can leave behind, and what a big document costs.** An `AttemptDir` dropped while a `spawn_blocking` writer of
+  `stage_*` is still running can lose to the file it creates (`ENOTEMPTY`, ignored by `Drop`): the directory, with the token and part of the
+  records, stays with no handle. A 4 MiB document of `{},` is about a million and a half values in the reader, tens of megabytes, and the input is
+  read before a slot is taken, so it is bounded by the runner's `maxConcurrent` (64) and not by the slots. *Exit condition:* the sweep of slice D
+  (by age, past the attempt's deadline) takes the leftovers; the memory is measured there, and the parse moves after the slot if it matters.
+- **D035-128 — The sweep of attempt directories nobody removed (a piece of slice D of D035-123).** **Decided by: delegate**. No `Cargo.lock` change.
+  - *What.* `apps/database-runner/src/lake/sweep.rs`: `sweep(work_root, now, older_than)` and `keep_sweeping(…)`. The driver keeps a directory when the
+    container may still be running, and a dropped or aborted attempt can leave one (G035-071); each holds the relay token and the author's records on
+    a volume the container shares. The sweep removes **by age**: a directory unchanged for longer than the longest attempt can last (one hour, the
+    longest `timeoutMs` the input accepts, plus the 90 s the slot is held back, plus five minutes: `SWEEP_AFTER`) belongs to no running attempt,
+    because its container ended by its deadline label and nothing else touches it.
+  - *Decisions.* It touches **real directories whose name is an attempt id** (ADR-0079's rule) and nothing else; a link is never followed, a file or
+    another name is left and counted as `foreign`. The age is the directory's last change and the edge itself is young. A directory it cannot remove
+    (the container's user left in it a subdirectory the runner cannot enter: G035-060, O035-006) is counted `failed` and tried again by the next pass.
+    The removal runs on a blocking thread. The pass is reported to a callback, because the metrics are not registered for it yet.
+  - *Evidence.* 7 unit tests against a real temporary directory (the set of ages, the edge, the threshold, a link to a directory outside that stays
+    intact, a file and a foreign name left alone, a directory the runner cannot enter counted and then taken once it can be, an unreadable root, the
+    loop that reports and stops); `cargo clippy -p sagat-database-runner --all-targets --locked -- -D warnings` clean. **Eight hand mutations, all
+    killed** (a link followed, the age ignored, the edge old, any name an attempt, a file an attempt, a threshold under the longest step, a failure
+    counted as removed, a sweeper that never stops).
+  - *Not done.* Nothing calls it: the shell (the rest of slice D) starts `keep_sweeping` with `SWEEP_AFTER` and the runner's stop token, once per minute or
+    so, and counts what it reports. The test of a directory the runner cannot enter is skipped in effect when the tests run as root, which can enter it.
+- **D035-129 — The blobs of an attempt arrive whole or not at all (a piece of slice D of D035-123).** **Decided by: delegate**. No `Cargo.lock` change.
+  - *What.* `apps/database-runner/src/lake/blobs.rs`: `LeaseBlobs`, the `Blobs` port over `ReadBlob` under the lease (the server checks the lease and
+    audits the read), and `BlobReader`, the `AsyncRead` under it, generic over the stream of messages so that it is tested without a server. The port's
+    error is now a type of its own, `BlobError` (it does not say why: G035-069 is about telling the causes apart).
+  - *Decisions.* **What arrives is what was named, whole.** The first message is the header and it is for the blob that was asked for; the size is a
+    non-negative number and the digest 64 lower-case hexadecimal digits; the chunks add up to the declared size, and **not a byte past it is handed
+    on** (a stream that does not stop is cut at the declared size, not at the staging limit); at the end the SHA-256 of what was read is the header's
+    and the count is the size. A truncated or altered blob is an error at the end of the read, and a second header, an empty message or a failing
+    stream is an error where it happens; after an error every read says so again. Staging removes the partial file when its source fails (D035-112),
+    so a corrupt blob is never left in `in/` as if it were whole: shown with the real `stage_blob`.
+  - *Evidence.* 12 unit tests (whole in pieces of every size, empty, a read buffer smaller than a piece, altered bytes, short, past the size,
+    failed-stays-failed, a stream that fails, a second header, a header for another blob, eight kinds of start that is not a header, a header whose size
+    is not the size of what arrives while its digest matches, and the staging of a corrupt and of a whole blob); the runner's library: 97 tests;
+    `cargo clippy -p sagat-database-runner --all-targets --locked -- -D warnings` clean. **Ten hand mutations, all killed**; the first run of the
+    mutations left one alive (the size check, when the digest matches what arrived), and the case that kills it was added.
+  - *Not covered.* The `ReadBlob` call itself (`LeaseBlobs::open`, a request built from the lease and the call): it is exercised by the end-to-end
+    canary against a real server, not here. Slice D must still scope the blob to the run on the server (D035-127).
+- **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
+  accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
+  two lake runners share a node.
+- **G035-066 — Deployment obligations of the node that no test can hold.** The drain is a fixed 30 s, so an orchestrator must give the process
+  at least that and the 10 s grace before it kills it (a Compose `stop_grace_period`, a pod's `terminationGracePeriodSeconds`); the node's memory
+  is what the operator says it is and is not compared with the machine's; hyper's header buffer, not the 4 KiB policy, bounds what a request
+  head can hold. *Exit condition:* the Compose service and the Helm shape of T035-029 set the grace and size the memory from the machine.
+- **G035-067 — A 017 database result as the source of a lake write has no wire yet.** The reader of the attempt input (D035-121) refuses
+  `records.databaseResult` as unsupported by name. A 017 result is retained as a blob in the SQL runner's JSON form, which the host does not
+  read (G035-059), so either the driver reads that blob and turns the rows into JSON values for `stage_inline` (then the document names the
+  blob, for instance `{"databaseResult": {"blob": "<id>"}}`), or the server turns it into an NDJSON blob when it builds the input (then the
+  runner never sees the source). *Exit condition:* decided with the conversion (G035-059) and T035-056; the corpus case "a database result is a
+  source this runner does not serve" becomes an accepted case and a refused one.
