@@ -19,6 +19,7 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Journal is the authority; projections equal a replay | `verify_run` / `assert_consistent` in the fault tests that compare a replay (54 of 92 in `fault_workflow_primitives` on 2026-11-01; the others assert persisted rows directly — inventory in `specs/014-workflow-primitives/validation-report.md`) |
 | One transaction per transition (state, scheduling, timers, outbox) | fault tests with an injected failure per statement |
 | Contracts only grow | `*.baseline.json` + compatibility tests; OpenAPI/AsyncAPI/proto/IR schema lint in CI `contracts` |
+| A step an isolated runner executes is *managed* by its kind (SQL or lake), never by having a SQL operation: the worker paths ask `Node::managed_kind` (035, D035-134) | `crates/application/tests/managed_kind_sites.rs` (source-text check of `worker.rs` and `worker/`, not a call-graph proof; its own tests prove it sees the narrow question however it is laid out) |
 | Six SDKs, one semantics | `tests/contract/sdk-conformance` (every scenario, six languages) |
 | Tenant boundary: another tenant's resource is a missing one | `tests/contract/security-multitenancy/rest/battery.rs` over every operation |
 | Observability vocabulary is closed and low-cardinality | telemetry tests (`observability.rs`, `approval_telemetry.rs`), metrics enums |

@@ -46,7 +46,7 @@ impl RefusalCandidate {
         let Some(node) = definition.node_for_instance(instance) else {
             return false;
         };
-        if node.database_operation().is_some() {
+        if node.managed_kind().is_some() {
             return false;
         }
         match self.success {
@@ -64,7 +64,7 @@ impl RefusalCandidate {
                     && matches!(node.kind(), NodeKind::Activity { .. })
                     && definition
                         .node_for_instance(&forward)
-                        .is_some_and(|forward| forward.database_operation().is_none())
+                        .is_some_and(|forward| forward.managed_kind().is_none())
             }
         }
     }

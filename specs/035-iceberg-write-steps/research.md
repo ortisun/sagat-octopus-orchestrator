@@ -2813,6 +2813,39 @@ The other fixes were wording:
     off-by-one in any of the six languages would fail.
   - *Not done.* The receipts and the errors of a real run, and an unsupported capability failing explicitly (T035-064's other two bullets) need the
     server's lease path (D035-130 E). The Studio editor and the `recordSchema` and overwrite options.
+- **D035-134 — The managed kind: one predicate for "an isolated runner executes this step" (slice A of D035-130).** **Decided by: delegate**. No
+  `Cargo.lock` change, no migration, no contract change. A lake step still cannot start (the guard of `check_definition` and the registration are
+  untouched), so this lands alone and changes nothing a run can observe.
+  - *What.* `sagat_domain::database::ManagedKind { Sql, Lake }` and `Node::managed_kind()`. The seven places of the worker paths that asked
+    `database_operation().is_some()` (or `.is_none()`) now ask the kind: the ready filter and the protocol-minor gate, the lease input (`{}` for a
+    managed step: the run's data does not travel), the lease actor, `managed_database` (who may complete or fail it), the scoped binding, the scoped
+    claim and the scoped refusal (the step itself and the forward of a reconciliation), in `worker.rs` and `worker/scoped*.rs`. SQL behaviour is the
+    same by construction (a SQL node is `Some(Sql)`); a lake node is now managed in all of them, so that opening the door later cannot lease it as an
+    ordinary activity.
+  - *Left as it is, on purpose.* `api-http/dto_exec.rs`: the `type` of a run node reads `database` for SQL and `activity` for a lake step; changing it
+    changes the contract's enum and belongs with admission (E) and the Studio. `database_write` (`worker.rs`) reads the SQL operation for what only SQL
+    has (whether it writes). The domain's own rules (root-only, the collection shape, the IR codec) already treat the lake node by their own tests and
+    its effect policy.
+  - *The rule is kept by a check* (`architecture-principles.md`, rule 21): `crates/application/tests/managed_kind_sites.rs` reads `worker.rs` and
+    `worker/` without their `mod tests` and fails if one asks the narrow question. **It was seen failing first, and the first version was wrong**: it
+    listed three files, not four, because it cut each file at its first `#[cfg(test)]` and `worker.rs` has a test helper long before its managed
+    paths. The cut is now the `mod tests` module, with a test of its own for that case. It is a source-text check, not a call-graph proof.
+  - *Evidence.* Domain test `a_step_is_managed_by_the_kind_of_runner_that_executes_it…` (SQL `Some(Sql)`, lake `Some(Lake)`, an ordinary activity and an
+    end node `None`; it did not compile before `managed_kind` existed, which is its red). `cargo fmt --check` and clippy `-D warnings` for the domain,
+    application and api-http crates. All 82 test binaries of `sagat-domain` and `sagat-application` pass, and `contract_iceberg_writes` (35). The SQL
+    paths, on the changed code: `integration_database_connections` 7 and again as the runtime role (`SAGAT_TEST_AS_RUNTIME_ROLE=1`) 7,
+    `integration_database_runner` 1 (1 ignored), the `database-connections` SDK scenario in Go, C#, Java and Rust against the real runner, PostgreSQL and
+    OpenBao (35 s), and **`integration_workflow_primitives`: 758 tests, 691 passed in the first run and 67 failed with `No space left on device`
+    in the setup of a test database or, for one, in a commit (the 29 GB disk of the project's Docker VM filled during the 12-minute suite: 64 of the 67
+    panics are at `create database` or `migrate` and name `No space left on device`, 2 are PostgreSQL's `could not write init file` at the admin
+    connection, which is the same symptom without the words, and 1 is a store error, `scope compensation could not be committed`, at
+    `collection_recovery.rs:274`, which I take to be the same cause because it passed on the rerun); the 67 names, rerun alone in a fresh container,
+    passed (67 of 67, 90 s)**. 22 of that suite are ignored.
+  - *Not run.* `e2e_database_connections` (a real browser: it builds the Studio, and the frontend dependencies and Chromium are not installed here;
+    it is unrelated to the worker paths). The `database-connections` scenario in TypeScript and Python (their toolchains were removed after the
+    builders were checked). No test lets a lake step through the lease paths, since none can start: the proof for the lake side is the check, the
+    domain test and the reading above; the end-to-end test waits for admission (E).
+  - *Not done.* B (registration profiles), C (resolve for a lake step and the two-secret pin), E, F and G of D035-130.
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

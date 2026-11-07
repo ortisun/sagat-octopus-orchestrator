@@ -12,9 +12,10 @@ use std::time::Duration;
 use common::{expr, id, sid};
 use sagat_domain::{
     database::{
-        ColumnMapping, ConnectionRef, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY,
-        IcebergWrite, IcebergWriteError, IcebergWriteParts, LakeLimits, MAX_MAPPED_COLUMNS,
-        MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS, RecordSource, TableIdentifier, WriteIntent,
+        ColumnMapping, ConnectionRef, DatabaseLimits, DatabaseOperation, ICEBERG_REVERT_ACTIVITY,
+        ICEBERG_WRITE_ACTIVITY, IcebergWrite, IcebergWriteError, IcebergWriteParts, LakeLimits,
+        MAX_MAPPED_COLUMNS, MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS, ManagedKind, OperationKind,
+        RecordSource, TableIdentifier, WriteIntent,
     },
     identity::Slug,
     saga::EffectPolicy,
@@ -778,4 +779,42 @@ mod effective_limits {
         assert!((1..=100_000_000).contains(&DEFAULT_MAX_RECORDS));
         assert!((1000..=3_600_000).contains(&DEFAULT_TIMEOUT_MS));
     }
+}
+
+// ---- Which isolated runner executes a step (D035-130 A, D035-134) --------------------------------------------------
+
+#[test]
+fn a_step_is_managed_by_the_kind_of_runner_that_executes_it_and_an_ordinary_activity_is_not_managed()
+ {
+    let sql = Node::database(
+        id("query"),
+        DatabaseOperation::new(
+            ConnectionRef::new(Slug::parse("orders-db").expect("name"), None).expect("ref"),
+            OperationKind::Query,
+            "SELECT 1",
+            vec![],
+            DatabaseLimits::default(),
+        )
+        .expect("a valid operation"),
+    );
+    assert_eq!(sql.managed_kind(), Some(ManagedKind::Sql));
+    assert_eq!(save().managed_kind(), Some(ManagedKind::Lake));
+    let ordinary = Node::new(
+        id("plain"),
+        NodeKind::Activity {
+            activity: ActivityName::parse("orders.charge").expect("activity"),
+            retry: RetryPolicy::DEFAULT,
+            compensate_with: None,
+            reconcile_with: None,
+            idempotency_template: None,
+            secrets: Vec::new(),
+        },
+    );
+    assert_eq!(ordinary.managed_kind(), None);
+    assert_eq!(
+        Node::new(id("done"), NodeKind::End { output: None }).managed_kind(),
+        None
+    );
+    // A node is of one kind: the two accessors never both answer.
+    assert!(sql.iceberg_write().is_none() && save().database_operation().is_none());
 }

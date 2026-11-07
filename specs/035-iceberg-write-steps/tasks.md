@@ -793,6 +793,11 @@ three conditions pass.
   *2026-11-07, twenty-fourth step, left unticked (D035-132):* "`ResolvedDatabase.iceberg` is built in `crates/api-grpc/src/service.rs`" has its pure
   half: `iceberg_connection` (`crates/api-grpc/src/lake_connection.rs`), whose message the runner's `convert` reads back as the stored documents of the
   wire fixture. Not done: the two-secret pin (a migration), the resolve path, the sum type for `ResolvedDatabase` and the profile check.
+
+  *2026-11-07, twenty-fifth step, left unticked (D035-134):* the predicate of the server paths that the lake step needs is one: `Node::managed_kind`
+  (`Sql` or `Lake`) replaces `database_operation().is_some()` in the worker's ready filter, lease input, lease actor, completion authority and the three
+  scoped paths, kept by `crates/application/tests/managed_kind_sites.rs`. Nothing a run can see changes (a lake step still cannot start). Not done:
+  registration (B), the resolve and the two-secret pin (C), admission (E), completion and `ReadBlob` (F), the runner's shell (G).
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
