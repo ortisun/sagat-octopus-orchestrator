@@ -49,6 +49,27 @@ fn text<'a>(document: &'a Value, member: &str) -> Option<&'a str> {
 
 /// The endpoint a URL names. `loopback_http` lets the plain `http` scheme through, for a loopback host only.
 fn endpoint_of(url: &str, loopback_http: bool) -> Result<Endpoint, PolicyError> {
+    let (host, port) = address_of(url, loopback_http)?;
+    Endpoint::new(&host, port).map_err(|_| PolicyError::Url)
+}
+
+/// Whether the last label of a host is a number (`2130706433`, `127.1`, `0x7f.1`): the URL standard reads such a host as an
+/// IPv4 address in a form this parser does not, and a resolver may too. A canonical dotted quad is an address and is fine.
+fn ends_in_a_number(host: &str) -> bool {
+    let last = host
+        .trim_end_matches('.')
+        .rsplit('.')
+        .next()
+        .unwrap_or_default();
+    let hex = last
+        .strip_prefix("0x")
+        .or_else(|| last.strip_prefix("0X"))
+        .is_some_and(|digits| digits.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    !last.is_empty() && (last.bytes().all(|byte| byte.is_ascii_digit()) || hex)
+}
+
+/// The host and the port a URL names, checked: see the module. `loopback_http` lets `http` through for a loopback host.
+fn address_of(url: &str, loopback_http: bool) -> Result<(String, u16), PolicyError> {
     if url.len() > MAX_URL_BYTES
         || !url.is_ascii()
         || url.bytes().any(|byte| {
@@ -94,11 +115,14 @@ fn endpoint_of(url: &str, loopback_http: bool) -> Result<Endpoint, PolicyError> 
             digits.parse::<u16>().map_err(|_| PolicyError::Url)?
         }
     };
-    let endpoint = Endpoint::new(&host, port).map_err(|_| PolicyError::Url)?;
+    Endpoint::new(&host, port).map_err(|_| PolicyError::Url)?;
     if scheme.eq_ignore_ascii_case("http") && !is_loopback(&host) {
         return Err(PolicyError::Url);
     }
-    Ok(endpoint)
+    if !host.starts_with('[') && host.parse::<IpAddr>().is_err() && ends_in_a_number(&host) {
+        return Err(PolicyError::Url);
+    }
+    Ok((host, port))
 }
 
 fn is_loopback(host: &str) -> bool {
@@ -193,11 +217,26 @@ pub fn endpoint_policy(
         .map_err(|_| PolicyError::Locations)?;
 
     if let Some(endpoint) = s3.get("endpoint") {
-        // an S3-compatible store: its address is the whole allowance, and the regional hosts of AWS are not added beside it
-        declared.push(endpoint_of(
-            endpoint.as_str().ok_or(PolicyError::Shape)?,
-            false,
-        )?);
+        // An S3-compatible store: its address is the allowance, and the regional hosts of AWS are not added beside it.
+        let (host, port) = address_of(endpoint.as_str().ok_or(PolicyError::Shape)?, false)?;
+        declared.push(Endpoint::new(&host, port).map_err(|_| PolicyError::Url)?);
+        // With `pathStyle: false` the host asks its client for virtual addressing, and the client then connects to
+        // `<bucket>.<endpoint host>` (measured with PyArrow: `Host: mybucket.localhost:PORT`). Each bucket of the warehouse
+        // is therefore allowed under the store's own name, and no other. An address has no such name, and a bucket with a
+        // dot is reached by path, as it is on S3.
+        let path_style = s3
+            .get("pathStyle")
+            .and_then(Value::as_bool)
+            .ok_or(PolicyError::Shape)?;
+        if !path_style && !host.starts_with('[') && host.parse::<IpAddr>().is_err() {
+            let store = host.trim_end_matches('.').to_ascii_lowercase();
+            for bucket in names.iter().filter(|bucket| !bucket.contains('.')) {
+                declared.push(
+                    Endpoint::new(&format!("{bucket}.{store}"), port)
+                        .map_err(|_| PolicyError::Url)?,
+                );
+            }
+        }
         return Ok(EndpointPolicy::new(declared));
     }
     EndpointPolicy::new(declared)

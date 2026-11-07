@@ -438,6 +438,157 @@ fn no_error_repeats_what_it_was_given() {
     assert!(!shown.contains("hunter2"), "{shown}");
 }
 
+// -- a custom S3 endpoint and the addressing of the client ------------------------------------------------------------------
+
+fn compatible(endpoint: &str, path_style: bool) -> Value {
+    json!({
+        "type": "s3",
+        "s3": {"region": "us-east-1", "endpoint": endpoint, "pathStyle": path_style},
+        "credentials": "static"
+    })
+}
+
+/// With `pathStyle: false` the host sets `s3.force-virtual-addressing`, and PyArrow then asks for `<bucket>.<endpoint host>`
+/// (measured: `Host: mybucket.localhost:PORT` against an endpoint `localhost:PORT`; with path style the Host is the endpoint's
+/// own). So a store reached that way is allowed the host of each bucket of the warehouse under its own name, and nothing else.
+#[test]
+fn a_store_addressed_by_bucket_is_allowed_the_hosts_of_its_buckets_under_its_own_name() {
+    let allowed = policy(
+        &rest("https://catalog.example"),
+        &compatible("https://minio.internal:9000", false),
+        &["s3://lake/warehouse/", "s3://archive/old/"],
+    )
+    .unwrap();
+    for host in [
+        "minio.internal",
+        "lake.minio.internal",
+        "archive.minio.internal",
+    ] {
+        assert!(allowed.allows(host, 9000), "{host}");
+    }
+    for (host, port) in [
+        ("other.minio.internal", 9000),
+        ("lake.minio.internal", 443),
+        ("lake.minio.internal.evil.example", 9000),
+        ("lake.s3.us-east-1.amazonaws.com", 443),
+    ] {
+        assert!(!allowed.allows(host, port), "{host}:{port}");
+    }
+}
+
+#[test]
+fn a_store_addressed_by_path_is_allowed_its_own_host_alone() {
+    let allowed = policy(
+        &rest("https://catalog.example"),
+        &compatible("https://minio.internal:9000", true),
+        &lake(),
+    )
+    .unwrap();
+    assert!(allowed.allows("minio.internal", 9000));
+    assert!(!allowed.allows("lake.minio.internal", 9000));
+}
+
+#[test]
+fn a_store_at_an_address_has_no_host_for_a_bucket_and_a_dotted_bucket_is_reached_by_path() {
+    let by_address = policy(
+        &rest("https://catalog.example"),
+        &compatible("https://203.0.113.9:9000", false),
+        &lake(),
+    )
+    .unwrap();
+    assert!(by_address.allows("203.0.113.9", 9000));
+    assert!(!by_address.allows("lake.203.0.113.9", 9000));
+
+    let dotted = policy(
+        &rest("https://catalog.example"),
+        &compatible("https://minio.internal:9000", false),
+        &["s3://my.lake/warehouse/"],
+    )
+    .unwrap();
+    assert!(dotted.allows("minio.internal", 9000));
+    assert!(!dotted.allows("my.lake.minio.internal", 9000));
+}
+
+// -- one corpus of catalog addresses for both parsers -----------------------------------------------------------------
+
+fn corpus() -> Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/contract/iceberg-writes/fixtures/urls/catalog-uris.json");
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// `runners/lake/tests/test_wire_urls.py` reads the same file and holds the host's check to the same answers.
+#[test]
+fn the_catalog_addresses_both_parsers_must_agree_on() {
+    let corpus = corpus();
+    let accepted = corpus["accept"].as_array().unwrap();
+    let rejected = corpus["reject"].as_array().unwrap();
+    assert!(accepted.len() >= 8 && rejected.len() >= 15);
+    for url in accepted {
+        let url = url.as_str().unwrap();
+        assert!(
+            policy(&rest(url), &s3("eu-west-1"), &lake()).is_ok(),
+            "{url:?} is accepted by the host and was refused here"
+        );
+    }
+    for url in rejected {
+        let url = url.as_str().unwrap();
+        assert_eq!(
+            policy(&rest(url), &s3("eu-west-1"), &lake()).unwrap_err(),
+            PolicyError::Url,
+            "{url:?}"
+        );
+    }
+}
+
+/// Where this parser is stricter than the host on purpose: a host the client would not reach as written is not declared. Each
+/// is refused today; the cases were reasoned through, and are pinned so a change to the parser cannot loosen them unseen.
+#[test]
+fn addresses_that_a_client_might_read_differently_are_refused_here() {
+    for url in [
+        // percent-encoding, which a client may decode and this parser does not
+        "https://catalog%2eexample",
+        "https://catalog.example%40evil.example",
+        "https://%2e",
+        // a zone id, bare or bracketed
+        "https://[fe80::1%25eth0]/",
+        "https://[fe80::1%eth0]/",
+        // numeric hosts that a resolver may read as an address in a form this parser does not
+        "https://2130706433",
+        "https://0x7f.1",
+        "https://017700000001",
+        "https://127.1",
+        // a repeated port, an empty label, a leading dot
+        "https://catalog.example:443:80",
+        "https://.catalog.example",
+        "https://catalog..example",
+        // plain http to a name that looks like the loopback, an address that is not it
+        "http://localhost.",
+        "http://[::ffff:127.0.0.1]:8181",
+        "http://2130706433:8181",
+        "http://LOCALHOST.evil.example:8181",
+    ] {
+        assert_eq!(
+            policy(&rest(url), &s3("eu-west-1"), &lake()).unwrap_err(),
+            PolicyError::Url,
+            "{url:?}"
+        );
+    }
+}
+
+/// A path that begins with `//` is still a path: the authority ends at the first `/`, as the client's does.
+#[test]
+fn a_path_that_begins_with_two_slashes_does_not_change_the_host() {
+    let allowed = policy(
+        &rest("https://catalog.example//evil.example/x"),
+        &s3("eu-west-1"),
+        &lake(),
+    )
+    .unwrap();
+    assert!(allowed.allows("catalog.example", 443));
+    assert!(!allowed.allows("evil.example", 443));
+}
+
 // -- the connection of the wire fixture -------------------------------------------------------------------------------
 
 fn fixture() -> Value {

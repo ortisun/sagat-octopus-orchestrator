@@ -1,0 +1,37 @@
+{
+  "description": "Catalog addresses on which the runner's endpoint policy (crates/infra-lake/src/policy.rs) and the host's check (runners/lake/sagat_lake/connection.py, _url with loopback_http) must AGREE. Each side has its own test that reads this file, so a change to one parser that the other does not follow fails a test. Cases where one side is stricter on purpose are listed in that side's own test, not here.",
+  "accept": [
+    "https://catalog.example",
+    "https://catalog.example/api/v1",
+    "https://catalog.example:8443/",
+    "https://Catalog.EXAMPLE./x",
+    "https://203.0.113.9:8443/",
+    "https://[2001:db8::1]:8443/",
+    "http://localhost:8181",
+    "http://127.0.0.1:8181/x",
+    "http://[::1]:8181"
+  ],
+  "reject": [
+    "",
+    "catalog.example",
+    "ftp://catalog.example",
+    "https://",
+    "https:///path",
+    "https://user@catalog.example",
+    "https://user:secret@catalog.example",
+    "https://catalog.example@evil.example",
+    "https://catalog.example?x=1",
+    "https://catalog.example/path?x=1",
+    "https://catalog.example#fragment",
+    "https://catalog.example:abc",
+    "https://catalog.example:65536",
+    "https://catalog.example:443:80",
+    "https://catalog .example",
+    "https://catalog.example\n",
+    "https://2001:db8::1:443/",
+    "https://[2001:db8::1",
+    "http://catalog.example",
+    "http://10.0.0.5:8181",
+    "http://localhost.evil.example"
+  ]
+}
