@@ -1989,13 +1989,46 @@ The other fixes were wording:
     bounded channel to a blocking task: no `tokio` feature is added.
   - *Errors name no path and no token*: `StagingError` is a closed kind (`AttemptId`, `Exists`, `Io`, `LimitExceeded`, `TooManyFiles`,
     `ZeroLimit`), with a test that no error shows either.
-  - *Evidence.* `cargo test -p sagat-infra-lake`: 24 new tests in `staging.rs` (modes, one directory per attempt, thirteen refused ids,
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 26 new tests in `staging.rs` (modes, one directory per attempt, thirteen refused ids,
     exact byte and record limits for inline and blob sources, an endless blob, a failing stream, a refused blob leaves no file, 32 files,
-    the inputs feed `WriteAppend`, removal and drop); `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D
+    the inputs feed `WriteAppend`, removal and drop, a removal that fails and is retried, a call dropped midway); `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D
     warnings` clean. The module and the tests were written together before the first run, so they were not seen failing for the absence of
     the module; the first run failed to compile on two type slips of mine in the tests. No mutation pass (OD-2026-11-06-2).
+  - *Independent review (security reviewer, given the files and the contract, not my conclusion).* No tenant string reaches a path (the id
+    is `[0-9a-f-]`, names come from a counter and an enum); `create` returns `Exists` before the value exists, so `Drop` never removes a
+    directory the runner did not make; a planted symlink cannot make `remove_dir_all` leave the directory (the pinned toolchain unlinks
+    symlinks); the token is written only to `relay.token`; memory is one 64 KiB buffer and four queued chunks; the counting is right at
+    chunk boundaries. Findings, each checked by reading the code:
+    - *Fixed.* **`remove` consumed the handle and `Drop` swallowed its error**, so a removal that failed left the tree, the token possibly
+      among it, with nobody to say so. `remove` now takes `&mut self` and keeps the attempt on failure, so the driver can retry, report
+      and count the leftover, and `Drop` tries once more (test: a directory the runner cannot enter, skipped when run as root). The
+      directories are now made with their final mode (`DirBuilder`), so there is no instant at which they are wider than 0770; the file's
+      mode is set on the open file (`fchmod`), not on a path. The additions that bound the counts are saturating, because a limit can be
+      any non-zero `u64` (no test can feed 2^64 bytes, so this one is by reading). A call dropped midway (the caller's deadline on a
+      stalled source) removes the half-made blob and leaves its name usable (`Partial`); with the guard's removal disabled three tests
+      fail, which I did to see that they are real. The id's doc said "starts with a digit"; it starts with a hexadecimal digit.
+    - *Not fixed, because it changes an owner decision: O035-006.* The container has the directories read-write in the runner's group
+      (D035-086, OD-2026-11-05-2), so a compromised host can create in them a directory the runner cannot enter (owned by the slot's user,
+      mode 0700, or 000) and `remove_dir_all` stops at it. Repeated, that fills the size-limited work volume and the effect crosses
+      tenants (G035-060). The host writes nothing in the directory (I searched `runners/lake`: it reads `relay.token` and `in/*` and
+      connects to `relay.sock`, which needs search on the directory and write on the socket, not write on the directory), so 0750 on
+      `<attempt>/` and `in/` would take the ability away and nothing else. That tightens a mode the owner chose, and `lake-runtime.md` and
+      the isolation tests state it, so it waits for an answer; 0770 stays until then.
+    - *For the driver.* Wrap `stage_*` in a timeout (a stalled source holds a blocking thread); the attempt directory takes the group of the
+      work root if that is setgid, so the volume's manifest says it must not be; zeroising is the driver's (above). The wording of the
+      slice list in D035-110 (b) said "removal and zeroising at the end": zeroising is not here.
   - *Not done.* The zeroising of the token and of the encoded request line is the driver's, in `apps/database-runner` where `zeroize` is
     already a dependency (adding it here would change a manifest). Nothing calls staging yet.
+- **O035-006** — Should the attempt directories be 0750 instead of 0770? (D035-086 chose 0770 in the runner's group.) *Recommendation: yes.*
+  The container reads `relay.token` and `in/*` and connects to `relay.sock`; it never writes in `<attempt>/` or `in/`. With 0770 a
+  compromised host can create a directory the runner cannot enter, which cannot be removed (G035-060). With 0750 it cannot create
+  anything. The token (0640), the record files (0640) and the socket (0660) keep their modes. It changes the amended text of
+  `lake-runtime.md`, the isolation tests of T035-015 and the `container_config` test that states the group, so it needs the owner's word.
+  *Until answered:* 0770, as decided.
+- **G035-060 — A compromised host can leave a tree on the work volume that the runner cannot remove.** See O035-006 and the review in
+  D035-112. `AttemptDir::remove` keeps the handle on failure so the driver can retry and report; what the runner cannot enter, it cannot
+  delete. *Exit condition:* the owner answers O035-006 (0750 closes it), or a cleanup through the engine (a container as the slot's user
+  that deletes the directory) is built, and the work volume's free space is a metric.
 - **G035-058 — A Parquet blob counts toward the bytes and not toward the records.** The runner does not parse a footer, so
   `max_records` is not enforced on Parquet input by the runner; the host's decoded-bytes budget (8 times the byte ceiling, D035-107) is the
   bound. *Exit condition:* read the row count from the footer in the runner (a Thrift read of a bounded tail), or accept the budget as the

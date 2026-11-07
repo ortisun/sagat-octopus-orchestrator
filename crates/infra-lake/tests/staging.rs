@@ -471,6 +471,69 @@ async fn removing_the_attempt_removes_the_directory_with_everything_in_it() {
     assert_eq!(std::fs::read_dir(work.path()).unwrap().count(), 0);
 }
 
+/// The container is given the directory read-write in the runner's group, so a compromised host can leave a directory the
+/// runner cannot enter (owned by the slot's user, mode 0700). The removal then fails, and the attempt must still be there
+/// to retry and to report: a removal that consumed the handle would leave the tree and the token with nobody to say so.
+/// (Skipped when the test runs as root, which can enter any directory.)
+#[tokio::test]
+async fn a_removal_that_fails_leaves_the_attempt_in_hand_for_a_retry() {
+    let work = tempfile::tempdir().unwrap();
+    let mut attempt = made(work.path(), roomy());
+    let planted = attempt.path().join("in/planted");
+    std::fs::create_dir(&planted).unwrap();
+    std::fs::write(planted.join("file"), b"x").unwrap();
+    std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_dir(&planted).is_ok() {
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+
+    assert_eq!(attempt.remove().unwrap_err(), StagingError::Io);
+    assert!(attempt.path().exists());
+
+    // whoever owns the directory lets go of it, and the same handle removes the rest
+    std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let dir = attempt.path().to_path_buf();
+    attempt.remove().unwrap();
+    assert!(!dir.exists());
+}
+
+/// A call that is dropped before it ends (the caller's deadline) leaves nothing half made and does not use up the name:
+/// the source stalled, the time ran out, and the attempt goes on or is removed. The call is polled once, up to the stalled
+/// read, and then dropped by a branch that is ready at once: no timer, because a paused clock does not advance while a
+/// blocking task (the writer) is alive.
+#[tokio::test]
+async fn a_stage_that_is_dropped_midway_leaves_no_file_and_the_name_can_be_used_again() {
+    struct Stalled;
+    impl tokio::io::AsyncRead for Stalled {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+    let work = tempfile::tempdir().unwrap();
+    let mut attempt = made(work.path(), roomy());
+
+    let blob = attempt.path().join("in/blob-0.ndjson");
+    tokio::select! {
+        biased;
+        _ = attempt.stage_blob(InputFormat::Ndjson, Stalled) => panic!("the stalled source ended by itself"),
+        () = async {} => {}
+    }
+    // the file was made when the call was polled, and is gone now that it was dropped
+    assert!(!blob.exists());
+    assert!(attempt.inputs().is_empty());
+
+    attempt
+        .stage_blob(InputFormat::Ndjson, &b"{}\n"[..])
+        .await
+        .unwrap();
+    assert_eq!(read(&attempt, "blob-0.ndjson"), b"{}\n");
+}
+
 #[test]
 fn dropping_the_attempt_removes_the_directory_too() {
     let work = tempfile::tempdir().unwrap();

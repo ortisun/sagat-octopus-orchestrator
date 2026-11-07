@@ -27,10 +27,20 @@
 //!
 //! The file work is `std::fs`, in a blocking task for the streams, so the crate needs nothing beyond the features of
 //! `tokio` it already uses.
+//!
+//! **What the caller owes.**
+//! - A deadline. A source that stalls holds a blocking thread until the call ends, and nothing here times it out: the
+//!   driver wraps `stage_*` in `tokio::time::timeout`. A call dropped midway leaves no half-made blob file and does not use
+//!   up its name; the attempt is removed, not reused.
+//! - The work volume. The attempt directory takes the group of the work root if that is setgid, and nothing here checks that
+//!   it is the runner's: the volume's manifest says so.
+//! - A look at what the container left. The directories are 0770 in the runner's group (D035-086), so a compromised host can
+//!   create entries in them, among them a directory the runner cannot enter, which `remove` then cannot delete (O035-006,
+//!   G035-060). The host itself writes nothing there: it reads `relay.token` and `in/*` and connects to `relay.sock`.
 
-use std::fs::{self, File, OpenOptions, Permissions};
+use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
 use std::io::{BufWriter, Write as _};
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 use sagat_domain::database::MAX_RECORD_BLOBS;
@@ -53,7 +63,7 @@ const QUEUED_CHUNKS: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum StagingError {
     #[error(
-        "the attempt id is not 1 to 60 lower-case hexadecimal digits and hyphens that start with a digit"
+        "the attempt id is not 1 to 60 lower-case hexadecimal digits and hyphens that start with a hexadecimal digit"
     )]
     AttemptId,
     #[error("the attempt directory, or the inline source, is there already")]
@@ -133,9 +143,37 @@ fn make_file(path: &Path) -> Result<File, StagingError> {
                 StagingError::Io
             }
         })?;
-    // the umask can only take bits away; the mode of the decision is exact
-    fs::set_permissions(path, Permissions::from_mode(FILE_MODE)).map_err(|_| StagingError::Io)?;
+    // the umask can only take bits away; the mode of the decision is exact. On the open file, not on the path.
+    file.set_permissions(Permissions::from_mode(FILE_MODE))
+        .map_err(|_| StagingError::Io)?;
     Ok(file)
+}
+
+/// A directory made with its final mode, so that there is no instant at which it is wider than the decision (a `mkdir` and
+/// a `chmod` after it leave one, and a process of another user could use it). The umask can only narrow what is asked, and
+/// the `chmod` that follows restores the mode of the decision.
+fn make_directory(path: &Path) -> std::io::Result<()> {
+    let mut builder = DirBuilder::new();
+    builder.mode(DIRECTORY_MODE);
+    builder.create(path)
+}
+
+/// A file that is removed if the call that made it is dropped before it ends (the caller's deadline), so that a stalled
+/// source leaves nothing half written and does not use up the name.
+struct Partial(Option<PathBuf>);
+
+impl Partial {
+    fn keep(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for Partial {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 impl AttemptDir {
@@ -154,7 +192,7 @@ impl AttemptDir {
             return Err(StagingError::AttemptId);
         }
         let path = work_root.join(attempt_id);
-        fs::create_dir(&path).map_err(|error| {
+        make_directory(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::AlreadyExists {
                 StagingError::Exists
             } else {
@@ -180,7 +218,7 @@ impl AttemptDir {
         fs::set_permissions(&self.path, Permissions::from_mode(DIRECTORY_MODE))
             .map_err(|_| StagingError::Io)?;
         let records = self.path.join("in");
-        fs::create_dir(&records).map_err(|_| StagingError::Io)?;
+        make_directory(&records).map_err(|_| StagingError::Io)?;
         fs::set_permissions(&records, Permissions::from_mode(DIRECTORY_MODE))
             .map_err(|_| StagingError::Io)?;
         let mut file = make_file(&self.path.join("relay.token"))?;
@@ -265,8 +303,8 @@ impl AttemptDir {
         .and_then(|outcome| outcome);
         match written {
             Ok(staged) => {
-                self.bytes += staged.bytes;
-                self.records += staged.records.unwrap_or(0);
+                self.bytes = self.bytes.saturating_add(staged.bytes);
+                self.records = self.records.saturating_add(staged.records.unwrap_or(0));
                 self.inline = true;
                 self.input("inline.ndjson", InputFormat::Ndjson)?;
                 Ok(staged)
@@ -303,6 +341,7 @@ impl AttemptDir {
         let name = format!("blob-{}.{extension}", self.blobs);
         let path = self.path.join("in").join(&name);
         let file = make_file(&path)?;
+        let partial = Partial(Some(path));
 
         let (chunks, queue) = mpsc::channel::<Vec<u8>>(QUEUED_CHUNKS);
         let writer = tokio::task::spawn_blocking(move || {
@@ -320,19 +359,14 @@ impl AttemptDir {
             .await
             .map_err(|_| StagingError::Io)
             .and_then(|outcome| outcome);
-        match copied.and_then(|staged| written.map(|()| staged)) {
-            Ok(staged) => {
-                self.bytes += staged.bytes;
-                self.records += staged.records.unwrap_or(0);
-                self.blobs += 1;
-                self.input(&name, format)?;
-                Ok(staged)
-            }
-            Err(error) => {
-                let _ = fs::remove_file(&path);
-                Err(error)
-            }
-        }
+        // on an error `partial` removes the file as it goes out of scope, as it does when this call is dropped midway
+        let staged = copied.and_then(|staged| written.map(|()| staged))?;
+        self.bytes = self.bytes.saturating_add(staged.bytes);
+        self.records = self.records.saturating_add(staged.records.unwrap_or(0));
+        self.blobs += 1;
+        self.input(&name, format)?;
+        partial.keep();
+        Ok(staged)
     }
 
     async fn copy<R: AsyncRead + Unpin>(
@@ -354,13 +388,13 @@ impl AttemptDir {
             }
             let chunk = &buffer[..read];
             bytes += read as u64;
-            if self.bytes + bytes > self.limits.max_bytes {
+            if self.bytes.saturating_add(bytes) > self.limits.max_bytes {
                 return Err(StagingError::LimitExceeded);
             }
             if format == InputFormat::Ndjson {
                 lines += chunk.iter().filter(|byte| **byte == b'\n').count() as u64;
                 last = chunk[read - 1];
-                if self.records + lines > self.limits.max_records {
+                if self.records.saturating_add(lines) > self.limits.max_records {
                     return Err(StagingError::LimitExceeded);
                 }
             }
@@ -375,7 +409,7 @@ impl AttemptDir {
                 if bytes > 0 && last != b'\n' {
                     lines += 1;
                 }
-                if self.records + lines > self.limits.max_records {
+                if self.records.saturating_add(lines) > self.limits.max_records {
                     return Err(StagingError::LimitExceeded);
                 }
                 Some(lines)
@@ -387,15 +421,21 @@ impl AttemptDir {
 
     /// Removes the directory and everything in it, the token included.
     ///
+    /// The container had this directory read-write in the runner's group, so a compromised host can leave in it a directory
+    /// the runner cannot enter (the slot's user owns it, mode 0700) and the removal then fails. It fails **without
+    /// letting go of the attempt**: the handle stays, so the driver can retry, report the leftover and count it, and `Drop`
+    /// tries once more. What the runner cannot enter, it cannot remove; that is O035-006 and G035-060.
+    ///
     /// # Errors
     /// [`StagingError::Io`] when something could not be removed; a directory that is gone already is not an error.
-    pub fn remove(mut self) -> Result<(), StagingError> {
-        self.removed = true;
+    pub fn remove(&mut self) -> Result<(), StagingError> {
         match fs::remove_dir_all(&self.path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(_) => Err(StagingError::Io),
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(StagingError::Io),
         }
+        self.removed = true;
+        Ok(())
     }
 }
 
