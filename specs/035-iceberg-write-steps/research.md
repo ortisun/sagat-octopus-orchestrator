@@ -2112,3 +2112,63 @@ The other fixes were wording:
   - *Not done.* The production `LakeSandbox` (a client of the sandbox runner: G035-055 and its ADR), the slot's user for the relay's
     `peer_uid` (the caller), zeroising the request buffer, the lease heartbeat that feeds `on_heartbeat`, `ResolveDatabase`, `ReadBlob`,
     and the report to the control plane (`apps/database-runner/src/lake.rs`).
+- **D035-114 — What the sandbox may reach is derived from the pinned connection by a closed function, `endpoint_policy`.** Sixth slice of
+  T035-035. **Decided by: delegate**.
+  - *Why.* D035-049 says the relay allows only the endpoints declared on the pinned connection or derived from its storage type and
+    region. The relay had the pieces (`Endpoint`, `EndpointPolicy`, `with_s3_regional`) and nothing built an allowance from the documents
+    the platform stores. This is where the text of a URL becomes a list of hosts a sandbox that holds credentials may connect to.
+  - *What it is.* `crates/infra-lake/src/policy.rs`, `endpoint_policy(catalog, storage, locations)` and `Connection::endpoint_policy()`.
+    A REST catalog declares its address (`https`, or `http` for a loopback host only, the way `connection.py` reads it) and, for OAuth2,
+    its token endpoint (`https` only). S3 without an `endpoint` gets the official regional hosts of its region and of each bucket the
+    warehouse locations name (path-style and dual-stack, and virtual-hosted for a bucket without a dot). S3 with an `endpoint` (an
+    S3-compatible store) declares that address, `https` only, **and AWS's regional hosts are not added beside it**: they reach any bucket
+    of anyone's (G035-021), and a store that is not AWS has no use for them.
+  - *Closed.* A URL that could name another host than it seems to is refused: user information, a query, a fragment, a backslash,
+    whitespace, a control character, a non-ASCII byte, a port that is not 1 to 65535, an address with a colon and no brackets, an
+    unclosed bracket, more than 2 KiB. Every connection the host cannot open yet is refused with a name before a container is started
+    (a Glue, Hive or JDBC catalog, GCS or ADLS, an assumed role, remote signing, SigV4: G035-048), because an allowance for a connection
+    that cannot run is an allowance for nothing. The region and the buckets are checked whether or not S3's hosts are used. Errors are a
+    closed kind and repeat nothing of the document (a URL may be a secret pasted where an address was meant).
+  - *Independent review (security reviewer, given the files and the contract, not my conclusion).* No security finding: every URL form it
+    traced (percent-encoding, zone ids, bare IPv6, `host:443:80`, control characters, non-ASCII, a leading or doubled dot) is refused or
+    read as the same host on both sides; the loopback rule is the host's own and the relay refuses loopback addresses outside
+    `development` anyway; a crafted region or bucket cannot leave `amazonaws.com[.cn]` (a region is one label between fixed text); the
+    errors repeat nothing of the document. What it found, checked:
+    - *Fixed (availability).* **A custom S3 endpoint with `pathStyle: false` could not run.** I measured it with PyArrow against a local
+      socket instead of relying on a recollection: with virtual addressing the client sends `Host: mybucket.localhost:PORT`, with path
+      style `Host: localhost:PORT`. The host sets virtual addressing when `pathStyle` is false, so the policy, which declared only the
+      endpoint's own host, would have blocked every request. A store addressed by bucket is now allowed `<bucket>.<endpoint host>` for each
+      bucket of the warehouse without a dot, and nothing else (not another bucket, not another port, not a store at an address).
+    - *Fixed (defence in depth).* A host whose last label is a number (`2130706433`, `127.1`, `0x7f.1`) is refused, as the URL standard
+      reads such a host as an IPv4 address in a form this parser does not. A canonical dotted quad is an address and is fine. (The reviewer
+      said these pass as plain names and that this widens nothing, because the policy holds the literal string and the relay validates
+      every address it resolves; I copied them into my test as refused before checking, the test failed, and I made the code match the
+      standard instead of relaxing the test.)
+    - *Test gap, closed.* The reviewer listed the inputs that nothing pinned; they are in `addresses_that_a_client_might_read_differently_
+      are_refused_here`, and **one corpus of catalog addresses (`tests/contract/iceberg-writes/fixtures/urls/catalog-uris.json`) is read by
+      the Rust test and by `runners/lake/tests/test_wire_urls.py`**, so the two parsers cannot drift apart without a test failing on one side
+      (9 addresses both accept, 21 both refuse; the host agreed with all 30 on the first run).
+    - *Recorded, not changed (all fail closed).* G035-061: a development namespace cannot use a plain-`http` S3 or token endpoint, which the
+      domain accepts (`infra-postgres` has a fixture with `http://rustfs.local:9000`): the host and this policy both refuse it
+      (D035-105), so the Compose fixtures of T035-004 need a development-only decision. G035-062: regions outside `amazonaws.com[.cn]`
+      (`amazonaws.eu`), buckets the domain accepts and S3 no longer creates (uppercase, underscores, under three characters), and whether
+      PyArrow with `us-east-1` asks for `s3.amazonaws.com` (the legacy global host) instead of the regional one, which I did not measure.
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 243 passed (26 in `policy.rs`, which also pins that the connection of the wire fixture
+    allows exactly its four hosts and nothing else); `runners/lake`: 1116 passed, 1 skipped, `ruff` and strict `mypy` clean; `cargo fmt
+    --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` clean. The first 20 tests were written with the module
+    and passed at once; the virtual-addressing test was written before the fix and failed for the right reason. Two mutations by hand:
+    letting AWS's hosts in beside a custom endpoint fails its test; accepting user information in the authority does **not** fail any,
+    because `Endpoint::new` already refuses a host with an `@` (an equivalent mutant: the explicit check is defence in depth). No mutation
+    pass (OD-2026-11-06-2).
+  - *Not done.* The operator's list of networks the relay may reach (`RelayConfig::new(allow)`) and the mappings for non-HTTP routes
+    (Hive, a JDBC catalog) come with the loaders (G035-048); nothing calls `endpoint_policy` yet: the driver builds the `Relay` with it.
+- **G035-061 — A development namespace cannot use a plain-`http` S3 or token endpoint.** The domain accepts one
+  (`crates/domain/src/database/iceberg.rs`; the `infra-postgres` round-trip fixture uses `http://rustfs.local:9000`); the host
+  (`connection.py`, D035-105) and `endpoint_policy` refuse it, on purpose. The Compose fixtures of T035-004 (RustFS, a catalog) need a
+  decision: a development-only allowance in the host and in the policy, tied to the relay's `development(true)`, or `https` fixtures.
+  *Exit condition:* that decision, with a test on both sides.
+- **G035-062 — The S3 allowance is narrower than S3.** `endpoint_policy` fails closed for regions outside `amazonaws.com[.cn]` (the
+  `amazonaws.eu` partition), for buckets the domain accepts and S3 no longer creates (uppercase, underscores, fewer than three
+  characters), and I did not measure whether PyArrow with `us-east-1` asks for the legacy global host `s3.amazonaws.com` instead of
+  `s3.us-east-1.amazonaws.com` (a test asserts the legacy host is not allowed). *Exit condition:* measure it against the pinned
+  PyArrow, and either allow the host or write down why not; decide the other partitions with the loaders.

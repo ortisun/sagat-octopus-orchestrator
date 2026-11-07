@@ -6,6 +6,7 @@
 
 pub mod attempt;
 pub mod control;
+pub mod policy;
 pub mod protocol;
 pub mod relay;
 pub mod staging;
