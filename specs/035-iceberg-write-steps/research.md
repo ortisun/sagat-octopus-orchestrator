@@ -1897,3 +1897,77 @@ The other fixes were wording:
   code is added.
 - **G035-055 — The sandbox-runner API for the lake runner (the open half of G035-022).** See the recommendation in D035-110 (d). *Exit
   condition:* the ADR, the API, the per-node ceiling, and T035-015 run through it on Compose, and on Kubernetes under T035-029.
+- **G035-056 — The relay does not require `peer_uid`, and `CONTROL` is the first request that gives the peer something.** Whoever
+  presents the token first receives the request line with the credentials; the token file is group-readable (D035-086). *Exit condition:*
+  the driver sets `RelayConfig::with_peer_uid` to the slot's user, with a test that a peer of another user is refused (D035-110, review).
+- **G035-057 — A failure's `column` is text the host chooses, and the host holds the credentials.** Narrowed by D035-111 (a column that is
+  not a plain name is not repeated); not closed, because letters and digits still carry a few dozen bytes an attempt. *Exit condition:* the
+  driver reports a column only when the platform can match it (a mapped column, or a field of the staged records), or the owner accepts
+  the channel.
+- **G035-054 — Closed by D035-111.**
+- **D035-111 — What the runner reports when an attempt ends, and which ending wins when two are ready.** Third slice of T035-035.
+  **Decided by: delegate**.
+  - *Why a table in its own module.* The driver waits on the conversation, the container, the deadline, the lease and a cancellation at
+    once, and the contract lists the kill conditions without saying what each reports (G035-054). `crates/infra-lake/src/supervisor.rs`
+    is that table as a pure function, `dispose(Ended, ContainerFacts) -> Disposition`, with no I/O and no clock: every row is a test, and
+    `Ended` is exhaustive so a new way to end is a compile error until someone decides.
+  - *The rows.* The host's receipt completes the step (and stands whatever happens to the container afterwards); the host's failure is
+    reported with its code, its reason and its column; no result, a break of the protocol or silence is `LAKE_HOST_PROTOCOL` (retryable);
+    the same with the memory limit having killed the container is `ICEBERG_LIMIT_EXCEEDED` (not retryable: the write does not fit, so
+    repeating it repeats the kill; a break that came before the kill, such as a malformed line, stays `LAKE_HOST_PROTOCOL`, and so does a
+    host that never connected: it died of how the deployment started it, not of what the write needs); a container that could not be
+    started or was lost is `LAKE_SANDBOX_UNAVAILABLE` (retryable); **the deadline or a cancellation before the request was sent** is
+    `DATABASE_TIMEOUT` / `DATABASE_CANCELLED` (`errors.md` says the 017 codes are reused); **after the request was sent** both are
+    `OUTCOME_UNKNOWN`; a lost lease reports nothing. `contracts/errors.md` is not edited (a contract file selects the whole stack in CI,
+    and its test pins codes and retry flags, not descriptions); the memory kill is a wider reading of "bytes … above the effective
+    limit", noted here. The flag reported with a failure is the contract's flag for its code (`Failure::retryable`).
+  - *Correction after the review: an unknown outcome after the request.* My first version said that **no** ending is `OUTCOME_UNKNOWN`
+    because the next attempt's lookup settles it. That holds only for the endings the engine retries (`LAKE_HOST_PROTOCOL`,
+    `LAKE_SANDBOX_UNAVAILABLE`); a deadline or a cancellation is not retried, so a commit that landed just before it would have ended
+    as a final failure with a snapshot in the table and no receipt, and nothing would ever look the effect key up. Two precedents say
+    otherwise: the 017 executor turns a timeout or cancel after dispatch into `OutcomeUnknown` (`executor.rs`), and G035-043 says to treat
+    a killed attempt as an unknown outcome. So the facts now carry whether the request was sent (`AttemptFacts::request_sent`), and
+    after it a deadline or a cancel is `OUTCOME_UNKNOWN`; a person retries it with `saga:override` (D035-069) and the lookup finds the
+    commit (`foundByLookup`) instead of writing again. The memory kill stays `ICEBERG_LIMIT_EXCEEDED`: a kill while data files are built
+    is the usual case, and a manual retry finds a commit made just before it, but this is a residual risk, not a proof.
+  - *Differs from the 017 runner on purpose.* `apps/database-runner/src/attempt.rs` folds three causes into one cancellation token (the
+    lease ran out, a heartbeat failed or timed out, the server asked for a cancel) and reports `Cancelled` for all of them, so a network
+    blip during a heartbeat can fail a step for good if the lease is still valid. The lake driver keeps them apart: only a cancel the server
+    asked for reports `DATABASE_CANCELLED`; a heartbeat that is refused or fails, or a lease that runs out, is `LeaseLost` and reports
+    nothing. The container is killed either way; the step is leased again when the lease expires, and the next attempt's lookup of the
+    effect key settles what was committed. The cost is the lease's remaining time before the retry; the gain is that an uncertain
+    situation never changes the step's state.
+  - *Which ending wins.* Two can be ready in the same poll. `Ended::strongest` decides, with a test for every pair: a lost lease, then a
+    result the host gave, then a cancellation, then the deadline, then a broken conversation, then a host that never connected, then a
+    sandbox that did not start. A result that arrives as the deadline passes is a completed step; a lost lease beats even a result.
+  - *G035-057 narrowed.* A failure's `column` is kept only if it is letters and digits of any script, `_`, `.`, `-` and a space; anything
+    with an encoding character (`+ / =`), markup, a separator or an invisible one is dropped and the code is reported without it. A
+    control character never gets here: the decoder refuses a failure that has one.
+  - *Independent review (correctness reviewer, given the files and the contract, not my conclusion).* `strongest` is right (exhaustive
+    `rank`, the first of equals wins, every pair tested); the codes exist and their flags match `failure.rs`. Findings, each checked
+    against the code:
+    - *Fixed.* The unknown outcome after a deadline or a cancel (above). **A host could report any code**, including `DATABASE_CANCELLED`,
+      `DATABASE_TIMEOUT` and `LAKE_SANDBOX_UNAVAILABLE`, because the decoder accepted every code of the table and the supervisor passed it
+      through: a hostile or buggy host could make a run look cancelled or timed out. The decoder now accepts the 18 codes a host may
+      report (`HOST_MAY_REPORT`, `OUTCOME_UNKNOWN` among them because the host reports it when its lookup is inconclusive, D035-030 step
+      3), and anything else is `InvalidFailure`, which is `LAKE_HOST_PROTOCOL`. A list of that kind can drift, so a test scans the Python
+      host's sources for the code literals it raises and fails if one is not on the list (it fails closed and visibly when a Hive loader
+      or a new operation adds a code). A memory kill no longer blames the write for a host that **never connected** (a container that dies
+      at start died of how the deployment started it). The `Disposition` does not carry a retry flag of its own; `Failure::retryable` is the
+      contract's flag for the code, with a test that the reported flag is that flag.
+    - *Documented, not changed.* A heartbeat that merely failed is `LeaseLost` too, so a finished commit may be discarded while the lease is
+      still valid at the server; the step is leased again and the lookup finds the commit. The engine's `oom_killed` is Docker's
+      `State.OOMKilled`, which an OOM event on any process of the cgroup sets: a host that lost a child to it and then went quiet for
+      another reason reads as a memory kill (the host is the only process and its threads are not processes, so this is the rare case).
+      `LakeContainer` has no inspect, so the attempt path has no source for `memory_killed` until G035-055. `SandboxUnavailable` now
+      says it also covers a sandbox lost mid-attempt, which may leave a host running that holds credentials; the next attempt's
+      conditional commit does not mind it (D035-030), and the driver slice must still try to kill it.
+    - *Tests.* The memory guard lists now include `InvalidReceipt` and `InvalidFailure`; a host failure with a memory-killed container
+      is tested; the retry flags are asserted; rows have their `request_sent` variants.
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 148 passed (22 in `supervisor.rs`, 24 in `control.rs`, 40 in `relay.rs`, 39 in
+    `protocol.rs`, 22 in `write_body.rs`, 1 unit); `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings`
+    clean. The decoder tests (a host cannot report a code of the runner's) were written first and seen failing (`DATABASE_CANCELLED` was
+    accepted). For the supervisor I changed tests and module together before running, so those were not seen failing; they are
+    equality assertions on the code of each row. No mutation pass (OD-2026-11-06-2).
+  - *Not done.* Nothing calls `dispose` yet: the driver (`lake.rs`) gathers the facts and acts on the answer, and the container's
+    `memory_killed` comes from the sandbox API (G035-055).
