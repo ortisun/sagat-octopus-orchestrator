@@ -250,21 +250,6 @@
         "status": 422,
         "traceId": "<trace:6>"
       },
-      "id": "cancel-source-refused",
-      "ok": false,
-      "op": "reset"
-    },
-    {
-      "error": {
-        "code": "VALIDATION_FAILED",
-        "message": "<text>",
-        "reason": null,
-        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
-        "retryAfterMs": null,
-        "retryable": false,
-        "status": 422,
-        "traceId": "<trace:7>"
-      },
       "id": "short-reason",
       "ok": false,
       "op": "reset"
@@ -308,7 +293,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 409,
-        "traceId": "<trace:8>"
+        "traceId": "<trace:7>"
       },
       "id": "reset-other-sequence",
       "ok": false,
@@ -330,7 +315,7 @@
         "runId": "<uuid:4>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
-        "traceId": "<trace:9>",
+        "traceId": "<trace:8>",
         "updatedAt": "<time>",
         "version": "<n>",
         "versionId": "<uuid:2>",
@@ -463,7 +448,7 @@
         "runId": "<uuid:6>",
         "startedBy": "alice",
         "status": "RUNNING",
-        "traceId": "<trace:10>",
+        "traceId": "<trace:9>",
         "updatedAt": "<time>",
         "version": "<n>",
         "versionId": "<uuid:7>",
@@ -495,7 +480,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 409,
-        "traceId": "<trace:11>"
+        "traceId": "<trace:10>"
       },
       "id": "open-source",
       "ok": false,
@@ -510,7 +495,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 404,
-        "traceId": "<trace:12>"
+        "traceId": "<trace:11>"
       },
       "id": "other-tenant",
       "ok": false,
@@ -525,7 +510,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 403,
-        "traceId": "<trace:13>"
+        "traceId": "<trace:12>"
       },
       "id": "viewer-cannot-reset",
       "ok": false,
@@ -546,7 +531,7 @@
         "runId": "<uuid:9>",
         "startedBy": "alice",
         "status": "RUNNING",
-        "traceId": "<trace:14>",
+        "traceId": "<trace:13>",
         "updatedAt": "<time>",
         "version": "<n>",
         "versionId": "<uuid:10>",
@@ -583,7 +568,7 @@
         "runId": "<uuid:9>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
-        "traceId": "<trace:14>",
+        "traceId": "<trace:13>",
         "updatedAt": "<time>",
         "version": "<n>",
         "versionId": "<uuid:10>",
@@ -753,7 +738,7 @@
         "runId": "<uuid:12>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
-        "traceId": "<trace:15>",
+        "traceId": "<trace:14>",
         "updatedAt": "<time>",
         "version": "<n>",
         "versionId": "<uuid:10>",
@@ -915,9 +900,372 @@
           }
         ]
       }
+    },
+    {
+      "id": "held",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:16>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:15>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:17>",
+        "workflowId": "<uuid:18>"
+      }
+    },
+    {
+      "id": "held-running",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "held-cancel-source",
+      "ok": true,
+      "op": "reset",
+      "result": {
+        "createdAt": "<time>",
+        "failureReason": null,
+        "newRunId": null,
+        "reapplyReport": [],
+        "resetId": "<uuid:19>",
+        "sequence": 1,
+        "sourceRunId": "<uuid:16>",
+        "state": "PENDING_SOURCE"
+      }
+    },
+    {
+      "id": "held-cancel-source-again",
+      "ok": true,
+      "op": "reset",
+      "result": {
+        "createdAt": "<time>",
+        "failureReason": null,
+        "newRunId": null,
+        "reapplyReport": [],
+        "resetId": "<uuid:19>",
+        "sequence": 1,
+        "sourceRunId": "<uuid:16>",
+        "state": "PENDING_SOURCE"
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "IDEMPOTENCY_KEY_REUSED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:16>"
+      },
+      "id": "held-cancel-source-other-request",
+      "ok": false,
+      "op": "reset"
+    },
+    {
+      "id": "held-status",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:16>",
+        "startedBy": "alice",
+        "status": "CANCELLING",
+        "traceId": "<trace:15>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:17>",
+        "workflowId": "<uuid:18>"
+      }
+    },
+    {
+      "id": "held-register",
+      "ok": true,
+      "op": "resets",
+      "result": {
+        "items": [
+          {
+            "createdAt": "<time>",
+            "failureReason": null,
+            "newRunId": null,
+            "reapplyReport": [],
+            "resetId": "<uuid:19>",
+            "sequence": 1,
+            "sourceRunId": "<uuid:16>",
+            "state": "PENDING_SOURCE"
+          }
+        ]
+      }
+    },
+    {
+      "id": "held-entry",
+      "ok": true,
+      "op": "getReset",
+      "result": {
+        "createdAt": "<time>",
+        "failureReason": null,
+        "newRunId": null,
+        "reapplyReport": [],
+        "resetId": "<uuid:19>",
+        "sequence": 1,
+        "sourceRunId": "<uuid:16>",
+        "state": "PENDING_SOURCE"
+      }
+    },
+    {
+      "id": "held-source-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:16>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:15>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:17>",
+        "workflowId": "<uuid:18>"
+      }
+    },
+    {
+      "id": "held-new-run-done-by-the-worker",
+      "ok": true,
+      "op": "awaitWorkerLog"
+    },
+    {
+      "id": "held-entry-made",
+      "ok": true,
+      "op": "getReset",
+      "result": {
+        "createdAt": "<time>",
+        "failureReason": null,
+        "newRunId": "<uuid:20>",
+        "reapplyReport": [],
+        "resetId": "<uuid:19>",
+        "sequence": 1,
+        "sourceRunId": "<uuid:16>",
+        "state": "CREATED"
+      }
+    },
+    {
+      "id": "held-register-made",
+      "ok": true,
+      "op": "resets",
+      "result": {
+        "items": [
+          {
+            "createdAt": "<time>",
+            "failureReason": null,
+            "newRunId": "<uuid:20>",
+            "reapplyReport": [],
+            "resetId": "<uuid:19>",
+            "sequence": 1,
+            "sourceRunId": "<uuid:16>",
+            "state": "CREATED"
+          }
+        ]
+      }
+    },
+    {
+      "id": "held-new-run-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "rerunOf": "<uuid:16>",
+        "runId": "<uuid:20>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": null,
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:17>",
+        "workflowId": "<uuid:18>"
+      }
+    },
+    {
+      "id": "ended-source-cancel-source",
+      "ok": true,
+      "op": "reset",
+      "result": {
+        "createdAt": "<time>",
+        "failureReason": null,
+        "newRunId": "<uuid:21>",
+        "reapplyReport": [],
+        "resetId": "<uuid:22>",
+        "sequence": 4,
+        "sourceRunId": "<uuid:1>",
+        "state": "CREATED"
+      }
+    },
+    {
+      "id": "ended-source-cancel-source-done",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "rerunOf": "<uuid:1>",
+        "runId": "<uuid:21>",
+        "startedBy": "alice",
+        "status": "SUCCEEDED",
+        "traceId": "<trace:17>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:18>"
+      },
+      "id": "unknown-source-policy",
+      "ok": false,
+      "op": "reset"
     }
   ],
   "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "a",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "b",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:21>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "held",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:20>",
+      "status": "SUCCEEDED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 1,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "held",
+          "kind": "FORWARD",
+          "status": "SUCCEEDED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:16>",
+      "status": "CANCELLED"
+    },
     {
       "nodes": [
         {
@@ -1239,7 +1587,7 @@
         "targetIdempotencyKey": "",
         "targetNode": "",
         "taskKind": "FORWARD",
-        "traceId": "<trace:9>",
+        "traceId": "<trace:8>",
         "traceparentPresent": true
       },
       {
@@ -1258,7 +1606,7 @@
         "targetIdempotencyKey": "",
         "targetNode": "",
         "taskKind": "FORWARD",
-        "traceId": "<trace:14>",
+        "traceId": "<trace:13>",
         "traceparentPresent": true
       },
       {
@@ -1284,7 +1632,7 @@
         "targetIdempotencyKey": "",
         "targetNode": "",
         "taskKind": "FORWARD",
-        "traceId": "<trace:14>",
+        "traceId": "<trace:13>",
         "traceparentPresent": true
       },
       {
@@ -1310,7 +1658,7 @@
         "targetIdempotencyKey": "",
         "targetNode": "",
         "taskKind": "FORWARD",
-        "traceId": "<trace:15>",
+        "traceId": "<trace:14>",
         "traceparentPresent": true
       },
       {
@@ -1329,8 +1677,65 @@
         "targetIdempotencyKey": "",
         "targetNode": "",
         "taskKind": "FORWARD",
-        "traceId": "<trace:16>",
+        "traceId": "<trace:19>",
         "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "reset.b",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:21>:b",
+        "input": {},
+        "kind": "activity",
+        "node": "b",
+        "outcome": "returned",
+        "steps": {
+          "a": {
+            "step": "a"
+          }
+        },
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:17>",
+        "traceparentPresent": true
+      }
+    ],
+    "w2": [
+      {
+        "abortedReason": "run-cancelled",
+        "activity": "reset.held",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:16>:held",
+        "input": {},
+        "kind": "activity",
+        "node": "held",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "<trace:15>",
+        "traceparentPresent": true
+      },
+      {
+        "abortedReason": null,
+        "activity": "reset.held",
+        "attempt": 1,
+        "deadlineAhead": true,
+        "idempotencyKey": "<uuid:20>:held",
+        "input": {},
+        "kind": "activity",
+        "node": "held",
+        "outcome": "returned",
+        "steps": {},
+        "targetIdempotencyKey": "",
+        "targetNode": "",
+        "taskKind": "FORWARD",
+        "traceId": "",
+        "traceparentPresent": false
       }
     ]
   }

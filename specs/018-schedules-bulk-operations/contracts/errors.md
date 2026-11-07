@@ -44,8 +44,9 @@ caller or another tenant's identifier. A foreign resource is `NOT_FOUND` without
 | `VALIDATION_FAILED` | 422 | `RESET_NOT_SUPPORTED_FOR_SOURCE` | no | reset points/preview/reset | Child runs, members of a continuation chain and runs of a database execution cannot be reset in this version. |
 | `VALIDATION_FAILED` | 422 | `RESET_POINT_NOT_ELIGIBLE` | no | preview/reset | Choose a sequence listed by `listResetPoints`. |
 | `VALIDATION_FAILED` | 422 | `RESET_PREFIX_TOO_LONG` | no | preview/reset | The prefix exceeds the reset ceiling; choose an earlier point. |
-| `VALIDATION_FAILED` | 422 | `RESET_REEXECUTION_NOT_ACKNOWLEDGED` | no | reset | Steps that completed in the source will run again; set `acknowledgeReexecution`. |
-| `CONFLICT` | 409 | `RESET_SOURCE_NOT_TERMINAL` | no | reset with `REQUIRE_TERMINAL` | Wait for the run to end; resetting a run that is still open (`CANCEL_SOURCE`) is not available in this version. |
+| `VALIDATION_FAILED` | 422 | `RESET_REEXECUTION_NOT_ACKNOWLEDGED` | no | reset | Steps that completed in the source, or that are in flight in a run being cancelled, will run again; set `acknowledgeReexecution`. |
+| `CONFLICT` | 409 | `RESET_SOURCE_NOT_TERMINAL` | no | reset with `REQUIRE_TERMINAL` | Wait for the run to end, or ask for `sourcePolicy: CANCEL_SOURCE` to cancel it and have the run created when it has ended. |
+| `VALIDATION_FAILED` | 422 | `RESET_CANCEL_SOURCE_NOT_AVAILABLE` | no | reset with `CANCEL_SOURCE` of a run that has not ended, on a deployment that does not serve it | Wait for the run to end and reset it then, or ask the operator of the platform to enable resets that cancel their source. |
 | `VALIDATION_FAILED` | 422 | `RESET_RULE_MISSING` | no | reset points/preview/reset whose prefix holds an event type without a rule in the reset-rule registry (`details.eventType`) | Reset to an earlier point; the owning feature must declare the rule. |
 | `VALIDATION_FAILED` | 422 | `RESET_REAPPLY_NOT_AVAILABLE` | no | preview/reset with `reapply` other than `NONE` on a deployment that does not serve it | Ask for `reapply: NONE`, or ask the operator of the platform to enable reset reapply. |
 | `VALIDATION_FAILED` | 422 | `RESET_REAPPLY_TOO_MANY` | no | preview/reset with `reapply` | The run received more than 256 signals and retained Updates after that point; choose a later point or `reapply: NONE`. |
@@ -67,6 +68,10 @@ Schedule action `reason`: `TRACKING_LIMIT`, `VERSION_MISSING`, `ADMISSION_REFUSE
 Reset `failureReason`: `BOUNDARY_NO_LONGER_ELIGIBLE`, `ADMISSION_REFUSED`, `BUSINESS_ID_IN_USE`,
 `CONCURRENCY_PERMIT_UNAVAILABLE`, `RUN_PURGED`, and the reason of a `REMATERIALIZE` rule that could not
 be applied (`RESOURCE_UNAVAILABLE`, `VARIABLE_NOT_FOUND`, `SNAPSHOT_RETIRED`, as their owners define).
+`CANCEL_SOURCE` (D1996..D2005) adds three, written by the pass that completes a pending reset:
+`AUTHORITY_REVOKED` (the member who asked no longer holds `run:operate`, `run:start` or what the reapply needs, or is
+no longer a member), `REEXECUTION_NOT_ACKNOWLEDGED` (steps completed after the point and the request did not
+acknowledge the re-execution) and `REAPPLY_TOO_MANY` (the source received more to deliver again than a reset may).
 Reapply `reason`: `NO_WAITING_STEP`, `AFTER_UNDELIVERED_SIGNAL`, `UPDATE_REJECTED`, `NOT_RETAINED`,
 `LEGACY_EVENT`, `REAPPLY_LIMIT`.
 

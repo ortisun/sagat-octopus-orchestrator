@@ -18,7 +18,7 @@ use sagat_infra_connectors::redis::RedisConfig;
 use sagat_infra_nats::NatsConfig;
 use sagat_scheduler::{
     BatchSettings, DeliverySettings, DispatchSettings, EventDispatchSettings, KeeperSettings,
-    MonitorSettings, ProjectorSettings, ScheduleSettings, SchedulerSettings,
+    MonitorSettings, ProjectorSettings, ResetSettings, ScheduleSettings, SchedulerSettings,
 };
 use sagat_telemetry::OtlpConfig;
 
@@ -39,6 +39,26 @@ pub struct MonitorConfig {
     pub settings: MonitorSettings,
     /// How often it looks.
     pub interval: Duration,
+}
+
+/// The passes of the engine that run only where the operator asked for them, by name (D2009).
+pub const PASS_SCHEDULES: &str = "schedules";
+pub const PASS_BATCHES: &str = "batches";
+pub const PASS_RESETS: &str = "resets";
+
+/// Which of the optional passes this configuration runs: a function of the configuration alone, so that "the pass that
+/// completes the resets that wait for their source is absent unless the operator turned it on" is a thing a test can
+/// say (it was the one pass whose absence nothing could assert, G1992). `serve` starts exactly these.
+#[must_use]
+pub fn optional_passes(config: &EngineConfig) -> Vec<&'static str> {
+    [
+        (config.schedules_enabled, PASS_SCHEDULES),
+        (config.batches_enabled, PASS_BATCHES),
+        (config.reset_cancel_source_enabled, PASS_RESETS),
+    ]
+    .into_iter()
+    .filter_map(|(enabled, name)| enabled.then_some(name))
+    .collect()
 }
 
 /// Everything `serve` needs beyond the shared database settings.
@@ -87,6 +107,13 @@ pub struct EngineConfig {
     pub batches: BatchSettings,
     /// Pause between batch rounds when the last one found nothing to do.
     pub batch_poll: Duration,
+    /// Whether the replica completes the resets that wait for their source run to end
+    /// (`SAGAT_RESET_CANCEL_SOURCE_ENABLED`, off by default until the feature is released): the REST routes can accept
+    /// them either way (under the same variable of the control plane), none is completed without it.
+    pub reset_cancel_source_enabled: bool,
+    pub resets: ResetSettings,
+    /// Pause between rounds of the pass that completes pending resets when the last one found nothing to do.
+    pub reset_poll: Duration,
     /// The worker that sends outbound webhooks.
     pub deliveries: DeliverySettings,
     /// Pause between delivery rounds when the last one found nothing to send.
@@ -643,6 +670,43 @@ impl EngineConfig {
             optional(get, "SAGAT_BATCHES_POLL_MS", 1_000u64)?,
         )?);
 
+        let reset_cancel_source_enabled = flag(get, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")?;
+        let reset_defaults = ResetSettings::default();
+        let resets = ResetSettings {
+            batch: u32::try_from(positive(
+                "SAGAT_RESET_CANCEL_SOURCE_BATCH",
+                optional(
+                    get,
+                    "SAGAT_RESET_CANCEL_SOURCE_BATCH",
+                    u64::from(reset_defaults.batch),
+                )?,
+            )?)
+            .ok()
+            .filter(|batch| *batch <= ResetSettings::MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_RESET_CANCEL_SOURCE_BATCH",
+                reason: format!("must be at most {}", ResetSettings::MAX_BATCH),
+            })?,
+            per_tenant: u32::try_from(positive(
+                "SAGAT_RESET_CANCEL_SOURCE_PER_TENANT",
+                optional(
+                    get,
+                    "SAGAT_RESET_CANCEL_SOURCE_PER_TENANT",
+                    u64::from(reset_defaults.per_tenant),
+                )?,
+            )?)
+            .ok()
+            .filter(|share| *share <= ResetSettings::MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_RESET_CANCEL_SOURCE_PER_TENANT",
+                reason: format!("must be at most {}", ResetSettings::MAX_BATCH),
+            })?,
+        };
+        let reset_poll = Duration::from_millis(positive(
+            "SAGAT_RESET_CANCEL_SOURCE_POLL_MS",
+            optional(get, "SAGAT_RESET_CANCEL_SOURCE_POLL_MS", 1_000u64)?,
+        )?);
+
         let delivery_defaults = DeliverySettings::default();
         let deliveries = DeliverySettings {
             batch: u32::try_from(positive(
@@ -856,6 +920,9 @@ impl EngineConfig {
             batches_enabled,
             batches,
             batch_poll,
+            reset_cancel_source_enabled,
+            resets,
+            reset_poll,
             deliveries,
             delivery_poll,
             connector_refresh,

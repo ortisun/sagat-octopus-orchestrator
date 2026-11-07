@@ -1013,6 +1013,12 @@ impl RunStore for PgRunStore {
             if let Some(schedule) = &new.schedule {
                 crate::schedules::lock_for_admission(&mut tx, tenant, schedule).await?;
             }
+            // The completion of a reset that waited takes its fence and its entry in the same slot: the one of
+            // the aggregates that create runs. An entry that was completed first, or a lease that moved, ends
+            // the transaction here, before anything is written.
+            if let Some(pending) = &new.pending_reset {
+                resets::lock_pending(&mut tx, tenant, pending).await?;
+            }
             // The business identifier of the start is claimed next, in the same slot: after the
             // schedule's row and before any run's (ADR-0050 decision 7). A refusal, or a holder
             // returned in place of a new run, ends the transaction here so the binding's row is not
@@ -1142,6 +1148,11 @@ impl RunStore for PgRunStore {
                     crate::quotas::lock_secrets(&mut tx, tenant, new.info.namespace_id).await?;
                 }
                 crate::schedules::recheck_authority(&mut tx, tenant, schedule, database).await?;
+            }
+            // The member who asked for the reset is looked at again where the run is admitted, under the lock
+            // of their membership: a revocation that has returned stops the run.
+            if let Some(pending) = &new.pending_reset {
+                resets::recheck_requester(&mut tx, tenant, pending).await?;
             }
             let bindings = if new
                 .definition
@@ -1603,6 +1614,14 @@ impl RunStore for PgRunStore {
         run: RunId,
     ) -> Result<Option<sagat_application::runs::ResetRecord>, StoreError> {
         resets::made(&self.pool, tenant, run).await
+    }
+
+    async fn reset_receipt(
+        &self,
+        tenant: TenantId,
+        idempotency: &Idempotency,
+    ) -> Result<Option<String>, StoreError> {
+        resets::receipt(&self.pool, tenant, idempotency).await
     }
 
     async fn payload_contents(
@@ -3783,6 +3802,13 @@ impl RunTx for PgRunTx {
         registration: &'a sagat_application::runs::ResetRegistration<'a>,
     ) -> Result<(), StoreError> {
         resets::register(self, registration).await
+    }
+
+    async fn register_pending_reset<'a>(
+        &'a mut self,
+        registration: &'a sagat_application::runs::PendingRegistration<'a>,
+    ) -> Result<(), StoreError> {
+        resets::register_pending(self, registration).await
     }
 
     async fn remember_start_served<'a>(

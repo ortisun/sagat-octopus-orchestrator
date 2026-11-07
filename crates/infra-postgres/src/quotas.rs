@@ -465,6 +465,35 @@ pub(crate) async fn ensure_room_for_batch(
     judge(QuotaResource::TenantBatchJobs, in_tenant, tenant_limit)
 }
 
+/// Takes the lock of the pending resets of one namespace for the rest of the transaction.
+pub(crate) async fn lock_pending_resets(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::PendingResets, tenant, Some(namespace)).await
+}
+
+/// A new reset that waits for its source fits in its namespace: the ones still waiting count. The caller holds
+/// [`lock_pending_resets`].
+pub(crate) async fn ensure_room_for_pending_reset(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_resets \
+         WHERE tenant_id = $1 AND namespace_id = $2 AND state = 'PENDING_SOURCE'",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::PendingResets, count, limit)
+}
+
 /// Takes the lock of the scripts of one namespace for the rest of the transaction.
 pub(crate) async fn lock_scripts(
     conn: &mut PgConnection,
@@ -1179,6 +1208,14 @@ impl QuotaStore for PgRunStore {
                  WHERE tenant_id = $1 AND state IN ('SELECTING', 'RUNNING', 'CANCELLING')",
             )
             .bind(tenant.as_uuid())
+            .fetch_one(&self.pool)
+            .await,
+            QuotaResource::PendingResets => sqlx::query_scalar(
+                "SELECT count(*) FROM run_resets \
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND state = 'PENDING_SOURCE'",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
             .fetch_one(&self.pool)
             .await,
             QuotaResource::ApiRequestsPerSecond

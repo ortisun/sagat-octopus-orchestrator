@@ -357,6 +357,11 @@ pub fn authorize_cancelling(principal: &Principal, overlap: Overlap) -> Result<(
 /// this text, which the firing tells apart from "another process acted first".
 pub const AUTHORITY_REVOKED: &str = "the subject the action acts for no longer holds its authority";
 
+/// What a transaction that is fenced by the lease of a shard is refused with when the lease is no longer held (it ran
+/// out, or another replica took the shard over): an ordinary race, after which nothing has changed. The passes that
+/// are fenced (schedules, batch jobs, pending resets) read it by this text, and no other.
+pub const SHARD_LEASE_LOST: &str = "the shard lease is no longer held";
+
 /// An action of a schedule that starts a run (`FR-018-005`). It rides on the creation of the run, so
 /// the fence check, the compare-and-swap on the schedule, the run, the action row and the new state
 /// of the schedule commit together or not at all.

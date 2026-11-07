@@ -270,6 +270,7 @@ mod tests {
                 ReexecutedStep {
                     node: node("ship"),
                     completed_in_source: true,
+                    in_flight: false,
                     effects: EffectMarkers {
                         compensate_with: true,
                         reconcile_with: true,
@@ -280,11 +281,13 @@ mod tests {
                 ReexecutedStep {
                     node: node("notify"),
                     completed_in_source: false,
+                    in_flight: false,
                     effects: EffectMarkers::default(),
                 },
                 ReexecutedStep {
                     node: node("log"),
                     completed_in_source: false,
+                    in_flight: false,
                     effects: EffectMarkers {
                         compensate_with: false,
                         reconcile_with: true,

@@ -250,6 +250,7 @@ async fn create_declared_run(
                 fingerprint: run.as_uuid().as_bytes().to_vec(),
             },
             reset_sequence: None,
+            pending_reset: None,
         })
         .await?;
     let sagat_application::runs::Admitted::Created(tx) = created else {

@@ -10,6 +10,7 @@ use sagat_domain::execution::{
 use sha2::{Digest as _, Sha256};
 use time::OffsetDateTime;
 
+use super::pending_reset::{Creation, request_receipt};
 use super::reapply::{
     Delivery, Material, PlannedReapply, ReapplyEntry, ReapplyKind, ReapplyOutcome, ReapplyReason,
     ReportEntry, TooMany, candidates, end_signals_at_first_skip, reapply_key, update_answer,
@@ -21,10 +22,6 @@ use super::*;
 /// (`RESET_PREFIX_TOO_LONG`), because the re-emission is one transaction. The effective value will be the
 /// minimum of the request, the namespace and the deployment, like every ceiling of the feature (G1980).
 pub const RESET_PREFIX_EVENTS: usize = 5_000;
-
-/// What a refusal to reset an open source by cancelling it says (T018-057 is not built).
-pub const CANCEL_SOURCE_NOT_AVAILABLE: &str =
-    "CANCEL_SOURCE is not available in this version: reset a run that has ended";
 
 /// What a reset is asked for (`ResetRequest` of the contract).
 #[derive(Debug, Clone, Copy)]
@@ -39,6 +36,8 @@ pub struct ResetRequest<'a> {
     pub business: RerunBusinessId,
     /// What is delivered again after the point.
     pub reapply: ResetReapply,
+    /// What to do when the source has not ended.
+    pub source_policy: ResetSourcePolicy,
 }
 
 /// What a preview says: the plan of the reset, and the signals and Updates it would try to deliver again
@@ -179,11 +178,13 @@ pub struct ResetRecord {
     /// What the reapply did, in journal order (empty for `NONE`): never a payload or an argument. Read as the register
     /// holds it, because a later version may have written names this one does not know.
     pub reapply_report: Vec<ReportEntry>,
+    /// What the request said to do with a source that had not ended; `None` for a policy a later version wrote.
+    pub source_policy: Option<ResetSourcePolicy>,
     pub created_at: OffsetDateTime,
 }
 
 /// What a reset writes to the register in the transaction that creates its run.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ResetRegistration<'a> {
     /// The id of the entry. It is chosen before the reapply, whose keys are derived from it.
     pub id: ResetId,
@@ -193,19 +194,43 @@ pub struct ResetRegistration<'a> {
     pub prefix_digest: sagat_domain::workflow::Digest,
     pub reapply: ResetReapply,
     pub business: RerunBusinessId,
+    /// What the request said to do with a source that had not ended: the register says what was asked, though a
+    /// source that has ended is reset at once.
+    pub source_policy: ResetSourcePolicy,
+    /// Whether the request acknowledged that steps run again.
+    pub acknowledged: bool,
     /// The subject that asked.
     pub actor: &'a str,
     /// The justification, in plain text; the register keeps it as content of the tenant.
     pub reason: &'a str,
     /// What the reapply did, written with the entry in the transaction that creates the run.
     pub report: &'a [ReapplyEntry],
+    /// The entry already exists, `PENDING_SOURCE`, and this completes it (`CANCEL_SOURCE`); otherwise it is
+    /// written, `CREATED`, with the run.
+    pub completes_pending: bool,
 }
 
-/// What a reset answers: the entry of the register and the run it created.
+impl std::fmt::Debug for ResetRegistration<'_> {
+    /// The subject that asked, the justification and the report are not printed.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResetRegistration")
+            .field("id", &self.id)
+            .field("source", &self.source)
+            .field("sequence", &self.sequence)
+            .field("reapply", &self.reapply)
+            .field("source_policy", &self.source_policy)
+            .field("completes_pending", &self.completes_pending)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a reset answers: the entry of the register and the run it created, if it has: a request that waits for
+/// its source to end (`CANCEL_SOURCE`) has none yet.
 #[derive(Debug, Clone)]
 pub struct ResetMade {
     pub reset: ResetRecord,
-    pub run: RunRecord,
+    pub run: Option<RunRecord>,
 }
 
 /// One row of the journal of a source run, decoded, with what a reset keeps of it: who did it, when, which
@@ -283,7 +308,7 @@ where
 {
     /// The source of a reset: the run, its journal and the refusals that do not depend on the point (a child
     /// run, a continuation chain, a database execution run on a private definition).
-    async fn reset_candidate(
+    pub(super) async fn reset_candidate(
         &self,
         principal: &Principal,
         id: RunId,
@@ -383,7 +408,7 @@ where
     /// journal order, each with what it needs to be tried (`keep`: the content, for a reset) or the reason it
     /// will not be. The content is read here, outside the transaction that creates the run: it is immutable and
     /// addressed by its digest.
-    async fn plan_reapply(
+    pub(super) async fn plan_reapply(
         &self,
         principal: &Principal,
         record: &RunRecord,
@@ -472,7 +497,7 @@ where
             })
     }
 
-    async fn plan_reset(
+    pub(super) async fn plan_reset(
         &self,
         principal: &Principal,
         record: &RunRecord,
@@ -510,11 +535,18 @@ where
     /// reset and goes on from there. The steps that completed in the source and run again need the caller's
     /// acknowledgement.
     ///
+    /// A source that has not ended is refused (`RESET_SOURCE_NOT_TERMINAL`), unless the request says
+    /// `CANCEL_SOURCE`: then the source is cancelled in the ordinary way and the reset waits, `PENDING_SOURCE`, for
+    /// the engine to create the run once the source has ended (`FR-018-038`). The answer to such a request has no
+    /// run yet. A key that already made a request is answered from the register whatever the settings are now.
+    ///
     /// # Errors
     /// [`AppError::Forbidden`] without `run:operate` and `run:start` (and `run:signal` to reapply signals,
     /// `run:update` to reapply Updates); [`AppError::NotAllowed`] without a justification;
     /// [`AppError::ResetRefused`] `RESET_SOURCE_NOT_TERMINAL` for a run that has not ended,
-    /// `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, and those of [`Self::reset_preview`]; the errors of a start.
+    /// `RESET_CANCEL_SOURCE_NOT_AVAILABLE` for a deployment that does not serve `CANCEL_SOURCE`,
+    /// `RESET_REEXECUTION_NOT_ACKNOWLEDGED`, and those of [`Self::reset_preview`];
+    /// [`AppError::QuotaExceeded`] when the namespace has the most pending resets it may; the errors of a start.
     pub async fn reset(
         &self,
         principal: &Principal,
@@ -542,66 +574,68 @@ where
             principal.authorize(Permission::RunUpdate)?;
         }
         let (record, source) = self.reset_candidate(principal, id, ctx).await?;
-        if !record.status.is_terminal() {
-            return Err(refused("RESET_SOURCE_NOT_TERMINAL"));
+        // A key that made a request that waits for its source is answered from the register before anything is
+        // judged: the source may have ended since, and the point may no longer be eligible, and the first answer
+        // stands (D1996). The same key with another request is `IDEMPOTENCY_KEY_REUSED`.
+        let receipt = request_receipt(&record, &source, &request, key);
+        if let Some(made) = self
+            .answer_from_register(principal, id, &receipt, ctx)
+            .await?
+        {
+            return Ok(made);
         }
+        if record.status.is_terminal() {
+            return self
+                .reset_ended(principal, id, record, source, request, key, ctx)
+                .await;
+        }
+        match request.source_policy {
+            ResetSourcePolicy::RequireTerminal => Err(refused("RESET_SOURCE_NOT_TERMINAL")),
+            ResetSourcePolicy::CancelSource => {
+                self.reset_cancelling(principal, id, record, source, request, key, receipt, ctx)
+                    .await
+            }
+        }
+    }
+
+    /// The reset of a source that has ended: the run is created at once, `CREATED`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn reset_ended(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        record: RunRecord,
+        source: ResetSource,
+        request: ResetRequest<'_>,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<ResetMade, AppError> {
         let plan = self
             .plan_reset(principal, &record, &source, request.sequence)
             .await?;
-        // Where the reapply is off nothing is planned: a retry of a request that succeeded is answered from the
-        // register, and a request that was never made is refused where it would create the run.
-        let planned = if self.reset_reapply {
-            self.plan_reapply(
-                principal,
-                &record,
-                &source,
-                request.sequence,
-                request.reapply,
-                true,
-            )
-            .await?
-        } else {
-            Vec::new()
-        };
-        if plan.needs_acknowledgement() && !request.acknowledge_reexecution {
-            return Err(refused("RESET_REEXECUTION_NOT_ACKNOWLEDGED"));
-        }
-        let kept = usize::try_from(request.sequence).map_err(|_| AppError::Internal)?;
-        let prefix = RestoredPrefix {
-            source: id,
-            events: source.events[..kept].to_vec(),
-        };
         let Some(origin) = self.store.rerun_source(principal.tenant_id(), id).await? else {
             return Err(self.missing(principal, id, ctx).await);
         };
         let started = self
-            .start_with(
+            .create_from_prefix(
                 principal,
-                &StartRun {
-                    namespace: &origin.namespace,
-                    workflow: record.info.workflow_id,
-                    version: Some(record.info.version_id),
-                    input: &origin.input,
-                    correlation_id: record.info.correlation_id.as_deref(),
-                    deadline: None,
+                &record,
+                &source,
+                &origin,
+                &Creation {
+                    plan: &plan,
                     key,
-                },
-                keep_business_id(record.info.business_id.as_ref(), request.business),
-                Some(Rerun {
-                    of: id,
-                    reason,
+                    sequence: request.sequence,
+                    reapply: request.reapply,
                     business: request.business,
-                    reset: Some(ResetStart {
-                        prefix: &prefix,
-                        reapply: request.reapply,
-                        plan: &planned,
-                        reason,
-                        business: request.business,
-                    }),
-                }),
-                None,
-                None,
-                None,
+                    acknowledged: request.acknowledge_reexecution,
+                    source_policy: request.source_policy,
+                    reason: request.reason.trim(),
+                    // a request that was never made is refused where the reapply is off; a retry of one that was
+                    // made is answered from the register before it gets here
+                    gate_reapply: true,
+                    pending: None,
+                },
                 ctx,
             )
             .await?;
@@ -616,7 +650,82 @@ where
             tracing::error!(run = %run.info.run_id, "a run created by a reset has no entry in the register");
             return Err(AppError::Internal);
         };
-        Ok(ResetMade { reset, run })
+        Ok(ResetMade {
+            reset,
+            run: Some(run),
+        })
+    }
+
+    /// The one sequence that makes the run of a reset from the journal of a source that has ended, whether it is made at
+    /// once ([`Self::reset_ended`]) or by the pass that completes a reset that waited (`complete_reset`, D2012): the
+    /// acknowledgement of the steps that run again, then what is delivered again, then the run. Two copies of it
+    /// had drifted in the order of the first two, so the same defect gave different reasons.
+    pub(super) async fn create_from_prefix(
+        &self,
+        principal: &Principal,
+        record: &RunRecord,
+        source: &ResetSource,
+        origin: &RerunSource,
+        creation: &Creation<'_>,
+        ctx: &RequestContext,
+    ) -> Result<Started, AppError> {
+        if creation.plan.needs_acknowledgement() && !creation.acknowledged {
+            return Err(refused("RESET_REEXECUTION_NOT_ACKNOWLEDGED"));
+        }
+        // Where the reapply is off nothing is planned: a retry of a request that succeeded is answered from the
+        // register, and a request that was never made is refused where it would create the run. What the pass of the
+        // engine completes was accepted at the request, and the engine has no setting for it (D1990).
+        let planned = if !creation.gate_reapply || self.reset_reapply {
+            self.plan_reapply(
+                principal,
+                record,
+                source,
+                creation.sequence,
+                creation.reapply,
+                true,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+        let kept = usize::try_from(creation.sequence).map_err(|_| AppError::Internal)?;
+        let prefix = RestoredPrefix {
+            source: record.info.run_id,
+            events: source.events[..kept].to_vec(),
+        };
+        self.start_with(
+            principal,
+            &StartRun {
+                namespace: &origin.namespace,
+                workflow: record.info.workflow_id,
+                version: Some(record.info.version_id),
+                input: &origin.input,
+                correlation_id: record.info.correlation_id.as_deref(),
+                deadline: None,
+                key: creation.key,
+            },
+            keep_business_id(record.info.business_id.as_ref(), creation.business),
+            Some(Rerun {
+                of: record.info.run_id,
+                reason: creation.reason,
+                business: creation.business,
+                reset: Some(ResetStart {
+                    prefix: &prefix,
+                    reapply: creation.reapply,
+                    plan: &planned,
+                    reason: creation.reason,
+                    business: creation.business,
+                    source_policy: creation.source_policy,
+                    acknowledged: creation.acknowledged,
+                    pending: creation.pending,
+                }),
+            }),
+            None,
+            None,
+            None,
+            ctx,
+        )
+        .await
     }
 
     /// Delivers to the run `run_id`, which the reset `reset` is creating in `tx`, what `plan` says, in journal

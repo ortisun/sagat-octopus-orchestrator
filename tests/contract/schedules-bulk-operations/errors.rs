@@ -22,6 +22,7 @@ const RAISED: &[&str] = &[
     "SCHEDULE_LIMIT",
     "BACKFILL_CONCURRENCY",
     "BATCH_LIMIT",
+    "PENDING_RESET_LIMIT",
     "BUSINESS_ID_INVALID",
     "BUSINESS_ID_IN_USE",
     "BUSINESS_ID_REUSE_REJECTED",
@@ -47,6 +48,7 @@ const RAISED: &[&str] = &[
     "RESET_RULE_MISSING",
     "RESET_REAPPLY_NOT_AVAILABLE",
     "RESET_REAPPLY_TOO_MANY",
+    "RESET_CANCEL_SOURCE_NOT_AVAILABLE",
 ];
 
 /// The reasons the table lists that no operation raises yet, and why.
@@ -60,7 +62,6 @@ const NOT_YET: &[(&str, &str)] = &[
         "a deleted schedule is NOT_FOUND, as one that never existed (G1975)",
     ),
     ("BINARY_CAPABILITY_MISSING", "features 029 and 031"),
-    ("PENDING_RESET_LIMIT", "US06, reset"),
     ("CONCURRENCY_QUEUE_FULL", "feature 022"),
     ("CONCURRENCY_PERMIT_UNAVAILABLE", "feature 022 and US06"),
     ("RUN_PURGED", "feature 020"),

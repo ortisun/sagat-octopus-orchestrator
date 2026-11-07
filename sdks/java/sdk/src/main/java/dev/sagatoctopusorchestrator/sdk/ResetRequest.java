@@ -30,7 +30,7 @@ public final class ResetRequest {
         return new ResetRequest(sequence, reason);
     }
 
-    /** What to apply again on top of the prefix: {@code NONE} or {@code CANCEL_SOURCE} in this version. */
+    /** What to deliver again on top of the prefix: {@code NONE}, {@code SIGNALS}, {@code UPDATES} or {@code ALL}. */
     public ResetRequest reapply(String value) {
         this.reapply = value;
         return this;

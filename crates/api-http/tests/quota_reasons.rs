@@ -16,7 +16,7 @@ fn details_of(limit: &'static str) -> (serde_json::Value, &'static str) {
 }
 
 #[test]
-fn the_ceilings_of_schedules_backfills_and_batches_name_themselves() {
+fn the_ceilings_of_schedules_backfills_batches_and_pending_resets_name_themselves() {
     for (limit, reason) in [
         (QuotaResource::Schedules.limit_name(), "SCHEDULE_LIMIT"),
         (
@@ -26,6 +26,10 @@ fn the_ceilings_of_schedules_backfills_and_batches_name_themselves() {
         ("schedule_backfills_per_schedule", "BACKFILL_CONCURRENCY"),
         (QuotaResource::BatchJobs.limit_name(), "BATCH_LIMIT"),
         (QuotaResource::TenantBatchJobs.limit_name(), "BATCH_LIMIT"),
+        (
+            QuotaResource::PendingResets.limit_name(),
+            "PENDING_RESET_LIMIT",
+        ),
     ] {
         let (details, advice) = details_of(limit);
         assert_eq!(details["reason"], reason, "{limit}");

@@ -188,6 +188,55 @@ async fn every_reset_operation_conforms_to_the_contract_on_its_normal_and_error_
     seen.insert((m, t));
     assert_eq!(refused["details"]["reason"], "RESET_SOURCE_NOT_TERMINAL");
 
+    // `CANCEL_SOURCE` on a run that is open cancels it and leaves an entry that waits: 202, no run yet
+    n += 1;
+    let (_, _, _, other) = check(keyed(
+        namespaced(scenario(
+            "POST",
+            "/runs",
+            "/runs",
+            alice.clone(),
+            Some(json!({"workflowId": workflow, "input": {"item": "pen"}})),
+            202,
+        )),
+        n,
+    ))
+    .await;
+    let waiting_source = other["runId"].as_str().expect("run id").to_owned();
+    n += 1;
+    let (m, t, _, pending) = check(keyed(
+        scenario(
+            "POST",
+            RESETS,
+            &format!("/runs/{waiting_source}/resets"),
+            alice.clone(),
+            Some(json!({
+                "sequence": 1, "reason": "the price list was wrong",
+                "sourcePolicy": "CANCEL_SOURCE", "acknowledgeReexecution": true
+            })),
+            202,
+        ),
+        n,
+    ))
+    .await;
+    seen.insert((m, t));
+    // nothing is in flight, so the cancellation ended the source: the entry is due, and waits for the engine
+    assert_eq!(pending["state"], "PENDING_SOURCE");
+    assert_eq!(pending["newRunId"], Value::Null);
+    assert_eq!(pending["failureReason"], Value::Null);
+    assert_eq!(pending["sourceRunId"], waiting_source);
+    let pending_id = pending["resetId"].as_str().expect("reset id").to_owned();
+    let (_, _, _, got) = check(scenario(
+        "GET",
+        RESET,
+        &format!("/runs/{waiting_source}/resets/{pending_id}"),
+        alice.clone(),
+        None,
+        200,
+    ))
+    .await;
+    assert_eq!(got["state"], "PENDING_SOURCE");
+
     // once it has ended it is
     n += 1;
     check(keyed(
@@ -243,7 +292,7 @@ async fn every_reset_operation_conforms_to_the_contract_on_its_normal_and_error_
         ),
         (
             alice.clone(),
-            json!({"sequence": 1, "reason": "the price list was wrong", "sourcePolicy": "CANCEL_SOURCE"}),
+            json!({"sequence": 1, "reason": "the price list was wrong", "sourcePolicy": "SOMETIMES"}),
             422,
         ),
         (

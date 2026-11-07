@@ -4,13 +4,14 @@ For operators who start a run again from the middle of one that ended ("the firs
 and for the people who answer for what that repeats. It says what a reset does and promises, which points exist, what to read
 before confirming, and what to do when a reset is refused.
 
-Design: decisions D1976 to D1979 and D1982 to D1995, gaps G1980 and G1982 to G1988 in [`specs/018-schedules-bulk-operations/research.md`](../../specs/018-schedules-bulk-operations/research.md);
+Design: decisions D1976 to D1979, D1982 to D1995 and D1996 to D2005, gaps G1980, G1982 to G1988 and G1989 to G1992 in [`specs/018-schedules-bulk-operations/research.md`](../../specs/018-schedules-bulk-operations/research.md);
 the contract is the `Operations` tag of [`openapi.yaml`](../../specs/001-platform-foundation/contracts/openapi.yaml)
 (`listResetPoints`, `previewReset`, `resetRun`, `listRunResets`, `getRunReset`).
 
 ## 1. What a reset is and what it promises
 
-A reset **creates a new run** from a prefix of the journal of a run that has ended. Nothing is changed in the source.
+A reset **creates a new run** from a prefix of the journal of a run that has ended. Nothing is changed in the source. (A run
+that is still open can be reset too, by cancelling it first and waiting for it to end: section 4.2.)
 
 - **The same workflow version and the same input** as the source. The new run is a run like any other: it has its own id, its
   own deadline and its own trace. It names its origin (`rerunOf` on the run) and the source lists it in its resets.
@@ -79,15 +80,16 @@ A sequence that is not a point is `422 RESET_POINT_NOT_ELIGIBLE`; choose one the
 
 ## 4. Doing it and reading what became of it
 
-`POST /runs/{id}/resets` with `{sequence, reason, acknowledgeReexecution?, businessId?, reapply?}` (Studio: the dialog; CLI:
-`sagat workflow reset <run> --sequence N --reason "…" [--acknowledge] [--drop-business-id] [--reapply none|signals|updates|all] [--key K]`)
+`POST /runs/{id}/resets` with `{sequence, reason, acknowledgeReexecution?, businessId?, reapply?, sourcePolicy?}` (Studio: the dialog; CLI:
+`sagat workflow reset <run> --sequence N --reason "…" [--acknowledge] [--drop-business-id] [--reapply none|signals|updates|all] [--cancel-source] [--key K]`)
 answers `202` with the reset:
 
 | Field | Meaning |
 |---|---|
 | `resetId`, `sourceRunId`, `sequence` | the register entry, the run it came from and the last event kept |
-| `state` | `CREATED`: the new run exists. `PENDING_SOURCE` and `FAILED` belong to the reset of an open source, which is not built, so a reset you can make today answers `CREATED` |
-| `newRunId` | the run to follow; read it as any run (`GET /runs/{newRunId}`) |
+| `state` | `CREATED`: the new run exists. `PENDING_SOURCE`: the source is being cancelled and the run is not made yet (`CANCEL_SOURCE`, section 4.2). `FAILED`: it will not be made, and `failureReason` says why (section 4.2) |
+| `newRunId` | the run to follow; read it as any run (`GET /runs/{newRunId}`); `null` until the run is made |
+| `failureReason` | why a reset that waited failed; `null` otherwise |
 | `reapplyReport` | what the reset delivered again, one entry for each signal or Update, in the order they arrived (section 4.1); empty for `NONE` |
 
 `GET /runs/{id}/resets` lists the resets made from a run, newest first (at most 200); `GET /runs/{id}/resets/{resetId}` reads one. The
@@ -175,11 +177,100 @@ Updates.
 In traces, the new run's span **links** the source's span and does not emit the restored prefix again: its first spans are the
 steps after the point. Whatever you read in the prefix of the new run's journal happened in the source, at the source's time.
 
+### 4.2 Resetting a run that has not ended (`CANCEL_SOURCE`)
+
+`sourcePolicy: CANCEL_SOURCE` (Studio: *Cancel and reset to a point…* on a run that is open; CLI: `--cancel-source`) resets a run
+that is still open: the run is **cancelled in the ordinary way** (it is never terminated; the steps in flight are told to stop
+and may finish), and the new run is made **once the source has ended**, if the point is still one. Nothing is made while the
+source is open, and the source never reopens.
+
+What the request does, in one transaction that holds the row of the source: it checks what a reset of an ended run checks
+(`run:operate`, `run:start`, the permissions of the `reapply`, the justification, that the point is one of the journal as it is
+now, the acknowledgement and the length of the prefix), judges the namespace's limit, writes the entry of the register
+`PENDING_SOURCE`, cancels the source, writes the receipt of the key and two audit records (`run.cancel_requested`, which says
+only that the cancellation is for this reset, and `run.reset`, which carries your justification). It answers `202` with the entry:
+`state: PENDING_SOURCE`, `newRunId: null`. A source that is already being cancelled or compensated is not cancelled twice; the
+entry waits for it all the same. A source that **has already ended** is simply reset at once (`CREATED`), whatever the policy
+says and whether or not this is turned on.
+
+**The acknowledgement is asked before anything is cancelled.** A cancellation is not taken back, so a request that is certain to
+fail later is refused now: `acknowledgeReexecution: true` is required (`422 RESET_REEXECUTION_NOT_ACKNOWLEDGED`, nothing
+cancelled) when a step after the point has completed **or is in flight** (leased or running: the attempt usually finishes after
+the cancellation, and the new run then runs that step again from the point). The preview (`requiresAcknowledgement`) says the
+same for a run that is open. The engine judges it again on the journal the source ended with (below), so an acknowledgement
+that the request did not need is harmless and one that it needed is never skipped.
+
+**Turning it on.** `SAGAT_RESET_CANCEL_SOURCE_ENABLED=true` on the control plane (it accepts the request) **and** on the engine
+(it makes the run); both read the same variable and it means the same, off by default (`true`/`false`, `yes`/`no`, `1`/`0`;
+unset or empty is off; anything else is refused naming the variable). The engine also reads `SAGAT_RESET_CANCEL_SOURCE_BATCH`
+(entries completed in a round, 1 to 1,000, default 100), `SAGAT_RESET_CANCEL_SOURCE_PER_TENANT` (how many of them one tenant may
+take of a round, 1 to 1,000, default 10, so that one tenant's entries cannot fill the round) and `SAGAT_RESET_CANCEL_SOURCE_POLL_MS`
+(pause when a round found nothing, default 1,000). Where the control plane has it off, a request for an open source is
+`422 RESET_CANCEL_SOURCE_NOT_AVAILABLE` and nothing is cancelled; **a retry of a request that was accepted is answered from the
+register whatever the setting is now**.
+
+**Order of the rollout (ADR-0079): the engine first, then the control plane; to turn it off, the control plane first.** The
+dangerous state is the control plane on and every engine off: a request is then accepted and answers `202`, **the customer's run
+is cancelled**, and nothing makes the replacement until an engine has the flag on. Nothing is lost (the entry waits in the
+register, counted against the limit): `scheduler_lag_seconds{pass="resets"}` grows once the sources have ended (the alert
+`SagatSchedulerLate`), and turning the flag on in one engine makes the runs (G1989). The registry that would refuse the
+mismatch is not built (ADR-0050 decision 9, T018-080), so do not leave the control plane on while the engines are being
+changed. The engine takes the entries of the shards it holds, like the pass of the batch jobs: several engines never make one
+run twice (a lease that moved, or an entry that another engine completed first, refuses the step and changes nothing).
+
+**What the engine checks again when the source has ended**, on the journal the source ended with and with the authority the
+member who asked holds **then** (their membership is read again, and locked, in the transaction that creates the run):
+
+| It fails with | When |
+|---|---|
+| `BOUNDARY_NO_LONGER_ELIGIBLE` | the prefix is not the one that was asked for, or the point is no longer one, or the prefix is too long |
+| `REEXECUTION_NOT_ACKNOWLEDGED` | a step completed after the point and the request did not acknowledge that steps run again. The request is refused for the steps it can see (completed, or in flight), so this is the rare case of a step that was leased only after the request was made; ask with `acknowledgeReexecution: true` when you expect it. The Studio always asks |
+| `AUTHORITY_REVOKED` | the member who asked is no longer a member, or lost `run:operate`, `run:start`, or the right to deliver again what the `reapply` delivers |
+| `BUSINESS_ID_IN_USE` | `KEEP` and another open run holds the identifier by now |
+| `ADMISSION_REFUSED` | the namespace has no room for the run, or the platform refused it |
+| `REAPPLY_TOO_MANY` | the source received more to deliver again than a reset delivers (256) |
+
+The entry becomes `FAILED` with that reason (`failureReason`) and the platform records `run.reset` on the source with the closed
+reason, never your justification. A reason this version does not know is a reason a later version added: read it as another
+reason. The `reapply` the request asked for is delivered even where the engine has no setting for it: what the control plane
+accepted stands.
+
+**A failed reset leaves a cancelled run and no replacement.** The request cancelled the source and nothing takes that back, so
+when `workflow_reset_completions_total{outcome="failed"}` rises, read `GET /runs/{id}/resets` for the reasons (the label says
+the same) and start the run again by hand (`sagat workflow start`, or a new reset of the ended source with the reason fixed:
+the ended source is reset at once). Only these reasons end an entry; a failure of the platform itself (storage, a lease that
+moved, a connection limit, an error nobody foresaw) leaves the entry pending and is tried again after a pause that doubles from
+2 s to 5 minutes, with a warning in the engine's log that names `tenant_id` and `reset_id`; one entry in that state does not
+hold the others (each tenant takes at most `SAGAT_RESET_CANCEL_SOURCE_PER_TENANT` places of a round, and an entry that failed
+is left out of the scan until its time).
+
+**The one lever on an entry that waits is the authority of the member who asked.** There is no call to withdraw an entry and
+none expires (G1991, an owner decision). Removing the member, or their `run:operate` or `run:start`, makes the engine end the
+entry `FAILED` `AUTHORITY_REVOKED` **when the source has ended**, not before: it does not free the place of the namespace while
+the source is open. The only way to free the place sooner is to end the source (retry, skip or resolve the step, or cancel
+the run's compensation). An administrator can raise the limit of a namespace up to the hard ceiling of 64, no further.
+
+**Reading the audit trail: the join is by the reset id.** The four records of one reset name the id of the entry in their
+reason and nothing else of it but closed words: `reset {id} requested at {N}...` and `cancelled for the reset {id}` on the
+source (the request), `reset from {source} at {N}... completes reset {id}: ...` on the run that was made, and
+`completes reset {id}: failed {REASON}` on the source when the entry failed (the completion). The id is the one that
+`GET /runs/{id}/resets` and `sagat workflow resets` show; the trace id of the request is on the request's records only,
+because the engine's pass has no request.
+
+**An entry waits for as long as its source is open, and nothing expires it.** A source in `MANUAL_REVIEW` (a compensation that
+failed, an unknown outcome) is open: the entry waits for an operator to act on the run (retry, skip or resolve the step); when
+the run ends the entry is completed in the next round. There is no call that withdraws an entry (G1991): it ends `CREATED` or
+`FAILED`. Entries count against the namespace's limit while they wait: **16 per namespace by default, at most 64**
+(`429 QUOTA_EXCEEDED`, `details.reason` `PENDING_RESET_LIMIT`), so a source that never ends holds a place. `GET /runs/{id}/resets`,
+`sagat workflow resets <run>` and the Studio list the entries with their state and reason.
+
 ## 5. When a reset is refused
 
 | Answer | Reason | What to do |
 |---|---|---|
-| `409` | `RESET_SOURCE_NOT_TERMINAL` | the run has not ended; wait for it, or cancel it and reset the ended run |
+| `409` | `RESET_SOURCE_NOT_TERMINAL` | the run has not ended; wait for it, or ask for `sourcePolicy: CANCEL_SOURCE` (section 4.2) |
+| `422` | `RESET_CANCEL_SOURCE_NOT_AVAILABLE` | `CANCEL_SOURCE` for a run that is open, on a deployment whose operator did not turn `SAGAT_RESET_CANCEL_SOURCE_ENABLED` on; wait for the run to end, or turn it on (section 4.2). Nothing was cancelled |
+| `429` | `PENDING_RESET_LIMIT` | the namespace already has the most resets waiting for their source that it may (16 by default, at most 64); wait for one to end or raise the limit |
 | `422` | `RESET_POINT_NOT_ELIGIBLE` | the sequence is not a point (or its prefix is blocked, section 2); pick one `reset-points` lists |
 | `422` | `RESET_PREFIX_TOO_LONG` | more than 5,000 events before that point; pick an earlier one |
 | `422` | `RESET_REEXECUTION_NOT_ACKNOWLEDGED` | steps that completed will run again; read the preview, then acknowledge |
@@ -189,7 +280,7 @@ steps after the point. Whatever you read in the prefix of the new run's journal 
 | `409` | `IDEMPOTENCY_KEY_REUSED` | the same key was used for another request; use a new key |
 | `422` | `RESET_REAPPLY_NOT_AVAILABLE` | `reapply` other than `NONE` on a deployment whose operator did not turn `SAGAT_RESET_REAPPLY_ENABLED` on; ask for `NONE` or turn it on (section 4.1). The sentence the API gives a caller does not name the variable |
 | `422` | `RESET_REAPPLY_TOO_MANY` | more than 256 signals and retained Updates after the point; pick a later point or `NONE` |
-| `422`, no reason | `sourcePolicy: CANCEL_SOURCE`, a `reapply` or a `businessId` the server does not know, or a reason of fewer than 8 characters | not available in this version, not a policy, or too short (a reason is missing from these answers: G1981) |
+| `422`, no reason | a `sourcePolicy`, a `reapply` or a `businessId` the server does not know, or a reason of fewer than 8 characters | not a policy, or too short (a reason is missing from these answers: G1981) |
 | `400` | | the `Idempotency-Key` starts with `batch:`, `schedule:` or `reset:` (the platform's own) |
 | `403` / `404` | | the caller lacks `run:operate`/`run:start`; or the run does not exist or is another tenant's (the two look the same) |
 
@@ -198,6 +289,11 @@ steps after the point. Whatever you read in the prefix of the new run's journal 
 | Metric | Labels | Meaning |
 |---|---|---|
 | `workflow_reset_reapply_total` | `kind` (`SIGNAL`, `UPDATE`), `outcome` (`REAPPLIED`, `REJECTED`, `NOT_REAPPLIED`), `reason` (the closed reasons of section 4.1, `none` when there is none) | What a reset delivered again, counted once the reset is committed: a reset that was refused, cut off or answered from the register counts nothing. No tenant, run, signal or operation is a label |
+| `workflow_reset_completions_total` | `outcome` (`created`, `failed`), `reason` (`none` for `created`; for `failed` one of the closed reasons of section 4.2) | The resets that waited for their source and were completed, counted once the transaction is committed: a step on an entry that was completed first, whose source is open, or that lost its lease counts nothing. No tenant, run or reset is a label |
+| `workflow_resets_pending` | | Resets waiting for their source (gauge, from the monitor of the engine). **Every replica sets it to the same count**, so read it with `max`, never `sum`: a sum multiplies the count by the number of replicas |
+| `scheduler_fenced_total{kind="reset"}` | `kind` | Steps of the pass that were refused because the replica no longer held the lease of the shard (an entry that another engine completed first is not counted: it is an ordinary race). A few during a rebalance are normal; a count that keeps rising says two replicas dispute a shard |
+| `workflow_reset_completions_total{outcome="failed"}` | `reason` | An entry ended `FAILED`: the source was cancelled and no run replaces it. Read the reasons (section 4.2) and start the run again by hand if it is still wanted |
+| `scheduler_lag_seconds{pass="resets"}` | | How long the oldest pending reset whose source has **ended** has waited for the engine to make its run (0 when none): the engine has the pass off, no replica holds the shard, or it is failing (look at its log). A source that is still open is not lag: the entry waits for the run |
 
 A rising `NOT_WAITING` or `REVISION_CONFLICT` says that resets are made to points where what followed does not fit: read the report
 of one of them (`GET /runs/{id}/resets`). The Updates a reset delivers again do not have the span and the latency histogram of
@@ -207,8 +303,9 @@ an Update made through the API (G1986); their events are in the journal, and the
 
 - **Delivering again what was received below the root** (an iteration of a collection or a loop; G1983): not delivered, and not
   reported.
-- **Resetting an open run** (`sourcePolicy: CANCEL_SOURCE`; T018-057): refused; the states `PENDING_SOURCE` and `FAILED` of a
-  reset exist in the register for it and are never written today.
+- **Withdrawing a reset that waits** (G1991) and **an expiry for one** (D2000): an entry ends `CREATED` or `FAILED` and nothing else.
+- **A permit of a concurrency key and the checks of the features that are not approved** (`CONCURRENCY_PERMIT_UNAVAILABLE`,
+  `RUN_PURGED` and the reasons of a `REMATERIALIZE` rule exist as names; nothing writes them yet).
 - **Points inside a collection, a parallel branch, a loop iteration or a child scope** (G1980 (1)).
 - **A setting for the ceiling** (G1980 (2)).
 - **The permit of a concurrency key** (feature 022, T018-053): a reset takes none; that feature is not approved, so there is no

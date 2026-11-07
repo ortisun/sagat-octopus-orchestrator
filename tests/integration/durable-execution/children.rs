@@ -650,6 +650,7 @@ async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_can
             fingerprint: child.as_uuid().as_bytes().to_vec(),
         },
         reset_sequence: None,
+        pending_reset: None,
     };
     let refused = w.store.create(new).await;
     assert!(

@@ -265,7 +265,7 @@ async fn a_reset_makes_a_run_and_an_entry_a_retry_is_the_same_entry_and_the_regi
     )
     .await;
     assert_eq!(status, 422);
-    for extra in [json!({"sourcePolicy": "CANCEL_SOURCE"})] {
+    for extra in [json!({"sourcePolicy": "SOMETIMES"})] {
         let mut body = ask(true);
         for (key, value) in extra.as_object().expect("an object") {
             body[key] = value.clone();

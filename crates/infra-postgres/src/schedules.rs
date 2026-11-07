@@ -123,7 +123,7 @@ pub(crate) async fn check_fence(
         };
         if current.flatten().is_none() {
             return Err(StoreError::StateConflict(
-                "the shard lease is no longer held",
+                sagat_application::schedules::SHARD_LEASE_LOST,
             ));
         }
     }

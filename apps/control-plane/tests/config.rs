@@ -1007,6 +1007,30 @@ fn delivering_signals_and_updates_again_after_a_reset_is_an_explicit_strict_oper
 }
 
 #[test]
+fn cancelling_a_source_for_a_reset_is_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .reset_cancel_source_enabled,
+        "off by default"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"));
+    let on = ServeConfig::from_lookup(&env(&values)).expect("activated");
+    assert!(on.reset_cancel_source_enabled);
+    // it is not one of the other switches
+    assert!(!on.batches_enabled && !on.reset_reapply_enabled && !on.schedules_enabled);
+    values.pop();
+    values.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "maybe"));
+    let error = ServeConfig::from_lookup(&env(&values)).expect_err("refused");
+    assert!(
+        error
+            .to_string()
+            .contains("SAGAT_RESET_CANCEL_SOURCE_ENABLED")
+    );
+}
+
+#[test]
 fn the_lake_is_an_explicit_strict_operator_switch_and_off_by_default() {
     assert!(
         !ServeConfig::from_lookup(&env(&OIDC))

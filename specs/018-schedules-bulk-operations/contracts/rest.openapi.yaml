@@ -905,7 +905,7 @@ components:
         sourceRunId: {type: string, format: uuid}
         sequence: {type: integer}
         state: {type: string, enum: [PENDING_SOURCE, CREATED, FAILED]}
-        failureReason: {type: [string, 'null'], description: 'BOUNDARY_NO_LONGER_ELIGIBLE, ADMISSION_REFUSED, BUSINESS_ID_IN_USE, CONCURRENCY_PERMIT_UNAVAILABLE, RUN_PURGED (grows only).'}
+        failureReason: {type: [string, 'null'], description: 'BOUNDARY_NO_LONGER_ELIGIBLE, ADMISSION_REFUSED, BUSINESS_ID_IN_USE, CONCURRENCY_PERMIT_UNAVAILABLE, RUN_PURGED, AUTHORITY_REVOKED, REEXECUTION_NOT_ACKNOWLEDGED, REAPPLY_TOO_MANY (grows only).'}
         newRunId: {type: [string, 'null'], format: uuid}
         reapplyReport: {type: array, maxItems: 256, items: {type: object, required: [sequence, kind, outcome], properties: {sequence: {type: integer}, kind: {type: string, enum: [signal, update]}, outcome: {type: string, enum: [REAPPLIED, REJECTED, NOT_REAPPLIED]}, reason: {type: [string, 'null']}}}}
         createdAt: {type: string, format: date-time}

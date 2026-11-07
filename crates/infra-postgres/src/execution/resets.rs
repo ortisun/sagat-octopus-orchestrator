@@ -9,19 +9,25 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use sagat_application::execution::{Actor, Effects, RunTx as _};
+use sagat_application::reset_completion::{DueReset, PendingResetStore, ResetFailure};
 use sagat_application::runs::{
-    RerunBusinessId, ResetRecord, ResetRegistration, ResetSource, ResetState, RestoredPrefix,
+    PendingAdmission, PendingRegistration, PendingReset, RESET_ALREADY_COMPLETED, RerunBusinessId,
+    ResetRecord, ResetRegistration, ResetSource, ResetSourcePolicy, ResetState, RestoredPrefix,
     Retained, SourceEvent, report_from_json, report_json,
 };
+use sagat_application::schedules::AUTHORITY_REVOKED;
 use sagat_domain::execution::{AddressedRunEvent, ResetId, ResetReapply, RunEvent};
+use sagat_domain::identity::{NamespaceId, Role};
+use sagat_domain::sharding::Shard;
 use serde_json::{Value, json};
-use sqlx::PgPool;
 use sqlx::postgres::PgRow;
+use sqlx::{PgConnection, PgPool};
 
 use super::{
-    NodeId, PgRunTx, StoreError, TenantId, Uuid, col, corrupt, decode, event_instance_path,
-    store_error,
+    NodeId, PgRunStore, PgRunTx, StoreError, TenantId, Uuid, col, corrupt, decode,
+    event_instance_path, hash, insert_audit, remember, store_error,
 };
+use crate::pool::BeginSafely;
 use sagat_domain::execution::RunId;
 
 fn internal(detail: &str) -> StoreError {
@@ -276,16 +282,42 @@ pub(super) async fn register(
     tx: &mut PgRunTx,
     registration: &ResetRegistration<'_>,
 ) -> Result<(), StoreError> {
+    if registration.completes_pending {
+        // The entry the request made, `PENDING_SOURCE`, locked by `lock_pending` when the run was admitted: it
+        // becomes `CREATED` with the run. What a reset is never changes (a trigger holds it); the digest is looked
+        // at again so that an entry is never completed with another prefix than the one it was asked for.
+        let completed = sqlx::query(
+            "UPDATE run_resets SET state = 'CREATED', new_run_id = $3, completed_at = $4, \
+                    reapply_report = $5 \
+             WHERE tenant_id = $1 AND id = $2 AND state = 'PENDING_SOURCE' AND prefix_digest = $6",
+        )
+        .bind(tx.info.tenant_id.as_uuid())
+        .bind(registration.id.as_uuid())
+        .bind(tx.info.run_id.as_uuid())
+        .bind(tx.now)
+        .bind(report_json(registration.report))
+        .bind(registration.prefix_digest.as_bytes().as_slice())
+        .execute(&mut *tx.tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if completed != 1 {
+            return Err(corrupt("the entry of a pending reset"));
+        }
+        return Ok(());
+    }
     // the name of the policy is written by the statement: a string literal in Rust that reads like a command
     // is audited as one
     let dropped = matches!(registration.business, RerunBusinessId::Drop);
+    let cancels = matches!(registration.source_policy, ResetSourcePolicy::CancelSource);
     sqlx::query(
         "INSERT INTO run_resets \
          (tenant_id, namespace_id, id, source_run_id, source_sequence, prefix_digest, reapply, \
           business_id_policy, source_policy, state, new_run_id, actor, reason, created_at, completed_at, \
-          reapply_report) \
+          reapply_report, acknowledged_reexecution) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 THEN 'DROP' ELSE 'KEEP' END, \
-                 'REQUIRE_TERMINAL', 'CREATED', $9, $10, $11, $12, $12, $13)",
+                 CASE WHEN $14 THEN 'CANCEL_SOURCE' ELSE 'REQUIRE_TERMINAL' END, \
+                 'CREATED', $9, $10, $11, $12, $12, $13, $15)",
     )
     .bind(tx.info.tenant_id.as_uuid())
     .bind(tx.info.namespace_id.as_uuid())
@@ -300,6 +332,8 @@ pub(super) async fn register(
     .bind(registration.reason)
     .bind(tx.now)
     .bind(report_json(registration.report))
+    .bind(cancels)
+    .bind(registration.acknowledged)
     .execute(&mut *tx.tx)
     .await
     .map_err(store_error)?;
@@ -312,6 +346,7 @@ fn record(row: &PgRow) -> Result<ResetRecord, StoreError> {
     let sequence: i64 = col(row, "source_sequence")?;
     let new_run: Option<Uuid> = col(row, "new_run_id")?;
     let report: Value = col(row, "reapply_report")?;
+    let policy: String = col(row, "source_policy")?;
     Ok(ResetRecord {
         id: ResetId::new(col(row, "id")?),
         source: RunId::new(col(row, "source_run_id")?),
@@ -321,6 +356,7 @@ fn record(row: &PgRow) -> Result<ResetRecord, StoreError> {
         new_run: new_run.map(RunId::new),
         reapply: ResetReapply::parse(&reapply).ok_or_else(|| corrupt("reset reapply"))?,
         reapply_report: report_from_json(&report),
+        source_policy: ResetSourcePolicy::parse(&policy),
         created_at: col(row, "created_at")?,
     })
 }
@@ -333,7 +369,7 @@ pub(super) async fn list(
 ) -> Result<Vec<ResetRecord>, StoreError> {
     sqlx::query(
         "SELECT id, source_run_id, source_sequence, state, failure_reason, new_run_id, reapply, reapply_report, \
-                created_at \
+                source_policy, created_at \
          FROM run_resets WHERE tenant_id = $1 AND source_run_id = $2 ORDER BY id DESC LIMIT 200",
     )
     .bind(tenant.as_uuid())
@@ -355,7 +391,7 @@ pub(super) async fn get(
 ) -> Result<Option<ResetRecord>, StoreError> {
     sqlx::query(
         "SELECT id, source_run_id, source_sequence, state, failure_reason, new_run_id, reapply, reapply_report, \
-                created_at \
+                source_policy, created_at \
          FROM run_resets WHERE tenant_id = $1 AND source_run_id = $2 AND id = $3",
     )
     .bind(tenant.as_uuid())
@@ -377,7 +413,7 @@ pub(super) async fn made(
 ) -> Result<Option<ResetRecord>, StoreError> {
     sqlx::query(
         "SELECT id, source_run_id, source_sequence, state, failure_reason, new_run_id, reapply, reapply_report, \
-                created_at \
+                source_policy, created_at \
          FROM run_resets WHERE tenant_id = $1 AND new_run_id = $2",
     )
     .bind(tenant.as_uuid())
@@ -518,6 +554,254 @@ pub(super) async fn retained_arguments(
         .iter()
         .map(|asked| asked.and_then(|key| kept.get(&key).cloned()))
         .collect())
+}
+
+/// Writes the entry of a reset that waits for its source (see
+/// [`sagat_application::execution::RunTx::register_pending_reset`]), in the transaction that holds the row of the
+/// source and cancels it: the quota of the namespace is judged under its own lock, then the entry, the audit record
+/// of the request and the receipt of its key are written.
+pub(super) async fn register_pending(
+    tx: &mut PgRunTx,
+    registration: &PendingRegistration<'_>,
+) -> Result<(), StoreError> {
+    if registration.source != tx.info.run_id {
+        return Err(internal(
+            "a reset that waits is registered in the transaction of its source",
+        ));
+    }
+    let tenant = tx.info.tenant_id;
+    let namespace = tx.info.namespace_id;
+    crate::quotas::lock_pending_resets(&mut tx.tx, tenant, namespace).await?;
+    crate::quotas::ensure_room_for_pending_reset(&mut tx.tx, tenant, namespace, registration.limit)
+        .await?;
+    // the names of the policies are written by the statement, as in `register`
+    let dropped = matches!(registration.business, RerunBusinessId::Drop);
+    sqlx::query(
+        "INSERT INTO run_resets \
+         (tenant_id, namespace_id, id, source_run_id, source_sequence, prefix_digest, reapply, \
+          business_id_policy, source_policy, state, new_run_id, actor, reason, created_at, completed_at, \
+          reapply_report, acknowledged_reexecution) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 THEN 'DROP' ELSE 'KEEP' END, \
+                 'CANCEL_SOURCE', 'PENDING_SOURCE', NULL, $9, $10, $11, NULL, '[]', $12)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .bind(registration.id.as_uuid())
+    .bind(registration.source.as_uuid())
+    .bind(i64::try_from(registration.sequence).map_err(|_| corrupt("sequence"))?)
+    .bind(registration.prefix_digest.as_bytes().as_slice())
+    .bind(registration.reapply.as_str())
+    .bind(dropped)
+    .bind(registration.actor)
+    .bind(registration.reason)
+    .bind(tx.now)
+    .bind(registration.acknowledged)
+    .execute(&mut *tx.tx)
+    .await
+    .map_err(store_error)?;
+    insert_audit(&mut tx.tx, registration.audit).await?;
+    // The row of the source is held, so an identical request cannot be here too; another request under the same
+    // key, for another run, can: it is not the same request.
+    let remembered = remember(
+        &mut tx.tx,
+        tenant,
+        registration.receipt,
+        &hash(&registration.receipt.fingerprint),
+        &registration.id.to_string(),
+    )
+    .await?;
+    if !remembered {
+        return Err(StoreError::IdempotencyKeyReused);
+    }
+    Ok(())
+}
+
+/// The stored result of a reset request that waits for its source (the id of its entry), read on its own.
+pub(super) async fn receipt(
+    pool: &PgPool,
+    tenant: TenantId,
+    idempotency: &sagat_application::definitions::Idempotency,
+) -> Result<Option<String>, StoreError> {
+    let mut tx = pool.begin_safely().await.map_err(store_error)?;
+    let stored = crate::definitions::replay(
+        &mut tx,
+        tenant,
+        idempotency,
+        &hash(&idempotency.fingerprint),
+    )
+    .await?;
+    tx.rollback().await.map_err(store_error)?;
+    Ok(stored)
+}
+
+/// Where a pending reset is completed, the fence and the entry: the lease of the shard that owns the entry is the
+/// one the engine holds, the entry is locked and is still pending. Taken before the other admission locks, in the
+/// slot of the aggregates that create runs (ADR-0050 decision 7).
+pub(super) async fn lock_pending(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    admission: &PendingAdmission,
+) -> Result<(), StoreError> {
+    lock_pending_row(conn, tenant, admission.reset, admission.fence.as_ref()).await
+}
+
+/// The requester is looked at again where the run is admitted, under the lock of their membership (`FOR SHARE`,
+/// through the function the runtime role may call): a revocation that has returned stops the run, and one that has
+/// not waits for this transaction. It follows the slot of the memberships of the admission order.
+pub(super) async fn recheck_requester(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    admission: &PendingAdmission,
+) -> Result<(), StoreError> {
+    let role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
+            .bind(tenant.as_uuid())
+            .bind(&admission.actor)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(store_error)?;
+    let role = role
+        .map(|role| role.parse::<Role>())
+        .transpose()
+        .map_err(|_| internal("a membership holds a role this build does not know"))?;
+    if role.is_some_and(|role| {
+        admission
+            .permissions
+            .iter()
+            .all(|permission| role.grants(*permission))
+    }) {
+        Ok(())
+    } else {
+        Err(StoreError::StateConflict(AUTHORITY_REVOKED))
+    }
+}
+
+/// The fence and the lock of a pending entry: the lease of the shard that owns it is the one the engine holds, and
+/// the entry is still pending.
+async fn lock_pending_row(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    id: ResetId,
+    fence: Option<&sagat_application::schedules::ShardFence>,
+) -> Result<(), StoreError> {
+    crate::schedules::check_fence(conn, id.as_uuid(), fence).await?;
+    let state: Option<String> = sqlx::query_scalar(
+        "SELECT state FROM run_resets WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+    )
+    .bind(tenant.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    match state.as_deref() {
+        None => Err(StoreError::MissingReference),
+        Some("PENDING_SOURCE") => Ok(()),
+        Some(_) => Err(StoreError::StateConflict(RESET_ALREADY_COMPLETED)),
+    }
+}
+
+impl PendingResetStore for PgRunStore {
+    async fn due_resets(
+        &self,
+        shards: &[Shard],
+        limit: u32,
+        per_tenant: u32,
+        skipping: &[ResetId],
+    ) -> Result<Vec<DueReset>, StoreError> {
+        let shards: Vec<i16> = shards.iter().map(|s| i16::from(s.index())).collect();
+        let skipping: Vec<Uuid> = skipping.iter().map(|id| id.as_uuid()).collect();
+        // the oldest `per_tenant` entries of each tenant, then the oldest `limit` of those: one tenant whose entries
+        // keep failing cannot fill the scan, and an entry the pass backs off from is not in it
+        let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT due.tenant_id, due.id FROM ( \
+                 SELECT r.tenant_id, r.id, r.created_at, \
+                        row_number() OVER (PARTITION BY r.tenant_id ORDER BY r.created_at, r.id) AS nth \
+                 FROM run_resets r \
+                 JOIN runs s ON s.tenant_id = r.tenant_id AND s.id = r.source_run_id \
+                 WHERE r.shard = ANY($1) AND r.state = 'PENDING_SOURCE' AND s.finished_at IS NOT NULL \
+                   AND r.id <> ALL($4::uuid[])) due \
+             WHERE due.nth <= $3 ORDER BY due.created_at, due.id LIMIT $2",
+        )
+        .bind(shards)
+        .bind(i64::from(limit))
+        .bind(i64::from(per_tenant))
+        .bind(skipping)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|(tenant, id)| DueReset {
+                tenant_id: TenantId::new(tenant),
+                id: ResetId::new(id),
+            })
+            .collect())
+    }
+
+    async fn pending_reset(
+        &self,
+        tenant: TenantId,
+        id: ResetId,
+    ) -> Result<Option<PendingReset>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, namespace_id, source_run_id, source_sequence, prefix_digest, reapply, \
+                    (business_id_policy = 'DROP') AS drops_business_id, acknowledged_reexecution, actor, reason, \
+                    created_at \
+             FROM run_resets WHERE tenant_id = $1 AND id = $2 AND state = 'PENDING_SOURCE'",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let reapply: String = col(&row, "reapply")?;
+        let drops: bool = col(&row, "drops_business_id")?;
+        let sequence: i64 = col(&row, "source_sequence")?;
+        Ok(Some(PendingReset {
+            id: ResetId::new(col(&row, "id")?),
+            tenant_id: tenant,
+            namespace_id: NamespaceId::new(col(&row, "namespace_id")?),
+            source: RunId::new(col(&row, "source_run_id")?),
+            sequence: u64::try_from(sequence).map_err(|_| corrupt("reset sequence"))?,
+            prefix_digest: col(&row, "prefix_digest")?,
+            reapply: ResetReapply::parse(&reapply).ok_or_else(|| corrupt("reset reapply"))?,
+            business: if drops {
+                RerunBusinessId::Drop
+            } else {
+                RerunBusinessId::Keep
+            },
+            acknowledged: col(&row, "acknowledged_reexecution")?,
+            actor: col(&row, "actor")?,
+            reason: col(&row, "reason")?,
+            created_at: col(&row, "created_at")?,
+        }))
+    }
+
+    async fn fail_reset(&self, failure: &ResetFailure<'_>) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        lock_pending_row(&mut tx, failure.tenant_id, failure.id, failure.fence).await?;
+        let failed = sqlx::query(
+            "UPDATE run_resets SET state = 'FAILED', failure_reason = $3, completed_at = $4 \
+             WHERE tenant_id = $1 AND id = $2 AND state = 'PENDING_SOURCE'",
+        )
+        .bind(failure.tenant_id.as_uuid())
+        .bind(failure.id.as_uuid())
+        .bind(failure.reason)
+        .bind(failure.at)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected();
+        if failed != 1 {
+            return Err(corrupt("the entry of a pending reset"));
+        }
+        insert_audit(&mut tx, failure.audit).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

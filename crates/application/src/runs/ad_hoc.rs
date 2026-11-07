@@ -357,6 +357,7 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
                 workflow_limit,
             }),
             reset_sequence: None,
+            pending_reset: None,
         };
         let result = match self.store.create(new).await {
             Ok(created) => self

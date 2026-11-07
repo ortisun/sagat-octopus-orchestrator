@@ -168,7 +168,7 @@ groups:
         for: 5m
         labels: {severity: warning}
         annotations:
-          summary: A timer, wait, retry, lease, deadline, schedule or batch job has been overdue for more than a minute.
+          summary: A timer, wait, retry, lease, deadline, schedule, batch job or reset that waited for its source has been overdue for more than a minute.
           runbook: docs/runbooks/scaling.md#scheduler-late
 
       - alert: SagatBatchJobsStalled

@@ -18,6 +18,7 @@ mod fairness;
 mod monitor;
 mod outbox;
 mod passes;
+mod resets;
 mod schedules;
 mod shards;
 mod telemetry;
@@ -32,6 +33,7 @@ pub use passes::{
     CollectionAdvance, CollectionAdvanceError, ContinuationAdvanceError, LoopAdvance,
     LoopAdvanceError, Report, Scheduler, SchedulerSettings,
 };
+pub use resets::{Backoff, ResetPass, ResetRound, ResetSettings, delay_after};
 pub use schedules::{SchedulePass, ScheduleRound, ScheduleSettings};
 pub use shards::{Keeper, KeeperSettings, Placement, Round, Snapshot};
 pub use telemetry::{

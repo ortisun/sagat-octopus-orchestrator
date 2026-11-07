@@ -265,6 +265,11 @@ pub struct Options {
     /// proved by `reapply::the_service_the_control_plane_builds_refuses_the_reapply_unless_the_operator_set_it`,
     /// which builds the service from the real configuration.
     pub reset_reapply: bool,
+    /// Let a reset cancel an open source and wait for it (`SAGAT_RESET_CANCEL_SOURCE_ENABLED`, feature 018). ON BY
+    /// DEFAULT HERE, unlike in production (where it is off unless the operator sets it), so that the suites can
+    /// exercise it; the gate is what a test of the refusal turns off. That the production default is off is proved by
+    /// `cancel_source::the_service_the_control_plane_builds_refuses_the_cancel_of_a_source_unless_the_operator_set_it`.
+    pub reset_cancel_source: bool,
 }
 
 impl Default for Options {
@@ -298,6 +303,7 @@ impl Default for Options {
             streams: None,
             studio: None,
             reset_reapply: true,
+            reset_cancel_source: true,
         }
     }
 }
@@ -521,7 +527,8 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         cache,
     )
     .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
-    .with_reset_reapply(options.reset_reapply);
+    .with_reset_reapply(options.reset_reapply)
+    .with_reset_cancel_source(options.reset_cancel_source);
     if let Some(blobs) = &blobs {
         runs = runs.with_input_blobs(blobs.clone(), Arc::new(sagat_infra_schema::Schemas));
     }

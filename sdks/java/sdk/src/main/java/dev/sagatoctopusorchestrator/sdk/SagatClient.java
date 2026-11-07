@@ -996,7 +996,7 @@ public final class SagatClient implements AutoCloseable {
      * What a reset to {@code sequence} would restore and run again; changes nothing.
      *
      * @param sequence the point, 1 or more
-     * @param reapply  what to apply again on top of the prefix ({@code NONE}, {@code CANCEL_SOURCE}); null for the default
+     * @param reapply  what to deliver again on top of the prefix ({@code NONE}, {@code SIGNALS}, {@code UPDATES}, {@code ALL}); null for the default
      */
     public ResetPlan previewReset(String runId, long sequence, String reapply, CallOptions options) {
         return runOperations.previewReset(runId, sequence, reapply, options);

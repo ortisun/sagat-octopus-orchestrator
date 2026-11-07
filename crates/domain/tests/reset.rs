@@ -708,3 +708,76 @@ fn a_prefix_with_an_event_of_an_iteration_is_not_offered_in_this_version() {
     assert_eq!(eligible(&found), [1], "{found:?}");
     assert_eq!(blocked(&found, 7), Some(&ResetBlock::ScopedEvents));
 }
+
+// ----------------------------------------------------------------------------------- an attempt in flight (D2008)
+
+/// `a` done, `b` leased to a worker, `c` not started: the source of a `CANCEL_SOURCE` request, open.
+fn open_source() -> (Harness, u64) {
+    let mut run = Harness::start(build(
+        "a",
+        vec![
+            activity("a").with_next(id("b")),
+            activity("b").with_next(id("c")),
+            activity("c"),
+        ],
+    ));
+    let fence = run.lease("a");
+    run.complete("a", fence).expect("a completes");
+    let _in_flight = run.lease("b");
+    let after_a = sequences(&run, "step.completed")[0];
+    (run, after_a)
+}
+
+#[test]
+fn a_step_in_flight_after_the_point_is_a_step_the_reset_may_repeat_and_asks_for_the_acknowledgement()
+ {
+    let (run, after_a) = open_source();
+    let plan = reset_plan(&run.def, run.state.run_id(), &addressed(&run), after_a).expect("a plan");
+    let steps: Vec<(&str, bool, bool)> = plan
+        .reexecuted
+        .iter()
+        .map(|step| (step.node.as_str(), step.completed_in_source, step.in_flight))
+        .collect();
+    // `b` was leased and has not completed: it may complete before a cancellation takes effect
+    assert_eq!(steps, [("b", false, true)]);
+    assert!(
+        plan.needs_acknowledgement(),
+        "an attempt that may complete is as much a repeat as one that completed"
+    );
+}
+
+#[test]
+fn a_step_that_only_waits_to_be_released_or_has_failed_is_not_in_flight() {
+    // `a` done, `b` released but not leased: a cancellation takes it before any worker does
+    let mut run = Harness::start(build(
+        "a",
+        vec![activity("a").with_next(id("b")), activity("b")],
+    ));
+    let fence = run.lease("a");
+    run.complete("a", fence).expect("a completes");
+    let after_a = sequences(&run, "step.completed")[0];
+    let plan = reset_plan(&run.def, run.state.run_id(), &addressed(&run), after_a).expect("a plan");
+    assert!(
+        plan.reexecuted.iter().all(|step| !step.in_flight),
+        "{:?}",
+        plan.reexecuted
+    );
+    assert!(!plan.needs_acknowledgement());
+}
+
+#[test]
+fn a_source_that_has_ended_never_has_a_step_in_flight() {
+    let mut run = Harness::start(build(
+        "a",
+        vec![activity("a").with_next(id("b")), activity("b")],
+    ));
+    for node in ["a", "b"] {
+        let fence = run.lease(node);
+        run.complete(node, fence).expect("complete");
+    }
+    let after_a = sequences(&run, "step.completed")[0];
+    let plan = reset_plan(&run.def, run.state.run_id(), &addressed(&run), after_a).expect("a plan");
+    assert!(plan.reexecuted.iter().all(|step| !step.in_flight));
+    // and the acknowledgement is asked for the same reason as before: `b` completed
+    assert!(plan.needs_acknowledgement());
+}

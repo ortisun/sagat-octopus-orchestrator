@@ -121,6 +121,8 @@ ENVIRONMENT (serve):
     SAGAT_BATCHES_ENABLED             serve the batch operation routes (the engine runs the jobs under the same flag) [false]
     SAGAT_RESET_REAPPLY_ENABLED       let a reset deliver signals and Updates again (reapply SIGNALS, UPDATES, ALL) and
                                       let a workflow declare an Update with reapplyOnReset (the engine needs nothing) [false]
+    SAGAT_RESET_CANCEL_SOURCE_ENABLED let a reset cancel a run that has not ended and wait for it (sourcePolicy
+                                      CANCEL_SOURCE); the engine completes those resets under the same flag [false]
     SAGAT_LAKE_ENABLED                let a workflow hold an Apache Iceberg write (publication still waits for its checks) [false]
     SAGAT_SECRETS_KEYS                key ring that seals secrets: id:base64,id2:base64; without it the
                                       secret routes do not exist. The engine needs the same ring

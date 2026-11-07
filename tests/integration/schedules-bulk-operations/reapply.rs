@@ -318,7 +318,7 @@ async fn a_reset_delivers_again_in_journal_order_what_the_source_received_after_
     );
 
     let made = reset(&f, &source, ResetReapply::All).await;
-    let new = made.run.info.run_id;
+    let new = made.run.as_ref().expect("the reset made a run").info.run_id;
 
     // Update 2 and one are delivered; two finds no step waiting (`b` has not run in the new run) and so ends the
     // signals, but not the Updates: Update 3 still goes, and three is not tried
@@ -430,7 +430,7 @@ async fn each_delivery_is_audited_by_the_caller_and_keyed_by_the_reset() {
     let f = fixture().await;
     let source = source(&f, true).await;
     let made = reset(&f, &source, ResetReapply::All).await;
-    let new = made.run.info.run_id;
+    let new = made.run.as_ref().expect("the reset made a run").info.run_id;
 
     // the reset, the signal that was delivered and the two Updates that were applied, each once, by the caller
     let audit: Vec<(String, String)> = sqlx::query_as(
@@ -491,7 +491,15 @@ async fn each_delivery_is_audited_by_the_caller_and_keyed_by_the_reset() {
     let plain_reason: Option<String> = sqlx::query_scalar(
         "SELECT reason FROM audit_records WHERE resource_id = $1 AND action = 'run.reset'",
     )
-    .bind(plain.run.info.run_id.to_string())
+    .bind(
+        plain
+            .run
+            .as_ref()
+            .expect("the reset made a run")
+            .info
+            .run_id
+            .to_string(),
+    )
     .fetch_one(&f.w.db.pool)
     .await
     .expect("audit");
@@ -605,16 +613,29 @@ async fn the_policy_chooses_what_is_delivered_again() {
     let none = reset(&f, &source, ResetReapply::None).await;
     assert!(none.reset.reapply_report.is_empty());
     assert_eq!(
-        revision(&f, none.run.info.run_id).await,
+        revision(
+            &f,
+            none.run.as_ref().expect("the reset made a run").info.run_id
+        )
+        .await,
         1,
         "nothing delivered"
     );
     assert_eq!(
-        events_of(&f, none.run.info.run_id, "state.updated").await,
+        events_of(
+            &f,
+            none.run.as_ref().expect("the reset made a run").info.run_id,
+            "state.updated"
+        )
+        .await,
         1
     );
     assert_eq!(
-        f.w.step_status(none.run.info.run_id, "w1").await,
+        f.w.step_status(
+            none.run.as_ref().expect("the reset made a run").info.run_id,
+            "w1"
+        )
+        .await,
         Some(StepStatus::Waiting)
     );
 
@@ -633,7 +654,19 @@ async fn the_policy_chooses_what_is_delivered_again() {
             ),
         ]
     );
-    assert_eq!(revision(&f, signals.run.info.run_id).await, 1);
+    assert_eq!(
+        revision(
+            &f,
+            signals
+                .run
+                .as_ref()
+                .expect("the reset made a run")
+                .info
+                .run_id
+        )
+        .await,
+        1
+    );
 
     // Updates only: both are applied, one after the other, to the state each was applied to in the source; the
     // signals are not listed, and the run waits where the prefix left it
@@ -645,9 +678,30 @@ async fn the_policy_chooses_what_is_delivered_again() {
             entry("UPDATE", OPERATION, "REAPPLIED", None),
         ]
     );
-    assert_eq!(revision(&f, updates.run.info.run_id).await, 3);
     assert_eq!(
-        f.w.step_status(updates.run.info.run_id, "w1").await,
+        revision(
+            &f,
+            updates
+                .run
+                .as_ref()
+                .expect("the reset made a run")
+                .info
+                .run_id
+        )
+        .await,
+        3
+    );
+    assert_eq!(
+        f.w.step_status(
+            updates
+                .run
+                .as_ref()
+                .expect("the reset made a run")
+                .info
+                .run_id,
+            "w1"
+        )
+        .await,
         Some(StepStatus::Waiting)
     );
 
@@ -661,7 +715,8 @@ async fn the_policy_chooses_what_is_delivered_again() {
         3
     );
     for made in [&none, &signals, &updates] {
-        f.w.assert_consistent(made.run.info.run_id).await;
+        f.w.assert_consistent(made.run.as_ref().expect("the reset made a run").info.run_id)
+            .await;
     }
 }
 
@@ -681,7 +736,19 @@ async fn an_update_whose_declaration_does_not_opt_in_is_not_a_candidate() {
     );
     let updates = reset(&f, &source, ResetReapply::Updates).await;
     assert!(updates.reset.reapply_report.is_empty());
-    assert_eq!(revision(&f, updates.run.info.run_id).await, 1);
+    assert_eq!(
+        revision(
+            &f,
+            updates
+                .run
+                .as_ref()
+                .expect("the reset made a run")
+                .info
+                .run_id
+        )
+        .await,
+        1
+    );
 
     // all of it: only the signals are candidates
     let all = reset(&f, &source, ResetReapply::All).await;
@@ -786,7 +853,14 @@ async fn a_row_that_does_not_say_what_it_was_is_a_legacy_event_and_ends_the_sign
             ),
         ]
     );
-    assert_eq!(revision(&f, made.run.info.run_id).await, 2);
+    assert_eq!(
+        revision(
+            &f,
+            made.run.as_ref().expect("the reset made a run").info.run_id
+        )
+        .await,
+        2
+    );
     // what the preview already knew is what the report says, line for line: the entries it held back are the same
     // lines in both (this is the case where some are held back; the case where none is, is the preview test's)
     let held_back: Vec<ReportEntry> = preview
@@ -802,7 +876,8 @@ async fn a_row_that_does_not_say_what_it_was_is_a_legacy_event_and_ends_the_sign
             "{line:?} is in the preview and not in the report"
         );
     }
-    f.w.assert_consistent(made.run.info.run_id).await;
+    f.w.assert_consistent(made.run.as_ref().expect("the reset made a run").info.run_id)
+        .await;
 }
 
 /// Removes, from the tenant, the payload of the first signal and the arguments of the first Update after the
@@ -894,7 +969,7 @@ async fn content_that_is_gone_is_not_retained_and_the_update_that_followed_it_fi
             ),
         ]
     );
-    let new = made.run.info.run_id;
+    let new = made.run.as_ref().expect("the reset made a run").info.run_id;
     assert_eq!(
         revision(&f, new).await,
         1,
@@ -993,7 +1068,7 @@ async fn an_update_the_validator_declines_and_one_the_declaration_does_not_accep
             ),
         ]
     );
-    let new = made.run.info.run_id;
+    let new = made.run.as_ref().expect("the reset made a run").info.run_id;
     assert_eq!(
         f.w.step_status(new, "w1").await,
         Some(StepStatus::Succeeded)
@@ -1044,7 +1119,11 @@ async fn what_a_signal_with_start_and_a_published_event_satisfied_is_not_deliver
         made.reset.reapply_report
     );
     assert_eq!(
-        f.w.step_status(made.run.info.run_id, "w").await,
+        f.w.step_status(
+            made.run.as_ref().expect("the reset made a run").info.run_id,
+            "w"
+        )
+        .await,
         Some(StepStatus::Waiting),
         "the signal of a request that also started the run is not sent to the run that replaces it"
     );
@@ -1105,7 +1184,12 @@ async fn the_same_request_is_the_same_reset_and_nothing_is_delivered_twice() {
             )
             .await
             .expect("the reset");
-    let new = first.run.info.run_id;
+    let new = first
+        .run
+        .as_ref()
+        .expect("the reset made a run")
+        .info
+        .run_id;
     let counts = |f: &Fixture| {
         let pool = f.w.db.pool.clone();
         async move {
@@ -1150,7 +1234,15 @@ async fn the_same_request_is_the_same_reset_and_nothing_is_delivered_twice() {
             .await
             .expect("the retry");
     assert_eq!(again.reset, first.reset, "the same entry, the same report");
-    assert_eq!(again.run.info.run_id, new);
+    assert_eq!(
+        again
+            .run
+            .as_ref()
+            .expect("the reset made a run")
+            .info
+            .run_id,
+        new
+    );
     assert_eq!(
         counts(&f).await,
         before,
@@ -1180,7 +1272,7 @@ async fn a_lost_hint_leaves_the_state_right_and_the_work_findable() {
     let f = fixture().await;
     let source = source(&f, true).await;
     let made = reset(&f, &source, ResetReapply::All).await;
-    let new = made.run.info.run_id;
+    let new = made.run.as_ref().expect("the reset made a run").info.run_id;
     let expected = words(&made.reset.reapply_report);
 
     // the broker never got the announcements of the new run (they are only hints, and nothing here dispatches them);
@@ -1226,7 +1318,12 @@ async fn a_reset_of_a_reset_follows_the_retained_arguments_to_the_run_that_kept_
     let f = fixture().await;
     let source = source(&f, true).await;
     let first = reset(&f, &source, ResetReapply::All).await;
-    let middle = first.run.info.run_id;
+    let middle = first
+        .run
+        .as_ref()
+        .expect("the reset made a run")
+        .info
+        .run_id;
     // the middle run goes on to the end: the caller sends the signals the reapply could not deliver
     finish(&f, middle, &["b"]).await;
     signal(&f, middle, TWO, &payload("two")).await;
@@ -1256,11 +1353,19 @@ async fn a_reset_of_a_reset_follows_the_retained_arguments_to_the_run_that_kept_
             entry("UPDATE", OPERATION, "REAPPLIED", None),
         ]
     );
-    assert_eq!(revision(&f, last.run.info.run_id).await, 3);
+    assert_eq!(
+        revision(
+            &f,
+            last.run.as_ref().expect("the reset made a run").info.run_id
+        )
+        .await,
+        3
+    );
     // the first of them is a row the middle run restored from the source
     let creation = last.reset.reapply_report[0].sequence;
     assert_eq!(creation, source.creation_update);
-    f.w.assert_consistent(last.run.info.run_id).await;
+    f.w.assert_consistent(last.run.as_ref().expect("the reset made a run").info.run_id)
+        .await;
 }
 
 #[tokio::test]
@@ -1347,7 +1452,14 @@ async fn the_ceiling_is_the_most_a_reapply_holds_and_one_more_refuses_the_previe
             .iter()
             .all(|entry| entry.outcome == "REAPPLIED")
     );
-    assert_eq!(revision(&f, made.run.info.run_id).await, 258);
+    assert_eq!(
+        revision(
+            &f,
+            made.run.as_ref().expect("the reset made a run").info.run_id
+        )
+        .await,
+        258
+    );
     assert_eq!(
         stored_entries(&f, &made).await,
         made.reset.reapply_report,
@@ -1703,7 +1815,12 @@ async fn a_reset_of_a_reset_keeps_two_equal_signals_that_the_first_reset_deliver
             entry("SIGNAL", ONE, "REAPPLIED", None)
         ]
     );
-    let middle = first.run.info.run_id;
+    let middle = first
+        .run
+        .as_ref()
+        .expect("the reset made a run")
+        .info
+        .run_id;
     finish(&f, middle, &["c"]).await;
     assert_eq!(f.w.run_status(middle).await, RunStatus::Succeeded);
     let instants: i64 = sqlx::query_scalar(
@@ -1738,7 +1855,7 @@ async fn a_reset_of_a_reset_keeps_two_equal_signals_that_the_first_reset_deliver
             entry("SIGNAL", ONE, "REAPPLIED", None)
         ]
     );
-    let new = last.run.info.run_id;
+    let new = last.run.as_ref().expect("the reset made a run").info.run_id;
     assert_eq!(
         f.w.step_status(new, "w1").await,
         Some(StepStatus::Succeeded)
@@ -1808,7 +1925,20 @@ async fn a_retry_is_answered_from_the_register_where_the_reapply_is_off_now_and_
         .await
         .expect("the retry is answered from the register");
     assert_eq!(again.reset, first.reset, "the stored report, as it was");
-    assert_eq!(again.run.info.run_id, first.run.info.run_id);
+    assert_eq!(
+        again
+            .run
+            .as_ref()
+            .expect("the reset made a run")
+            .info
+            .run_id,
+        first
+            .run
+            .as_ref()
+            .expect("the reset made a run")
+            .info
+            .run_id
+    );
     assert_eq!(made_counts(&f).await, counts);
 
     // a request that was never made is refused, and makes nothing: no run and no entry
@@ -1992,7 +2122,7 @@ async fn a_chain_of_resets_of_resets_is_walked_once_and_the_walk_stops_at_its_bo
                 )
                 .await
                 .expect("a link of the chain");
-        let run = made.run.info.run_id;
+        let run = made.run.as_ref().expect("the reset made a run").info.run_id;
         f.w.operate_run(run, sagat_application::runs::RunOperation::Cancel)
             .await;
         assert_eq!(f.w.run_status(run).await, RunStatus::Cancelled);

@@ -348,6 +348,9 @@ async fn boot(scenario: &Value) -> Run {
         blob_store: Some(BlobStoreConfig::Fs {
             root: blob_dir.path().to_owned(),
         }),
+        // Feature 018: a reset may cancel a source that has not ended only where the operator said so; the engine is told
+        // by the flag below (`server.resetCancelSource`), the control plane of the scenario by this setting.
+        reset_cancel_source: scenario["server"]["resetCancelSource"] == true,
         ..Options::default()
     })
     .await;
@@ -404,6 +407,10 @@ async fn boot(scenario: &Value) -> Run {
     }
     if scenario["server"]["batches"] == true {
         extra.push(("SAGAT_BATCHES_ENABLED", "true"));
+    }
+    if scenario["server"]["resetCancelSource"] == true {
+        extra.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"));
+        extra.push(("SAGAT_RESET_CANCEL_SOURCE_POLL_MS", "100"));
     }
     // A reset that delivers signals and Updates again, and a workflow that declares an Update with `reapplyOnReset`,
     // are off until the operator says so, and only the control plane is told: the engine reads the versions it was

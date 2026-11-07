@@ -493,7 +493,11 @@ impl MonitorStore for PgRunStore {
                                        AND (r.state = 'PENDING' \
                                             OR (r.state = 'DEFERRED' AND r.next_attempt_at <= now())))))) \
                ) AS batches, \
-               (SELECT count(*) FROM batch_jobs WHERE state IN ('SELECTING', 'RUNNING', 'CANCELLING')) AS batch_active",
+               (SELECT coalesce(extract(epoch FROM clock_timestamp() - min(s.finished_at)), 0)::float8 \
+                 FROM run_resets r JOIN runs s ON s.tenant_id = r.tenant_id AND s.id = r.source_run_id \
+                 WHERE r.state = 'PENDING_SOURCE' AND s.finished_at IS NOT NULL) AS resets, \
+               (SELECT count(*) FROM batch_jobs WHERE state IN ('SELECTING', 'RUNNING', 'CANCELLING')) AS batch_active, \
+               (SELECT count(*) FROM run_resets WHERE state = 'PENDING_SOURCE') AS resets_pending",
         )
         .fetch_one(pool)
         .await
@@ -546,8 +550,10 @@ impl MonitorStore for PgRunStore {
                 deadlines: late("deadlines")?,
                 schedules: late("schedules")?,
                 batches: late("batches")?,
+                resets: late("resets")?,
             },
             batch_jobs_active: to_u64(&overdue, "batch_active")?,
+            resets_pending: to_u64(&overdue, "resets_pending")?,
         })
     }
 

@@ -103,6 +103,8 @@ pub enum QuotaResource {
     BatchJobs,
     /// Batch jobs of the tenant that have not finished (feature 018).
     TenantBatchJobs,
+    /// Resets of the namespace that wait for their source run to end (`CANCEL_SOURCE`, feature 018).
+    PendingResets,
 }
 
 /// At which level a resource is counted.
@@ -137,7 +139,7 @@ pub enum QuotaUnit {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 37] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
@@ -174,6 +176,7 @@ impl QuotaResource {
         Self::ScheduleBackfills,
         Self::BatchJobs,
         Self::TenantBatchJobs,
+        Self::PendingResets,
     ];
 
     #[must_use]
@@ -215,6 +218,7 @@ impl QuotaResource {
             Self::ScheduleBackfills => "schedule_backfills",
             Self::BatchJobs => "batch_jobs",
             Self::TenantBatchJobs => "tenant_batch_jobs",
+            Self::PendingResets => "pending_resets",
         }
     }
 
@@ -249,7 +253,8 @@ impl QuotaResource {
             | Self::SecretProviderOperations
             | Self::Schedules
             | Self::ScheduleBackfills
-            | Self::BatchJobs => QuotaScope::Namespace,
+            | Self::BatchJobs
+            | Self::PendingResets => QuotaScope::Namespace,
             Self::TenantActiveRuns
             | Self::WorkerSessions
             | Self::IterationConcurrency
@@ -350,7 +355,7 @@ impl QuotaResource {
             Self::Schedules => 10_000,
             Self::ScheduleBackfills => 16,
             Self::BatchJobs => 16,
-            Self::TenantBatchJobs => 64,
+            Self::TenantBatchJobs | Self::PendingResets => 64,
             _ => MAX_LIMIT,
         }
     }
@@ -398,6 +403,7 @@ impl QuotaResource {
             Self::ScheduleBackfills => 4,
             Self::BatchJobs => 2,
             Self::TenantBatchJobs => 8,
+            Self::PendingResets => 16,
         }
     }
 
@@ -441,6 +447,7 @@ impl QuotaResource {
             Self::ScheduleBackfills => "schedule backfills in progress in the namespace",
             Self::BatchJobs => "batch jobs in progress in the namespace",
             Self::TenantBatchJobs => "batch jobs in progress of the tenant",
+            Self::PendingResets => "resets waiting for their source run to end in the namespace",
         }
     }
 
@@ -771,7 +778,7 @@ mod tests {
 
     #[test]
     fn durable_resources_have_explicit_scope_kind_unit_range_and_usage_semantics() {
-        assert_eq!(QuotaResource::ALL.len(), 36);
+        assert_eq!(QuotaResource::ALL.len(), 37);
         for (resource, scope, kind, unit, maximum, default, has_usage) in [
             (
                 QuotaResource::TenantContentBytes,

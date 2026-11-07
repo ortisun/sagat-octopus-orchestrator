@@ -339,6 +339,7 @@ async fn rerun_source_and_cleanup_barrier(
         },
         info,
         reset_sequence: None,
+        pending_reset: None,
     };
     assert!(matches!(
         store.create(new).await,

@@ -17,7 +17,7 @@ A schedule starts a run of a published workflow at the times its rule gives. The
 
 ## 2. Turning it on
 
-Off by default, in two places that must agree:
+Off by default, in two places that must agree. Turn it on in the engines first and then in the control plane, and turn it off in the control plane first (the order of ADR-0079, which the registry of ADR-0050 decision 9 will replace):
 
 | Where | Setting | Default | What it does |
 |---|---|---|---|

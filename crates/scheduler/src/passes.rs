@@ -5293,6 +5293,7 @@ where
                 fingerprint: child_id.as_uuid().as_bytes().to_vec(),
             },
             reset_sequence: None,
+            pending_reset: None,
         };
         match self.store.create(new).await {
             // (a child run never carries a business identifier, so a holder is never returned)

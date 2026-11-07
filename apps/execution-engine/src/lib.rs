@@ -22,6 +22,7 @@ use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::IdentityService;
+use sagat_application::reset_completion::ResetCompleter;
 use sagat_application::runs::RunService;
 use sagat_application::schedule_firing::ScheduleFiring;
 use sagat_application::worker::WorkerService;
@@ -40,7 +41,7 @@ use sagat_infra_postgres::{
 };
 use sagat_scheduler::{
     BatchPass, DeliveryWorker, EventDispatcher, Keeper, Monitor, OutboxDispatcher, Placement,
-    ProjectorSettings, SchedulePass, Scheduler, TelemetryProjector,
+    ProjectorSettings, ResetPass, SchedulePass, Scheduler, TelemetryProjector,
 };
 use sagat_telemetry::Metrics;
 use tokio::net::TcpListener;
@@ -56,7 +57,7 @@ pub use settings::EngineConfig;
 
 use loops::{
     EngineBatches, EngineDeliveries, EngineDispatcher, EngineEvents, EngineKeeper, EngineMonitor,
-    EngineProjector, EngineScheduler, EngineSchedules, Health,
+    EngineProjector, EngineResets, EngineScheduler, EngineSchedules, Health,
 };
 use supervision::CriticalTasks;
 
@@ -382,7 +383,10 @@ pub async fn serve(
             stop_rx.clone(),
         ),
     );
-    if engine.schedules_enabled {
+    // which of the optional passes run is decided once, by a function of the configuration that a test reads (D2009)
+    let optional = settings::optional_passes(engine);
+    tracing::info!(passes = ?optional, "the optional passes of this replica");
+    if optional.contains(&settings::PASS_SCHEDULES) {
         // A schedule's run is admitted as the schedule's own subject, so the pass needs the same
         // run service the API has; it holds a store of its own over the shared pool.
         // The pass finds what is due by the database's clock, so the firing must plan the times it
@@ -423,7 +427,7 @@ pub async fn serve(
     } else {
         tracing::info!("SAGAT_SCHEDULES_ENABLED is not set: schedules are stored but none fires");
     }
-    if engine.batches_enabled {
+    if optional.contains(&settings::PASS_BATCHES) {
         // An item is applied as the job's creator through the same run service the API has. The
         // items are paced by the database's clock, the one the jobs are stamped with.
         let database_clock = DatabaseClock::new(pool.clone(), SystemClock);
@@ -462,6 +466,47 @@ pub async fn serve(
         );
     } else {
         tracing::info!("SAGAT_BATCHES_ENABLED is not set: batch jobs are stored but none runs");
+    }
+    if optional.contains(&settings::PASS_RESETS) {
+        // The run of a pending reset is created as the member who asked, through the same run service the API has.
+        // The reapply of what the source received is not asked of this process again: the request that was accepted
+        // stands, and the engine has no setting for it (D1990, D1997); an Update it delivers needs the evaluator.
+        let database_clock = DatabaseClock::new(pool.clone(), SystemClock);
+        let resets: Arc<EngineResets> = Arc::new(ResetPass::new(
+            ResetCompleter::new(
+                store.clone(),
+                RunService::new(
+                    store.clone(),
+                    SystemClock,
+                    Engine::new(JsonEvaluator),
+                    cache.clone(),
+                )
+                .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator)),
+                PgIdentityStore::new(pool.clone()),
+                database_clock.clone(),
+            ),
+            placement.clone(),
+            engine.resets,
+        ));
+        tasks.spawn_loop(
+            "reset pass",
+            loops::run_resets(
+                {
+                    let resets = Arc::clone(&resets);
+                    move || {
+                        let resets = Arc::clone(&resets);
+                        let clock = database_clock.clone();
+                        async move { loops::reset_round(&clock, &resets).await }
+                    }
+                },
+                engine.reset_poll,
+                stop_rx.clone(),
+            ),
+        );
+    } else {
+        tracing::info!(
+            "SAGAT_RESET_CANCEL_SOURCE_ENABLED is not set: resets that wait for their source are stored but none is completed"
+        );
     }
     tasks.spawn_loop(
         "event dispatcher",

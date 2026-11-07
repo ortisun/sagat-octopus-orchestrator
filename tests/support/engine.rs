@@ -167,7 +167,10 @@ pub async fn world_with_breaker(
         // `reapply::the_service_the_control_plane_builds_refuses_the_reapply_unless_the_operator_set_it`.
         runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone())
             .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
-            .with_reset_reapply(true),
+            .with_reset_reapply(true)
+            // ON here, like the reapply, so that the suites can exercise it; the production default is proved by
+            // `cancel_source::the_service_the_control_plane_builds_refuses_the_cancel_of_a_source_unless_the_operator_set_it`.
+            .with_reset_cancel_source(true),
         quotas: QuotaService::new(store.clone(), SystemClock),
         bindings: BindingService::new(store.clone(), SystemClock),
         secrets: SecretService::new(store.clone(), SystemClock, keys.cipher()),

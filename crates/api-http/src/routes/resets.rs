@@ -12,8 +12,7 @@ use axum::http::StatusCode;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sagat_application::api_admission::{ApiOperation, ApiTarget};
-use sagat_application::error::AppError;
-use sagat_application::runs::{CANCEL_SOURCE_NOT_AVAILABLE, ResetRequest};
+use sagat_application::runs::{ResetRequest, ResetSourcePolicy};
 use sagat_domain::execution::{ResetId, ResetReapply, RunId};
 use serde::Deserialize;
 
@@ -146,9 +145,10 @@ pub async fn reset_run<B: Exec>(
         return Err(ApiError::validation("the sequence is at least 1"));
     }
     let reapply = reapply_of(body.reapply);
-    if matches!(body.source_policy, Some(SourcePolicyBody::CancelSource)) {
-        return Err(AppError::NotAllowed(CANCEL_SOURCE_NOT_AVAILABLE).into());
-    }
+    let source_policy = match body.source_policy {
+        None | Some(SourcePolicyBody::RequireTerminal) => ResetSourcePolicy::RequireTerminal,
+        Some(SourcePolicyBody::CancelSource) => ResetSourcePolicy::CancelSource,
+    };
     let business = match body.business_id {
         None | Some(RerunBusinessIdBody::Keep) => sagat_application::runs::RerunBusinessId::Keep,
         Some(RerunBusinessIdBody::Drop) => sagat_application::runs::RerunBusinessId::Drop,
@@ -164,6 +164,7 @@ pub async fn reset_run<B: Exec>(
                 acknowledge_reexecution: body.acknowledge_reexecution,
                 business,
                 reapply,
+                source_policy,
             },
             key,
             &caller.ctx,

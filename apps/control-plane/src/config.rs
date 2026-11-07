@@ -378,6 +378,11 @@ pub struct ServeConfig {
     /// an Update with `reapplyOnReset` (`SAGAT_RESET_REAPPLY_ENABLED`, off by default until the feature is
     /// released). The engine has no such setting: it reads the versions it was given (D1990).
     pub reset_reapply_enabled: bool,
+    /// Whether a reset may cancel a run that has not ended and wait for it (`sourcePolicy` `CANCEL_SOURCE`,
+    /// `SAGAT_RESET_CANCEL_SOURCE_ENABLED`, off by default until the feature is released); the engine completes the
+    /// resets that wait under the same flag. With it off, a request for an open source is refused
+    /// `RESET_CANCEL_SOURCE_NOT_AVAILABLE`; a retry of one that was accepted is still answered.
+    pub reset_cancel_source_enabled: bool,
     /// Whether a workflow may hold an Apache Iceberg write (`SAGAT_LAKE_ENABLED`, feature 035, off by default).
     /// With it off, publishing such a workflow is refused with `LAKE_DISABLED`. With it on, publication still
     /// waits for the checks of access, allowed modes and data classification.
@@ -580,6 +585,7 @@ impl ServeConfig {
             schedules_enabled: flag(get, "SAGAT_SCHEDULES_ENABLED")?,
             batches_enabled: flag(get, "SAGAT_BATCHES_ENABLED")?,
             reset_reapply_enabled: flag(get, "SAGAT_RESET_REAPPLY_ENABLED")?,
+            reset_cancel_source_enabled: flag(get, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")?,
             lake_enabled: flag(get, "SAGAT_LAKE_ENABLED")?,
             tls,
             webhook_oidc,

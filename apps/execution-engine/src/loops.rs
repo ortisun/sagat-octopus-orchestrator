@@ -20,8 +20,8 @@ use sagat_infra_postgres::{
 };
 use sagat_scheduler::{
     BatchPass, BatchRound, DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound,
-    Keeper, Monitor, MonitorRound, OutboxDispatcher, ProjectionRound, Report, Round, SchedulePass,
-    ScheduleRound, Scheduler, TelemetryProjector,
+    Keeper, Monitor, MonitorRound, OutboxDispatcher, ProjectionRound, Report, ResetPass,
+    ResetRound, Round, SchedulePass, ScheduleRound, Scheduler, TelemetryProjector,
 };
 use tokio::sync::watch;
 
@@ -54,6 +54,12 @@ pub type EngineSchedules = SchedulePass<
 >;
 pub type EngineBatches = BatchPass<
     PgBatchStore,
+    RunService<PgRunStore, SystemClock, JsonEvaluator>,
+    PgIdentityStore,
+    DatabaseClock<SystemClock>,
+>;
+pub type EngineResets = ResetPass<
+    PgRunStore,
     RunService<PgRunStore, SystemClock, JsonEvaluator>,
     PgIdentityStore,
     DatabaseClock<SystemClock>,
@@ -378,6 +384,46 @@ where
         }
     }
     tracing::info!("batch pass stopped");
+}
+
+/// One round of the pass that completes pending resets, after the clock it acts by has been read again.
+pub async fn reset_round<L, R>(
+    clock: &DatabaseClock<L>,
+    pass: &ResetPass<PgRunStore, R, PgIdentityStore, DatabaseClock<L>>,
+) -> ResetRound
+where
+    L: Clock,
+    R: sagat_application::reset_completion::ResetCompletions,
+{
+    if let Err(error) = clock.sync().await {
+        if !clock.is_synced() {
+            tracing::warn!(%error, "could not read the database clock yet; the reset pass waits");
+            return ResetRound {
+                errors: 1,
+                ..ResetRound::default()
+            };
+        }
+        tracing::warn!(%error, "could not read the database clock; the reset pass keeps the last difference");
+    }
+    pass.round().await
+}
+
+/// Completes the pending resets whose source has ended until stopped: the same rhythm as the batch pass.
+pub async fn run_resets<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ResetRound>,
+{
+    while !*stop.borrow() {
+        if round().await.did_work() {
+            tokio::task::yield_now().await;
+            continue;
+        }
+        if stop_during(jittered(poll, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("reset pass stopped");
 }
 
 /// Sends outbound webhooks until stopped: the same rhythm as the event dispatcher.

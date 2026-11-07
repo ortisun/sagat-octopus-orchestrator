@@ -398,6 +398,10 @@ pub struct ReexecutedStep {
     /// It completed in the source, so running it again repeats an effect: the caller must acknowledge it
     /// (`acknowledgeReexecution`).
     pub completed_in_source: bool,
+    /// An attempt of it is leased or running in the source now: it may complete before a cancellation takes effect,
+    /// and then running it again repeats an effect as much as one that completed (`CANCEL_SOURCE`, D2008). Always
+    /// false for a source that has ended.
+    pub in_flight: bool,
     pub effects: EffectMarkers,
 }
 
@@ -410,10 +414,13 @@ pub struct ResetPlan {
 }
 
 impl ResetPlan {
-    /// Whether the caller has to acknowledge a step that completed in the source being run again.
+    /// Whether the caller has to acknowledge a step that completed in the source being run again, or one whose
+    /// attempt is in flight in a source that is still open and may complete before it is cancelled (D2008).
     #[must_use]
     pub fn needs_acknowledgement(&self) -> bool {
-        self.reexecuted.iter().any(|step| step.completed_in_source)
+        self.reexecuted
+            .iter()
+            .any(|step| step.completed_in_source || step.in_flight)
     }
 }
 
@@ -516,7 +523,18 @@ pub fn reset_plan(
                 effects: markers(def, &node),
                 node,
                 completed_in_source: completed,
+                in_flight: false,
             }),
+        }
+    }
+    // A step whose attempt is leased or running in the journal as it stands may complete before a cancellation takes
+    // effect; one that waits, retries or has ended cannot (a source that has ended has no such step).
+    if let Ok(now) = RunState::replay_addressed(run_id, journal) {
+        for step in &mut seen {
+            step.in_flight = now.steps().any(|(node, held)| {
+                *node == step.node
+                    && matches!(held.status(), StepStatus::Leased | StepStatus::Running)
+            });
         }
     }
     Ok(ResetPlan {

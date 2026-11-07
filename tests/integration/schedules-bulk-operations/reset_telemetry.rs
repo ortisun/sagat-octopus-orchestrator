@@ -55,7 +55,7 @@ async fn the_attempts_of_the_restored_prefix_are_told_once_by_the_source_and_the
             )
             .await
             .expect("the reset");
-    let new = made.run.info.run_id;
+    let new = made.run.as_ref().expect("the reset made a run").info.run_id;
     finish(&f, new, &["c"]).await;
     for _ in 0..2 {
         projector.run_once().await;

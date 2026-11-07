@@ -507,6 +507,7 @@ async fn rollback_and_acl_fence(w: &World, existing: RunId, publisher: &str) {
         },
         info,
         reset_sequence: None,
+        pending_reset: None,
     };
     let held = match w.store.create(new).await.unwrap() {
         sagat_application::runs::Admitted::Created(tx) => tx,

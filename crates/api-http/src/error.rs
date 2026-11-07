@@ -193,9 +193,10 @@ impl ErrorCode {
             (Self::Conflict, "SCHEDULE_TRIGGER_HANDOVER_PENDING") => {
                 "The legacy cron pass still runs; the operator completes the handover once every engine is upgraded."
             }
-            (Self::QuotaExceeded, "SCHEDULE_LIMIT" | "BACKFILL_CONCURRENCY" | "BATCH_LIMIT") => {
-                "A namespace or tenant ceiling is reached; free capacity or ask an administrator."
-            }
+            (
+                Self::QuotaExceeded,
+                "SCHEDULE_LIMIT" | "BACKFILL_CONCURRENCY" | "BATCH_LIMIT" | "PENDING_RESET_LIMIT",
+            ) => "A namespace or tenant ceiling is reached; free capacity or ask an administrator.",
             (Self::ValidationFailed, "BUSINESS_ID_INVALID") => "1 to 200 visible ASCII characters.",
             (Self::Conflict, "BUSINESS_ID_IN_USE") => {
                 "Another open execution holds this id; `details.runId` names it when the caller may read runs."
@@ -246,10 +247,13 @@ impl ErrorCode {
                 "The prefix exceeds the reset ceiling; choose an earlier point."
             }
             (Self::ValidationFailed, "RESET_REEXECUTION_NOT_ACKNOWLEDGED") => {
-                "Steps that completed in the source will run again; set `acknowledgeReexecution`."
+                "Steps that completed in the source, or that are in flight in a run being cancelled, will run again; set `acknowledgeReexecution`."
             }
             (Self::Conflict, "RESET_SOURCE_NOT_TERMINAL") => {
-                "Wait for the run to end; resetting a run that is still open (`CANCEL_SOURCE`) is not available in this version."
+                "Wait for the run to end, or ask for `sourcePolicy: CANCEL_SOURCE` to cancel it and have the run created when it has ended."
+            }
+            (Self::ValidationFailed, "RESET_CANCEL_SOURCE_NOT_AVAILABLE") => {
+                "Wait for the run to end and reset it then, or ask the operator of the platform to enable resets that cancel their source."
             }
             (Self::ValidationFailed, "RESET_RULE_MISSING") => {
                 "Reset to an earlier point; the owning feature must declare the rule."
@@ -311,6 +315,8 @@ fn quota_reason(limit: &str) -> Option<&'static str> {
         || limit == QuotaResource::TenantBatchJobs.limit_name()
     {
         Some("BATCH_LIMIT")
+    } else if limit == QuotaResource::PendingResets.limit_name() {
+        Some("PENDING_RESET_LIMIT")
     } else {
         None
     }

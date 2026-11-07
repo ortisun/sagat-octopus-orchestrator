@@ -62,11 +62,12 @@ pub(crate) fn request(sequence: u64, acknowledge: bool) -> ResetRequest<'static>
         acknowledge_reexecution: acknowledge,
         business: RerunBusinessId::Keep,
         reapply: ResetReapply::None,
+        source_policy: sagat_application::runs::ResetSourcePolicy::RequireTerminal,
     }
 }
 
 /// `(seq, event_type, actor, payload digest, restored, occurred at, trace)` of a row of the journal.
-type Row = (
+pub(crate) type Row = (
     i64,
     String,
     String,
@@ -77,7 +78,7 @@ type Row = (
 );
 
 /// Every row of a run, in order.
-async fn rows(f: &Fixture, run: RunId) -> Vec<Row> {
+pub(crate) async fn rows(f: &Fixture, run: RunId) -> Vec<Row> {
     sqlx::query_as(
         "SELECT seq, event_type, actor, payload_digest, detail->>'restored', occurred_at, trace_id \
          FROM run_events WHERE run_id = $1 ORDER BY seq",
@@ -155,7 +156,8 @@ async fn a_run_is_reset_to_a_point_and_goes_on_from_there_with_the_history_it_ha
             .reset(&f.w.admin, source, request(after_a, true), &key(), &ctx())
             .await
             .expect("the reset")
-            .run;
+            .run
+            .expect("the reset made a run");
     let new = reset.info.run_id;
     assert_ne!(new, source);
     assert_eq!(reset.info.rerun_of, Some(source));
@@ -250,7 +252,8 @@ async fn a_reset_to_the_start_is_a_run_of_its_own_and_the_refusals_are_typed() {
             .reset(&f.w.admin, source, request(1, true), &key(), &ctx())
             .await
             .expect("a reset to the start")
-            .run;
+            .run
+            .expect("the reset made a run");
     assert_eq!(
         f.w.step_status(fresh.info.run_id, "a").await,
         Some(StepStatus::Ready)
@@ -362,7 +365,8 @@ async fn the_declared_state_and_the_output_of_a_signal_in_the_prefix_are_restore
             .reset(&f.w.admin, source, request(last, true), &key(), &ctx())
             .await
             .expect("the reset")
-            .run;
+            .run
+            .expect("the reset made a run");
     let new = reset.info.run_id;
     f.w.assert_consistent(new).await;
 
@@ -415,7 +419,8 @@ async fn the_same_key_is_the_same_reset_and_another_point_under_it_is_another_re
             )
             .await
             .expect("first")
-            .run;
+            .run
+            .expect("the reset made a run");
     let again =
         f.w.runs
             .reset(
@@ -427,7 +432,8 @@ async fn the_same_key_is_the_same_reset_and_another_point_under_it_is_another_re
             )
             .await
             .expect("a retry")
-            .run;
+            .run
+            .expect("the reset made a run");
     assert_eq!(
         first.info.run_id, again.info.run_id,
         "a retry is answered with the run it created"
@@ -692,7 +698,10 @@ async fn a_reset_is_recorded_with_what_was_asked_and_who_asked_and_a_refused_one
     assert_eq!(record.sequence, completed[0]);
     assert_eq!(record.state, ResetState::Created);
     assert_eq!(record.failure_reason, None);
-    assert_eq!(record.new_run, Some(made.run.info.run_id));
+    assert_eq!(
+        record.new_run,
+        Some(made.run.as_ref().expect("the reset made a run").info.run_id)
+    );
     assert_eq!(record.reapply, ResetReapply::None);
 
     // and the database says the same, with the digest the journal of the new run carries
@@ -702,12 +711,21 @@ async fn a_reset_is_recorded_with_what_was_asked_and_who_asked_and_a_refused_one
     let journal_digest: String = sqlx::query_scalar(
         "SELECT detail->>'prefix_sha256' FROM run_events WHERE run_id = $1 AND event_type = 'run.reset'",
     )
-    .bind(made.run.info.run_id.as_uuid())
+    .bind(made.run.as_ref().expect("the reset made a run").info.run_id.as_uuid())
     .fetch_one(&f.w.db.pool)
     .await
     .expect("the reset event");
     assert_eq!(row.0, record.id.as_uuid());
-    assert_eq!(row.1, made.run.info.namespace_id.as_uuid(), "the namespace");
+    assert_eq!(
+        row.1,
+        made.run
+            .as_ref()
+            .expect("the reset made a run")
+            .info
+            .namespace_id
+            .as_uuid(),
+        "the namespace"
+    );
     assert_eq!(row.2, source.as_uuid(), "the source");
     assert_eq!(
         row.3,
@@ -725,7 +743,18 @@ async fn a_reset_is_recorded_with_what_was_asked_and_who_asked_and_a_refused_one
         ("NONE", "KEEP", "REQUIRE_TERMINAL", "CREATED")
     );
     assert_eq!(row.9, None);
-    assert_eq!(row.10, Some(made.run.info.run_id.as_uuid()), "the new run");
+    assert_eq!(
+        row.10,
+        Some(
+            made.run
+                .as_ref()
+                .expect("the reset made a run")
+                .info
+                .run_id
+                .as_uuid()
+        ),
+        "the new run"
+    );
     assert_eq!(row.11, f.w.admin.subject().as_str(), "who asked");
     assert_eq!(row.12, request(0, false).reason, "why");
     assert!(row.13, "it has completed");
@@ -806,7 +835,16 @@ async fn the_register_lists_the_resets_of_a_run_newest_first_and_a_retry_adds_no
     // the run a reset created is not a source of anything yet
     assert!(
         f.w.runs
-            .resets(&f.w.admin, first.run.info.run_id, &ctx())
+            .resets(
+                &f.w.admin,
+                first
+                    .run
+                    .as_ref()
+                    .expect("the reset made a run")
+                    .info
+                    .run_id,
+                &ctx()
+            )
             .await
             .expect("none")
             .is_empty()
@@ -843,12 +881,20 @@ async fn the_register_is_private_to_the_tenant_and_to_the_run_that_made_the_rese
     );
     assert_eq!(f.w.store.run_reset(stranger, source, id).await, Ok(None));
     assert_eq!(
-        f.w.store.reset_made(stranger, made.run.info.run_id).await,
+        f.w.store
+            .reset_made(
+                stranger,
+                made.run.as_ref().expect("the reset made a run").info.run_id
+            )
+            .await,
         Ok(None)
     );
     assert!(
         f.w.store
-            .reset_made(f.w.admin.tenant_id(), made.run.info.run_id)
+            .reset_made(
+                f.w.admin.tenant_id(),
+                made.run.as_ref().expect("the reset made a run").info.run_id
+            )
             .await
             .expect("found")
             .is_some()
@@ -1038,7 +1084,7 @@ async fn at_every_point_the_run_that_is_made_replays_to_its_projection_keeps_the
                 .reset(&f.w.admin, source, request(point, true), &key(), &ctx())
                 .await
                 .unwrap_or_else(|error| panic!("a reset to {point}: {error:?}"));
-        let new = made.run.info.run_id;
+        let new = made.run.as_ref().expect("the reset made a run").info.run_id;
 
         // the projection of the new run is what a replay of its journal gives, before it goes on
         f.w.assert_consistent(new).await;

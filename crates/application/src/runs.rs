@@ -7,11 +7,15 @@
 
 mod ad_hoc;
 mod batch_items;
+mod pending_reset;
 mod reapply;
 mod reset;
 pub(crate) use ad_hoc::audit_denied as audit_database_execution_denied;
 pub use ad_hoc::{
     AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
+};
+pub use pending_reset::{
+    PendingAdmission, PendingRegistration, PendingReset, RESET_ALREADY_COMPLETED, ResetSourcePolicy,
 };
 pub use reapply::{
     Candidate, Delivery, Material, PlannedReapply, REAPPLY_CEILING, RESET_KEY_PREFIX, ReapplyEntry,
@@ -20,9 +24,9 @@ pub use reapply::{
     update_refusal,
 };
 pub use reset::{
-    CANCEL_SOURCE_NOT_AVAILABLE, RESET_PREFIX_EVENTS, ResetMade, ResetPointInfo, ResetPointKind,
-    ResetPreview, ResetRecord, ResetRegistration, ResetRequest, ResetSource, ResetState,
-    RestoredPrefix, SourceEvent, prefix_digest,
+    RESET_PREFIX_EVENTS, ResetMade, ResetPointInfo, ResetPointKind, ResetPreview, ResetRecord,
+    ResetRegistration, ResetRequest, ResetSource, ResetState, RestoredPrefix, SourceEvent,
+    prefix_digest,
 };
 
 use std::future::Future;
@@ -242,6 +246,9 @@ pub struct NewRun {
     /// Set when the run is created by a reset: the events `1..=N` of `info.rerun_of` are re-emitted under
     /// it, and this is `N` (feature 018, `FR-018-037`).
     pub reset_sequence: Option<u64>,
+    /// Set when the run completes a reset that waited for its source (`CANCEL_SOURCE`, feature 018): the entry is
+    /// locked, the lease of its shard and the authority of the requester are checked where the run is admitted.
+    pub pending_reset: Option<PendingAdmission>,
 }
 
 /// One journal entry as the API shows it.
@@ -492,6 +499,14 @@ pub trait RunStore:
         reset: sagat_domain::execution::ResetId,
     ) -> impl Future<Output = Result<Option<ResetRecord>, StoreError>> + Send;
 
+    /// The result stored for a reset request that waits for its source (the id of its entry): `None` when the key
+    /// made none, [`StoreError::IdempotencyKeyReused`] when it made another one (feature 018, `CANCEL_SOURCE`).
+    fn reset_receipt(
+        &self,
+        tenant: TenantId,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
+
     /// The reset that created `run`; `None` when no reset did.
     fn reset_made(
         &self,
@@ -672,7 +687,7 @@ pub struct Rerun<'a> {
 }
 
 /// The prefix a reset re-emits under the run it creates, and what it delivers again after it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct ResetStart<'a> {
     pub prefix: &'a RestoredPrefix,
     pub reapply: sagat_domain::execution::ResetReapply,
@@ -682,6 +697,26 @@ pub struct ResetStart<'a> {
     pub reason: &'a str,
     /// What became of the business identifier of the source.
     pub business: RerunBusinessId,
+    /// What the request said to do with a source that had not ended: the register keeps what was asked.
+    pub source_policy: ResetSourcePolicy,
+    /// Whether the request acknowledged that steps run again.
+    pub acknowledged: bool,
+    /// Set when the run completes a reset that waited for its source (`CANCEL_SOURCE`).
+    pub pending: Option<&'a PendingAdmission>,
+}
+
+impl std::fmt::Debug for ResetStart<'_> {
+    /// The justification of the caller and the content of the plan are not printed.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResetStart")
+            .field("source", &self.prefix.source)
+            .field("sequence", &self.prefix.sequence())
+            .field("reapply", &self.reapply)
+            .field("source_policy", &self.source_policy)
+            .field("pending", &self.pending.map(|pending| pending.reset))
+            .finish_non_exhaustive()
+    }
 }
 
 /// What a run started again does with the business identifier of the one it repeats: bound to it unless
@@ -730,6 +765,9 @@ pub struct RunService<S, C, E> {
     declared_updates: Option<Arc<dyn DeclaredOperationEvaluator>>,
     /// Whether a reset may deliver signals and Updates again (`SAGAT_RESET_REAPPLY_ENABLED`, off by default).
     reset_reapply: bool,
+    /// Whether a reset may cancel a source that has not ended and wait for it (`SAGAT_RESET_CANCEL_SOURCE_ENABLED`,
+    /// off by default).
+    reset_cancel_source: bool,
 }
 
 /// The state of a run's telemetry and what it is judged by.
@@ -763,6 +801,7 @@ where
             input_blobs: None,
             declared_updates: None,
             reset_reapply: false,
+            reset_cancel_source: false,
         }
     }
 
@@ -771,6 +810,15 @@ where
     #[must_use]
     pub const fn with_reset_reapply(mut self, enabled: bool) -> Self {
         self.reset_reapply = enabled;
+        self
+    }
+
+    /// Lets a reset cancel a source that has not ended and wait for it (`sourcePolicy` `CANCEL_SOURCE`, feature 018,
+    /// `FR-018-038`). Off, such a request for a source that is open is refused `RESET_CANCEL_SOURCE_NOT_AVAILABLE`;
+    /// a retry of one that was accepted is still answered, and the engine completes the ones that were.
+    #[must_use]
+    pub const fn with_reset_cancel_source(mut self, enabled: bool) -> Self {
+        self.reset_cancel_source = enabled;
         self
     }
 
@@ -1326,14 +1374,19 @@ where
                 now,
             )
             .with_reason(format!(
-                "reset from {of} at {}{}: {reason}",
+                "reset from {of} at {}{}{}: {reason}",
                 reset.prefix.sequence(),
                 // the closed word of the policy, when something is to be delivered again; never content
                 if reset.reapply == sagat_domain::execution::ResetReapply::None {
                     String::new()
                 } else {
                     format!(" reapply={}", reset.reapply.as_str())
-                }
+                },
+                // the entry of the register that a pass completes: the join with the request that made it (an id)
+                reset.pending.map_or_else(String::new, |pending| format!(
+                    " completes reset {}",
+                    pending.reset
+                )),
             )),
             Some(rerun) => AuditRecord::by(
                 principal,
@@ -1401,11 +1454,14 @@ where
         // A reset is the same request only for the same point of the same prefix with the same delivery after
         // it: the key of another point is another request, not a replay of this one.
         if let Some(reset) = rerun.and_then(|rerun| rerun.reset) {
+            // The justification is part of the request (it is audited and kept in the register): the same key with
+            // another one is another request, not a retry whose second justification is never written (D2010).
             idempotency.fingerprint.extend(fingerprint(&[
                 b"run.reset",
                 &reset.prefix.sequence().to_be_bytes(),
                 reset.prefix.digest().as_bytes(),
                 reset.reapply.as_str().as_bytes(),
+                reset.reason.as_bytes(),
             ]));
         }
         if let Some(business) = &options.business {
@@ -1422,6 +1478,20 @@ where
         // choices are the same request.
         if let Some(blob_idempotency) = blob_idempotency {
             idempotency = blob_idempotency;
+        }
+        if let Some(pending) = reset.and_then(|reset| reset.pending) {
+            // the completion of a reset that waited is recognised by the reset, whatever else is sent: its key is
+            // the platform's own, `reset:{id}` (the prefix is reserved), given by `complete_reset`, so nobody retries
+            // it, and a replay is another engine that completed the entry first
+            idempotency = Idempotency {
+                scope: format!("run.start:{}", namespace.id()),
+                key: request.key.to_owned(),
+                fingerprint: fingerprint(&[
+                    b"run.reset.completion",
+                    pending.reset.to_string().as_bytes(),
+                    request.input,
+                ]),
+            };
         }
         if let Some(admission) = &scheduled {
             // an action is recognised by its schedule and its nominal time, whatever the caller sends
@@ -1476,7 +1546,10 @@ where
                 rerun.map(|r| crate::blobs::RunInputBinding::Inherit(r.of)),
             ),
         };
-        let limits = RunLimits::of(&self.store, principal.tenant_id(), namespace.id()).await?;
+        let pending_completion = reset.is_some_and(|reset| reset.pending.is_some());
+        let limits = RunLimits::of(&self.store, principal.tenant_id(), namespace.id())
+            .await
+            .map_err(|error| store_failure(pending_completion, error))?;
         self.cache
             .initial_declared_state(&version.document, &input)
             .map_err(|error| {
@@ -1497,6 +1570,7 @@ where
             schedule: scheduled,
             business: options.business,
             reset_sequence: reset.map(|reset| reset.prefix.sequence()),
+            pending_reset: reset.and_then(|reset| reset.pending).cloned(),
         };
         let scheduled_start = new.schedule.is_some();
         let start_receipt = new.idempotency.clone();
@@ -1515,7 +1589,7 @@ where
             Err(error) => {
                 self.audit_database_denial(principal, workflow.id(), &error, ctx)
                     .await;
-                return Err(error.into());
+                return Err(store_failure(pending_completion, error));
             }
         };
         self.finish_start(
@@ -1549,6 +1623,10 @@ where
             Admitted::Replayed(_) if scheduled => Err(AppError::StateConflict(
                 "the schedule already acted on that time",
             )),
+            // the entry of a pending reset was completed by another engine that committed first
+            Admitted::Replayed(_) if reset.is_some_and(|reset| reset.pending.is_some()) => {
+                Err(AppError::StateConflict(RESET_ALREADY_COMPLETED))
+            }
             Admitted::Replayed(existing) => {
                 let mut started = self.known_start(principal, &existing, false).await?;
                 match with {
@@ -1635,6 +1713,7 @@ where
                 Ok(started)
             }
             Admitted::Created(mut tx) => {
+                let pending_completion = reset.is_some_and(|reset| reset.pending.is_some());
                 let mut reapplied: Vec<ReapplyEntry> = Vec::new();
                 let effects = Effects::by(
                     Actor::Principal(principal.subject().as_str().to_owned()),
@@ -1644,13 +1723,19 @@ where
                     // A reset that would deliver again is refused here, where a run would be created, and not
                     // before the replay of the request: a retry of a request that succeeded must be answered from
                     // the register whatever the setting is now. Nothing has been written: the transaction is dropped.
-                    if let Err(refusal) = self.reapply_available(reset.reapply) {
+                    // The completion of a request that was accepted is not asked again: the setting belongs to the
+                    // control plane, the engine has none (D1990), and what was accepted stands (D1997).
+                    if reset.pending.is_none()
+                        && let Err(refusal) = self.reapply_available(reset.reapply)
+                    {
                         drop(tx);
                         return Err(refusal);
                     }
                     // the events of the source up to the point are written as they were, and the run goes on
                     // from there: the reset is recorded and the successors of the point are released
-                    tx.restore_prefix(reset.prefix).await?;
+                    tx.restore_prefix(reset.prefix)
+                        .await
+                        .map_err(|error| store_failure(pending_completion, error))?;
                     self.engine
                         .run(&mut tx, effects, |def, state, now| {
                             let progress = execution::record_reset(
@@ -1665,10 +1750,15 @@ where
                             Ok(((), progress))
                         })
                         .await
-                        .map_err(engine_error)?;
+                        .map_err(|error| match error {
+                            EngineError::Store(store) => store_failure(pending_completion, store),
+                            other => engine_error(other),
+                        })?;
                     // what the source received after the point is delivered again, in its order, in this
                     // transaction: a failure that is not an answer of the new run drops it, and with it the run
-                    let reset_id = execution::ResetId::generate();
+                    let reset_id = reset
+                        .pending
+                        .map_or_else(execution::ResetId::generate, |pending| pending.reset);
                     let report = self
                         .reapply(&mut tx, principal, run_id, reset_id, reset.plan, ctx)
                         .await?;
@@ -1681,11 +1771,15 @@ where
                         prefix_digest: reset.prefix.digest(),
                         reapply: reset.reapply,
                         business: reset.business,
+                        source_policy: reset.source_policy,
+                        acknowledged: reset.acknowledged,
                         actor: principal.subject().as_str(),
                         reason: reset.reason,
                         report: &report,
+                        completes_pending: reset.pending.is_some(),
                     })
-                    .await?;
+                    .await
+                    .map_err(|error| store_failure(pending_completion, error))?;
                 } else {
                     self.engine
                         .run(&mut tx, effects, |def, state, now| {
@@ -1750,7 +1844,9 @@ where
                         Err(other) => return Err(other),
                     };
                 }
-                tx.commit().await?;
+                tx.commit()
+                    .await
+                    .map_err(|error| store_failure(pending_completion, error))?;
                 // counted once it is committed: a creation that was dropped delivered nothing
                 count_reapply(&reapplied);
                 let mut started = self
@@ -2668,6 +2764,27 @@ where
         }
         AppError::NotFound
     }
+}
+
+/// What a failure of the store comes to when the run being made completes a reset that waited for its source (feature
+/// 018, D2007). The conversion that a client is told turns an unavailable database connection and a connection limit
+/// into `NotFound` and `NotAllowed`, and a missing reference into `NotFound`; for the pass of the engine those are not
+/// answers of the admission but failures to try again, and written as the outcome of the reset they would end it for
+/// good after the source has been cancelled. Everything else (a quota, a business identifier held, a lost lease) is
+/// converted as for every other caller.
+pub(crate) fn store_failure(pending_completion: bool, error: StoreError) -> AppError {
+    if pending_completion
+        && matches!(
+            error,
+            StoreError::DatabaseUnavailable
+                | StoreError::DatabaseLimit
+                | StoreError::MissingReference
+                | StoreError::RevealGrantRequired
+        )
+    {
+        return AppError::Unavailable;
+    }
+    error.into()
 }
 
 /// Translates an engine failure into what a client may be told.

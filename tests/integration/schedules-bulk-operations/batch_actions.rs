@@ -424,7 +424,7 @@ fn step(node: &str, action: Action) -> BatchWrite {
 
 /// A run that was cancelled, or failed, after `reserve`: the compensation of `reserve` ran out of
 /// attempts and waits for an operator (`reserve~c`), the way a failed compensation does.
-async fn run_with_a_stuck_compensation(w: &World) -> RunId {
+pub(crate) async fn run_with_a_stuck_compensation(w: &World) -> RunId {
     let flow = document(
         &format!("settlement-{}", Uuid::now_v7().simple()),
         "settlement",

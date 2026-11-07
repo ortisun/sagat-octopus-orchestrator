@@ -61,6 +61,7 @@ async fn reset(
                 acknowledge_reexecution: true,
                 business: RerunBusinessId::Keep,
                 reapply: ResetReapply::None,
+                source_policy: sagat_application::runs::ResetSourcePolicy::RequireTerminal,
             },
             key,
             &ctx(),
@@ -152,7 +153,16 @@ async fn a_reset_that_dies_at_any_write_leaves_nothing_and_sent_again_makes_one_
     }
     // the history it made is the source's up to the point, then the reset
     assert_eq!(
-        types(&f, probe.run.info.run_id).await[..kept],
+        types(
+            &f,
+            probe
+                .run
+                .as_ref()
+                .expect("the reset made a run")
+                .info
+                .run_id
+        )
+        .await[..kept],
         source_types[..kept]
     );
     println!(
@@ -187,7 +197,12 @@ async fn a_reset_that_dies_at_any_write_leaves_nothing_and_sent_again_makes_one_
         let again = reset(&f, source, point, &key)
             .await
             .unwrap_or_else(|error| panic!("write {position} ({table}), sent again: {error:?}"));
-        let run = again.run.info.run_id;
+        let run = again
+            .run
+            .as_ref()
+            .expect("the reset made a run")
+            .info
+            .run_id;
         assert_eq!(
             made_from(&f, source).await.len(),
             runs.len() + 1,
@@ -210,7 +225,16 @@ async fn a_reset_that_dies_at_any_write_leaves_nothing_and_sent_again_makes_one_
             .await
             .expect("a replay of the request");
         assert_eq!(third.reset.id, again.reset.id, "write {position}");
-        assert_eq!(third.run.info.run_id, run, "write {position}");
+        assert_eq!(
+            third
+                .run
+                .as_ref()
+                .expect("the reset made a run")
+                .info
+                .run_id,
+            run,
+            "write {position}"
+        );
         assert_eq!(
             made_from(&f, source).await.len(),
             runs.len() + 1,
@@ -333,6 +357,7 @@ async fn ask(f: &Fixture, source: RunId, point: u64, key: &str) -> Result<ResetM
                 acknowledge_reexecution: true,
                 business: RerunBusinessId::Drop,
                 reapply: ResetReapply::All,
+                source_policy: sagat_application::runs::ResetSourcePolicy::RequireTerminal,
             },
             key,
             &ctx(),
@@ -422,7 +447,19 @@ async fn a_reset_that_delivers_again_and_dies_at_any_write_leaves_nothing_and_de
             .collect::<Vec<_>>(),
         [("UPDATE", "REAPPLIED"), ("SIGNAL", "REAPPLIED")]
     );
-    assert_eq!(counts(&f, probe.run.info.run_id).await, (1, 1, 1, 1));
+    assert_eq!(
+        counts(
+            &f,
+            probe
+                .run
+                .as_ref()
+                .expect("the reset made a run")
+                .info
+                .run_id
+        )
+        .await,
+        (1, 1, 1, 1)
+    );
     println!(
         "a reset that delivers again makes {} writing statements in one transaction",
         writes.len()
@@ -454,7 +491,12 @@ async fn a_reset_that_delivers_again_and_dies_at_any_write_leaves_nothing_and_de
         let again = ask(&f, source, point, &key)
             .await
             .unwrap_or_else(|error| panic!("write {position} ({table}), sent again: {error:?}"));
-        let run = again.run.info.run_id;
+        let run = again
+            .run
+            .as_ref()
+            .expect("the reset made a run")
+            .info
+            .run_id;
         assert_eq!(
             made_from(&f, source).await.len(),
             runs.len() + 1,

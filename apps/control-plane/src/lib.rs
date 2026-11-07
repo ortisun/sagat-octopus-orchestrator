@@ -451,6 +451,7 @@ pub fn run_service(
     RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache)
         .with_lag_budget(serve.telemetry_lag_budget)
         .with_reset_reapply(serve.reset_reapply_enabled)
+        .with_reset_cancel_source(serve.reset_cancel_source_enabled)
         // Update-with-Start applies a declared Update in the transaction that creates the run
         .with_declared_updates(Arc::new(JsonDeclaredOperationEvaluator))
 }

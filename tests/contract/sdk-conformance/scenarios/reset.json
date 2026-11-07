@@ -1,8 +1,9 @@
 {
   "name": "reset",
-  "description": "Feature 018 US06: resetting a run that ended to a point of its journal. The points are listed and one is previewed (what the new run keeps, what it runs again, whether the caller must acknowledge it); a reset that runs completed steps again needs the acknowledgement; the reset creates a new run that finishes, is recorded in the register of the source and is read back by id; the same key answers the first reset; a run that is still open, a sequence that is not a point and a policy the server does not know are refused with their reasons. A run that was signalled is reset with its signal delivered again (the preview lists it, the report says it was delivered), and reset to its start the same signal finds nothing waiting for it and is reported rejected. The server runs with the reapply turned on.",
+  "description": "Feature 018 US06: resetting a run that ended to a point of its journal. The points are listed and one is previewed (what the new run keeps, what it runs again, whether the caller must acknowledge it); a reset that runs completed steps again needs the acknowledgement; the reset creates a new run that finishes, is recorded in the register of the source and is read back by id; the same key answers the first reset; a run that is still open, a sequence that is not a point and a policy the server does not know are refused with their reasons; with `sourcePolicy: CANCEL_SOURCE` a run that is still open is cancelled and the reset waits for it (`PENDING_SOURCE`, no run yet; the same key answers the same entry, another request under it is refused, the register and the read by id show it), and a run that has ended is simply reset at once. A run that was signalled is reset with its signal delivered again (the preview lists it, the report says it was delivered), and reset to its start the same signal finds nothing waiting for it and is reported rejected. The server runs with the reapply and the cancelling of a source turned on (the engine too: it makes the run once the source has ended). The run held in flight is let go after the observations, and the scenario waits, through the log of the worker that serves it, for the run the engine makes to do its step, so that nothing is in flight when the scenario ends.",
   "server": {
-    "resetReapply": true
+    "resetReapply": true,
+    "resetCancelSource": true
   },
   "workflows": {
     "two": {
@@ -68,6 +69,21 @@
           "id": "done"
         }
       ]
+    },
+    "held": {
+      "name": "reset-held",
+      "description": "An activity a worker holds for a few seconds and does not stop when the run is cancelled; the run that is made from it holds it again.",
+      "program": [
+        {
+          "op": "step",
+          "id": "held",
+          "activity": "reset.held"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
     }
   },
   "workers": {
@@ -87,6 +103,23 @@
           "behavior": {
             "returns": {
               "step": "b"
+            }
+          }
+        }
+      }
+    },
+    "w2": {
+      "workerName": "reset-holder",
+      "protocolVersion": "1.4",
+      "maxInflight": 1,
+      "heartbeatIntervalMs": 100,
+      "activities": {
+        "reset.held": {
+          "behavior": {
+            "sleepMs": 5000,
+            "ignoresCancel": true,
+            "returns": {
+              "step": "held"
             }
           }
         }
@@ -168,16 +201,6 @@
       "reapply": "SOMETIMES",
       "acknowledgeReexecution": true,
       "idempotencyKey": "reset-reapply-{{unique}}"
-    },
-    {
-      "id": "cancel-source-refused",
-      "op": "reset",
-      "run": "source",
-      "sequence": 4,
-      "reason": "run b again after a",
-      "sourcePolicy": "CANCEL_SOURCE",
-      "acknowledgeReexecution": true,
-      "idempotencyKey": "reset-cancel-{{unique}}"
     },
     {
       "id": "short-reason",
@@ -385,6 +408,124 @@
       "id": "signalled-register",
       "op": "resets",
       "run": "signalled"
+    },
+    {
+      "id": "held",
+      "op": "start",
+      "workflow": "held",
+      "input": {},
+      "idempotencyKey": "reset-held-{{unique}}"
+    },
+    {
+      "id": "held-running",
+      "op": "awaitJournal",
+      "run": "held",
+      "eventType": "step.started",
+      "stepId": "held",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "held-cancel-source",
+      "op": "reset",
+      "run": "held",
+      "sequence": 1,
+      "reason": "cancel it and run it again",
+      "sourcePolicy": "CANCEL_SOURCE",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-held-cancel-{{unique}}"
+    },
+    {
+      "id": "held-cancel-source-again",
+      "op": "reset",
+      "run": "held",
+      "sequence": 1,
+      "reason": "cancel it and run it again",
+      "sourcePolicy": "CANCEL_SOURCE",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-held-cancel-{{unique}}"
+    },
+    {
+      "id": "held-cancel-source-other-request",
+      "op": "reset",
+      "run": "held",
+      "sequence": 1,
+      "reason": "cancel it and run it again",
+      "sourcePolicy": "CANCEL_SOURCE",
+      "acknowledgeReexecution": false,
+      "idempotencyKey": "reset-held-cancel-{{unique}}"
+    },
+    {
+      "id": "held-status",
+      "op": "get",
+      "run": "held"
+    },
+    {
+      "id": "held-register",
+      "op": "resets",
+      "run": "held"
+    },
+    {
+      "id": "held-entry",
+      "op": "getReset",
+      "run": "held",
+      "reset": "held-cancel-source"
+    },
+    {
+      "id": "held-source-done",
+      "op": "waitForCompletion",
+      "run": "held",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "held-new-run-done-by-the-worker",
+      "op": "awaitWorkerLog",
+      "worker": "w2",
+      "count": 2,
+      "timeoutMs": 60000
+    },
+    {
+      "id": "held-entry-made",
+      "op": "getReset",
+      "run": "held",
+      "reset": "held-cancel-source"
+    },
+    {
+      "id": "held-register-made",
+      "op": "resets",
+      "run": "held"
+    },
+    {
+      "id": "held-new-run-done",
+      "op": "waitForCompletion",
+      "run": "held-entry-made",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "ended-source-cancel-source",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "sourcePolicy": "CANCEL_SOURCE",
+      "acknowledgeReexecution": true,
+      "businessId": "DROP",
+      "idempotencyKey": "reset-ended-cancel-{{unique}}"
+    },
+    {
+      "id": "ended-source-cancel-source-done",
+      "op": "waitForCompletion",
+      "run": "ended-source-cancel-source",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "unknown-source-policy",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "sourcePolicy": "SOMETIMES",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-source-policy-{{unique}}"
     }
   ]
 }

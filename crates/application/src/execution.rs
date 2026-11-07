@@ -1037,6 +1037,21 @@ pub trait RunTx: Send {
         }
     }
 
+    /// Writes, in this transaction, the entry of the register of a reset that waits for this run to end
+    /// (`CANCEL_SOURCE`, feature 018): the entry `PENDING_SOURCE`, the audit record of the request and the receipt
+    /// of its key, after judging the namespace's quota of pending resets. The caller holds the run's row: the
+    /// request cancels it next, in the same transaction. An adapter that cannot refuses; the failure is the wiring's.
+    fn register_pending_reset<'a>(
+        &'a mut self,
+        _registration: &'a crate::runs::PendingRegistration<'a>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot keep the register of resets".into(),
+            })
+        }
+    }
+
     /// Applies a declared Update to this run inside this transaction, which the caller then commits
     /// (a business rejection leaves its receipt with the run) or drops (nothing of it persists):
     /// Update-with-Start, feature 018. Whatever the Update needs to read it reads here, so the
