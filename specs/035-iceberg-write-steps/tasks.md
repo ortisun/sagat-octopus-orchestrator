@@ -713,6 +713,13 @@ three conditions pass.
   lake-mode sandbox runner over a node-local Unix socket; the request is an attempt id, a slot, a budget class and a deadline). It was
   rewritten after a security and an architecture review. Nothing is built: the API, the `LakeEngine` additions it depends on, the
   production `LakeSandbox` client and the checks it lists. A person accepts the ADR; Kubernetes stays open under T035-029.
+
+  *2026-11-07, ninth step, left unticked (D035-117):* "request the container" and "kill the container on lease loss, cancellation,
+  deadline, a missing heartbeat or `memory.max`" have the engine operations the API of ADR-0079 needs: `crates/infra-sandbox/src/lake/engine.rs`
+  (`launch`, `find`, `list`, `wait`, `end`, `sweep_expired`), the lake containers' state read from the labels they carry
+  (`sagat.lake.slot|class|deadline`), `end` reading the out-of-memory flag before it removes the container and never reporting an ending the
+  engine did not confirm; 25 new cases against a real Docker engine and a scripted one. Not done: the API on the sandbox runner, the
+  production `LakeSandbox` client, lake-mode exclusivity, and everything on the server side of the task list.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.

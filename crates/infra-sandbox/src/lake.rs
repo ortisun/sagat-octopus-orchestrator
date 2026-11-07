@@ -49,12 +49,18 @@ pub const LABEL: &str = "sagat.lake";
 pub const OWNER_LABEL: &str = "sagat.lake.owner";
 /// The attempt a container belongs to.
 pub const ATTEMPT_LABEL: &str = "sagat.lake.attempt";
+/// The slot of the attempt, whose user id the container runs as.
+pub const SLOT_LABEL: &str = "sagat.lake.slot";
+/// The budget class the limits came from.
+pub const CLASS_LABEL: &str = "sagat.lake.class";
+/// When the container must be gone, in seconds since the epoch.
+pub const DEADLINE_LABEL: &str = "sagat.lake.deadline";
 const MAX_OPEN_FILES: i64 = 1024;
 
 /// What the profile refuses. The reason names the field, never its value: a refused value may be anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LakeProfileError {
-    /// The attempt id is not 1 to 64 lower-case hexadecimal digits and hyphens.
+    /// The attempt id is not 1 to 60 lower-case hexadecimal digits and hyphens that start with a hexadecimal digit.
     AttemptId,
     /// The slot is past the last one.
     Slot,
@@ -62,20 +68,24 @@ pub enum LakeProfileError {
     Group,
     /// A limit is zero, and zero is not unlimited.
     Limits,
-    /// An image, volume or owner name is empty, too long or carries a character it must not.
+    /// An image, volume, owner or class name is empty, too long or carries a character it must not.
     Name,
+    /// The deadline is zero, or past the year 2100: a container with no time is not a container with no limit, and one
+    /// whose deadline no clock reaches is one that nothing ends.
+    Deadline,
 }
 
 impl std::fmt::Display for LakeProfileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::AttemptId => {
-                "the attempt id is not 1 to 64 lower-case hexadecimal digits and hyphens"
+                "the attempt id is not 1 to 60 lower-case hexadecimal digits and hyphens that start with a hexadecimal digit"
             }
             Self::Slot => "the slot is past the last one",
             Self::Group => "the group of a lake container is never root's",
             Self::Limits => "a limit of the lake container is zero",
-            Self::Name => "an image, volume or owner name is not acceptable",
+            Self::Name => "an image, volume, owner or class name is not acceptable",
+            Self::Deadline => "the deadline of a lake container is zero or not one a clock reaches",
         })
     }
 }
@@ -122,6 +132,19 @@ pub struct LakeSpec {
     pub limits: LakeLimits,
     /// Which lake runner asks.
     pub owner: String,
+    /// The budget class the limits came from (a closed name the node configures). Only a label: it lets a restarted
+    /// sandbox runner add up what is reserved from the engine (ADR-0079, rule 7).
+    pub class: String,
+    /// When the container must be gone, in seconds since the epoch. Only a label, but the one the sweep acts on: the
+    /// deadline outlives the process that set it (ADR-0079, rules 7 and 8).
+    ///
+    /// It is the **backstop**, not the attempt's own deadline: the lake runner's deadline fires first and reports
+    /// `OUTCOME_UNKNOWN`, while a container ended by this label under a host that is still writing is reported as a host
+    /// that went silent. So a caller sets it to the attempt's deadline **rounded up** to a whole second plus the time the
+    /// lake runner has to end the container itself (`kill_limit`), and never earlier. A container whose label is wrong
+    /// or missing is the age sweep's ([`engine::LakeEngine::sweep`]), which a caller runs beside the deadline sweep with
+    /// the longest lifetime a container may have.
+    pub deadline_epoch_secs: u64,
 }
 
 /// The user id of a slot, or `None` past the last slot.
@@ -144,11 +167,40 @@ pub fn host_command(attempt_id: &str) -> Vec<String> {
         .collect()
 }
 
-fn attempt_id_ok(id: &str) -> bool {
-    (1..=64).contains(&id.len())
-        && id
+/// An attempt id as ADR-0079 (rule 10) has it: 1 to 60 lower-case hexadecimal digits and hyphens that start with a
+/// hexadecimal digit, the stricter of this profile's rule and the lake runner's staging (`AttemptDir`). The engine calls
+/// check it too, before an id is put in a label filter.
+pub(crate) fn attempt_id_ok(id: &str) -> bool {
+    let hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+    (1..=60).contains(&id.len())
+        && id.bytes().next().is_some_and(hex)
+        && id.bytes().all(|b| hex(b) || b == b'-')
+}
+
+/// An owner name: 1 to 128 letters, digits, `.`, `_` and `-`. It is a label value that goes into a label filter, and a
+/// name like `lake-runner-1` has no use for `=`, `,` or anything the filter could read as more than a name.
+pub(crate) fn owner_ok(owner: &str) -> bool {
+    (1..=128).contains(&owner.len())
+        && owner
             .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// The latest deadline a container may be given: the first second of the year 2100. A label is only as good as the sweep
+/// that reads it, and a deadline that is not reached by any clock (`u64::MAX`) would make a container that nothing ends.
+pub(crate) const MAX_DEADLINE_EPOCH_SECS: u64 = 4_102_444_800;
+
+/// A deadline that a clock can reach: not zero, and not past [`MAX_DEADLINE_EPOCH_SECS`].
+pub(crate) fn deadline_ok(deadline_epoch_secs: u64) -> bool {
+    (1..=MAX_DEADLINE_EPOCH_SECS).contains(&deadline_epoch_secs)
+}
+
+/// A class is a short lower-case name the node configures a budget under (`small`, `large`).
+pub(crate) fn class_ok(class: &str) -> bool {
+    (1..=32).contains(&class.len())
+        && class
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 fn plain(name: &str, longest: usize) -> bool {
@@ -191,8 +243,15 @@ pub fn container_config(spec: &LakeSpec) -> Result<ContainerCreateBody, LakeProf
     {
         return Err(LakeProfileError::Limits);
     }
-    if !plain(&spec.image, 512) || !volume_name_ok(&spec.mount.volume) || !plain(&spec.owner, 128) {
+    if !plain(&spec.image, 512)
+        || !volume_name_ok(&spec.mount.volume)
+        || !owner_ok(&spec.owner)
+        || !class_ok(&spec.class)
+    {
         return Err(LakeProfileError::Name);
+    }
+    if !deadline_ok(spec.deadline_epoch_secs) {
+        return Err(LakeProfileError::Deadline);
     }
     let clamp = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
     let memory = clamp(limits.memory_bytes);
@@ -218,6 +277,12 @@ pub fn container_config(spec: &LakeSpec) -> Result<ContainerCreateBody, LakeProf
             (LABEL.to_owned(), "1".to_owned()),
             (OWNER_LABEL.to_owned(), spec.owner.clone()),
             (ATTEMPT_LABEL.to_owned(), spec.attempt_id.clone()),
+            (SLOT_LABEL.to_owned(), spec.slot.to_string()),
+            (CLASS_LABEL.to_owned(), spec.class.clone()),
+            (
+                DEADLINE_LABEL.to_owned(),
+                spec.deadline_epoch_secs.to_string(),
+            ),
         ])),
         network_disabled: Some(true),
         tty: Some(false),
