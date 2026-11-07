@@ -2662,6 +2662,23 @@ The other fixes were wording:
     counted as removed, a sweeper that never stops).
   - *Not done.* Nothing calls it: the shell (the rest of slice D) starts `keep_sweeping` with `SWEEP_AFTER` and the runner's stop token, once per minute or
     so, and counts what it reports. The test of a directory the runner cannot enter is skipped in effect when the tests run as root, which can enter it.
+- **D035-129 — The blobs of an attempt arrive whole or not at all (a piece of slice D of D035-123).** **Decided by: delegate**. No `Cargo.lock` change.
+  - *What.* `apps/database-runner/src/lake/blobs.rs`: `LeaseBlobs`, the `Blobs` port over `ReadBlob` under the lease (the server checks the lease and
+    audits the read), and `BlobReader`, the `AsyncRead` under it, generic over the stream of messages so that it is tested without a server. The port's
+    error is now a type of its own, `BlobError` (it does not say why: G035-069 is about telling the causes apart).
+  - *Decisions.* **What arrives is what was named, whole.** The first message is the header and it is for the blob that was asked for; the size is a
+    non-negative number and the digest 64 lower-case hexadecimal digits; the chunks add up to the declared size, and **not a byte past it is handed
+    on** (a stream that does not stop is cut at the declared size, not at the staging limit); at the end the SHA-256 of what was read is the header's
+    and the count is the size. A truncated or altered blob is an error at the end of the read, and a second header, an empty message or a failing
+    stream is an error where it happens; after an error every read says so again. Staging removes the partial file when its source fails (D035-112),
+    so a corrupt blob is never left in `in/` as if it were whole: shown with the real `stage_blob`.
+  - *Evidence.* 12 unit tests (whole in pieces of every size, empty, a read buffer smaller than a piece, altered bytes, short, past the size,
+    failed-stays-failed, a stream that fails, a second header, a header for another blob, eight kinds of start that is not a header, a header whose size
+    is not the size of what arrives while its digest matches, and the staging of a corrupt and of a whole blob); the runner's library: 97 tests;
+    `cargo clippy -p sagat-database-runner --all-targets --locked -- -D warnings` clean. **Ten hand mutations, all killed**; the first run of the
+    mutations left one alive (the size check, when the digest matches what arrived), and the case that kills it was added.
+  - *Not covered.* The `ReadBlob` call itself (`LeaseBlobs::open`, a request built from the lease and the call): it is exercised by the end-to-end
+    canary against a real server, not here. Slice D must still scope the blob to the run on the server (D035-127).
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

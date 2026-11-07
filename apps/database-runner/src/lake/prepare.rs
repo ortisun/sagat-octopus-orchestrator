@@ -109,6 +109,13 @@ pub fn effective(step: NodeLimits, connection: ConnectionLimits, settings: &Sett
     }
 }
 
+/// A blob that could not be opened. It does not say why: the causes (not there, not allowed, the transport, a corrupt
+/// stream) are the source's to log, and today every one of them fails the attempt the same way (G035-069 is about telling
+/// them apart).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the blob could not be opened")]
+pub struct BlobError;
+
 /// Where the blobs come from: `ReadBlob` under the lease, in production.
 pub trait Blobs: Send + Sync {
     type Reader: AsyncRead + Unpin + Send;
@@ -117,7 +124,7 @@ pub trait Blobs: Send + Sync {
     ///
     /// # Errors
     /// Anything: the reason is the caller's to log, and the attempt fails with [`PrepareError::Source`].
-    fn open(&self, blob: BlobId) -> impl Future<Output = Result<Self::Reader, ()>> + Send;
+    fn open(&self, blob: BlobId) -> impl Future<Output = Result<Self::Reader, BlobError>> + Send;
 }
 
 /// An attempt ready for a container.
@@ -246,7 +253,7 @@ pub async fn prepare<B: Blobs>(
                 let reader = blobs
                     .open(blob.id)
                     .await
-                    .map_err(|()| PrepareError::Source)?;
+                    .map_err(|_| PrepareError::Source)?;
                 let staged = directory
                     .stage_blob(blob.format, reader)
                     .await
@@ -332,8 +339,8 @@ mod tests {
     impl Blobs for Held {
         type Reader = Cursor<Vec<u8>>;
 
-        async fn open(&self, blob: BlobId) -> Result<Self::Reader, ()> {
-            self.0.get(&blob).cloned().map(Cursor::new).ok_or(())
+        async fn open(&self, blob: BlobId) -> Result<Self::Reader, BlobError> {
+            self.0.get(&blob).cloned().map(Cursor::new).ok_or(BlobError)
         }
     }
 
@@ -343,7 +350,7 @@ mod tests {
     impl Blobs for Endless {
         type Reader = tokio::io::Repeat;
 
-        async fn open(&self, _blob: BlobId) -> Result<Self::Reader, ()> {
+        async fn open(&self, _blob: BlobId) -> Result<Self::Reader, BlobError> {
             Ok(tokio::io::repeat(b'x'))
         }
     }

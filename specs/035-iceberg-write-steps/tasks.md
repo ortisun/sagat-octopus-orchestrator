@@ -775,6 +775,10 @@ three conditions pass.
 
   *2026-11-07, twentieth step, left unticked (D035-128):* "remove the directory" has the sweep for what no attempt removed
   (`apps/database-runner/src/lake/sweep.rs`): by age, real attempt directories only, a link never followed. Not scheduled yet (the shell).
+
+  *2026-11-07, twenty-first step, left unticked (D035-129):* "stream … `ReadBlob` blobs … into `in/`" has its source
+  (`apps/database-runner/src/lake/blobs.rs`): the blob is checked against its header, whole or an error, and a corrupt one leaves no file.
+  Not done: the call itself in an end-to-end run, and the shell that hands it to the driver.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.

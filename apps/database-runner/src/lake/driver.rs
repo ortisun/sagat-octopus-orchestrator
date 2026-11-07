@@ -499,6 +499,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::super::fixtures::{converted, input_json, message, my_uid, settings};
+    use super::super::prepare::BlobError;
     use super::*;
 
     // -- the doubles ---------------------------------------------------------------------------------------------------
@@ -529,7 +530,10 @@ mod tests {
     impl Blobs for Stalled {
         type Reader = io::Cursor<Vec<u8>>;
 
-        async fn open(&self, _blob: sagat_domain::blobs::BlobId) -> Result<Self::Reader, ()> {
+        async fn open(
+            &self,
+            _blob: sagat_domain::blobs::BlobId,
+        ) -> Result<Self::Reader, BlobError> {
             std::future::pending().await
         }
     }
@@ -544,8 +548,11 @@ mod tests {
     impl Blobs for NoBlobs {
         type Reader = io::Cursor<Vec<u8>>;
 
-        async fn open(&self, _blob: sagat_domain::blobs::BlobId) -> Result<Self::Reader, ()> {
-            Err(())
+        async fn open(
+            &self,
+            _blob: sagat_domain::blobs::BlobId,
+        ) -> Result<Self::Reader, BlobError> {
+            Err(BlobError)
         }
     }
 
