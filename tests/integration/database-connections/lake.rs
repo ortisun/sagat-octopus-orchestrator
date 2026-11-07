@@ -12,6 +12,7 @@ use sagat_application::{
     managed_secrets::{ManagedSecretService, ManagedSecretWrite},
     publishing::Promotion,
     reveal_grants::RevealGrantService,
+    worker::Capabilities,
 };
 use sagat_domain::{
     audit::AuditAction,
@@ -964,4 +965,105 @@ async fn promotion(
         matches!(promoted, Ok(Promotion::Published(_))),
         "the promotion is published once the target namespace has what the step needs: {promoted:?}"
     );
+}
+
+/// A lake runner registers for the write activity alone, and only under a binding that covers it (feature 035,
+/// D035-135): through the real store, the membership role, the binding patterns and the negotiated minor. No lake step
+/// can start yet (the admission guard is closed), so this is the whole of what registering gives it.
+pub async fn registration(w: &World) {
+    let ns = w.namespace.id();
+    let lake = w.member("lake-machine", Role::DatabaseRunner).await;
+    let caps = |activities: &[&str], version: &str| Capabilities {
+        activities: activities.iter().map(|name| (*name).to_owned()).collect(),
+        languages: vec![],
+        pools: vec![],
+        max_inflight: 4,
+        protocol_version: version.into(),
+    };
+    let write = "sagat.database.iceberg.write";
+    let sql = "sagat.database.postgresql";
+    let refused = |result: Result<_, AppError>| matches!(result, Err(AppError::NotBound));
+
+    // Without a binding nothing registers; a binding for the SQL activity does not cover the lake one.
+    assert!(refused(
+        w.workers
+            .register(&lake, "payments", "lake-unbound", &caps(&[write], "1.6"))
+            .await
+    ));
+    w.bindings
+        .bind(
+            &w.admin,
+            ns,
+            lake.subject().as_str(),
+            &[sql.to_owned()],
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(refused(
+        w.workers
+            .register(
+                &lake,
+                "payments",
+                "lake-sql-binding",
+                &caps(&[write], "1.6")
+            )
+            .await
+    ));
+
+    // A binding that names the write activity is the authority for it, and for nothing else.
+    w.bindings
+        .bind(
+            &w.admin,
+            ns,
+            lake.subject().as_str(),
+            &[write.to_owned()],
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(refused(
+        w.workers
+            .register(&lake, "payments", "lake-too-old", &caps(&[write], "1.5"))
+            .await
+    ));
+    assert!(refused(
+        w.workers
+            .register(&lake, "payments", "lake-with-sql", &caps(&[sql], "1.6"))
+            .await
+    ));
+    let registered = w
+        .workers
+        .register(&lake, "payments", "lake-machine", &caps(&[write], "1.6"))
+        .await
+        .unwrap();
+    assert_eq!(registered.accepted_protocol_version, "1.6");
+
+    // Everything bound: the profile rule still holds, because it does not come from the binding.
+    w.bind_everything(&lake).await;
+    for (name, activities) in [
+        ("lake-mixed", vec![write, sql]),
+        ("lake-ordinary", vec![write, "ordinary"]),
+        ("lake-revert", vec!["sagat.database.iceberg.revert"]),
+        ("lake-probe", vec!["sagat.database.lake.probe"]),
+    ] {
+        assert!(
+            refused(
+                w.workers
+                    .register(&lake, "payments", name, &caps(&activities, "1.6"))
+                    .await
+            ),
+            "{name}"
+        );
+    }
+
+    // The reserved prefix stays closed to every other role, whatever it is bound to.
+    for principal in [&w.worker, &w.runner_identity] {
+        w.bind_everything(principal).await;
+        assert!(refused(
+            w.workers
+                .register(principal, "payments", "forged-lake", &caps(&[write], "1.6"))
+                .await
+        ));
+    }
 }
