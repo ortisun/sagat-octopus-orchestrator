@@ -694,6 +694,12 @@ three conditions pass.
   have `crates/infra-lake/src/attempt.rs` (`LakeSandbox`, `run_attempt`), tested end to end with a scripted host on the real socket. Not
   done: the production sandbox client (G035-055), `apps/database-runner/src/lake.rs` (lease, `ResolveDatabase`, `ReadBlob`, the report),
   the lease heartbeat, zeroising, `peer_uid` (G035-056).
+
+  *2026-11-07, sixth slice, left unticked (D035-114):* "open the relay" has its allowance: `crates/infra-lake/src/policy.rs`
+  (`endpoint_policy`, `Connection::endpoint_policy`) derives what the sandbox may reach from the pinned connection, closed to what the
+  host can open. The server side the driver reads from (T035-044 `ResolveDatabase` for an Iceberg connection, T035-056 the attempt
+  input, T035-055 admission, T035-059 completion) is not built; T035-055 and T035-059 touch `crates/application/src/runs.rs`, which the
+  open 018 branches also change.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.

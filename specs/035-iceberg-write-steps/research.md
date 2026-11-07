@@ -2112,3 +2112,28 @@ The other fixes were wording:
   - *Not done.* The production `LakeSandbox` (a client of the sandbox runner: G035-055 and its ADR), the slot's user for the relay's
     `peer_uid` (the caller), zeroising the request buffer, the lease heartbeat that feeds `on_heartbeat`, `ResolveDatabase`, `ReadBlob`,
     and the report to the control plane (`apps/database-runner/src/lake.rs`).
+- **D035-114 — What the sandbox may reach is derived from the pinned connection by a closed function, `endpoint_policy`.** Sixth slice of
+  T035-035. **Decided by: delegate**.
+  - *Why.* D035-049 says the relay allows only the endpoints declared on the pinned connection or derived from its storage type and
+    region. The relay had the pieces (`Endpoint`, `EndpointPolicy`, `with_s3_regional`) and nothing built an allowance from the documents
+    the platform stores. This is where the text of a URL becomes a list of hosts a sandbox that holds credentials may connect to.
+  - *What it is.* `crates/infra-lake/src/policy.rs`, `endpoint_policy(catalog, storage, locations)` and `Connection::endpoint_policy()`.
+    A REST catalog declares its address (`https`, or `http` for a loopback host only, the way `connection.py` reads it) and, for OAuth2,
+    its token endpoint (`https` only). S3 without an `endpoint` gets the official regional hosts of its region and of each bucket the
+    warehouse locations name (path-style and dual-stack, and virtual-hosted for a bucket without a dot). S3 with an `endpoint` (an
+    S3-compatible store) declares that address, `https` only, **and AWS's regional hosts are not added beside it**: they reach any bucket
+    of anyone's (G035-021), and a store that is not AWS has no use for them.
+  - *Closed.* A URL that could name another host than it seems to is refused: user information, a query, a fragment, a backslash,
+    whitespace, a control character, a non-ASCII byte, a port that is not 1 to 65535, an address with a colon and no brackets, an
+    unclosed bracket, more than 2 KiB. Every connection the host cannot open yet is refused with a name before a container is started
+    (a Glue, Hive or JDBC catalog, GCS or ADLS, an assumed role, remote signing, SigV4: G035-048), because an allowance for a connection
+    that cannot run is an allowance for nothing. The region and the buckets are checked whether or not S3's hosts are used. Errors are a
+    closed kind and repeat nothing of the document (a URL may be a secret pasted where an address was meant).
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 237 passed (20 in `policy.rs`, which also pins that the connection of the wire fixture
+    allows exactly its four hosts and nothing else); `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D
+    warnings` clean. Module and tests were written together, so they passed on the first run and were not seen failing. Two mutations
+    by hand: letting AWS's hosts in beside a custom endpoint fails its test; accepting user information in the authority does **not**
+    fail any, because `Endpoint::new` already refuses a host with an `@` (the explicit check is defence in depth, an equivalent mutant).
+    No mutation pass (OD-2026-11-06-2).
+  - *Not done.* The operator's list of networks the relay may reach (`RelayConfig::new(allow)`) and the mappings for non-HTTP routes
+    (Hive, a JDBC catalog) come with the loaders (G035-048); nothing calls `endpoint_policy` yet: the driver builds the `Relay` with it.

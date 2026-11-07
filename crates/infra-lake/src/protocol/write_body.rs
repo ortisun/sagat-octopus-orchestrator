@@ -265,6 +265,17 @@ impl Connection {
         }
     }
 
+    /// What the sandbox may reach for this connection (D035-114): the relay's allowance, derived from the documents as they
+    /// are stored and from the warehouse locations.
+    ///
+    /// # Errors
+    /// [`crate::policy::PolicyError`] for a connection the host cannot open, or an address it must not be allowed to reach.
+    pub fn endpoint_policy(
+        &self,
+    ) -> Result<crate::relay::EndpointPolicy, crate::policy::PolicyError> {
+        crate::policy::endpoint_policy(&self.catalog, &self.storage, &self.warehouse_locations)
+    }
+
     fn to_value(&self) -> Result<Value, BodyError> {
         let locations_fit = (1..=MAX_LOCATIONS).contains(&self.warehouse_locations.len())
             && self
