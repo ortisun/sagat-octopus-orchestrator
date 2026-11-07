@@ -2679,6 +2679,54 @@ The other fixes were wording:
     mutations left one alive (the size check, when the digest matches what arrived), and the case that kills it was added.
   - *Not covered.* The `ReadBlob` call itself (`LeaseBlobs::open`, a request built from the lease and the call): it is exercised by the end-to-end
     canary against a real server, not here. Slice D must still scope the blob to the run on the server (D035-127).
+- **D035-130 — The server side of a lake step: what exists, what blocks it, and the order to build it.** Documentation only. **Decided by: delegate**.
+  Written from a read-only reading of the code (2026-11-07, `Explore`); each slice re-reads what it touches before it starts, because the 018 pull
+  requests (#91, #98) change `crates/application/src` while they are open. Nothing here is built.
+  - *What exists.* The node (`Node::iceberg`, root-only, the reserved activity `sagat.database.iceberg.write`, `IcebergWrite` with its accessors),
+    publication (access, modes, egress, `lake.enabled`: `definitions.rs`), the stored connection (`infra-postgres/src/database/iceberg.rs`), the
+    proto messages (`worker.proto`, `ResolvedDatabase` fields 13 to 15) and the lake loop of `check_definition` (`database/admission.rs:278-340`), which
+    already returns lake pins. **Nothing on the lease, claim, resolve or report paths knows about a lake step.**
+  - *Why a lake run cannot start today, and why that is a safety.* `check_definition` refuses a run with a lake write at creation
+    (`admission.rs:160-165`, `DatabaseUnavailable`, audited as a database admission refusal), and `managed_capabilities_allowed` (`worker.rs:88-99`, again in
+    `infra-postgres/src/workers.rs:284`) lets a database runner register only for exactly `sagat.database.postgresql`, so no worker can claim the
+    activity. **If either were opened alone the step would be leased as an ordinary activity**: the "managed" predicate is
+    `database_operation().is_some()` in about ten places (the ready filter `worker.rs:1052`, the lease input `:1119`, the lease actor `:1316`, `:2202`,
+    `scoped.rs:161`, `scoped_claims.rs:123`, `scoped_reports.rs:49`, `api-http/dto_exec.rs:576`), so the lease would carry the whole run input and every
+    step output as its `input_json` and an `input_blob_ref`, and a database runner's heartbeat, `CompleteStep`, `FailStep` and `ReadBlob` would be
+    refused (`current_worker_authorized` excludes the role). The two doors must be opened in one slice, behind the same predicate.
+  - *What blocks it, by place.* (1) **The predicate**: a lake step must be managed, of a kind (`Sql` or `Lake`), everywhere above. (2) **Registration**: the
+    profile (`database` or `lake`) and the activities per profile do not exist; `worker_bindings` has no profile column (a migration); the protocol
+    ceiling is flat at minor 6 and the contract's 1.7 is not implemented (`worker-protocol.md` says "only those the negotiated minor includes"). (3)
+    **Resolve**: `DatabaseInput` and `ResolvedDatabase` carry a mandatory `DatabaseOperation` and one secret; `database_snapshot`, `database_admission`,
+    `database_output_limits` and `database_pinned_secret` call `database_operation()` and `sql_secret()`; `api-grpc/src/database.rs` refuses a non-Postgres
+    connection and sets `iceberg: None`, and no conversion from `IcebergConfig` to `pb::IcebergConnection` exists. (4) **Two secrets**:
+    `step_database_credentials` has `PRIMARY KEY (tenant_id, run_id, node_id, attempt, generation)` and one `provider_operation`, so catalog and
+    storage cannot both be pinned (a migration; `/migration`). (5) **Pins**: the lake loop of `check_definition` ignores the run's pins and resolves by
+    the node's own revision or the current one, so with the guard gone a floating write would re-resolve at claim or replay instead of using the
+    pinned revision. (6) **Quotas**: the concurrency counts (`database_admission`, `quotas.rs:1109`) are blind to the kind, so lake attempts would
+    consume SQL concurrency, and there are no lake quota resources (T035-055 asks for 8 per namespace and 32 per tenant). (7) **`ReadBlob`** is scoped to
+    the tenant and namespace (`BlobAccess`, `blobs.rs:99`), not to the run, and `check_blob_access` (`worker.rs:1730`) refuses it for a managed step; the
+    precedent for run scope is `collection_source.rs:247` (the run's input blob or a `StepOutput` of this run). (8) **Creation audit**: `audit_database_denial`
+    (`runs.rs:934`) audits only `DatabaseUnavailable` and `DatabaseLimit`, not `LakeRefused`.
+  - *The input document (T035-056).* Built where the SQL path sets `b"{}"` (`worker.rs:1119-1131`, `claim_root_run`), as the document the reader of D035-121
+    accepts; **the shared corpus is the check** (a test in the `tests` crate, which depends on both ends, reads every builder output through
+    `AttemptInput::read`). Facts: the run, node and step ids (`tx.info()`, `instance_step_id`), the attempt (`step.attempt() + 1` before `lease_step`), the
+    workflow name (`tx.parts().0.name()`), the **database clock** (`RunTx::now()`, `clock_timestamp()`; `WorkerService` itself is on `SystemClock`). Gaps in
+    the facts: the **workflow version number** is not on `RunInfo` (only the version id; `workflow_versions.version_number`, read elsewhere in
+    `telemetry.rs:151`), **the first attempt's start is stored nowhere** (only the journal event `step.leased` with `attempt=1`), and `allowEmpty`, which the
+    runner's reader requires, **has no field in `IcebergWriteParts`** (the contract text is its only home). The effect key defaults to `"{run_id}:{node}"`
+    (`task_identity`, stable across attempts). Records: `run_result` / `collection_source` already evaluate an expression to canonical JSON or a
+    `$blob` descriptor; an inline source must be an array of objects, a blob source is mapped to `[{"id","format"}]`, and a 017 result is G035-067.
+    The builder must refuse a document over 4 MiB (the runner's bound) with a named error, instead of leasing it for the runner to refuse as a
+    permanent configuration failure; the server's own cap is 8 MiB (`MAX_TASK_INPUT_BYTES`).
+  - *The order.* (A) **Predicate and kinds**: `managed_kind()` replaces `database_operation().is_some()` in the places above, SQL behaviour unchanged,
+    with a test that proves it on the existing SQL suites. (B) **Registration**: profiles, per-profile activities and the minor, with a migration for the
+    binding's profile. (C) **Resolve for a lake step**: the sum type for `ResolvedDatabase`, the conversion to `pb::IcebergConnection`, and the
+    migration for two pinned secrets, with a test against the runner's `convert` through the shared wire fixture. (D) **The input builder** (T035-056)
+    against the corpus, with the three facts above stored or read. (E) **Admission** (T035-055: pins on the five paths, the quotas, the guard opened,
+    `LakeRefused` audited), which waits for the 018 pull requests. (F) **Completion** (T035-059) and `ReadBlob` scoped to the run. (G) **The runner's
+    shell** (slice D of D035-123), then the end-to-end canary. A and B are safe to land alone (no lake step can start); C to F are one feature
+    from the point of view of a run, and only E opens the door.
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.
