@@ -454,9 +454,12 @@ impl Decoder {
     }
 
     fn beat(&mut self, at: Duration) -> Result<(), ProtocolFailure> {
-        let floor = at.saturating_sub(HEARTBEAT_WINDOW);
-        while self.beats.front().is_some_and(|beat| *beat <= floor) {
-            self.beats.pop_front();
+        // Before the first second of the attempt there is no beat old enough to be out of the window. A saturated floor
+        // of zero would drop a beat that arrived at zero, and any number of beats at that instant would pass.
+        if let Some(floor) = at.checked_sub(HEARTBEAT_WINDOW) {
+            while self.beats.front().is_some_and(|beat| *beat <= floor) {
+                self.beats.pop_front();
+            }
         }
         if self.beats.len() >= HEARTBEATS_PER_WINDOW {
             return Err(ProtocolFailure::HeartbeatFlood);

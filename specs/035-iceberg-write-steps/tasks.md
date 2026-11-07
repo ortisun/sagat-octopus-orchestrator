@@ -672,6 +672,12 @@ three conditions pass.
   member, read by a Rust test and a Python test), with `encode_request` refusing an envelope or a line the host would refuse. Not done: the directory, streaming into `in/` with the limit, the relay and the container request, the supervisor and
   its kill conditions, the receipt rebuild, zeroising and cleanup. They need `apps/sandbox-runner` to start, stop and kill a container of
   the lake profile, which it does not offer yet (G035-022).
+
+  *2026-11-07, second slice, left unticked (D035-110):* "serve the request line, map heartbeats, parse the result" has its conversation:
+  `crates/infra-lake/src/control.rs` (`converse`, bounded lines, a silence limit, the grace after the result) and the relay hands the
+  host's `CONTROL` connection to the driver once (`Relay::take_control`). The rest is cut into slices (supervisor, staging, a
+  `LakeSandbox` port, the sandbox-runner API, `lake.rs`, Compose/Helm and the canaries) in D035-110; G035-054 and G035-055 are the
+  decisions they wait on.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.

@@ -21,23 +21,27 @@
 //! text never repeats what the client asked for.
 //!
 //! The resolver and the connector are traits so that a test scripts a DNS answer and records the address connected to.
-//! The control conversation (`CONTROL`, the `sagat.lake.v1` lines) is served by the attempt driver (T035-035), not here.
+//! The control conversation (`CONTROL`, the `sagat.lake.v1` lines) is not served here: after the token, the relay hands
+//! that one connection to the attempt driver ([`Relay::take_control`], [`crate::control::converse`], D035-110) and has
+//! nothing more to do with it. There is one per attempt; a second `CONTROL` is refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use ipnet::IpNet;
 use sagat_infra_database::{DestinationScope, NetworkPolicy};
 use sagat_telemetry::LakeRelayDenial;
 use sagat_telemetry::lake::record_relay_denial;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, copy_bidirectional};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, copy_bidirectional};
 use tokio::net::{TcpStream, UnixListener, UnixStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, oneshot};
 use tokio::time::{Instant, timeout_at};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -450,6 +454,56 @@ struct Inner<R, C> {
     resolver: R,
     connector: C,
     counters: Counters,
+    control: Mutex<ControlSlot>,
+}
+
+/// The two ends of the one hand-over of the host's `CONTROL` connection to the attempt driver.
+struct ControlSlot {
+    sender: Option<oneshot::Sender<ControlStream>>,
+    receiver: Option<oneshot::Receiver<ControlStream>>,
+}
+
+/// What a connection that is handed to the driver has to be: a pipe in both directions that can move to another task.
+trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Duplex for T {}
+
+/// The host's control connection, authenticated by the attempt's token and handed over by the relay (D035-110). The
+/// driver owns it from there: it writes the request line, reads the host's lines ([`crate::control::converse`]), and
+/// closes it by dropping it.
+pub struct ControlStream(Box<dyn Duplex>);
+
+impl std::fmt::Debug for ControlStream {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ControlStream")
+    }
+}
+
+impl AsyncRead for ControlStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut *self.0).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for ControlStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut *self.0).poll_write(context, bytes)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut *self.0).poll_flush(context)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut *self.0).poll_shutdown(context)
+    }
 }
 
 /// The relay of one attempt.
@@ -490,6 +544,7 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
             .map_err(|_| RelayConfigError::Network)?;
         let policy = NetworkPolicy::new(scope.clone(), config.deny, config.development)
             .map_err(|_| RelayConfigError::Network)?;
+        let (sender, receiver) = oneshot::channel();
         Ok(Self {
             inner: Arc::new(Inner {
                 token: config.token,
@@ -505,8 +560,39 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
                 resolver,
                 connector,
                 counters: Counters::default(),
+                control: Mutex::new(ControlSlot {
+                    sender: Some(sender),
+                    receiver: Some(receiver),
+                }),
             }),
         })
+    }
+
+    /// Where the host's `CONTROL` connection arrives, once. The driver takes it when it builds the relay, before it
+    /// starts the container, and waits on it for the time the host has to start. A second call gives `None`.
+    #[must_use]
+    pub fn take_control(&self) -> Option<oneshot::Receiver<ControlStream>> {
+        self.inner
+            .control
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.receiver.take())
+    }
+
+    /// The host's `CONTROL` connection, authenticated, goes to the driver; there is one conversation per attempt, so a
+    /// second one is refused, and one that arrives after the driver stopped waiting is closed.
+    fn hand_over<S: Duplex + 'static>(&self, stream: S) {
+        let sender = self
+            .inner
+            .control
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.sender.take());
+        match sender {
+            // a driver that is gone drops the stream, which closes the connection
+            Some(sender) => drop(sender.send(ControlStream(Box::new(stream)))),
+            None => self.deny(LakeRelayDenial::RequestUnsupported),
+        }
     }
 
     /// What the relay has refused so far.
@@ -593,7 +679,7 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
     /// it waits for its request, for a name server or for a destination, as well as while it copies.
     pub async fn handle<S>(&self, stream: S, shutdown: &CancellationToken)
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         tokio::select! {
             () = shutdown.cancelled() => {}
@@ -603,7 +689,7 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
 
     async fn converse<S>(&self, mut stream: S)
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let deadline = Instant::now() + self.inner.handshake_timeout;
         if !matches!(
@@ -613,13 +699,18 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
             self.deny(LakeRelayDenial::TokenRefused);
             return;
         }
-        let (mode, target) = match timeout_at(deadline, read_request(&mut stream)).await {
+        let request = match timeout_at(deadline, read_request(&mut stream)).await {
             Ok(Some(request)) => request,
             Ok(None) | Err(_) => {
                 self.deny(LakeRelayDenial::RequestUnsupported);
                 let _ = stream.write_all(BAD_REQUEST).await;
                 return;
             }
+        };
+        let (mode, target) = match request {
+            // the host's one conversation: the relay stops here and the driver has the connection
+            Request::Control => return self.hand_over(stream),
+            Request::Proxy(mode, target) => (mode, target),
         };
         let admission = Instant::now() + self.inner.admission_timeout;
         let address = match self.admit(target, admission).await {
@@ -753,12 +844,23 @@ async fn read_line<S: AsyncRead + Unpin>(stream: &mut S, limit: usize) -> Option
     }
 }
 
+/// What a connection that presented its token asks for.
+enum Request {
+    /// The host's control conversation, exactly the word `CONTROL`.
+    Control,
+    /// A route out: a tunnel or a mapping.
+    Proxy(Mode, Target),
+}
+
 /// The request of a connection that presented its token, or `None` when the relay does not serve it.
-async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Option<(Mode, Target)> {
+async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Option<Request> {
     let line = read_line(stream, MAX_REQUEST_BYTES).await?;
+    if line == b"CONTROL" {
+        return Some(Request::Control);
+    }
     if let Some(name) = line.strip_prefix(b"TCP ") {
         let name = std::str::from_utf8(name).ok()?;
-        return Some((Mode::Tcp, Target::Tcp(name.to_owned())));
+        return Some(Request::Proxy(Mode::Tcp, Target::Tcp(name.to_owned())));
     }
     let text = std::str::from_utf8(line.strip_suffix(b"\r")?).ok()?;
     let mut parts = text.split(' ');
@@ -774,7 +876,7 @@ async fn read_request<S: AsyncRead + Unpin>(stream: &mut S) -> Option<(Mode, Tar
         let header = read_line(stream, MAX_REQUEST_BYTES.saturating_sub(used)).await?;
         used += header.len() + 1;
         match header.as_slice() {
-            b"\r" => return Some((Mode::Connect, Target::Connect(target))),
+            b"\r" => return Some(Request::Proxy(Mode::Connect, Target::Connect(target))),
             [.., b'\r'] => {}
             _ => return None,
         }
