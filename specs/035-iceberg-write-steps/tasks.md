@@ -678,6 +678,10 @@ three conditions pass.
   host's `CONTROL` connection to the driver once (`Relay::take_control`). The rest is cut into slices (supervisor, staging, a
   `LakeSandbox` port, the sandbox-runner API, `lake.rs`, Compose/Helm and the canaries) in D035-110; G035-054 and G035-055 are the
   decisions they wait on.
+
+  *2026-11-07, third slice, left unticked (D035-111):* "kill the container on lease loss, cancellation, deadline, a missing heartbeat
+  or `memory.max`" and "parse the result" have their decision table: `crates/infra-lake/src/supervisor.rs` (`dispose`, `Ended::strongest`),
+  one test per row; G035-054 is closed. Nothing calls it yet.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
