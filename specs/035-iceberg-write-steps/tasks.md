@@ -1217,16 +1217,28 @@ journey publish identical definitions and get equal receipts and errors.
   T035-063 passes. Refs: FR-035-007, D035-065.
 - [ ] T035-067 [P] [US03] Add the TypeScript builder in `sdks/typescript/src/database.ts`, with unit
   tests in `sdks/typescript/test/`. Refs: FR-035-008.
+
+  *2026-11-07, partly done, left unticked (D035-133):* TypeScript: 7 new tests, `npm test` 138 pass. The append builder is in all six SDKs and passes the build-only scenario `iceberg-write-builders` (six languages, golden read and rerun without bless). Overwrite, upsert and `recordSchema` come with T035-080, T035-085 and T035-089. The task text names `database.ts`; the builder is in `src/iceberg.ts`, with `validConnectionRef` shared from `database.ts`.
 - [ ] T035-068 [P] [US03] Add the Python builder in `sdks/python/sagat_octopus_orchestrator/database.py`,
   with tests in `sdks/python/tests/`. Refs: FR-035-008.
+
+  *2026-11-07, partly done, left unticked (D035-133):* Python: pytest 319 pass, mypy and ruff clean. The append builder is in all six SDKs and passes the build-only scenario `iceberg-write-builders` (six languages, golden read and rerun without bless). Overwrite, upsert and `recordSchema` come with T035-080, T035-085 and T035-089. The task text names `database.py`; the builder is in `iceberg.py` (`Flow.iceberg_write`), with `valid_connection_ref` shared from `database.py`.
 - [ ] T035-069 [P] [US03] Add the Go builder in `sdks/go/workflow/database.go`, with tests. Refs:
   FR-035-008.
+
+  *2026-11-07, partly done, left unticked (D035-133):* Go: `go test -race ./...`, vet and gofmt clean. The append builder is in all six SDKs and passes the build-only scenario `iceberg-write-builders` (six languages, golden read and rerun without bless). Overwrite, upsert and `recordSchema` come with T035-080, T035-085 and T035-089. The task text names `database.go`; the builder is in `workflow/iceberg.go`, with `validConnectionRef` shared from `database.go`.
 - [ ] T035-070 [P] [US03] Add the Java builder
   `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/workflow/IcebergWriteOptions.java` and
   its use from `Flow.java` and `WorkflowBuilder.java`, with tests. Refs: FR-035-008.
+
+  *2026-11-07, partly done, left unticked (D035-133):* Java: 7 new tests, `./mvnw -q verify` passes. The append builder is in all six SDKs and passes the build-only scenario `iceberg-write-builders` (six languages, golden read and rerun without bless). Overwrite, upsert and `recordSchema` come with T035-080, T035-085 and T035-089. The task text names `IcebergWriteOptions.java`, `Flow.java` and `WorkflowBuilder.java`; the builder is in those files, with `validConnectionRef` shared from `DatabaseOptions.java`.
 - [ ] T035-071 [P] [US03] Add the C# builder
   `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workflows/IcebergWriteOptions.cs` and its use from
   `FlowDatabase.cs`, with tests. Refs: FR-035-008.
+
+  *2026-11-07, partly done, left unticked (D035-133):* C#: 7 tests and a 31-case theory, `dotnet test` 487 pass, `dotnet format --verify-no-changes` clean. The append builder is in all six SDKs and passes the build-only scenario `iceberg-write-builders` (six languages, golden read and rerun without bless). Overwrite, upsert and `recordSchema` come with T035-080, T035-085 and T035-089. The task text names `IcebergWriteOptions.cs` and `FlowDatabase.cs`; the builder is in `IcebergWriteOptions.cs` and `FlowIceberg.cs`, with `ValidConnectionRef` shared from `DatabaseOptions.cs`.
+  The Rust SDK, which the task text leaves out, has its builder too: `sdks/rust/src/workflow/iceberg.rs` and `Builder::iceberg_write`, with 8
+  tests in `sdks/rust/tests/iceberg_builders.rs`; fmt, clippy `-D warnings` and `cargo test --locked` pass, and `shared_builders` rebuilds the golden.
 - [ ] T035-072 [US03] Wire the conformance runners:
   - `sdks/typescript/conformance/runner.ts`;
   - `sdks/python/conformance/runner.py`;
@@ -1236,6 +1248,10 @@ journey publish identical definitions and get equal receipts and errors.
   - and `tests/contract/sdk-conformance/database.rs`.
 
   Run all five. T035-064 passes. Refs: SC-035-005.
+
+  *2026-11-07, partly done, left unticked (D035-133):* the runners of the six SDKs (the Rust one is `sdks/rust/conformance/src/builders.rs`; no
+  file of the harness changes) build the `icebergWrite` op and the scenario passes in all six. T035-064 does not pass yet: receipts, errors and
+  the unsupported capability need the server's lease path.
 - [ ] T035-073 [US03] Build the Studio editor:
   - `frontend/apps/studio/src/features/workflows/{IcebergWriteFields.tsx,NodeInspector.tsx,AddNode.tsx}`;
   - `frontend/apps/studio/src/features/connections/CatalogPicker.tsx`, which shows the schema,

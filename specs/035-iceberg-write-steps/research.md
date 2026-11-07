@@ -2782,6 +2782,37 @@ The other fixes were wording:
   - *Not done.* The sum type for `ResolvedDatabase` (it carries a mandatory SQL operation and one credential), the two-secret pin and its migration, the
     resolve path that resolves both secrets in two phases and answers with this message, and the profile check that only the lake profile may resolve the
     kind (D035-130 B and C). The stored form is checked here against the wire fixture only; the store's own writer is private to `infra-postgres`.
+- **D035-133 — The append builders in the six SDKs, held to one build-only scenario.** **Decided by: delegate**. No `Cargo.lock` change. The
+  task text (T035-064, T035-067..072) is amended, not silently reinterpreted: it says five SDKs and names `database.ts`, `database.py`,
+  `database.go`, `FlowDatabase.cs` and `tests/contract/sdk-conformance/database.rs`; there are **six** official SDKs (Rust is the sixth,
+  `sdks/AGENTS.md`), the builders live in files of their own (below), and the conformance runners need no Rust file of the harness.
+  - *What.* `icebergWrite(id, options)` in TypeScript (`src/iceberg.ts`), Python (`iceberg.py`, `Flow.iceberg_write`), Go
+    (`workflow/iceberg.go`), Java (`IcebergWriteOptions.java`, `Flow` and `WorkflowBuilder`), C# (`IcebergWriteOptions.cs`, `FlowIceberg.cs`) and
+    Rust (`workflow/iceberg.rs`, `Builder::iceberg_write`). The node is `{id, type: "icebergWrite", mode: "append", connectionRef, table,
+    records, ref?, mapping?, ignoreUnknownFields?, limits?, compensation?, onError?}`; **the mode is not an option**: overwrite and upsert are not
+    built (T035-080, T035-085, T035-089), so no SDK can say them. `connectionRef` is the one check of a managed step, now a single function in each
+    SDK that `database` uses too.
+  - *Decisions.* One fixed message, `invalid iceberg write` (code `VALIDATION_FAILED`), with no value in it; a supplied empty `mapping` or `limits`
+    stays `[]` or `{}`, an absent option is omitted; the bounds are the schema's (namespace 1..8 levels, names and `ref` 1..255 bytes without a
+    control character, `.` and `..` not a table part, a pointer of at most 512 bytes and 16 segments with `~0` and `~1` the only escapes, at most 1,024
+    rows, a field or a column used once, `maxRecordBytes` 1,024..2,147,483,648, `maxRecords` 1..100,000,000, `timeoutMs` 1,000..3,600,000), except
+    **an expression is held to 1..1,024 UTF-8 bytes where the schema says 4,096**, because that is what the engine takes (the same rule as every
+    other expression an SDK builds). A typed SDK cannot express an unknown member the same way in six languages, so the shared scenario holds no
+    refusal for one; Rust refuses it when the options are decoded, the other runners ignore it, and the server's codec refuses it (T035-053).
+  - *Evidence.* `tests/contract/sdk-conformance/scenarios/iceberg-write-builders.json` (build only: eight valid workflows, among them every option, each
+    record source, the edge of every bound and non-ASCII names, and 29 refusals, one for each rule, that must carry the fixed message) and its golden
+    `expected/iceberg-write-builders.workflows.json`, **written by `SAGAT_SDK_BLESS=1` from TypeScript, Python and Go together after the harness had
+    compared them, then read in full, and the scenario rerun without the switch in all six languages (`SAGAT_SDK_LANGS=typescript,go,python,dotnet,
+    java,rust`: passed)**. The shared valid document `tests/contract/iceberg-writes/fixtures/ir/valid/append-inline.json` is rebuilt by each SDK's
+    own unit test. Each SDK's checks pass: TypeScript `npm test` (138), Python pytest (319), mypy and ruff, Go `go test -race`, vet and gofmt, Java
+    `./mvnw -q verify`, C# `dotnet test` (487) and `dotnet format --verify-no-changes`, Rust fmt, clippy `-D warnings` and `cargo test --locked`.
+    Because the connection check of `database` was moved into the shared function in every SDK, the `database-connections` scenario (the real
+    database runner, PostgreSQL and OpenBao on the project's own daemon) was rerun in all six languages and passed.
+  - *Honest limit.* The builders and their tests were written together; no test of them was seen failing first, and **no mutation pass was made**
+    (it is off until a release closes, OD-2026-11-06-2). What stands in for it is that the scenario holds both sides of each bound, which an
+    off-by-one in any of the six languages would fail.
+  - *Not done.* The receipts and the errors of a real run, and an unsupported capability failing explicitly (T035-064's other two bullets) need the
+    server's lease path (D035-130 E). The Studio editor and the `recordSchema` and overwrite options.
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

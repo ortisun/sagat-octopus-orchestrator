@@ -99,10 +99,15 @@ public final class DatabaseOptions {
 
     static SagatException invalid() { return SagatException.invalid("invalid managed database operation"); }
 
+    /** A scoped logical name (3 to 63 characters, no {@code --}) and an optional revision; shared by every managed step. */
+    static boolean validConnectionRef(ConnectionRef ref) {
+        return ref != null && ref.name() != null && NAME.matcher(ref.name()).matches() && !ref.name().contains("--")
+            && (ref.revision() == null || ref.revision() >= 1);
+    }
+
     ObjectNode toNode(String id) {
         try {
-            if (connectionRef == null || connectionRef.name() == null || !NAME.matcher(connectionRef.name()).matches()
-                || connectionRef.name().contains("--") || (connectionRef.revision() != null && connectionRef.revision() < 1)
+            if (!validConnectionRef(connectionRef)
                 || operation == null || statement == null || statement.isBlank() || statement.indexOf('\0') >= 0
                 || statement.getBytes(StandardCharsets.UTF_8).length > 65536 || (parameters != null && parameters.size() > 256)
                 || (onError != null && onError.isEmpty())) throw invalid();

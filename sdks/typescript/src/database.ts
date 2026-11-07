@@ -53,14 +53,17 @@ function parameter(p: unknown): boolean {
   return keys(p, ['type', 'expression']) && typeof p['type'] === 'string' && TYPES.has(p['type'])
     && typeof p['expression'] === 'string' && p['expression'].length > 0;
 }
+/** @internal. A scoped logical name (3 to 63 characters, no `--`) and an optional revision; shared by every managed step. */
+export function validConnectionRef(ref: unknown): boolean {
+  return object(ref) && keys(ref, ['name', 'revision']) && typeof ref['name'] === 'string'
+    && full(/^[a-z][a-z0-9-]{1,61}[a-z0-9]$/, ref['name']) && !ref['name'].includes('--')
+    && (ref['revision'] === undefined || (Number.isInteger(ref['revision']) && (ref['revision'] as number) >= 1 && (ref['revision'] as number) <= 2147483647));
+}
 /** @internal. Shape validation only: SQL parsing, policy, access and retries belong to the server. */
 export function databaseNode(id: string, options: DatabaseOptions): Record<string, Json> {
   const fail = () => invalid('invalid managed database operation');
   if (!object(options) || !keys(options, ['connectionRef', 'operation', 'statement', 'parameters', 'limits', 'timeoutMs', 'onError'])) throw fail();
-  const ref = options.connectionRef;
-  if (!object(ref) || !keys(ref, ['name', 'revision']) || typeof ref.name !== 'string'
-    || !full(/^[a-z][a-z0-9-]{1,61}[a-z0-9]$/, ref.name) || ref.name.includes('--')
-    || (ref.revision !== undefined && (!Number.isInteger(ref.revision) || ref.revision < 1 || ref.revision > 2147483647))) throw fail();
+  if (!validConnectionRef(options.connectionRef)) throw fail();
   if (!['query', 'execute'].includes(options.operation) || typeof options.statement !== 'string'
     || !options.statement.trim() || options.statement.includes('\0') || Buffer.byteLength(options.statement) > 65536) throw fail();
   if (options.parameters !== undefined && (!Array.isArray(options.parameters) || options.parameters.length > 256 || !options.parameters.every(parameter))) throw fail();
