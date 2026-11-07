@@ -21,6 +21,8 @@
 //!
 //! This module has no engine dependency and no transport: the server, the client and the listener are built on it.
 
+pub mod client;
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 

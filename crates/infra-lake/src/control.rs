@@ -132,7 +132,7 @@ async fn next_line<R: AsyncBufRead + Unpin>(reader: &mut R, line: &mut Vec<u8>) 
 /// supervisor of T035-035). Two more things hold the caller to its side: `on_heartbeat` must not block, because the
 /// [`Decoder`] judges a beat by when it is *read* and a runner that stalls for a second or two reads the host's beats in
 /// one burst and calls it a flood; and the request line holds the credentials, so the caller keeps it no longer than this
-/// call and zeroises it afterwards.
+/// call (it is the `Zeroizing` buffer that [`crate::protocol::encode_request`] makes, and is zeroed when dropped).
 ///
 /// # Errors
 /// [`ControlFailure::Silent`] when the host takes the request or a line longer than the silence limit, and

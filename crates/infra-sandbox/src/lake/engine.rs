@@ -26,8 +26,8 @@ use bollard::query_parameters::{
 use futures_util::{Stream, StreamExt as _};
 
 use super::{
-    ATTEMPT_LABEL, CLASS_LABEL, DEADLINE_LABEL, LABEL, MAX_SLOTS, OWNER_LABEL, SLOT_LABEL,
-    attempt_id_ok, class_ok, deadline_ok, owner_ok,
+    ATTEMPT_LABEL, CLASS_LABEL, DEADLINE_LABEL, LABEL, MAX_SLOTS, MEMORY_LABEL, OWNER_LABEL,
+    SLOT_LABEL, attempt_id_ok, class_ok, deadline_ok, owner_ok,
 };
 use crate::docker::{Removal, failed_at, within};
 
@@ -92,6 +92,9 @@ pub struct LakeInfo {
     pub slot: Option<u32>,
     pub class: Option<String>,
     pub deadline_epoch_secs: Option<u64>,
+    /// The memory limit the container was created with. What a restarted process adds up is this, and not what its own
+    /// settings say now.
+    pub memory_bytes: Option<u64>,
     /// Not ended: created, running, paused or restarting. A state the engine did not name counts as not ended, so that
     /// nothing is ever reported as over that was not seen to be.
     pub running: bool,
@@ -409,6 +412,29 @@ impl LakeEngine {
             }
         }
         removed
+    }
+
+    /// The API version the engine speaks (its highest). The sub-path mount of a lake container, which is the only thing that
+    /// keeps a container to its own attempt directory, needs 1.45 or later; an engine older than that must not be used.
+    ///
+    /// # Errors
+    /// The engine did not answer or did not say.
+    pub async fn api_version(&self) -> Result<(u32, u32), EngineError> {
+        match within(self.docker.version()).await {
+            Some(Ok(version)) => version
+                .api_version
+                .as_deref()
+                .and_then(parse_api_version)
+                .ok_or(EngineError::Unavailable),
+            Some(Err(error)) => {
+                failed_at("version")(error);
+                Err(EngineError::Unavailable)
+            }
+            None => {
+                failed_at("version")("the engine did not answer in time");
+                Err(EngineError::Unavailable)
+            }
+        }
     }
 
     /// A client of the engine at a Unix socket. The address is not tried here: every call to an engine that is not there is
@@ -789,6 +815,12 @@ fn not_found(error: &bollard::errors::Error) -> bool {
     )
 }
 
+/// `1.45` as `(1, 45)`. Anything else (a patch number, text, nothing) is not a version this reads.
+fn parse_api_version(text: &str) -> Option<(u32, u32)> {
+    let (major, minor) = text.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
 /// Whether the engine refused the name because it has a container by it.
 fn conflict(error: &bollard::errors::Error) -> bool {
     matches!(
@@ -811,7 +843,8 @@ fn profile_name(body: &ContainerCreateBody) -> Option<String> {
         && attempt_id_ok(attempt)
         && number(SLOT_LABEL).is_some_and(|slot| slot < u64::from(MAX_SLOTS))
         && class_ok(labels.get(CLASS_LABEL)?)
-        && number(DEADLINE_LABEL).is_some_and(deadline_ok))
+        && number(DEADLINE_LABEL).is_some_and(deadline_ok)
+        && number(MEMORY_LABEL).is_some_and(|memory| memory > 0))
     .then(|| format!("sagat-lake-attempt-{attempt}"))
 }
 
@@ -836,6 +869,10 @@ fn info_of(container: ContainerSummary) -> Option<LakeInfo> {
             .get(DEADLINE_LABEL)
             .and_then(|deadline| deadline.parse().ok())
             .filter(|deadline| deadline_ok(*deadline)),
+        memory_bytes: labels
+            .get(MEMORY_LABEL)
+            .and_then(|memory| memory.parse().ok())
+            .filter(|memory| *memory > 0),
         running: !ended,
     })
 }
@@ -850,13 +887,14 @@ fn append(into: &mut Vec<u8>, chunk: &[u8], keep: usize) {
 mod label_tests {
     use super::*;
 
-    const VALID: [(&str, &str); 6] = [
+    const VALID: [(&str, &str); 7] = [
         ("sagat.lake", "1"),
         ("sagat.lake.owner", "lake-runner-1"),
         ("sagat.lake.attempt", "0198f2c4-7b1e-7c3a-9d52-3f4a6b8c0d11"),
         ("sagat.lake.slot", "3"),
         ("sagat.lake.class", "small"),
         ("sagat.lake.deadline", "1800000000"),
+        ("sagat.lake.memory", "2147483648"),
     ];
 
     fn labels(changes: &[(&str, Option<&str>)]) -> HashMap<String, String> {
@@ -927,6 +965,7 @@ mod label_tests {
         assert_eq!(info.slot, Some(3));
         assert_eq!(info.class.as_deref(), Some("small"));
         assert_eq!(info.deadline_epoch_secs, Some(1_800_000_000));
+        assert_eq!(info.memory_bytes, Some(2_147_483_648));
     }
 
     /// A label that is not what the profile writes is `None`, never a number made up: a deadline that is zero or that no
@@ -980,6 +1019,30 @@ mod label_tests {
     }
 
     #[test]
+    fn a_memory_label_that_is_not_a_limit_is_none() {
+        for bad in ["0", "-1", "", "lots", "1.5", "18446744073709551616"] {
+            let info = info_of(summary(None, labels(&[("sagat.lake.memory", Some(bad))])))
+                .expect("a container");
+            assert_eq!(info.memory_bytes, None, "{bad:?}");
+        }
+        let info =
+            info_of(summary(None, labels(&[("sagat.lake.memory", None)]))).expect("a container");
+        assert_eq!(info.memory_bytes, None);
+    }
+
+    #[test]
+    fn an_api_version_is_a_major_and_a_minor_and_nothing_else() {
+        assert_eq!(parse_api_version("1.45"), Some((1, 45)));
+        assert_eq!(parse_api_version("1.52"), Some((1, 52)));
+        assert_eq!(parse_api_version("2.0"), Some((2, 0)));
+        for bad in [
+            "", "1", "1.", ".45", "1.45.1", "v1.45", "one.two", "1.-4", " 1.45",
+        ] {
+            assert_eq!(parse_api_version(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
     fn a_summary_without_an_id_is_not_a_container_to_act_on() {
         let mut nameless = summary(None, labels(&[]));
         nameless.id = None;
@@ -1000,6 +1063,7 @@ mod label_tests {
             "sagat.lake.slot",
             "sagat.lake.class",
             "sagat.lake.deadline",
+            "sagat.lake.memory",
         ] {
             assert_eq!(
                 profile_name(&body(labels(&[(key, None)]))),
@@ -1030,6 +1094,9 @@ mod label_tests {
             ("sagat.lake.deadline", "0"),
             ("sagat.lake.deadline", "4102444801"),
             ("sagat.lake.deadline", "later"),
+            ("sagat.lake.memory", "0"),
+            ("sagat.lake.memory", "-1"),
+            ("sagat.lake.memory", "lots"),
         ] {
             assert_eq!(
                 profile_name(&body(labels(&[(key, Some(bad))]))),

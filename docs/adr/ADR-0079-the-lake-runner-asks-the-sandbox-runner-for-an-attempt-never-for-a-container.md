@@ -65,7 +65,10 @@ The question: how does the process that holds the credentials get a container wi
 2. **The lake runner holds no container-engine access.** `sagat-database-runner` and `sagat-infra-lake` MUST NOT depend, directly or
    transitively, on `bollard` or `sagat-infra-sandbox`, and a deployment MUST NOT mount the engine socket into the lake runner.
    (Integration tests may link `LakeEngine`; a test is not a deployment.)
-3. **Transport.** A Unix socket in a directory that the sandbox runner owns (mode 0750, the lake runner's group may search it, not write
+3. **Transport.** A Unix socket in a directory that the sandbox runner owns, **checked and not trusted**: it must be a real directory (not
+   a link), owned by the user of the process, and hold nothing but the socket and a lock file, and **an exclusive lock on that file keeps
+   one process to it** (a second is refused; it does not take a live socket, and the first does not delete the second's when it exits).
+   The mode is 0750 (the lake runner's group may search it, not write
    it); the socket is bound under a restrictive umask and then set to 0660 in that group. On every accept the sandbox runner MUST read
    `SO_PEERCRED` and refuse a peer whose user is not the configured lake-runner user. That user is **required**: with none configured
    the listener does not start; 0 and 65534 (the overflow id of an unmapped user) are refused as a configuration. There is no TCP
@@ -94,7 +97,9 @@ The question: how does the process that holds the credentials get a container wi
    engine is asked to create and released when the container is gone, so two concurrent starts cannot both pass. It never exceeds
    `MAX_SLOTS`. The lake runner also limits its own concurrency to the ceiling before it resolves a connection, so a refusal is the
    exception and not the normal case of a busy node.
-7. **State is the engine's, not the process's.** Every container carries labels for its attempt, slot, class and **absolute deadline**.
+7. **State is the engine's, not the process's.** Every container carries labels for its attempt, slot, class, **absolute deadline** and
+   **the memory limit it was created with** (what the node adds up is what a container was given, not what the node's settings say
+   today; a container with no such label is charged as the node's largest class).
    At start-up, and before the listener accepts, the sandbox runner rebuilds its reservations and slot table from them. `wait`, `kill`
    and an idempotent `start` resolve **by the attempt label**, never by an in-memory table alone: a second `start` for an attempt that
    has a container (running, or exited and retained) answers `started` and makes no second container. This needs `LakeEngine` to gain
@@ -106,8 +111,9 @@ The question: how does the process that holds the credentials get a container wi
 8. **Every container has a hard deadline that does not depend on the process.** The deadline in `start` is refused, not clamped, if it
    exceeds the node's attempt ceiling (`refused`, reason `deadline`: a silent clamp would end a container after its request was sent
    and be reported as a retryable `LAKE_HOST_PROTOCOL` instead of `OUTCOME_UNKNOWN`). The sandbox runner ends the container at its label
-   deadline, with an in-process timer and with a sweep of the labels **every 30 s and at start-up**, which is the guarantee across a
-   restart. A lake runner that dies leaves nothing running past its deadline. `start` runs in a task of its own that a closed
+   deadline with a sweep of the labels **at start-up and every 30 s (the setting is capped at 60 s)**. There is no timer per container:
+   the sweep reads the same labels and so holds across a restart without a second mechanism, and the grace in the label covers its
+   interval. A lake runner that dies leaves nothing running past its deadline. `start` runs in a task of its own that a closed
    connection does not cancel, so a driver that drops its `start` future and then calls `kill` finds the container the start made (or
    waits for the start to settle, and then ends it).
 9. **No tombstone for a `kill` that comes before its `start`.** A late `start` is not made harmless by a record in memory; it is harmless

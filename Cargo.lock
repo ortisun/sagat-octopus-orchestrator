@@ -5641,6 +5641,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tempfile",
  "thiserror 2.0.21",
  "time",
  "tokio",
@@ -5733,6 +5734,7 @@ dependencies = [
  "sagat-application",
  "sagat-domain",
  "sagat-infra-database",
+ "sagat-infra-lake",
  "sagat-infra-secrets",
  "sagat-telemetry",
  "serde",
@@ -5934,7 +5936,11 @@ dependencies = [
 name = "sagat-infra-lake"
 version = "0.2.0"
 dependencies = [
+ "bytes",
  "getrandom 0.4.3",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "ipnet",
  "jsonschema",
  "sagat-domain",
@@ -5946,6 +5952,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "zeroize",
 ]
 
 [[package]]
@@ -6043,16 +6050,19 @@ dependencies = [
  "base64 0.23.1",
  "metrics",
  "reqwest 0.13.5",
+ "rustix",
  "sagat-api-grpc",
  "sagat-api-http",
  "sagat-application",
  "sagat-control-plane",
  "sagat-domain",
  "sagat-infra-egress",
+ "sagat-infra-lake",
  "sagat-infra-sandbox",
  "sagat-telemetry",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tonic",
@@ -6137,6 +6147,7 @@ dependencies = [
  "sagat-infra-connectors",
  "sagat-infra-egress",
  "sagat-infra-ir",
+ "sagat-infra-lake",
  "sagat-infra-nats",
  "sagat-infra-postgres",
  "sagat-infra-sandbox",

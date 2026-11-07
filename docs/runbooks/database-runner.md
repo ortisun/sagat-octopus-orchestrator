@@ -67,6 +67,39 @@ and workload-auth bootstrap are documented in [OpenBao deployment](openbao.md).
 `SAGAT_DATABASE_RUNNER_NAME` can override the configured name with the stable pod name;
 the same length/character and namespace constraints apply.
 
+### The lake profile (feature 035)
+
+An optional `lake` section turns on the runner's lake profile. **Absent means off.** Present, it is validated whole when
+the runner starts, and a value outside its bounds stops the runner: nothing is defaulted that is a decision about security.
+**Today the section is read and validated and nothing serves lake activities yet** (the attempt driver is built in slices,
+`specs/035-iceberg-write-steps/research.md` D035-123); do not rely on it to write to a table.
+
+```json
+"lake": {
+  "workRoot": "/work",
+  "sandboxSocket": "/run/sagat/lake-sandbox.sock",
+  "sandboxUid": 10002,
+  "slots": 8,
+  "relayAllowCidrs": ["0.0.0.0/0", "::/0"],
+  "relayDenyCidrs": ["10.96.0.0/12", "10.244.0.0/16"]
+}
+```
+
+- `workRoot` and `sandboxSocket` are absolute paths (no `..`). `sandboxUid` is the user the sandbox runner runs as: the
+  runner believes only a socket whose other end is that user. It is neither root nor one of the containers' users
+  (`40000` to `44095`).
+- `slots` is how many containers' users there are, 1 to 4096; the lake runner picks the slot of an attempt.
+- `relayAllowCidrs` are the ranges the relay may connect to for a destination's catalog and storage. **An empty list
+  reaches nothing and is refused**, except with `developmentLoopback`.
+- `relayDenyCidrs` are the ranges it may never connect to, and a deny range wins over an allow range. **The relay itself
+  refuses loopback, link-local, metadata and other special-use addresses, and no private network.** A tenant declares the endpoints of its connection, so the
+  platform's own state (PostgreSQL, the broker, the secret store, the Kubernetes API) and your pod and service networks must
+  be listed here, exactly as `denyCidrs` is for the SQL runner. It is required and non-empty, except with
+  `developmentLoopback`.
+- Optional, with the defaults of the contract: `maxBytes` (1 GiB, staged input of one attempt), `maxRecords` (10 million),
+  `maxCommitRetries` (4, at most 16), `maxDecodedBytes` (16 GiB), `maxMetadataBytes` (64 MiB), `hostStartSecs` (30),
+  `killLimitSecs` (20) and `largeAboveBytes` (none).
+
 ## Observe and recover
 
 - Standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `http/json` configure traces.

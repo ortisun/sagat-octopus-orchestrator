@@ -24,8 +24,9 @@
 //! an escape into a scratch buffer of its own, and the message of a type error repeats the value it met (`invalid type: string
 //! "S", expected a map`); both are dropped unscrubbed. A secret that contains `"`, `\` or a control character, and a document
 //! of the wrong shape, therefore leave a short-lived copy in freed heap memory that this module cannot zero (a hand-written
-//! parser or a scrubbing allocator could; neither is in this slice). `infra-lake` holds what it is handed as plain strings
-//! until its manifest takes `zeroize` (G035-063).
+//! parser or a scrubbing allocator could; neither is in this slice). `infra-lake` takes the secrets as `String`s and moves
+//! them into `Zeroizing` ones, scrubs the body it builds from them, and returns the request line as a `Zeroizing` buffer
+//! (G035-063, D035-122).
 
 use std::collections::BTreeMap;
 use std::fmt;

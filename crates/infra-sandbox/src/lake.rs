@@ -55,6 +55,9 @@ pub const SLOT_LABEL: &str = "sagat.lake.slot";
 pub const CLASS_LABEL: &str = "sagat.lake.class";
 /// When the container must be gone, in seconds since the epoch.
 pub const DEADLINE_LABEL: &str = "sagat.lake.deadline";
+/// The memory limit the container was created with, in bytes: what a restarted sandbox runner adds up, whatever its own
+/// settings say now.
+pub const MEMORY_LABEL: &str = "sagat.lake.memory";
 const MAX_OPEN_FILES: i64 = 1024;
 
 /// What the profile refuses. The reason names the field, never its value: a refused value may be anything.
@@ -101,7 +104,8 @@ pub struct LakeLimits {
     pub processes: u32,
     /// The CPU quota, in thousandths of a CPU.
     pub cpu_millis: u32,
-    /// The size of the attempt directory, and the largest file a process may write.
+    /// The largest file a process may write (`fsize`). It is **not** a quota on the attempt directory: the work volume is
+    /// shared, and its size, which the deployment sets, is what the directories together cannot exceed.
     pub work_bytes: u64,
     /// The size of `/tmp`.
     pub tmp_bytes: u64,
@@ -179,7 +183,8 @@ pub(crate) fn attempt_id_ok(id: &str) -> bool {
 
 /// An owner name: 1 to 128 letters, digits, `.`, `_` and `-`. It is a label value that goes into a label filter, and a
 /// name like `lake-runner-1` has no use for `=`, `,` or anything the filter could read as more than a name.
-pub(crate) fn owner_ok(owner: &str) -> bool {
+#[must_use]
+pub fn owner_ok(owner: &str) -> bool {
     (1..=128).contains(&owner.len())
         && owner
             .bytes()
@@ -209,8 +214,16 @@ fn plain(name: &str, longest: usize) -> bool {
         && !name.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
+/// An image reference as the profile accepts it: 1 to 512 characters with no whitespace or control character. Whether the engine
+/// can pull it is the engine's.
+#[must_use]
+pub fn image_ok(image: &str) -> bool {
+    plain(image, 512)
+}
+
 /// A volume name as the engine accepts it: it starts with a letter or digit and goes on with those, `_`, `.` and `-`.
-fn volume_name_ok(name: &str) -> bool {
+#[must_use]
+pub fn volume_name_ok(name: &str) -> bool {
     plain(name, 255)
         && name
             .chars()
@@ -283,6 +296,7 @@ pub fn container_config(spec: &LakeSpec) -> Result<ContainerCreateBody, LakeProf
                 DEADLINE_LABEL.to_owned(),
                 spec.deadline_epoch_secs.to_string(),
             ),
+            (MEMORY_LABEL.to_owned(), limits.memory_bytes.to_string()),
         ])),
         network_disabled: Some(true),
         tty: Some(false),
