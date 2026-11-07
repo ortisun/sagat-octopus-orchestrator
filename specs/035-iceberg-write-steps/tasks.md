@@ -707,6 +707,12 @@ three conditions pass.
   against the wire fixture. Not done: the server filling `iceberg` (T035-044's `service.rs` and
   `worker/database.rs`), the edge `database-runner` → `infra-lake` and `zeroize` in `infra-lake` (G035-063), which change `Cargo.lock`
   and so select the whole CI: they come together, with the driver.
+
+  *2026-11-07, eighth step (documentation only), left unticked (D035-116):* "request the container" and "fail `LAKE_SANDBOX_UNAVAILABLE`
+  when the sandbox runner is unreachable" have their decision: ADR-0079 (Proposed), the sandbox-runner API of G035-055 (three calls on a
+  lake-mode sandbox runner over a node-local Unix socket; the request is an attempt id, a slot, a budget class and a deadline). It was
+  rewritten after a security and an architecture review. Nothing is built: the API, the `LakeEngine` additions it depends on, the
+  production `LakeSandbox` client and the checks it lists. A person accepts the ADR; Kubernetes stays open under T035-029.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
