@@ -121,7 +121,9 @@ pub struct AttemptDir {
     removed: bool,
 }
 
-fn attempt_id_holds(id: &str) -> bool {
+/// The attempt id rule of ADR-0079 (rule 10): 1 to 60 lower-case hexadecimal digits and hyphens that start with a
+/// hexadecimal digit. The sandbox API and the staging directory share it.
+pub(crate) fn attempt_id_holds(id: &str) -> bool {
     let mut bytes = id.bytes();
     let digit_first = bytes
         .next()

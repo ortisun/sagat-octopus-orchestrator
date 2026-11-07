@@ -720,6 +720,10 @@ three conditions pass.
   (`sagat.lake.slot|class|deadline`), `end` reading the out-of-memory flag before it removes the container and never reporting an ending the
   engine did not confirm; 25 new cases against a real Docker engine and a scripted one. Not done: the API on the sandbox runner, the
   production `LakeSandbox` client, lake-mode exclusivity, and everything on the server side of the task list.
+
+  *2026-11-07, tenth step, left unticked (D035-118):* "request the container" has the wire of the sandbox API: `crates/infra-lake/src/sandbox_api.rs`
+  (the request, the answers, the strict readers a client reads them with) and one corpus of 76 cases that the server will read too.
+  Nothing has a socket yet: the server, the client behind `LakeSandbox` and the dependency edges that select the whole CI are the next step.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
