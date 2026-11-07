@@ -9,5 +9,6 @@ pub mod control;
 pub mod policy;
 pub mod protocol;
 pub mod relay;
+pub mod sandbox_api;
 pub mod staging;
 pub mod supervisor;

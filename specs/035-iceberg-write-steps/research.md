@@ -2294,3 +2294,28 @@ The other fixes were wording:
   containers one engine call at a time (four at once in the sweep). That is nothing at the plan's 2 to 8 containers per node and a cost at
   hundreds. *Exit condition:* measure it with the API under its ceiling (the canaries of T035-031), and put one poller per owner behind
   the waiters if the scans show.
+- **D035-118 — The wire of the lake sandbox API has one home and one corpus (ADR-0079, rules 3, 5 and 14).** Ninth slice of T035-035, and the
+  dependency-free half of the API: the types, the strict readers and the corpus, so that the whole-CI change that follows (the sandbox
+  runner's server, the lake runner's client, the `database-runner` → `infra-lake` edge, `zeroize`) is only plumbing. **Decided by: delegate**.
+  - *What.* `crates/infra-lake/src/sandbox_api.rs`: `StartBody` (slot, class, deadline; nothing else), `Class` (a closed set of two),
+    `Reason` (five), `StartAnswer`/`WaitState`/`KillOutcome`/`Plain`, the encoders the server writes with (`start_body`, `wait_body`,
+    `kill_body`, `plain_body`: a status and a body each), the readers the client reads with (`read_start`, `read_wait`, `read_kill`),
+    `uid_for_slot` (the relay needs the container's user before `start`, rule 5), `attempt_id_ok` (the staging rule, shared) and the paths.
+    One corpus, `tests/contract/iceberg-writes/fixtures/sandbox-api/cases.json` (25 requests, 22 start answers, 13 wait answers, 16 kill
+    answers), read by `crates/infra-lake/tests/sandbox_api.rs` now and by the sandbox runner's server later.
+  - *The rule the readers keep.* An answer that is not recognised **exactly** is never read as started or as ended: a status that does
+    not belong to the answer, a member added or missing, a name written twice, a variant nobody knows, a body that is not text, or one
+    over 1 KiB is `Unavailable` (for a kill, `ended: false`, "the container may still be up"). A name written twice is a case of its own
+    because `serde_json::Value` keeps the last and drops the first without a trace, which would turn
+    `{"ended":false,…,"ended":true}` into a confirmed end; the readers go through a member reader that refuses a repeat.
+  - *Found by the corpus.* The first request reader was the derived one, and serde's derive also reads an **array** in the order of the
+    members: `[3,"small",60000]` was a valid request. The request is now an object with exactly the three names, read by the same
+    strict member reader, and the corpus pins the array.
+  - *Evidence.* `cargo test -p sagat-infra-lake --test sandbox_api`: 13 passed; the array case failed first, for the reason above. 16
+    single mutations by hand (a status unchecked, a member added or missing, a name twice, the body bound, the slot range, the deadline
+    of zero, the uid range, a class in capitals, a reason dropped, for the three readers and the request) were each killed by a test.
+    No mutation pass (OD-2026-11-06-2). `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and the
+    three repository checkers clean.
+  - *Not done.* Everything with a socket: the server (lake mode, the listener and its limits, admission over `LakeEngine`), the client
+    behind `LakeSandbox`, the equality of `uid_for_slot` here and in `crates/infra-sandbox` (a test in the sandbox runner, which will
+    depend on both: the `tests` crate depends on only one of them, and an edge there would select the whole CI for one assertion).
