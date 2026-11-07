@@ -176,6 +176,38 @@ fn heartbeats_at_most_once_a_second_are_accepted_for_as_long_as_the_host_runs() 
     }
 }
 
+/// The window starts `HEARTBEAT_WINDOW` before a beat, and before the first second of an attempt that moment does not
+/// exist: a beat at exactly zero must not be treated as already out of the window (the floor saturated to zero and
+/// `beat <= floor` dropped it, so any number of beats at the same first instant passed).
+#[test]
+fn a_flood_in_the_first_second_is_a_flood_even_at_the_very_first_instant() {
+    let beat = br#"{"heartbeat":true}"#;
+    for instant in [ms(0), ms(1), ms(999)] {
+        let mut decoder = Decoder::new();
+        assert_eq!(decoder.line(beat, instant), Ok(Event::Heartbeat));
+        assert_eq!(decoder.line(beat, instant), Ok(Event::Heartbeat));
+        assert_eq!(
+            decoder.line(beat, instant),
+            Err(ProtocolFailure::HeartbeatFlood),
+            "{instant:?}"
+        );
+    }
+}
+
+#[test]
+fn a_beat_leaves_the_window_exactly_one_second_after_it_arrived() {
+    let beat = br#"{"heartbeat":true}"#;
+    let mut decoder = Decoder::new();
+    assert_eq!(decoder.line(beat, ms(0)), Ok(Event::Heartbeat));
+    assert_eq!(decoder.line(beat, ms(500)), Ok(Event::Heartbeat));
+    // the first beat is a second old now and out; the second is still in, so one more fits and the next does not
+    assert_eq!(decoder.line(beat, ms(1000)), Ok(Event::Heartbeat));
+    assert_eq!(
+        decoder.line(beat, ms(1000)),
+        Err(ProtocolFailure::HeartbeatFlood)
+    );
+}
+
 #[test]
 fn one_extra_heartbeat_inside_a_second_is_tolerated_and_a_flood_is_not() {
     let mut decoder = Decoder::new();

@@ -923,8 +923,13 @@ async fn anything_but_connect_and_a_mapping_is_unsupported() {
             format!("CONNECT {}:443 HTTP/1.1\r\n\r\n", "a".repeat(9000)),
         ),
         (
-            "the control conversation, which this socket does not serve here",
-            "CONTROL\n".to_owned(),
+            "the control word with something after it",
+            "CONTROL now\n".to_owned(),
+        ),
+        ("the control word in lower case", "control\n".to_owned()),
+        (
+            "the control word ended like an HTTP line",
+            "CONTROL\r\n".to_owned(),
         ),
         ("an empty request", "\n".to_owned()),
         (
@@ -948,6 +953,111 @@ async fn anything_but_connect_and_a_mapping_is_unsupported() {
 
     expect_counts(relay.denials(), 0, 0, 0, 0, count);
     assert_eq!((script.calls(), connector.connected().len()), (0, 0));
+}
+
+// -- the control conversation (D035-110) ------------------------------------------------------------------------------
+
+/// The relay serves proxy requests and hands one connection, the host's `CONTROL`, to the attempt driver. The driver
+/// holds the receiver from the start; the first authenticated `CONTROL` is sent through it and is the only one.
+#[tokio::test]
+async fn the_first_control_request_is_handed_to_the_driver_with_the_connection_open() {
+    let relay = relay(config(), &Script::default(), &Recording::new());
+    let control = relay.take_control().unwrap();
+
+    let mut session = Session::open(&relay);
+    session.authenticate().await;
+    session.send(b"CONTROL\n").await;
+    let mut driver = control.await.unwrap();
+
+    // the relay's own task is over, and the conversation goes on between the host and the driver both ways
+    (&mut session.served).await.unwrap();
+    driver.write_all(b"request\n").await.unwrap();
+    assert_eq!(session.read_exactly(8).await, b"request\n");
+    session.send(b"{\"heartbeat\":true}\n").await;
+    let mut heard = vec![0; 19];
+    driver.read_exact(&mut heard).await.unwrap();
+    assert_eq!(heard, b"{\"heartbeat\":true}\n");
+    expect_counts(relay.denials(), 0, 0, 0, 0, 0);
+}
+
+#[tokio::test]
+async fn a_second_control_request_is_refused_and_counted() {
+    let relay = relay(config(), &Script::default(), &Recording::new());
+    let control = relay.take_control().unwrap();
+    let mut first = Session::open(&relay);
+    first.authenticate().await;
+    first.send(b"CONTROL\n").await;
+    let _driver = control.await.unwrap();
+
+    let mut second = Session::open(&relay);
+    second.authenticate().await;
+    second.send(b"CONTROL\n").await;
+    // closed with nothing said: a second host process learns nothing
+    assert_eq!(second.everything().await, "");
+    expect_counts(relay.denials(), 0, 0, 0, 0, 1);
+}
+
+#[tokio::test]
+async fn a_control_request_without_the_token_is_not_handed_over() {
+    let relay = relay(config(), &Script::default(), &Recording::new());
+    let mut control = relay.take_control().unwrap();
+
+    let mut session = Session::open(&relay);
+    session
+        .send(b"SAGAT-RELAY/1 not-the-token-not-the-token-not-the-token\nCONTROL\n")
+        .await;
+    assert_eq!(session.everything().await, "");
+
+    // still waiting for a host that has the token: the sender was not used
+    assert!(matches!(
+        control.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    expect_counts(relay.denials(), 0, 0, 0, 1, 0);
+}
+
+#[tokio::test]
+async fn the_driver_takes_the_control_receiver_once() {
+    let relay = relay(config(), &Script::default(), &Recording::new());
+    assert!(relay.take_control().is_some());
+    assert!(relay.take_control().is_none());
+}
+
+#[tokio::test]
+async fn a_host_that_connects_after_the_driver_stopped_waiting_is_closed_not_counted() {
+    let relay = relay(config(), &Script::default(), &Recording::new());
+    drop(relay.take_control().unwrap());
+
+    let mut session = Session::open(&relay);
+    session.authenticate().await;
+    session.send(b"CONTROL\n").await;
+    assert_eq!(session.everything().await, "");
+    // the attempt is over; that is not the sandbox misbehaving
+    expect_counts(relay.denials(), 0, 0, 0, 0, 0);
+}
+
+#[tokio::test]
+async fn the_tunnels_keep_working_beside_the_control_conversation() {
+    let script = Script::answering(vec![vec!["203.0.113.7"]]);
+    let connector = Recording::new();
+    let relay = relay(config(), &script, &connector);
+    let control = relay.take_control().unwrap();
+
+    let mut host = Session::open(&relay);
+    host.authenticate().await;
+    host.send(b"CONTROL\n").await;
+    let _driver = control.await.unwrap();
+
+    let mut forwarder = Session::open(&relay);
+    forwarder.authenticate().await;
+    forwarder
+        .send(connect("catalog.example:443").as_bytes())
+        .await;
+    assert_eq!(
+        forwarder.read_exactly(ESTABLISHED.len()).await,
+        ESTABLISHED.as_bytes()
+    );
+    assert_eq!(connector.connected().len(), 1);
 }
 
 // -- the real socket --------------------------------------------------------------------------------------------------

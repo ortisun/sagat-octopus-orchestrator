@@ -707,7 +707,8 @@ The other fixes were wording:
     delivers late lines in a burst, so a window of one second holds two lines (the one on time and one of slack) and a
     third is a flood (`HeartbeatFlood`). The time comes in as an argument, so no test sleeps.
   - *One result.* A second result, or any line after the result, is `LineAfterResult`; a host that closes without one is
-    `NoResult`; a line over 1 MiB is `LineTooLong`. The attempt driver reads the socket a line at a time under that bound.
+    `NoResult`; a line over 1 MiB is `LineTooLong` (**16 KiB since D035-110**). The attempt driver reads the socket a line at a time
+    under that bound.
   - *The result line.* Exactly `{"receipt": …, "relayDenials": n}` or `{"failure": …, "relayDenials": n}`; any other set of
     members is `UnknownMember`, and a count that is not an integer from 0 to 2^32-1 is `Malformed`. Every
     `ProtocolFailure` is `LAKE_HOST_PROTOCOL` and carries a closed kind, never content of the line.
@@ -1805,3 +1806,94 @@ The other fixes were wording:
 - **G035-051 — Closed by D035-109.** A mapped field with a `~` that is not `~0` or `~1` validated in the domain and failed in the host.
 - **G035-052 — Closed by D035-109.** `mapping.py` accepted Unicode digits and leading zeros as array indexes and crashed on `"²"`.
 - **G035-053 — Closed by D035-109.** A namespace level or table named `.` or `..` changed the path of the catalog request.
+- **D035-110 — The control conversation is a function over a stream, the relay hands the host's `CONTROL` connection to the driver once, and
+  the rest of the attempt driver is cut into the slices below.** Second slice of T035-035. **Decided by: delegate**.
+  - *What I found before cutting.* My earlier note said the sandbox side had nothing for a lake container. It has more: the `lake` profile
+    (`container_config`, `crates/infra-sandbox/src/lake.rs`) and the engine calls (`LakeEngine::{connect, create_work_volume, run, start,
+    sweep}` and `LakeContainer::{exec, stop}`, `lake/engine.rs`) exist and pass T035-015 against a real engine. What does **not** exist is
+    the way the *lake runner* asks for a container: D035-048 says it never receives the engine socket, and `apps/sandbox-runner` today only
+    polls the control plane for build and test jobs (its `api.rs` is the client of that, with an admin page on `/livez`). Also, the relay
+    answered `CONTROL` (the word the host sends after its token, `host.py`) as an unsupported request: nothing served the conversation.
+  - *Done in this slice.* (1) `crates/infra-lake/src/control.rs`, `converse(stream, request, config, began, on_heartbeat)`: writes the one
+    request line, reads the host's lines to its one result, and returns the typed `HostResult` or a `ControlFailure` (`Silent` or the
+    `ProtocolFailure` of the `Decoder`; both are `LAKE_HOST_PROTOCOL`). A line is read through a limit (`MAX_LINE_BYTES`, a host with no
+    newline costs one line of memory); a whole line must arrive within `silence` of the last one (15 s by default, the host beats once a
+    second; a line that trickles in a byte a second does not keep it alive; a host that never reads the request is silent too); after the
+    result the host has `result_grace` (2 s) to close, and a byte before it is a break while a host that keeps the connection open still
+    gave its result. Time is `tokio::time`, so the tests pause the clock. (2) `Relay::take_control()` and the hand-over: after the token, a
+    request that is exactly `CONTROL` goes to the driver as a `ControlStream` through a one-shot channel; a second one is refused and
+    counted as `request_unsupported`, one that arrives after the driver stopped waiting is closed and not counted, and the tunnels work
+    beside it. `handle` and `serve` take a `'static` stream now. The existing test that listed `CONTROL` as unsupported was the gap itself
+    and now lists three near misses (`CONTROL now`, `control`, `CONTROL\r`).
+  - *A defect found on the way.* `Decoder::beat` computed the window floor with `saturating_sub`, so a beat at exactly zero elapsed was
+    already "out of the window" and any number of beats at that instant passed. Now `checked_sub`: before the first second nothing
+    expires. Tests: `a_flood_in_the_first_second_is_a_flood_even_at_the_very_first_instant` (seen failing at `0ns`) and
+    `a_beat_leaves_the_window_exactly_one_second_after_it_arrived`.
+  - *The rest of T035-035, in the order that keeps each slice testable without a container.*
+    (a) **Supervisor** (pure): events in (beat, result, lease lost, cancelled, deadline, memory kill, host exited, sandbox refused), a
+    decision out (keep going, or kill and report this code), with the clock injected. (b) **Staging**: `/work/<attempt>/` with the
+    modes of D035-086 (directory 0770, token 0640, socket 0660 in the runner's group), `in/` files from inline records, `ReadBlob` and a 017
+    result, the effective limit checked while streaming (`ICEBERG_LIMIT_EXCEEDED` before any container), removal and zeroising at the end.
+    (c) **A `LakeSandbox` port** (start by attempt id and limits, wait for the exit, kill) with an in-memory double for the driver's tests
+    and an adapter to the API of (d). (d) **The sandbox-runner API** (below). (e) **`apps/database-runner/src/lake.rs`**: lease, two-phase
+    `ResolveDatabase`, the above in order, the receipt rebuilt from the typed result, `CompleteStep` or `FailStep`; registration of the lake
+    activities only when `lake.enabled`. (f) Compose and Helm co-location, the image target, the canaries of T035-031 (the real Python host
+    through the real relay, which neither language's tests can show; the Python `relay_double.py` is the stand-in until then).
+  - *Recommendation for (d), which is G035-022's open half; to be decided with that slice and recorded as an ADR because it adds a server
+    to the one process that holds the engine socket.* The lake runner asks the sandbox runner over a node-local Unix socket (a directory
+    both mount, `SO_PEERCRED` checked) for three calls: start, wait and kill, as small HTTP/JSON on the `axum` the sandbox runner already
+    links, not gRPC (no streaming, no code generation for three calls). **The request carries no image, mount, user, capability or
+    command.** The sandbox runner builds the `LakeSpec` from its own configuration (image digest, work volume, the lake group, ceilings),
+    allocates the slot (the uid) itself, clamps the limits to its ceilings, and refuses an attempt directory that is not already in the
+    work volume under a valid attempt id. It enforces the "lake containers per node" ceiling and gives every container a hard deadline at
+    start, so a lake runner that dies leaves nothing running past it (the existing label sweep removes the rest). Refused alternatives:
+    the lake runner linking `LakeEngine` itself (gives the credential-holding process the engine socket: D035-048; fine in the integration
+    tests, which already do it) and a control-plane-brokered job claimed by the sandbox runner like a build (a table, a lease type and
+    polling latency on every attempt, in the files the 018 and 014 sessions are changing; it stays the fallback if a node-local socket
+    cannot be provisioned on Kubernetes, which T035-029 decides, and if none co-locates the owner chooses, as that task says).
+  - *Independent review (security and correctness reviewers, given the files and the contract, not my conclusion).* Both read the hand-over
+    and found no way for a process without the token to get the stream, for two token holders to both get it, for a stream to be lost
+    between the sender and the receiver, for a secret to reach a `Debug` or an error, or for the `'static` bound to change what `handle`
+    guarantees; `Take` over `BufReader` loses and duplicates no byte across calls, and every edge of the line allowance is right. Each claim
+    below was checked against the code, and each defect was seen failing before it was fixed:
+    - *Fixed.* **The line limit was a megabyte, and the runner parses a line into a tree before it checks the shape.** A line of `0,` becomes
+      sixteen times its size in values: about sixteen megabytes per hostile attempt, in the process that holds the credentials, outside the
+      container's cgroup. A legitimate result line has no collection in it (an effect key of at most 512 characters, a ref of at most 256,
+      counts of at most 19 digits) and is under 4 KiB, so `MAX_LINE_BYTES` is now **16 KiB**, which revises the 1 MiB of D035-077. A test
+      pins the longest receipt the contract allows under half of it, and one pins the amplification. **After the result the runner read
+      up to the whole line allowance** (`1056768` bytes taken in the test) **and a stray byte without a newline was accepted** if the host
+      then stayed silent, because the timeout dropped what `read_until` had read; both are fixed by asking `fill_buf` whether any byte is
+      there instead of reading a line: a flood after the result costs one buffer (`≤ result + 2 × 8 KiB` in the test), and a byte is a
+      break whether or not the host closes. Two tests could not fail for what they named (they passed with the limit removed); they now
+      count the bytes taken from the stream (a `Counting` wrapper), and I loosened the allowance to three times to see the line test fail
+      (`57344 bytes were taken for a limit of 16384`) before restoring it.
+    - *Documented, for the supervisor and the driver.* `converse` bounds each line, not the conversation: a host that beats at least every
+      15 s may go on for ever, so the attempt's deadline, a lost lease and a cancellation end it by dropping the future (G035-054's
+      supervisor). `on_heartbeat` must not block: the `Decoder` judges a beat by when it is read, so a runner that stalls for a second or two
+      reads the host's beats in one burst and calls it a flood (D035-077's slack of one extra beat covers about a second); that is an
+      availability limit and the next attempt resolves what was sent. The sustained rate the `Decoder` accepts is two beats a second, not
+      one (D035-077; unchanged).
+    - *G035-056 (new).* `peer_uid` is optional on the relay, and `CONTROL` is the first request that gives the peer something: whoever
+      presents the token first receives the request line with the credentials. The token file is group-readable (D035-086), so the driver
+      must set `with_peer_uid` to the slot's user, and the driver slice needs a test that a peer of another user is refused.
+    - *G035-057 (new, not this slice).* A failure line's `column` and a receipt's strings are host-controlled text, and the host holds the
+      credentials. They are bounded (128 characters for a column, typed fields for a receipt) but a column is free text, so a compromised
+      host has a few dozen bytes per attempt through it to whatever the runner shows or audits. When the driver reports a failure it must
+      treat `column` as untrusted (a conservative character set, or only a column the platform can match against the table).
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 122 passed (24 in `control.rs`, 40 in `relay.rs`, 35 in `protocol.rs`, 22 in
+    `write_body.rs`, 1 unit); `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` clean (only the
+    vendored `rskafka` warns). Written before the code and seen failing: the control tests (the module did not exist; two of them then failed
+    for the reasons above, one of them my test's, an unused `_host` binding dropped the stream before the script ran), the relay tests (no
+    `take_control`), the Decoder test, and after the review the four tests above. No mutation pass (OD-2026-11-06-2). Not run: the real
+    Python host against this relay (T035-031).
+  - *Not done.* Nothing here starts a container or reads a record; `T035-035` stays unticked.
+- **G035-054 — Which code a kill reports is not in the contract.** `errors.md` has `LAKE_HOST_PROTOCOL` (no result line, malformed or extra
+  fields) and `LAKE_SANDBOX_UNAVAILABLE` (the container could not be started), and `lake-runtime.md` lists the kill conditions (lease loss,
+  cancellation, deadline, missing heartbeat, `memory.max`) without codes. Proposed for the supervisor slice: a silent or protocol-breaking host
+  and an exit with no result are `LAKE_HOST_PROTOCOL` (done here for the conversation); a deadline is `DATABASE_TIMEOUT`; a cancellation is
+  `DATABASE_CANCELLED`; a lease loss reports nothing (fenced); a `memory.max` kill needs a decision (`ICEBERG_LIMIT_EXCEEDED` says the write was
+  too large, `LAKE_HOST_PROTOCOL` says the host broke). Whichever, the next attempt's effect-key lookup settles what was already sent
+  (D035-030), so none of them is `OUTCOME_UNKNOWN`. *Exit condition:* the supervisor's table, with a test for each row, and `errors.md` if a
+  code is added.
+- **G035-055 — The sandbox-runner API for the lake runner (the open half of G035-022).** See the recommendation in D035-110 (d). *Exit
+  condition:* the ADR, the API, the per-node ceiling, and T035-015 run through it on Compose, and on Kubernetes under T035-029.
