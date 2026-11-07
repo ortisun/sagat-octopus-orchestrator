@@ -747,6 +747,10 @@ three conditions pass.
   *2026-11-07, fourteenth step, left unticked (D035-122):* "zeroise the credentials" has what `infra-lake` could not do before
   (G035-063): the connection's secrets, the relay token, the request body and the request line are `Zeroizing` or scrubbed, with the
   escape-scratch residual written down. Not done: the `database-runner` → `infra-lake` edge and the driver that uses all of it.
+
+  *2026-11-07, fifteenth step (documentation only), left unticked (D035-123, G035-068):* the rest of this task is planned in four slices
+  (settings, prepare, driver, shell) with the failure mapping, the intersection of limits and the fail-closed relay allowance decided; the
+  per-record size limit turned out to be enforced nowhere (G035-068).
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.

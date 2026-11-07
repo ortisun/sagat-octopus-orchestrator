@@ -2470,6 +2470,44 @@ The other fixes were wording:
     would survive; it is an unobservable one, not an equivalent one. **Residual, written down:** `serde_json` writes a string that holds an
     escape (`"`, `\`, a control character) through a scratch buffer of its own that is freed unscrubbed; a secret with one leaves a short-lived
     copy in freed memory. A hand-written writer or a scrubbing allocator could close it; neither is in this slice.
+- **D035-123 — The plan for the lake attempt driver, in the order that keeps each piece testable (the rest of T035-035).** Documentation only.
+  **Decided by: delegate**. What is built is in D035-109..122; this is how the pieces are joined, so that the next slices do not have to decide it
+  again after a context is lost. Nothing here is built.
+  - *Edge and lock.* `apps/database-runner` depends on `sagat-infra-lake` (one `Cargo.lock` line); added with the first slice that uses it, because
+    an unused dependency is a lint failure.
+  - *Slice A, settings (`apps/database-runner/src/lake/settings.rs`).* A `lake` section of the runner's file configuration (`deny_unknown_fields`;
+    absent means the lake profile is off and the lake activities are not registered): `workRoot` (absolute, exists), `sandboxSocket` (absolute) and
+    the user the sandbox runner must run as (`SocketSandbox::expecting_server`), `slots` (how many; the lake runner picks the slot, ADR-0079 rule 5),
+    `relayAllowCidrs` (**required and non-empty outside development: an empty list reaches nothing**, fail closed, because the relay's own denial list
+    removes loopback, link-local and metadata but cannot say which public ranges a deployment trusts), `maxBytes` and `maxRecords` of one attempt's
+    staging, the host's ceilings (`maxCommitRetries` at most 16, `maxDecodedBytes`, `maxMetadataBytes`), `hostStartSecs`, `killLimitSecs`, and the byte
+    count above which an attempt asks for the `large` class (when the node has one).
+  - *Slice B, prepare (`lake/prepare.rs`).* From the lease input (`AttemptInput`, D035-121), the connection (`connection::convert`, D035-115), a
+    source of blobs (a port over `ReadBlob`) and the settings, to a `Prepared` (the staged attempt directory, the request line as a `Zeroizing`
+    buffer, the relay's configuration for the user of the slot, the plan) or a failure. Order: the mode is one the connection allows; the limits are
+    the **intersection** of the step's, the connection's and the settings'; the token is generated and the directory created; the sources are staged
+    (a `LimitExceeded` is `ICEBERG_LIMIT_EXCEEDED` before any container); the connection is built and the policy derived; the request is encoded. Every
+    path that returns drops the directory and the buffer.
+  - *Failure mapping (closed).* An input that is not an attempt input, a connection the runner cannot open, an endpoint policy that refuses, a mode the
+    connection does not allow: `DATABASE_CONFIGURATION_INVALID`. Staging over the limit: `ICEBERG_LIMIT_EXCEEDED`. A `ReadBlob` that fails:
+    `DATABASE_CAPABILITY_UNAVAILABLE`. A directory that cannot be made or written: `WORKER_ERROR`. The sandbox: `LAKE_SANDBOX_UNAVAILABLE` (retryable);
+    a refusal for `ceiling` is the same code with the reason in the metric, not in the failure.
+  - *Slice C, driver (`lake/driver.rs`).* Behind ports: the control plane (`resolve`, `read_blob`, heartbeat) and `LakeSandbox`. It prepares, builds the
+    `Relay` for the user of the slot (`with_peer_uid(uid_for_slot(slot))`, G035-056, which `run_attempt` already refuses to run without), calls
+    `run_attempt`, takes `Disposition`, removes the directory, and returns what to report. A start refused for the slot is tried once with another
+    slot; any other refusal ends the attempt. Tested with a scripted host on the real socket, as `crates/infra-lake/tests/attempt.rs` does; that
+    scaffold moves behind a `test-support` feature of `infra-lake` rather than being copied.
+  - *Slice D, the shell.* The heartbeat and the report loop of `attempt.rs` (`Heartbeat`, `report_until_ack`, `upload`) are made shared, not copied; the
+    poll loop dispatches on `lease.activity_name`; the registration offers the lake activities only when the section is present and the negotiated
+    protocol minor includes them. The `contracts/worker-protocol.md` sentence about the lease input goes in this slice (a contract edit selects the
+    whole stack in CI, so it is made once).
+  - *Not decided here.* The server's builder of the input and the resolution of two pinned secrets (T035-044, T035-056; a migration, because the SQL
+    runner pins one secret per attempt), the admission of a lake run (T035-055; `runs.rs`, which the open 018 branches change), and the completion of the
+    step (T035-059).
+- **G035-068 — The per-record size limit is carried and enforced nowhere.** `maxRecordBytes` is in the connection's limits (`LakeLimits`), in the
+  step's, and now in the attempt input, but staging counts the **total** bytes and the number of records, and the host's `maxDecodedBytes` is a
+  total too. A record of 1 GiB inside a 2 GiB total passes every check. *Exit condition:* the staging of inline records and of NDJSON blobs refuses a
+  line over the limit (`ICEBERG_LIMIT_EXCEEDED`), with a test at the edge; a Parquet row is not parsed by the runner and stays with the host's total.
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.
