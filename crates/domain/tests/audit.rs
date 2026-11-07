@@ -183,6 +183,35 @@ fn payload_disclosure_audits_have_the_decided_repeat_semantics() {
     }
 }
 
+/// Feature 035 (D035-066, D035-075). "Every browse is audited" (contracts/connections.md): a repeat is not collapsed, and
+/// the trail is bounded by the browse limit of the API (30 a minute for an actor), not by a dedupe that would hide how
+/// much of a catalog someone walked. A decision about a step and a request to revert a commit are events each time.
+#[test]
+fn the_audit_actions_of_the_lake_have_stable_names_and_none_collapses_repeats() {
+    assert_eq!(
+        AuditAction::DatabaseCatalogBrowsed.as_str(),
+        "database.catalog_browsed"
+    );
+    assert_eq!(
+        AuditAction::DestinationDecided.as_str(),
+        "destination.decided"
+    );
+    assert_eq!(
+        AuditAction::IcebergRevertRequested.as_str(),
+        "iceberg.revert_requested"
+    );
+
+    for action in [
+        AuditAction::DatabaseCatalogBrowsed,
+        AuditAction::DestinationDecided,
+        AuditAction::IcebergRevertRequested,
+    ] {
+        assert!(!action.collapses_repeats(), "{action}");
+        assert_eq!(action.repeat_window(), None, "{action}");
+        assert_eq!(action.distinct_cap(), None, "{action}");
+    }
+}
+
 #[test]
 fn provisioning_records_are_attributed_to_the_system_and_cannot_be_mistaken_for_a_user() {
     let tenant = TenantId::generate();

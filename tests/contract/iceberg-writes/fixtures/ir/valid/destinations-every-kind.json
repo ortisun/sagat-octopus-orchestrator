@@ -1,0 +1,111 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "destinations-every-kind"
+  },
+  "entrypoint": "extract",
+  "nodes": [
+    {
+      "id": "extract",
+      "type": "activity",
+      "activity": "orders.extract",
+      "next": "done",
+      "destinations": [
+        {
+          "name": "archive",
+          "kind": "iceberg",
+          "connectionRef": {
+            "name": "lake-main"
+          },
+          "target": {
+            "table": {
+              "namespace": [
+                "archive"
+              ],
+              "name": "orders"
+            },
+            "ref": "main"
+          },
+          "mode": "upsert",
+          "upsert": {
+            "keyColumns": [
+              "id"
+            ]
+          },
+          "records": {
+            "outputPath": "/rows"
+          },
+          "mapping": [
+            {
+              "field": "/id",
+              "column": "id"
+            }
+          ],
+          "onFailure": "hold"
+        },
+        {
+          "name": "mirror",
+          "kind": "postgresql",
+          "connectionRef": {
+            "name": "orders-db"
+          },
+          "target": {
+            "schema": "public",
+            "relation": "orders_copy"
+          },
+          "mode": "insert",
+          "keyColumn": "id",
+          "effectKeyColumn": "effect_key",
+          "records": {
+            "outputPath": "/rows"
+          },
+          "onFailure": "fail"
+        },
+        {
+          "name": "export",
+          "kind": "object_storage",
+          "connectionRef": {
+            "name": "exports-bucket"
+          },
+          "target": {
+            "format": "parquet"
+          },
+          "records": {
+            "blobs": "steps.extract.output.files"
+          },
+          "onFailure": "continue"
+        },
+        {
+          "name": "events",
+          "kind": "clickhouse",
+          "connectionRef": {
+            "name": "analytics-ch"
+          },
+          "target": {
+            "relation": "events"
+          },
+          "records": {
+            "output": true
+          },
+          "limits": {
+            "maxRecords": 1000
+          }
+        },
+        {
+          "name": "notify",
+          "kind": "broker_stream",
+          "subscriptionRef": "order-events",
+          "target": {},
+          "records": {
+            "output": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "done",
+      "type": "end"
+    }
+  ]
+}

@@ -86,6 +86,35 @@ Use a namespace connection with an OpenBao credential and positional SQL paramet
 Integer and decimal literal values are strings; expression bindings must declare their type.
 See [managed database SDK examples](../guides/managed-database-sdk.md) for the canonical shape.
 
+### LAKE_DISABLED
+
+This deployment has not enabled the lake, so a workflow cannot hold an Apache Iceberg write. Ask the operator to turn on SAGAT_LAKE_ENABLED, or publish the workflow to a deployment that has it.
+
+The lake is off by default. An operator turns it on with `SAGAT_LAKE_ENABLED=true` on the control plane; publishing an
+Apache Iceberg write is still refused until the checks of access, allowed modes and data classification exist.
+
+### INVALID_ICEBERG_NODE
+
+Check the connection reference, the table, the record source (exactly one of inline, blobs or a database result), the mapping and the limits. A database result must name a database step that runs before the write. An Apache Iceberg write cannot declare its own retries or effect, impersonate an ordinary activity, or name a field and a column twice.
+
+### MODE_NOT_ALLOWED
+
+The connection of this Apache Iceberg write does not allow the mode it writes in. Write in a mode the connection allows, or ask the owner of the connection to allow this one in a new revision.
+
+A new connection has `append` only. The refusal names the node and the mode; the owner of the connection changes the allowed
+modes in a new revision.
+
+### CLASSIFICATION_EGRESS_REFUSED
+
+The connection of this Apache Iceberg write does not accept the classification of a field it would send, or the fields were never classified. Map fewer fields, classify the source with x-sagat-classification and refer to it directly (input.a.b or steps.<id>.output.a.b), or use a connection whose ceiling accepts them. A secret field never leaves.
+
+The refusal lists each field by its path and class and never by its value. A field built by an expression, taken from a list of
+blobs or from a database result counts as `pii`, because the platform cannot follow its classification there.
+
+### ICEBERG_NODE_NOT_ROOT
+
+An Apache Iceberg write belongs to the root graph of a definition without loops, collections or a continuation policy, and never inside a body. Move the write out of the loop, or into a child workflow.
+
 ### SECRET_UNAVAILABLE
 
 A node names a secret that does not exist in the namespace, or that you may not use. Create it there, or ask an administrator for access to it.

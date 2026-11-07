@@ -534,9 +534,16 @@ async fn every_implemented_operation_resists_an_administrator_of_another_tenant(
         vec![&ws, &ns, &wf, &run, &script, &test_run, &request, &schedule];
 
     // Operations nobody has built yet are listed by name, so they cannot be forgotten later.
-    let not_built: BTreeSet<&str> = ["publishEvent", "receiveSignedWebhook"]
-        .into_iter()
-        .collect();
+    let not_built: BTreeSet<&str> = [
+        "publishEvent",
+        "receiveSignedWebhook",
+        // Feature 035 merged its contract before its routes (`x-planned: '035'`); each leaves this list when its route
+        // lands, and the battery then attacks it like any other (so it also needs its `body_of` entry).
+        "startCatalogBrowse",
+        "getCatalogBrowse",
+    ]
+    .into_iter()
+    .collect();
     let bob = ("bob", "globex");
     let mut attacked = BTreeSet::new();
     let mut addressed = 0;

@@ -85,7 +85,7 @@ impl PgRunTx {
             &mut self.tx,
             self.info.tenant_id,
             self.info.namespace_id,
-            std::slice::from_ref(connection.config.secret()),
+            std::slice::from_ref(sql_secret(&connection)?),
             subject,
             false,
         )
@@ -114,7 +114,7 @@ impl PgRunTx {
         )
         .await?;
         let effective = requested
-            .intersect(connection.config.limits())
+            .intersect(sql_limits(&connection)?)
             .intersect(policy.limits);
         Ok(tenant < i64::from(policy.tenant_concurrency)
             && namespace < i64::from(policy.namespace_concurrency)
@@ -179,7 +179,7 @@ impl PgRunTx {
             &mut self.tx,
             self.info.tenant_id,
             self.info.namespace_id,
-            std::slice::from_ref(connection.config.secret()),
+            std::slice::from_ref(sql_secret(&connection)?),
             subject,
             true,
         )
@@ -202,7 +202,7 @@ impl PgRunTx {
         .await?;
         operation.limits = operation
             .limits
-            .intersect(connection.config.limits())
+            .intersect(sql_limits(&connection)?)
             .intersect(policy.limits);
         operation
             .validate()
@@ -211,7 +211,7 @@ impl PgRunTx {
             "SELECT s.id AS secret_id,s.tenant_id,s.namespace_id,s.name,v.id AS version_id,v.version,v.key_id,v.nonce,v.ciphertext,v.provider_operation,v.created_by,v.created_at
              FROM secrets s JOIN secret_versions v ON v.tenant_id=s.tenant_id AND v.secret_id=s.id AND v.version=s.current_version
              WHERE s.tenant_id=$1 AND s.namespace_id=$2 AND s.name=$3 AND s.authority='openbao'")
-            .bind(self.info.tenant_id.as_uuid()).bind(self.info.namespace_id.as_uuid()).bind(connection.config.secret().as_str())
+            .bind(self.info.tenant_id.as_uuid()).bind(self.info.namespace_id.as_uuid()).bind(sql_secret(&connection)?.as_str())
             .fetch_optional(&mut *self.tx).await.map_err(store_error)?.ok_or(StoreError::DatabaseUnavailable)?;
         let current = crate::secrets::stored_from(&row)?;
         let current_secret_version = current.meta.id;
@@ -225,7 +225,7 @@ impl PgRunTx {
         if !same_authority {
             return Err(StoreError::DatabaseUnavailable);
         }
-        if secret.meta.name != *connection.config.secret() {
+        if secret.meta.name != *sql_secret(&connection)? {
             return Err(StoreError::DatabaseUnavailable);
         }
         Ok(DatabaseInput {
@@ -291,7 +291,7 @@ impl PgRunTx {
         .await?;
         Ok(operation
             .limits
-            .intersect(connection.config.limits())
+            .intersect(sql_limits(&connection)?)
             .intersect(policy.limits))
     }
 
@@ -337,4 +337,24 @@ impl PgRunTx {
         })
         .transpose()
     }
+}
+
+/// The secret of a SQL connection. A lake connection has none, and a SQL step that names one is refused.
+fn sql_secret(
+    connection: &sagat_application::database::ConnectionRecord,
+) -> Result<&sagat_domain::secrets::SecretName, StoreError> {
+    connection
+        .config
+        .sql_secret()
+        .ok_or(StoreError::DatabaseUnavailable)
+}
+
+/// The SQL limits of a SQL connection, with the same refusal.
+fn sql_limits(
+    connection: &sagat_application::database::ConnectionRecord,
+) -> Result<sagat_domain::database::DatabaseLimits, StoreError> {
+    connection
+        .config
+        .sql_limits()
+        .ok_or(StoreError::DatabaseUnavailable)
 }

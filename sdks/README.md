@@ -30,7 +30,7 @@ not automated**. All six packages use the MIT license: see `docs/runbooks/sdk-pa
 - [`SPEC.md`](SPEC.md) — the normative behaviour: configuration and credentials, the canonical errors, the client, trace
   and idempotency, retries (only when safe), the worker host (negotiation, the poll loop, heartbeat, cancellation,
   reporting, compensation and reconciliation, secrets, lifecycle), the builders, serialization, versioning, safety.
-- [`error-catalog.json`](error-catalog.json) — the 19 canonical errors with their HTTP and gRPC mapping, whether they may
+- [`error-catalog.json`](error-catalog.json) — the 44 canonical errors with their HTTP and gRPC mapping, whether they may
   be repeated and what to do about each. Each SDK embeds a copy and a test fails when it is behind.
 - `specs/001-platform-foundation/contracts/worker.proto` — the worker protocol. Each SDK copies it with a script and a
   test fails when its copy is behind.
@@ -72,7 +72,7 @@ from the backend `CARGO_TARGET_DIR`.
 
 ## Interface
 
-- The shared catalog maps 19 canonical error codes to HTTP/gRPC/default retryability/remediation metadata. The copied WorkerService schema defines registration, task delivery, heartbeat, outcomes, secrets, blobs and additive managed-database messages. [error-catalog.json:errors] [typescript/proto/worker.proto:WorkerService]
+- The shared catalog maps 44 canonical error codes to HTTP/gRPC/default retryability/remediation metadata. The copied WorkerService schema defines registration, task delivery, heartbeat, outcomes, secrets, blobs and additive managed-database messages. [error-catalog.json:errors] [typescript/proto/worker.proto:WorkerService]
 - The language packages expose REST clients, activity hosts and workflow IR authoring; detailed language surfaces and internal boundaries are linked below. [typescript/src/index.ts:SagatClient] [python/sagat_octopus_orchestrator/__init__.py:__all__] [go/client/client.go:Client] [java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/SagatClient.java:SagatClient] [dotnet/src/SagatOctopusOrchestrator.Sdk/ISagatClient.cs:ISagatClient] [rust/src/lib.rs:Client]
 
 - [typescript](./typescript/README.md) — language package contract.

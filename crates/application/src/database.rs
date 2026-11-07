@@ -81,10 +81,23 @@ pub trait ConnectionStore: NamespaceDirectory {
 pub struct ConnectionService<S, C> {
     store: S,
     clock: C,
+    /// `allowUnauthenticatedMetastore`: whether a Hive metastore may be used without TLS. Off unless the deployment says
+    /// so, since it has neither transport security nor authentication.
+    allow_unauthenticated_metastore: bool,
 }
 impl<S: ConnectionStore, C: Clock> ConnectionService<S, C> {
     pub fn new(store: S, clock: C) -> Self {
-        Self { store, clock }
+        Self {
+            store,
+            clock,
+            allow_unauthenticated_metastore: false,
+        }
+    }
+    /// Lets a connection use a Hive metastore with `tls: none` (the deployment's `allowUnauthenticatedMetastore`).
+    #[must_use]
+    pub fn with_unauthenticated_metastore_allowed(mut self, allowed: bool) -> Self {
+        self.allow_unauthenticated_metastore = allowed;
+        self
     }
     #[tracing::instrument(name = "database.catalog.write", skip_all)]
     pub async fn put(
@@ -96,10 +109,12 @@ impl<S: ConnectionStore, C: Clock> ConnectionService<S, C> {
     ) -> Result<ConnectionRecord, AppError> {
         principal.authorize(Permission::DatabaseManage)?;
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
-        write
-            .config
-            .validate()
-            .map_err(|_| AppError::NotAllowed("invalid database connection configuration"))?;
+        write.config.validate().map_err(invalid_connection)?;
+        if write.config.uses_unauthenticated_metastore() && !self.allow_unauthenticated_metastore {
+            return Err(AppError::InvalidConnection {
+                reason: "UNAUTHENTICATED_METASTORE_NOT_ALLOWED",
+            });
+        }
         if write.request_id.is_nil() || write.expected_revision >= i32::MAX as u32 {
             return Err(AppError::NotAllowed(
                 "invalid database request identity or revision",
@@ -150,6 +165,17 @@ impl<S: ConnectionStore, C: Clock> ConnectionService<S, C> {
     }
 }
 
+/// What a refused connection configuration says: the reason of a lake connection, which is a closed name, and the
+/// general refusal for the rest.
+pub fn invalid_connection(error: sagat_domain::database::DatabaseError) -> AppError {
+    match error {
+        sagat_domain::database::DatabaseError::Lake(reason) => AppError::InvalidConnection {
+            reason: reason.reason(),
+        },
+        _ => AppError::NotAllowed("invalid database connection configuration"),
+    }
+}
+
 /// Credential fields have independent semantics and always own zeroized secret memory.
 #[derive(Debug)]
 pub struct DatabaseCredentials {
@@ -182,4 +208,30 @@ pub trait DatabaseResultValidator: Send + Sync {
         content: &[u8],
         limits: sagat_domain::database::DatabaseLimits,
     ) -> Result<(), InvalidDatabaseResult>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sagat_domain::database::{DatabaseError, LakeConfigError};
+
+    #[test]
+    fn a_lake_refusal_keeps_its_reason_and_any_other_is_the_general_one() {
+        assert_eq!(
+            invalid_connection(DatabaseError::Lake(LakeConfigError::CredentialInUri)),
+            AppError::InvalidConnection {
+                reason: "CREDENTIAL_IN_URI"
+            }
+        );
+        for other in [
+            DatabaseError::InvalidHost,
+            DatabaseError::InvalidLimits,
+            DatabaseError::InvalidTls,
+        ] {
+            assert_eq!(
+                invalid_connection(other),
+                AppError::NotAllowed("invalid database connection configuration")
+            );
+        }
+    }
 }

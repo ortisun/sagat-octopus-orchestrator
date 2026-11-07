@@ -3,7 +3,8 @@
 **Input**: [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md),
 [data-model.md](data-model.md), [contracts/](contracts/README.md), [quickstart.md](quickstart.md).
 
-**Status**: Not started (generated 2026-10-28). Nothing below is built. A task is ticked only with
+**Status**: In progress (generated 2026-10-28; ADR-0071 accepted and implementation started
+2026-11-02). Only the tasks ticked below are done; nothing else is built. A task is ticked only with
 the evidence that closes it: a named test and its result, or a command and its output (AGENTS.md).
 
 **Tests**: required. Constitution VIII and AGENTS.md rule 18 make tests come first: every test task
@@ -54,17 +55,29 @@ contracts, so every later task has a place to put its failing test.
 
   No code task starts before ADR-0071 is accepted (plan.md, Constitution Check, technology-baseline
   row). Refs: D035-045, D035-047, D035-066, O035-002..005.
-- [ ] T035-002 Before the first code commit, check every number the plan reserved:
+
+  *2026-11-02, partly done, left unticked:* ADR-0071 is Accepted; O035-003, O035-004 and O035-005 are
+  answered (D035-070, `docs/owner-decisions.md` 2026-11-02 items 1–4). Not done: O035-002 (ORC/Avro
+  and Kerberos priority, a later delivery, does not block I0–I1) and the developer-publication
+  question, which keeps the plan's answer "no" (D035-066) until the owner says otherwise.
+- [x] T035-002 Before the first code commit, check every number the plan reserved:
   1. Rebase `feature/035-iceberg-write-steps` on `origin/develop`.
   2. Check every open branch and worktree (`git branch -a`, `git worktree list`) for:
      - migration `20270115000000` still sorting after every branch's latest migration;
      - ADR-0071 still free;
-     - 48 permissions before this feature;
+     - 52 permissions before this feature (written as 48; amended by D035-071);
      - protocol minor 6 on develop.
   3. Record any change as a new D035 decision in research.md.
 
   Refs: D035-043, D035-044.
-- [ ] T035-003 Register the targets in `tests/Cargo.toml` and create each harness `main.rs`:
+
+  *Evidence, 2026-11-02:* `git merge --ff-only origin/develop` took the branch to `df59eb0e` (0 ahead,
+  0 behind). `git log --all` over `crates/infra-postgres/migrations/` shows the newest migration on any
+  branch is `20261231000000`, so `20270115000000` still sorts last. `git log --all` over `docs/adr/`
+  shows ADR-0071 only here, with 0072..0076 taken by other features. `Permission::ALL.len()` is 52 in
+  `crates/domain/tests/identity.rs:288`. `PROTOCOL_MINOR` is 6 in `crates/application/src/worker.rs:59`.
+  Recorded as D035-071.
+- [x] T035-003 Register the targets in `tests/Cargo.toml` and create each harness `main.rs`:
 
   | Target | Harness |
   |---|---|
@@ -78,6 +91,14 @@ contracts, so every later task has a place to put its failing test.
   | `e2e_step_destinations` | `tests/e2e/step-destinations/main.rs` |
 
   A harness that cannot start its containers fails the test. Refs: NFR-035-DUR, SC-035-010.
+
+  *Evidence, 2026-11-02:* `cargo test -p sagat-tests --locked --no-run --test contract_iceberg_writes
+  --test integration_iceberg_writes --test fault_iceberg_writes --test e2e_iceberg_writes --test
+  perf_iceberg_writes --test integration_step_destinations --test fault_step_destinations --test
+  e2e_step_destinations` → `Finished test profile [unoptimized] target(s) in 1m 09s`, 8 executables, 0
+  errors (private `CARGO_TARGET_DIR`, `CARGO_PROFILE_DEV_DEBUG=0`); `cargo fmt --check` prints nothing.
+  The harnesses declare no case yet: each one gains its first failing case in the task named in its
+  doc comment, so a run of any of them today reports 0 tests and proves nothing about the feature.
 - [ ] T035-004 [P] Declare the fixtures in `infra/docker/compose.lake.yaml`: the D035-041 images, each
   pinned by digest, with a tag at least two weeks old when added; loopback-only ports; a healthcheck
   per service. Add `tests/support/lake.rs`, which:
@@ -86,6 +107,28 @@ contracts, so every later task has a place to put its failing test.
   - never uses a hand-started service or another project's container.
 
   Refs: FR-035-032, SC-035-010, D035-041, AGENTS.md rule 16.
+
+  *2026-11-02, partly done, left unticked:* `infra/docker/compose.lake.yaml` (ten services, digests
+  fetched from the registries, loopback-only ports, a healthcheck each) and
+  `infra/docker/lake-init/01-databases.sql` exist. `docker compose config -q` passes, and in three
+  groups every service reached `healthy`: postgres, rustfs, iceberg-rest and lakekeeper (the
+  `lakekeeper-migrate` job exited 0); azurite, clickhouse, fake-gcs and moto; hive-metastore. The first
+  RustFS start failed (`Permission denied`, a root-owned `tmpfs`) and was fixed with an anonymous
+  volume. Not done: `tests/support/lake.rs` (Testcontainers startup and the fixture admin client);
+  all ten at once were not started (the shared Docker Desktop VM has 7.7 GiB); the project's Colima
+  socket `sagat-remaining` refused connections while `colima list` said Running, so the default daemon
+  was used with a unique compose project and `down -v` of that project only; the ClickHouse fixture has
+  no TLS yet; the Azurite push date is not verifiable by API.
+  *2026-11-04, more done, still unticked:* `tests/support/lake.rs` starts RustFS and the Iceberg REST reference
+  catalog from the pinned digests, on a private network and with its own container names, and waits for them under
+  `bounded::within`. The fixture admin client creates the bucket (S3 signature version 4 written over `sha2`), a
+  namespace and a table, and loads the table back. `cargo test -p sagat-tests --test integration_iceberg_writes
+  --locked`: 6 passed (RFC 4231 cases 2 and 6, the AWS `get-vanilla` signature, two cases of the bucket retry and
+  the container case in 2.2 s); 12 consecutive runs, 12 passed; no container or network left. A first version
+  waited for RustFS's `/health` and failed in 1 of 4 runs with `503 Service not ready: waiting for
+  storage_quorum`: `/health` answers before the storage layer is ready, so `create_bucket` now waits for that 503
+  and for nothing else (G035-025). Not done: the GCS, Azure, Glue (moto), Hive, JDBC, Lakekeeper and ClickHouse
+  starters (each arrives with the first test that needs it); TLS for ClickHouse.
 - [ ] T035-005 [P] Add the independent reader:
   - `iceberg = "=0.10.1"` as a test-only dependency in `tests/Cargo.toml`;
   - `tests/support/lake_reader.rs`, returning rows, snapshots, snapshot summaries and refs;
@@ -93,7 +136,25 @@ contracts, so every later task has a place to put its failing test.
     package other than `tests`.
 
   Refs: NFR-035-INTEROP, D035-026.
-- [ ] T035-006 [P] Create the lake runtime skeleton in `runners/lake/`:
+
+  *2026-11-02, partly done, left unticked:* the architecture rule and its negative tests are in
+  (`python3 -m unittest scripts.tests.test_check_architecture`: 10 tests, OK; they failed 18 times
+  before the rule). The task text was incomplete: `iceberg` 0.10.1 has no storage features, so
+  `tests/Cargo.toml` also declares `iceberg-storage-opendal` (D035-072). Both resolve and the three
+  resulting advisories are ignored by the owner's decision (G035-024); `cargo audit --deny warnings`
+  exits 0.
+  *2026-11-04, more done, still unticked:* `tests/support/lake_reader.rs` opens a table from the metadata file the
+  catalog points at (`StaticTable::from_metadata_file` over an S3 file IO against the fixture store) and returns the
+  columns, the snapshots with operation and summary, the branches and tags (read from the metadata document, because
+  the crate keeps the reference map private), the properties and the rows. `cargo test -p sagat-tests --test
+  integration_iceberg_writes --locked`: 12 passed. Three cases read a metadata document written by hand into the
+  in-memory file IO (two snapshots, an append then an overwrite, `main` on the second and a tag on the first); one
+  opens a table the REST fixture created in the real store; one names the location of a metadata file that is not
+  there. Three mutations of the reader (snapshots in reverse order, tags dropped, operation dropped) each failed
+  exactly the case that guards it. Not done: the rows of a table that has been committed, and the summary of a real
+  commit, because nothing in the repository writes to the lake yet; that case arrives with the first write-step test
+  (T035-013) and this task is ticked then.
+- [x] T035-006 [P] Create the lake runtime skeleton in `runners/lake/`:
   - `pyproject.toml`, with mypy strict and ruff;
   - `requirements.in`;
   - `requirements.lock`: the closure of `pyiceberg[pyarrow,s3fs,gcsfs,adlfs,hive,glue,sql-postgres]==0.12.0`,
@@ -108,7 +169,31 @@ contracts, so every later task has a place to put its failing test.
 
   Add pytest, mypy, ruff and `pip-audit` (on every lock change and on a schedule) to
   `.github/workflows/ci.yml`. Refs: D035-026, G035-023, contracts/lake-runtime.md "Image".
-- [ ] T035-007 Write the failing contract tests in `tests/contract/iceberg-writes/`, with their
+
+  *2026-11-04, partly done, left unticked:* `runners/lake/` has `pyproject.toml` (mypy strict, ruff),
+  `requirements.in`, `requirements.lock` (78 packages, hashes, made with `uv pip compile --universal --exclude-newer
+  2026-11-04`, regenerated byte-identical), `requirements-dev.in/.lock` (106 packages: pytest 9.1.1, mypy 2.3.1,
+  ruff 0.16.9, pip-audit 2.10.1), the `Dockerfile` (stage `lake-runtime`), `sagat_lake/__init__.py`,
+  `tests/conftest.py` and `smoke-image.sh`. In a venv installed from the dev lock with `--require-hashes`: `pytest`
+  52 passed, `mypy` no issues in 7 files, `ruff check` and `ruff format --check` clean; `pip-audit -r
+  requirements.lock --require-hashes --disable-pip`: no known vulnerabilities. The policy tests failed first
+  (missing lock, Dockerfile and package) and every rule of the lock parser and of the Dockerfile has a case that
+  breaks it. `docker build --target lake-runtime` builds in 45 s (wheels only, so no package needed a compiler) and
+  `smoke-image.sh` passes 17 promises (imports of every extra, no pip, no ensurepip, no compiler, not root, host
+  read-only, read-only root) with no network and no capabilities; against the stock `python:3.12-slim` it failed 12
+  and, once two checks that had passed for the wrong reason were tightened, it fails 14. A build with
+  `--sbom=true` attaches an SPDX document of 179 packages (178 with a purl, PyIceberg and PyArrow among them).
+  *2026-11-05, done:* the CI is wired (PR #92). `scripts/select-test-targets.py` has a `lake` output: a change under
+  `runners/lake/` (Markdown aside) opens the gate and selects the lake suites, not every integration target (it did,
+  because `runners/` is a shared input); the job `lake-runtime` runs pytest and `pip-audit` on that gate and, for a
+  release (Constitution 4.1.0), mypy, ruff, the image build, `smoke-image.sh` and the SBOM check
+  (`runners/lake/tools/check_sbom.py`, tested on a synthetic archive and on a real BuildKit export); the lock is also
+  audited every Monday by `.github/workflows/lake-audit.yml`. So the task's "on every lock change and on a schedule" is
+  met, and mypy and ruff are for a release by the owner's rule. Evidence: the job passed on the `linux/amd64`
+  runner in 2 min 20 s (run 41944865468, job 126974540637), with the image built wheels-only and the 17 promises of
+  the smoke test holding; `dependency advisories` passed with the three documented ignores (job 126974540593).
+  46 selector tests (5 new), 14 workflow tests (5 new), 336 script tests and `actionlint` pass.
+- [x] T035-007 Write the failing contract tests in `tests/contract/iceberg-writes/`, with their
   fixtures under `tests/contract/iceberg-writes/fixtures/`:
   - `ir.rs`: the canonical `workflow.schema.json` accepts the valid IR samples and refuses the invalid
     ones. Use at least the 14 IR cases checked at planning.
@@ -124,7 +209,27 @@ contracts, so every later task has a place to put its failing test.
     reasons and in `sdks/error-catalog.json`.
 
   Refs: FR-035-008, FR-035-029, FR-035-033.
-- [ ] T035-008 Merge the fragments into the canonical contracts, then regenerate the derived files.
+
+  *2026-11-04, done:* `tests/contract/iceberg-writes/` holds `ir.rs`, `receipts.rs`, `openapi.rs`, `proto.rs`,
+  `errors.rs`, `main.rs` and the fixtures (8 IR documents, 6 receipts, the baseline of the existing operations); the
+  amendments of the task text are D035-073 and G035-027. **Red state, before T035-008:** `cargo test -p
+  sagat-tests --test contract_iceberg_writes --locked`: 11 passed, 10 failed, each for the reason the merge removes:
+  the canonical schema has no `icebergWrite` (7 of the 8 samples are refused, and 19 of the 35 refusal cases have a
+  base it refuses) and does not read `destinations` on a root activity (14 cases are accepted that must be refused;
+  the other 2 cases hold); `DatabaseConnection.config`
+  is not a `oneOf`; no catalog-browse operation, no `purpose` or `egressCeiling`, one driver in the list; no
+  `iceberg`, `object_storage` or `clickhouse` field in `ResolvedDatabase`; 25 codes missing from
+  `sdks/error-catalog.json` and 9 reasons missing from the `Error` schema. The 11 that pass guard what must not
+  change: the fragments themselves (receipts accept 6 samples and refuse 17 edits and an injected field in all 6; the
+  fragment accepts the sample nodes and refuses the edited ones), body placement, the 170 existing operations and the
+  28 messages and enums. Four mutations of the contracts (`unevaluatedProperties`, the ceilings of 8, an operation's
+  summary, a field number) each failed the guard that owns them, and the files were restored.
+  **Now:** `cargo test -p sagat-tests --test contract_iceberg_writes --locked` is 21 passed, 0 failed, 0 ignored. The
+  case that reads the SDK error catalog waited for T035-024 (D035-073), which added the 25 entries and a typed constant
+  in each SDK on 2026-11-05. A first version of `proto.rs` carried a second baseline of the
+  protocol; it duplicated `crates/api-grpc/tests/compatibility.rs` and was removed. `cargo clippy --workspace
+  --all-targets --locked -- -D warnings` clean.
+- [x] T035-008 Merge the fragments into the canonical contracts, then regenerate the derived files.
   Merges:
   - [contracts/workflow-lake.schema.json](contracts/workflow-lake.schema.json) into
     `specs/001-platform-foundation/contracts/workflow.schema.json`;
@@ -141,6 +246,31 @@ contracts, so every later task has a place to put its failing test.
   - each SDK's generated protobuf stubs.
 
   T035-007 passes. Refs: FR-035-008, FR-035-033, D035-043.
+
+  *2026-11-04, done in three commits:*
+  - **Workflow schema** (+702 lines, none removed): `icebergWrite` joins the root-only nodes and `activity` and
+    `database` accept `destinations`; the fragment's helpers are renamed (`lake*`, `stepDestination`) because
+    `expression` and `limits` exist. ajv (`--strict=false`) validates the CI example and the 8 lake samples. The
+    publication codec refused `icebergWrite` only as an unknown node and **accepted and dropped `destinations`**
+    on an activity and on a database node; it now refuses both as `UNSUPPORTED_NODE` (4 tests, failing first) until
+    the domain parses them. `docs/reference/workflow-document.md` blessed after reading the diff.
+  - **OpenAPI** (+337/-12): `DatabaseConnection.config` and the connection write request take a union discriminated by
+    `driver` (4 closed variants, each with `egressCeiling`), the driver list gains the lake drivers as a second item
+    shape, two catalog-browse operations (`x-planned: '035'`, listed in the battery as not built), subscription
+    `purpose` and `egressCeiling`, the refusal reasons in `Error`. The 170 existing operations are byte-identical.
+    Redocly lint valid; the live security battery (17 tests) and the webhook contract suite pass;
+    `docs/reference/api.md` blessed (172 operations; planned ones read "035 (planned)"); Studio types regenerated
+    and `check:api` passes; the Studio crashed on a union config, fixed with a test first (lint, typecheck, build and
+    1195 unit tests pass).
+  - **Protocol** (+76 lines): `IcebergConnection`, `ObjectStorageConnection`, `ClickHouseConnection` and their parts;
+    `ResolvedDatabase` fields 13 to 15; `worker.baseline.json` +344 lines, none removed. The new messages hold
+    credential bytes: their `Debug` is skipped and redacted (4 tests, failing first). Adding `iceberg-storage-opendal`
+    to the tests crate made rustls see both `aws-lc-rs` and `ring` (`cargo tree -e features`), so **3 gRPC TLS tests failed on
+    this branch**; `serve` now installs the `ring` provider like the other eight TLS sites. All six
+    SDKs synced and checked: Go (`go test -race`, vet, gofmt), Python (264 tests, mypy, ruff), TypeScript (131),
+    Java (`./mvnw -q verify`), .NET (450 tests, `dotnet format`), Rust (fmt, clippy, tests).
+  - Not done here, by decision: the catalog codes (T035-024, D035-073); `operateRun` and the redrive for destination
+    steps (G035-027 item 5); the `linux/amd64` builds and the six-language conformance run, which CI runs.
 
 ---
 
@@ -164,7 +294,12 @@ three conditions pass.
   - "setting `pii` requires the actor to hold the 016 reveal grant for the namespace".
 
   Refs: FR-035-005, D035-040.
-- [ ] T035-010 [P] Write the failing tests in `crates/domain/tests/classification.rs`:
+
+  *2026-11-05, done for the one variant that exists, left unticked:* 4 cases in `database_connections.rs` (default
+  `internal`, set and read back, a different ceiling is a different connection, `pii` needs the reveal grant and
+  the other two do not), failing first. The Iceberg, object-storage and ClickHouse variants do not exist yet; the same
+  cases are extended to them when T035-038 adds them.
+- [x] T035-010 [P] Write the failing tests in `crates/domain/tests/classification.rs`:
   - `within(level, ceiling)` holds for every pair of the four levels;
   - a written field's level is the stricter of its inherited and declared levels, so a `public`
     `recordSchema` annotation never lowers an inherited `pii` field;
@@ -172,18 +307,37 @@ three conditions pass.
   - database-result fields are `pii`.
 
   Refs: FR-035-025, D035-051.
-- [ ] T035-011 [P] Write the failing tests in `crates/domain/tests/identity.rs` and
+
+  *2026-11-05, done:* 8 cases in `crates/domain/tests/classification.rs` (every pair of the four levels, `secret` within
+  no ceiling, the written level for all 25 combinations of inherited and declared, a `public` declaration never
+  lowering `pii`, neither level is `pii`, a database result is `pii`, the three ceilings and `secret` refused, the
+  default and the reveal grant). They failed to compile first (no `within`, `written_level`, `EgressCeiling`), then
+  `cargo test -p sagat-domain --test classification`: 15 passed.
+- [x] T035-011 [P] Write the failing tests in `crates/domain/tests/identity.rs` and
   `crates/domain/tests/audit.rs`:
-  - the catalog has 49 permissions;
+  - the catalog has 53 permissions (written as 49; develop held 52 before this feature, D035-071);
   - `database:browse` is held by developer and admin only;
   - a permission added to `ALL` without a role decision fails a test;
   - the audit actions `DatabaseCatalogBrowsed`, `DestinationDecided` and `IcebergRevertRequested`
     exist, with their collapse policy.
 
   Refs: FR-035-024, D035-066.
-- [ ] T035-012 [P] Write the failing pin test in `crates/domain/src/database/failure.rs`: the full set
+
+  *2026-11-05, done:* `database_browse_is_held_by_developers_and_admins_only`, `every_permission_has_a_role_decision`
+  (every permission of `ALL` is held by a role of the hand-written matrix or is on the list of the ones granted to
+  none, which is `payload:reveal-pii`), the catalog test at 53, and
+  `the_audit_actions_of_the_lake_have_stable_names_and_the_decided_repeat_semantics` (a browse collapses repeats for
+  five minutes like the other reads; a decision and a revert request never collapse). They did not compile before
+  the variants existed; now `cargo test -p sagat-domain --test identity --test audit`: 32 and 11 passed.
+- [x] T035-012 [P] Write the failing pin test in `crates/domain/src/database/failure.rs`: the full set
   of contracts/errors.md codes, each with its retryable flag, is identical in `code()` and in
   `parse()`, so no code can be added to one list only. Refs: FR-035-029, D035-042.
+
+  *2026-11-05, done:* 5 cases in `failure.rs`; they read the table of `contracts/errors.md` itself, so a documented
+  code that is unknown to `DatabaseFailure`, a known code the document does not list (outside the 017 codes), a
+  retry flag that differs, a code listed twice, or a code `parse` and `code()` disagree on, each fails. They did not
+  compile before `DatabaseFailure::ALL` and `retryable()`. Three mutations (a flag flipped, a documented row removed,
+  an undocumented row added) each failed the case that owns it.
 - [ ] T035-013 [P] Write the failing migration tests in `tests/integration/iceberg-writes/migration.rs`:
   - the up migration applies on the develop schema;
   - existing rows read unchanged: `purpose = RUN_EVENTS`, binding profile `database`, ceiling
@@ -211,7 +365,14 @@ three conditions pass.
   - running with any capability or a writable root.
 
   Refs: FR-035-023, D035-048, G035-022.
-- [ ] T035-016 [P] Write the failing relay tests in `crates/infra-lake/tests/relay.rs`, plus unit tests
+
+  *2026-11-05, partly done, left unticked (D035-083, G035-033):* `tests/integration/iceberg-writes/isolation.rs` runs these
+  against a real Docker engine, with the `lake` profile and only the command replaced by a probe: another attempt's directory
+  and token, the metadata service and the network (IPv4 and IPv6), the engine socket, the capabilities and the root, and more
+  (the memory, swap and process limits, `/tmp`, the work volume, the deadline). 8 tests pass; 13 mutations of the profile are
+  caught. Not done: the runner's own token file (there is no runner in the Docker model to read it from; the test shows that
+  no service-account directory or engine socket is in the container) and the Kubernetes run (T035-029).
+- [x] T035-016 [P] Write the failing relay tests in `crates/infra-lake/tests/relay.rs`, plus unit tests
   in `crates/infra-database/src/network.rs` for `fd00:ec2::254` and `fd20:ce::254`. The relay:
   - refuses a missing or wrong token;
   - refuses `CONNECT` to an undeclared host, and counts the refusal;
@@ -222,7 +383,19 @@ three conditions pass.
   - never terminates TLS.
 
   Refs: FR-035-004, D035-049, D035-061.
-- [ ] T035-017 [P] Write the failing `sagat.lake.v1` codec tests in `crates/infra-lake/tests/protocol.rs`:
+
+  *2026-11-05, the `network.rs` part is done, the task is left unticked:* `fd00:ec2::254` (AWS) and `fd20:ce::254` (Google
+  Compute Engine) lie inside `fc00::/7`, which the policy allowed, so a policy that allows `fd00::/8` reached the
+  metadata services. They are named in `prohibited` and refused in development too. Four unit tests in `network.rs`: the
+  two addresses are refused, their neighbours are not (the rule is two addresses, not a range), the IPv4-mapped forms
+  of the IPv4 metadata addresses stay refused, and a policy that allows the ULA range still refuses them, also in a
+  mixed answer. The two tests that need the rule failed first.
+  *2026-11-05, done:* `crates/infra-lake/tests/relay.rs`, 34 cases: the token, the declared and regional endpoints, a
+  scripted resolver that proves one resolution and a connection to the checked address, every kind of forbidden
+  address, TCP mappings, a tunnel that carries bytes untouched, requests the relay does not serve, a real Unix socket
+  and shutdown, the connection limit, the admission timeouts and the peer user id (D035-078, D035-079). Written before
+  the relay; 39 mutations in two rounds, all caught.
+- [x] T035-017 [P] Write the failing `sagat.lake.v1` codec tests in `crates/infra-lake/tests/protocol.rs`:
   - one request line;
   - progress lines at most once per second;
   - exactly one result line;
@@ -233,7 +406,11 @@ three conditions pass.
     or logged.
 
   Refs: D035-062, D035-067.
-- [ ] T035-018 [P] Write the failing configuration-hygiene tests in
+
+  *2026-11-05, done:* `crates/infra-lake/tests/protocol.rs`, 31 cases against the real `receipts.schema.json` and the
+  receipt samples of the contract suite. Written before the codec and seen failing (the imports did not resolve), then
+  passing; 25 mutations of the codec are each caught (D035-077).
+- [x] T035-018 [P] Write the failing configuration-hygiene tests in
   `runners/lake/tests/test_config_hygiene.py`, and the hostile REST catalog fixture in
   `tests/fixtures/lake/hostile-catalog/`. The fixture returns:
   - `py-io-impl`, `s3.endpoint`, `s3.proxy-uri` and signer settings;
@@ -241,16 +418,41 @@ three conditions pass.
 
   Expect: every override dropped, every such location refused, and each denial counted. Refs:
   FR-035-004, D035-050.
+
+  *2026-11-05, done:* `runners/lake/tests/test_config_hygiene.py` (93 cases) and the hostile catalog, which is
+  `runners/lake/tests/hostile_catalog.py` and not `tests/fixtures/lake/hostile-catalog/` (D035-076: the selector treats
+  `tests/fixtures` as shared by every suite). The catalog serves over loopback HTTP: the hostile `py-io-impl`,
+  `s3.endpoint`, `s3.proxy-uri`, region, role and signer keys, vended credentials, a table at `169.254.169.254`, one at
+  the platform database, and one whose properties move the data files. Written before the module and seen failing
+  (`No module named 'sagat_lake.config_hygiene'`); 21 mutations of the module are each caught.
 - [ ] T035-019 [P] Write the failing T-commit-once test in
   `tests/integration/iceberg-writes/commit_once.rs`: a commit-counting relay in front of the REST
   fixture sees exactly one commit request per search, even when the catalog answers 409, 5xx or times
   out. Refs: FR-035-018, D035-030, G035-020.
+
+  *2026-11-06, the client half measured, left unticked (D035-093):* `runners/lake/tests/test_commit.py` counts the commit requests a
+  REST catalog receives from PyIceberg 0.12.0 for every answer, with and without the override. The Rust test of this task, with the
+  relay in front of the fixture, is not written.
 - [ ] T035-020 [P] Write the failing rollout tests in `tests/integration/iceberg-writes/rollout.rs`:
   with `lake.enabled` off (the default), both publication and admission refuse with
   `VALIDATION_FAILED`, reason `LAKE_DISABLED`. Refs: D035-059.
-- [ ] T035-021 [P] Write the failing telemetry tests in `crates/telemetry/src/metrics.rs`: every label
+
+  *2026-11-06, publication half written (D035-087):* the publication case is `the_lake_switch_reaches_the_services_that_publish`
+  in `tests/e2e/platform-foundation/us03.rs` (the real `serve`, both ways, over REST) and the lake-off case of the scenario in
+  `tests/integration/database-connections/lake.rs`. The admission half waits for T035-055; the task stays unticked and
+  `rollout.rs` is not written.
+- [x] T035-021 [P] Write the failing telemetry tests in `crates/telemetry/src/metrics.rs`: every label
   of the plan's Observability metrics takes values only from its closed set, and none takes a
   connection, table, run or tenant identifier. Refs: FR-035-030, NFR-035-OBS.
+
+  *2026-11-05, done:* the 4 cases are in `crates/telemetry/tests/lake_vocabulary.rs`, next to the existing
+  `primitive_vocabulary.rs` and not in `metrics.rs`, because a test of the public vocabulary belongs in `tests/`. They
+  pin the names and label keys of the nine families of the plan, the absence of any label that could carry an
+  identifier, every closed set (the two the contract leaves open, sandbox exits and relay denials, are derived from
+  the ways `lake-runtime.md` says a container ends and what the relay policy refuses), and read the Prometheus page
+  back after recording every combination: each series has exactly its family's keys with values from the sets, and the
+  phase latency is a histogram. They did not compile before the module; two mutations (a recorder adding a `table`
+  label, a value added to a set) each failed the case that owns them.
 
 ### Implementation
 
@@ -258,6 +460,24 @@ three conditions pass.
   and `classification::within` with the stricter-of rule in `crates/domain/src/classification.rs`.
   Add no new domain dependency. T035-009 and T035-010 pass. Refs: FR-035-005, FR-035-025, D035-040,
   D035-051.
+
+  *2026-11-05, done for PostgreSQL, left unticked:* `classification::{within, written_level, DATABASE_RESULT,
+  EgressCeiling}` and `ConnectionConfig::{with_egress_ceiling, egress_ceiling, authorize_egress_ceiling}` with
+  `DatabaseError::RevealGrantRequired`; no new domain dependency. The store writes the ceiling only when it is not
+  the default, so a revision stored before the feature, and the idempotent replay that compares stored JSON, stay
+  byte-identical; it reads an absent ceiling as `internal` and refuses a stored `secret` (4 unit tests in
+  `infra-postgres`, failing first). `cargo test -p sagat-tests --test integration_database_connections`: 7 passed,
+  also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; workspace clippy clean. The REST body still refuses `egressCeiling`
+  (G035-027 item 7).
+  *After the independent review of PR #95 (D035-074):* the reveal-grant rule had no caller. `write_connection` now
+  checks it in the transaction that writes the revision, for a write that leaves the connection active at `pii`
+  (`StoreError::RevealGrantRequired`, shown as `Forbidden` for `payload:reveal-pii`). The scenario
+  `egress_ceiling_needs_the_reveal_grant` failed first (a `pii` write by an admin with no grant was stored), then
+  `integration_database_connections` passed 7 of 7, also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`; relaxing the condition to
+  every status failed it at the pause after the revocation. Also added: a golden of the configuration as feature 017
+  stored it (reads as `internal`, serializes back unchanged) and two `dto_database.rs` tests (the body refuses the
+  field, the response does not carry it), each failed by its own mutation. Still not done for the task: the
+  Iceberg, object-storage and ClickHouse variants, and the REST field.
 - [ ] T035-023 Add the permission and the audit actions:
   - `Permission::DatabaseBrowse` and its role tables in `crates/domain/src/identity.rs`;
   - the three audit actions in `crates/domain/src/audit.rs`;
@@ -265,11 +485,37 @@ three conditions pass.
   - the browse operation in `crates/application/src/api_admission.rs`.
 
   T035-011 passes. Refs: FR-035-024, D035-066.
+
+  *2026-11-05, partly done, left unticked:* `Permission::DatabaseBrowse` (`database:browse`, developer and admin)
+  and the three `AuditAction`s are in `crates/domain`; `AuthContext` needs no edit because it is built from
+  `role.permissions()`. No other list of permissions pins the count (searched). `cargo clippy --workspace
+  --all-targets --locked -- -D warnings` clean; the domain, API and application crates pass. Not done: the browse
+  entry of `crates/application/src/api_admission.rs`, which comes with the browse route (the operations are
+  `x-planned: '035'`).
+  *After the independent review of PR #95:* `every_permission_has_a_role_decision` was satisfied by the admin role
+  itself, so it could not fail; it now names the 13 admin-only permissions and fails when a permission in
+  `Permission::ALL` is in no decision (a removal from the list failed it, then the file was restored). A catalog browse
+  is one audit row each time and does not collapse repeats (D035-075; 11 audit tests). The doc comment of
+  `DatabaseBrowse` said "the roles that manage connections"; it now says developers and admins (D035-066).
 - [ ] T035-024 Add the contracts/errors.md codes to `DatabaseFailure` in
   `crates/domain/src/database/failure.rs`. Add the publication refusal reasons to
   `crates/api-http/src/error.rs`, and the catalog entries to `sdks/error-catalog.json` and every
   per-SDK copy (Go, .NET, Java and the others its equality test names). T035-012 and the copy-equality
   tests pass. Refs: FR-035-029, D035-042.
+
+  *2026-11-05, partly done, left unticked:* `DatabaseFailure` is one table (macro) that builds the enum, `ALL`,
+  `code()`, `parse()` and `retryable()`: the 24 new codes join the 18 of feature 017, whose flags stay `false` as
+  the runner reports them today. The 25 entries of the table (the 24 and `OUTCOME_UNKNOWN`) are in
+  `sdks/error-catalog.json` (origin `worker`, no HTTP status, a gRPC class, the table's retry flag, one remediation
+  sentence each), with a typed constant in Go, Python, TypeScript, Java and .NET (Rust reads the catalog by name) and the
+  copies synced; `sdks/SPEC.md` and `sdks/README.md` say so. The SDK tests failed first ("the catalog has 44 codes and
+  the SDK 19 constants"), then: Go `go test -race`, vet, gofmt; Python 264 tests, mypy, ruff; TypeScript 131; Java
+  `./mvnw -q verify`; .NET 450 tests and `dotnet format`; Rust fmt, clippy and tests; `contract_iceberg_writes` 21
+  passed with the catalog case no longer ignored; workspace clippy clean; the connection integration suite passes.
+  Not done: the publication refusal reasons of `crates/api-http/src/error.rs` (`ICEBERG_NODE_NOT_ROOT`,
+  `MODE_NOT_ALLOWED`, ...). They are `details.reason` values raised by the publication checks, which do not exist yet
+  (T035-093 and the US01 tasks); each is added with the check that raises it, so none is dead code. The CLI help and the
+  error quickstart cover definition problems and do not list run-step failure codes (the 017 ones are not there either).
 - [ ] T035-025 Write `crates/infra-postgres/migrations/20270115000000_lake_destinations.{up,down}.sql`
   with the `/migration` checklist, covering data-model.md §3:
   - `steps.kind` accepts `DESTINATION`;
@@ -303,6 +549,13 @@ three conditions pass.
   In `scripts/check-architecture.py`, run `cargo tree -e features` for `apps/control-plane` and
   `apps/execution-engine`, and fail if `infra-lake`, `object_store/gcp` or `object_store/azure`
   appears. Refs: D035-058, constitution II.
+
+  *2026-11-05, partly done, left unticked:* the workspace crate `crates/infra-lake/` exists, in the adapter layer
+  (`python3 scripts/check-architecture.py`: 25 crates, layers respected), with the protocol codec. It depends on the
+  domain only, so the control plane does not link it. Not done: the `lake` cargo feature of `apps/database-runner`, the
+  `lake-runner` Dockerfile target, the `object_store` `gcp` and `azure` features, and the rule in
+  `scripts/check-architecture.py` that runs `cargo tree -e features` for the control plane and the execution engine.
+  They come with the first code that links the object-store clients.
 - [ ] T035-028 Implement the `lake` container profile in `crates/infra-sandbox/src/docker.rs`:
   - own user, pid, mount and network namespaces, with loopback only;
   - a distinct UID per slot;
@@ -314,6 +567,11 @@ three conditions pass.
   In `apps/sandbox-runner/src/{api.rs,config.rs}`, add the start, stop and kill API. A start request
   carries no credential. A lake sandbox runner serves only lake containers and admits at most the
   "lake containers per node" ceiling. Refs: FR-035-023, D035-048, ADR-0013.
+
+  *2026-11-05, partly done, left unticked (D035-083, G035-033):* the profile is `container_config` in
+  `crates/infra-sandbox/src/lake.rs` (19 tests, 49 mutations caught) and the engine calls are `lake/engine.rs`; the place is not
+  `docker.rs`, as the text says. Not done: the start, stop and kill API and the "lake containers per node" ceiling in
+  `apps/sandbox-runner`, and the user-namespace and `/dev/shm` points of G035-033.
 - [ ] T035-029 Run spike T-isolation. Choose the co-location of the lake runner and the sandbox runner
   (one pod sharing an `emptyDir`, or a node-local socket) in Compose and in
   `infra/helm/templates/lake-runner.yaml`. Run T035-015 under both, the Helm one in the Kubernetes
@@ -322,6 +580,14 @@ three conditions pass.
 
   If no co-location passes, stop and ask the owner to choose between a node-local deployment and a
   per-attempt Kubernetes Job (plan.md Risks). Refs: G035-022, D035-048.
+
+  *2026-11-05 (D035-086):* the question of who gives a file to the user of a slot is settled by the owner: nobody does; the
+  containers run in the runner's group (OD-2026-11-05-2).
+  *2026-11-05, half done, left unticked (D035-083, G035-033):* the Docker/Compose half passes (T035-015 against a real
+  engine), and it found two things: a memory-backed work volume lives only while a container has it mounted, and handing a file
+  to the user of a slot needs `CAP_CHOWN`, which the lake runner as `USER 10001` does not have (G035-033, point 1, a decision
+  for before T035-035). Not done: the pod sharing an `emptyDir`, `infra/helm/templates/lake-runner.yaml`, the Kubernetes
+  validation profile, `docs/architecture/security-and-sandbox.md`, and so G035-022 stays open.
 - [ ] T035-030 Implement the relay in `crates/infra-lake/src/relay.rs`:
   - an authenticated Unix socket at `/work/<attempt-id>/relay.sock`;
   - a per-attempt token at `relay.token`, mode 0400, owned by the container's UID;
@@ -331,11 +597,18 @@ three conditions pass.
 
   Add the IPv6 metadata addresses to `network.rs`, and the in-container forwarder in
   `runners/lake/sagat_lake/forwarder.py` with pytest. T035-016 passes. Refs: D035-049, D035-061.
+
+  *2026-11-05, the Rust half is done, left unticked:* `crates/infra-lake/src/relay.rs` (the token on a Unix socket, the
+  name policy, one resolution, the address policy over `NetworkPolicy` and the operator's networks, a tunnel that reads
+  nothing, TCP mappings, a count of denials by kind) and the IPv6 metadata addresses in `network.rs`. T035-016 passes:
+  34 cases, clippy clean. An independent security review found seven things and the relay changed for them (D035-079).
+  *The forwarder is done* (D035-081): `runners/lake/sagat_lake/forwarder.py`, 25 cases. Not done: what only the attempt driver
+  can do (the socket directory, the `relay.token` file, the user id, the operator's networks; G035-029).
 - [ ] T035-031 Write the relay canaries for the I1 clients in
   `tests/integration/iceberg-writes/relay_canaries.rs`. The PyIceberg REST client and the S3 FileIO,
   run inside a lake container, work through the relay, and every other route fails. Record the result
   against G035-018 in research.md. Refs: G035-018, D035-049.
-- [ ] T035-032 Implement the `sagat.lake.v1` codec in `crates/infra-lake/src/protocol.rs`, and the host
+- [x] T035-032 Implement the `sagat.lake.v1` codec in `crates/infra-lake/src/protocol.rs`, and the host
   skeleton `runners/lake/sagat_lake/host.py`:
   - `PR_SET_DUMPABLE=0` is its first action;
   - it authenticates on the relay;
@@ -343,7 +616,21 @@ three conditions pass.
   - it writes heartbeats and one result line, then exits 0.
 
   Add the pytest `runners/lake/tests/test_host_protocol.py`. T035-017 passes. Refs: D035-062, D035-067.
-- [ ] T035-033 Implement configuration hygiene in `runners/lake/sagat_lake/config_hygiene.py`:
+
+  *2026-11-05, the Rust half is done, left unticked:* `crates/infra-lake/src/protocol.rs` and `protocol/receipt.rs`
+  (the request envelope, the decoder with its heartbeat bound and its single result line, the typed receipts of the
+  two kinds a host produces, the closed failures, the standard-error summary). T035-017 passes: 31 cases, clippy
+  clean, 25 mutations caught (D035-077). Not done: `runners/lake/sagat_lake/host.py` (`PR_SET_DUMPABLE=0` first, the
+  relay authentication, one request line, heartbeats, one result line) and `test_host_protocol.py`; the probe and
+  browse results; and where the host's configuration denials are reported (G035-028).
+
+  *2026-11-05, the Python half is done and the task is ticked:* `runners/lake/sagat_lake/host.py` (`PR_SET_DUMPABLE=0` first, the
+  token from `relay.token`, `CONTROL` on the relay, one bounded request line, heartbeats at most once a second, exactly one
+  result line, exit 0, nothing of the request written), `failures.py` and `tests/test_host_protocol.py` (38 cases and 1
+  skipped, which is Linux's), with 22 mutations of the host, the forwarder and the failures all caught (D035-081). The probe and
+  browse results, and the operations themselves, are the tasks of the stories that name them; the contract text of the host's
+  path is G035-031.
+- [x] T035-033 Implement configuration hygiene in `runners/lake/sagat_lake/config_hygiene.py`:
   - an allowlist of `warehouse`, `prefix` and the declared storage type's vended credential keys;
   - `py-io-impl` and the FileIO implementation pinned;
   - remote signing refused unless declared;
@@ -351,11 +638,21 @@ three conditions pass.
   - GCS and Azure credentials passed explicitly, failing closed when missing.
 
   T035-018 passes. Refs: D035-050.
+
+  *2026-11-05, done:* `Hygiene` filters `/v1/config` and `LoadTable.config` to the allowlist, pins `py-io-impl`, refuses
+  signing unless declared, confines every location the catalog names to the declared prefixes, builds an allowlisted
+  environment with `AWS_EC2_METADATA_DISABLED=true`, and fails closed on a missing credential. `pytest` in
+  `runners/lake`: 151 passed (93 of them T035-018); `ruff check`, `ruff format --check` and `mypy` (strict) clean. The
+  host that calls it is T035-032. Where the host reports its denials is open (G035-028).
 - [ ] T035-034 Implement the conditional commit in `runners/lake/sagat_lake/commit.py`: set
   `commit.retry.num-retries = 0` in memory on the loaded table, and assert `assert-table-uuid` and
   `assert-ref-snapshot-id(ref, H)`. If T035-019 shows the override has no effect, build the updates and
   call the catalog's commit directly. Record the result in research.md, closing G035-020. Refs:
   D035-030, G035-020.
+
+  *2026-11-06, the override done and proved, left unticked (D035-093):* `commit.pin_commit_once` sets the retry to zero in memory and
+  the request counts show it works, so the fallback of this task is not needed; G035-020 is answered for PyIceberg 0.12.0. The
+  conditional commit around the append comes with the append mode.
 - [ ] T035-035 Implement the lake attempt driver in `apps/database-runner/src/lake.rs`:
   - create `/work/<attempt-id>/`;
   - stream inline records, `ReadBlob` blobs and 017 results into `in/`, checking the effective limit
@@ -372,8 +669,20 @@ three conditions pass.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
-- [ ] T035-037 [P] Register the metric families of plan.md "Observability" in
+
+  *2026-11-06, partly done, left unticked (D035-087, G035-036):* the control plane has `SAGAT_LAKE_ENABLED` (strict boolean, off
+  by default) and publication and validation refuse an `icebergWrite` with `LAKE_DISABLED` at the node. Not done: the same
+  setting in the execution engine and the check at run admission (`runs.rs`, `worker.rs`), which T035-055 owns because
+  admission of an Iceberg run does not exist before it; until then no definition can hold the node past the store's fail-closed
+  guard, so no run can meet the gap.
+- [x] T035-037 [P] Register the metric families of plan.md "Observability" in
   `crates/telemetry/src/metrics.rs`. T035-021 passes. Refs: FR-035-030.
+
+  *2026-11-05, done:* `crates/telemetry/src/lake.rs`, a module of its own like the other vocabularies of the crate,
+  holds the nine families (`LakeMetric`), the eleven closed label sets (one macro builds each enum and its `ALL`) and
+  typed recorders (`record_write`, `record_phase`, ...), so a value outside a set cannot be passed. The families
+  reach the page when a runner records them (T035-035, T035-030); the runbook that lists them is the one of
+  `docs/runbooks/lake-destinations.md`. `cargo test -p sagat-telemetry`: all pass; workspace clippy clean.
 
 **Checkpoint**: G035-018 (REST and S3 clients), G035-020 and G035-022 are closed with evidence in
 research.md. User stories can start.
@@ -391,7 +700,7 @@ test to every catalog and storage type.
 
 ### Tests for User Story 1
 
-- [ ] T035-038 [P] [US01] Write the failing tests in `crates/domain/tests/database_connections.rs` for
+- [x] T035-038 [P] [US01] Write the failing tests in `crates/domain/tests/database_connections.rs` for
   every Iceberg configuration rule of data-model.md §1, quoted:
   - `catalog.type` is "`rest` | `glue` | `hive` | `jdbc`";
   - REST `uri` is "HTTPS outside development";
@@ -406,6 +715,11 @@ test to every catalog and storage type.
   - a URI with user info or query credentials fails `VALIDATION_FAILED`, reason `CREDENTIAL_IN_URI`.
 
   Refs: FR-035-001..005.
+
+  *2026-11-05, done:* the cases are in `crates/domain/tests/database_connections.rs` (26 in the file), one for each rule
+  quoted above and for the bounds of the members the schema names. Written first (the types did not exist); 29
+  mutations of the rules are all caught (D035-080). "Unknown settings are refused" is the REST body's
+  `deny_unknown_fields`, tested in `dto_database.rs`.
 - [ ] T035-039 [P] [US01] Write the failing tests in `tests/integration/iceberg-writes/connections.rs`:
   - creating a REST + S3 connection with a new OAuth2 secret stores the value in OpenBao, and the
     connection keeps only references;
@@ -419,6 +733,12 @@ test to every catalog and storage type.
   - every change is audited as `DatabaseConnectionChanged`.
 
   Refs: FR-035-001..005, FR-035-026, SC-035-001.
+
+  *2026-11-05, partly done, left unticked:* `tests/integration/database-connections/lake.rs` runs inside the lifecycle
+  scenario against real PostgreSQL and OpenBao (7 of 7, also as the runtime role): the stored document, reload, the
+  retry, the audit row, another tenant's 404, a missing secret writing nothing, a SQL step refused, plaintext by
+  environment, the `pii` grant and the history of a paused connection. Not done: creating the connection over REST
+  with a new OAuth2 secret, a Lakekeeper connection with vended credentials (its fixture), and `GET /database-drivers`.
 - [ ] T035-040 [P] [US01] Write the failing tests in `tests/integration/iceberg-writes/probe.rs`:
   - the probe runs in the managed executor;
   - it reports `CATALOG_AUTH`, `WAREHOUSE` and `STORAGE_ACCESS` with the tested revision and time;
@@ -432,17 +752,32 @@ test to every catalog and storage type.
 
 ### Implementation for User Story 1
 
-- [ ] T035-041 [US01] Add `ConnectionConfig::Iceberg`, with every catalog and storage shape, to
+- [x] T035-041 [US01] Add `ConnectionConfig::Iceberg`, with every catalog and storage shape, to
   `crates/domain/src/database.rs`. T035-038 passes. Refs: FR-035-001..005, D035-040.
-- [ ] T035-042 [US01] Validate and save the new kind in `crates/application/src/database.rs`. A
+
+  *2026-11-05, done:* `crates/domain/src/database/iceberg.rs` (D035-080). The new variant made seven places that took
+  the one variant for granted say what they do with a lake connection: all of them refuse it, since a SQL step never
+  uses one. The workspace compiles and its clippy is clean.
+- [x] T035-042 [US01] Validate and save the new kind in `crates/application/src/database.rs`. A
   revision is audited, and a `pii` ceiling requires a current reveal grant inside T1. Refs: FR-035-005,
   FR-035-024.
+
+  *2026-11-05, done:* `ConnectionService::put` validates the kind and words a refusal with its reason; the store writes
+  and reads the document of the contract, checks both secrets for OpenBao authority and the `pii` grant in the same
+  transaction, and the revision is audited (`lake.rs`, 7 of 7 integration tests, also as the runtime role). A Hive
+  metastore without TLS is refused unless the deployment allows it, and nothing allows it yet (G035-030).
 - [ ] T035-043 [US01] Expose the kind over REST:
   - the `oneOf` config with a `driver` discriminator in `crates/api-http/src/dto_database.rs`;
   - `GET /database-drivers` in `crates/api-http/src/routes/database.rs`;
   - the reasons `UNKNOWN_CONNECTION_KIND` and `CREDENTIAL_IN_URI`.
 
   Refs: FR-035-001, FR-035-002.
+
+  *2026-11-05, partly done, left unticked:* the `oneOf` config with its `driver` discriminator in `dto_database.rs`
+  (an Iceberg connection comes back as the document it was sent as, every member unknown to the contract is refused, and
+  `egressCeiling` is open on both kinds) and the reason `CREDENTIAL_IN_URI` with the other thirteen, each with advice.
+  Not done: `GET /database-drivers` listing `iceberg` (with the probe, T035-045) and `UNKNOWN_CONNECTION_KIND`, which
+  belongs to the publication that meets a connection of a kind it cannot use.
 - [ ] T035-044 [US01] Resolve the Iceberg connection. `ResolvedDatabase.iceberg` is built in
   `crates/api-grpc/src/service.rs` and `crates/application/src/worker/database.rs`. `catalogSecret` and
   `storageSecret` are each compared, pinned and audited separately (017 two-phase), and only the lake
@@ -465,6 +800,15 @@ test to every catalog and storage type.
 
   Add the vitest cases to `ConnectionsPage.test.tsx`: no credential value after a reload. Refs:
   FR-035-001..006, SC-035-001.
+
+  *2026-11-05, partly done (D035-082, G035-032):* the Iceberg form for a REST catalog over S3 is in
+  `IcebergConnectionForm.tsx`, chosen by `ConnectionEditor.tsx` only when the deployment lists the driver: catalog and storage
+  credentials (existing OpenBao secret or created inline, references only in the connection), warehouse locations, allowed modes,
+  the ceiling with `pii` offered only with `payload:reveal-pii`, the vended-credentials choice, URL rules, and a note that saving
+  is not proof of connectivity. 30 tests in `ConnectionsPage.test.tsx` (no credential value after a reload among them), 30
+  mutations all caught; `npm run lint`, `typecheck`, `check:api`, `npm test` (87 files, 1,217 tests) and `npm run build` pass.
+  **Not done:** the per-check probe results (they need T035-045 and a field in the contract), the other catalog and storage
+  shapes (T035-078), and the server listing `iceberg` in `GET .../database-drivers` (T035-036, T035-043).
 
 **Checkpoint**: US01 on REST + S3 works and is tested on its own.
 
@@ -491,6 +835,13 @@ one commit carries the key.
   - the step is `high_risk` and irreversible unless it declares `compensation: revert`.
 
   Refs: FR-035-008, FR-035-009, FR-035-034, G035-019.
+
+  *2026-11-05, partly done, left unticked (D035-084, G035-034):* `crates/domain/tests/iceberg_write.rs` has 22 tests, written
+  first and seen failing, that cover every bullet but one: the node parses; it is refused beside a forEach, while or
+  repeatUntil, inside a body and under a continuation policy, and allowed beside saga and parallel nodes; an ordinary activity
+  cannot forge the reserved names; one record source; the mapping ceilings; high risk and irreversible unless it reverts.
+  Not covered: "at most 32 blobs" is pinned as a constant only, because the count exists when the expression is evaluated
+  (G035-034).
 - [ ] T035-048 [P] [US02] Write the failing publication tests in
   `tests/integration/iceberg-writes/publication.rs`:
   - publishing needs `database:use` and `database:write` (admin);
@@ -526,6 +877,10 @@ one commit carries the key.
     - the decoding bounds hold (D035-063).
 
   Refs: FR-035-010..014, FR-035-018, FR-035-019.
+
+  *2026-11-06, partly done, left unticked (D035-091, G035-039):* `test_mapping.py` (64 tests), `test_lookup.py` (25) and
+  `test_compat.py` (45) are written, were seen failing, and pass. `test_append.py` (streamed batches, an empty batch, the
+  decoding bounds) is not written.
 - [ ] T035-050 [P] [US02] Write the failing tests in `tests/integration/iceberg-writes/append.rs`:
   - a 10,000-record blob append makes one snapshot on the target ref;
   - its summary holds exactly `sagat.effect-key`, `sagat.run-id`, `sagat.step-id`, `sagat.workflow` and
@@ -567,9 +922,20 @@ one commit carries the key.
 - [ ] T035-052 [US02] Add the `IcebergWrite` type and `Node.iceberg` to
   `crates/domain/src/{database.rs,workflow.rs}`, with root-only validation and the reserved activity.
   T035-047 passes. Refs: FR-035-008, D035-038.
+
+  *2026-11-05, partly done, left unticked (D035-084, G035-034):* `IcebergWrite` and `Node::iceberg` are in the domain with the
+  root-only rule, the reserved activities, a fixed retry and effect, and a derived revert compensation; T035-047 passes
+  (22 tests, 35 mutations caught). Append only: overwrite and upsert come with T035-080 and T035-085, and `recordSchema` with
+  the codec (T035-053). The task text names `database.rs`; the type is in `database/iceberg_write.rs`.
 - [ ] T035-053 [US02] Add the codec in `crates/infra-ir/src/lake.rs` and `crates/infra-ir/src/convert.rs`.
   A field outside the contract is refused, and canonical bytes are stable across two publications.
   Refs: FR-035-008, FR-035-033.
+
+  *2026-11-05, partly done, left unticked (D035-085, G035-035):* the codec parses the append step into the domain node; a
+  field outside the contract is refused without echoing it; the canonical bytes do not depend on key order and do not
+  materialise defaults; the node is root-only. 14 tests, 15 mutations caught. Overwrite, upsert and `recordSchema` are refused
+  as unsupported. Nothing can be published yet: the store fails closed until T035-054, which is a placeholder and not a
+  decision to leave it so.
 - [ ] T035-054 [US02] Add the publication checks in
   `crates/application/src/{definitions.rs,publishing.rs,database.rs}`:
   - access;
@@ -579,6 +945,28 @@ one commit carries the key.
   - `lake.enabled`.
 
   T035-048 passes. Refs: FR-035-005, FR-035-024, FR-035-025.
+
+  *2026-11-06, first slice done, left unticked (D035-088, G035-037):* the level of each field an `icebergWrite` writes is read by
+  the codec from the schema of its source (a plain reference to the input or to a root step's output; anything else, blobs and
+  database results are `pii`) and attached to the step (`IcebergWrite::egress`, `EgressRefusal`), for publication and for the
+  restore that admission uses. A step with no list is refused whole. Not done: the comparison with the ceiling of a connection in
+  the definition service and the store (`CLASSIFICATION_EGRESS_REFUSED`), access (`database:use`, `database:write`), allowed modes
+  (`MODE_NOT_ALLOWED`), the connection's kind, existence and pins, the audit of a denial, and the removal of the store's
+  fail-closed guard; `publication.rs` (T035-048) is not written either.
+
+  *2026-11-06, second slice done, left unticked (D035-089, G035-038):* the store resolves the connection (active, lake kind, pinned
+  revision, secrets usable), needs `database:use` and `database:write`, and `IcebergWrite::refusal_by` refuses a mode the connection
+  does not allow (`MODE_NOT_ALLOWED`) and fields above its ceiling or never classified (`CLASSIFICATION_EGRESS_REFUSED`); validation
+  reports the same as problems; the HTTP answer, the CLI help and the quickstart have both reasons. The store's fail-closed guard is
+  gone from publication; a run of an Iceberg write is refused at creation until T035-055. Not done: `records.databaseResult` naming an
+  earlier root-level database step (G035-038 point 2). The cases of `publication.rs` (T035-048) are in the lifecycle scenario of
+  `integration_database_connections` (D035-089), where the world and the OpenBao secret are.
+
+  *2026-11-06, `records.databaseResult` done (D035-090):* the graph refuses a database result that names a node that does not
+  exist, is not a database step, is the write itself, runs after it or is on another branch. Still open before this can be ticked:
+  the levels declared by a `recordSchema` (the codec refuses it until T035-085, so the stricter-of rule reads the source's schema
+  alone), and the `upsert` case of T035-048 (upsert is refused by the codec until T035-080/085, so the mode case is tested with an
+  append against a connection that allows overwriting only).
 - [ ] T035-055 [US02] Pin admission (T3) in `crates/application/src/runs.rs` and
   `crates/infra-postgres/src/database.rs`:
   - connection pins on direct, child, event, rerun and ad hoc paths;
@@ -600,6 +988,21 @@ one commit carries the key.
   - `priorAttemptMayHaveLeftFiles` is set after a crash.
 
   T035-049 passes. Refs: FR-035-010..014, FR-035-018, FR-035-020, D035-031.
+
+  *2026-11-06, first part done, left unticked (D035-091, G035-039):* `mapping.py`, `lookup.py` and `compat.py` are in
+  `runners/lake/sagat_lake/` as pure functions, with the published type table in `docs/guides/iceberg-type-mapping.md`. Not
+  done: `modes/append.py`, the conditional commit (T035-034), the deletion of the attempt's own files when a commit is refused,
+  and `priorAttemptMayHaveLeftFiles`.
+
+  *2026-11-06, second part done, left unticked (D035-092):* `table_facts.py` builds the facts, the refs and the snapshots from a
+  loaded table (21 tests against a real SQLite catalog), and `compat.py` now refuses a table that names its own location provider,
+  because PyIceberg imports and calls the class a table property names. The security review added the metadata locations,
+  branch-only refs, a stricter path rule and a size lookup that stays inside the warehouse (D035-092); what it found about the table's
+  properties reaching the file IO is G035-041 and is not fixed.
+
+  *2026-11-06, third part done, left unticked (D035-095, G035-044):* `attempt.py` pins the directory of an attempt in memory and deletes
+  exactly its files when a commit is refused (for PyIceberg's own file IO; ADLS is G035-044). Still not done: `modes/append.py`, the
+  conditional commit around the append, the readers of NDJSON and Parquet, and `priorAttemptMayHaveLeftFiles`.
 - [ ] T035-058 [US02] Add the activity `sagat.database.iceberg.write` to
   `apps/database-runner/src/lake.rs`: rebuild the receipt, report `CompleteStep` or `FailStep`, and
   audit relay denials. Refs: FR-035-023, FR-035-027.

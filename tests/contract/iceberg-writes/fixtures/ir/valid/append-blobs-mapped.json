@@ -1,0 +1,77 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {
+    "name": "lake-append-blobs"
+  },
+  "entrypoint": "extract",
+  "nodes": [
+    {
+      "id": "extract",
+      "type": "activity",
+      "activity": "orders.extract",
+      "next": "load"
+    },
+    {
+      "id": "load",
+      "type": "icebergWrite",
+      "connectionRef": {
+        "name": "lake-main",
+        "revision": 3
+      },
+      "table": {
+        "namespace": [
+          "sales"
+        ],
+        "name": "orders"
+      },
+      "next": "done",
+      "name": "Load the order files",
+      "ref": "staging",
+      "mode": "append",
+      "records": {
+        "blobs": "steps.extract.output.files"
+      },
+      "mapping": [
+        {
+          "field": "/id",
+          "column": "order_id"
+        },
+        {
+          "field": "/customer/email",
+          "column": "email"
+        }
+      ],
+      "ignoreUnknownFields": true,
+      "recordSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "x-sagat-classification": "public"
+          },
+          "email": {
+            "type": "string",
+            "x-sagat-classification": "pii"
+          }
+        }
+      },
+      "limits": {
+        "maxRecordBytes": 1048576,
+        "maxRecords": 500000,
+        "timeoutMs": 600000
+      },
+      "compensation": "revert",
+      "onError": "failed"
+    },
+    {
+      "id": "done",
+      "type": "end"
+    },
+    {
+      "id": "failed",
+      "type": "end"
+    }
+  ]
+}

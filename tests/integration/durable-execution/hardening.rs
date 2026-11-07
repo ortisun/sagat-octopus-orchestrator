@@ -521,6 +521,7 @@ async fn the_claim_query_walks_the_ready_index_and_never_aggregates_the_backlog(
     .bind(8_i64)
     .bind(3_i32) // current negotiated worker minor; legacy compatibility is tested separately
     .bind("some-worker")
+    .bind(0_i32) // capacity window: every run, as before the possession guard
     .fetch_all(&mut *conn)
     .await
     .expect("explain");

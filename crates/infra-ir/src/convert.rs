@@ -88,6 +88,12 @@ fn unsupported_structured(kind: &str) -> Option<&'static str> {
     })
 }
 
+/// The canonical schema describes step-output destinations (feature 035), but no domain type runs them yet. Publishing
+/// such a workflow would drop the step, so the codec refuses it until the domain tasks of the feature parse and
+/// schedule them (T035-093 and before). The Iceberg write step is parsed (T035-053); whether a deployment may publish
+/// it is the definition service's decision (`lake.enabled`), not the codec's.
+const DESTINATIONS_NOT_ENABLED: &str = "step-output destinations are not enabled by the runtime";
+
 fn integer_u32(node: &Map<String, Value>, field: &str, at: &str) -> Result<u32, IrError> {
     node.get(field)
         .and_then(Value::as_u64)
@@ -519,9 +525,18 @@ fn nodes(raw_nodes: &[Value], at: &str, structured: bool) -> Result<Vec<Node>, I
                 reason,
             });
         }
+        if node.contains_key("destinations") {
+            return Err(IrError::Unsupported {
+                node: id.chars().take(64).collect(),
+                kind: "destinations".to_owned(),
+                reason: DESTINATIONS_NOT_ENABLED,
+            });
+        }
         let id = node_id(id, &format!("{at}/id"))?;
         let mut built = if kind == "database" {
             Node::database(id, crate::database::operation(node, &at)?)
+        } else if kind == "icebergWrite" {
+            Node::iceberg(id, crate::lake::write(node, &at)?)
         } else {
             let kind = kind_of(node, kind, &at, &id, structured)?;
             Node::new(id, kind)

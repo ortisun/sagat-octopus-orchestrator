@@ -49,7 +49,7 @@ SAGAT_SDK_SCENARIO=<name> cargo test -p sagat-tests --test sdk_conformance --loc
 (cd frontend/apps/studio && npm run api && npm run check:api)  # Studio types follow openapi.yaml
 ```
 
-The per-SDK checks CI runs (mypy and ruff in `sdks/python/.venv`, `dotnet format --verify-no-changes`, `gofmt -l` and `go vet`, `./mvnw -q verify`, `npm test`) are listed in `sdks/AGENTS.md`. A pull request runs in CI only the tests of what it changes (the unit tests of the changed packages and the integration suites that touch them); the lints and the rest of the stack run for a release (`docs/constitution.md`, CI gates). So run all of these yourself before you open a pull request; CI stops at its first failing step. `/verify` runs the whole checklist.
+The per-SDK checks CI runs (mypy and ruff in `sdks/python/.venv`, `dotnet format --verify-no-changes`, `gofmt -l` and `go vet`, `./mvnw -q verify`, `npm test`) are listed in `sdks/AGENTS.md`. A pull request runs in CI only the tests of what it changes (the unit tests of the changed packages and the integration suites that touch them); the lints and the rest of the stack run for a release, and a merge into `develop` starts no run at all (`docs/constitution.md`, CI gates; OD-2026-11-05-1). So nothing re-checks `develop` after a merge: run all of these yourself before you open a pull request, and rerun the gate on the merged tree (rule 17) when you merge a stack; CI stops at its first failing step. `/verify` runs the whole checklist.
 
 ## Definition of Done
 

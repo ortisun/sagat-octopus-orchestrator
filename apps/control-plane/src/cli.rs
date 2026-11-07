@@ -119,6 +119,7 @@ ENVIRONMENT (serve):
     SAGAT_REDIS_CALLBACKS_ENABLED     enable Redis callback creation after a cold upgrade [false]
     SAGAT_SCHEDULES_ENABLED           serve the schedule routes (the engine fires them under the same flag) [false]
     SAGAT_BATCHES_ENABLED             serve the batch operation routes (the engine runs the jobs under the same flag) [false]
+    SAGAT_LAKE_ENABLED                let a workflow hold an Apache Iceberg write (publication still waits for its checks) [false]
     SAGAT_SECRETS_KEYS                key ring that seals secrets: id:base64,id2:base64; without it the
                                       secret routes do not exist. The engine needs the same ring
     SAGAT_API_ALLOW_PLAINTEXT_SECRETS  with a key ring, outside dev, say that TLS is terminated in

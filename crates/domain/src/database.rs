@@ -1,8 +1,24 @@
 //! Managed database targets and operations (feature 017). No driver or network I/O lives here.
 mod failure;
+mod iceberg;
+mod iceberg_egress;
+mod iceberg_write;
 pub use failure::DatabaseFailure;
+pub use iceberg::{
+    AccessDelegation, AdlsStorage, GcsStorage, GlueCatalog, HiveCatalog, HiveTls, IcebergCatalog,
+    IcebergConfig, JdbcCatalog, JdbcEngine, LakeConfigError, LakeLimits, LakeStorage, RestAuth,
+    RestCatalog, S3Storage, StorageCredentials, StorageKind, WriteMode,
+};
+pub use iceberg_egress::{EgressField, EgressRefusal, LakeRefusal};
+pub use iceberg_write::{
+    ColumnMapping, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
+    IcebergWriteError, IcebergWriteParts, MAX_MAPPED_COLUMNS, MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS,
+    RecordSource, TableIdentifier, WriteIntent,
+};
 
-use crate::{identity::Slug, secrets::SecretName, workflow::Expression};
+use crate::{
+    classification::EgressCeiling, identity::Slug, secrets::SecretName, workflow::Expression,
+};
 use std::{fmt, net::IpAddr};
 
 uuid_id!(
@@ -34,6 +50,10 @@ pub enum DatabaseError {
     ParameterLimit,
     #[error("unsupported or invalid database value")]
     InvalidValue,
+    #[error("setting a PII egress ceiling needs the reveal grant of the namespace")]
+    RevealGrantRequired,
+    #[error("invalid lake connection: {0}")]
+    Lake(LakeConfigError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +159,22 @@ impl DatabaseLimits {
     }
 }
 
+/// A bare DNS name or an IP address: no scheme, port, path, query or user information.
+fn valid_host(host: &str) -> bool {
+    let dns = !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        });
+    dns || host.parse::<IpAddr>().is_ok()
+}
+
 /// Driver-specific configuration keeps an extension boundary without advertising unbuilt drivers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionConfig {
@@ -149,7 +185,12 @@ pub enum ConnectionConfig {
         tls: TlsPolicy,
         secret: SecretName,
         limits: DatabaseLimits,
+        /// The highest level a step may write to this connection (feature 035). A revision stored without one reads
+        /// as `internal`.
+        egress_ceiling: EgressCeiling,
     },
+    /// An Apache Iceberg catalog and its storage (feature 035). Boxed: it is far larger than the others.
+    Iceberg(Box<IcebergConfig>),
 }
 impl ConnectionConfig {
     pub fn postgres(
@@ -167,31 +208,61 @@ impl ConnectionConfig {
             tls,
             secret,
             limits,
+            egress_ceiling: EgressCeiling::default(),
         };
         config.validate()?;
         Ok(config)
     }
+    /// An Iceberg connection, checked against every rule of `data-model.md` section 1.
+    pub fn iceberg(config: IcebergConfig) -> Result<Self, DatabaseError> {
+        config.validate()?;
+        Ok(Self::Iceberg(Box::new(config)))
+    }
+    /// The name of the driver, as the API and the stored configuration give it.
+    #[must_use]
+    pub const fn driver(&self) -> &'static str {
+        match self {
+            Self::Postgres { .. } => "postgresql",
+            Self::Iceberg(_) => "iceberg",
+        }
+    }
+    /// The same connection with another egress ceiling. Whether the actor may set it is `authorize_egress_ceiling`.
+    #[must_use]
+    pub fn with_egress_ceiling(mut self, ceiling: EgressCeiling) -> Self {
+        match &mut self {
+            Self::Postgres { egress_ceiling, .. } => *egress_ceiling = ceiling,
+            Self::Iceberg(config) => config.egress_ceiling = ceiling,
+        }
+        self
+    }
+    #[must_use]
+    pub fn egress_ceiling(&self) -> EgressCeiling {
+        match self {
+            Self::Postgres { egress_ceiling, .. } => *egress_ceiling,
+            Self::Iceberg(config) => config.egress_ceiling,
+        }
+    }
+    /// Setting `pii` as the ceiling needs the actor to hold the reveal grant for the namespace (FR-035-005); the other
+    /// ceilings need nothing more than the right to manage connections.
+    pub fn authorize_egress_ceiling(&self, holds_reveal_grant: bool) -> Result<(), DatabaseError> {
+        if self.egress_ceiling().requires_reveal_grant() && !holds_reveal_grant {
+            return Err(DatabaseError::RevealGrantRequired);
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), DatabaseError> {
-        let Self::Postgres {
-            host,
-            port,
-            database,
-            tls,
-            limits,
-            ..
-        } = self;
-        let dns = !host.is_empty()
-            && host.len() <= 253
-            && host.split('.').all(|label| {
-                !label.is_empty()
-                    && label.len() <= 63
-                    && !label.starts_with('-')
-                    && !label.ends_with('-')
-                    && label
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            });
-        if host.parse::<IpAddr>().is_err() && !dns {
+        let (host, port, database, tls, limits) = match self {
+            Self::Postgres {
+                host,
+                port,
+                database,
+                tls,
+                limits,
+                ..
+            } => (host, port, database, tls, limits),
+            Self::Iceberg(config) => return config.validate(),
+        };
+        if !valid_host(host) {
             return Err(DatabaseError::InvalidHost);
         }
         if *port == 0
@@ -204,14 +275,60 @@ impl ConnectionConfig {
         tls.validate()?;
         limits.validate()
     }
-    pub fn secret(&self) -> &SecretName {
+    /// The settings of an Apache Iceberg connection, or `None` for any other kind: a step that writes to a lake reads the
+    /// modes and the ceiling from them, and a connection of another kind is unusable to it.
+    #[must_use]
+    pub const fn as_iceberg(&self) -> Option<&IcebergConfig> {
         match self {
-            Self::Postgres { secret, .. } => secret,
+            Self::Postgres { .. } => None,
+            Self::Iceberg(config) => Some(config),
         }
     }
-    pub fn limits(&self) -> DatabaseLimits {
+    /// The logical secrets the connection refers to, for the checks that each exists with the right authority. A
+    /// PostgreSQL connection has one; an Iceberg connection has a catalog secret, a storage secret, both or neither.
+    #[must_use]
+    pub fn secrets(&self) -> Vec<&SecretName> {
         match self {
-            Self::Postgres { limits, .. } => *limits,
+            Self::Postgres { secret, .. } => vec![secret],
+            Self::Iceberg(config) => config
+                .catalog_secret
+                .iter()
+                .chain(config.storage_secret.iter())
+                .collect(),
+        }
+    }
+    /// The secret of a SQL connection. `None` for a lake connection: the managed executor runs SQL and nothing else, so
+    /// a path that needs one refuses the connection instead of guessing.
+    #[must_use]
+    pub fn sql_secret(&self) -> Option<&SecretName> {
+        match self {
+            Self::Postgres { secret, .. } => Some(secret),
+            Self::Iceberg(_) => None,
+        }
+    }
+    /// The SQL limits of a SQL connection; `None` for a lake connection, whose limits are [`LakeLimits`].
+    #[must_use]
+    pub fn sql_limits(&self) -> Option<DatabaseLimits> {
+        match self {
+            Self::Postgres { limits, .. } => Some(*limits),
+            Self::Iceberg(_) => None,
+        }
+    }
+    /// Whether the connection reaches something without transport security, which only a development namespace allows.
+    #[must_use]
+    pub fn requires_development(&self) -> bool {
+        match self {
+            Self::Postgres { tls, .. } => *tls == TlsPolicy::DevelopmentPlaintext,
+            Self::Iceberg(config) => config.requires_development(),
+        }
+    }
+    /// Whether the connection uses a Hive metastore with `tls: none`, which the deployment must allow
+    /// (`allowUnauthenticatedMetastore`).
+    #[must_use]
+    pub fn uses_unauthenticated_metastore(&self) -> bool {
+        match self {
+            Self::Postgres { .. } => false,
+            Self::Iceberg(config) => config.uses_unauthenticated_metastore(),
         }
     }
 }

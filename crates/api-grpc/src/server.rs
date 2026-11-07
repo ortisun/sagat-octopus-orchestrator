@@ -138,6 +138,9 @@ pub async fn serve<T: WorkerService>(
     admission.configure(config.max_in_flight, config.request_timeout);
     let mut builder = Server::builder();
     if let Some(tls) = &config.tls {
+        // Name the provider this platform uses instead of letting rustls guess from the features of the build: a
+        // process that also links another provider (a test binary with an object-store client) makes rustls refuse.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let mut server_tls = ServerTlsConfig::new().identity(Identity::from_pem(
             &tls.certificate_pem,
             &tls.private_key_pem,
