@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+mod attempt_input_builder;
+mod connection_wire;
 mod errors;
 mod ir;
 mod openapi;

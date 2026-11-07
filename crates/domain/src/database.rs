@@ -9,6 +9,9 @@ pub use iceberg::{
     IcebergConfig, JdbcCatalog, JdbcEngine, LakeConfigError, LakeLimits, LakeStorage, RestAuth,
     RestCatalog, S3Storage, StorageCredentials, StorageKind, WriteMode,
 };
+pub use iceberg::{
+    DEFAULT_MAX_RECORD_BYTES, DEFAULT_MAX_RECORDS, DEFAULT_TIMEOUT_MS, EffectiveLakeLimits,
+};
 pub use iceberg_egress::{EgressField, EgressRefusal, LakeRefusal};
 pub use iceberg_write::{
     ColumnMapping, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,

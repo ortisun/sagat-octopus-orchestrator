@@ -7,6 +7,7 @@
 
 mod blobs;
 mod database;
+pub mod lake_connection;
 mod limits;
 mod request;
 mod server;
