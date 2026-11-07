@@ -117,12 +117,15 @@ public sealed partial record DatabaseOptions
 
     internal static SagatException Invalid() => SagatException.Invalid("invalid managed database operation");
 
+    /// <summary>A scoped logical name (3 to 63 characters, no <c>--</c>) and an optional revision; shared by every managed step.</summary>
+    internal static bool ValidConnectionRef(ConnectionRef? reference)
+        => reference is { Name: { } name } && NamePattern().IsMatch(name) && !name.Contains("--", StringComparison.Ordinal) && reference.Revision is null or >= 1;
+
     internal JsonObject ToNode(string id)
     {
         try
         {
-            if (ConnectionRef is null || !NamePattern().IsMatch(ConnectionRef.Name ?? string.Empty)
-                || ConnectionRef.Name!.Contains("--", StringComparison.Ordinal) || ConnectionRef.Revision is < 1
+            if (!ValidConnectionRef(ConnectionRef)
                 || !Enum.IsDefined(Operation) || string.IsNullOrWhiteSpace(Statement) || Statement.Contains('\0', StringComparison.Ordinal)
                 || Encoding.UTF8.GetByteCount(Statement) > 65536 || Parameters?.Count > 256 || OnError is { Length: 0 })
             {

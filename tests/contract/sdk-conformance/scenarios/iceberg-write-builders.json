@@ -1,0 +1,1308 @@
+{
+  "buildOnly": true,
+  "description": "The append-only Iceberg write step authored by every SDK: the same canonical document for a minimal write, every option, each record source, the edges of every bound and non-ASCII names, and the same refusal, with one fixed message that shows no content, for what the server would refuse. Build-only evidence: no publication or execution claim.",
+  "invalidWorkflows": {
+    "compensation-unknown": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-compensation-unknown",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "compensation": "undo",
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "connection-double-dash": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-connection-double-dash",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake--main"
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "connection-revision-zero": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-connection-revision-zero",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 0
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "connection-with-credentials": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-connection-with-credentials",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "postgres://credential-canary@host/db"
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "limits-bytes-too-small": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-limits-bytes-too-small",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "limits": {
+                "maxRecordBytes": 1023
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "limits-records-too-many": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-limits-records-too-many",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "limits": {
+                "maxRecords": 100000001
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "limits-records-zero": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-limits-records-zero",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "limits": {
+                "maxRecords": 0
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "limits-timeout-fraction": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-limits-timeout-fraction",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "limits": {
+                "timeoutMs": 1.5
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "limits-timeout-too-small": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-limits-timeout-too-small",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "limits": {
+                "timeoutMs": 999
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "mapping-bad-escape": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-mapping-bad-escape",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "mapping": [
+                {
+                  "column": "a",
+                  "field": "/a~2"
+                }
+              ],
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "mapping-column-empty": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-mapping-column-empty",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "mapping": [
+                {
+                  "column": "",
+                  "field": "/a"
+                }
+              ],
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "mapping-column-twice": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-mapping-column-twice",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "mapping": [
+                {
+                  "column": "c",
+                  "field": "/a"
+                },
+                {
+                  "column": "c",
+                  "field": "/b"
+                }
+              ],
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "mapping-empty-segment": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-mapping-empty-segment",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "mapping": [
+                {
+                  "column": "a",
+                  "field": "/a//b"
+                }
+              ],
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "mapping-field-not-a-pointer": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-mapping-field-not-a-pointer",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "mapping": [
+                {
+                  "column": "amount",
+                  "field": "amount"
+                }
+              ],
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "mapping-field-twice": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-mapping-field-twice",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "mapping": [
+                {
+                  "column": "c",
+                  "field": "/a"
+                },
+                {
+                  "column": "d",
+                  "field": "/a"
+                }
+              ],
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "mapping-seventeen-segments": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-mapping-seventeen-segments",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "mapping": [
+                {
+                  "column": "a",
+                  "field": "/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a"
+                }
+              ],
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "namespace-empty": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-namespace-empty",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": []
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "namespace-nine-levels": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-namespace-nine-levels",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "a",
+                  "b",
+                  "c",
+                  "d",
+                  "e",
+                  "f",
+                  "g",
+                  "h",
+                  "i"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "on-error-empty": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-on-error-empty",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "onError": "",
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "records-database-result-empty": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-records-database-result-empty",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "databaseResult": ""
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "records-inline-empty": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-records-inline-empty",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "inline": ""
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "records-inline-too-long": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-records-inline-too-long",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "inline": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "records-inline-too-long-in-bytes": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-records-inline-too-long-in-bytes",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "inline": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "records-none": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-records-none",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {},
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "records-two-sources": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-records-two-sources",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "blobs": "b",
+                "inline": "a"
+              },
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "ref-empty": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-ref-empty",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "ref": "",
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "ref-too-long": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-ref-too-long",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "ref": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+              "table": {
+                "name": "orders",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "table-name-dots": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-table-name-dots",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "..",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    },
+    "table-name-empty": {
+      "contains": "invalid iceberg write",
+      "workflow": {
+        "name": "lake-invalid-table-name-empty",
+        "program": [
+          {
+            "id": "w",
+            "op": "icebergWrite",
+            "options": {
+              "connectionRef": {
+                "name": "lake-main",
+                "revision": 3
+              },
+              "records": {
+                "inline": "steps.extract.output.rows"
+              },
+              "table": {
+                "name": "",
+                "namespace": [
+                  "sales"
+                ]
+              }
+            }
+          },
+          {
+            "id": "done",
+            "op": "end"
+          }
+        ]
+      }
+    }
+  },
+  "name": "iceberg-write-builders",
+  "steps": [],
+  "workflows": {
+    "blobs": {
+      "name": "lake-blobs",
+      "program": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "op": "step"
+        },
+        {
+          "id": "load",
+          "op": "icebergWrite",
+          "options": {
+            "connectionRef": {
+              "name": "lake-main",
+              "revision": 3
+            },
+            "records": {
+              "blobs": "steps.extract.output.parts"
+            },
+            "table": {
+              "name": "orders",
+              "namespace": [
+                "sales"
+              ]
+            }
+          }
+        },
+        {
+          "id": "done",
+          "op": "end"
+        }
+      ]
+    },
+    "database-result": {
+      "name": "lake-database-result",
+      "program": [
+        {
+          "id": "read",
+          "op": "database",
+          "options": {
+            "connectionRef": {
+              "name": "orders-db"
+            },
+            "operation": "query",
+            "statement": "SELECT id, amount FROM orders"
+          }
+        },
+        {
+          "id": "load",
+          "op": "icebergWrite",
+          "options": {
+            "connectionRef": {
+              "name": "lake-main",
+              "revision": 3
+            },
+            "records": {
+              "databaseResult": "read"
+            },
+            "table": {
+              "name": "orders",
+              "namespace": [
+                "sales"
+              ]
+            }
+          }
+        },
+        {
+          "id": "done",
+          "op": "end"
+        }
+      ]
+    },
+    "edges": {
+      "name": "lake-edges",
+      "program": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "op": "step"
+        },
+        {
+          "id": "load",
+          "op": "icebergWrite",
+          "options": {
+            "connectionRef": {
+              "name": "abc"
+            },
+            "limits": {
+              "maxRecordBytes": 2147483648,
+              "maxRecords": 1,
+              "timeoutMs": 1000
+            },
+            "mapping": [
+              {
+                "column": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "field": "/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a"
+              }
+            ],
+            "records": {
+              "inline": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            },
+            "ref": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+            "table": {
+              "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+              "namespace": [
+                "a",
+                "b",
+                "c",
+                "d",
+                "e",
+                "f",
+                "g",
+                "h"
+              ]
+            }
+          }
+        },
+        {
+          "id": "done",
+          "op": "end"
+        }
+      ]
+    },
+    "every-option": {
+      "name": "lake-every-option",
+      "program": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "op": "step"
+        },
+        {
+          "id": "load",
+          "op": "icebergWrite",
+          "options": {
+            "compensation": "revert",
+            "connectionRef": {
+              "name": "lake-main",
+              "revision": 3
+            },
+            "ignoreUnknownFields": true,
+            "limits": {
+              "maxRecordBytes": 1048576,
+              "maxRecords": 1000000,
+              "timeoutMs": 600000
+            },
+            "mapping": [
+              {
+                "column": "amount",
+                "field": "/amount"
+              },
+              {
+                "column": "customer_name",
+                "field": "/customer/name"
+              },
+              {
+                "column": "escaped",
+                "field": "/a~0b/c~1d"
+              }
+            ],
+            "onError": "recover",
+            "records": {
+              "inline": "steps.extract.output.rows"
+            },
+            "ref": "staging",
+            "table": {
+              "name": "orders",
+              "namespace": [
+                "sales",
+                "emea"
+              ]
+            }
+          }
+        },
+        {
+          "activity": "orders.recover",
+          "id": "recover",
+          "op": "step"
+        },
+        {
+          "id": "done",
+          "op": "end"
+        }
+      ]
+    },
+    "limits-lowest": {
+      "name": "lake-limits-lowest",
+      "program": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "op": "step"
+        },
+        {
+          "id": "load",
+          "op": "icebergWrite",
+          "options": {
+            "connectionRef": {
+              "name": "lake-main",
+              "revision": 3
+            },
+            "limits": {
+              "maxRecordBytes": 1024,
+              "maxRecords": 100000000,
+              "timeoutMs": 3600000
+            },
+            "records": {
+              "inline": "steps.extract.output.rows"
+            },
+            "table": {
+              "name": "orders",
+              "namespace": [
+                "sales"
+              ]
+            }
+          }
+        },
+        {
+          "id": "done",
+          "op": "end"
+        }
+      ]
+    },
+    "minimal": {
+      "name": "lake-minimal",
+      "program": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "op": "step"
+        },
+        {
+          "id": "load",
+          "op": "icebergWrite",
+          "options": {
+            "connectionRef": {
+              "name": "lake-main",
+              "revision": 3
+            },
+            "records": {
+              "inline": "steps.extract.output.rows"
+            },
+            "table": {
+              "name": "orders",
+              "namespace": [
+                "sales"
+              ]
+            }
+          }
+        },
+        {
+          "id": "done",
+          "op": "end"
+        }
+      ]
+    },
+    "no-revision": {
+      "name": "lake-no-revision",
+      "program": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "op": "step"
+        },
+        {
+          "id": "load",
+          "op": "icebergWrite",
+          "options": {
+            "connectionRef": {
+              "name": "lake-main"
+            },
+            "records": {
+              "inline": "steps.extract.output.rows"
+            },
+            "table": {
+              "name": "orders",
+              "namespace": [
+                "sales"
+              ]
+            }
+          }
+        },
+        {
+          "id": "done",
+          "op": "end"
+        }
+      ]
+    },
+    "unicode": {
+      "name": "lake-unicode",
+      "program": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "op": "step"
+        },
+        {
+          "id": "load",
+          "op": "icebergWrite",
+          "options": {
+            "connectionRef": {
+              "name": "lake-main",
+              "revision": 3
+            },
+            "mapping": [
+              {
+                "column": "preço",
+                "field": "/preço"
+              }
+            ],
+            "records": {
+              "inline": "steps.extract.output.rows"
+            },
+            "table": {
+              "name": "pedidos_é😀",
+              "namespace": [
+                "vendas"
+              ]
+            }
+          }
+        },
+        {
+          "id": "done",
+          "op": "end"
+        }
+      ]
+    }
+  }
+}
