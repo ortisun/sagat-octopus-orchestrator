@@ -707,7 +707,8 @@ The other fixes were wording:
     delivers late lines in a burst, so a window of one second holds two lines (the one on time and one of slack) and a
     third is a flood (`HeartbeatFlood`). The time comes in as an argument, so no test sleeps.
   - *One result.* A second result, or any line after the result, is `LineAfterResult`; a host that closes without one is
-    `NoResult`; a line over 1 MiB is `LineTooLong`. The attempt driver reads the socket a line at a time under that bound.
+    `NoResult`; a line over 1 MiB is `LineTooLong` (**16 KiB since D035-110**). The attempt driver reads the socket a line at a time
+    under that bound.
   - *The result line.* Exactly `{"receipt": …, "relayDenials": n}` or `{"failure": …, "relayDenials": n}`; any other set of
     members is `UnknownMember`, and a count that is not an integer from 0 to 2^32-1 is `Malformed`. Every
     `ProtocolFailure` is `LAKE_HOST_PROTOCOL` and carries a closed kind, never content of the line.
@@ -1850,11 +1851,41 @@ The other fixes were wording:
     tests, which already do it) and a control-plane-brokered job claimed by the sandbox runner like a build (a table, a lease type and
     polling latency on every attempt, in the files the 018 and 014 sessions are changing; it stays the fallback if a node-local socket
     cannot be provisioned on Kubernetes, which T035-029 decides, and if none co-locates the owner chooses, as that task says).
-  - *Evidence.* `cargo test -p sagat-infra-lake`: 117 passed (19 in `control.rs`, 40 in `relay.rs`, 35 in `protocol.rs`, 22 in
+  - *Independent review (security and correctness reviewers, given the files and the contract, not my conclusion).* Both read the hand-over
+    and found no way for a process without the token to get the stream, for two token holders to both get it, for a stream to be lost
+    between the sender and the receiver, for a secret to reach a `Debug` or an error, or for the `'static` bound to change what `handle`
+    guarantees; `Take` over `BufReader` loses and duplicates no byte across calls, and every edge of the line allowance is right. Each claim
+    below was checked against the code, and each defect was seen failing before it was fixed:
+    - *Fixed.* **The line limit was a megabyte, and the runner parses a line into a tree before it checks the shape.** A line of `0,` becomes
+      sixteen times its size in values: about sixteen megabytes per hostile attempt, in the process that holds the credentials, outside the
+      container's cgroup. A legitimate result line has no collection in it (an effect key of at most 512 characters, a ref of at most 256,
+      counts of at most 19 digits) and is under 4 KiB, so `MAX_LINE_BYTES` is now **16 KiB**, which revises the 1 MiB of D035-077. A test
+      pins the longest receipt the contract allows under half of it, and one pins the amplification. **After the result the runner read
+      up to the whole line allowance** (`1056768` bytes taken in the test) **and a stray byte without a newline was accepted** if the host
+      then stayed silent, because the timeout dropped what `read_until` had read; both are fixed by asking `fill_buf` whether any byte is
+      there instead of reading a line: a flood after the result costs one buffer (`≤ result + 2 × 8 KiB` in the test), and a byte is a
+      break whether or not the host closes. Two tests could not fail for what they named (they passed with the limit removed); they now
+      count the bytes taken from the stream (a `Counting` wrapper), and I loosened the allowance to three times to see the line test fail
+      (`57344 bytes were taken for a limit of 16384`) before restoring it.
+    - *Documented, for the supervisor and the driver.* `converse` bounds each line, not the conversation: a host that beats at least every
+      15 s may go on for ever, so the attempt's deadline, a lost lease and a cancellation end it by dropping the future (G035-054's
+      supervisor). `on_heartbeat` must not block: the `Decoder` judges a beat by when it is read, so a runner that stalls for a second or two
+      reads the host's beats in one burst and calls it a flood (D035-077's slack of one extra beat covers about a second); that is an
+      availability limit and the next attempt resolves what was sent. The sustained rate the `Decoder` accepts is two beats a second, not
+      one (D035-077; unchanged).
+    - *G035-056 (new).* `peer_uid` is optional on the relay, and `CONTROL` is the first request that gives the peer something: whoever
+      presents the token first receives the request line with the credentials. The token file is group-readable (D035-086), so the driver
+      must set `with_peer_uid` to the slot's user, and the driver slice needs a test that a peer of another user is refused.
+    - *G035-057 (new, not this slice).* A failure line's `column` and a receipt's strings are host-controlled text, and the host holds the
+      credentials. They are bounded (128 characters for a column, typed fields for a receipt) but a column is free text, so a compromised
+      host has a few dozen bytes per attempt through it to whatever the runner shows or audits. When the driver reports a failure it must
+      treat `column` as untrusted (a conservative character set, or only a column the platform can match against the table).
+  - *Evidence.* `cargo test -p sagat-infra-lake`: 122 passed (24 in `control.rs`, 40 in `relay.rs`, 35 in `protocol.rs`, 22 in
     `write_body.rs`, 1 unit); `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` clean (only the
     vendored `rskafka` warns). Written before the code and seen failing: the control tests (the module did not exist; two of them then failed
     for the reasons above, one of them my test's, an unused `_host` binding dropped the stream before the script ran), the relay tests (no
-    `take_control`), the Decoder test. No mutation pass (OD-2026-11-06-2). Not run: the real Python host against this relay (T035-031).
+    `take_control`), the Decoder test, and after the review the four tests above. No mutation pass (OD-2026-11-06-2). Not run: the real
+    Python host against this relay (T035-031).
   - *Not done.* Nothing here starts a container or reads a record; `T035-035` stays unticked.
 - **G035-054 — Which code a kill reports is not in the contract.** `errors.md` has `LAKE_HOST_PROTOCOL` (no result line, malformed or extra
   fields) and `LAKE_SANDBOX_UNAVAILABLE` (the container could not be started), and `lake-runtime.md` lists the kill conditions (lease loss,

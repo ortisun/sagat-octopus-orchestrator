@@ -33,8 +33,12 @@ pub use write_body::{
 /// The protocol's name and version, the first member of every request.
 pub const PROTOCOL: &str = "sagat.lake.v1";
 
-/// The longest line the runner reads from the host (1 MiB). A result line is a receipt: a few hundred bytes.
-pub const MAX_LINE_BYTES: usize = 1 << 20;
+/// The longest line the runner reads from the host (16 KiB). A result line is a receipt or a failure: no collection in
+/// it, an effect key of at most 512 characters and a ref of at most 256, so the longest the contract allows is about 4 KiB
+/// and this is a multiple of it. The limit also bounds what the runner builds from a hostile line: it parses a line into a
+/// tree before it checks the shape, and a line of `0,` becomes sixteen times its size in values, in the process that
+/// holds the credentials and outside the container's cgroup (a megabyte limit allowed sixteen megabytes per attempt).
+pub const MAX_LINE_BYTES: usize = 16 * 1024;
 
 /// The longest request line the host reads (4 MiB, without its newline; `MAX_REQUEST_BYTES` of
 /// `runners/lake/sagat_lake/host.py`). A longer one is dropped there as a protocol break, so the runner refuses to send it

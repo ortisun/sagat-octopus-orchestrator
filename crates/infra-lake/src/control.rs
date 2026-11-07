@@ -108,6 +108,14 @@ async fn next_line<R: AsyncBufRead + Unpin>(reader: &mut R, line: &mut Vec<u8>) 
 /// result. `began` is when the attempt began, for the arrival time the [`Decoder`] measures beats by; `on_heartbeat` is
 /// called once for each beat that was accepted.
 ///
+/// **The caller bounds the whole conversation.** Every line has a time limit and no line is longer than the protocol allows,
+/// but a host that beats at least every [`ControlConfig::silence`] keeps the conversation going for as long as it likes.
+/// The attempt's deadline, a lease lost and a cancellation end it by dropping this future, which closes the stream (the
+/// supervisor of T035-035). Two more things hold the caller to its side: `on_heartbeat` must not block, because the
+/// [`Decoder`] judges a beat by when it is *read* and a runner that stalls for a second or two reads the host's beats in
+/// one burst and calls it a flood; and the request line holds the credentials, so the caller keeps it no longer than this
+/// call and zeroises it afterwards.
+///
 /// # Errors
 /// [`ControlFailure::Silent`] when the host takes the request or a line longer than the silence limit, and
 /// [`ControlFailure::Protocol`] for what [`Decoder`] refuses, a line over the limit, a host that closed with no result or
@@ -148,7 +156,7 @@ where
             Read::Line => match decoder.line(&line, began.elapsed())? {
                 Event::Heartbeat => on_heartbeat(),
                 Event::Result(result) => {
-                    return after_result(&mut reader, &mut line, config.result_grace, result).await;
+                    return after_result(&mut reader, config.result_grace, result).await;
                 }
             },
         }
@@ -156,17 +164,19 @@ where
 }
 
 /// The host has given its result. It closes the connection, or it does not within the grace, and the result stands;
-/// anything it sends first is a break.
+/// **any byte** it sends first is a break, a complete line or not.
+///
+/// Nothing is read for this: the question is whether a byte is there, and `fill_buf` answers it with the bytes the
+/// buffered reader already holds (a line sent in the same write as the result) or one read of its own buffer's size. A
+/// host that floods after its result costs one buffer, not a line limit. A read that fails is the end of the connection:
+/// the result stands.
 async fn after_result<R: AsyncBufRead + Unpin>(
     reader: &mut R,
-    line: &mut Vec<u8>,
     grace: Duration,
     result: HostResult,
 ) -> Result<HostResult, ControlFailure> {
-    match timeout(grace, next_line(reader, line)).await {
-        Err(_) | Ok(Read::Closed) => Ok(result),
-        Ok(Read::Line | Read::Partial | Read::TooLong) => {
-            Err(ProtocolFailure::LineAfterResult.into())
-        }
+    match timeout(grace, reader.fill_buf()).await {
+        Ok(Ok(bytes)) if !bytes.is_empty() => Err(ProtocolFailure::LineAfterResult.into()),
+        Ok(Ok(_) | Err(_)) | Err(_) => Ok(result),
     }
 }

@@ -6,19 +6,65 @@
 //! rules of `sagat.lake.v1` (`protocol::Decoder`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::io;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use sagat_infra_lake::control::{ControlConfig, ControlFailure, converse};
 use sagat_infra_lake::protocol::{MAX_LINE_BYTES, Outcome, ProtocolFailure};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, duplex};
+use tokio::io::{
+    AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, DuplexStream, ReadBuf, duplex,
+};
 use tokio::time::{Instant, sleep};
 
 const REQUEST: &[u8] = b"{\"protocol\":\"sagat.lake.v1\",\"operation\":\"icebergWrite\"}\n";
 const BEAT: &[u8] = b"{\"heartbeat\":true}\n";
+/// What a `BufReader` takes from the stream at a time; a bound on how far past a limit the runner can have read.
+const READ_AHEAD: usize = 8 * 1024;
+
+/// The runner's side of a stream, counting the bytes it takes from the host: the one way to see that a limit stops the
+/// reading and does not only stop the parsing.
+struct Counting<S> {
+    inner: S,
+    taken: Arc<AtomicUsize>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Counting<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buffer.filled().len();
+        let polled = Pin::new(&mut self.inner).poll_read(context, buffer);
+        self.taken
+            .fetch_add(buffer.filled().len() - before, Ordering::Relaxed);
+        polled
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Counting<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(context, bytes)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(context)
+    }
+}
 
 fn receipt() -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -49,6 +95,8 @@ struct Run {
     outcome: Result<sagat_infra_lake::protocol::HostResult, ControlFailure>,
     beats: u32,
     seen_by_host: Vec<u8>,
+    /// How many bytes of the host's the runner took from the stream.
+    taken: usize,
 }
 
 async fn run<F, Fut>(settings: ControlConfig, script: F) -> Run
@@ -68,6 +116,11 @@ where
     });
     let beats = Arc::new(AtomicU32::new(0));
     let counter = Arc::clone(&beats);
+    let taken = Arc::new(AtomicUsize::new(0));
+    let runner = Counting {
+        inner: runner,
+        taken: Arc::clone(&taken),
+    };
     let outcome = converse(runner, REQUEST, settings, Instant::now(), move || {
         counter.fetch_add(1, Ordering::Relaxed);
     })
@@ -78,6 +131,7 @@ where
         outcome,
         beats: beats.load(Ordering::Relaxed),
         seen_by_host: seen.lock().unwrap().clone(),
+        taken: taken.load(Ordering::Relaxed),
     }
 }
 
@@ -217,30 +271,80 @@ async fn more_beats_than_the_protocol_allows_are_a_flood() {
 
 #[tokio::test(start_paused = true)]
 async fn a_line_longer_than_the_limit_is_refused_without_reading_it_all() {
-    let (runner, mut host) = duplex(64 * 1024);
-    let guest = tokio::spawn(async move {
-        let mut request = Vec::new();
-        let mut reader = BufReader::new(&mut host);
-        reader.read_until(b'\n', &mut request).await.unwrap();
-        // a host that never sends a newline; the stream stays open so only a bound can stop the runner
-        let chunk = vec![b'a'; 64 * 1024];
-        let mut sent = 0_usize;
-        while sent < 8 * MAX_LINE_BYTES {
-            if reader.get_mut().write_all(&chunk).await.is_err() {
+    // a host that never sends a newline and never stops: only a bound on the reading can stop the runner
+    let result = run(config(), |mut host| async move {
+        let chunk = vec![b'a'; 4 * MAX_LINE_BYTES];
+        for _ in 0..64 {
+            if host.get_mut().write_all(&chunk).await.is_err() {
                 break;
             }
-            sent += chunk.len();
         }
-        sent
-    });
-    let outcome = converse(runner, REQUEST, config(), Instant::now(), || {}).await;
+    })
+    .await;
     assert_eq!(
-        outcome.unwrap_err(),
+        result.outcome.unwrap_err(),
         ControlFailure::Protocol(ProtocolFailure::LineTooLong)
     );
-    // the runner stopped reading, so the host's writes stopped being accepted well before it had sent eight limits
-    let sent = guest.await.unwrap();
-    assert!(sent < 4 * MAX_LINE_BYTES, "{sent} bytes were taken");
+    // the longest line, its newline and one byte more, and what the buffered reader had already fetched: not a byte more
+    assert!(
+        result.taken <= MAX_LINE_BYTES + 2 + READ_AHEAD,
+        "{} bytes were taken for a limit of {MAX_LINE_BYTES}",
+        result.taken
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_line_one_byte_over_the_limit_with_its_newline_is_too_long() {
+    let result = run(config(), |mut host| async move {
+        let mut line = vec![b'a'; MAX_LINE_BYTES + 1];
+        line.push(b'\n');
+        say(&mut host, &line).await;
+        sleep(Duration::from_secs(3600)).await;
+    })
+    .await;
+    assert_eq!(
+        result.outcome.unwrap_err(),
+        ControlFailure::Protocol(ProtocolFailure::LineTooLong)
+    );
+}
+
+/// The limit exists because the runner parses what it reads into a tree before it checks the shape: a megabyte of `0,`
+/// becomes sixteen megabytes of values, in the process that holds the credentials, outside the container's cgroup. The
+/// longest line the contract allows is a receipt (no collection in it, an effect key of at most 512 characters and a ref of
+/// at most 256), so the limit is a multiple of that and not a number of megabytes.
+#[tokio::test(start_paused = true)]
+async fn the_longest_receipt_the_contract_allows_fits_in_half_the_limit() {
+    let mut longest = receipt();
+    longest["effectKey"] = json!("e".repeat(512));
+    longest["ref"] = json!("r".repeat(256));
+    let mut line =
+        serde_json::to_vec(&json!({"receipt": longest, "relayDenials": 4_294_967_295_u64}))
+            .unwrap();
+    line.push(b'\n');
+    assert!(
+        line.len() * 2 <= MAX_LINE_BYTES,
+        "{} bytes against a limit of {MAX_LINE_BYTES}",
+        line.len()
+    );
+    let result = run(config(), move |mut host| async move {
+        say(&mut host, &line).await;
+    })
+    .await;
+    assert!(matches!(
+        result.outcome.unwrap().outcome,
+        Outcome::Receipt(_)
+    ));
+}
+
+#[test]
+fn the_limit_is_small_enough_for_a_tree_of_it_to_be_small() {
+    // 16 bytes of `0,` per 32-byte value is the worst amplification of a JSON line: the tree must stay far below a megabyte
+    const {
+        assert!(
+            MAX_LINE_BYTES * 16 <= 512 * 1024,
+            "a line of the host's is parsed into a tree sixteen times its size"
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -328,7 +432,8 @@ async fn a_host_that_closes_after_its_result_is_not_waited_for() {
 
 #[tokio::test(start_paused = true)]
 async fn the_bytes_after_the_result_are_not_read_beyond_a_line() {
-    // a flood after the result must not be buffered: the check stops at the first byte
+    // a flood after the result must not be read: the check stops at the first byte
+    let sent = result_line().len();
     let result = run(config(), |mut host| async move {
         say(&mut host, &result_line()).await;
         let chunk = vec![b'z'; 64 * 1024];
@@ -337,6 +442,51 @@ async fn the_bytes_after_the_result_are_not_read_beyond_a_line() {
                 break;
             }
         }
+    })
+    .await;
+    assert_eq!(
+        result.outcome.unwrap_err(),
+        ControlFailure::Protocol(ProtocolFailure::LineAfterResult)
+    );
+    // the result, and what the buffered reader fetches in the reads that tell the runner there is more: a few buffers, not
+    // the four megabytes on offer
+    assert!(
+        result.taken <= sent + 2 * READ_AHEAD,
+        "{} bytes were taken",
+        result.taken
+    );
+}
+
+/// A byte of a line that never ends is as much a break as a line that does: the host had its result accepted, and anything
+/// it says after is outside the protocol. It must not matter whether the host then keeps still or closes.
+#[tokio::test(start_paused = true)]
+async fn a_byte_after_the_result_is_a_break_whether_or_not_the_host_goes_on() {
+    for closes in [false, true] {
+        let result = run(config(), move |mut host| async move {
+            say(&mut host, &result_line()).await;
+            say(&mut host, b"z").await;
+            if closes {
+                host.get_mut().shutdown().await.unwrap();
+            } else {
+                sleep(Duration::from_secs(3600)).await;
+            }
+        })
+        .await;
+        assert_eq!(
+            result.outcome.unwrap_err(),
+            ControlFailure::Protocol(ProtocolFailure::LineAfterResult),
+            "the host closes: {closes}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_line_that_arrives_with_the_result_in_one_write_is_a_break() {
+    let result = run(config(), |mut host| async move {
+        let mut together = result_line();
+        together.extend_from_slice(BEAT);
+        say(&mut host, &together).await;
+        sleep(Duration::from_secs(3600)).await;
     })
     .await;
     assert_eq!(

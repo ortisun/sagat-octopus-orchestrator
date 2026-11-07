@@ -570,6 +570,12 @@ impl<R: Resolver, C: Connector> Relay<R, C> {
 
     /// Where the host's `CONTROL` connection arrives, once. The driver takes it when it builds the relay, before it
     /// starts the container, and waits on it for the time the host has to start. A second call gives `None`.
+    ///
+    /// The request line the driver writes on this connection holds the credentials, and the token is what the relay checks
+    /// before it hands the connection over. The driver therefore also sets [`RelayConfig::with_peer_uid`] to the user of
+    /// the container's slot: the relay does not require it (a test builds one without), and a process of the same group
+    /// that could read the token file would otherwise be given the credentials by asking for `CONTROL` first (G035-056).
+    /// The connection is the driver's from here: the relay's shutdown no longer reaches it, so the driver drops it.
     #[must_use]
     pub fn take_control(&self) -> Option<oneshot::Receiver<ControlStream>> {
         self.inner
