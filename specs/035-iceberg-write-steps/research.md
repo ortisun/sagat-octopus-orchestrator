@@ -2172,3 +2172,56 @@ The other fixes were wording:
   characters), and I did not measure whether PyArrow with `us-east-1` asks for the legacy global host `s3.amazonaws.com` instead of
   `s3.us-east-1.amazonaws.com` (a test asserts the legacy host is not allowed). *Exit condition:* measure it against the pinned
   PyArrow, and either allow the host or write down why not; decide the other partitions with the loaders.
+- **D035-115 — The runner reads the Iceberg connection of `ResolveDatabase` into the documents the host reads, and zeroises the
+  secret bytes as it parses them.** Seventh slice of T035-035, and the runner's half of T035-044. **Decided by: delegate**.
+  - *Why.* The server answers `ResolveDatabase` with the typed message `IcebergConnection` (`worker.proto`, already in the contract):
+    the settings of one revision and `credentials`, a map with one entry per secret (`catalog`, `storage`), each the JSON document of the
+    data model. The host reads the documents as the platform *stores* them (`to_json`). Something has to turn the one into the other,
+    and it is the place where the secret bytes first sit in the runner.
+  - *What it is.* `apps/database-runner/src/lake/connection.rs`, `convert(&mut pb::IcebergConnection) -> Converted`. A REST catalog over
+    S3 becomes the stored documents (`{"type":"rest","rest":{...}}`, `{"type":"s3","s3":{...},"credentials":"static"|"vended"}`); an
+    empty string is "not set" (protobuf has no other); the allowed modes and the limits are carried (`0` is not set). Glue, Hive, JDBC,
+    GCS and ADLS are `Unsupported`, with a name, before a container is started (G035-048); an incomplete connection is `Shape`. **A test
+    holds the result to the wire fixture** that the Rust request builder and the Python host both read, so the stored JSON of the domain,
+    the protobuf and the request line agree on this connection.
+  - *Secrets.* Each entry of `credentials` must be a JSON object of text to text, at most 16 KiB, with no name twice (refused at parse
+    time, not by keeping the last one); the bytes are zeroised in place as soon as they are parsed, **also when the connection is refused
+    for another reason and also when a secret is refused** (the secrets are read first for that), and the parsed values are `Zeroizing`
+    strings held in a `Secret` newtype whose `Debug` shows a count and nothing else (the `Debug` of `Zeroizing` prints the value). At most
+    two entries are read; more are refused and scrubbed before any is parsed. A key other than `catalog` and `storage` is refused, and
+    so is a `storage` secret for storage whose credentials the catalog vends: either would sit in the runner (and the sandbox) for nothing.
+    `Converted` shows no secret and no address; an error repeats nothing. `capability::scrub` also zeroises the `credentials` maps of the
+    three lake connections of a `ResolvedDatabase` that the PostgreSQL path receives and never reads.
+  - *What the converter refuses before a container is started.* Everything the host cannot open (`connection.py`): SigV4, remote signing,
+    an assumed role (`role_arn`, `external_id`), a catalog and a storage that disagree about vended credentials. It does not decide whether
+    a *mode* is allowed; it carries the allowed modes, the limits and the **egress ceiling**. A ceiling that is not set (or a number the
+    runner does not know) is `Shape`, not the domain's default `internal`: the server always sends one, so its absence is an anomaly and
+    must not widen what a revision may receive. Warehouse locations are bounded (16 of at most 2048 bytes) before they are cloned.
+  - *Independent review (security-reviewer, on the first version of this PR).* Findings taken: the egress ceiling was dropped (now carried,
+    absent refused); a `serde_json::Value` copy of every secret value was left unscrubbed (values are now parsed straight into `Zeroizing`
+    strings); duplicate names were silently collapsed; the number of entries and the location bounds were not checked before cloning;
+    vended-credentials disagreement and a storage secret for vended storage were left to fail in the host; the lake maps of a
+    PostgreSQL response were not scrubbed; `Secret` was an alias of the map and its `Debug` printed the values.
+  - *What the zeroisation does not reach (stated, not hidden).* `serde_json` copies a string that contains an escape (`"`, `\`, a control
+    character) into a scratch buffer of its own, and the message of a type error repeats the value it met; both are dropped unscrubbed. A
+    secret with an escape, and a document of the wrong shape, can therefore leave a short-lived copy in freed heap memory that this module
+    cannot zero. A hand-written parser or a scrubbing allocator could; neither is in this slice (G035-063 covers the same family in
+    `infra-lake`).
+  - *Evidence.* `cargo test -p sagat-database-runner`: 25 passed (21 in `lake::connection`, 1 new in `capability`); `cargo fmt --check`,
+    `cargo clippy --workspace --all-targets --locked -- -D warnings` and the three repository checkers clean. The module and the tests
+    were written together and passed at once, so they were **not seen failing**; instead 14 single mutations were run by hand against
+    the protections (scrub on too many entries, duplicate names, vended storage secret, vended mismatch, unset ceiling, location count,
+    location bytes, secret bound, remote signing, role ARN, unknown key, byte zeroisation, `Debug` redaction, lake-map scrub), and each
+    is killed by a test. One survived the first time (the unknown-key test added a third entry, so the entry bound refused it before the
+    name was looked at); the test now has two entries and kills it. `Guard::drop` calling `scrub` is not observable after the drop and is
+    covered by reading, not by a test; `scrub` itself is tested directly. No mutation pass (OD-2026-11-06-2).
+  - *Not done, and why this slice has no new dependency.* The server does not fill `iceberg` yet (T035-044: nothing in `service.rs` or
+    `worker/database.rs` mentions Iceberg). `Converted` is not yet turned into `infra_lake::Connection`: that needs
+    `sagat-infra-lake` as a dependency of `sagat-database-runner`, and **a new dependency edge changes `Cargo.lock`, which the CI
+    selector treats as an input of every package (every unit test and every integration target)**. The same goes for `zeroize` in
+    `infra-lake` (G035-063). Both are one deliberate change, taken together with the driver, rather than one expensive CI run each.
+- **G035-063 — `infra-lake` holds the secrets as plain strings.** `Connection` keeps them in `BTreeMap<String, String>`, the body in
+  `serde_json::Value` strings, and `encode_request` returns a `Vec<u8>` of the whole line; none is zeroised when it is dropped. The runner
+  can zeroise what it owns (D035-115) but not what `infra-lake` copies. *Exit condition:* `zeroize` in `infra-lake`'s manifest (a
+  `Cargo.lock` change, so the whole CI: do it once, with the `database-runner` → `infra-lake` edge), secrets as `Zeroizing`, the body
+  scrubbed on drop, and `encode_request` returning a `Zeroizing<Vec<u8>>`, each with a test.
