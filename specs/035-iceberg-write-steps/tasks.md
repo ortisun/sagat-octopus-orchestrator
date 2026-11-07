@@ -772,6 +772,9 @@ three conditions pass.
   taken, the first of them that the relay had no deny list (`relayDenyCidrs` is required outside development), then staging under the signals
   and the step's deadline, the lease's end no longer being the attempt's, permanent sandbox refusals not being retryable, and a dropped `run` keeping
   the directory and holding the slot. Gaps G035-069..071 register what is not fixed. Slice D must build the sandbox client with the settings' user.
+
+  *2026-11-07, twentieth step, left unticked (D035-128):* "remove the directory" has the sweep for what no attempt removed
+  (`apps/database-runner/src/lake/sweep.rs`): by age, real attempt directories only, a link never followed. Not scheduled yet (the shell).
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.

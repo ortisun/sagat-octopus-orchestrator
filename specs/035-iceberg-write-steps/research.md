@@ -2645,6 +2645,23 @@ The other fixes were wording:
   records, stays with no handle. A 4 MiB document of `{},` is about a million and a half values in the reader, tens of megabytes, and the input is
   read before a slot is taken, so it is bounded by the runner's `maxConcurrent` (64) and not by the slots. *Exit condition:* the sweep of slice D
   (by age, past the attempt's deadline) takes the leftovers; the memory is measured there, and the parse moves after the slot if it matters.
+- **D035-128 — The sweep of attempt directories nobody removed (a piece of slice D of D035-123).** **Decided by: delegate**. No `Cargo.lock` change.
+  - *What.* `apps/database-runner/src/lake/sweep.rs`: `sweep(work_root, now, older_than)` and `keep_sweeping(…)`. The driver keeps a directory when the
+    container may still be running, and a dropped or aborted attempt can leave one (G035-071); each holds the relay token and the author's records on
+    a volume the container shares. The sweep removes **by age**: a directory unchanged for longer than the longest attempt can last (one hour, the
+    longest `timeoutMs` the input accepts, plus the 90 s the slot is held back, plus five minutes: `SWEEP_AFTER`) belongs to no running attempt,
+    because its container ended by its deadline label and nothing else touches it.
+  - *Decisions.* It touches **real directories whose name is an attempt id** (ADR-0079's rule) and nothing else; a link is never followed, a file or
+    another name is left and counted as `foreign`. The age is the directory's last change and the edge itself is young. A directory it cannot remove
+    (the container's user left in it a subdirectory the runner cannot enter: G035-060, O035-006) is counted `failed` and tried again by the next pass.
+    The removal runs on a blocking thread. The pass is reported to a callback, because the metrics are not registered for it yet.
+  - *Evidence.* 7 unit tests against a real temporary directory (the set of ages, the edge, the threshold, a link to a directory outside that stays
+    intact, a file and a foreign name left alone, a directory the runner cannot enter counted and then taken once it can be, an unreadable root, the
+    loop that reports and stops); `cargo clippy -p sagat-database-runner --all-targets --locked -- -D warnings` clean. **Eight hand mutations, all
+    killed** (a link followed, the age ignored, the edge old, any name an attempt, a file an attempt, a threshold under the longest step, a failure
+    counted as removed, a sweeper that never stops).
+  - *Not done.* Nothing calls it: the shell (the rest of slice D) starts `keep_sweeping` with `SWEEP_AFTER` and the runner's stop token, once per minute or
+    so, and counts what it reports. The test of a directory the runner cannot enter is skipped in effect when the tests run as root, which can enter it.
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

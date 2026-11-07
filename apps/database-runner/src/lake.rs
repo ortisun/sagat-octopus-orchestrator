@@ -7,3 +7,4 @@ pub mod driver;
 mod fixtures;
 pub mod prepare;
 pub mod settings;
+pub mod sweep;
