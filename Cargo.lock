@@ -6140,6 +6140,7 @@ dependencies = [
  "sagat-application",
  "sagat-cli",
  "sagat-control-plane",
+ "sagat-database-runner",
  "sagat-dev-idp",
  "sagat-domain",
  "sagat-execution-engine",

@@ -2761,6 +2761,27 @@ The other fixes were wording:
   step's and the connection's exist; the platform contributes a default (D035-131). *Exit condition:* a decision (product) on whether an operator caps
   lake writes per namespace, with a home for it next to the SQL policy; until then the only ceilings are the contract's absolute bounds and the runner's
   own (`maxBytes`, `maxRecords`).
+- **D035-132 — The wire form of an Iceberg connection, held to the runner's reading of it (slice C of D035-130, the pure half).** **Decided by:
+  delegate**. `Cargo.lock` changes by one line (the test crate depends on `sagat-database-runner`, so that the two ends can be compared).
+  - *What.* `crates/api-grpc/src/lake_connection.rs`: `iceberg_connection(config, secrets) -> pb::IcebergConnection`, the server's end of what
+    `ResolveDatabase` answers a lake runner with, and `LakeSecrets`, the two resolved secrets (`catalog`, `storage`) as bytes, whose `Debug` shows only
+    whether each is there. It writes **every shape the proto carries** (REST with OAuth2, bearer or SigV4; Glue; Hive; JDBC; S3, GCS, ADLS; vended or
+    static storage); which of them the lake host can open is the **runner's** to refuse with a name (G035-048), not the server's to hide: a connection the
+    platform stored is answered as stored. Nothing calls it yet (the resolve path for a lake step is slice C, D035-130).
+  - *Decisions.* An absent optional setting is the empty string and the runner reads it as absent; `limits` is absent when none is set (zero means "not
+    set" for the others); the egress ceiling is always set (the runner refuses a connection without one); the modes keep their order; only the secrets
+    that were resolved are in `credentials`, under `catalog` and `storage`.
+  - *Evidence.* 10 tests in `crates/api-grpc/tests/lake_connection_wire.rs` (the message field by field for each shape, the flags in both places, the
+    optional settings, the order of the modes, the three ceilings, the limits, the credentials map, and that neither the message nor the secrets show a
+    value; the oneofs of the message have no `Debug` on purpose, so they are compared with `PartialEq`), and 4 in `tests/contract/iceberg-writes/
+    connection_wire.rs`, which depends on both ends: **the message the server writes, read by the runner's `convert`, is exactly the stored catalog and
+    storage documents, the warehouse locations and the two secrets of the wire fixture that the Python host parses**; a catalog that delegates with
+    vended storage and a compatible store with its endpoint and style come out as the documents the platform stores; and a Glue, a Hive, a JDBC catalog,
+    GCS and ADLS storage, answered as stored, are each refused by the runner as `Unsupported`, never misread. Clippy for the crates and the test crate
+    clean; the architecture check passes. **Thirteen hand mutations, all killed.**
+  - *Not done.* The sum type for `ResolvedDatabase` (it carries a mandatory SQL operation and one credential), the two-secret pin and its migration, the
+    resolve path that resolves both secrets in two phases and answers with this message, and the profile check that only the lake profile may resolve the
+    kind (D035-130 B and C). The stored form is checked here against the wire fixture only; the store's own writer is private to `infra-postgres`.
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

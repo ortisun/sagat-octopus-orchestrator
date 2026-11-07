@@ -789,6 +789,10 @@ three conditions pass.
   effective limits (`LakeLimits::effective`) and `lake_attempt_input` (`crates/application/src/worker/lake_input.rs`), which reproduces the runner's
   corpus and is read back by the runner's reader. Not done: what feeds it (the records evaluated, the workflow version and the first attempt's start
   read) and the lease path that calls it.
+
+  *2026-11-07, twenty-fourth step, left unticked (D035-132):* "`ResolvedDatabase.iceberg` is built in `crates/api-grpc/src/service.rs`" has its pure
+  half: `iceberg_connection` (`crates/api-grpc/src/lake_connection.rs`), whose message the runner's `convert` reads back as the stored documents of the
+  wire fixture. Not done: the two-secret pin (a migration), the resolve path, the sum type for `ResolvedDatabase` and the profile check.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
