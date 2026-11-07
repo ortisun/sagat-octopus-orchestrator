@@ -2370,6 +2370,53 @@ The other fixes were wording:
     together with their cases, so those were not seen failing first; the mutations stand in for that. No mutation pass (OD-2026-11-06-2).
   - *Not done.* The client behind `LakeSandbox` and the case that runs it against this server and a real engine over the real socket
     (ADR-0079 rule 14); the Compose service and the Kubernetes shape (T035-029); the isolation cases through this API.
+- **D035-120 — The lake runner reaches the sandbox API through a client that believes only an exact answer.** Eleventh slice of T035-035 and
+  the client half of the API of ADR-0079: `SocketSandbox` in `crates/infra-lake/src/sandbox_api/client.rs`, behind the `LakeSandbox` port.
+  **Decided by: delegate**. It changes `Cargo.lock` by the dependencies of `sagat-infra-lake` (`hyper` with its client feature,
+  `hyper-util`, `http-body-util`, `bytes`; four lines, no new package), which selects the whole CI.
+  - *What.* One connection to the node-local socket per call (connect within 2 s; optionally the kernel's word that the process at the other
+    end runs as the expected user, `expecting_server`; `Connection: close`; the answer read through a bound of `MAX_BODY_BYTES`; the whole call
+    under a limit, a start and a kill shorter than a wait, which the server holds for `WAIT_HOLD`). The three calls: `start`, `exited` (the
+    wait) and `kill`. The port changed with it: `StartRequest` carries the slot and the budget class the lake runner chose (the relay needs
+    the peer's user `uid_for_slot(slot)` before the container starts), `SandboxError::Refused(Reason)` keeps the reason of a refusal, and
+    `AttemptOutcome.sandbox_refusal` carries it to the report, so that a refusal is not shown as an outage.
+  - *Rules of the client (ADR-0079 rule 6, held by cases).* An answer that is not exactly one of those the wire defines is never read as
+    started or as ended (the strict readers of D035-118). A wait never resolves on a transport error, a timeout or a malformed answer: it
+    pauses (at least 250 ms after "running", so a server that answers at once is not asked in a loop; backing off to 2 s after an error)
+    and asks again, and an attempt id the API would refuse is pending for ever instead of being sent. A kill is "not confirmed" unless the
+    server says `ended: true`. The deadline goes in whole milliseconds, rounded up and never zero. An id that fails `attempt_id_ok` is
+    never sent: it is a defect of the caller, and the API would only refuse it.
+  - *Independent review (security-reviewer, given the client, the port and the ADR, not my conclusion).* No Blocker and no Major. Its findings
+    were fixed together with their cases (the round-trip file), so those cases were not seen failing first; the hand mutations below stand
+    in for that. **Obligations it left, not code of this slice:**
+    the relay of an attempt is built with `with_peer_uid(uid_for_slot(slot))` (G035-056); the trace context and the failure-kind metric are
+    the driver's (`apps/database-runner/src/lake.rs`). **Residual, accepted and written down:** a `kill` and the `start` before it are on
+    separate connections, so the kill may reach the server first; the relay is already stopped by then and the container ends by its
+    deadline label (the sweep is the clock), and the driver may kill again.
+  - *Evidence.* 19 round-trip cases in `apps/sandbox-runner/src/lake/roundtrip.rs` (the real router on a real socket with the fake engine,
+    and a scripted server that answers bytes, closes, holds, or never stops): the request as the API reads it, the rounding of the deadline,
+    ids never sent, each refusal and the outage with its reason, a wait that ends only when the container has, a cancelled start ended by the
+    kill that follows, a wrong server not believed (another user, a wrong framing, a chunk, `100-Continue`), an answer cut at its bound, a
+    server that never answers given up on. `cargo test -p sagat-infra-lake -p sagat-sandbox-runner`: 110 passed in the sandbox runner's
+    library, 34 in `attempt`, 0 failed; `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and the three repository
+    checkers clean. **Mutations by hand on the client: all killed by a test but one**, "the abort of the connection's driver removed", which
+    survives because hyper itself ends a connection whose request was dropped: an equivalent mutant today, kept as a guarantee that does
+    not depend on the library (its comment says so). Several of my own cases were wrong the first time (an id that is not hexadecimal, the
+    size of a chunk, a counter read before the call it counted) and were corrected, not retried. No mutation pass (OD-2026-11-06-2).
+  - *Against a real engine (ADR-0079 rule 14).* `tests/integration/iceberg-writes/sandbox_api.rs`: the client, the node (`serve::run` with the
+    Docker adapter) and the project's Docker (29.5.2, API 1.54) on a real socket, with a real memory-backed work volume and a real sub-path
+    mount. Two cases: an attempt is started, the engine holds one container of it in the slot, the class and the deadline label that were
+    asked for, the wait ends when the container has, and the kill removes it and says so; an attempt without its directory is refused as
+    `directory` and makes no container. `integration_iceberg_writes`: 50 passed, 0 failed (the two new; `isolation.rs` now takes its holder
+    container from a shared function, and its cases pass). **Four hand mutations of the node, all killed by these cases:** the slot of the
+    container, the class label, a directory that is never missing, a deadline label that ignores the attempt's deadline. (The first run of the
+    mutations said all four survived: my reading of the output looked for `FAILED` at the end of a line, which `--nocapture` moves; read again
+    from the failures list, all four were killed.) `cargo clippy -p sagat-tests --all-targets -- -D warnings` clean.
+  - *Not done.* A container that is held up, through the API and the real engine (the ceiling, the deadline sweep, a kill of one that runs):
+    the stand-in image has no host program, so the container the API starts ends by itself; those are `lifecycle.rs` (the engine) and
+    `roundtrip.rs` (the router). That the work root the node checks and the volume the container mounts are one volume (they are two in
+    these cases so that they run against an engine in another machine; the deployment is T035-029). The `database-runner` → `infra-lake`
+    edge, `zeroize` (G035-063) and the driver; the Compose service and the Kubernetes shape (T035-029).
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

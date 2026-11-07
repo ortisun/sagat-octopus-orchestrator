@@ -54,6 +54,7 @@ use tokio_util::sync::CancellationToken;
 use crate::control::{ControlConfig, Observer, converse};
 use crate::protocol::HostResult;
 use crate::relay::{Connector, ControlStream, Relay, RelayDenials, Resolver};
+use crate::sandbox_api::{Class, Reason};
 use crate::staging::AttemptDir;
 use crate::supervisor::{AttemptFacts, Disposition, Ended, dispose};
 
@@ -61,10 +62,14 @@ use crate::supervisor::{AttemptFacts, Disposition, Ended, dispose};
 const SOCKET_MODE: u32 = 0o660;
 
 /// What the sandbox is asked for. It carries no credential, no image, no mount and no command: the sandbox decides all of
-/// those, from the attempt's id (D035-110 on the API).
+/// those, from the attempt's id (ADR-0079). It does carry the slot, because the relay needs the user of the container before
+/// the container exists, and the class of budget, which is a name and not a limit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartRequest {
     pub attempt_id: String,
+    /// The slot the container runs in; its user is [`crate::sandbox_api::uid_for_slot`], which the relay admits and nobody else.
+    pub slot: u32,
+    pub class: Class,
     /// How long the container may live, from the moment of the request. The sandbox ends it at this time even if the runner
     /// is gone: it is the backstop for a runner that dies or drops the attempt, so it is never zero.
     pub deadline: Duration,
@@ -75,8 +80,9 @@ pub struct StartRequest {
 pub enum SandboxError {
     #[error("the sandbox could not be reached or could not start the container")]
     Unavailable,
-    #[error("the sandbox refused the container (the ceiling of containers on the node)")]
-    Refused,
+    /// The sandbox answered and said no, for a reason that names a rule and never a value.
+    #[error("the sandbox refused the container ({})", .0.as_str())]
+    Refused(Reason),
 }
 
 /// What the engine said about a container when it was ended.
@@ -112,6 +118,10 @@ pub struct Plan<'a> {
     pub request: &'a [u8],
     /// When the attempt is over, whatever it is doing.
     pub deadline: Instant,
+    /// The slot of the attempt on this node. The relay is built for the user of this slot ([`crate::sandbox_api::uid_for_slot`]).
+    pub slot: u32,
+    /// The budget class of the attempt: the lake runner's own table maps a kind of write to one.
+    pub class: Class,
     /// How long the host has to open the control conversation once its container is started.
     pub host_start: Duration,
     pub control: ControlConfig,
@@ -129,6 +139,8 @@ impl fmt::Debug for Plan<'_> {
                 &format_args!("<{} bytes, not shown>", self.request.len()),
             )
             .field("deadline", &self.deadline)
+            .field("slot", &self.slot)
+            .field("class", &self.class)
             .field("host_start", &self.host_start)
             .field("control", &self.control)
             .field("kill_limit", &self.kill_limit)
@@ -156,6 +168,10 @@ pub struct AttemptOutcome {
     /// the life time it was started with runs out.
     pub container_ended: bool,
     pub relay_denials: RelayDenials,
+    /// Why the sandbox said no, when it answered and said no (ADR-0079, rule 15): kept apart from an outage, which this is
+    /// `None` for, so that a node at its ceiling and a dead engine are not the same line in the driver's metrics and in the
+    /// failure's detail. Both end the attempt as the sandbox being unavailable.
+    pub sandbox_refusal: Option<Reason>,
 }
 
 /// `ended` is left out: it holds what the host sent, the column of a failure among it, which [`dispose`] filters and a
@@ -169,6 +185,7 @@ impl fmt::Debug for AttemptOutcome {
             .field("memory_killed", &self.memory_killed)
             .field("container_ended", &self.container_ended)
             .field("relay_denials", &self.relay_denials)
+            .field("sandbox_refusal", &self.sandbox_refusal)
             .finish_non_exhaustive()
     }
 }
@@ -223,6 +240,7 @@ fn outcome<R: Resolver, C: Connector>(
         memory_killed: exit.memory_killed,
         container_ended: exit.ended,
         relay_denials: relay.denials(),
+        sandbox_refusal: None,
     }
 }
 
@@ -331,8 +349,17 @@ where
     };
     let serving = Serving::start(relay.clone(), listener);
 
-    let (ended, request_sent, started) =
-        drive(sandbox, attempt.id(), plan, signals, control, on_heartbeat).await;
+    let mut refusal = None;
+    let (ended, request_sent, started) = drive(
+        sandbox,
+        attempt.id(),
+        plan,
+        signals,
+        control,
+        on_heartbeat,
+        &mut refusal,
+    )
+    .await;
 
     // The relay goes first: its tunnels are the container's only route out, and a kill that hangs must not leave them open.
     serving.finish().await;
@@ -353,7 +380,10 @@ where
     } else {
         ended
     };
-    outcome(ended, request_sent, exit, &relay)
+    AttemptOutcome {
+        sandbox_refusal: refusal,
+        ..outcome(ended, request_sent, exit, &relay)
+    }
 }
 
 /// The container, the wait for the host and the conversation. Returns how it ended, whether the request was begun, and
@@ -365,6 +395,7 @@ async fn drive<S: LakeSandbox>(
     signals: &Signals,
     control: oneshot::Receiver<ControlStream>,
     on_heartbeat: impl FnMut() + Send,
+    refusal: &mut Option<Reason>,
 ) -> (Ended, bool, bool) {
     let began = Instant::now();
     // The deadline, a cancellation or a lease can have come since the check that began the attempt (a slow bind, a busy
@@ -378,6 +409,8 @@ async fn drive<S: LakeSandbox>(
     }
     let request = StartRequest {
         attempt_id: id.to_owned(),
+        slot: plan.slot,
+        class: plan.class,
         deadline: remaining,
     };
     let started = tokio::select! {
@@ -385,7 +418,12 @@ async fn drive<S: LakeSandbox>(
         () = signals.lease_lost.cancelled() => Err(Ended::LeaseLost),
         () = signals.cancelled.cancelled() => Err(Ended::Cancelled),
         () = sleep_until(plan.deadline) => Err(Ended::DeadlinePassed),
-        result = sandbox.start(&request) => result.map_err(|_| Ended::SandboxUnavailable),
+        result = sandbox.start(&request) => result.map_err(|error| {
+            if let SandboxError::Refused(reason) = error {
+                *refusal = Some(reason);
+            }
+            Ended::SandboxUnavailable
+        }),
     };
     if let Err(first) = started {
         return (settled(first, None, plan, signals), false, true);
@@ -463,6 +501,8 @@ mod tests {
         Plan {
             request: b"{}\n",
             deadline,
+            slot: 1,
+            class: Class::Small,
             host_start: Duration::from_secs(1),
             control: ControlConfig::default(),
             kill_limit: Duration::from_secs(1),

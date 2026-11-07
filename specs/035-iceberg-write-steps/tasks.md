@@ -730,6 +730,13 @@ three conditions pass.
   socket, and `sagat_api_http::serve_unix` serves it with the peer's user checked at accept. Reviewed by a security and a correctness
   reviewer (a Blocker found and fixed). Not done: the client behind `LakeSandbox`, the run of the two over a real socket and a real engine,
   and the Compose and Kubernetes shapes.
+
+  *2026-11-07, twelfth step, left unticked (D035-120):* "request the container" has its client: `SocketSandbox`
+  (`crates/infra-lake/src/sandbox_api/client.rs`) reaches the socket of D035-119 with the three calls, believes only an exact answer, and
+  is run against the real router by 19 cases and, with the node and a real Docker engine on a real socket, by 2 (`sandbox_api.rs`). A
+  refusal now reaches the report with its reason. Reviewed by a security reviewer (no Blocker, no Major). Not done: a held-up container
+  through the API against the real engine, the `database-runner` edge and `zeroize` (G035-063), the driver, and the Compose and
+  Kubernetes shapes.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.

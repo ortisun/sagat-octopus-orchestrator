@@ -5935,7 +5935,11 @@ dependencies = [
 name = "sagat-infra-lake"
 version = "0.2.0"
 dependencies = [
+ "bytes",
  "getrandom 0.4.3",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "ipnet",
  "jsonschema",
  "sagat-domain",
@@ -6141,6 +6145,7 @@ dependencies = [
  "sagat-infra-connectors",
  "sagat-infra-egress",
  "sagat-infra-ir",
+ "sagat-infra-lake",
  "sagat-infra-nats",
  "sagat-infra-postgres",
  "sagat-infra-sandbox",

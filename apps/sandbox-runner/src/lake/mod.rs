@@ -18,6 +18,9 @@ pub mod config;
 pub mod engine;
 pub mod serve;
 
+#[cfg(test)]
+mod roundtrip;
+
 pub use config::{LakeConfig, SOCKET_NAME};
 
 #[cfg(test)]
