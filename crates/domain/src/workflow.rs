@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use crate::database::{
     DatabaseOperation, EgressField, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
-    MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, OperationKind, RecordSource,
+    MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, ManagedKind, OperationKind, RecordSource,
 };
 use crate::execution::{ApprovalPolicy, ExecutionInstanceId};
 use crate::identity::{Slug, clip};
@@ -856,6 +856,19 @@ impl Node {
     #[must_use]
     pub const fn iceberg_write(&self) -> Option<&IcebergWrite> {
         self.iceberg.as_ref()
+    }
+
+    /// The kind of isolated runner that executes this step, or `None` for an ordinary activity or any other node.
+    /// Every path that treats a managed step differently from an ordinary one asks this (D035-134).
+    #[must_use]
+    pub const fn managed_kind(&self) -> Option<ManagedKind> {
+        if self.database.is_some() {
+            Some(ManagedKind::Sql)
+        } else if self.iceberg.is_some() {
+            Some(ManagedKind::Lake)
+        } else {
+            None
+        }
     }
 
     /// What the author says about the effect of this activity (irreversible, high risk, how its

@@ -366,6 +366,18 @@ impl ConnectionRef {
     }
 }
 
+/// Which isolated runner executes a managed step. A managed step is never offered to an ordinary worker, its lease does
+/// not carry the run's data, and its own runner reports its outcome (feature 035, D035-134). A path that needs to know
+/// whether a step is managed asks [`Node::managed_kind`](crate::workflow::Node::managed_kind), never whether it has a SQL
+/// operation: that names only one of the kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedKind {
+    /// A SQL operation, executed by a database runner.
+    Sql,
+    /// An Iceberg write, executed by a lake runner.
+    Lake,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationKind {
     Query,

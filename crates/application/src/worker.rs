@@ -1050,7 +1050,7 @@ where
                 })
                 .filter_map(|(instance, _)| {
                     let n = def.node_for_instance(instance)?;
-                    if n.database_operation().is_some()
+                    if n.managed_kind().is_some()
                         && (!instance.path().is_root()
                             || session.accepted_protocol_minor < DATABASE_PROTOCOL_MINOR)
                     {
@@ -1122,7 +1122,7 @@ where
                     .parts()
                     .0
                     .node_for_instance(&instance)
-                    .is_some_and(|n| n.database_operation().is_some());
+                    .is_some_and(|n| n.managed_kind().is_some());
             let input = if managed {
                 b"{}".to_vec()
             } else {
@@ -1314,7 +1314,7 @@ where
             .parts()
             .0
             .node_for_instance(instance)
-            .is_some_and(|node| instance.path().is_root() && node.database_operation().is_some());
+            .is_some_and(|node| instance.path().is_root() && node.managed_kind().is_some());
         let mut effects = Effects::by(
             Actor::Worker(if managed {
                 session.subject.clone()
@@ -2200,7 +2200,7 @@ where
                 .parts()
                 .0
                 .node_for_instance(task.instance)
-                .is_some_and(|n| n.database_operation().is_some())
+                .is_some_and(|n| n.managed_kind().is_some())
     }
 
     fn database_write<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
