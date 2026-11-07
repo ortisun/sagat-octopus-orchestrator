@@ -688,6 +688,12 @@ three conditions pass.
   starts" have `crates/infra-lake/src/staging.rs` (`AttemptDir`, `StagingLimits`). Not done there: the `ReadBlob` stream itself (a source
   the driver gives it), the conversion of a 017 result into rows (G035-059), Parquet record counting (G035-058), zeroising. The modes
   stay 0770 until the owner answers O035-006 (0750 would stop a compromised host from leaving a directory the runner cannot remove).
+
+  *2026-11-07, fifth slice, left unticked (D035-113):* "open the relay and request the container; serve the request line; map heartbeats
+  to lease heartbeats; kill the container on lease loss, cancellation, deadline, a missing heartbeat or `memory.max`; parse the result"
+  have `crates/infra-lake/src/attempt.rs` (`LakeSandbox`, `run_attempt`), tested end to end with a scripted host on the real socket. Not
+  done: the production sandbox client (G035-055), `apps/database-runner/src/lake.rs` (lease, `ResolveDatabase`, `ReadBlob`, the report),
+  the lease heartbeat, zeroising, `peer_uid` (G035-056).
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.

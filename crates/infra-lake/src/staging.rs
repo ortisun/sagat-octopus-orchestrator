@@ -110,6 +110,7 @@ pub struct Staged {
 /// The directory of one attempt, with what was staged into it.
 #[derive(Debug)]
 pub struct AttemptDir {
+    id: String,
     path: PathBuf,
     limits: StagingLimits,
     bytes: u64,
@@ -201,6 +202,7 @@ impl AttemptDir {
         })?;
         // from here the directory is ours and `Drop` removes it if anything below fails
         let attempt = Self {
+            id: attempt_id.to_owned(),
             path,
             limits,
             bytes: 0,
@@ -226,6 +228,12 @@ impl AttemptDir {
             .and_then(|()| file.write_all(b"\n"))
             .and_then(|()| file.flush())
             .map_err(|_| StagingError::Io)
+    }
+
+    /// The attempt's id: the name of its directory, and what the sandbox is asked for.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     /// The attempt's directory: what the container is given.
