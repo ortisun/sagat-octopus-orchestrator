@@ -224,8 +224,9 @@ pub struct LakeStorage {
     pub credentials: StorageCredentials,
 }
 
-/// Ceilings for one write. The effective value is the minimum of the platform's, the namespace's, the connection's
-/// and the step's, and zero is not unlimited: a ceiling that is absent here is the next one up.
+/// Ceilings for one write. The effective value is the strictest of the connection's and the step's ([`LakeLimits::effective`]),
+/// and the platform's default when neither says; zero is not unlimited, and a ceiling that is absent here is the next one up.
+/// (There is no platform or namespace policy for lake limits yet: G035-072.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LakeLimits {
     pub max_record_bytes: Option<u32>,
@@ -247,6 +248,48 @@ impl LakeLimits {
             Err(LakeConfigError::InvalidLimits)
         }
     }
+
+    /// The limits a write runs under: for each, the **strictest** of what the step and the connection say, and the platform's
+    /// default when neither says. A ceiling that is absent is the next one up and zero is not unlimited, so every value here
+    /// is a number the runner can enforce. The default is a default and not a ceiling: there is no platform or namespace policy
+    /// for lake limits yet (G035-072), so a step may name more than the default when the connection does not forbid it.
+    #[must_use]
+    pub fn effective(self, connection: Self) -> EffectiveLakeLimits {
+        let strictest = |step: Option<u32>, connection: Option<u32>, default: u32| {
+            [step, connection]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(default)
+        };
+        EffectiveLakeLimits {
+            max_record_bytes: strictest(
+                self.max_record_bytes,
+                connection.max_record_bytes,
+                DEFAULT_MAX_RECORD_BYTES,
+            ),
+            max_records: strictest(
+                self.max_records,
+                connection.max_records,
+                DEFAULT_MAX_RECORDS,
+            ),
+            timeout_ms: strictest(self.timeout_ms, connection.timeout_ms, DEFAULT_TIMEOUT_MS),
+        }
+    }
+}
+
+/// What a write runs under when neither the step nor the connection says (D035-131): a megabyte a record, a million records, ten
+/// minutes. The last is the sandbox runner's default ceiling for an attempt, so a default write is never refused by it.
+pub const DEFAULT_MAX_RECORD_BYTES: u32 = 1_048_576;
+pub const DEFAULT_MAX_RECORDS: u32 = 1_000_000;
+pub const DEFAULT_TIMEOUT_MS: u32 = 600_000;
+
+/// The limits of one write, every one a number: [`LakeLimits::effective`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveLakeLimits {
+    pub max_record_bytes: u32,
+    pub max_records: u32,
+    pub timeout_ms: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

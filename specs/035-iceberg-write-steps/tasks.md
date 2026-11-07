@@ -784,6 +784,11 @@ three conditions pass.
   it is built: a lake step is not "managed" anywhere (about ten places key on `database_operation()`), no worker can register for it, one secret
   is pinned per attempt, and the facts the input needs are partly unstored. The order is A (the managed kind), B (registration), C (resolve and two
   secrets), D (the input builder), E (admission, after the 018 pull requests), F (completion and `ReadBlob` scoped to the run), G (the runner's shell).
+
+  *2026-11-07, twenty-third step, left unticked (D035-131):* "build the attempt input … `effectKey`, `firstAttemptStartedAt` …" has its pure core: the
+  effective limits (`LakeLimits::effective`) and `lake_attempt_input` (`crates/application/src/worker/lake_input.rs`), which reproduces the runner's
+  corpus and is read back by the runner's reader. Not done: what feeds it (the records evaluated, the workflow version and the first attempt's start
+  read) and the lease path that calls it.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.

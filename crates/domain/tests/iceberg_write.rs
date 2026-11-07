@@ -707,3 +707,75 @@ fn the_weight_of_a_step_is_exactly_the_bytes_it_holds() {
         "one mapped column"
     );
 }
+
+// -- the limits a write runs under (D035-131) -----------------------------------------------------------------------------
+
+mod effective_limits {
+    use sagat_domain::database::{
+        DEFAULT_MAX_RECORD_BYTES, DEFAULT_MAX_RECORDS, DEFAULT_TIMEOUT_MS, EffectiveLakeLimits,
+        LakeLimits,
+    };
+
+    const fn limits(bytes: Option<u32>, records: Option<u32>, timeout: Option<u32>) -> LakeLimits {
+        LakeLimits {
+            max_record_bytes: bytes,
+            max_records: records,
+            timeout_ms: timeout,
+        }
+    }
+
+    #[test]
+    fn when_neither_the_step_nor_the_connection_says_the_platform_default_is_the_limit() {
+        assert_eq!(
+            LakeLimits::default().effective(LakeLimits::default()),
+            EffectiveLakeLimits {
+                max_record_bytes: DEFAULT_MAX_RECORD_BYTES,
+                max_records: DEFAULT_MAX_RECORDS,
+                timeout_ms: DEFAULT_TIMEOUT_MS,
+            }
+        );
+        assert_eq!(DEFAULT_MAX_RECORD_BYTES, 1_048_576);
+        assert_eq!(DEFAULT_MAX_RECORDS, 1_000_000);
+        assert_eq!(DEFAULT_TIMEOUT_MS, 600_000);
+    }
+
+    #[test]
+    fn each_limit_is_the_strictest_of_the_step_and_the_connection() {
+        let step = limits(Some(4096), Some(500), Some(60_000));
+        let connection = limits(Some(8192), Some(100), Some(120_000));
+        let effective = step.effective(connection);
+        assert_eq!(effective.max_record_bytes, 4096, "the step is stricter");
+        assert_eq!(effective.max_records, 100, "the connection is stricter");
+        assert_eq!(effective.timeout_ms, 60_000, "the step is stricter");
+        // and it does not depend on which side says it
+        assert_eq!(connection.effective(step), effective);
+    }
+
+    #[test]
+    fn a_limit_only_one_side_names_is_that_sides_and_the_others_stay_default() {
+        let only_step = limits(None, Some(10), None).effective(LakeLimits::default());
+        assert_eq!(only_step.max_records, 10);
+        assert_eq!(only_step.max_record_bytes, DEFAULT_MAX_RECORD_BYTES);
+        assert_eq!(only_step.timeout_ms, DEFAULT_TIMEOUT_MS);
+
+        let only_connection = LakeLimits::default().effective(limits(None, None, Some(5000)));
+        assert_eq!(only_connection.timeout_ms, 5000);
+        assert_eq!(only_connection.max_records, DEFAULT_MAX_RECORDS);
+    }
+
+    #[test]
+    fn the_default_is_a_default_and_not_a_ceiling() {
+        // nobody says less than the default, so a step may name more
+        let bigger =
+            limits(Some(DEFAULT_MAX_RECORD_BYTES + 1), None, None).effective(LakeLimits::default());
+        assert_eq!(bigger.max_record_bytes, DEFAULT_MAX_RECORD_BYTES + 1);
+    }
+
+    #[test]
+    fn the_defaults_are_inside_the_bounds_the_platform_accepts() {
+        // a connection or a step with exactly the default validates, so a default write is one that could have been saved
+        assert!((1024..=2_147_483_648).contains(&DEFAULT_MAX_RECORD_BYTES));
+        assert!((1..=100_000_000).contains(&DEFAULT_MAX_RECORDS));
+        assert!((1000..=3_600_000).contains(&DEFAULT_TIMEOUT_MS));
+    }
+}

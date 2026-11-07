@@ -9,6 +9,7 @@
 //! have happened (hence idempotency keys).
 
 mod database;
+pub mod lake_input;
 mod output;
 mod scoped;
 mod scoped_capabilities;
