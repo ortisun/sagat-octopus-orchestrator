@@ -2319,3 +2319,61 @@ The other fixes were wording:
   - *Not done.* Everything with a socket: the server (lake mode, the listener and its limits, admission over `LakeEngine`), the client
     behind `LakeSandbox`, the equality of `uid_for_slot` here and in `crates/infra-sandbox` (a test in the sandbox runner, which will
     depend on both: the `tests` crate depends on only one of them, and an edge there would select the whole CI for one assertion).
+- **D035-119 — Lake mode of the sandbox runner serves the API of ADR-0079.** Tenth slice of T035-035 and the server half of the API:
+  `sandbox-runner lake`. **Decided by: delegate**. It changes `Cargo.lock` (the sandbox runner depends on `sagat-infra-lake` and on
+  `rustix`; `tempfile` is a dev-dependency of two crates), which selects the whole CI: one deliberate run. The client (and so the HTTP
+  client's dependencies), the `database-runner` → `infra-lake` edge and `zeroize` are the next lock change.
+  - *What.* `apps/sandbox-runner/src/lake/`: `config` (the settings, and what is refused at start), `engine` (the port, the Docker adapter
+    and an in-memory fake), `admission` (start, wait, kill, the sweeps, the drain), `api` (the router: a closed body for every answer and
+    every refusal), `serve` (the socket, the lock, the sweeper, the drain); the `lake` subcommand and its help; and
+    `sagat_api_http::serve_unix`: the HTTP loop of the platform generalised over a private `Acceptor` (TCP and TLS unchanged), with the
+    peer's user checked at accept, before a byte is read.
+  - *Decisions the ADR left open, taken here.* Occupancy is read from the engine's labels on each start, never kept; the check and the
+    reservation are made under one lock held across the list and not the launch; the reservation is a **guard** on a plain mutex, and
+    `start` runs in a task of its own; an idempotent start is keyed on the attempt label and compares slot and class; a start and a kill of
+    one attempt never run at once; waits are as many as the ceiling; ended containers that are kept are capped at twice the ceiling; the
+    memory a container is charged is the **label it was created with** (`sagat.lake.memory`), the largest class when there is none; the
+    deadline label is the attempt's rounded up plus a grace, refused above the node's ceiling and never cut; the sweep (30 s, at most 60)
+    is the deadline's only clock, with the age sweep beside it as the backstop for a label that is wrong or missing; the drain refuses
+    starts, answers waits and kills for 30 s, and leaves the containers to their labels.
+  - *Refused at start-up.* Any `SAGAT_RUNNER_*` variable (by prefix, over the whole environment); a peer that is root, the overflow id, a user
+    of the lake containers' range, or (outside development) the user of the process; a group of root or of the overflow id; no owner; an image
+    by tag outside development; a limit of zero or past its cap (the plan's table: 2 and at most 8 containers, 10 and at most 60 minutes,
+    at most 16 GiB per container, and a cap on each other limit that catches a number written in bytes); a node with less memory than its
+    largest class; a work root that is not a directory; an engine whose API is older than 1.45 (the sub-path mount that confines a
+    container to its attempt directory); a socket directory that is a link, is not the process's, holds anything but the socket and the lock,
+    or whose lock is held (one process to a socket).
+  - *Independent review (security-reviewer and correctness-reviewer, given the files and the ADR, not my conclusion; every claim checked
+    before it was taken).* **Blocker, from both:** a start whose client gave up leaked its reservation for good (hyper's `half_close` is
+    off by default, so a closed connection drops the handler), and the ADR's "a start runs in a task of its own" was not implemented; after
+    `ceiling` abandoned starts every start was refused until a restart. Fixed by the spawn and the guard, with four cases: the start dropped
+    inside the engine, the caller going away, a launch that panics, and a real client that closes its connection mid-start (two cases over
+    the socket). **Majors taken:** a second process took a live socket and its exit deleted the next one's (an exclusive lock, and the
+    directory is checked, not trusted); the socket directory followed links and its owner was not checked; exited containers were not bounded
+    and a peer chooses their deadline; the config defaults and caps contradicted the plan's table; the ADR's "in-process timer" did not exist
+    (the ADR now says the sweep is the clock); memory was charged by the settings of today. **Minors taken:** the admission lock is waited
+    for a bounded time; a reservation and its container are counted once; `Exists` is `started` only for the same slot and class; the admin
+    listener is bound before the socket; the body is read within five seconds; the gauge falls when containers end;
+    the large class's file limit is not the small one's; the work root is checked; the engine's API version is checked.
+    **Not taken:** a configurable slot range (G035-065); ending the drain early when idle, the comparison of the node's memory with the
+    machine's, and a bound on hyper's header buffer, which holds the 4 KiB limit as policy after the head is parsed (G035-066); an overlap
+    check of the socket directory with the work root; a suspicion about the per-attempt lock map that is a few bytes at worst.
+  - *Found by the cases themselves.* A mutation of the ceiling check made a case **hang** (the second start waited on a gate nobody opened):
+    the gates of the fake now give way after five seconds and the waits of the cases are bounded, so that a missing protection fails a suite
+    instead of stalling it; `/v1/attempts//wait` is a malformed attempt id (400), not an unknown route; the fake kept a memory flag after a
+    removal that the engine does not.
+  - *Evidence.* `cargo test` of `sagat-api-http`, `sagat-infra-lake`, `sagat-infra-sandbox` and `sagat-sandbox-runner`: 487 passed, 0 failed
+    (71 cases in `lake`, 3 of the command line, 6 of `serve_unix` over a real socket); the whole workspace's unit tests: 526 passed, 0 failed;
+    `integration_iceberg_writes` against the project's Docker (29.5.2): 48 passed (27 of the lifecycle, two of them new: the engine's API
+    version, real and scripted); `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` and the three repository
+    checkers clean. **Mutations by hand: 32 on the server and 3 on `serve_unix`, all killed by a test.** The reviews' findings were fixed
+    together with their cases, so those were not seen failing first; the mutations stand in for that. No mutation pass (OD-2026-11-06-2).
+  - *Not done.* The client behind `LakeSandbox` and the case that runs it against this server and a real engine over the real socket
+    (ADR-0079 rule 14); the Compose service and the Kubernetes shape (T035-029); the isolation cases through this API.
+- **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
+  accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
+  two lake runners share a node.
+- **G035-066 — Deployment obligations of the node that no test can hold.** The drain is a fixed 30 s, so an orchestrator must give the process
+  at least that and the 10 s grace before it kills it (a Compose `stop_grace_period`, a pod's `terminationGracePeriodSeconds`); the node's memory
+  is what the operator says it is and is not compared with the machine's; hyper's header buffer, not the 4 KiB policy, bounds what a request
+  head can hold. *Exit condition:* the Compose service and the Helm shape of T035-029 set the grace and size the memory from the machine.

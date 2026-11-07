@@ -724,6 +724,12 @@ three conditions pass.
   *2026-11-07, tenth step, left unticked (D035-118):* "request the container" has the wire of the sandbox API: `crates/infra-lake/src/sandbox_api.rs`
   (the request, the answers, the strict readers a client reads them with) and one corpus of 76 cases that the server will read too.
   Nothing has a socket yet: the server, the client behind `LakeSandbox` and the dependency edges that select the whole CI are the next step.
+
+  *2026-11-07, eleventh step, left unticked (D035-119):* "request the container" and "fail `LAKE_SANDBOX_UNAVAILABLE` when the sandbox runner
+  is unreachable" have their server: `sandbox-runner lake` (`apps/sandbox-runner/src/lake/`) serves the API of ADR-0079 on a node-local
+  socket, and `sagat_api_http::serve_unix` serves it with the peer's user checked at accept. Reviewed by a security and a correctness
+  reviewer (a Blocker found and fixed). Not done: the client behind `LakeSandbox`, the run of the two over a real socket and a real engine,
+  and the Compose and Kubernetes shapes.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
