@@ -333,6 +333,25 @@ def test_a_pointer_decodes_tilde_one_after_tilde_zero_not_before() -> None:
     assert row == {"a": "v"}
 
 
+@pytest.mark.parametrize("segment", ["0", "1", "3"])
+def test_an_array_index_in_a_pointer_selects_the_element(segment: str) -> None:
+    table = schema(column("a", StringType()))
+    row, _ = map_record(table, {"items": ["w", "x", "y", "z"]}, mapping=[(f"/items/{segment}", "a")])
+    assert row == {"a": "wxyz"[int(segment)]}
+
+
+# RFC 6901: an index is "0" or digits that do not start with 0. Python's `str.isdigit` is true for "²" and "٣" (and
+# `int("²")` raises), and `int("01")` is 1, so the check must be ASCII and must refuse a leading zero. A segment that
+# is not an index is a missing value, as for any other pointer that leads nowhere.
+@pytest.mark.parametrize(
+    "segment", ["²", "٣", "①", "00", "01", "+1", "-1", " 1", "1 ", "1.0", "4", "99999999999999999999"]
+)
+def test_a_segment_that_is_not_an_array_index_leads_nowhere(segment: str) -> None:
+    table = schema(column("a", StringType()))
+    row, _ = map_record(table, {"items": ["w", "x", "y", "z"]}, mapping=[(f"/items/{segment}", "a")])
+    assert row == {"a": None}
+
+
 def test_a_null_element_of_a_required_list_element_is_refused() -> None:
     kind = ListType(element_id=20, element_type=IntegerType(), element_required=True)
     with pytest.raises(Failure) as caught:

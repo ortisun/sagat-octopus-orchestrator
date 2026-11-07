@@ -1,0 +1,77 @@
+{
+  "protocol": "sagat.lake.v1",
+  "operation": "icebergWrite",
+  "effectKey": "run-7f3a/load/1",
+  "firstAttemptStartedAt": "2026-11-05T10:00:00.000Z",
+  "relay": {
+    "socket": "/work/attempt-1/relay.sock",
+    "token": "relay-token-canary-0123456789abcdef"
+  },
+  "table": {
+    "namespace": ["sales"],
+    "name": "orders"
+  },
+  "ref": "main",
+  "mode": "append",
+  "overwrite": null,
+  "upsert": null,
+  "snapshotProperties": {
+    "sagat.effect-key": "run-7f3a/load/1",
+    "sagat.run-id": "run-7f3a",
+    "sagat.step-id": "load",
+    "sagat.workflow": "orders-sync",
+    "sagat.workflow-version": "12"
+  },
+  "connection": {
+    "catalog": {
+      "type": "rest",
+      "rest": {
+        "uri": "https://catalog.example/api",
+        "warehouse": "s3://lake/warehouse/",
+        "prefix": "tenant-a",
+        "auth": {
+          "type": "oauth2",
+          "tokenUri": "https://auth.example/token",
+          "scope": "catalog"
+        },
+        "accessDelegation": "none",
+        "remoteSigning": false
+      }
+    },
+    "storage": {
+      "type": "s3",
+      "s3": {
+        "region": "eu-west-1",
+        "pathStyle": false
+      },
+      "credentials": "static"
+    },
+    "warehouseLocations": ["s3://lake/warehouse/"],
+    "credentials": {
+      "catalog": {
+        "clientId": "client-1",
+        "clientSecret": "client-secret-canary"
+      },
+      "storage": {
+        "accessKeyId": "AKIAEXAMPLE",
+        "secretAccessKey": "storage-secret-canary"
+      }
+    }
+  },
+  "inputs": [
+    {"file": "in/inline.ndjson", "format": "ndjson"},
+    {"file": "in/blob-0.parquet", "format": "parquet"}
+  ],
+  "mapping": [
+    {"field": "/amount", "column": "amount"}
+  ],
+  "ignoreUnknownFields": true,
+  "allowEmpty": false,
+  "priorAttemptMayHaveLeftFiles": false,
+  "limits": {
+    "maxCommitRetries": 4,
+    "maxDecodedBytes": "17179869184",
+    "maxMetadataBytes": "67108864",
+    "deadlineAt": "2026-11-05T10:10:00.000Z"
+  }
+}

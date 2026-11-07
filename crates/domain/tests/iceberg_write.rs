@@ -456,6 +456,23 @@ fn a_field_is_a_json_pointer_and_a_column_is_a_plain_name() {
     assert!(ColumnMapping::new("/a", &"c".repeat(255)).is_ok());
 }
 
+/// RFC 6901: `~` is only the start of `~0` (a `~`) and `~1` (a `/`). The host (`runners/lake/sagat_lake/request.py`)
+/// refuses any other use of it as a break of the protocol, so a step the domain accepted with `/a~2` would publish and
+/// then fail at run time with `LAKE_HOST_PROTOCOL` (D035-109, G035-051).
+#[test]
+fn a_tilde_in_a_field_starts_only_the_two_escapes_of_a_json_pointer() {
+    for bad in ["/a~", "/a~2", "/~", "/~x/b", "/a/b~", "/a~00~"] {
+        assert_eq!(
+            ColumnMapping::new(bad, "c").err(),
+            Some(IcebergWriteError::Field),
+            "{bad:?}"
+        );
+    }
+    for good in ["/a~0", "/a~1", "/~0~1", "/a~0b/c~1d", "/a~00"] {
+        assert!(ColumnMapping::new(good, "c").is_ok(), "{good:?}");
+    }
+}
+
 #[test]
 fn a_table_names_one_to_eight_namespace_levels_and_a_name_within_255_bytes() {
     let level = |text: &str| text.to_owned();
@@ -493,6 +510,36 @@ fn a_table_names_one_to_eight_namespace_levels_and_a_name_within_255_bytes() {
         TableIdentifier::new(vec![level("n")], "t\0").err(),
         Some(IcebergWriteError::Table)
     );
+}
+
+/// An HTTP client removes `.` and `..` from the path of a request (RFC 3986, 5.2.4), so a namespace level or a table
+/// named by one would send the catalog request to another endpoint than the one meant. The lake host refuses them too
+/// (`request.py`, G035-052); the domain refuses them where the step is written.
+#[test]
+fn a_dot_segment_is_not_a_namespace_level_or_a_table_name() {
+    for dot in [".", ".."] {
+        assert_eq!(
+            TableIdentifier::new(vec![dot.to_owned()], "t").err(),
+            Some(IcebergWriteError::Table),
+            "level {dot}"
+        );
+        assert_eq!(
+            TableIdentifier::new(vec!["a".to_owned(), dot.to_owned()], "t").err(),
+            Some(IcebergWriteError::Table),
+            "second level {dot}"
+        );
+        assert_eq!(
+            TableIdentifier::new(vec!["a".to_owned()], dot).err(),
+            Some(IcebergWriteError::Table),
+            "name {dot}"
+        );
+    }
+    for name in ["...", "..a", "a..", ".a", "a.b"] {
+        assert!(
+            TableIdentifier::new(vec![name.to_owned()], name).is_ok(),
+            "{name}"
+        );
+    }
 }
 
 #[test]

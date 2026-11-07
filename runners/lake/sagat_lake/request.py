@@ -198,7 +198,17 @@ def _table(value: object) -> tuple[tuple[str, ...], str]:
     levels = table["namespace"]
     if not isinstance(levels, list) or not 1 <= len(levels) <= _MAX_LEVELS:
         raise _break()
-    return tuple(_text(level, _MAX_NAME) for level in levels), _text(table["name"], _MAX_NAME)
+    return tuple(_name(level) for level in levels), _name(table["name"])
+
+
+def _name(value: object) -> str:
+    """A level of a namespace or a table name. Dot segments are refused: the HTTP client removes them from the path of
+    a request (RFC 3986 section 5.2.4), so ``..`` would send the catalog request to another endpoint than the one
+    meant."""
+    text = _text(value, _MAX_NAME)
+    if text in {".", ".."}:
+        raise _break()
+    return text
 
 
 def _connection(value: object) -> dict[str, Any]:

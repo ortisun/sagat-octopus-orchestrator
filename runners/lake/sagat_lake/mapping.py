@@ -94,6 +94,9 @@ _TIMESTAMP = re.compile(
     r"([0-9]{4}-[0-9]{2}-[0-9]{2})[T ]([0-9]{2}:[0-9]{2}:[0-9]{2})(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})?"
 )
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+# RFC 6901: an array index is "0" or ASCII digits with no leading zero. `str.isdigit` is true for "²" and "٣", and
+# `int("²")` raises, so the check is a pattern and not a method of the string.
+_INDEX = re.compile(r"0|[1-9][0-9]*")
 
 
 def map_record(
@@ -151,7 +154,7 @@ def _read_pointer(record: Mapping[str, Any], pointer: str) -> tuple[bool, Any]:
             if name not in current:
                 return False, None
             current = current[name]
-        elif isinstance(current, list) and name.isdigit() and int(name) < len(current):
+        elif isinstance(current, list) and _INDEX.fullmatch(name) and int(name) < len(current):
             current = current[int(name)]
         else:
             return False, None

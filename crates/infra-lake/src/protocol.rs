@@ -11,6 +11,7 @@
 //! test needs no sleep.
 
 mod receipt;
+mod write_body;
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -25,11 +26,23 @@ pub use receipt::{
     ObjectStorageReceipt, Receipt, RefName, RowLevelMode, Sha256Hex, SnapshotId, WriteMode,
 };
 
+pub use write_body::{
+    BodyError, Connection, InputFile, InputFormat, Limits, SNAPSHOT_PROPERTIES, WriteAppend,
+};
+
 /// The protocol's name and version, the first member of every request.
 pub const PROTOCOL: &str = "sagat.lake.v1";
 
 /// The longest line the runner reads from the host (1 MiB). A result line is a receipt: a few hundred bytes.
 pub const MAX_LINE_BYTES: usize = 1 << 20;
+
+/// The longest request line the host reads (4 MiB, without its newline; `MAX_REQUEST_BYTES` of
+/// `runners/lake/sagat_lake/host.py`). A longer one is dropped there as a protocol break, so the runner refuses to send it
+/// ([`EncodeError::TooLong`]). The members of the body that a person controls are bounded one by one; the `catalog` and
+/// `storage` documents are forwarded as stored, and this is the bound on them.
+pub const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+/// The longest effect key the host reads, in bytes.
+const MAX_EFFECT_KEY_BYTES: usize = 512;
 
 /// Progress lines are at most one a second. The runner measures when a line *arrived*, and a socket delivers late lines
 /// in a burst, so the check is a window of one second that holds two lines: the one on time and one of slack. A third
@@ -134,36 +147,78 @@ impl RelayAccess {
     }
 }
 
+/// The members of a request that are not the envelope. They hold the resolved credentials, so the value shows nothing:
+/// a `Map` would print every secret in a `{:?}`, a panic message or an assertion that fails.
+#[derive(Clone)]
+pub struct Body(Map<String, Value>);
+
+impl Body {
+    #[must_use]
+    pub fn contains_key(&self, member: &str) -> bool {
+        self.0.contains_key(member)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The members as a map. The caller takes over the duty of not showing them.
+    #[must_use]
+    pub fn into_map(self) -> Map<String, Value> {
+        self.0
+    }
+}
+
+impl From<Map<String, Value>> for Body {
+    fn from(members: Map<String, Value>) -> Self {
+        Self(members)
+    }
+}
+
+impl fmt::Debug for Body {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "Body(<{} members, not shown>)", self.0.len())
+    }
+}
+
 /// The request line: an envelope this module owns and an operation body its builder owns.
 ///
 /// The body holds the pinned connection with its resolved credentials, the table, the mode and the limits. Each
-/// operation gets its own typed builder with the task that adds the operation (US01 and US02), and none exists yet, so
-/// the body is an open map here. The envelope members cannot be overridden by it.
+/// operation gets its own typed builder with the task that adds the operation: [`WriteAppend`] builds the body of an
+/// `icebergWrite` in the append mode (D035-109), and the others are an open map until theirs exists. The envelope
+/// members cannot be overridden by it.
 #[derive(Clone)]
 pub struct Request {
     operation: Operation,
     effect_key: String,
     first_attempt_started_at: String,
     relay: RelayAccess,
-    body: Map<String, Value>,
+    body: Body,
 }
 
 impl Request {
-    /// `first_attempt_started_at` is an RFC 3339 instant, formatted by the caller.
+    /// `first_attempt_started_at` is an RFC 3339 instant in UTC, formatted by the caller; [`encode_request`] refuses one
+    /// the host would not read.
     #[must_use]
     pub fn new(
         operation: Operation,
         effect_key: impl Into<String>,
         first_attempt_started_at: impl Into<String>,
         relay: RelayAccess,
-        body: Map<String, Value>,
+        body: impl Into<Body>,
     ) -> Self {
         Self {
             operation,
             effect_key: effect_key.into(),
             first_attempt_started_at: first_attempt_started_at.into(),
             relay,
-            body,
+            body: body.into(),
         }
     }
 }
@@ -175,37 +230,51 @@ impl fmt::Debug for Request {
             .debug_struct("Request")
             .field("operation", &self.operation)
             .field("effect_key", &self.effect_key)
-            .field(
-                "body",
-                &format_args!("<{} members, not shown>", self.body.len()),
-            )
+            .field("body", &self.body)
             .finish_non_exhaustive()
     }
 }
 
-/// Why a request could not be framed. Both are faults of the runner, not of the host.
+/// Why a request could not be framed. All of them are faults of the runner, not of the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum EncodeError {
     #[error("the body of the request names a member of the envelope")]
     ReservedMember,
+    #[error("the effect key or the instant of the first attempt is not one the host reads")]
+    Envelope,
+    #[error("the request line is longer than the host reads")]
+    TooLong,
     #[error("the request cannot be serialized")]
     Serialization,
 }
 
 /// The request as one line: compact JSON that ends with a single newline. A newline inside a value is escaped by the
 /// serializer, so the line cannot be split.
+///
+/// The line holds every secret of the attempt and the relay token as plain bytes. The caller keeps it only as long as it
+/// takes to write it, never shows it, and zeroises it (T035-035).
+///
+/// # Errors
+/// [`EncodeError`] for a body that names an envelope member, an effect key or an instant the host would refuse, or a line
+/// of more than [`MAX_REQUEST_BYTES`] without its newline.
 pub fn encode_request(request: &Request) -> Result<Vec<u8>, EncodeError> {
     if request
         .body
+        .0
         .keys()
         .any(|key| ENVELOPE.contains(&key.as_str()))
     {
         return Err(EncodeError::ReservedMember);
     }
+    if !write_body::plain(&request.effect_key, MAX_EFFECT_KEY_BYTES)
+        || !write_body::is_instant(&request.first_attempt_started_at)
+    {
+        return Err(EncodeError::Envelope);
+    }
     let relay = serde_json::to_value(&request.relay).map_err(|_| EncodeError::Serialization)?;
     let operation =
         serde_json::to_value(request.operation).map_err(|_| EncodeError::Serialization)?;
-    let mut members = request.body.clone();
+    let mut members = request.body.0.clone();
     members.insert("protocol".to_owned(), Value::from(PROTOCOL));
     members.insert("operation".to_owned(), operation);
     members.insert(
@@ -219,6 +288,9 @@ pub fn encode_request(request: &Request) -> Result<Vec<u8>, EncodeError> {
     members.insert("relay".to_owned(), relay);
     let mut line =
         serde_json::to_vec(&Value::Object(members)).map_err(|_| EncodeError::Serialization)?;
+    if line.len() > MAX_REQUEST_BYTES {
+        return Err(EncodeError::TooLong);
+    }
     line.push(b'\n');
     Ok(line)
 }
