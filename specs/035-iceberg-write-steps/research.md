@@ -2554,6 +2554,37 @@ The other fixes were wording:
     swapped, bytes not counted, blobs backwards, a retryable limit failure).
   - *Not covered.* That the development flag reaches the relay: `RelayConfig` does not expose it, so only a relay that connects to a loopback target
     can show it (the driver's test, slice C). The per-record size limit (G035-068). A blob source over the real `ReadBlob` (slice D).
+- **D035-126 — The lake driver: one attempt from the lease's input to what is reported (slice C of D035-123).** **Decided by: delegate**. No
+  `Cargo.lock` change (`tokio`'s `net` feature is a dev-dependency of the database runner, already in the lock through `infra-lake`).
+  - *What.* `apps/database-runner/src/lake/driver.rs`: `Driver::run(job, connection, signals, on_heartbeat) -> Finished`. It reads the input
+    (`AttemptInput`), takes a slot from the `SlotPool`, derives the deadline, prepares the attempt (D035-125), builds the `Relay` for the user of the
+    slot, calls `run_attempt` behind the `LakeSandbox` port and says what to report (`Report::{Complete, Fail, Abandon}`) with the facts the runner
+    keeps (the request was sent, the container was confirmed gone, the relay's denials, the sandbox's refusal, where the directory was left). It
+    does **not** talk to the control plane: the connection is already resolved, the signals are the lease's, and the report is the caller's to send.
+    `infra-lake` gains `AttemptDir::release`, which lets go of a directory without removing it.
+  - *Decisions.* **The directory is removed only when the sandbox confirmed the container gone**; otherwise it is released and its path is returned in
+    `Finished::left`, because the container may still have it mounted and its credentials are good until its deadline (the sweep, slice D, takes it
+    once its deadline is past). A removal that fails is also released, not forgotten. **The slot is free when the attempt is over,** whatever the
+    outcome (the sandbox is the one that refuses a slot still in use). **Slots are taken in turn,** not the lowest free, so that the user of the
+    container that has just ended is not the user of the next. **The deadline is the least of the lease's end and the step's timeout** (the strictest
+    of the step's and the connection's). **The class is `large`** when the staged bytes are *over* `largeAboveBytes` and the settings name one; the
+    threshold itself is `small`. **No retry with another slot** (this amends D035-123 slice C, which said to try once more): the code
+    `LAKE_SANDBOX_UNAVAILABLE` is retryable, the server retries the step, and the next attempt takes the next slot; a retry inside would need a second
+    relay and a second preparation of the same sources for a case that, with one lake runner to a node, comes only from a leftover container whose
+    label deadline will remove it. The peer of the relay is `peer_for_slot(slot)`: `40000 + slot` in production (`Driver::new`), the test's own user in a
+    test, where the scripted host is in the same process.
+  - *Evidence.* 17 tests in `driver.rs` against a scripted sandbox whose host plays the wire on the **real relay socket** (token file, `CONTROL`,
+    request line, heartbeat, one ending): an attempt that commits reports the receipt and leaves the work root empty, the slot free and the request the
+    host read; a failure of the host arrives with its code and column; a heartbeat reaches the caller; an input that is not an attempt input, no free
+    slot, a slot with no user, a mode the connection does not allow, a sandbox that cannot start or refuses (the reason kept), a cancellation before the
+    start and a lost lease each leave nothing taken or made; a container not confirmed gone leaves its directory; the deadline is the least of the
+    lease and the step; the large class at the threshold and a byte over. `cargo test -p sagat-database-runner -p sagat-infra-lake`: 338 passed;
+    clippy for both crates clean. **Twelve hand mutations, all killed** (the directory removed or kept whatever the sandbox said, the slot never given
+    back, each side of the deadline, the threshold, the slots always the lowest, a failure abandoned, the request reported unsent, the refusal lost, the
+    code of no slot, the large class never asked).
+  - *Not covered.* That the development flag reaches the relay (needs a relay that connects to a loopback target). A directory whose removal fails (it
+    needs a subdirectory the runner cannot enter, made by another user: G035-060). The metrics of an attempt. The sweep of released directories, the
+    shared heartbeat and report loop, the registration and the real `ReadBlob` source (slice D).
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

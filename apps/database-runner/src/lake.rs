@@ -2,5 +2,8 @@
 //! the pieces that do not need the connection to the rest of the runner come first, each with its tests.
 
 pub mod connection;
+pub mod driver;
+#[cfg(test)]
+mod fixtures;
 pub mod prepare;
 pub mod settings;

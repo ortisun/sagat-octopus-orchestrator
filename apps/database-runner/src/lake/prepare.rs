@@ -28,7 +28,6 @@ use sagat_infra_lake::protocol::{
     Request, encode_request,
 };
 use sagat_infra_lake::relay::RelayConfig;
-use sagat_infra_lake::sandbox_api::uid_for_slot;
 use sagat_infra_lake::staging::{AttemptDir, StagingError, StagingLimits};
 use tokio::io::AsyncRead;
 use zeroize::Zeroizing;
@@ -182,8 +181,9 @@ fn staging(error: StagingError) -> PrepareError {
 pub struct Attempt<'a> {
     /// The name of its directory and what the sandbox is asked for.
     pub id: &'a str,
-    /// The slot the lake runner chose; its user is the only peer the relay serves.
-    pub slot: u32,
+    /// The user of the container, the only peer the relay serves: `40000 + slot` in production
+    /// ([`sagat_infra_lake::sandbox_api::uid_for_slot`]), which the driver computes from the slot it chose.
+    pub peer_uid: u32,
     /// When the host must be done, as the host is told.
     pub deadline_at: SystemTime,
     /// Development opens the loopback interface in the relay (the fixtures of the tests run on it).
@@ -204,7 +204,6 @@ pub async fn prepare<B: Blobs>(
     if !connection.allowed_modes.iter().any(|mode| mode == APPEND) {
         return Err(PrepareError::Mode);
     }
-    let peer = uid_for_slot(attempt.slot).ok_or(PrepareError::Request)?;
     let limits = effective(input.limits(), connection.limits, settings);
 
     let Converted {
@@ -283,7 +282,7 @@ pub async fn prepare<B: Blobs>(
 
     let relay = RelayConfig::new(token, endpoints, settings.relay_allow.iter().copied())
         .development(attempt.development)
-        .with_peer_uid(peer);
+        .with_peer_uid(attempt.peer_uid);
     Ok(Prepared {
         directory,
         request,
@@ -296,85 +295,19 @@ pub async fn prepare<B: Blobs>(
 mod tests {
     use std::collections::HashMap;
     use std::io::Cursor;
-    use std::path::PathBuf;
     use std::time::UNIX_EPOCH;
 
-    use sagat_api_grpc::pb::{self, iceberg_connection::Catalog, lake_storage::Kind};
+    use sagat_api_grpc::pb;
     use sagat_infra_lake::relay::{Relay, SystemResolver, TcpConnector};
     use serde_json::{Value, json};
 
     use super::super::connection::convert;
+    use super::super::fixtures::{SECRET, base, converted, message, settings};
     use super::*;
 
     const ATTEMPT: &str = "0192f5aa-1111-7000-8000-000000000001";
     const BLOB_A: &str = "0192f5aa-0000-7000-8000-00000000000a";
     const BLOB_B: &str = "0192f5aa-0000-7000-8000-00000000000b";
-    const SECRET: &str = "client-secret-canary";
-
-    fn settings(work_root: &std::path::Path) -> Settings {
-        Settings {
-            work_root: work_root.to_path_buf(),
-            sandbox_socket: "/run/sagat/lake-sandbox.sock".into(),
-            sandbox_uid: 10_002,
-            slots: 8,
-            relay_allow: vec!["0.0.0.0/0".parse().unwrap()],
-            max_bytes: 1 << 20,
-            max_records: 1000,
-            max_commit_retries: 4,
-            max_decoded_bytes: 17_179_869_184,
-            max_metadata_bytes: 67_108_864,
-            host_start: Duration::from_secs(30),
-            kill_limit: Duration::from_secs(20),
-            large_above_bytes: None,
-        }
-    }
-
-    fn message() -> pb::IcebergConnection {
-        pb::IcebergConnection {
-            catalog: Some(Catalog::Rest(pb::IcebergRestCatalog {
-                uri: "https://catalog.example/api".into(),
-                warehouse: "s3://lake/warehouse/".into(),
-                prefix: "tenant-a".into(),
-                auth: pb::LakeRestAuth::Oauth2 as i32,
-                token_uri: "https://auth.example/token".into(),
-                scope: "catalog".into(),
-                ..pb::IcebergRestCatalog::default()
-            })),
-            storage: Some(pb::LakeStorage {
-                kind: Some(Kind::S3(pb::LakeS3Storage {
-                    region: "eu-west-1".into(),
-                    ..pb::LakeS3Storage::default()
-                })),
-                vended_credentials: false,
-            }),
-            warehouse_locations: vec!["s3://lake/warehouse/".into()],
-            allowed_modes: vec!["append".into()],
-            egress_ceiling: pb::EgressCeiling::Internal as i32,
-            credentials: HashMap::from([
-                (
-                    "catalog".to_owned(),
-                    format!(r#"{{"clientId":"client-1","clientSecret":"{SECRET}"}}"#).into_bytes(),
-                ),
-                (
-                    "storage".to_owned(),
-                    br#"{"accessKeyId":"AKIAEXAMPLE","secretAccessKey":"storage-secret-canary"}"#
-                        .to_vec(),
-                ),
-            ]),
-            ..pb::IcebergConnection::default()
-        }
-    }
-
-    fn converted() -> Converted {
-        convert(&mut message()).unwrap()
-    }
-
-    fn base() -> Value {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/contract/iceberg-writes/fixtures/attempt-input/cases.json");
-        let corpus: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        corpus["base"].clone()
-    }
 
     fn input(edit: impl FnOnce(&mut Value)) -> AttemptInput {
         let mut document = base();
@@ -382,10 +315,10 @@ mod tests {
         AttemptInput::read(&serde_json::to_vec(&document).unwrap()).unwrap()
     }
 
-    fn attempt(slot: u32) -> Attempt<'static> {
+    fn attempt(peer_uid: u32) -> Attempt<'static> {
         Attempt {
             id: ATTEMPT,
-            slot,
+            peer_uid,
             deadline_at: SystemTime::from(time::macros::datetime!(2026-11-05 10:10:00.123 UTC)),
             development: false,
         }
@@ -708,22 +641,6 @@ mod tests {
             relay.requires_peer(),
             "a relay without a peer check would serve whoever has the token"
         );
-    }
-
-    #[tokio::test]
-    async fn a_slot_outside_the_range_is_refused_and_nothing_is_made() {
-        let work = tempfile::tempdir().unwrap();
-        let error = prepare(
-            &input(|_| {}),
-            converted(),
-            &nothing(),
-            &settings(work.path()),
-            attempt(4096),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error, PrepareError::Request);
-        assert!(entries(work.path()).is_empty());
     }
 
     #[tokio::test]

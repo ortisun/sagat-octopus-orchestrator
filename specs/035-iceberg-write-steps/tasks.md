@@ -760,6 +760,13 @@ three conditions pass.
   into `in/`, checking the effective limit while streaming; going over fails `ICEBERG_LIMIT_EXCEEDED` before any container starts" and "serve the
   request line" are joined in `prepare` (`apps/database-runner/src/lake/prepare.rs`), with the closed table of codes and nothing left on disk on any
   refusal. Not done: the driver that runs it (slice C), the real `ReadBlob` source, and a 017 result as a source (G035-067).
+
+  *2026-11-07, eighteenth step, left unticked (D035-126):* "open the relay and request the container; serve the request line; map heartbeats to
+  lease heartbeats; kill the container on lease loss, cancellation, deadline, a missing heartbeat or `memory.max`; parse the result and rebuild the
+  receipt; zeroise the credentials and remove the directory; fail `LAKE_SANDBOX_UNAVAILABLE`" are joined in `Driver::run`
+  (`apps/database-runner/src/lake/driver.rs`), tested against a scripted host on the real relay socket. Not done: the shell that calls it with a
+  real lease (slice D): the heartbeat and report loop, the registration of the lake activities, the real `ReadBlob`, the sweep of released
+  directories and the metrics.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
