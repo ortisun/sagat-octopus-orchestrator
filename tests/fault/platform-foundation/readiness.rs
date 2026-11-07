@@ -89,6 +89,7 @@ async fn the_reason_a_probe_failed_is_logged_but_not_returned() {
     let serve_config = ServeConfig {
         redis_callbacks: false,
         schedules_enabled: false,
+        batches_enabled: false,
         lake_enabled: false,
         openbao: Default::default(),
         bind_addr: "127.0.0.1:0".parse().expect("addr"),

@@ -77,6 +77,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   14 passed, `integration_security_multitenancy` 126 passed, `integration_platform_foundation` 101 passed, workspace clippy
   clean. Still open: `batch_jobs`, `tenant_batch_jobs` and `pending_resets`, which land with the tables they count (their
   usage cannot be written before those tables exist).
+  *Update 2026-11-04:* `batch_jobs` (namespace, 2 by default, hard 16) and `tenant_batch_jobs` (tenant, 8, hard 64) are
+  done with the batch tables (migration `20270102000000_batch_operations`): the domain resources
+  (`domain/tests/batch_quotas.rs` 3 passed), the lock of the tenant and then of the namespace and the count of the jobs
+  that have not finished in `infra-postgres/src/quotas.rs`, the usage report, the `CHECK`s of the two ceilings tables, the
+  OpenAPI enums and the generated Studio types (`npm run check:api` and `npm run typecheck` clean). `pending_resets`
+  stays open with US06.
 - [ ] T018-008 Additive migrations (tables incl. `schedule_actions` PK with `origin`, `batch_jobs.selection_horizon xid8`,
   `schedule_trigger_handover`, and the instance-capability registry tables unless 029 or 031 shipped them; `runs` columns with the erasure-aware
   immutability trigger; `run_shard` partial indexes; ALWAYS triggers; grants; trigger-owned backfill;
@@ -95,6 +101,13 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   ways; a mutation of the action guard was caught. Not done: business ids and the `runs` columns with their erasure-aware
   trigger, batch jobs and items, resets, the five quota resources with the `quota_ceilings_resource_valid` CHECK, the
   instance-capability registry, the trigger-owned backfill and the purge functions.
+  *Update 2026-11-04:* the batch tables are done: migration `20270102000000_batch_operations` (`batch_jobs` with the
+  selection bound, the `xid8` horizon of the creating snapshot, the durable rate slot and a generated shard;
+  `batch_items` with one row per run; `ALWAYS` guards that keep what a job is fixed, a finished job finished and an ended
+  item as it ended; content accounting of the justification and the selector; grants without `DELETE`; a `down` that
+  refuses while a job exists or a limit for the resources is set). Tested in `batch::` (guards, privileges, rollback and
+  applying again). Still open: the business-id table and the `runs` columns, resets, the instance-capability registry, the
+  trigger-owned backfill and the purge functions of jobs and items.
 - [ ] T018-009 Classify new variable-size columns; register payload-referencing columns for 020's
   reference check; extend the runtime-privilege test — `crates/infra-postgres/storage-classification.json`,
   `tests/integration/platform-foundation/runtime_privileges.rs` — manifest test, `SAGAT_TEST_AS_RUNTIME_ROLE=1`
@@ -105,6 +118,10 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   PENDING until T018-014. Evidence: `manifest_covers_every_variable_size_column_and_every_accounted_table_has_always_triggers`
   and the 8 `durable_quotas` tests pass. Not done: the runtime-privilege audit of the stores' statements (no statement exists
   yet) and the columns of the later migrations.
+  *Update 2026-11-04:* the 11 variable-size columns of `batch_jobs` and `batch_items` are classified (the selector and the
+  justification as content, the rest protected with the `CHECK` that bounds it) and `infra-postgres/src/batch.rs` owns
+  them; `manifest_covers_every_variable_size_column_and_every_accounted_table_has_always_triggers` passes. The accounting
+  triggers take the content columns in the order of the manifest (selector, then reason), which the test enforces.
 - [ ] T018-010 Merge the REST fragment, AsyncAPI additions (intentional baseline regeneration) and
   reasons; assert `workflow.schema.json` and `worker.baseline.json` unchanged —
   `specs/001-platform-foundation/contracts/{openapi.yaml,events.asyncapi.yaml,events.baseline.json}` —
@@ -130,11 +147,28 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `ScheduleCalendar` port. The strict JSON codec lives in `application/src/schedule_codec.rs` (moved from `infra-ir` so that
   `api-http` and `infra-postgres` share it without an edge between adapters). Not done: `BusinessIdStore`, `BatchStore`,
   `ResetStore`, and the `NewRun` admissions processed by `RunStore::create`.
+  *Update 2026-11-04:* `BatchStore` (create with the ceilings and the request key, read, list, items, request cancel,
+  preview) is built in `application/src/batch.rs`, with the records it speaks and the codec of the selector and the
+  parameters (`application/tests/batch_codec.rs` 5 passed); `PgBatchStore` implements it. Not done: `ResetStore`,
+  `BusinessIdStore` and the `NewRun` admissions.
 - [ ] T018-012 Lock-order interleaving harness (barriers, deadlock counter) for the merged admission slots
   of ADR-0050 decision 7 and both aggregate orders (aggregate → run; run → bookkeeping row), with
   slot-order cases for the admission paths of 019, 021, 022, 024, 025, 026 and 030 as they merge —
   `tests/support/lock_order.rs` — self-test reproduces an opposite-order deadlock and passes the slot
   order — NFR-018-001.
+  *Part done 2026-11-04 (task stays open for the slot-order cases of the admission paths of 019, 021, 022, 024, 025,
+  026 and 030, which exist only as those features merge).* The harness is built: `interleave` runs plans of locks at once,
+  each in a transaction and a connection of its own, and holds every plan after each lock until the others have taken
+  theirs or are seen waiting on a lock in `pg_stat_activity` (a plan queued behind another one cannot keep the holder at a
+  barrier); `Slot` and `assert_ascending` state the ten slots of the decision and refuse a plan that returns to a lower
+  one; `RowLockMonitor` samples the row locks of a table with `pgrowlocks`, because `pg_locks` does not list them, and
+  reports any transaction that holds more than one. Evidence, `fault_schedules_bulk_operations` `batch_locks::` (7
+  passed): two plans that take two rows in opposite orders give exactly one deadlock victim and one commit (and the
+  database counter `pg_stat_database.deadlocks` rises by one), in the same order both commit; the same for a ring of
+  three advisory locks, and for three plans in one order; a plan in the order of the slots is accepted and one that goes
+  from a run back to a schedule row is refused by name; the monitor sees a transaction that holds two run locks. A first
+  version of the barrier hung when a plan was queued behind the other (found by running it), and sampling on the
+  connection that holds the locks hung it too; it samples from another connection now.
 
 ## Phase 3: US01 — Run a workflow on a schedule (P1, MVP)
 
@@ -221,7 +255,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   workflow with would be inconsistent, and the check needs a validator port that the run start would use as well. What a
   schedule checks stays: an object, at most 64 KiB. The business-id prefix waits for US03. `nominalTimeField` is
   already written into the input at the action.
-- [ ] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
+- [x] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
   `crates/scheduler/src/{schedules.rs,lib.rs,monitor.rs}`, `apps/execution-engine/src/lib.rs` — two-replica
   pass tests — FR-018-005, FR-018-044.
   *Part done 2026-10-29 (task stays open).* `SchedulePass` (`scheduler/src/schedules.rs`) looks at the due schedules of the
@@ -238,7 +272,39 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   due-ness and the planning of the times agree on the database's time.
   *Update 2026-11-04 (T018-029):* the pass that bounds the due slice of a long outage, which T018-003 left to this task,
   is built: a recovery is planned once, remembered on the schedule and carried out a step at a time (D1951).
-- [ ] T018-018 [US1] REST create/read/list/update/delete — `crates/api-http/src/routes/{schedules.rs,mod.rs}`,
+  *Done 2026-11-05 (the rest of the task: fairness, the gauges and the alert).* **Fairness.** The pass took the oldest
+  `batch` of any tenant, so one tenant's backlog (an outage on a thousand per-minute schedules) held back every schedule
+  that was due later. It now shares the batch by `fairness::select` like the passes of the runs (`due_schedules` takes
+  a `Window` with the shards and the tenants to leave out; `SAGAT_SCHEDULER_DISCOVERY_REST_MS` rests the search;
+  `scheduler_fairness_limited_total` and `_exhausted_total` carry `pass="schedules"`). Seen failing first:
+  `pass::a_tenant_with_a_backlog_does_not_hold_back_another_tenants_due_schedule` (twelve schedules of one tenant due two
+  hours ago, one of another due one hour ago, batch of four: the second tenant had 0 runs after the round, 1 after the
+  change) and `a_lone_tenant_with_a_backlog_still_gets_the_whole_batch` (four of four: the policy is work-conserving).
+  **Gauges and counters.** `scheduler_lag_seconds{pass="schedules"}` is how long the oldest active schedule has been
+  due, `{pass="batches"}` how long the oldest job the batch pass would take has waited (a job held back by an older open
+  transaction is not due, so it is not lag: no replica added would change that), `batch_jobs_active`; and
+  `schedule_actions_total{kind,outcome}` once a decision is committed (a decision the fence or the compare-and-swap
+  refused counts nothing; `admission_retry` for a time left owed), `schedule_action_lag_seconds{kind}` (how long after
+  its time a scheduled action started), `batch_items_total{action,outcome}` once an outcome is committed (cancelled items
+  of a drain included) and `batch_item_duration_seconds{action}`. No label is a tenant, schedule, job or run. **Alert.**
+  `SagatSchedulerLate` is `max(scheduler_lag_seconds) > 60` with no `pass` matcher, so it covers the two new passes, and
+  so does the KEDA query of the chart; the runbooks (`execution-engine.md`, `scaling.md`, `observability.md`) list them.
+  Evidence (private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`): `integration_schedules_bulk_operations` 224 passed, also
+  with `SAGAT_TEST_AS_RUNTIME_ROLE=1` (224); new: `lag::` 2, `counted::` 3 (a recorder of the test's own on a one-thread
+  runtime), `pass::` 2; `fault_schedules_bulk_operations` 30; `contract_schedules_bulk_operations` 2;
+  `integration_scalability_ha` 44; `contract_scalability_ha` 25 (it caught four comparisons with `clock_timestamp()` in
+  the new sample SQL, which the planner cannot use as the bound of a range: now `now()`); `integration_observability_operations` 20;
+  `contract_observability_operations` 9; `contract_developer_experience` 8; `integration_platform_foundation` 101 (the
+  runtime-privilege audit reads the new statements); unit suites of application, scheduler, infra-postgres,
+  execution-engine, domain and telemetry; `cargo fmt --check` and `cargo clippy --workspace --all-targets --locked -- -D
+  warnings` clean. Mutations, each reverted: 11 on the metrics (a job held by an older transaction counted as late, a
+  paused schedule counted as late, finished jobs counted as active, the batch lag showing the schedule lag, a started run
+  and a decision not counted, the lag measured from the wrong end, a refused decision counted, cancelled items not
+  counted, a succeeded item counted as skipped, the item duration not recorded) and 2 on the fairness (the tenant
+  exclusion dropped from the query, the pass ignoring it): all caught; the one that survived (the duration recorded as 0,
+  the test only counted samples) got an assertion on the sum. Not done: `schedules_paused_by_system_total`; the
+  `delayed_starts` and `resets` passes belong to the features that build them (US03, US06).
+- [x] T018-018 [US1] REST create/read/list/update/delete — `crates/api-http/src/routes/{schedules.rs,mod.rs}`,
   `crates/api-http/src/dto_schedules.rs` — contract tests — FR-018-001, FR-018-013, FR-018-043.
   *Part done 2026-10-30 (task stays open).* Built behind `SAGAT_SCHEDULES_ENABLED` (control plane, off by default):
   `ScheduleUseCase` (a trait object over `ScheduleService`, so the HTTP layer needs no new generic parameter), the document
@@ -252,6 +318,23 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `describe` and delete at a revision; `crates/application/tests/schedule_document.rs` 4); without the namespace check of
   the route the isolation test fails. Not done: the list filters `origin`, `state`, `workflowId`, `name` and `inputBytes`
   (G1015).
+  *Done 2026-11-05 (the filters).* `GET /namespaces/{id}/schedules` takes `state` (`ACTIVE`, `PAUSED`; a deleted schedule is
+  never listed), `origin` (`API`, `TRIGGER`), `workflowId` (the workflow the head revision starts) and `name` (names that
+  start with it, at most 128 characters); every part given has to hold, a value that is none of the listed ones is `400`, and
+  the order and the cursor are those of the unfiltered listing. No new index: the scan is bounded by the `schedules` quota
+  (G1015 keeps `inputBytes` and the index as open). The Studio list narrows by state, workflow and name (asked for once
+  typing has rested). Seen failing first: `rest::a_listing_can_be_narrowed_by_state_workflow_and_name_and_pages_keep_to_the_filter`
+  (the filters were ignored: five schedules where one was asked for) and `a_filter_that_is_not_one_is_refused_in_words`
+  (`state=DELETED` answered `200` with an empty page). Evidence: `store::a_listing_is_narrowed_by_every_part_of_the_filter_...`
+  (five schedules over two workflows, one trigger-owned, one paused: each part alone, all of them together, a name matched
+  by its start and not inside, and paging one at a time through each filter gives the listing as a whole), the two `rest::`
+  tests above, the contract test (the filtered and refused requests conform to the schema), 13 Studio tests of the list. Gates on the final tree: `integration_schedules_bulk_operations` 227 passed, also with `SAGAT_TEST_AS_RUNTIME_ROLE=1` (227); `fault_schedules_bulk_operations` 30; `contract_schedules_bulk_operations` 2; `contract_rest_platform_foundation` 9; `contract_rest_security_multitenancy` 17; `contract_developer_experience` 8 (the reference lists no query parameter, so it did not change); `integration_platform_foundation` 101; unit suites of application, api-http, infra-postgres, scheduler and domain; Studio from `frontend/`: lint, typecheck, `npm test` (95 files, 1,321 tests), build and `check:api` clean; fmt and clippy clean.
+  Mutations, each reverted: 7 on the store and the route (each predicate dropped, a name matched anywhere, the filters ORed
+  with the cursor, a deleted state accepted, the name length unbounded) and 7 on the Studio list (state, workflow or name
+  not sent, a letter asked for at a time, an untrimmed name, one cache for every filter, the wrong empty message): all caught
+  (the first run of the cursor one survived and got the page-through-every-filter assertion). Still open from this task
+  and registered: G1014 (the key of a write is required and not replayed; the spec asks for replay only for trigger-now and
+  the with-start operations).
 - [x] T018-019 [P] [US1] US01 scenarios 1–5 — `tests/integration/schedules-bulk-operations/schedules.rs`
   — target output — FR-018-001..005, FR-018-016.
   *Done 2026-11-04.* The scenario file walks the five scenarios of the story and says, for each, which test proves it.
@@ -431,10 +514,21 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   (system note, `schedule.auto_paused` audit), `a_cancelled_run_does_not_pause_a_schedule_that_pauses_on_failure`; in
   `trigger.rs`, `trigger_now_does_not_use_up_a_remaining_action` and
   `a_waiting_trigger_starts_when_the_run_ends_and_uses_up_nothing` (only a scheduled start decrements).
-- [ ] T018-028 [US2] Describe (next N, recent, counters), actions route, action purge keeping `BUFFERED`
+- [x] T018-028 [US2] Describe (next N, recent, counters), actions route, action purge keeping `BUFFERED`
   — `crates/infra-postgres/src/maintenance.rs` — contract + purge tests — FR-018-013.
-  *Part done 2026-11-04 (task stays open: the actions route, `listScheduleActions`, changes the canonical OpenAPI and
-  waits for the REST work; describe is built, T018-018).* Nothing deleted actions. Now
+  *Done 2026-11-04 (the purge first, the route after).* The route `listScheduleActions` (`GET
+  /namespaces/{id}/schedules/{id}/actions`, `schedule:read`, `cursor`, `limit`, `outcome`) lists the decisions of a schedule
+  newest first, by the instant of the decision and then by the key of the action (origin, nominal time), so a page ends
+  where the next begins even when several decisions were made in the same instant; an outcome this version does not know
+  is refused 400 (the contract's enum), as is a cursor this build did not hand out. It is merged into the platform
+  contract (`x-implemented: '018'`, `ScheduleActionPage`), the reference and the Studio types are regenerated.
+  Evidence: `actions::` 3 passed in `integration_schedules_bulk_operations` (six decisions with a three-way tie on the
+  instant, listed 1, 2, 3, 4 and 100 at a time: the same listing every time, none skipped, none twice, in the order of the
+  key; one outcome at a time; another tenant is `NotFound` and a viewer reads); `action_cursor` 2 passed (what is handed
+  out comes back, thirteen strings that were not are not cursors); the schedule contract test now exercises the twelfth
+  operation (a page of one, the next page, the outcome filter, a viewer, another tenant, an anonymous caller, a bad cursor, a
+  bad outcome, an unknown schedule); the cross-tenant battery covers it. Removing the tie-breaking from the keyset makes
+  the paging test fail. The earlier work of this task follows. Nothing deleted actions. Now
   `schedule_purge_actions(schedules, rows)` keeps an action while it is among the newest 1,000 of its schedule or younger
   than 30 days and never deletes a `BUFFERED` one, runs through the housekeeping of the scheduler (a few schedules at a
   time, at most 5,000 rows a call) and visits schedules in turn (decision D1955, migration
@@ -514,10 +608,34 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `a_delete_at_a_stale_revision_deletes_nothing_and_at_the_head_deletes`; and
   `firing::a_waiting_action_keeps_the_revision_it_was_taken_under` (an update while an action waits: the run starts under
   revision 1 and the head is 2).
-- [ ] T018-032 [P] [US2] Studio schedules (list, detail, form with server-computed next times,
+- [x] T018-032 [P] [US2] Studio schedules (list, detail, form with server-computed next times,
   pause/resume, trigger, backfill preview; tokens, WCAG AA, tables) —
   `frontend/apps/studio/src/features/schedules/`, `frontend/apps/studio/src/api/endpoints.ts` —
   component tests — FR-018-047.
+  *Done 2026-11-04, except the backfill preview (G1966).* `/schedules` (list, paged by cursor), `/schedules/new` and
+  `/schedules/:id/edit` (one form: an interval or cron expressions, time zone, jitter, bounds, overlap and catch-up
+  rules, limit on actions, note), `/schedules/:id` (the platform's own next times with the jitter shown, the open runs,
+  the counters, the decisions by outcome and page, the backfills with start and cancel, pause, resume, run now, delete),
+  a `Schedules` entry in the menu (`Shell.test.tsx`, `smoke.spec.ts`), a README. The Studio computes no time. Each control
+  is behind the permissions the platform asks for; a retry keeps its idempotency key and a changed request has a new one;
+  an edit saves against the revision it was opened at (the copy is never refetched under the person nor kept after the
+  page); what the form does not show (catch-up window, buffer limit, DST rule, interval offset, pinned version, run
+  timeout) is carried, not reset; a schedule with calendars, exclusions or several rules, or one a cron trigger owns, is
+  not edited there; the input is never shown and a number the browser would round is refused.
+  Evidence (`frontend/`): `src/features/schedules` 4 files, 84 tests passed (`model.test.ts` 26: the request, the draft,
+  the words; `SchedulesPage` 9; `ScheduleFormPage` 15; `SchedulePage` 34), the whole Studio suite 95 files and 1,317
+  tests passed, `npm run lint` clean, `tsc --noEmit` clean for the Studio, `npm run build` built, `npm run check:api`
+  matches the contract. Mutation checks, each reverted: 11 of the model (a dropped `dst`, `bufferLimit` or offset, an end
+  equal to the start, exhausted not first, the units tried smallest first, a future end, an array input, an eleventh cron
+  expression, editable exclusions, a name counted in UTF-16) and 18 of the pages (a dropped permission, a delete for a
+  trigger-owned schedule, a delete without its revision, an untrimmed note, a pause of a paused schedule, a key never
+  kept and a key kept for a changed request, no `expectedRevision`, unpublished workflows offered, a form not a fresh
+  copy, the problem ignored, a future end, a cancel for an ended backfill, the outcome filter not sent, recent actions
+  asked for, the digest in full, a next time while paused, creating without `run:start`): all caught (the one that
+  survived, the fresh copy, got its test). Not done: the backfill preview (G1966); WCAG AA is by the platform's tokens,
+  role and label queries and the `jsx-a11y` lint rules, not by a contrast measurement (there is no axe harness in the
+  Studio and no new colour was added); `npm run typecheck --workspace @sagat/e2e` needs the TypeScript SDK built first
+  (`sdks/typescript/conformance/prepare.sh`) and was not run here, the one edit in `smoke.spec.ts` is a menu list.
 - [ ] T018-033 [P] [US2] Schedule input disclosure (016 audiences, `no-store`, audit) —
   `tests/integration/schedules-bulk-operations/disclosure.rs` — per-level cases — FR-018-042.
   *Not started (2026-11-04).* It needs the route `discloseScheduleInput`
@@ -564,27 +682,177 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 
 ## Phase 7: US05 — Batch operations (P2)
 
-- [ ] T018-045 [US5] Batch store, service and routes (create, preview, read, list, items, cancel) —
+- [x] T018-045 [US5] Batch store, service and routes (create, preview, read, list, items, cancel) —
   `crates/infra-postgres/src/batch.rs`, `crates/application/src/batch.rs`,
   `crates/api-http/src/routes/batch.rs`, `crates/api-http/src/dto_batch.rs` — contract/store tests —
   FR-018-027, FR-018-028, FR-018-032.
-- [ ] T018-046 [US5] Executor pass (horizon wait on `pg_snapshot_xmin`, keyset selection rounds, item order
+  *Done 2026-11-04 (the executor that selects and applies is T018-046/047).* The store and the service are built
+  (decision D1957): create (judged against the active jobs of the namespace and of the
+  tenant under a fence, idempotent by key, the payload of a signal or an update kept as content and never returned, the
+  audit record naming the action and never the justification), preview (counted up to `maxItems + 1` with a sample of 20
+  in a read that stops after 5 seconds), read, list newest first with a cursor, items, and cancel (once, audited once, a
+  finished job left alone). `batch::` 16 passed in `integration_schedules_bulk_operations`; the test of the fence fails
+  (naming its stage) when the lock is removed; a concurrent race for the last place passes even without the lock, so it
+  is kept as a check of the outcome and the fence has its own deterministic test. Gates on the final tree (private
+  `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`): `integration_schedules_bulk_operations` 185 passed and
+  `fault_schedules_bulk_operations` 16 passed, each also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`;
+  `integration_platform_foundation` 101 (the runtime-privilege audit found the bare word of a statement stored as a
+  value, now a flag); `integration_security_multitenancy` 126 (the quota views list the two new resources);
+  `contract_schedules_bulk_operations` 1, `contract_rest_platform_foundation` 9, `contract_rest_security_multitenancy`
+  17, `contract_developer_experience` 8; `integration_database_connections` 7; the unit suites of domain, application,
+  infra-postgres, scheduler, api-http and execution-engine 1,202 passed, 0 failed (the inline test that fixes the number
+  of quota resources found the new ones); Studio `npm run check:api` and `npm run typecheck` clean; `cargo fmt --check`
+  and `cargo clippy --workspace --all-targets --locked -- -D warnings` clean. The gates found two failures on the first
+  run and one more on the second, all of them tests that list every resource or every literal; none was a defect of the
+  behaviour. `MARK_MANUAL_REVIEW` is the single-run `Hold`, which needs `run:operate` only.
+  *The routes and the DTOs (D1959):* `POST /namespaces/{id}/batch-operations/preview`, `GET` and `POST
+  /namespaces/{id}/batch-operations`, `GET /namespaces/{id}/batch-operations/{batchId}`, `POST .../{batchId}/cancel` and
+  `GET .../{batchId}/items`, in `api-http/src/routes/batch.rs` and `dto_batch.rs`, over the `BatchUseCase` trait object
+  (`application/src/batch_api.rs`), merged into the platform contract with `x-implemented: '018'` (six operations, the
+  `Batch operations` tag, `BatchId` and eight schemas) and served only behind `SAGAT_BATCHES_ENABLED`. Evidence:
+  `contract_schedules_bulk_operations` `batch::every_batch_operation_conforms_to_the_contract_on_its_normal_and_error_paths`
+  (every one of the six operations, each status it documents and each body checked against its schema: previews with a
+  filter, ids, a bad id, a bad status, a query refused, an unknown field; a job created and refused for a viewer, an
+  anonymous caller, another tenant, a short reason, `UPDATE`, a missing step, a rate over 200, an unknown action and a
+  missing key; reading, listing with a state and a bad cursor, items with a state, the job through another namespace of
+  the tenant as 404; cancelling twice and then a job that ended as 409 `BATCH_NOT_CANCELLABLE`); removing the same-namespace
+  check of the route makes it fail (the job is returned through the wrong namespace). The cross-tenant battery
+  (`contract_rest_security_multitenancy` `battery::`, 2 passed) now creates a job of the victim and snapshots it, and every
+  batch operation resists an administrator of another tenant; `integration_schedules_bulk_operations` `batch::` holds the
+  new refusal of a finished job; `apps/control-plane/tests/config.rs` the strict flag; `contract_developer_experience` was
+  blessed after reading the diff (six operations in a new group, 176 in all) and rerun without the switch; Studio
+  `npm run api`, `check:api` and `typecheck` are clean. Gap G1960.
+- [x] T018-046 [US5] Executor pass (horizon wait on `pg_snapshot_xmin`, keyset selection rounds, item order
   run → fence → job → item, rate slot, deferral, drain) with kill/restart, duplicate, lost-hint and
   late-commit faults — `crates/scheduler/src/batches.rs`, `tests/fault/schedules-bulk-operations/batch.rs`
   — SC-018-009 — FR-018-029..031, FR-018-033.
+  *Done 2026-11-04 (SC-018-009 is proven in part: see the review below).* The executor itself is built (decision D1958): `BatchExecutor::step` selects, applies, drains, fails and ends a job
+  one step at a time, over `BatchStore` (`due_jobs`, `select_round`, `next_item`, `record_item`, `complete_job`,
+  `drain_cancel`, `fail_job`). A design defect of D1033 was found by a held transaction: `pg_snapshot_xmax` is the last
+  completed identity plus one, so an open transaction with that identity let the selection start; the horizon is now the
+  creator's own identity. Evidence: `batch_executor::` 12 passed in `integration_schedules_bulk_operations` (pages by id
+  and `maxItems`; an empty job; the wait for a transaction open at creation; one item per slot with its effect, outcome
+  and counters, the last item ending the job; a finished run and an unknown id skipped with their reasons; a crash between
+  the effect and its record; the loss of the creator's permission; a cancel drained in pages; a refusal retried after a
+  backoff and one that is not; two tests of a lease that was lost). Mutations that were caught: the original horizon
+  (`xmax` with `>=`) fails the held-transaction test as `Acted` instead of `Idle`, and recording an item without the fence
+  fails the stale-lease test. Gaps G1956..G1959.
+  *Update 2026-11-04 (the pass):* `BatchPass` (`crates/scheduler/src/batches.rs`) is the pass over the jobs of the shards a
+  replica owns, like `SchedulePass`: it asks the store for the due jobs (`state` selecting, running or cancelling, slot
+  reached, earliest first), takes the lease of the shard of each job from the keeper's placement, and takes at most
+  `steps_per_job` (20) steps for a job and `round_actions` (100, hard 1,000) steps over the round; a lost lease is a
+  refused step (`scheduler_fenced_total{kind="batch"}`), a failing one is logged and counted. The engine runs it behind
+  `SAGAT_BATCHES_ENABLED` (off by default; `SAGAT_BATCHES_BATCH` 1-5000, `SAGAT_BATCHES_ROUND_ACTIONS` 1-1,000,
+  `SAGAT_BATCHES_POLL_MS`), pacing the items by the database's clock like the schedule pass. Evidence: 5 in
+  `batch_pass::` (one replica selects and cancels the three runs of a job in 4 steps and each run is cancelled once; a
+  replica with no shard does nothing; two replicas split twelve jobs by shard, take 2 steps for each job of their own
+  shards and cancel every run once; a replica whose shard was taken is refused where it records and the job goes on when
+  the shard is back; a round of one step takes one step and the next carries on), 2 unit tests of the ceilings, 2 in
+  `apps/execution-engine/tests/config.rs`. Mutations that were caught: the pass without the fence fails the lease test
+  (2 steps, 0 refused instead of 0 and 1), and a round without its ceiling fails the ceiling test.
+  *The faults* (`tests/fault/schedules-bulk-operations/batch.rs`, 7 passed): a process killed after each write of the five
+  transactions of the executor (a page of the selection 3 writes, an item 3, the last item 4, the drain of a cancelled
+  job 6, the failure of a job whose creator lost a permission 4; the connection dies inside PostgreSQL at the Nth write)
+  commits nothing (every table digest equal), leaves the job where it was, and a new executor started from the database
+  alone ends it exactly once (one item for each run, counters adding up to the items, one `batch.finished` record, the
+  key of each run unchanged); two steps at the same item, both waiting for the row of the job, count it once (one
+  `Acted`, one `Refused`); a cancel that commits first while an item that was applied is being recorded loses neither
+  (the item is counted `SUCCEEDED`, the other two `CANCELLED`, one end record). Mutations that were caught: dropping the
+  "item already ended" guard (the item is counted twice), refusing to record into a cancelling job (`Refused` instead of
+  `Acted`), and the audit of a drained job in a transaction of its own (the probe sees two transactions). No lost hint
+  exists to test: a job is found by the pass's own poll, as a schedule is. The late commit of a run against the
+  selection is the held transaction of `batch_executor::` (the selection waits for it); its residual window is G1957.
+  Not part of this task and not done: fairness between tenants, the gauges (`scheduler_lag_seconds{pass="batches"}`,
+  `batch_items_total`) and the monitor alert, which the schedule pass lacks too (T018-017).
+  *After an independent read (D1960).* The kill matrix uses an action with no effect of its own, so it proves that the
+  record of an item is atomic and not that the effect and the record are (G1961, O1951); the held-transaction test proves
+  that the selection waits, not that a run the held transaction commits late is then selected; no lost hint exists to
+  test. SC-018-009 is covered by `a_job_over_a_thousand_runs_applies_each_once_across_a_restart_and_a_cancel` (1,000 runs
+  in two pages of selection, 400 items, a restart, 300 items, a cancel: 700 succeeded and 300 cancelled, every key applied
+  once, the counters equal the item rows) and by the lock monitor of T018-049; the run whose creating transaction was in
+  progress is the part not proven by a test (G1957, G1962).
 - [ ] T018-047 [US5] Item adapters for the eight actions through single-run use cases, skip reasons (incl.
   `TEST_RUN`), failed compensation of cancelled runs — `tests/integration/schedules-bulk-operations/batch_actions.rs`
   — one case per action and reason — FR-018-030, FR-018-031, FR-018-034, FR-018-050.
-- [ ] T018-048 [US5] Batch authorization and ceilings (no `run:batch`, missing action permission,
+  *Part done 2026-11-04 (task stays open for `UPDATE`, which a batch cannot apply yet (G1959), and `TEST_RUN`, which
+  needs feature 022, not approved).* `ItemActions` is implemented for the run service in
+  `application/src/runs/batch_items.rs` for cancel, pause, resume (`operate`), signal, retry-step and
+  mark-manual-review (`review` with `Retry` and `Hold`) and rerun, each under the key of its item. Cases against real runs
+  and workers, `batch_actions::` (4 passed) and the earlier `batch_executor::`: `CANCEL` of a running run and of one that
+  ended (`ALREADY_TERMINAL`); `PAUSE` and `RESUME` of a run they fit and of one that ended or is not paused
+  (`NOT_APPLICABLE`), with the `paused` flag checked; `SIGNAL` to two runs that wait for it (both woken) and to a run that
+  waits for nothing and to a run already woken (`NOT_WAITING`, never buffered), the job showing that it has a payload (`hasPayload`), never its digest (D1960);
+  `RETRY_STEP` of a compensation that ran out of attempts and waits for an operator (`reserve~c`: the run goes back to
+  `COMPENSATING` with another attempt), of a run that has no such step (`NOT_WAITING`) and of a step whose outcome is
+  unknown (the item `FAILED` with `CONFLICT`, nothing repeated, the run stays in review); `MARK_MANUAL_REVIEW` of a step
+  that has not started (the run goes to `MANUAL_REVIEW`) and of a run without that step (`NOT_WAITING`); `RERUN` and a
+  run that is not there (`RUN_CONTINUED`, `HIDDEN_FROM_CREATOR`). Real defects found by these cases and fixed: a run without
+  the named step was reported `HIDDEN_FROM_CREATOR` (the adapter now reads the run first, so a `NotFound` after that means
+  "no such step"), and a batch could not address a compensation (`reserve~c`) because the adapter read the step id with
+  the strict parser; a step id that is no node is now `BATCH_ACTION_PARAMETERS` at `/stepId` when the job is created.
+  Mutations that were caught: the strict parser, the missing `NotFound` mapping, every non-cancel skip as
+  `ALREADY_TERMINAL`, and a missing signal wait as `NOT_APPLICABLE`.
+- [x] T018-048 [US5] Batch authorization and ceilings (no `run:batch`, missing action permission,
   mid-job revocation, foreign ids, job/item ceilings, zero quota) —
   `tests/integration/schedules-bulk-operations/batch_security.rs` — SC-018-010 — FR-018-033, FR-018-034,
   FR-018-041, FR-018-045.
-- [ ] T018-049 [US5] Lock monitor (`pg_locks` sampling: never two run locks) and harness interleaving with
+  *Done 2026-11-04.* The cases are spread over four files of `integration_schedules_bulk_operations` and each is a named
+  test: `batch::creating_a_job_needs_run_batch_and_every_permission_of_the_action` (the role matrix over every action: a
+  viewer or a developer is refused, an operator and an administrator are not, and `MARK_MANUAL_REVIEW` needs only
+  `run:operate`); `batch_executor::a_creator_who_loses_a_permission_fails_the_job_and_nothing_more_is_applied`
+  (mid-job revocation: the job fails `AUTHORITY_REVOKED` and the items that had not run are cancelled);
+  `batch::active_jobs_are_limited_per_namespace_and_a_limit_of_zero_refuses_before_any_work`,
+  `batch::the_active_jobs_of_a_tenant_are_limited_too` and
+  `batch::a_creation_waits_for_the_fence_of_the_active_jobs_before_it_counts_them` (the ceilings of active jobs, judged
+  under a fence);
+  `batch::parameters_the_action_does_not_take_and_limits_out_of_range_create_nothing` (`maxItems` over 100,000, a rate over
+  200, `REPIN` and `UPDATE` unavailable); `batch::jobs_are_read_listed_newest_first_and_never_across_tenants` and the
+  cross-tenant battery. New in `batch_security::` (2 passed): a job names the ids of a run of another namespace and of
+  another tenant besides its own, the preview counts one, the job selects one, the other two are untouched and never
+  become items, not even skipped ones that would say they exist; a limit of zero, for the namespace and then for the
+  tenant, admits no job and leaves nothing stored. Mutations that were caught: the selection without its tenant and
+  namespace conditions (the preview counts three runs instead of one), and a limit of zero read as one. Not covered: the
+  `deployment:manage` permission of `REPIN`, which does not exist before feature 019.
+- [x] T018-049 [US5] Lock monitor (`pg_locks` sampling: never two run locks) and harness interleaving with
   API cancel/signal — `tests/fault/schedules-bulk-operations/batch_locks.rs` — zero deadlocks —
   FR-018-030; NFR-018-001.
-- [ ] T018-050 [P] [US5] Studio batch (from run-list filter, preview, confirm with reason, progress,
+  *Done 2026-11-04.* `batch_locks::a_batch_job_and_the_api_on_the_same_runs_never_hold_two_run_locks_or_deadlock`: 24 open
+  runs, two tasks that pause, resume and signal them through the API for as long as the test lasts, three rounds of a
+  `PAUSE` job and a `RESUME` job over the same runs at the top rate, then the API cancelling the runs from the last to the
+  first while a `CANCEL` job works through them; the monitor looked 1,157 times (one run of the test), saw run locks held and
+  never more than one by one transaction, the API made 1,008 calls and met nothing but a state that was not the one
+  asked for, the seven jobs ended `COMPLETED` with counters equal to their items and no failure (a skipped item is
+  `ALREADY_TERMINAL` and nothing else), every run is `CANCELLED`, and `pg_stat_database.deadlocks` did not move. The test
+  is not vacuous: its monitor and its deadlock are shown by the self-tests of T018-012 (it sees two run locks held at
+  once, and the harness reproduces a deadlock); no mutation of the platform could be made to hold two run locks,
+  because no path of the platform does. *After an independent read:* the batch executor takes no run lock of its own (the
+  run service does, one run at a time), so the monitor observes the run service under batch load; the order of the batch
+  side (job, then item, in `record_item`, `drain_cancel`, `fail_job` and `select_round`, and the job alone in
+  `request_cancel`) is by construction and is exercised by the duplicate-step and late-cancel tests of T018-046, not by
+  this monitor.
+- [x] T018-050 [P] [US5] Studio batch (from run-list filter, preview, confirm with reason, progress,
   items, cancel) — `frontend/apps/studio/src/features/batch/`, `frontend/apps/studio/src/features/runs/runList.ts`
   — component tests — FR-018-047.
+  *Done 2026-11-04.* `features/batch/`: `BatchFromRuns` (a "Batch operation…" button in the toolbar of the run list, shown
+  only with `run:batch`, which turns the status, workflow and origin filters into the selector of a job: choose an action,
+  count the runs, give a reason, confirm; nothing is asked of the platform before a person acts, the job starts only after
+  the runs were counted for the same limit and a reason of 8 to 2,000 characters, an unchanged request keeps its
+  idempotency key, a signal needs a JSON object within 256 KiB, a step-based action names its step), `BatchesPage`
+  (`/batches`, newest first, a state filter, load more, followed every 5 s while one job is at work) and `BatchPage`
+  (`/batches/:batchId`: the state in words and a shape, a progress bar with "25 of 40 runs have an outcome (62%)", the
+  counters, the outcome of each run with the reason in words or the error code, a filter by outcome, load more, followed
+  every 2 s while the job works, the payload never shown, nor its digest, only that the job has one; "Cancel the job" with `run:batch`, a reason
+  and the plain statement that what was applied stays applied). A deployment with batch operations off (`ROUTE_NOT_FOUND`)
+  is told so. Routes `batches` and `batches/:batchId`, a "Batches" entry in the menu, six endpoints in
+  `api/endpoints.ts`. The pure rules are in `model.ts` and tested alone. Evidence, from `frontend/` in CI's order: `npm run
+  lint` clean, `npm run typecheck` clean, `npm test` 91 files and 1,233 tests passed (39 new in `features/batch/`: 14 of the
+  model, 10 of the dialog, 9 of the job page, 6 of the list), `npm run build`, `npm run check:api`. Six mutations were caught,
+  each by its own test: the dialog without its "count first" guard, the count kept after the limit changed, the dialog
+  offered without `run:batch`, the cancel button without `run:batch`, the cancel form without its reason check, and the
+  outcome filter not sent. Not run here: `npm run typecheck --workspace @sagat/e2e` needs the TypeScript SDK built
+  (`bash sdks/typescript/conformance/prepare.sh`) and fails without it for reasons unrelated to this change, and the
+  browser journeys (Rust-driven, ignored without Node and Chromium) have no journey for batches. The filter of the run
+  list (`runList.ts`) is not changed: the dialog reads the filters the page already holds.
 - [ ] T018-051 [US5] Job/item purge; selection through 020's `RunSelector`
   (`specs/020-visibility-analytics-archival/contracts/list-query.md`) when enabled, `query` refused
   `QUERY_UNSUPPORTED_OPERATOR` while it is off; `listRuns` filters mapped to 020's `BusinessId`/`ScheduleId`
@@ -656,6 +924,18 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `SagatSchedulesLate`/`SagatBatchesStalled`, alert kinds, quota exhaustion per resource) —
   `infra/observability/alerts.yaml`, `crates/domain/src/operations.rs`,
   `tests/integration/schedules-bulk-operations/observability.rs` — SC-018-014 — FR-018-044, FR-018-045; NFR-018-006.
+  *Part done 2026-11-05 (task stays open: the OTel export canary, the audit rollback, alert kinds and the quota exhaustion
+  per resource).* Label closure: `counted::` reads the Prometheus page of the schedule and batch series and fails on any
+  label that is not `kind`, `outcome`, `action` or the histogram's `le`. Alerts: the lag of the schedule and batch passes
+  rides on `SagatSchedulerLate` (`max(scheduler_lag_seconds) > 60`, no `pass` matcher), whose summary now names them, and a new
+  `SagatBatchJobsStalled` (`batch_jobs_active > 0` with no item outcome for fifteen minutes: jobs accepted where no engine
+  runs them, G1965, or a selection waiting for an old transaction) points to `batch-operations.md#5-when-a-job-does-not-move`.
+  The new rule is tested with `promtool test rules` (`infra/observability/tests/batch_stalled_test.yaml`, run by CI after
+  `check rules`): it fires after fifteen minutes with jobs active and a flat counter, stays silent while items get outcomes
+  and while no job is active, and fires when the counter has never existed. Also: `promtool check rules` accepts the 25
+  rules (the CI image, run here), `contract_observability_operations` 9 passed (every metric a rule evaluates is one the
+  code emits, every rule has a runbook section that exists). The separate `SagatSchedulesLate` of the plan is not added:
+  the generic rule already covers the pass.
 - [ ] T018-072 Benchmark on a declared environment (firing lag at 1k/10k schedules, batch rate per job
   and 16 jobs, 32-way business-id claim, reset at 1k/20k events); adjust ceilings only from data —
   `tests/performance/schedules-bulk-operations/`, `tests/performance/reports/schedules-bulk-operations.md`
@@ -663,6 +943,15 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 - [ ] T018-073 Runbooks/docs (`docs/runbooks/{schedules,batch-operations,run-reset}.md`, cron section of
   `docs/runbooks/events.md`, entry-wait pattern, business-id privacy warning) — review + link check —
   FR-018-049.
+  *Part done 2026-11-05 (task stays open: `run-reset.md`, the cron section of `events.md`, the entry-wait pattern and the
+  business-id warning belong to US03, US06 and US07).* `docs/runbooks/schedules.md` (what a schedule is and the nine
+  decisions a time can become, the two flags that must agree and their settings, the order to look in when a schedule did not
+  start a run, the signals, the input that is never returned, what is not built) and `docs/runbooks/batch-operations.md`
+  (what a job promises and what it does not, the limits, the two flags, how to read a job and its items, what to look at when
+  a job does not move, the signals, what is not built). Every setting, default, reason code, audit action and metric they name
+  was read from the code (engine and control-plane settings, `Limits`, the quota defaults, the audit table, the roles); a link
+  check of the relative links of both found none missing, and `check-design-docs.py` and `check-agent-config.py` pass. Not
+  done: a review by an operator.
 - [ ] T018-074 Real-browser e2e of schedule, batch and reset flows, keyboard only, WCAG AA, failure states
   — `tests/e2e/schedules-bulk-operations/` — SC-018-015 — FR-018-047.
 - [ ] T018-076 Barrier test: every run-driven transition (completion, failure, timer, wait timeout,
@@ -670,6 +959,21 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   transaction on schedule, business-id, job, item, obligation or pending-reset rows —
   `tests/fault/schedules-bulk-operations/run_driven_locks.rs` — SC-018-016 — FR-018-007, FR-018-021,
   FR-018-030.
+  *Part done 2026-11-05 (task stays open: business-id and pending-reset rows, the wait timeout and the handoff).* The test
+  holds `ACCESS EXCLUSIVE` on every table of the two aggregates that exist (`schedules`, `schedule_revisions`,
+  `schedule_actions`, `schedule_backfills`, `schedule_obligations`, `batch_jobs`, `batch_items`, found by name so that one
+  added later is locked too; each is shown to refuse a statement with `lock_not_available` after 300 ms), which stops any
+  statement that reads or writes them, and drives the transitions a run goes through: a worker completes an attempt and the
+  step it unlocks (the run succeeds), a worker fails an attempt for good (the run ends), a person cancels, and the
+  scheduler's passes fire a timer (the step behind it is ready), take back a lease that ran out and enforce a run
+  deadline. Every one finishes while the locks are held, so none of them reads or writes a row of an aggregate (a run
+  learns nothing from them and they learn of a run by looking, ADR-0050 decision 7). The control: the firing of a due
+  schedule does wait for the same locks (seen in `pg_stat_activity`, not by a delay) and acts once they are released.
+  Evidence: `fault_schedules_bulk_operations` `run_driven_locks::` 1 passed, the suite 31 passed, also with
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`; a mutation that makes the transaction a run-driven change begins read the schedule that
+  tracks the run fails it with "stage `a worker completes` did not finish within 60s", naming the transition that waited.
+  Not covered: the wait timeout and the handoff transitions, and the rows of business ids and pending resets, which
+  exist when US03 and US06 do.
 - [ ] T018-077 Feature 020/022 integration once they merge: every run creator through 022's T10 (schedule
   action, starts, with-start, batch rerun, rerun, reset), reset `CONCURRENCY_PERMIT_UNAVAILABLE`,
   test-tree refusals, restored rows skipped by 020 analytics, attribute fold on reset, `RUN_PURGED`

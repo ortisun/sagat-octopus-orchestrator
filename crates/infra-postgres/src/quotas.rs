@@ -432,6 +432,39 @@ pub(crate) async fn ensure_room_for_backfill(
     judge(QuotaResource::ScheduleBackfills, count, limit)
 }
 
+/// Takes the locks that decide whether a new batch job fits, for the rest of the transaction: the
+/// tenant's first and then the namespace's, the same order in every transaction that takes both.
+pub(crate) async fn lock_batch_jobs(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::TenantBatchJobs, tenant, None).await?;
+    lock(conn, QuotaResource::BatchJobs, tenant, Some(namespace)).await
+}
+
+/// A new batch job fits in its namespace and in its tenant: the jobs that have not finished count.
+/// The caller holds [`lock_batch_jobs`].
+pub(crate) async fn ensure_room_for_batch(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    namespace_limit: u64,
+    tenant_limit: u64,
+) -> Result<(), StoreError> {
+    let (in_namespace, in_tenant): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE namespace_id = $2), count(*) FROM batch_jobs \
+         WHERE tenant_id = $1 AND state IN ('SELECTING', 'RUNNING', 'CANCELLING')",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::BatchJobs, in_namespace, namespace_limit)?;
+    judge(QuotaResource::TenantBatchJobs, in_tenant, tenant_limit)
+}
+
 /// Takes the lock of the scripts of one namespace for the rest of the transaction.
 pub(crate) async fn lock_scripts(
     conn: &mut PgConnection,
@@ -1130,6 +1163,22 @@ impl QuotaStore for PgRunStore {
             )
             .bind(tenant.as_uuid())
             .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            QuotaResource::BatchJobs => sqlx::query_scalar(
+                "SELECT count(*) FROM batch_jobs \
+                 WHERE tenant_id = $1 AND namespace_id = $2 \
+                   AND state IN ('SELECTING', 'RUNNING', 'CANCELLING')",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            QuotaResource::TenantBatchJobs => sqlx::query_scalar(
+                "SELECT count(*) FROM batch_jobs \
+                 WHERE tenant_id = $1 AND state IN ('SELECTING', 'RUNNING', 'CANCELLING')",
+            )
+            .bind(tenant.as_uuid())
             .fetch_one(&self.pool)
             .await,
             QuotaResource::ApiRequestsPerSecond

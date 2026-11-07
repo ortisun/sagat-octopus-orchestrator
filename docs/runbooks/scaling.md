@@ -143,7 +143,7 @@ helm install sagat infra/helm -f my-values.yaml          # after the migrations 
 
 ## scheduler-late
 
-**`SagatSchedulerLate`.** `scheduler_lag_seconds{pass}` has been above 60 seconds for five minutes: an item of that pass (`timers`, `wait_deadlines`, `retries`, `leases`, `deadlines`) has been overdue for that long. The run it belongs to is waiting, not lost.
+**`SagatSchedulerLate`.** `scheduler_lag_seconds{pass}` has been above 60 seconds for five minutes: an item of that pass (`timers`, `wait_deadlines`, `retries`, `leases`, `deadlines`, `schedules`, `batches`) has been overdue for that long. For `schedules` that is a schedule whose next time has passed and which the pass has not acted on; for `batches` a job the pass would take (its slot has come and, while it selects, no older transaction is still open) and has not. A job that waits for an older transaction to end is not counted: look for a long-open transaction in the database, not for replicas. The run it belongs to is waiting, not lost.
 
 - **Confirm:** `scheduler_lag_seconds` by `pass`; `scheduler_shards_owned` (all 64 held?); `scheduler_actions_total{outcome}` (failing, or being fenced?); the CPU of the engines; `db_pool_connections{state="in_use"}` against the pool size; the server.
 - **Likely causes:** shards unowned (the alert above); a burst of due items larger than the passes take (`SAGAT_SCHEDULER_BATCH` per pass per tick, `SAGAT_SCHEDULER_CONCURRENCY` at a time); a slow database; fewer replicas than the peak needs.

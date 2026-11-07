@@ -5,7 +5,8 @@
 use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::schedule_codec::spec_from_json;
 use sagat_application::schedules::{
-    NewSchedule, Revise, ScheduleRecord, ScheduleState, ScheduleStore, StateChange, StateNote,
+    NewSchedule, Revise, ScheduleFilter, ScheduleRecord, ScheduleState, ScheduleStore, StateChange,
+    StateNote,
 };
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Principal, Role, Subject, TenantId};
@@ -468,7 +469,7 @@ async fn deleting_leaves_a_tombstone_drops_waiting_actions_and_frees_the_name() 
     );
     assert!(
         w.store
-            .schedules(w.tenant, w.namespace, None, 10)
+            .schedules(w.tenant, w.namespace, &ScheduleFilter::default(), None, 10)
             .await
             .expect("list")
             .is_empty()

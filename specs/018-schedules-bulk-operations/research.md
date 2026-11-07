@@ -410,6 +410,80 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 - **D1956** (2026-11-04, T018-016) The input of a schedule is checked for shape and size, not against the `inputSchema` of the
   target version (G1955): nothing on the platform enforces that schema, so a schedule would be stricter than a person
   starting the same workflow.
+- **D1957** (2026-11-04, T018-045) Batch jobs: the model and who may do what. A job is a row that never changes except in
+  its progress (an `ALWAYS` guard refuses every other `UPDATE`, a finished job staying finished) with one item row per
+  selected run and no foreign key to `runs`, so retention of an item never waits for a run. Creating it needs
+  `run:batch` and every permission of the single action (`action_permissions`): `run:operate` for cancel, pause, resume and
+  retry-step and mark-manual-review (the single-run `Hold`), `run:signal`, `run:update`, and `run:operate` with `run:start` for
+  rerun; `REPIN` is `BATCH_ACTION_UNAVAILABLE` while feature 019 is not enabled. The creation is judged under a fence
+  (the tenant's first, then the namespace's, the same order everywhere) against the jobs that have not finished, 2 per
+  namespace and 8 per tenant by default (hard 16 and 64). The selection bound, the horizon (the identity of the creating transaction, D1958; D1957 first said
+  `pg_snapshot_xmax(pg_current_snapshot())`, which was wrong) and the first slot come from the database inside the
+  creating transaction, so the executor can wait until every
+  transaction that was open then has ended. The key (`Idempotency-Key`, 8 to 160 characters) is recorded with the job: a
+  repeat answers the job it made, a changed request is `IDEMPOTENCY_KEY_REUSED`. The payload of a signal or the
+  arguments of an update are a payload of the tenant, named by a digest, and neither the job record nor its audit record
+  carries the body; the audit reason is the action name. A `businessIdPrefix` selector is refused
+  (`BATCH_SELECTOR_UNSUPPORTED`) until business ids exist, because there is no column to match. New reasons of the contract:
+  `BATCH_PARAMS_INVALID`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_PAYLOAD_INVALID`,
+  `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, carried by the new `AppError::InvalidBatch`.
+- **D1958** (2026-11-04, T018-046) The selection waits for the transactions that were open at creation, and the horizon is the
+  creator's own identity. D1033 recorded `pg_snapshot_xmax(pg_current_snapshot())` as the horizon and the condition
+  `pg_snapshot_xmin(pg_current_snapshot()) >= horizon`. In PostgreSQL the `xmax` of a snapshot is the last completed
+  transaction identity plus one, not the next one to be assigned, so a transaction that was open with exactly that identity
+  passes the condition while it is still open: a test with one held transaction showed `held 916, horizon 916, xmin 916`.
+  The horizon is now `pg_current_xact_id()` of the transaction that creates the job and the condition is `xmin > horizon`:
+  the selection starts once every transaction that had an identity when the job was created has ended. A transaction that
+  began before the job and takes its identity only after it (a run whose `created_at` was read before the first write)
+  can still be missed; it is concurrent with the creation of the job, which commits first (G1957).
+  **The executor.** One call of `BatchExecutor::step` does one thing to one job: a page of the selection (500 runs by id
+  after the cursor, up to `maxItems`, items numbered after the ones already there), a page of the drain of a cancelled
+  job, or one item. An item waits for the durable slot (no faster than the rate; a job that ran late never catches up in a
+  burst), re-checks the creator (a creator who lost `run:batch` or a permission of the action fails the job
+  `AUTHORITY_REVOKED` and the items that had not ended are cancelled, so the counters equal the outcomes), applies the
+  single-run use case under the key `batch:{job}:{run}`, and records the outcome, the counters and the next slot under the
+  fence of the shard in one transaction; the record that makes the last item end also completes the job. As with
+  `CANCEL_OTHER` (D1953) the effect and the record are two transactions made safe by the key: a crash between them costs a
+  repeat that changes nothing, and a replica that lost its lease may repeat the effect but cannot record it. No step holds
+  two run locks. What a use case refuses because the run is not in the state the action needs is a skip with its closed
+  reason (`ALREADY_TERMINAL`, `NOT_APPLICABLE`, `NOT_WAITING`, `RUN_CONTINUED`, `HIDDEN_FROM_CREATOR` for a run that is not
+  there or not visible); a quota, a busy tenant or an unavailable store defers the item with the bounded backoff of the
+  domain (5 s doubling to 5 min) and an item refused more than the retries allow or for longer than the window fails
+  `RETRIES_EXHAUSTED`; any other error fails the item with a closed code. A job asking for `UPDATE` is refused when it is
+  created (`BATCH_ACTION_UNAVAILABLE`, G1959), as is a step named with an instance path (G1956).
+- **D1959** (2026-11-04, T018-045) The routes of batch operations follow the contract and, where the code had named something
+  its own way, the contract wins. `BATCH_ACTION_PARAMETERS` is the reason for an action that needs or refuses a
+  parameter (the service said `BATCH_PARAMS_INVALID` and was renamed); a job that already ended is `409`
+  `BATCH_NOT_CANCELLABLE` (the service had left it alone and answered with it; it now refuses before it audits, and a job
+  being cancelled that is cancelled again is still one cancellation, one audit record). The use cases reach the HTTP layer
+  as one trait object (`BatchUseCase`, implemented by `BatchService`) so the routes take no new generic parameter, like
+  the schedule routes. Admission authorizes the namespace of the path (`run:batch` to create or cancel, `run:read` to read,
+  both to preview); the service then asks for the permissions of the action; a job is placed by `namespace_of`, which
+  needs no permission, so a caller with `run:batch` and no `run:read` can still cancel, and a job through the path of
+  another namespace of the same tenant is `404`. The ids of a selector travel as strings and are parsed here, so a
+  malformed id is `BATCH_SELECTOR_INVALID` at `/selector/...` and not a generic body error. The routes exist only behind
+  `SAGAT_BATCHES_ENABLED` (control plane and engine, off by default), on the database clock shared with the schedules.
+- **D1960** (2026-11-04, T018-045..050) What an independent correctness and security read of the batch lane changed. (1) A
+  reason is trimmed, 8 to 2,000 characters of plain text with no control character, the rule the single-run `review` and
+  `rerun` already applied to the reason of each item: a job whose reason they refuse would be accepted and then fail every
+  item. (2) The name of a signal is 1 to 128 characters of `A-Za-z0-9_.:-` starting with a letter or digit, as the
+  single-run route takes it. (3) A job does not return the digest of its payload, only `hasPayload`: an unsalted SHA-256
+  of a low-entropy payload (`{"approved":true}`) lets anyone who can read the job (`run:read`) confirm a guess of what
+  they may not read (the contract draft listed `payloadDigest`; it is dropped). (4) The keys that start with `batch:` and
+  `schedule:` are the platform's own and are refused as an `Idempotency-Key` on every route, so a caller cannot decide what
+  an item or a `CANCEL_OTHER` cancellation does by sending the key first. (5) The caller is part of what a replay means:
+  the same key and body from another person is `IDEMPOTENCY_KEY_REUSED`, not the first person's job. (6) A request that
+  waited for the creation fence looks for its key again after it, so two requests with one key make one job and the second
+  is answered with it, whatever the ceiling. (7) The selection bound is read before the payload insert gives the creating
+  transaction its identity, so no transaction can take an identity between the horizon and the bound (what remains is
+  G1957). (8) The cancellation reason is checked and kept in the audit record (G1960 is closed for the reason; the key is
+  still not replayed), and the audit record of a run changed by an item names the job (`batch {job}: {reason}`).
+  (9) `due_jobs` returns only the jobs that can do something now: a selection whose horizon has not passed and a running job
+  whose items are all deferred to a later time are left out, so a hundred of them no longer hide every other job from the
+  pass. (10) Immediately before an effect the executor looks once more (`ensure_live`) at the lease, the state of the job
+  and the state of the item, so a replica that lost its lease, a job that was cancelled or an item that has ended does not
+  touch the run (what is left is G1961). (11) The fencing metric counts lost leases only. (12) The selection runs under a
+  10 s statement timeout and is tried again.
 - **D1955** (2026-11-04, T018-028) The actions of a schedule are purged by a bounded function, visiting schedules in
   turn. Nothing deleted them: an hourly schedule writes 8,700 rows a year and one every minute 525,000. FR-018-013
   keeps "at least the last 1,000 or 30 days": an action goes when it is older than 30 days **and** beyond the
@@ -445,7 +519,7 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1014 | `createSchedule`, `updateSchedule`, `deleteSchedule`, `pauseSchedule` and `resumeSchedule` require an `Idempotency-Key` (8 to 160 printable characters, like every operation that changes something) but do not replay by it: a request sent again after a lost answer is not answered with the original result. It is refused by what the first one did (409 for a name in use or a stale `expectedRevision`, 404 for a schedule that is gone; pause and resume are idempotent by their nature). Nothing is applied twice. | The spec asks for replay by key only for trigger-now and the with-start operations (FR-018-024, FR-018-026); a replay store for schedule writes needs its own table and retention (ADR-0050 decision 4). | Accepted |
 | G1016 | D1040..D1045 (the Rust SDK, `CANCEL_OTHER`, the waiting reservation, the waiting order, the jitter seed, the item backoff) were written on this branch on 2026-10-29 in the numbers the parity branch gives feature 019 (its D1040..D1079). 018's own block (D1000..D1039) is full, and the check of that day looked at files and migrations but not at the decision blocks. Both sets are published, so neither is renumbered here. | The owner decides which side moves (suggested: 018's six become D1800..D1805 when PR #53 and PR #63 meet, with the references in code and tasks updated in the same change); new 018 decisions use D1800 and up meanwhile. | Open (owner) |
 | G1017 | A waiting trigger-now counts as one of the remaining actions a scheduled time must leave (the reservation of D1042 counts every waiting action), though it never uses one up; with `remainingActions` set and a trigger-now waiting, a scheduled time can find the schedule exhausted a time early. | Rare (a limit, an open run, a buffering rule and a manual action at once); the fix is to count waiting scheduled actions only, which needs the waiting count by kind in `Standing`. | Open |
-| G1015 | `listSchedules` takes `cursor` and `limit` only. The draft fragment also listed the filters `origin`, `state`, `workflowId` and `name`; they are not built, so the canonical contract does not name them, and the response `action` carries `inputDigest` but not `inputBytes`. | A filter needs an index per column (`schedules_by_workflow`, `schedules_by_state`) and a keyset that follows the filter; the store lists by id only. | Open |
+| G1015 | `listSchedules` filters by `state`, `origin`, `workflowId` and the start of a `name` (done 2026-11-05, without a new index: a namespace holds at most as many schedules as its `schedules` quota, which bounds the scan over the head revisions, and the order and the cursor are those of the unfiltered listing, so a page ends where the next begins whichever part filters it). The response `action` still carries `inputDigest` but not `inputBytes`. | An index per filter column (`schedules_by_workflow`, `schedules_by_state`) is a migration for a scan the quota already bounds; it is worth adding if a namespace's ceiling is raised far above the default. | Open (`inputBytes` only) |
 | G1018 | The crash-at-each-write matrix of T018-020 kills the transaction that starts a run (28 writes) and the one that records a skipped time (3 writes). The other decision-only steps (buffer, coalesce, drop, reconcile, auto-pause, the backfill step) have the same shape (fence, compare-and-swap, action row, new state in one transaction) but are not killed at each write; no test boots the control plane with schedules enabled and a skewed clock. | Extend the matrix with the `Step` enum of `tests/fault/schedules-bulk-operations/firing.rs` when a task touches those steps; add a control-plane wiring test with T018-018's remaining work. | Open |
 | G1607 | A binary older than the instance-capability registry release does not register, so no activation can see it; activations therefore require the registry release deployed fleet-wide first (operator precondition, checked by nothing but the runbook), and rollback below a recorded requirement is unsupported. | Inherent to introducing the registry; 029's prerequisite release (T029-003) is the vehicle. | Accepted |
 | G1605 | Draft lock orders that deviated from ADR-0050 decision 7 on 2026-10-27 (026 T2 membership and rate buckets after the link row; 030 endpoint head before memberships; 021 asset heads after secrets and the variable fence as an "authority slot"). Resolved the same day: 021 and 026 now follow decision 7 exactly (021 D1624, 026 D1337 revised); 030 follows it with one listed exception, a caller transaction locking its own `START` row after its run (030 D1660), recorded in decision 7. | Owners 021, 026, 030. | Resolved |
@@ -455,6 +529,17 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
 | G1953 | A waiting action keeps waiting however long the runs that hold it back stay open (a run in `MANUAL_REVIEW` after a failed compensation can stay open for days) and starts when they end, even if it is older than the catch-up window; `data-model.md` has it become `MISSED_CATCHUP_WINDOW` instead. | Starting a stale time is the safe direction (the work is not lost) and the action is visible as `BUFFERED`; the transition needs an update of an action row under the append-only guard. | Open |
 | G1954 | Only the actions are purged. The revisions of a schedule (append-only: a trigger refuses every `UPDATE` and `DELETE`, and they carry the content the tenant is charged for), the obligations that are `DONE`, the finished backfills and the tombstone of a deleted schedule are kept for ever; `data-model.md` has the tombstone go 30 days after the last purge of its actions. | They are small next to the actions (a row per edit, per debt, per backfill), but a tenant that edits a big schedule often keeps charging its content quota with revisions nobody reads. Needs a guard that lets a purge function through, and a rule for the revision an action still names. | Open |
 | G1955 | The input of a schedule is not validated against the `inputSchema` of the target version at write or at action (`SCHEDULE_INPUT_INVALID` means "not an object" or "too large"), and `nominalTimeField` is not checked to be a declared string property (`NOMINAL_TIME_FIELD_INVALID` is never answered). | The IR declares `inputSchema` but the platform enforces it nowhere (run start, signal, worker), so enforcing it for schedules alone would refuse what the same workflow accepts from a person. Close it with the run start: a validator port (`infra-schema::validate` exists) used by both, and the contract `errors.md` already has the two reasons. | Open |
+| G1956 | A batch job names root steps only (`RETRY_STEP`, `MARK_MANUAL_REVIEW`): a step of an iteration of a collection or a loop needs its scope path resolved per run, which the single-run `review_instance` takes as an exact instance and the job has no way to express across runs. A request with an `instancePath` is `BATCH_PARAMS_INVALID`. | Resolving a path per run (the iteration that waits is not the same in every run) is a design of its own. | Open |
+| G1957 | A transaction that began before a batch job was created and takes its identity only after it can commit a run whose `created_at` is before the job's bound after the selection read, and the run is not selected (D1958). | It is concurrent with the creation of the job, which commits first, so the run is not "before" the job in any order a caller can observe; the window is the milliseconds between reading the clock and the first write of a run creation. Closing it needs the selection to look at the oldest transaction that has not ended, not only at identities. | Open |
+| G1958 | The wait of an item for the lock of its run is not bounded to two seconds (`LOCK_WAIT` is never produced): the run service opens a run with `Lock::Wait`. A long transaction on one run delays the job's pass at that item. | Run transactions are short; a bounded wait needs a lock mode in the run store that gives up and an error to carry it. | Open |
+| G1959 | The `UPDATE` action of a batch is refused at creation: it needs the declared-operations evaluation of a run (its receipt, `reapplyOnReset`, the per-run update key), which no use case offers to a caller that is not the HTTP route. | A use case of the application layer for a declared Update, shared by the route and the batch. | Open |
+| G1960 | `cancelBatchOperation` requires an `Idempotency-Key` and a `reason` (8 to 2,000 characters) but neither is kept: asking twice is asking once by the nature of the operation (the second answer is the job being cancelled), and the reason is checked and not stored, because the audit record names the action and never free text (D1957). | A cancellation reason in the audit trail needs a closed vocabulary or a redaction rule; the key would need a replay store (as G1014 for schedule writes). | Open |
+| G1961 | **The effect on a run and the record of its item are two transactions, which ADR-0050 decision 2 and FR-018-030 say they should not be.** `ensure_live` narrows the window to the duration of the effect, it does not close it: a replica that stalls after the look, a lease that lapses, or a cancel that commits in that window still lets one more effect through, and its record is then refused; a crash between the effect and its record followed by a cancel marks the item `CANCELLED` although the run was changed. Every effect is keyed, so a repeat changes nothing and the counters always equal the item rows, but an item can say less than what happened to its run. | Closing it means the single-run use cases take a hook that locks the fence, the job and the item inside the run transaction (ADR-0050 slot order: fence, run, job, item) and records the outcome there; that touches `operate`, `signal`, `review` and `rerun`, and ADR-0050 would then be followed instead of amended. The owner decides (O1951). | Open |
+| G1962 | The selection compares `runs.created_at`, stamped by the application clock of the host that created the run, with the bound read from the database clock. A host whose clock is ahead of the database's by δ stamps runs that are older than the job with a time after its bound, and the job never selects them; a host that is behind has runs created after the job selected. Not the window of G1957 (one host, between reading its clock and its first write). | Stamping `created_at` from the database in the run insert, or selecting by a column the database orders (commit order), is a change to run creation, which is not this feature's. Hosts of one deployment are expected to be within milliseconds. | Open |
+| G1963 | The wait for the transactions that were open when a job was created has no deadline, and it is database-wide: one forgotten transaction or prepared transaction keeps every `SELECTING` job there and the active-job place each holds until it ends or the job is cancelled (a cancel does not wait for the horizon). `SELECTION_FAILED` exists and is produced by nothing. | A deadline that fails the job is a product choice (how long is too long, and who is told). | Open |
+| G1964 | `businessId: DROP` of `RERUN` is accepted and stored but the adapter does not read it: business ids are not bound to runs yet, so a rerun has none to keep or to drop. | It becomes a promise the code must keep when business ids land (US03). | Open |
+| G1965 | The control plane and the engine each have `SAGAT_BATCHES_ENABLED`. With it on in the control plane and off in the engine, jobs are accepted and never run, they stay `SELECTING` and hold their active-job places, and a cancellation waits for an engine to drain it. Turning the flag off in the control plane stops the routes, not the jobs already running; the engine's flag is the switch. | One flag per process kind is how schedules are gated too; the instance-capability registry of ADR-0050 decision 9 would refuse the mismatch and is not built. | Open |
+| G1966 | The Studio's backfill dialog has no preview of how many times the range holds: no route counts them without starting the backfill, so it states the bound (1,000 times, an end that is not in the future) and shows the platform's refusal in words. | A preview is a read of the schedule's spec over a range, which the platform alone computes (the Studio computes no time); it needs a route (`previewScheduleBackfill`) with the contract, the reference and the types. | Open |
 | G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
 
 ## 5. Owner questions (the plan implements the recommended defaults)
@@ -474,6 +559,12 @@ paragraphs below are kept as the question that was put.
 - **O1002 — Who holds `run:batch`.** (a) admin and operator; (b) also developer for actions a developer
   may take one by one. **Recommended: (a)** — a batch multiplies an action's blast radius by up to
   100,000.
+- **O1951 — Must the effect on a run and the record of its batch item be one transaction?** (a) Keep the two keyed
+  transactions with the look before the effect (D1960, G1961): a stale replica or a cancel can let one more keyed effect
+  through, and an item can say less than happened to its run; or (b) pass a hook into the four single-run use cases so
+  the fence, the job and the item are locked and the outcome recorded inside the run transaction, as ADR-0050 decision 2
+  says. **Recommended: (b) before the feature is released; (a) is what is built** and is safe against a repeat, not
+  against one extra effect after a cancel.
 - **O1950 — Who may write a `CANCEL_OTHER` schedule.** (a) whoever holds `run:operate` (admin, operator; of the roles
   that write schedules only admin), because the schedule cancels runs for them; (b) whoever holds `schedule:write`
   (admin, developer), the schedule cancelling as the platform. **Recommended and implemented: (a)** — a developer who

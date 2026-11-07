@@ -99,6 +99,10 @@ pub enum QuotaResource {
     Schedules,
     /// Backfills of the namespace that have not finished (feature 018).
     ScheduleBackfills,
+    /// Batch jobs of the namespace that have not finished (feature 018).
+    BatchJobs,
+    /// Batch jobs of the tenant that have not finished (feature 018).
+    TenantBatchJobs,
 }
 
 /// At which level a resource is counted.
@@ -133,7 +137,7 @@ pub enum QuotaUnit {
 }
 
 impl QuotaResource {
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 36] = [
         Self::ActiveRuns,
         Self::TenantActiveRuns,
         Self::Workflows,
@@ -168,6 +172,8 @@ impl QuotaResource {
         Self::SecretProviderOperations,
         Self::Schedules,
         Self::ScheduleBackfills,
+        Self::BatchJobs,
+        Self::TenantBatchJobs,
     ];
 
     #[must_use]
@@ -207,6 +213,8 @@ impl QuotaResource {
             Self::SecretProviderOperations => "secret_provider_operations",
             Self::Schedules => "schedules",
             Self::ScheduleBackfills => "schedule_backfills",
+            Self::BatchJobs => "batch_jobs",
+            Self::TenantBatchJobs => "tenant_batch_jobs",
         }
     }
 
@@ -240,13 +248,15 @@ impl QuotaResource {
             | Self::DatabaseConcurrency
             | Self::SecretProviderOperations
             | Self::Schedules
-            | Self::ScheduleBackfills => QuotaScope::Namespace,
+            | Self::ScheduleBackfills
+            | Self::BatchJobs => QuotaScope::Namespace,
             Self::TenantActiveRuns
             | Self::WorkerSessions
             | Self::IterationConcurrency
             | Self::TenantContentBytes
             | Self::TenantLogBytes
-            | Self::TenantDatabaseConcurrency => QuotaScope::Tenant,
+            | Self::TenantDatabaseConcurrency
+            | Self::TenantBatchJobs => QuotaScope::Tenant,
         }
     }
 
@@ -339,6 +349,8 @@ impl QuotaResource {
             Self::SecretProviderOperations => 128,
             Self::Schedules => 10_000,
             Self::ScheduleBackfills => 16,
+            Self::BatchJobs => 16,
+            Self::TenantBatchJobs => 64,
             _ => MAX_LIMIT,
         }
     }
@@ -384,6 +396,8 @@ impl QuotaResource {
             Self::SecretProviderOperations => 32,
             Self::Schedules => 200,
             Self::ScheduleBackfills => 4,
+            Self::BatchJobs => 2,
+            Self::TenantBatchJobs => 8,
         }
     }
 
@@ -425,6 +439,8 @@ impl QuotaResource {
             Self::SecretProviderOperations => "pending secret provider operations in the namespace",
             Self::Schedules => "schedules in the namespace",
             Self::ScheduleBackfills => "schedule backfills in progress in the namespace",
+            Self::BatchJobs => "batch jobs in progress in the namespace",
+            Self::TenantBatchJobs => "batch jobs in progress of the tenant",
         }
     }
 
@@ -755,7 +771,7 @@ mod tests {
 
     #[test]
     fn durable_resources_have_explicit_scope_kind_unit_range_and_usage_semantics() {
-        assert_eq!(QuotaResource::ALL.len(), 34);
+        assert_eq!(QuotaResource::ALL.len(), 36);
         for (resource, scope, kind, unit, maximum, default, has_usage) in [
             (
                 QuotaResource::TenantContentBytes,

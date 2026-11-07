@@ -6,13 +6,21 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod actions;
 mod admission;
 mod authority;
 mod backfill;
+mod batch;
+mod batch_actions;
+mod batch_executor;
+mod batch_pass;
+mod batch_security;
 mod cancel_other;
 mod catchup;
 mod changes;
+mod counted;
 mod firing;
+mod lag;
 mod limits;
 mod migration;
 mod pass;

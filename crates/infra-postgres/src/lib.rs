@@ -9,6 +9,7 @@ use sqlx::migrate::Migrator;
 mod api_admission;
 mod approval_progress;
 mod approval_scheduler;
+mod batch;
 mod bindings;
 mod breaker;
 mod capacity_acquire;
@@ -58,6 +59,7 @@ mod versioning;
 mod workers;
 
 pub use approval_progress::PgApprovalProgressStore;
+pub use batch::PgBatchStore;
 pub use capacity_acquire::PgCapacityAcquireStore;
 pub use capacity_finish::PgCapacityFinishStore;
 pub use capacity_vacate::PgCapacityVacateStore;

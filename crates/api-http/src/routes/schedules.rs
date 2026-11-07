@@ -11,16 +11,19 @@ use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use sagat_application::api_admission::{ApiOperation, ApiTarget};
-use sagat_application::schedules::ScheduleUseCase;
+use sagat_application::schedules::{
+    ActionCursor, ScheduleFilter, ScheduleOrigin, ScheduleState, ScheduleUseCase,
+};
 use sagat_domain::identity::NamespaceId;
-use sagat_domain::schedules::{Note, ScheduleId};
+use sagat_domain::schedules::{Note, Outcome, ScheduleId};
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::admission::admit;
 use crate::dto_schedules::{
-    BackfillBody, BackfillListBody, BackfillRequestBody, ScheduleActionBody, ScheduleBody,
-    ScheduleDescriptionBody, ScheduleNoteBody, SchedulePageBody, ScheduleUpdateBody,
-    ScheduleWriteBody, TriggerBody,
+    BackfillBody, BackfillListBody, BackfillRequestBody, ScheduleActionBody,
+    ScheduleActionPageBody, ScheduleBody, ScheduleDescriptionBody, ScheduleNoteBody,
+    SchedulePageBody, ScheduleUpdateBody, ScheduleWriteBody, TriggerBody,
 };
 use crate::error::ApiError;
 use crate::extract::{ApiJson, Caller};
@@ -103,9 +106,59 @@ pub async fn create_schedule<B: Governance>(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListQuery {
     pub cursor: Option<String>,
     pub limit: Option<u32>,
+    pub state: Option<String>,
+    pub origin: Option<String>,
+    pub workflow_id: Option<String>,
+    pub name: Option<String>,
+}
+
+/// The filter a query asks for, or why it is not one. A listing never shows a deleted schedule, so
+/// `DELETED` is not a state to ask for.
+fn filter_of(query: &ListQuery) -> Result<ScheduleFilter, ApiError> {
+    let state = query
+        .state
+        .as_deref()
+        .map(|text| match text.parse::<ScheduleState>() {
+            Ok(state @ (ScheduleState::Active | ScheduleState::Paused)) => Ok(state),
+            _ => Err(ApiError::bad_request("state is ACTIVE or PAUSED")),
+        })
+        .transpose()?;
+    let origin = query
+        .origin
+        .as_deref()
+        .map(|text| {
+            text.parse::<ScheduleOrigin>()
+                .map_err(|()| ApiError::bad_request("origin is API or TRIGGER"))
+        })
+        .transpose()?;
+    let workflow = query
+        .workflow_id
+        .as_deref()
+        .map(|text| {
+            Uuid::parse_str(text).map_err(|_| ApiError::bad_request("workflowId is not a UUID"))
+        })
+        .transpose()?;
+    let name_prefix = query
+        .name
+        .as_deref()
+        .map(|text| {
+            if text.chars().count() > 128 {
+                Err(ApiError::bad_request("name is at most 128 characters"))
+            } else {
+                Ok(text.to_owned())
+            }
+        })
+        .transpose()?;
+    Ok(ScheduleFilter {
+        state,
+        origin,
+        workflow,
+        name_prefix,
+    })
 }
 
 pub async fn list_schedules<B: Governance>(
@@ -123,11 +176,18 @@ pub async fn list_schedules<B: Governance>(
         })
         .transpose()?;
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let filter = filter_of(&query)?;
     let namespace =
         admitted_namespace(&state, &caller, &namespace, ApiOperation::ScheduleRead).await?;
     // one more than a page, to know whether there is a next one
     let mut found = schedules(&state)?
-        .list(&caller.session.principal, namespace, after, limit + 1)
+        .list(
+            &caller.session.principal,
+            namespace,
+            &filter,
+            after,
+            limit + 1,
+        )
         .await?;
     let next_cursor = if found.len() > limit as usize {
         found.truncate(limit as usize);
@@ -146,6 +206,56 @@ pub async fn list_schedules<B: Governance>(
 pub struct DescribeQuery {
     pub next_count: Option<u32>,
     pub recent_count: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActionsQuery {
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+    pub outcome: Option<String>,
+}
+
+/// The decisions of a schedule, newest first, optionally of one outcome.
+pub async fn list_schedule_actions<B: Governance>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, id)): Path<(String, String)>,
+    Query(query): Query<ActionsQuery>,
+) -> Result<Json<ScheduleActionPageBody>, ApiError> {
+    let after = query
+        .cursor
+        .as_deref()
+        .map(|c| {
+            ActionCursor::decode(c).ok_or_else(|| ApiError::bad_request("the cursor is not valid"))
+        })
+        .transpose()?;
+    let outcome = query
+        .outcome
+        .as_deref()
+        .map(|name| {
+            name.parse::<Outcome>()
+                .map_err(|_| ApiError::bad_request("the outcome is not valid"))
+        })
+        .transpose()?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let id =
+        admitted_schedule(&state, &caller, &namespace, &id, ApiOperation::ScheduleRead).await?;
+    // one more than a page, to know whether there is a next one
+    let mut found = schedules(&state)?
+        .actions(&caller.session.principal, id, outcome, after, limit + 1)
+        .await?;
+    let next_cursor = if found.len() > limit as usize {
+        found.truncate(limit as usize);
+        found
+            .last()
+            .map(|action| ActionCursor::after(action).encode())
+    } else {
+        None
+    };
+    Ok(Json(ScheduleActionPageBody {
+        items: found.iter().map(ScheduleActionBody::from).collect(),
+        next_cursor,
+    }))
 }
 
 pub async fn get_schedule<B: Governance>(

@@ -3,16 +3,16 @@
 //! scheduler's pass runs), behind one trait object.
 
 use sagat_domain::identity::{NamespaceId, Principal};
-use sagat_domain::schedules::{Note, Overlap, ScheduleId};
+use sagat_domain::schedules::{Note, Outcome, Overlap, ScheduleId};
 
 use crate::clock::Clock;
 use crate::identity::{IdentityStore, RequestContext};
 use crate::quotas::QuotaLookup;
 use crate::schedule_firing::{ScheduleFiring, ScheduledStarts, TriggerRequest};
 use crate::schedules::{
-    ActionView, BackfillRecord, BackfillRequest, ScheduleCalendar, ScheduleDescription,
-    ScheduleDocument, ScheduleFuture, ScheduleRecord, ScheduleService, ScheduleStore,
-    ScheduleUseCase, decode_document,
+    ActionCursor, ActionView, BackfillRecord, BackfillRequest, ScheduleCalendar,
+    ScheduleDescription, ScheduleDocument, ScheduleFilter, ScheduleFuture, ScheduleRecord,
+    ScheduleService, ScheduleStore, ScheduleUseCase, decode_document,
 };
 use uuid::Uuid;
 
@@ -71,14 +71,29 @@ where
         Box::pin(self.service.describe(principal, id, next, recent))
     }
 
+    fn actions<'a>(
+        &'a self,
+        principal: &'a Principal,
+        id: ScheduleId,
+        outcome: Option<Outcome>,
+        after: Option<ActionCursor>,
+        limit: u32,
+    ) -> ScheduleFuture<'a, Vec<ActionView>> {
+        Box::pin(self.service.actions(principal, id, outcome, after, limit))
+    }
+
     fn list<'a>(
         &'a self,
         principal: &'a Principal,
         namespace: NamespaceId,
+        filter: &'a ScheduleFilter,
         after: Option<ScheduleId>,
         limit: u32,
     ) -> ScheduleFuture<'a, Vec<ScheduleRecord>> {
-        Box::pin(self.service.list(principal, namespace, after, limit))
+        Box::pin(
+            self.service
+                .list(principal, namespace, filter, after, limit),
+        )
     }
 
     fn update<'a>(

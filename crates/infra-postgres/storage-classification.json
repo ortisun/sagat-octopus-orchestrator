@@ -158,6 +158,204 @@
       ]
     },
     {
+      "table": "batch_items",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only PENDING, DEFERRED, SUCCEEDED, SKIPPED, FAILED or CANCELLED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/batch.rs"
+      ]
+    },
+    {
+      "table": "batch_items",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "A closed code: CHECK permits only upper-case letters, digits and underscores, at most 64 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/batch.rs"
+      ]
+    },
+    {
+      "table": "batch_items",
+      "column": "error_code",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "A closed Error.code: CHECK permits only upper-case letters, digits and underscores, at most 64 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/batch.rs"
+      ]
+    },
+    {
+      "table": "batch_jobs",
+      "column": "action",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only the nine actions of the contract."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/batch.rs"
+      ]
+    },
+    {
+      "table": "batch_jobs",
+      "column": "params",
+      "sql_type": "jsonb",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "A closed object per action (step id, instance path, operation name, business-id policy); CHECK limits it to an object of at most 1,024 bytes."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/batch.rs"
+      ]
+    },
+    {
+      "table": "batch_jobs",
+      "column": "payload_digest",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "A SHA-256 digest: CHECK requires exactly 32 bytes; the payload it names is charged as content in payloads."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/batch.rs"
+      ]
+    },
+    {
+      "table": "batch_jobs",
+      "column": "selector",
+      "sql_type": "jsonb",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "canonical_json_utf8",
+        "expression": null,
+        "evidence": "The structured filter or the list of run ids, which may carry a business-id prefix; bounded to 64 KiB by CHECK; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/batch.rs"
+      ]
+    },
+    {
+      "table": "batch_jobs",
+      "column": "reason",
+      "sql_type": "text",
+      "class": "content",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "octet_length_utf8",
+        "expression": null,
+        "evidence": "The justification of the operator, 8 to 2,000 characters by CHECK; charged by the ALWAYS quota triggers."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/batch.rs"
+      ]
+    },
+    {
+      "table": "batch_jobs",
+      "column": "created_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "A subject: CHECK limits it to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/batch.rs"
+      ]
+    },
+    {
+      "table": "batch_jobs",
+      "column": "state",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only SELECTING, RUNNING, CANCELLING, COMPLETED, CANCELLED or FAILED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/batch.rs"
+      ]
+    },
+    {
+      "table": "batch_jobs",
+      "column": "failure_reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only AUTHORITY_REVOKED or SELECTION_FAILED."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/batch.rs"
+      ]
+    },
+    {
       "table": "blobs",
       "column": "content_type",
       "sql_type": "text",

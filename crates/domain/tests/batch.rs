@@ -101,6 +101,29 @@ fn each_action_needs_exactly_its_parameters() {
 
 #[test]
 fn the_reason_is_eight_to_two_thousand_characters() {
+    // trimmed, and plain text: the single-run use cases refuse anything else, so a job that took it
+    // would fail every one of its items
+    assert_eq!(
+        Justification::new("  clean up the runs  ")
+            .expect("trimmed")
+            .as_str(),
+        "clean up the runs"
+    );
+    assert!(
+        Justification::new("   fix   ").is_err(),
+        "3 characters once trimmed"
+    );
+    for bad in [
+        "retry after incident\n#4821",
+        "tab\tseparated reason",
+        "nul\0inside it",
+    ] {
+        assert_eq!(
+            Justification::new(bad).expect_err("a control character"),
+            BatchError::BadReason,
+            "{bad:?}"
+        );
+    }
     assert!(Justification::new(&"é".repeat(8)).is_ok());
     assert!(Justification::new(&"é".repeat(2000)).is_ok());
     assert_eq!(

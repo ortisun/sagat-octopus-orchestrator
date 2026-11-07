@@ -34,8 +34,12 @@ caller or another tenant's identifier. A foreign resource is `NOT_FOUND` without
 | `CONFLICT` | 409 | `IDEMPOTENCY_KEY_REUSED` (existing reason) | no | every keyed operation | Use a new key for a different request. |
 | `VALIDATION_FAILED` | 422 | `BATCH_SELECTOR_INVALID` | no | batch preview/create | The filter or run-id list is malformed or over its ceiling. |
 | `VALIDATION_FAILED` | 422 | `QUERY_UNSUPPORTED_OPERATOR` (feature 020's reason, reused) | no | batch with `query` while 020's capability is off | Use the structured filter. |
-| `VALIDATION_FAILED` | 422 | `BATCH_ACTION_UNAVAILABLE` | no | batch action whose owning feature is not enabled (`REPIN` without 019) | Enable the feature or choose another action. |
-| `VALIDATION_FAILED` | 422 | `BATCH_ACTION_PARAMETERS` | no | batch create | The action needs (or refuses) `stepId`, `signal` or `update`. |
+| `VALIDATION_FAILED` | 422 | `BATCH_ACTION_UNAVAILABLE` | no | batch action whose owning feature is not enabled (`REPIN` without 019), or one this build cannot apply to many runs (`UPDATE`, G1959) | Enable the feature or choose another action. |
+| `VALIDATION_FAILED` | 422 | `BATCH_LIMITS_INVALID` | no | batch create | `maxItems` is 1 to 100,000 and `itemsPerSecond` above 0 and at most 200. |
+| `VALIDATION_FAILED` | 422 | `BATCH_REASON_INVALID` | no | batch create/cancel | The reason is 8 to 2,000 characters of plain text once trimmed: no control character, a new line included. |
+| `VALIDATION_FAILED` | 422 | `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE` | no | batch create with `signal` or `update` | The payload must be a JSON object (a signal) and at most 256 KiB. |
+| `VALIDATION_FAILED` | 422 | `BATCH_SELECTOR_UNSUPPORTED` | no | batch create/preview with `businessIdPrefix` | Business ids are not bound to runs yet; select by the other filters or by run ids. |
+| `VALIDATION_FAILED` | 422 | `BATCH_ACTION_PARAMETERS` | no | batch create | The action needs (or refuses) `stepId`, `signal` or `update`; a signal name is 1 to 128 characters of letters, digits and `_ . : -`; a step id is a step of the workflow. |
 | `CONFLICT` | 409 | `BATCH_NOT_CANCELLABLE` | no | batch cancel | The job already ended. |
 | `VALIDATION_FAILED` | 422 | `RESET_NOT_SUPPORTED_FOR_SOURCE` | no | reset points/preview/reset | Chain segments and child runs cannot be reset in this version. |
 | `VALIDATION_FAILED` | 422 | `RESET_POINT_NOT_ELIGIBLE` | no | preview/reset | Choose a sequence listed by `listResetPoints`. |

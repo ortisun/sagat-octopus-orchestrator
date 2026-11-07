@@ -1,5 +1,6 @@
 //! HTTP routes.
 
+pub mod batch;
 pub mod chains;
 pub mod connectors;
 pub mod database;

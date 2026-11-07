@@ -6,7 +6,7 @@ use sagat_application::clock::Clock;
 use sagat_application::error::{AppError, ConflictKind};
 use sagat_application::identity::RequestContext;
 use sagat_application::schedule_codec::{policies_from_json, spec_from_json, target_from_json};
-use sagat_application::schedules::{ScheduleService, ScheduleState, ScheduleWrite};
+use sagat_application::schedules::{ScheduleFilter, ScheduleService, ScheduleState, ScheduleWrite};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Role, Subject, TenantId};
 use sagat_domain::schedules::{
     Ceilings, Note, RemainingActions, ScheduleId, ScheduleName, jitter_offset_ms, jitter_seed,
@@ -442,7 +442,7 @@ async fn anyone_who_reads_runs_reads_schedules_and_nobody_reads_another_tenants(
     );
     assert_eq!(
         w.service
-            .list(&viewer, w.namespace, None, 10)
+            .list(&viewer, w.namespace, &ScheduleFilter::default(), None, 10)
             .await
             .expect("list")
             .len(),
@@ -711,7 +711,7 @@ async fn deleting_is_for_writers_and_leaves_nothing_to_read() {
     ));
     assert!(
         w.service
-            .list(&alice, w.namespace, None, 10)
+            .list(&alice, w.namespace, &ScheduleFilter::default(), None, 10)
             .await
             .expect("list")
             .is_empty()

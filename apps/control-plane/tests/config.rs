@@ -960,6 +960,26 @@ fn schedules_are_an_explicit_strict_operator_switch() {
 }
 
 #[test]
+fn batch_operations_are_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .batches_enabled,
+        "off by default"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_BATCHES_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .batches_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_BATCHES_ENABLED", "maybe"));
+    assert!(ServeConfig::from_lookup(&env(&values)).is_err());
+}
+
+#[test]
 fn the_lake_is_an_explicit_strict_operator_switch_and_off_by_default() {
     assert!(
         !ServeConfig::from_lookup(&env(&OIDC))

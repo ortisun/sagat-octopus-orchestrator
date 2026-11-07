@@ -77,6 +77,12 @@ pub enum ApiOperation {
     ScheduleTrigger,
     /// A backfill starts runs as the schedule, under the role of its requester.
     ScheduleBackfill,
+    /// Read a batch job, its items and the list of jobs of a namespace.
+    BatchRead,
+    /// Create or cancel a batch job; the permissions of the action are checked by the service.
+    BatchWrite,
+    /// Count what a selector matches: it reads runs, so it needs both permissions.
+    BatchPreview,
 }
 
 impl ApiOperation {
@@ -133,6 +139,9 @@ impl ApiOperation {
             Self::ScheduleResume | Self::ScheduleTrigger | Self::ScheduleBackfill => {
                 &[ScheduleOperate, RunStart]
             }
+            Self::BatchRead => &[RunRead],
+            Self::BatchWrite => &[Permission::RunBatch],
+            Self::BatchPreview => &[Permission::RunBatch, RunRead],
         }
     }
 }
