@@ -2226,6 +2226,8 @@ The other fixes were wording:
   can zeroise what it owns (D035-115) but not what `infra-lake` copies. *Exit condition:* `zeroize` in `infra-lake`'s manifest (a
   `Cargo.lock` change, so the whole CI: do it once, with the `database-runner` → `infra-lake` edge), secrets as `Zeroizing`, the body
   scrubbed on drop, and `encode_request` returning a `Zeroizing<Vec<u8>>`, each with a test.
+  *Closed by D035-122* (the scrub on drop and the type of the secrets are not observable by a test without `unsafe`, which the workspace forbids;
+  the escape-scratch residual stays).
 - **D035-116 — The lake runner asks the sandbox runner for an attempt, never for a container (ADR-0079, Proposed).** Closes the API half of
   G035-022 / G035-055 as a decision; **Decided by: delegate** (the owner's delegation for feature 035), to be accepted by a person because it
   adds a server to the process that holds the engine socket. *What it is:* a node-local Unix-socket API of three calls on a **lake-mode**
@@ -2448,6 +2450,26 @@ The other fixes were wording:
   - *Not done.* The server that builds the document (T035-056; its test reads this corpus), the driver that reads it
     (`apps/database-runner/src/lake`), and the sentence in `contracts/worker-protocol.md`, which still names the content in prose (a contract
     edit selects the whole stack in CI: it goes with the driver). The other modes and operations (T035-080, T035-085, revert, probe, browse).
+- **D035-122 — `infra-lake` holds the secrets zeroising (closes G035-063).** Thirteenth slice of T035-035. **Decided by: delegate**. It changes
+  `Cargo.lock` by one line (`zeroize` in `sagat-infra-lake`, already in the lock), which selects the whole CI: it goes with the client's PR.
+  - *What.* `Connection` keeps the catalog's and the storage's secrets as `Zeroizing<String>` (the caller's `String` is **moved** in, not
+    copied, so the signature of `Connection::new` is unchanged and a caller that holds `Zeroizing` text hands over the string inside, the same
+    allocation); `RelayToken` is a `Zeroizing<String>` and `generate` builds it digit by digit into its final allocation (the old way left
+    two-digit temporary strings and the 32 random bytes on the stack); `Body` zeroes the text of every string of its members when it is
+    dropped (`scrub`), and `into_map` hands the members over whole; `encode_request` returns a **`Zeroizing<Vec<u8>>` made at its exact
+    size** (measured first, then written, so it never grows and never leaves the credentials in a freed block) and scrubs the copy of the body
+    that the line is made from, on the error path too (`line_of`).
+  - *Tests.* Five unit tests in `protocol.rs`: the scrub empties every string at any depth and leaves numbers, booleans, nulls and the names of
+    the members; the line holds the secrets and the document is scrubbed after; the document is scrubbed when the line is too long; the line's
+    capacity is its length; `into_map` gives the members back whole. **Five hand mutations, all killed:** the document not scrubbed after the
+    line, arrays not scrubbed, objects not scrubbed, the line allocated without its size, the limit not checked before the line.
+    `cargo clippy --workspace --all-targets --locked -- -D warnings` clean; `cargo test -p sagat-infra-lake`: all suites pass.
+  - *What no test can show, and what remains.* That the memory is zeroed **is the `zeroize` crate's and the `Drop` impls'**: reading a freed
+    block needs `unsafe` (a spying allocator, or a pointer kept past the drop), and the workspace forbids it (`unsafe_code = "forbid"`), so
+    `Drop for Body` and the `Zeroizing` fields are held by their types and by review, not by a test. A mutation that removes `Drop for Body`
+    would survive; it is an unobservable one, not an equivalent one. **Residual, written down:** `serde_json` writes a string that holds an
+    escape (`"`, `\`, a control character) through a scratch buffer of its own that is freed unscrubbed; a secret with one leaves a short-lived
+    copy in freed memory. A hand-written writer or a scrubbing allocator could close it; neither is in this slice.
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

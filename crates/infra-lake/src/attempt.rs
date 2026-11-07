@@ -30,7 +30,8 @@
 //! should then be removed only after that time, or after the sandbox says the container is gone.
 //!
 //! The container is killed once, after every start that was attempted, whatever the ending. The directory is the caller's
-//! to remove once this returns, and so is the request buffer (it holds the credentials) to zeroise.
+//! to remove once this returns, and the request buffer (it holds the credentials) is the caller's to drop: it is the `Zeroizing`
+//! buffer of [`crate::protocol::encode_request`].
 //!
 //! The sandbox is a port. In production it is a client of the sandbox runner (G035-055); the tests give it a scripted host
 //! that reads the token, connects to the real socket and plays one ending, so the runner's side of every ending is tested
@@ -114,7 +115,8 @@ pub trait LakeSandbox: Send + Sync {
 /// What the attempt is to do and in what time.
 #[derive(Clone, Copy)]
 pub struct Plan<'a> {
-    /// The request line, newline included. It holds the credentials: the caller zeroises it.
+    /// The request line, newline included. It holds the credentials: it is the `Zeroizing` buffer of
+    /// [`crate::protocol::encode_request`], and the caller drops it as soon as the attempt is over.
     pub request: &'a [u8],
     /// When the attempt is over, whatever it is doing.
     pub deadline: Instant,

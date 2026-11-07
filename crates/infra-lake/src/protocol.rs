@@ -21,6 +21,7 @@ use std::time::Duration;
 use sagat_domain::database::DatabaseFailure;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
+use zeroize::{Zeroize as _, Zeroizing};
 
 pub use receipt::{
     Count, EffectKey, FormatVersion, IcebergOutcome, IcebergReceipt, ObjectFormat, ObjectOutcome,
@@ -79,9 +80,10 @@ pub enum Operation {
     Browse,
 }
 
-/// The per-attempt token the host presents on the relay socket. It is a credential: it is never shown.
+/// The per-attempt token the host presents on the relay socket. It is a credential: it is never shown, and its bytes are
+/// zeroised when the last copy is dropped.
 #[derive(Clone, PartialEq, Eq)]
-pub struct RelayToken(String);
+pub struct RelayToken(Zeroizing<String>);
 
 /// Why a relay token is not one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -96,7 +98,7 @@ impl RelayToken {
     /// A token the relay compares and the host presents on one line, so it has no space, newline or separator, and it
     /// is long enough not to be guessed: 32 to 128 characters of `A-Z a-z 0-9 - _`.
     pub fn new(token: impl Into<String>) -> Result<Self, TokenError> {
-        let token = token.into();
+        let token = Zeroizing::new(token.into());
         let shape = (32..=128).contains(&token.len())
             && token
                 .bytes()
@@ -110,13 +112,16 @@ impl RelayToken {
 
     /// A fresh token: 32 bytes from the operating system's random source as 64 hexadecimal digits.
     pub fn generate() -> Result<Self, TokenError> {
-        let mut bytes = [0_u8; 32];
-        getrandom::fill(&mut bytes).map_err(|_| TokenError::Entropy)?;
-        let mut token = String::with_capacity(64);
-        for byte in bytes {
-            token.push_str(&format!("{byte:02x}"));
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut bytes = Zeroizing::new([0_u8; 32]);
+        getrandom::fill(&mut *bytes).map_err(|_| TokenError::Entropy)?;
+        // built digit by digit into the final allocation: no temporary string holds a part of the token
+        let mut token = Zeroizing::new(String::with_capacity(64));
+        for byte in *bytes {
+            token.push(char::from(DIGITS[usize::from(byte >> 4)]));
+            token.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
         }
-        Self::new(token)
+        Self::new(std::mem::take(&mut *token))
     }
 
     /// For the comparison the relay makes; the token is never shown or logged.
@@ -133,7 +138,7 @@ impl fmt::Debug for RelayToken {
 
 impl Serialize for RelayToken {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.0)
+        serializer.serialize_str(self.0.as_str())
     }
 }
 
@@ -155,9 +160,28 @@ impl RelayAccess {
 }
 
 /// The members of a request that are not the envelope. They hold the resolved credentials, so the value shows nothing:
-/// a `Map` would print every secret in a `{:?}`, a panic message or an assertion that fails.
+/// a `Map` would print every secret in a `{:?}`, a panic message or an assertion that fails, and the text of every member is
+/// zeroised when the body is dropped ([`scrub`]).
 #[derive(Clone)]
 pub struct Body(Map<String, Value>);
+
+/// Zeroes the text of every string in `value`, at any depth. A `serde_json::Value` cannot hold a `Zeroizing` string, and a
+/// request body is built as one, so the credentials it carries are scrubbed here when it is dropped, and the copy that
+/// [`encode_request`] makes of it when the line is written. (The names of the members are not secrets and stay.)
+pub(crate) fn scrub(value: &mut Value) {
+    match value {
+        Value::String(text) => text.zeroize(),
+        Value::Array(items) => items.iter_mut().for_each(scrub),
+        Value::Object(members) => members.values_mut().for_each(scrub),
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+impl Drop for Body {
+    fn drop(&mut self) {
+        self.0.values_mut().for_each(scrub);
+    }
+}
 
 impl Body {
     #[must_use]
@@ -175,10 +199,11 @@ impl Body {
         self.0.is_empty()
     }
 
-    /// The members as a map. The caller takes over the duty of not showing them.
+    /// The members as a map. The caller takes over the duty of not showing them, and of scrubbing them ([`scrub`] is the
+    /// crate's; a caller outside it zeroises the strings it holds before it drops the map).
     #[must_use]
-    pub fn into_map(self) -> Map<String, Value> {
-        self.0
+    pub fn into_map(mut self) -> Map<String, Value> {
+        std::mem::take(&mut self.0)
     }
 }
 
@@ -258,13 +283,20 @@ pub enum EncodeError {
 /// The request as one line: compact JSON that ends with a single newline. A newline inside a value is escaped by the
 /// serializer, so the line cannot be split.
 ///
-/// The line holds every secret of the attempt and the relay token as plain bytes. The caller keeps it only as long as it
-/// takes to write it, never shows it, and zeroises it (T035-035).
+/// The line holds every secret of the attempt and the relay token as plain bytes, and it is a [`Zeroizing`] buffer made at
+/// its exact size, so that it never grows (a growth would leave the credentials in the old block) and is zeroed when it is
+/// dropped. The copy of the body that the line is made from is scrubbed too. The caller keeps the line only as long as it
+/// takes to write it and never shows it.
+///
+/// **What this does not reach:** `serde_json` writes a string that holds an escape through a scratch buffer of its own, which
+/// is freed unscrubbed, and the `Value` of the connection's secrets was built from text the connection held (a `Zeroizing`
+/// copy that is scrubbed when the connection is dropped). A secret with `"`, `\` or a control character leaves a short-lived
+/// copy in freed memory that this cannot zero (G035-063, what remains).
 ///
 /// # Errors
 /// [`EncodeError`] for a body that names an envelope member, an effect key or an instant the host would refuse, or a line
 /// of more than [`MAX_REQUEST_BYTES`] without its newline.
-pub fn encode_request(request: &Request) -> Result<Vec<u8>, EncodeError> {
+pub fn encode_request(request: &Request) -> Result<Zeroizing<Vec<u8>>, EncodeError> {
     if request
         .body
         .0
@@ -293,11 +325,40 @@ pub fn encode_request(request: &Request) -> Result<Vec<u8>, EncodeError> {
         Value::from(request.first_attempt_started_at.clone()),
     );
     members.insert("relay".to_owned(), relay);
-    let mut line =
-        serde_json::to_vec(&Value::Object(members)).map_err(|_| EncodeError::Serialization)?;
-    if line.len() > MAX_REQUEST_BYTES {
+    line_of(&mut Value::Object(members))
+}
+
+/// The line for `document`, and then the document scrubbed, whatever the outcome: the document is the copy of the body that
+/// the line is made from and holds every secret in plain text.
+fn line_of(document: &mut Value) -> Result<Zeroizing<Vec<u8>>, EncodeError> {
+    let line = write_line(document);
+    scrub(document);
+    line
+}
+
+/// Counts the bytes a value would take, without keeping them.
+struct Measure(usize);
+
+impl std::io::Write for Measure {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The line, at its exact size: measured first so that the buffer is allocated once and never grows.
+fn write_line(document: &Value) -> Result<Zeroizing<Vec<u8>>, EncodeError> {
+    let mut measure = Measure(0);
+    serde_json::to_writer(&mut measure, document).map_err(|_| EncodeError::Serialization)?;
+    if measure.0 > MAX_REQUEST_BYTES {
         return Err(EncodeError::TooLong);
     }
+    let mut line = Zeroizing::new(Vec::with_capacity(measure.0 + 1));
+    serde_json::to_writer(&mut *line, document).map_err(|_| EncodeError::Serialization)?;
     line.push(b'\n');
     Ok(line)
 }
@@ -584,5 +645,93 @@ fn exception_class(line: &[u8]) -> ExceptionClass {
         "TypeError" => ExceptionClass::TypeError,
         "RuntimeError" => ExceptionClass::RuntimeError,
         _ => ExceptionClass::Other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    const CANARY: &str = "canary-secret-0123456789";
+
+    fn strings(value: &Value, found: &mut Vec<String>) {
+        match value {
+            Value::String(text) => found.push(text.clone()),
+            Value::Array(items) => items.iter().for_each(|item| strings(item, found)),
+            Value::Object(members) => members.values().for_each(|item| strings(item, found)),
+            Value::Null | Value::Bool(_) | Value::Number(_) => {}
+        }
+    }
+
+    fn document() -> Value {
+        json!({
+            "credentials": {"catalog": {"clientSecret": CANARY}, "list": [CANARY, {"deep": [CANARY]}]},
+            "relay": {"token": CANARY},
+            "count": 3,
+            "flag": true,
+            "nothing": null
+        })
+    }
+
+    #[test]
+    fn scrubbing_empties_every_string_at_any_depth_and_leaves_the_rest() {
+        let mut value = document();
+        scrub(&mut value);
+        let mut left = Vec::new();
+        strings(&value, &mut left);
+        assert_eq!(left.len(), 4, "the strings are still members: {left:?}");
+        assert!(left.iter().all(String::is_empty), "{left:?}");
+        assert_eq!(value["count"], 3);
+        assert_eq!(value["flag"], true);
+        assert!(value["nothing"].is_null());
+        // the names of the members are not secrets and stay
+        assert!(
+            value["credentials"]["catalog"]
+                .get("clientSecret")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_line_is_made_from_the_document_and_the_document_is_scrubbed_after() {
+        let mut value = document();
+        let line = line_of(&mut value).expect("a line");
+        let text = String::from_utf8(line.to_vec()).expect("text");
+        assert_eq!(
+            text.matches(CANARY).count(),
+            4,
+            "the line holds the secrets"
+        );
+        assert!(text.ends_with('\n'));
+        let mut left = Vec::new();
+        strings(&value, &mut left);
+        assert!(left.iter().all(String::is_empty), "{left:?}");
+    }
+
+    #[test]
+    fn the_document_is_scrubbed_when_the_line_cannot_be_made_too() {
+        let mut value = json!({"secret": CANARY, "padding": "x".repeat(MAX_REQUEST_BYTES)});
+        assert_eq!(line_of(&mut value), Err(EncodeError::TooLong));
+        let mut left = Vec::new();
+        strings(&value, &mut left);
+        assert!(left.iter().all(String::is_empty), "{left:?}");
+    }
+
+    #[test]
+    fn the_line_is_made_at_its_exact_size_so_that_it_never_grows() {
+        let mut value = document();
+        let line = line_of(&mut value).expect("a line");
+        assert_eq!(line.capacity(), line.len());
+    }
+
+    #[test]
+    fn a_body_is_scrubbed_through_its_members_and_into_map_gives_them_back_whole() {
+        let mut members = Map::new();
+        members.insert("credentials".to_owned(), json!({"secret": CANARY}));
+        let body = Body::from(members);
+        let back = body.into_map();
+        assert_eq!(back["credentials"]["secret"], CANARY);
     }
 }

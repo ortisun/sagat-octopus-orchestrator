@@ -28,6 +28,7 @@ use sagat_domain::database::{
     ColumnMapping, MAX_MAPPED_COLUMNS, MAX_RECORD_BLOBS, TableIdentifier,
 };
 use serde_json::{Map, Value, json};
+use zeroize::Zeroizing;
 
 use super::Body;
 
@@ -237,19 +238,31 @@ pub(super) fn plain(text: &str, limit: usize) -> bool {
 /// (`crates/infra-postgres/src/database/iceberg.rs`), the warehouse locations, and the secrets the runner resolved for
 /// the catalog and for the storage (each a document of text to text).
 ///
-/// Nothing of it is shown by [`fmt::Debug`].
+/// Nothing of it is shown by [`fmt::Debug`], and the text of every secret is zeroised when the last copy is dropped.
 #[derive(Clone)]
 pub struct Connection {
     catalog: Value,
     storage: Value,
     warehouse_locations: Vec<String>,
-    catalog_secrets: BTreeMap<String, String>,
-    storage_secrets: BTreeMap<String, String>,
+    catalog_secrets: BTreeMap<String, Zeroizing<String>>,
+    storage_secrets: BTreeMap<String, Zeroizing<String>>,
+}
+
+/// The secrets of one document as the connection keeps them. Each `String` is moved into a [`Zeroizing`] one, not copied: the
+/// text the caller gave is the text that is zeroised.
+fn held(secrets: BTreeMap<String, String>) -> BTreeMap<String, Zeroizing<String>> {
+    secrets
+        .into_iter()
+        .map(|(name, value)| (name, Zeroizing::new(value)))
+        .collect()
 }
 
 impl Connection {
+    /// The secrets are the catalog's and the storage's, each a document of text to text. They are moved in (a caller that
+    /// holds them as `Zeroizing` text hands over the `String` inside, which is the same allocation), and the connection
+    /// zeroises them when the last copy is dropped.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         catalog: Value,
         storage: Value,
         warehouse_locations: Vec<String>,
@@ -260,8 +273,8 @@ impl Connection {
             catalog,
             storage,
             warehouse_locations,
-            catalog_secrets,
-            storage_secrets,
+            catalog_secrets: held(catalog_secrets),
+            storage_secrets: held(storage_secrets),
         }
     }
 
@@ -283,7 +296,7 @@ impl Connection {
                 .iter()
                 .all(|location| plain(location, MAX_LOCATION_BYTES));
         // the host's rule for a secret: text of bounded size with no byte below 0x20 and no DEL
-        let secret_fits = |secret: &String| {
+        let secret_fits = |secret: &Zeroizing<String>| {
             secret.len() <= MAX_SECRET_BYTES
                 && !secret.chars().any(|c| c < '\u{20}' || c == '\u{7f}')
         };
@@ -301,15 +314,24 @@ impl Connection {
             ("storage", &self.storage_secrets),
         ] {
             if !document.is_empty() {
-                credentials.insert(name.to_owned(), json!(document));
+                // the text is copied once, into the value that the body scrubs when it is dropped
+                let texts: Map<String, Value> = document
+                    .iter()
+                    .map(|(key, secret)| (key.clone(), Value::String(secret.as_str().to_owned())))
+                    .collect();
+                credentials.insert(name.to_owned(), Value::Object(texts));
             }
         }
-        Ok(json!({
-            "catalog": self.catalog,
-            "storage": self.storage,
-            "warehouseLocations": self.warehouse_locations,
-            "credentials": credentials,
-        }))
+        // moved, not serialised again: a second copy of the credentials would be one more to scrub
+        let mut members = Map::new();
+        members.insert("catalog".to_owned(), self.catalog.clone());
+        members.insert("storage".to_owned(), self.storage.clone());
+        members.insert(
+            "warehouseLocations".to_owned(),
+            json!(self.warehouse_locations),
+        );
+        members.insert("credentials".to_owned(), Value::Object(credentials));
+        Ok(Value::Object(members))
     }
 }
 

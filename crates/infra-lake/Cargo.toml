@@ -26,6 +26,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "time", "rt", "sync", "io-util"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 ipnet = "2"

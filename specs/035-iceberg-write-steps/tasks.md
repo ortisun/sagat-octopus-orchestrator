@@ -743,6 +743,10 @@ three conditions pass.
   credential, no relay, no deadline), read strictly and held to one corpus of 101 cases that the server's builder (T035-056) will read too; the
   request built from it is the fixture the host parses. A 017 result as the source is refused by name (G035-067). Not done: the builder, the
   driver that reads it, and the contract sentence.
+
+  *2026-11-07, fourteenth step, left unticked (D035-122):* "zeroise the credentials" has what `infra-lake` could not do before
+  (G035-063): the connection's secrets, the relay token, the request body and the request line are `Zeroizing` or scrubbed, with the
+  escape-scratch residual written down. Not done: the `database-runner` → `infra-lake` edge and the driver that uses all of it.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
