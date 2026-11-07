@@ -328,8 +328,35 @@ impl ProtocolFailure {
     }
 }
 
-/// A failure the host reports: a code of the closed set of `errors.md` and, for a schema mismatch, the column and a
-/// reason. There is no free text.
+/// The codes a host may report: those its operations raise (`runners/lake/sagat_lake`, `contracts/errors.md`). The rest of
+/// the table belongs to the runner (a cancellation, a deadline, a container that did not start, an admission refusal) or
+/// to another feature, and a host that claims one is not the host that was written: it could make a run look cancelled
+/// or timed out. `OUTCOME_UNKNOWN` is here because the host reports it when its lookup of the effect key is inconclusive
+/// (D035-030, step 3). A new operation of the host adds its codes here, and a code missing from this list fails closed as
+/// `LAKE_HOST_PROTOCOL`.
+const HOST_MAY_REPORT: [DatabaseFailure; 18] = [
+    DatabaseFailure::IcebergTableNotFound,
+    DatabaseFailure::IcebergUnsupportedTable,
+    DatabaseFailure::IcebergLocationNotAllowed,
+    DatabaseFailure::IcebergSchemaMismatch,
+    DatabaseFailure::IcebergDuplicateKey,
+    DatabaseFailure::IcebergScopeViolation,
+    DatabaseFailure::IcebergCommitConflict,
+    DatabaseFailure::IcebergRevertBlocked,
+    DatabaseFailure::IcebergLimitExceeded,
+    DatabaseFailure::CatalogUnavailable,
+    DatabaseFailure::StorageUnavailable,
+    DatabaseFailure::Authentication,
+    DatabaseFailure::Credential,
+    DatabaseFailure::Tls,
+    DatabaseFailure::Connection,
+    DatabaseFailure::OutcomeUnknown,
+    DatabaseFailure::WorkerError,
+    DatabaseFailure::LakeHostProtocol,
+];
+
+/// A failure the host reports: a code the host may report ([`HOST_MAY_REPORT`]) and, for a schema mismatch, the column
+/// and a reason. There is no free text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostFailure {
     pub code: DatabaseFailure,
@@ -351,7 +378,9 @@ impl HostFailure {
     fn from_wire(value: Value) -> Result<Self, ProtocolFailure> {
         let wire: WireFailure =
             serde_json::from_value(value).map_err(|_| ProtocolFailure::InvalidFailure)?;
-        let code = DatabaseFailure::parse(&wire.code).ok_or(ProtocolFailure::InvalidFailure)?;
+        let code = DatabaseFailure::parse(&wire.code)
+            .filter(|code| HOST_MAY_REPORT.contains(code))
+            .ok_or(ProtocolFailure::InvalidFailure)?;
         let column_holds = wire.column.as_deref().is_none_or(|column| {
             (1..=MAX_COLUMN_CHARS).contains(&column.chars().count())
                 && !column.chars().any(char::is_control)

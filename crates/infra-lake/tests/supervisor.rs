@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use sagat_domain::database::DatabaseFailure;
 use sagat_infra_lake::control::ControlFailure;
 use sagat_infra_lake::protocol::{Decoder, Event, HostResult, Outcome, ProtocolFailure};
-use sagat_infra_lake::supervisor::{ContainerFacts, Disposition, Ended, dispose};
+use sagat_infra_lake::supervisor::{AttemptFacts, Disposition, Ended, dispose};
 use serde_json::{Value, json};
 
 fn fixture(name: &str) -> Value {
@@ -44,11 +44,20 @@ fn failure_result(failure: &Value) -> HostResult {
     result(&json!({"failure": failure, "relayDenials": 0}))
 }
 
-const NOTHING: ContainerFacts = ContainerFacts {
+/// The request line was written to the host, and the memory limit did not kill the container.
+const NOTHING: AttemptFacts = AttemptFacts {
     memory_killed: false,
+    request_sent: true,
 };
-const OUT_OF_MEMORY: ContainerFacts = ContainerFacts {
+/// The request line was written, and the engine says the memory limit killed the container.
+const OUT_OF_MEMORY: AttemptFacts = AttemptFacts {
     memory_killed: true,
+    request_sent: true,
+};
+/// The attempt ended before the host asked for its request.
+const BEFORE_THE_REQUEST: AttemptFacts = AttemptFacts {
+    memory_killed: false,
+    request_sent: false,
 };
 
 fn failed(disposition: Disposition) -> (DatabaseFailure, Option<String>, Option<String>) {
@@ -58,7 +67,7 @@ fn failed(disposition: Disposition) -> (DatabaseFailure, Option<String>, Option<
     }
 }
 
-fn code_of(ended: Ended, facts: ContainerFacts) -> DatabaseFailure {
+fn code_of(ended: Ended, facts: AttemptFacts) -> DatabaseFailure {
     failed(dispose(ended, facts)).0
 }
 
@@ -190,7 +199,6 @@ fn a_host_the_memory_limit_killed_exceeded_the_limit_and_did_not_break_the_proto
     for ended in [
         Ended::Conversation(Err(ControlFailure::Protocol(ProtocolFailure::NoResult))),
         Ended::Conversation(Err(ControlFailure::Silent)),
-        Ended::HostNeverConnected,
     ] {
         assert_eq!(
             code_of(ended, OUT_OF_MEMORY),
@@ -198,6 +206,17 @@ fn a_host_the_memory_limit_killed_exceeded_the_limit_and_did_not_break_the_proto
         );
     }
     assert!(!DatabaseFailure::IcebergLimitExceeded.retryable());
+}
+
+/// A container that died before its host connected died of how it was started, which the deployment decides (a limit that
+/// is too small, an image that does not fit), not of what the write needs: the write has not begun, and blaming it would
+/// send the author to cut a batch that was never read.
+#[test]
+fn a_container_the_memory_limit_killed_before_its_host_connected_is_not_the_writes_fault() {
+    assert_eq!(
+        code_of(Ended::HostNeverConnected, OUT_OF_MEMORY),
+        DatabaseFailure::LakeHostProtocol
+    );
 }
 
 #[test]
@@ -208,6 +227,8 @@ fn a_host_that_broke_the_protocol_before_the_memory_limit_killed_it_still_broke_
         ProtocolFailure::LineTooLong,
         ProtocolFailure::HeartbeatFlood,
         ProtocolFailure::LineAfterResult,
+        ProtocolFailure::InvalidReceipt,
+        ProtocolFailure::InvalidFailure,
     ] {
         assert_eq!(
             code_of(
@@ -231,27 +252,43 @@ fn a_container_that_could_not_be_started_is_a_sandbox_failure_that_can_be_retrie
     assert!(DatabaseFailure::LakeSandboxUnavailable.retryable());
 }
 
+/// Before the request was sent the host had nothing to do: nothing can have been written, so a deadline is a timeout and a
+/// cancellation is one.
 #[test]
-fn the_deadline_is_a_timeout_whatever_the_container_looked_like() {
+fn a_deadline_or_a_cancellation_before_the_request_was_sent_is_what_it_says() {
+    assert_eq!(
+        code_of(Ended::DeadlinePassed, BEFORE_THE_REQUEST),
+        DatabaseFailure::Timeout
+    );
+    assert_eq!(
+        code_of(Ended::Cancelled, BEFORE_THE_REQUEST),
+        DatabaseFailure::Cancelled
+    );
+}
+
+/// After the request was sent the host may have committed, and a deadline or a cancellation does not retry: nothing would
+/// ever look the effect key up. The 017 runner does the same for a statement after dispatch (`executor.rs`), and G035-043
+/// says to treat a killed attempt as an unknown outcome. A retry of an unknown outcome needs `saga:override` (D035-069),
+/// and finds the commit by the lookup of D035-030 (`foundByLookup`) instead of writing again.
+#[test]
+fn a_deadline_or_a_cancellation_after_the_request_was_sent_is_an_unknown_outcome() {
     for facts in [NOTHING, OUT_OF_MEMORY] {
         assert_eq!(
             code_of(Ended::DeadlinePassed, facts),
-            DatabaseFailure::Timeout
+            DatabaseFailure::OutcomeUnknown
+        );
+        assert_eq!(
+            code_of(Ended::Cancelled, facts),
+            DatabaseFailure::OutcomeUnknown
         );
     }
 }
 
 #[test]
-fn a_cancellation_is_reported_as_one() {
-    for facts in [NOTHING, OUT_OF_MEMORY] {
-        assert_eq!(code_of(Ended::Cancelled, facts), DatabaseFailure::Cancelled);
-    }
-}
-
-#[test]
 fn a_lost_lease_reports_nothing() {
-    // the lease is fenced: a report from this runner would be refused, and the next attempt settles what was sent
-    for facts in [NOTHING, OUT_OF_MEMORY] {
+    // a lease that is fenced would refuse the report; one that only failed a heartbeat may still be valid, and is let go
+    // all the same: the step is leased again and the next attempt's lookup finds what was sent (D035-111)
+    for facts in [NOTHING, OUT_OF_MEMORY, BEFORE_THE_REQUEST] {
         assert!(matches!(
             dispose(Ended::LeaseLost, facts),
             Disposition::Abandon
@@ -259,23 +296,57 @@ fn a_lost_lease_reports_nothing() {
     }
 }
 
-/// An attempt that ended without a word never says an unknown outcome: the next attempt looks the effect key up in the
-/// table's history and settles what was committed (D035-030), so no ending here is `OUTCOME_UNKNOWN`.
+/// An ending the engine retries is settled by the retry: the next attempt looks the effect key up in the table's history
+/// and reports the commit it finds (D035-030). These are the endings whose code the contract marks retryable, and none
+/// of them is an unknown outcome.
 #[test]
-fn no_ending_reports_an_unknown_outcome() {
-    let endings = [
+fn an_ending_the_engine_retries_is_not_an_unknown_outcome() {
+    let retried = [
         Ended::Conversation(Err(ControlFailure::Silent)),
         Ended::Conversation(Err(ControlFailure::Protocol(ProtocolFailure::NoResult))),
+        Ended::Conversation(Err(ControlFailure::Protocol(ProtocolFailure::Malformed))),
         Ended::HostNeverConnected,
         Ended::SandboxUnavailable,
-        Ended::DeadlinePassed,
-        Ended::Cancelled,
     ];
-    for ended in endings {
-        for facts in [NOTHING, OUT_OF_MEMORY] {
-            let (code, _, _) = failed(dispose(ended.clone(), facts));
-            assert_ne!(code, DatabaseFailure::OutcomeUnknown);
+    for ended in retried {
+        let Disposition::Fail(failure) = dispose(ended.clone(), NOTHING) else {
+            panic!("{ended:?} does not fail");
+        };
+        assert_ne!(failure.code, DatabaseFailure::OutcomeUnknown, "{ended:?}");
+        assert!(failure.retryable(), "{ended:?} is not retried");
+    }
+}
+
+/// The flag the runner reports with a failure is the contract's flag for the code (the worker reads it, G035-027 item 8).
+#[test]
+fn a_failure_is_as_retryable_as_the_contract_says_its_code_is() {
+    for facts in [NOTHING, OUT_OF_MEMORY, BEFORE_THE_REQUEST] {
+        for ended in [
+            ok_failure_conversation(),
+            Ended::Conversation(Err(ControlFailure::Silent)),
+            Ended::SandboxUnavailable,
+            Ended::DeadlinePassed,
+            Ended::Cancelled,
+        ] {
+            if let Disposition::Fail(failure) = dispose(ended, facts) {
+                assert_eq!(failure.retryable(), failure.code.retryable());
+            }
         }
+    }
+}
+
+fn ok_failure_conversation() -> Ended {
+    Ended::Conversation(Ok(failure_result(&json!({"code": "CATALOG_UNAVAILABLE"}))))
+}
+
+/// A failure the host reported stands: a memory kill after it is nothing to do with it.
+#[test]
+fn a_failure_of_the_host_stands_whatever_the_engine_says_afterwards() {
+    for facts in [NOTHING, OUT_OF_MEMORY] {
+        assert_eq!(
+            code_of(ok_failure_conversation(), facts),
+            DatabaseFailure::CatalogUnavailable
+        );
     }
 }
 
