@@ -42,11 +42,11 @@ pub const SNAPSHOT_PROPERTIES: [&str; 5] = [
 
 const MAX_COMMIT_RETRIES: u32 = 16;
 const MAX_INPUT_NAME_BYTES: usize = 128;
-const MAX_REFERENCE_BYTES: usize = 255;
+pub(super) const MAX_REFERENCE_BYTES: usize = 255;
 const MAX_LOCATIONS: usize = 16;
 const MAX_LOCATION_BYTES: usize = 2048;
 const MAX_SECRET_BYTES: usize = 16384;
-const MAX_PROPERTY_BYTES: usize = 1024;
+pub(super) const MAX_PROPERTY_BYTES: usize = 1024;
 const MAX_FRACTION_DIGITS: usize = 6;
 
 /// Why a body cannot be built. The reason names the part and never its value: a body holds secrets.

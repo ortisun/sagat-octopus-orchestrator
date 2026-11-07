@@ -2417,6 +2417,37 @@ The other fixes were wording:
     `roundtrip.rs` (the router). That the work root the node checks and the volume the container mounts are one volume (they are two in
     these cases so that they run against an engine in another machine; the deployment is T035-029). The `database-runner` → `infra-lake`
     edge, `zeroize` (G035-063) and the driver; the Compose service and the Kubernetes shape (T035-029).
+- **D035-121 — The attempt input of a lake step has one wire, a strict reader and one corpus.** Twelfth slice of T035-035 and the shape that
+  T035-056 will build. **Decided by: delegate**. No `Cargo.lock` change: the reader is in `sagat-infra-lake`, which already links what it uses.
+  - *What.* `crates/infra-lake/src/protocol/attempt_input.rs`: `AttemptInput::read(input_json)`, a document of schema
+    `sagat.lake.attempt-input.v1` with the effect key, the instant of the first attempt, the five snapshot properties the platform writes, the
+    table, the ref, the mode, the records, the mapping, three flags (`ignoreUnknownFields`, `allowEmpty`, `priorAttemptMayHaveLeftFiles`) and the
+    effective limits (`maxRecordBytes`, `maxRecords`, `timeoutMs`). **No credential, no relay, no connection and no deadline**: the credentials
+    come from `ResolveDatabase`, the relay is the runner's, and the deadline is the lease's. `AttemptInput::write_append` joins it with what the
+    runner owns (the resolved connection, the staged files, the host limits) into the `WriteAppend` of D035-109.
+  - *Decisions.* The reader is **strict in the way the host's request is**: one object of at most 4 MiB in which **no name is written twice at
+    any depth** (`serde_json::Value` keeps the last of a name written twice and drops the first, which is how a limit or a mapping could be read
+    as one the author did not write), every member present and of its type, no member the contract does not name. The records are exactly one
+    of `inline` (objects; the size is the document's) and `blobs` (1 to 32, a UUID and `ndjson` or `parquet` each, each once). What the contract
+    names and this runner does not serve is refused **as unsupported by name**, not read as something else: the operations other than
+    `icebergWrite`, the modes other than `append`, and a 017 database result as the source (G035-067). The limits are the intersection that the
+    server computes, as it does for a SQL step (`database_snapshot`); the runner may still lower them with its own deployment ceilings. An
+    error names the member and never a value, and a `Debug` shows how many records and not the records.
+  - *A cost I accepted.* The ranges of the three limits (1 KiB to 2 GiB, 1 to 100 million records, 1 to 3600 s) are copied from the domain's
+    `LakeLimits`, whose own check is private to the domain's module; the corpus holds each edge, so a change on one side fails a test here, but it
+    is two places to change.
+  - *Evidence.* `crates/infra-lake/tests/attempt_input.rs`: 9 tests, 101 cases of
+    `tests/contract/iceberg-writes/fixtures/attempt-input/cases.json` (12 accepted, 11 not a document, the rest by member), the edges (32 blobs and
+    the 33rd, an effect key of 512 bytes and 513, a ref of 255 and 256, a document of exactly 4 MiB and one byte more), no value in an error or in a
+    `Debug`, and the request built from the base document is, as JSON, **the fixture the host's own tests parse**
+    (`requests/iceberg-write-append.json`), so the lease input and the host's request cannot drift apart. **Hand mutations of the reader: 17,
+    all killed by a test**; two checks (`is_empty` of the effect key and of the ref) were redundant with `plain` (an equivalent mutant), so they
+    were removed and not tested. (The first mutation of a name twice was built wrongly, `false && insert(..)` skips the insert, so other tests
+    killed it for another reason; rebuilt as `insert(..).is_some() && false`, it is killed by the corpus.) `cargo clippy -p sagat-infra-lake
+    --all-targets -- -D warnings` clean. No mutation pass (OD-2026-11-06-2).
+  - *Not done.* The server that builds the document (T035-056; its test reads this corpus), the driver that reads it
+    (`apps/database-runner/src/lake`), and the sentence in `contracts/worker-protocol.md`, which still names the content in prose (a contract
+    edit selects the whole stack in CI: it goes with the driver). The other modes and operations (T035-080, T035-085, revert, probe, browse).
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.
@@ -2424,3 +2455,9 @@ The other fixes were wording:
   at least that and the 10 s grace before it kills it (a Compose `stop_grace_period`, a pod's `terminationGracePeriodSeconds`); the node's memory
   is what the operator says it is and is not compared with the machine's; hyper's header buffer, not the 4 KiB policy, bounds what a request
   head can hold. *Exit condition:* the Compose service and the Helm shape of T035-029 set the grace and size the memory from the machine.
+- **G035-067 — A 017 database result as the source of a lake write has no wire yet.** The reader of the attempt input (D035-121) refuses
+  `records.databaseResult` as unsupported by name. A 017 result is retained as a blob in the SQL runner's JSON form, which the host does not
+  read (G035-059), so either the driver reads that blob and turns the rows into JSON values for `stage_inline` (then the document names the
+  blob, for instance `{"databaseResult": {"blob": "<id>"}}`), or the server turns it into an NDJSON blob when it builds the input (then the
+  runner never sees the source). *Exit condition:* decided with the conversion (G035-059) and T035-056; the corpus case "a database result is a
+  source this runner does not serve" becomes an accepted case and a refused one.

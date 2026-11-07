@@ -10,6 +10,7 @@
 //! at a time with a bound of [`MAX_LINE_BYTES`] and gives each line to [`Decoder::line`] with the time it arrived, so a
 //! test needs no sleep.
 
+mod attempt_input;
 mod receipt;
 mod write_body;
 
@@ -25,6 +26,8 @@ pub use receipt::{
     Count, EffectKey, FormatVersion, IcebergOutcome, IcebergReceipt, ObjectFormat, ObjectOutcome,
     ObjectStorageReceipt, Receipt, RefName, RowLevelMode, Sha256Hex, SnapshotId, WriteMode,
 };
+
+pub use attempt_input::{AttemptInput, BlobRef, InputError, MAX_INPUT_BYTES, NodeLimits, Records};
 
 pub use write_body::{
     BodyError, Connection, InputFile, InputFormat, Limits, SNAPSHOT_PROPERTIES, WriteAppend,

@@ -737,6 +737,12 @@ three conditions pass.
   refusal now reaches the report with its reason. Reviewed by a security reviewer (no Blocker, no Major). Not done: a held-up container
   through the API against the real engine, the `database-runner` edge and `zeroize` (G035-063), the driver, and the Compose and
   Kubernetes shapes.
+
+  *2026-11-07, thirteenth step, left unticked (D035-121):* "stream inline records, `ReadBlob` blobs and 017 results into `in/`" and "serve the
+  request line" have their input: `AttemptInput` (`crates/infra-lake/src/protocol/attempt_input.rs`), the document the lease carries (no
+  credential, no relay, no deadline), read strictly and held to one corpus of 101 cases that the server's builder (T035-056) will read too; the
+  request built from it is the fixture the host parses. A 017 result as the source is refused by name (G035-067). Not done: the builder, the
+  driver that reads it, and the contract sentence.
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
