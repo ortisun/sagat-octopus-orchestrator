@@ -88,8 +88,8 @@ ENVIRONMENT (all commands):
 ENVIRONMENT (serve):
     Outside SAGAT_ENV=dev, serve checks its database role at start and exits with code 2 if the
     role is a superuser, owns audit_records, or may UPDATE/DELETE/TRUNCATE it: use the
-    least-privilege runtime role (sagat_app) here and the owner role only for migrate and
-    provision-tenant.
+    least-privilege runtime role (sagat_app) here and the owner role only for migrate,
+    provision-tenant and the commands that record a requirement of the instance registry.
     SAGAT_OIDC_ISSUER                expected token issuer (required)
     SAGAT_OIDC_AUDIENCE               expected token audience (required)
     SAGAT_OIDC_JWKS_URI               signing keys URL, https (required)

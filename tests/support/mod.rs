@@ -19,6 +19,7 @@ pub mod collector;
 pub mod contract;
 pub mod dx;
 pub mod engine;
+pub mod instances;
 pub mod lake;
 pub mod lake_reader;
 pub mod lock_order;

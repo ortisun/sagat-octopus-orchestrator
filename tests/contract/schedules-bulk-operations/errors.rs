@@ -48,6 +48,7 @@ const RAISED: &[&str] = &[
     "RESET_RULE_MISSING",
     "RESET_REAPPLY_NOT_AVAILABLE",
     "RESET_REAPPLY_TOO_MANY",
+    "BINARY_CAPABILITY_MISSING",
     "RESET_CANCEL_SOURCE_NOT_AVAILABLE",
 ];
 
@@ -61,7 +62,6 @@ const NOT_YET: &[(&str, &str)] = &[
         "SCHEDULE_DELETED",
         "a deleted schedule is NOT_FOUND, as one that never existed (G1975)",
     ),
-    ("BINARY_CAPABILITY_MISSING", "features 029 and 031"),
     ("CONCURRENCY_QUEUE_FULL", "feature 022"),
     ("CONCURRENCY_PERMIT_UNAVAILABLE", "feature 022 and US06"),
     ("RUN_PURGED", "feature 020"),

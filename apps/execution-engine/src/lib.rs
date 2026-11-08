@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::get;
 use sagat_api_grpc::{WorkerGrpc, serve as serve_grpc, worker_service};
 use sagat_api_http::{AppState, HttpJwksFetcher, TokenVerifier};
@@ -22,6 +23,7 @@ use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
 use sagat_application::execution::{DefinitionCache, Engine};
 use sagat_application::identity::IdentityService;
+use sagat_application::instances::InstanceKind;
 use sagat_application::reset_completion::ResetCompleter;
 use sagat_application::runs::RunService;
 use sagat_application::schedule_firing::ScheduleFiring;
@@ -41,12 +43,13 @@ use sagat_infra_postgres::{
 };
 use sagat_scheduler::{
     BatchPass, DeliveryWorker, EventDispatcher, Keeper, Monitor, OutboxDispatcher, Placement,
-    ProjectorSettings, ResetPass, SchedulePass, Scheduler, TelemetryProjector,
+    ProjectorSettings, ResetPass, Round, SchedulePass, Scheduler, TelemetryProjector,
 };
 use sagat_telemetry::Metrics;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+pub mod capabilities;
 pub mod cli;
 pub mod loops;
 pub mod settings;
@@ -175,6 +178,22 @@ pub async fn serve(
     ));
     let keeper: Arc<EngineKeeper> =
         Arc::new(Keeper::new(store.clone(), placement.clone(), engine.shards));
+    // The place of this replica in the instance-capability registry (FR-018-052): what it announces is what its binary
+    // can do narrowed by the passes this configuration runs. The registry has a connection of its own, so that the
+    // heartbeat of a healthy replica does not wait for the pool that its passes may have saturated. Nothing is written
+    // until `join`, below, and a closed gate stops every pass, the connectors and the worker API, and fails readiness.
+    let registry_pool = sagat_infra_postgres::connect(
+        &sagat_control_plane::registry::registry_pool_config(&config.database),
+    )
+    .await
+    .map_err(|e| RunError::Database(e.to_string()))?;
+    let member = sagat_control_plane::registry::member(
+        &registry_pool,
+        InstanceKind::ExecutionEngine,
+        &capabilities::capabilities(engine),
+        Some(placement.owner().to_owned()),
+    );
+    let gate = Arc::clone(member.gate());
     // The candidates of a pass are acted on at the same time, each on a connection of its own, and the
     // keeper needs one to renew the leases: never as many at once as the pool has.
     let mut scheduler_settings = engine.scheduler;
@@ -224,15 +243,18 @@ pub async fn serve(
     ));
     // Broker credentials are resolved through the same namespace-scoped reader.
     let connectors = (engine.secrets.is_some() || provider.is_some()).then(|| {
-        Arc::new(sagat_infra_connectors::supervisor::Supervisor::with_reader(
-            Arc::new(store.clone()),
-            sagat_infra_connectors::guard::PolicyGuard::new(store.clone()),
-            sagat_infra_connectors::webhook::Clients::new(store.clone()),
-            secret_reader.clone(),
-            Arc::new(JsonEvaluator),
-            format!("engine-{}", uuid::Uuid::new_v4()),
-            engine.connector_refresh,
-        ))
+        Arc::new(
+            sagat_infra_connectors::supervisor::Supervisor::with_reader(
+                Arc::new(store.clone()),
+                sagat_infra_connectors::guard::PolicyGuard::new(store.clone()),
+                sagat_infra_connectors::webhook::Clients::new(store.clone()),
+                secret_reader.clone(),
+                Arc::new(JsonEvaluator),
+                format!("engine-{}", uuid::Uuid::new_v4()),
+                engine.connector_refresh,
+            )
+            .with_serving_gate(Arc::clone(&gate)),
+        )
     });
     let publisher = match (&engine.nats, &engine.redis) {
         (Some(nats), None) => Some(loops::HintPublisher::Nats(Box::new(
@@ -298,32 +320,54 @@ pub async fn serve(
 
     let health = Arc::new(
         Health::new((engine.tick_interval * 10).max(engine.liveness_grace))
-            .with_keeper_stale_after((engine.shards.ttl * 3).max(engine.liveness_grace)),
+            .with_keeper_stale_after((engine.shards.ttl * 3).max(engine.liveness_grace))
+            .with_gate(Arc::clone(&gate)),
     );
+    // Register before the first pass runs: the one transaction that takes the requirement epoch, checks what the
+    // platform requires of an engine against what this binary can do, and writes the row. Until it has registered, and
+    // while the platform requires what this binary lacks, the gate is closed: no pass runs, the keeper holds no shard
+    // and readiness fails (FR-018-052).
+    let heartbeat =
+        sagat_control_plane::registry::join(&member, engine.registry, stop_rx.clone()).await;
     // The first round before anything ticks, so the scheduler does not begin by finding nothing to
     // look at; if the database is not there yet the loop below tries again.
-    match keeper.round().await {
-        Ok(first) => tracing::info!(
-            replicas = first.replicas,
-            held = first.held,
-            "holding scheduler shards"
-        ),
-        Err(error) => {
-            tracing::warn!(%error, "could not take the scheduler shards at start; trying again")
+    // A replica that may not serve takes no shard: its keeper loop does not round while the gate is closed.
+    if gate.is_open() {
+        match keeper.round().await {
+            Ok(first) => tracing::info!(
+                replicas = first.replicas,
+                held = first.held,
+                "holding scheduler shards"
+            ),
+            Err(error) => {
+                tracing::warn!(%error, "could not take the scheduler shards at start; trying again")
+            }
         }
     }
     let mut tasks = CriticalTasks::new();
+    // The heartbeat is a critical task: if it ends while the replica runs, the replica would go on with an open gate and
+    // a row that ages out, so the supervisor stops the process.
+    tasks.spawn_loop("instance heartbeat", heartbeat);
     tasks.spawn_loop(
         "shard keeper",
         loops::run_keeper(
             {
                 let keeper = Arc::clone(&keeper);
                 let health = Arc::clone(&health);
+                let gate = Arc::clone(&gate);
                 move || {
                     let keeper = Arc::clone(&keeper);
                     let health = Arc::clone(&health);
+                    let gate = Arc::clone(&gate);
                     async move {
-                        let round = keeper.round().await;
+                        // A replica that may not serve gives its shards to the others and takes none, so that
+                        // the work of those shards is not left to a replica that runs no pass.
+                        let round = if gate.is_open() {
+                            keeper.round().await
+                        } else {
+                            keeper.leave().await;
+                            Ok(Round::default())
+                        };
                         health.keeper_rounded();
                         round
                     }
@@ -342,9 +386,11 @@ pub async fn serve(
         loops::run_scheduler(
             {
                 let scheduler = Arc::clone(&scheduler);
+                let gate = Arc::clone(&gate);
                 move || {
                     let scheduler = Arc::clone(&scheduler);
-                    async move { scheduler.tick().await }
+                    let gate = Arc::clone(&gate);
+                    async move { loops::while_serving(&gate, || scheduler.tick()).await }
                 }
             },
             engine.tick_interval,
@@ -360,22 +406,27 @@ pub async fn serve(
                 let events = Arc::clone(&events);
                 let deliveries = deliveries.clone();
                 let store = store.clone();
+                let gate = Arc::clone(&gate);
                 move || {
                     let scheduler = Arc::clone(&scheduler);
                     let events = Arc::clone(&events);
                     let deliveries = deliveries.clone();
                     let store = store.clone();
+                    let gate = Arc::clone(&gate);
                     async move {
-                        scheduler.housekeeping().await;
-                        events.housekeeping().await;
-                        // The notes of runs that finished and were projected a day ago.
-                        if let Err(error) = store
-                            .purge_projected(Duration::from_secs(24 * 3600), 1000)
-                            .await
-                        {
-                            tracing::warn!(%error, "could not purge the telemetry notes of finished runs");
-                        }
-                        deliveries.housekeeping().await;
+                        loops::while_serving(&gate, || async {
+                            scheduler.housekeeping().await;
+                            events.housekeeping().await;
+                            // The notes of runs that finished and were projected a day ago.
+                            if let Err(error) = store
+                                .purge_projected(Duration::from_secs(24 * 3600), 1000)
+                                .await
+                            {
+                                tracing::warn!(%error, "could not purge the telemetry notes of finished runs");
+                            }
+                            deliveries.housekeeping().await;
+                        })
+                        .await;
                     }
                 }
             },
@@ -414,10 +465,17 @@ pub async fn serve(
             loops::run_schedules(
                 {
                     let schedules = Arc::clone(&schedules);
+                    let gate = Arc::clone(&gate);
                     move || {
                         let schedules = Arc::clone(&schedules);
                         let clock = database_clock.clone();
-                        async move { loops::schedule_round(&clock, &schedules).await }
+                        let gate = Arc::clone(&gate);
+                        async move {
+                            loops::while_serving(&gate, || {
+                                loops::schedule_round(&clock, &schedules)
+                            })
+                            .await
+                        }
                     }
                 },
                 engine.schedule_poll,
@@ -454,10 +512,15 @@ pub async fn serve(
             loops::run_batches(
                 {
                     let batches = Arc::clone(&batches);
+                    let gate = Arc::clone(&gate);
                     move || {
                         let batches = Arc::clone(&batches);
                         let clock = database_clock.clone();
-                        async move { loops::batch_round(&clock, &batches).await }
+                        let gate = Arc::clone(&gate);
+                        async move {
+                            loops::while_serving(&gate, || loops::batch_round(&clock, &batches))
+                                .await
+                        }
                     }
                 },
                 engine.batch_poll,
@@ -493,10 +556,15 @@ pub async fn serve(
             loops::run_resets(
                 {
                     let resets = Arc::clone(&resets);
+                    let gate = Arc::clone(&gate);
                     move || {
                         let resets = Arc::clone(&resets);
                         let clock = database_clock.clone();
-                        async move { loops::reset_round(&clock, &resets).await }
+                        let gate = Arc::clone(&gate);
+                        async move {
+                            loops::while_serving(&gate, || loops::reset_round(&clock, &resets))
+                                .await
+                        }
                     }
                 },
                 engine.reset_poll,
@@ -513,9 +581,11 @@ pub async fn serve(
         loops::run_events(
             {
                 let events = Arc::clone(&events);
+                let gate = Arc::clone(&gate);
                 move || {
                     let events = Arc::clone(&events);
-                    async move { events.tick().await }
+                    let gate = Arc::clone(&gate);
+                    async move { loops::while_serving(&gate, || events.tick()).await }
                 }
             },
             engine.event_poll,
@@ -527,9 +597,11 @@ pub async fn serve(
         loops::run_telemetry(
             {
                 let projector = Arc::clone(&projector);
+                let gate = Arc::clone(&gate);
                 move || {
                     let projector = Arc::clone(&projector);
-                    async move { projector.run_once().await }
+                    let gate = Arc::clone(&gate);
+                    async move { loops::while_serving(&gate, || projector.run_once()).await }
                 }
             },
             engine.telemetry.poll,
@@ -541,9 +613,11 @@ pub async fn serve(
         loops::run_monitor(
             {
                 let monitor = Arc::clone(&monitor);
+                let gate = Arc::clone(&gate);
                 move || {
                     let monitor = Arc::clone(&monitor);
-                    async move { monitor.run_once().await }
+                    let gate = Arc::clone(&gate);
+                    async move { loops::while_serving(&gate, || monitor.run_once()).await }
                 }
             },
             engine.monitor.interval,
@@ -556,9 +630,13 @@ pub async fn serve(
     tasks.spawn_loop(
         "delivery worker",
         loops::run_deliveries(
-            move || {
-                let deliveries = Arc::clone(&deliveries);
-                async move { deliveries.tick().await }
+            {
+                let gate = Arc::clone(&gate);
+                move || {
+                    let deliveries = Arc::clone(&deliveries);
+                    let gate = Arc::clone(&gate);
+                    async move { loops::while_serving(&gate, || deliveries.tick()).await }
+                }
             },
             engine.delivery_poll,
             stop_rx.clone(),
@@ -568,9 +646,13 @@ pub async fn serve(
         tasks.spawn_loop(
             "outbox dispatcher",
             loops::run_dispatcher(
-                move || {
-                    let dispatcher = Arc::clone(&dispatcher);
-                    async move { dispatcher.run_once().await }
+                {
+                    let gate = Arc::clone(&gate);
+                    move || {
+                        let dispatcher = Arc::clone(&dispatcher);
+                        let gate = Arc::clone(&gate);
+                        async move { loops::while_serving(&gate, || dispatcher.run_once()).await }
+                    }
                 },
                 engine.dispatch.batch,
                 engine.outbox_poll,
@@ -613,13 +695,22 @@ pub async fn serve(
         tasks.spawn_loop(
             "blob cleanup",
             loops::run_housekeeping(
-                move || {
-                    let blobs = blobs.clone();
-                    async move {
-                        match blobs.sweep(500).await {
-                            Ok(0) => {}
-                            Ok(removed) => tracing::info!(removed, "swept unused blobs"),
-                            Err(error) => tracing::warn!(%error, "sweeping unused blobs failed"),
+                {
+                    let gate = Arc::clone(&gate);
+                    move || {
+                        let blobs = blobs.clone();
+                        let gate = Arc::clone(&gate);
+                        async move {
+                            loops::while_serving(&gate, || async {
+                                match blobs.sweep(500).await {
+                                    Ok(0) => {}
+                                    Ok(removed) => tracing::info!(removed, "swept unused blobs"),
+                                    Err(error) => {
+                                        tracing::warn!(%error, "sweeping unused blobs failed");
+                                    }
+                                }
+                            })
+                            .await;
                         }
                     }
                 },
@@ -628,7 +719,9 @@ pub async fn serve(
             ),
         );
     }
-    let mut worker_api = WorkerGrpc::new(state, workers);
+    // The worker protocol obeys the registry as the passes do: a replica that may not serve answers its workers
+    // UNAVAILABLE and another replica serves them.
+    let mut worker_api = WorkerGrpc::new(state, workers).with_serving_gate(Arc::clone(&gate));
     if let Some(blobs) = blobs {
         worker_api = worker_api.with_blobs(blobs, engine.blob_transfer);
     }
@@ -655,6 +748,10 @@ pub async fn serve(
     )
     .await;
 
+    // However the engine ended, the membership ends with it, and only now that its tasks have drained: the replica was
+    // counted while it finished its work, and its row is deleted, not left to expire.
+    member.leave().await;
+    registry_pool.close().await;
     tracing::info!("execution engine stopped");
     pool_metrics.abort();
     metrics_upkeep.abort();
@@ -699,23 +796,40 @@ fn probes(store: PgRunStore, health: Arc<Health>) -> Router {
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     "a critical background task stopped",
-                );
+                )
+                    .into_response();
             }
             if !health.scheduler_alive() {
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     "the scheduler loop stopped ticking",
-                );
+                )
+                    .into_response();
             }
             if !health.keeper_alive() {
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     "the shard keeper stopped rounding",
-                );
+                )
+                    .into_response();
+            }
+            // Not ready, and not dead: a restart would only register again and be refused (FR-018-052). The answer
+            // carries the reason in the error envelope, as the control plane's does.
+            match health.registry_state(std::time::Instant::now()) {
+                loops::RegistryState::Serving => {}
+                loops::RegistryState::Closed => {
+                    if let Some(gate) = health.gate() {
+                        return sagat_api_http::not_serving(gate).into_response();
+                    }
+                }
+                // the registry has not answered for longer than a replica stays live: invisible to an activation
+                loops::RegistryState::Silent => {
+                    return sagat_api_http::error::ApiError::unavailable_after(10).into_response();
+                }
             }
             match tokio::time::timeout(Duration::from_secs(2), store.ready()).await {
-                Ok(Ok(())) => (StatusCode::OK, "ready"),
-                _ => (StatusCode::SERVICE_UNAVAILABLE, "the database is not ready"),
+                Ok(Ok(())) => (StatusCode::OK, "ready").into_response(),
+                _ => (StatusCode::SERVICE_UNAVAILABLE, "the database is not ready").into_response(),
             }
         }
     };

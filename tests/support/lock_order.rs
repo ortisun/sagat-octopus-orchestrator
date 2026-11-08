@@ -27,6 +27,10 @@ use tokio::task::JoinHandle;
 /// The slots of ADR-0050 decision 7, in the order a transaction may take them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Slot {
+    /// The requirement epoch of the instance registry (`FR-018-052`): `FOR SHARE` to register, `FOR UPDATE` to record a
+    /// requirement. It is the first slot because the activation holds it while the feature's step runs, so the step
+    /// takes no lock a transaction that read the epoch may hold: it reads, it does not lock.
+    RegistryEpoch,
     /// 026 public-link row or 027 app-session row.
     Entry,
     /// The request receipt.

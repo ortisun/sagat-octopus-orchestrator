@@ -484,7 +484,9 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
 - **FR-018-052 — Instance-capability registry.** Every control-plane and execution-engine process MUST
   register its kind, binary version and capability set before serving, heartbeat on the database clock
   (10 s; live = seen within 30 s), and refuse to serve while a recorded requirement for its kind names a
-  capability it lacks (re-checked whenever the requirement epoch moves). A requirement MUST be recorded
+  capability it lacks (re-checked whenever the requirement epoch moves: a running process learns of one within
+  one heartbeat period, about 12 s, and only a process that was not live at the activation can be in that window).
+  A requirement MUST be recorded
   only by an audited operator activation command that, in one transaction, verifies every live instance
   of the required kinds and records it — never inside a tenant or user transaction; until then the
   feature refuses its own use with its own reason. 018's trigger handover is its first
@@ -542,7 +544,7 @@ All evidence below is future evidence; none exists yet.
 | SC-018-014 | Canary schedule inputs, batch payloads and business ids are absent from logs, spans, metrics, audit and outbox; each new quota refuses before work; real OTel export has fixed labels only. | FR-018-042, FR-018-044, FR-018-045 |
 | SC-018-015 | A real browser runs the schedule, batch and reset flows keyboard-only with WCAG AA contrast and table alternatives; the quickstart demo runs. | FR-018-047, FR-018-049 |
 | SC-018-016 | A barrier test runs every run-driven transition (completion, timer, wait timeout, deadline, terminal, handoff) against each aggregate path; `pg_locks` never shows a run-driven transaction holding a schedule, business-id, job, item, obligation or pending-reset row, and no deadlock occurs. | FR-018-007, FR-018-021, FR-018-030 |
-| SC-018-017 | An activation racing a registering instance that lacks the capability never leaves that instance serving; an instance whose capability is missing after an activation answers `BINARY_CAPABILITY_MISSING` (API) or stops its passes (engine); an instance silent for 30 s no longer blocks an activation. | FR-018-052, FR-018-017 |
+| SC-018-017 | An activation racing a registering instance that lacks the capability never leaves that instance serving (a running one that was silent at the activation stops within about 12 s of its first answer); an instance whose capability is missing after an activation answers `BINARY_CAPABILITY_MISSING` (API) or stops its passes (engine); an instance silent for 30 s no longer blocks an activation. | FR-018-052, FR-018-017 |
 
 ## Assumptions
 

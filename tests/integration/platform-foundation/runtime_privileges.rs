@@ -43,6 +43,7 @@ struct Allowed {
 const IDENTITY: &str = "crates/infra-postgres/src/identity.rs";
 const QUOTAS: &str = "crates/infra-postgres/src/quotas.rs";
 const CONTENT_USAGE: &str = "crates/infra-postgres/src/content_usage.rs";
+const INSTANCES: &str = "crates/infra-postgres/src/instances.rs";
 
 const ALLOWED: &[Allowed] = &[
     Allowed {
@@ -84,6 +85,21 @@ const ALLOWED: &[Allowed] = &[
         file: QUOTAS,
         need: "DELETE tenant_scheduling",
         reason: "G260: operator command, owner role (withdrawing a weight)",
+    },
+    Allowed {
+        file: INSTANCES,
+        need: "EXECUTE platform_requirement_activate()",
+        reason: "T018-080: recording a requirement of the instance-capability registry is an operator act (an activation command run with the schema-owning role, as provision-tenant is); a compromised API process must not be able to make the fleet refuse to serve. instances::the_runtime_role_reads_the_registry_and_calls_three_functions_only proves the role is refused",
+    },
+    Allowed {
+        file: INSTANCES,
+        need: "EXECUTE platform_requirement_lock()",
+        reason: "T018-080: the first step of an activation or a removal, operator only (see the entry for platform_requirement_activate)",
+    },
+    Allowed {
+        file: INSTANCES,
+        need: "EXECUTE platform_requirement_remove()",
+        reason: "T018-080: removing a requirement is the activation in reverse, operator only (see the entry for platform_requirement_activate)",
     },
     Allowed {
         file: CONTENT_USAGE,

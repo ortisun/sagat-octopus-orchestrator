@@ -11,6 +11,7 @@ use std::sync::Arc;
 use sagat_application::clock::Clock;
 use sagat_application::error::{AccessDenial, AppError, StoreError};
 use sagat_application::identity::{IdentityStore, RequestContext, Session};
+use sagat_application::instances::ServingGate;
 use sagat_domain::identity::Principal;
 
 use crate::concurrency::TenantConcurrency;
@@ -27,6 +28,9 @@ pub trait Core: Clone + Send + Sync + 'static {
     fn tenant_limiter(&self) -> &RateLimiter;
 
     fn tenant_concurrency(&self) -> &Arc<TenantConcurrency>;
+
+    /// Whether this process may serve, from the instance-capability registry (`None`: no registry, serve).
+    fn serving_gate(&self) -> Option<&Arc<ServingGate>>;
 
     /// Turns verified claims into a session (tenant and role come from the database).
     fn authenticate(
@@ -65,6 +69,10 @@ where
 
     fn tenant_concurrency(&self) -> &Arc<TenantConcurrency> {
         &self.tenant_concurrency
+    }
+
+    fn serving_gate(&self) -> Option<&Arc<ServingGate>> {
+        self.serving_gate.as_ref()
     }
 
     async fn authenticate(&self, tenant: &str, subject: &str) -> Result<Session, AppError> {

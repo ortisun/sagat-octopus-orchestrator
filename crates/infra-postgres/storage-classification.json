@@ -1855,6 +1855,142 @@
       ]
     },
     {
+      "table": "platform_requirement_history",
+      "column": "action",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only ACTIVATED or REMOVED. Writer: the activation functions of `crates/infra-postgres/src/instances.rs`; deployment-level, no tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "platform_requirement_history",
+      "column": "actor",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject of the operator, CHECK limits it to 255 characters. Writer: `platform_requirement_activate` and `platform_requirement_remove`; deployment-level, no tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "platform_requirement_history",
+      "column": "capability",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only the closed capability values (schedules-v1, access-narrowing-v1, payload-encoding-v1)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "platform_requirement_history",
+      "column": "database_user",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The database role that ran the activation (`session_user`), a role name of at most 63 bytes; CHECK limits it to 128 characters. Written by `platform_requirement_activate` and `platform_requirement_remove` only; deployment-level, no tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "platform_requirement_history",
+      "column": "kinds",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Copy of the requirement it records: the closed instance kinds CONTROL_PLANE and EXECUTION_ENGINE, at most two entries, written by the activation functions only."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "platform_requirements",
+      "column": "capability",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only the closed capability values (schedules-v1, access-narrowing-v1, payload-encoding-v1); the primary key, so at most three rows."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "platform_requirements",
+      "column": "kinds",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only the closed instance kinds CONTROL_PLANE and EXECUTION_ENGINE and at least one; a row holds at most two."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "platform_requirements",
+      "column": "recorded_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Identity subject of the operator, CHECK limits it to 255 characters."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
       "table": "private_execution_definitions",
       "column": "actor",
       "sql_type": "text",
@@ -4791,6 +4927,91 @@
       },
       "owner_paths": [
         "crates/infra-postgres/src/reveal_grants.rs"
+      ]
+    },
+    {
+      "table": "serving_instances",
+      "column": "binary_version",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK limits it to 64 characters; the version string of the binary (CARGO_PKG_VERSION). At most 1,000 rows, enforced by `instance_register`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "serving_instances",
+      "column": "capabilities",
+      "sql_type": "_text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only the closed capability values and at most 32 entries (`serving_instances_capabilities_closed`); at most 1,000 rows."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "serving_instances",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only CONTROL_PLANE or EXECUTION_ENGINE."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "serving_instances",
+      "column": "scheduler_owner",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK limits it to 255 characters; the name of the replica in `scheduler_members.owner`, a fixed application-level grammar with no business payload, for correlation only."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
+      ]
+    },
+    {
+      "table": "serving_instances",
+      "column": "token_hash",
+      "sql_type": "bytea",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The SHA-256 of the random per-start token of the process (CHECK `serving_instances_token_hash_sha256`: exactly 32 bytes); at most 1,000 rows. The runtime role cannot read the column. Writer: `instance_register`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/instances.rs"
       ]
     },
     {

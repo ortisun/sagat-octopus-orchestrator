@@ -299,6 +299,10 @@ where
         self.core.tenant_concurrency()
     }
 
+    fn serving_gate(&self) -> Option<&Arc<sagat_application::instances::ServingGate>> {
+        self.core.serving_gate()
+    }
+
     async fn authenticate(
         &self,
         tenant: &str,

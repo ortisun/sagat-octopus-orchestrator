@@ -32,6 +32,7 @@ pub mod event_payloads;
 pub mod events;
 pub mod execution;
 pub mod identity;
+pub mod instances;
 pub mod leaf_certification;
 pub mod loop_progress;
 pub mod maintenance;

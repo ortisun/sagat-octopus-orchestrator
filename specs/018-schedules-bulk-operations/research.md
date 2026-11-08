@@ -1170,6 +1170,158 @@ do not apply: a run is a reduction of its journal over a pinned declarative IR.
   is looked at once per cycle. The cut is the time of the thousandth newest action, found through the index that
   already serves the recent-actions read.
 
+- **D2013** (2026-11-08, T018-080, `FR-018-052`) The activation is audited in a table of its own, not in `audit_records`.
+  `audit_records.tenant_id` is `NOT NULL` and references a tenant; an activation concerns the deployment and no tenant, so a
+  row there would need a made-up tenant. `platform_requirement_history` (action `ACTIVATED`/`REMOVED`, capability, kinds,
+  actor, epoch, time) is written by the two operator functions in the transaction that records or removes the requirement, is
+  append-only (`ENABLE ALWAYS` triggers, truncate refused) and is not readable by the runtime role. Every token in it is from a
+  closed set or an operator subject of at most 255 characters; no free text of a caller. The `down` migration refuses while it
+  holds a row, so rolling back never destroys the evidence of an activation (tests: `instances_migration`).
+- **D2014** (2026-11-08, T018-080; reworded 2026-11-08 after review) Only the operator can record or remove a requirement, so the
+  functions that do are not executable by the runtime role (`platform_requirement_lock`, `_activate`, `_remove`; `REVOKE ... FROM
+  PUBLIC`, no grant to `sagat_app`). The command runs with the schema-owning role, as `provision-tenant` does (G260 precedent), and the
+  runtime-privilege audit lists the three `EXECUTE` needs in `ALLOWED` with the reason (test:
+  `the_runtime_role_reads_the_registry_and_calls_three_functions_only`). **What this closes, and what it does not:** a compromised
+  API or engine process (it holds the runtime role) cannot *record a requirement*, which would make the fleet refuse to serve. It
+  can still, with the functions it may call, register rows of its own up to the limit, hold the registration lock open and fail a
+  victim's heartbeat by holding the victim's row lock; it cannot refresh, delete or rewrite another process's row (D2024). That
+  residual is G2000: the database cannot close what the role legitimately does, and the claim of this decision is the first
+  sentence only.
+- **D2015** (2026-11-08, T018-080) The guards. The two tables are guarded by triggers that are `ENABLE ALWAYS`: a row of
+  `platform_requirements` is inserted or deleted (never updated) and the epoch is moved (by exactly one, never inserted or
+  deleted) only while a transaction-local flag that the two operator functions set is on; and a constraint trigger, deferred to
+  the commit, refuses a transaction that changed a requirement without the epoch having moved in it (`changed_xact`, the
+  `xid8` of the transaction that last moved it, compared with `pg_current_xact_id()`, which is the top-level transaction
+  whatever savepoints it used). The flag is not a secret: the owner can set it. The point is that a hand edit cannot forget the
+  epoch (processes would never learn of the change) and that nobody does it by accident (tests:
+  `requirements_and_the_epoch_change_only_through_the_activation_functions`, the `session_replication_role = replica` case in
+  `the_epoch_is_one_row_and_the_history_and_the_epoch_cannot_be_rewritten_or_emptied`).
+- **D2016** (2026-11-08, T018-080) Registration. A refusal (`CAPABILITY_MISSING`, `FULL`) writes no row, so a process that is refused and asks again every second, or a crash loop
+  of an old build, does not fill the table. The count of the table is made under an advisory lock taken after the epoch lock, so the limit
+  of 1,000 is exact for new ids under concurrent registrations (the check that the id is new is made before the lock: a second
+  registration of the same id racing itself is not a case, ids are random per start) (test: `registrations_counted_at_the_same_time_never_exceed_the_limit`).
+  **Deviation from the data model:** "a full table refuses registration" is refused only when 1,000 rows are **live**; at the
+  limit the rows no longer live (silent for 30 seconds) give way, oldest first, to the registration. A rule of a day kept
+  would let a process that restarts every ten seconds (a crash loop) fill the table in under three hours and lock every healthy
+  restart of the fleet out (test: `a_table_full_of_silent_rows_makes_room_and_a_crash_loop_cannot_lock_the_fleet_out`). A row
+  that exists registers again at the limit (the heartbeat found it gone and the process registers anew).
+- **D2017** (2026-11-08, T018-080) The epoch check is carried by the heartbeat, not by a query of its own. The brief left the
+  choice between one small query per second and the heartbeat. A process compares the epoch that its heartbeat returns (one
+  statement) with the one its gate was decided under, and reads the requirements (one statement, one snapshot, with the epoch)
+  only when they differ: at most one extra statement per process per 10 s, and none when nothing changed. The bound on what a
+  process may do after an activation is therefore one heartbeat period (10 s, jittered up to 12 s) plus the call; and since an
+  activation is refused while a live process of the kinds lacks the capability, only a process that was not live (silent for
+  30 s) can be in that window. A shorter loop would only move the exposure of a process that has lost the database anyway. The
+  API's admission and the streams read one atomic (`ServingGate::is_open`); a stream ends with a `reconnect` event.
+- **D2018** (2026-11-08, T018-080; amended 2026-11-08 after review) The fail mode, stated. (1) The registry cannot be asked at the
+  start, or refuses the process: the process does not serve (its gate is closed: every call but liveness is `503`, readiness fails,
+  no pass runs, no connector is read, the worker API is `UNAVAILABLE`) and **does not exit**; it asks again every second until the
+  registry lets it serve (`REGISTRY_UNREACHABLE`, `BINARY_CAPABILITY_MISSING` in the log and in the counter). Exiting would have
+  broken the contract of both runbooks and of `an_instance_pointed_at_an_unmigrated_database_is_alive_but_not_ready_until_migrated`.
+  A table of 1,000 live rows is **not** a refusal (D2025): the check of capabilities has passed, so the process serves, loudly, and
+  is not counted. (2) A heartbeat fails while it serves: logged with the instance id, tried again at the next beat, never fatal;
+  after 30 s of silence the line is an error, and **the failure decides** (D2026): a plain connection failure
+  (`StoreError::DatabaseUnavailable`) leaves the process serving, because a registry that cannot be reached is a database that
+  cannot be reached and stopping the fleet would make an outage longer; any other failure closes the gate, because the process is
+  then invisible to activations and never learns of an epoch change while the database works. The next beat that succeeds reads
+  the requirements and decides again. **Precondition for activating 029's or 031's capability:** the fleet runs builds with this
+  rule (G2003). (3) Two processes never share an instance id (v4, per start); a restart is a new row and the old one stops
+  counting after 30 s (test: `a_restarted_process_is_a_new_row_and_the_old_one_stops_counting_after_thirty_seconds`).
+- **D2019** (2026-11-08, T018-080) The adapter's operator API. `PgInstanceStore::activate(Activation, step)` and `remove(capability,
+  actor, step)` run in one transaction: the epoch is locked `FOR UPDATE`, the live instances are verified, the requirement is
+  recorded and the epoch moved, then the feature's own step runs on the same connection and the transaction commits; an error
+  of the step rolls the requirement back with it. Outcomes: `Recorded{epoch}`; `AlreadyRecorded` for the same kinds (nothing is
+  done and the step does not run: it ran in the transaction that recorded it); `KindsDiffer` is refused (a capability is recorded for
+  one set of kinds; change it by removing it first); `InstancesLackCapability{missing, examples}` names how many and up to
+  sixteen ids (ids are not content). A removal locks the epoch, answers `NotRecorded` without running the step when there is
+  nothing to remove, runs the feature's verification, then removes. There is no command-line subcommand in this task: the
+  first is `control-plane schedule-trigger-handover` (T018-061), which passes its handover write as the step.
+- **D2020** (2026-11-08, T018-080; reworded 2026-11-08 after review, D2023) A process lists a capability when **the process** will
+  honour it: the binary's list, narrowed by the passes its configuration turns on (`apps/execution-engine/src/capabilities.rs`).
+  The control plane lists none until 029 or 031 gives it one (`apps/control-plane/src/registry.rs`); the engine lists `schedules-v1`
+  when `optional_passes(config)` contains the schedule pass. The closed list is in `sagat_application::instances::Capability`, in the
+  CHECKs of the schema and in rule 5 of the data model, and a test fails when they disagree
+  (`the_capabilities_and_kinds_in_code_are_the_closed_values_of_the_schema_and_of_the_data_model`). A value written by a newer build
+  (a requirement for a capability this build does not know) is read as the string it is, is lacked, and refuses the process with its
+  name: never a failure to read (unit test in `crates/application/src/instances.rs`).
+- **D2021** (2026-11-08, T018-080) What "stops serving" means. Control plane: a middleware on the whole `/v1` router and on the
+  upload router answers every call but the two probes with `503 UNAVAILABLE` / `BINARY_CAPABILITY_MISSING` (`Retry-After: 10`)
+  before authentication; `/v1/health` is never refused, and `/v1/ready` is answered by its own handler, which probes the database
+  first (so that a failing probe is logged with its cause, as before) and then consults the gate, so the load balancer drains the
+  replica; a gate that is closed because the process has not registered yet names no capability (the plain 503); a stream ends
+  with a `reconnect`. The worker gRPC admission refuses every call `UNAVAILABLE` while the gate is closed, before authentication (G1998: closed for new calls and for the claims of an open task stream). Engine: every loop runs its round through `loops::while_serving` and the supervisor of the connectors winds its consumers down (D2027) (a closed gate is a round that found nothing, so the
+  liveness of the loops continues), the keeper gives its shards back and leaves the replicas that count, `/readyz` answers
+  `503` with the reason in the error envelope and `/livez` stays `200` (a restart would only be refused). A fitness test over
+  the engine's wiring fails when a loop is added that bypasses the gate (`apps/execution-engine/tests/registry.rs`).
+- **D2022** (2026-11-08, T018-080) Observability. `serving_instances_live{kind}` (a gauge per kind of the closed set, `0` when none
+  is live, the same value from every process because the beat reads the fleet: read it with `max`) and
+  `instance_registry_refusals_total{reason}` (`BINARY_CAPABILITY_MISSING`, `REGISTRY_FULL`, `REGISTRY_UNREACHABLE`; counted when
+  a process is refused or cannot be counted, and once when a running process learns of a requirement it lacks or fails closed),
+  and, per process, `instance_registry_gate_open` (0/1) and `instance_registry_last_beat_age_seconds` (D2029). No instance id is a label; the
+  id is in the log line. Both are in the metrics tables of the runbooks of the control plane, the engine and observability.
+
+- **D2023** (2026-11-08, T018-080, review A, closes G1997) The capability follows the configuration. `capabilities(config)` lists
+  `SchedulesV1` iff the schedule pass is in `optional_passes(config)`; the flags are read from the environment once, so the list is
+  true for the life of the process. An activation that requires `schedules-v1` from every live engine therefore refuses an engine
+  that runs no schedule pass, naming its id, and an engine restarted without the pass after the handover is refused at registration
+  and closes its whole gate (runbook section 2). Without this the handover (T018-061) would stop the legacy cron pass in an engine
+  that runs no schedule pass and nothing would fire (tests: `an_engine_lists_schedules_v1_only_when_it_runs_the_schedule_pass_and_an_activation_refuses_one_that_does_not`,
+  `apps/execution-engine/tests/registry.rs`).
+- **D2024** (2026-11-08, T018-080, review B) A row is owned by a token. A process makes 32 random bytes at every start and sends
+  them with every call; the registry stores their SHA-256 in `serving_instances.token_hash`, which the runtime role cannot read
+  (column privileges); `instance_heartbeat`, `instance_deregister` and the upsert branch of `instance_register` touch a row only for
+  the matching hash, otherwise the row is not found (the upsert raises `restrict_violation`, the row untouched). A holder of the
+  runtime role that knows another instance's id (it can read every id) can no longer refresh a dead row, delete a live one or
+  rewrite its capabilities so that an activation verifies falsely (tests: `instances_hostile.rs`, both roles; red first). The residual
+  is G2000.
+- **D2025** (2026-11-08, T018-080, review B) At start, a full table is served. `FULL` is reached only after the check of capabilities,
+  so serving on it is as safe as `beat` already was when the row had gone; the process is not counted, which is logged as an error and
+  counted (`REGISTRY_FULL`), and it asks again at every beat (test: `an_engine_that_finds_the_table_full_still_serves_and_says_it_is_not_counted`, red first).
+  Without it a holder of the runtime role that fills the table closes the gate of every process that starts.
+- **D2026** (2026-11-08, T018-080, review C) After 30 s of failed heartbeats the gate closes unless the failure is a lost connection
+  (D2018 (2)). The adapter maps connection failures (I/O, TLS, pool timeout or closure, SQLSTATE class 08, shutdown 57P01 to 57P03) to
+  `StoreError::DatabaseUnavailable`, everything else keeps the mapping of the adapter; the control plane decides with
+  `closes_the_gate` (tests: `a_connection_failure_beyond_the_window_leaves_the_gate_open_and_any_other_failure_closes_it`,
+  `failing_closed_forgets_the_epoch_so_that_the_next_beat_that_succeeds_decides_again`).
+- **D2027** (2026-11-08, T018-080, review D) A closed engine reads no connector and the fitness test is structural. The supervisor of
+  the connectors takes the gate (`Supervisor::with_serving_gate`): while it is closed every consumer is wound down and none is started,
+  so no event is admitted from a broker (`Ingest::judge` -> `runtime.admit`); when it opens they start again at the next refresh. The
+  first version exempted the supervisor in the fitness test with a wrong reason. The test now walks the calls of `tasks.spawn_loop(` with
+  balanced parentheses, requires the exact set of loops, and requires of each the gate in the way that applies (`while_serving`, the
+  keeper's `gate.is_open()`, the supervisor built `with_serving_gate`); one behavioural test starts a closed engine with a due schedule and a
+  connector and asserts neither acts and that both do once the engine is let (`a_closed_engine_fires_no_schedule_and_reads_no_connector_and_the_same_engine_does_both_once_it_is_let`, red first).
+- **D2028** (2026-11-08, T018-080, review E) The heartbeat is supervised and readiness knows the last answer. In the engine it is a
+  critical task (`instance heartbeat`); in the control plane `serve_until_the_heartbeat_ends` stops the server and fails the process if
+  it ends while the process is not stopping. The gate keeps the time of the last answer of the registry; readiness (`/v1/ready`,
+  `/readyz`) fails when it is older than 30 s, whatever the gate says (the gate rule stays D2026). Tests: `a_process_whose_heartbeat_ended_is_stopped_and_fails_while_one_whose_server_ended_is_not`,
+  `a_registry_that_has_been_silent_for_too_long_fails_readiness_and_leaves_the_calls_to_the_gate`,
+  `the_registry_fails_readiness_when_the_gate_is_closed_and_when_it_has_been_silent_too_long`.
+- **D2029** (2026-11-08, T018-080, review F and G) The counters and gauges are proved by recorders of the test's own (the unit tests
+  of `instances::tests`), not by the global page that parallel tests share; the process tests no longer read it. Two per-process gauges
+  are added, `instance_registry_gate_open` and `instance_registry_last_beat_age_seconds`, set at every try, and two alerts,
+  `SagatInstanceGateClosed` (five minutes) and `SagatInstanceRegistrySilent` (thirty seconds for a minute), each with a runbook section
+  and a promtool test (`infra/observability/tests/instance_registry_test.yaml`, run with the pinned image as CI does).
+- **D2030** (2026-11-08, T018-080, review H and K) The probe of the engine and the control plane say why with one function
+  (`sagat_api_http::not_serving`): the reason `BINARY_CAPABILITY_MISSING` only when a capability is missing. The remediation sentence
+  that an unauthenticated caller reads names no replica and no version ("The service cannot serve this call now: try again..."). The
+  history also stores `session_user` (`database_user`). The operator's transaction sets `lock_timeout` (2 s), `statement_timeout` (3 s)
+  and bounds the feature's step (3 s) with a timeout of its own (`OperatorBounds`); a slower step is rolled back, because every process that
+  registers waits for the epoch meanwhile and has a statement timeout of 5 s (tests: `the_operators_transaction_runs_under_its_own_lock_and_statement_timeouts`,
+  `a_feature_step_that_takes_too_long_is_cut_off_and_nothing_is_recorded`, `a_statement_of_the_step_that_outlasts_the_statement_timeout_is_cancelled`).
+- **D2031** (2026-11-08, T018-080, review L) The registry has a connection of its own (a pool of one, `registry_pool_config`), so that
+  saturation of the pool of the requests cannot silence a healthy process; the row is deleted after the server has drained (the
+  heartbeat loop no longer leaves), so that an activation in the grace window still counts a replica that is finishing its work; the
+  worker task stream checks the gate before every claim (`Admission::not_serving`), so a stream open when the gate closes leases nothing
+  more (test: `a_task_stream_that_is_open_when_the_gate_closes_leases_nothing_after_it`); every operation of the OpenAPI contract is walked
+  against a closed gate and must be refused but liveness, so a route merged outside the gated layer fails
+  (`every_operation_of_the_contract_that_this_server_mounts_is_refused_by_a_closed_gate_but_liveness`).
+- **D2032** (2026-11-08, T018-080, review I and J) The decisions that are hard to reverse are in ADR-0081 (proposed, awaiting the owner).
+  A feature's activation step *reads, it does not lock* (the step runs while the epoch is held `FOR UPDATE`; a transaction that reads
+  it `FOR SHARE` waits for the whole step): stated in the module documentation of the adapter, in the migration header and in the
+  runbook; the epoch is the first slot of the lock-order inventory (`Slot::RegistryEpoch` in `tests/support/lock_order.rs`, with a test
+  that a plan which returns to it is refused). The migration is `20270111000000`: `20270110000000` is taken on `origin/develop` by
+  `step_credential_roles` (feature 035); this migration was unpublished and was renumbered.
+
 ## 4. Gaps
 
 | ID | Gap | Reason / closure | Status |
@@ -1244,6 +1396,14 @@ workflow, so a test cannot make such a run with SQL, and the ad-hoc database run
 | G1977 | The `reapplyOnReset` capability (D1974) has no setting of a deployment: `set_reset_reapply` is called by no binary, so a workflow that opts in cannot be published anywhere yet. And the CLI's `sagat check`, which has no deployment, accepts a document that the server will refuse. | Wiring it before the reset exists would let workflows opt in whose arguments nothing retains or reads; the setting arrives with the reset flag of US06 (T018-056, T018-057), where the retention (T018-043) and the reapply are proved together. A client cannot know the capabilities of a server (ADR-0032, consequences), and the refusal names the field. | **Closed 2026-11-06 (D1986, D1990):** `SAGAT_RESET_REAPPLY_ENABLED` in the control plane (the engine has none: it reads stored versions with `parse_stored`); `sagat check` still has no deployment and accepts what a server without the flag refuses. |
 | G1974 | Two cases of Update-with-Start (D1970) are not proved or are weaker than the clause. (1) With an open holder the Update runs in a transaction after the claim of the identifier has ended, not under it: if the holder closes in between, the answer is `409 RUN_NOT_MUTABLE`, not a new run. (2) A holder that is a continuation chain is served in the segment that is current when the claim ends (`current_segment`); if that run hands off to its successor between that read and the effect, the answer is `409 RUN_CONTINUED` or `NOT_WAITING`. And a new run that 022's permit would queue is not rolled back, for the reason of G1973 (2). | (1) and (2) are races the caller sees as a typed 409 that a retry resolves, and they are the answers `updateRun` gives to the same race; closing them needs the Update inside the claim's transaction for an existing holder too, which the binding lock order (ADR-0050) allows and a later slice may do. | Open |
 | G1952 | A backfill step that the admission refuses (a full quota, no published version) waits and is tried again on every round of the pass, with no backoff, unlike a scheduled time (D1952). | A round is one poll of the database per owned shard and the step is one rolled-back transaction; harmless at the default poll but wasteful. Fix with a `retry_at` on the backfill (a migration). | Open |
+| G1996 | A row of `serving_instances` was owned by knowing its random `instance_id`, which the runtime role can read: another process holding the runtime role could refresh, delete or rewrite it. | *Closed 2026-11-08 (D2024):* a row is touched only for the token that registered it, and the runtime role cannot read the hash. What a holder of the runtime role can still do is G2000. | Closed |
+| G1997 | The capability was the binary's, not the setting's: an engine with `SAGAT_SCHEDULES_ENABLED` unset listed `schedules-v1` and ran no schedule pass, so the handover (T018-061) would have stopped the legacy cron pass in an engine that fires no schedule. | *Closed 2026-11-08 (D2023):* an engine lists `schedules-v1` only when its configuration runs the schedule pass; an activation refuses a live engine without it, naming its id. | Closed |
+| G1998 | The engine's worker gRPC API could have kept answering while its passes were stopped by a requirement it lacks. | *Closed 2026-11-08 (D2021, D2031):* the admission layer of the gRPC server answers every new call `UNAVAILABLE` with `x-sagat-error: BINARY_CAPABILITY_MISSING` before it authenticates while the gate is closed, and the producer of a task stream checks the gate before every claim, so a stream open when the gate closes leases nothing more (it ends with that answer at its next claim, within its window of 5 s); a worker goes to another replica. A frame already queued is delivered. | Closed |
+| G1999 | The registry does not carry `SAGAT_BATCHES_ENABLED`, `SAGAT_RESET_REAPPLY_ENABLED` and `SAGAT_RESET_CANCEL_SOURCE_ENABLED`: no capability is defined for them. G1965, G1988 and G1989 are therefore unchanged: with the flag on in the control plane and off in every engine the registry does not refuse. | Moving them is a change of its own (a capability value, a migration that widens the CHECKs, the engines listing it, the activation commands) that supersedes ADR-0080, which says so in its amendment of 2026-11-08. | Open |
+| G2000 | What a holder of the runtime role can still do to the registry, which no function of the database can close because the role legitimately calls them: (1) register up to 1,000 rows of its own, so that every new process finds the table full (it serves, uncounted: D2025) and an activation's verification is incomplete; (2) hold the registration lock open (the epoch `FOR SHARE` and the public advisory lock that counts the table, in a transaction it does not finish), so that new processes time out and stay refused until it lets go; (3) fail a victim's heartbeat by holding its row lock, which closes the victim's gate after 30 s (D2026); (4) at the cap, restarts evict nothing while the rows are live. It cannot record a requirement, and it cannot refresh, delete or rewrite another's row. | The registry protects a fleet from mistakes, not from a hostile holder of the credentials of the processes it protects; that is the credentials' boundary (rotate them, find the sessions, runbook section 6). | Accepted |
+| G2001 | Feature 029's request path reads the epoch row `FOR SHARE` inside tenant transactions, but `sagat_app` has `SELECT` only on `platform_requirement_epoch` and a share lock needs `UPDATE`; a share lock held for a whole tenant transaction would also make a queued activation's `FOR UPDATE` wait, and that wait stalls the registration of every new process. | Not built for 029 (not approved). It needs a definer function the runtime role can execute that *reads* the epoch (and does not hold it), and its own proof that the wait of an activation cannot starve new registrations. A dated note is in 029's `plan.md` and `data-model.md`. | Open (029) |
+| G2002 | What the activation command of a feature (`control-plane schedule-trigger-handover`, T018-061) must also do: (1) take `--expect-live N` and refuse when fewer than N live instances of the required kinds exist (an activation with none passes vacuously); (2) map `permission denied for function` to "run with the owner role"; (3) say in `cli.rs` which commands need the owner role (the usage text now names the activation commands of the instance registry). | Not built here: T018-061 owns the command. | Open (T018-061) |
+| G2003 | A precondition for activating 029's `access-narrowing-v1` or 031's `payload-encoding-v1`: the whole fleet runs builds with the fail rule of D2026 (a heartbeat that fails for longer than the liveness window for a reason other than a lost connection closes the gate), with the token of D2024, and an engine's capabilities follow its configuration (D2023). A build without them would keep serving invisibly after a lock timeout on its own row. | Stated in the runbook (section 3) and ADR-0081; checked by nothing but the runbook, as G1607. | Open (029, 031) |
 
 ## 5. Owner questions (the plan implements the recommended defaults)
 

@@ -289,6 +289,9 @@ impl ErrorCode {
             (Self::QuotaExceeded, _) => {
                 "Release something the limit counts, or ask an administrator to raise the limit."
             }
+            (Self::Unavailable, "BINARY_CAPABILITY_MISSING") => {
+                "The service cannot serve this call now: try again. If it keeps happening, tell the operator of the platform."
+            }
             (Self::Unavailable, _) => {
                 "Try again with a growing pause; if it lasts, check the platform's readiness and report the trace id."
             }

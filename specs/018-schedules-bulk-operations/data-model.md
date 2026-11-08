@@ -176,14 +176,15 @@ transaction.
 
 ### Instance-capability registry (owned by 018; used by 029 and 031)
 
-One deployment-level registry (not tenant-scoped) through which every process that holds platform
-database credentials — each control-plane and each execution-engine replica — announces what its binary
-can do, and through which a feature is activated only when every live process can honour it. Runners and
+One deployment-level registry (not tenant-scoped) through which every serving process — each control-plane
+and each execution-engine replica; the one-shot commands (`migrate`, `provision-tenant`, `cleanup-secrets`)
+do not register — announces what its binary can do and what its configuration runs, and through which a
+feature is activated only when every live process can honour it. Runners and
 SDK workers hold no database credentials and keep the worker-protocol minor negotiation (ADR-0015).
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `serving_instances` | `instance_id uuid` PK (random per process start), `kind` (`CONTROL_PLANE`, `EXECUTION_ENGINE`; grows only), `scheduler_owner text null` (an engine's `scheduler_members.owner`, for correlation only), `binary_version text` (≤ 64), `capabilities text[]` (closed values, ≤ 32), `started_at`, `last_seen` | at most 1,000 rows; protected |
+| `serving_instances` | `instance_id uuid` PK (random per process start), `kind` (`CONTROL_PLANE`, `EXECUTION_ENGINE`; grows only), `scheduler_owner text null` (an engine's `scheduler_members.owner`, for correlation only), `binary_version text` (≤ 64), `capabilities text[]` (closed values, ≤ 32), `started_at`, `last_seen`, `token_hash bytea` (the SHA-256 of a random per-start token that only the registering process holds; the runtime role cannot read it) | at most 1,000 rows; protected |
 | `platform_requirements` | `capability text` PK, `kinds text[]` (the instance kinds that must hold it), `required_since`, `recorded_by` | protected |
 | `platform_requirement_epoch` | singleton `epoch bigint` | incremented in every transaction that inserts or deletes a requirement |
 
@@ -196,11 +197,19 @@ Rules (D1034, G1607):
    concurrent activation, which locks it `FOR UPDATE`.
 2. **Heartbeat and liveness.** Every 10 s each process sets `last_seen = clock_timestamp()` (database
    clock); an instance is **live** when `last_seen` is within the last 30 s; a clean stop deletes its row;
-   rows silent for more than one day are deleted by any heartbeat; a full table refuses registration.
-3. **Re-check while serving.** Each API admission and stream re-evaluation (control plane) and each
-   scheduler round (engine) compares a cached epoch; when it moved, the process re-reads the
-   requirements and, lacking one, answers `503 UNAVAILABLE`/`BINARY_CAPABILITY_MISSING` (API) or stops its
-   passes and fails readiness (engine).
+   rows silent for more than one day are deleted by any heartbeat; a table of 1,000 **live** rows refuses
+   to count a new process (a registration at the limit evicts the rows no longer live first, oldest first),
+   and a process that finds it still serves, loudly, and is not counted. A row is touched only for the token
+   that registered it.
+3. **Re-check while serving.** The heartbeat returns the epoch and compares it with the one the process's
+   gate was decided under; when it moved, the process re-reads the requirements and, lacking one, closes its
+   gate: every API admission and stream re-evaluation (control plane) answers `503 UNAVAILABLE` /
+   `BINARY_CAPABILITY_MISSING`, and every pass, connector and the worker API of an engine stops and readiness
+   fails. **A process learns of a requirement within one heartbeat period: about 12 s (10 s jittered by 20 %)
+   plus the time of the call**, and only a process that was not live (silent for 30 s) at the activation can
+   be in that window, because an activation is refused while a live process of the required kinds lacks the
+   capability. A heartbeat that fails for longer than 30 s closes the gate unless the failure is a lost
+   connection; readiness fails when the registry has not answered for 30 s.
 4. **Activation (operator only).** A requirement is recorded **only** by an audited operator activation
    command, never inside a tenant or user transaction. A feature that needs every process is activated in
    one transaction: lock `platform_requirement_epoch` `FOR UPDATE` → verify that every live instance of the
@@ -209,18 +218,31 @@ Rules (D1034, G1607):
    feature verifies that nothing depends on it. Until its operator activation, a feature refuses its own
    feature use with its own reason (018 `SCHEDULE_TRIGGER_HANDOVER_PENDING`, 029
    `ACCESS_CAPABILITY_DISABLED`, 031's equivalent).
-5. **Capability values** are owned by the feature that introduces them: `schedules-v1` (018,
+5. **Capability values** are listed by a process when the **process** will honour them, that is, the
+   binary's, narrowed by the passes its configuration turns on. They are owned by the feature that
+   introduces them: `schedules-v1` (018,
    `EXECUTION_ENGINE`), `access-narrowing-v1` (029, `CONTROL_PLANE`; activated by the operator before the
    first restricted folder or operation list can be created), `payload-encoding-v1` (031, `CONTROL_PLANE`
    and `EXECUTION_ENGINE`).
 
 `scheduler_members` is unchanged (shard membership and the replica count for shard shares); adding
 control-plane rows or capabilities to it would distort the shard-share computation of ADR-0020.
-Grants: the runtime role reads all three tables and upserts/deletes only its own `serving_instances` row
-(row ownership by `instance_id` through a `SECURITY DEFINER` function); requirement and epoch rows change
-only through the operator command's definer function. The registry ships in a release before any feature
+Grants: the runtime role reads the three tables (the instances without the hash of the token) and writes
+only through three `SECURITY DEFINER` functions, each of which touches a row only for the token that
+registered it (D2024); requirement and epoch rows change only through the operator command's definer
+functions, which the runtime role cannot execute (D2014). The registry ships in a release before any feature
 that activates through it (029's prerequisite release, T029-003); whichever of 018, 029, 031 is
 implemented first ships it.
+
+**As built (T018-080, migration `20270111000000_instance_registry`; decisions D2013 to D2032, ADR-0081).** The process functions are
+`instance_register`, `instance_heartbeat` and `instance_deregister` (executable by the runtime role); the operator functions are
+`platform_requirement_lock`, `platform_requirement_activate` and `platform_requirement_remove` (not executable by it, D2014).
+Differences from the text above, each with its reason in `research.md`: a fourth table, `platform_requirement_history` (the
+audit of an activation, with the database role that did it; `audit_records` is tenant-scoped, D2013); `platform_requirement_epoch.changed_xact`, which the
+deferred guard compares with the committing transaction (D2015); at the limit of 1,000 rows the rows no longer live give way to a
+registration, so the table is "full" only of live rows (D2016); the epoch check is carried by the heartbeat (D2017). The adapter's
+`activate`/`remove` take the feature's own step as a closure that runs in the same transaction (D2019). The runbook is
+[`docs/runbooks/instance-registry.md`](../../docs/runbooks/instance-registry.md).
 
 ### `batch_jobs`
 

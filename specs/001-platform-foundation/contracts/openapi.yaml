@@ -4920,7 +4920,10 @@ components:
             `SCHEDULE_TRIGGER_HANDOVER_PENDING`, `BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`,
             `NOT_WAITING`, `SIGNAL_NOT_ACCEPTED_AT_START`, `BATCH_NOT_CANCELLABLE` and
             `RESET_SOURCE_NOT_TERMINAL`, and `QUOTA_EXCEEDED` with
-            `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY`, `BATCH_LIMIT` and `PENDING_RESET_LIMIT`;
+            `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY`, `BATCH_LIMIT` and `PENDING_RESET_LIMIT`, and `UNAVAILABLE`
+            with `BINARY_CAPABILITY_MISSING` (the replica that answered runs a version that lacks a capability the
+            platform now requires of it, `FR-018-052`: every call but `GET /v1/health` is refused, with
+            `Retry-After`; another replica serves the call);
             Iceberg writes and step-output destinations (feature 035) refine `VALIDATION_FAILED` with
             `ICEBERG_NODE_NOT_ROOT`, `DESTINATION_NOT_ROOT`, `MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`,
             `UNKNOWN_CONNECTION_KIND`, `BROKER_SOURCE_NOT_INLINE`, `FILTER_TOO_DEEP` (more than 8 levels or 64

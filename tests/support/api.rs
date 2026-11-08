@@ -270,6 +270,9 @@ pub struct Options {
     /// exercise it; the gate is what a test of the refusal turns off. That the production default is off is proved by
     /// `cancel_source::the_service_the_control_plane_builds_refuses_the_cancel_of_a_source_unless_the_operator_set_it`.
     pub reset_cancel_source: bool,
+    /// The gate of the instance-capability registry (`FR-018-052`): while it is closed every call but `/v1/health` is
+    /// `503 BINARY_CAPABILITY_MISSING`. `None` is a process with no registry, which serves.
+    pub serving_gate: Option<Arc<sagat_application::instances::ServingGate>>,
 }
 
 impl Default for Options {
@@ -304,6 +307,7 @@ impl Default for Options {
             studio: None,
             reset_reapply: true,
             reset_cancel_source: true,
+            serving_gate: None,
         }
     }
 }
@@ -373,6 +377,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         .expect("valid budget")
         .with_subject_rate_limit(options.subject_rate_limit)
         .expect("valid subject budget");
+    if let Some(gate) = &options.serving_gate {
+        state = state.with_serving_gate(Arc::clone(gate));
+    }
     state.tenant_concurrency = Arc::new(sagat_api_http::TenantConcurrency::new(
         options.limits.max_in_flight_per_tenant,
     ));
@@ -588,6 +595,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         workers = workers.with_secret_provider(provider.clone());
     }
     let mut grpc = WorkerGrpc::new(exec.clone(), workers);
+    if let Some(gate) = &options.serving_gate {
+        grpc = grpc.with_serving_gate(Arc::clone(gate));
+    }
     if let Some(blobs) = &blobs {
         grpc = grpc.with_blobs(blobs.clone(), options.blob_transfer);
     }

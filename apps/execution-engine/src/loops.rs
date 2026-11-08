@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use sagat_application::clock::{Clock, SystemClock};
 use sagat_application::entropy::{Entropy, SystemEntropy};
+use sagat_application::instances::ServingGate;
 use sagat_application::runs::RunService;
 use sagat_application::schedule_firing::ScheduledStarts;
 use sagat_control_plane::stopped;
@@ -77,6 +78,16 @@ pub type EngineDeliveries = DeliveryWorker<
     >,
 >;
 
+/// What the registry says of a replica, for its probes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryState {
+    Serving,
+    /// The gate is closed (a capability is missing, or the replica has not registered).
+    Closed,
+    /// The registry has not answered for longer than the liveness window.
+    Silent,
+}
+
 /// Liveness of the scheduler loop: it must keep ticking, even when a tick finds nothing (or the
 /// database is down and every pass fails fast).
 #[derive(Debug)]
@@ -87,6 +98,8 @@ pub struct Health {
     stale_after: Duration,
     last_round_ms: AtomicU64,
     keeper_stale_after: Duration,
+    /// Whether the replica may serve, from the instance-capability registry (`None`: no registry).
+    gate: Option<Arc<ServingGate>>,
 }
 
 impl Health {
@@ -99,7 +112,40 @@ impl Health {
             stale_after,
             last_round_ms: AtomicU64::new(0),
             keeper_stale_after: stale_after,
+            gate: None,
         }
+    }
+
+    /// Makes readiness follow the replica's membership of the registry: a replica whose binary lacks a capability
+    /// the platform requires is not ready (`BINARY_CAPABILITY_MISSING`) and runs none of its passes.
+    #[must_use]
+    pub fn with_gate(mut self, gate: Arc<ServingGate>) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+
+    /// The gate of the instance registry, if the replica has one.
+    #[must_use]
+    pub fn gate(&self) -> Option<&Arc<ServingGate>> {
+        self.gate.as_ref()
+    }
+
+    /// What the registry says of this replica at `now`: it may serve, its gate is closed, or the registry has been silent for
+    /// longer than a replica stays live (invisible to an activation, so not offered work, whatever the gate says).
+    #[must_use]
+    pub fn registry_state(&self, now: Instant) -> RegistryState {
+        match &self.gate {
+            None => RegistryState::Serving,
+            Some(gate) if !gate.is_open() => RegistryState::Closed,
+            Some(gate) if gate.beat_is_stale(now) => RegistryState::Silent,
+            Some(_) => RegistryState::Serving,
+        }
+    }
+
+    /// Whether the registry lets this replica serve (always, with no registry).
+    #[must_use]
+    pub fn serving(&self) -> bool {
+        self.gate.as_ref().is_none_or(|gate| gate.is_open())
     }
 
     /// How long the shard keeper may go without finishing a round (a round that fails counts: the
@@ -158,6 +204,21 @@ impl Health {
             .now_ms()
             .saturating_sub(self.last_tick_ms.load(Ordering::Relaxed));
         u128::from(age) < self.stale_after.as_millis()
+    }
+}
+
+/// Runs `round` unless the replica's gate is closed. A closed gate (the platform requires a capability this binary
+/// lacks, `FR-018-052`) is a round that found nothing to do, so every loop goes on pausing and ticking its liveness
+/// while none of its passes touches a tenant's data.
+pub async fn while_serving<T, Fut>(gate: &ServingGate, round: impl FnOnce() -> Fut) -> T
+where
+    T: Default,
+    Fut: Future<Output = T>,
+{
+    if gate.is_open() {
+        round().await
+    } else {
+        T::default()
     }
 }
 
@@ -691,6 +752,84 @@ mod tests {
         })
         .await;
         assert!((2..=4).contains(&sweeps), "{sweeps} sweeps in 500 ms");
+    }
+
+    #[tokio::test]
+    async fn a_closed_gate_is_a_round_that_found_nothing_and_an_open_one_runs_the_round() {
+        let gate = ServingGate::closed();
+        let calls = AtomicUsize::new(0);
+        let round = || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Report {
+                timers_fired: 3,
+                ..Report::default()
+            })
+        };
+        let closed = while_serving(&gate, round).await;
+        assert!(!closed.did_work(), "nothing was done");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "and the round did not even start"
+        );
+        gate.open(1);
+        let open = while_serving(&gate, round).await;
+        assert_eq!(open.timers_fired, 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        gate.close(2, vec!["schedules-v1".to_owned()]);
+        assert!(!while_serving(&gate, round).await.did_work());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "closed again: not run");
+    }
+
+    #[test]
+    fn a_replica_serves_with_no_gate_and_follows_the_gate_it_has() {
+        assert!(Health::new(Duration::from_secs(1)).serving());
+        let gate = Arc::new(ServingGate::closed());
+        let health = Health::new(Duration::from_secs(1)).with_gate(Arc::clone(&gate));
+        assert!(!health.serving(), "closed until it registered");
+        gate.open(0);
+        assert!(health.serving());
+        gate.close(1, vec!["schedules-v1".to_owned()]);
+        assert!(!health.serving());
+        assert!(health.process_alive(), "not serving is not dead");
+    }
+
+    #[test]
+    fn the_registry_fails_readiness_when_the_gate_is_closed_and_when_it_has_been_silent_too_long() {
+        let now = Instant::now();
+        // no registry: it serves
+        assert_eq!(
+            Health::new(Duration::from_secs(1)).registry_state(now),
+            RegistryState::Serving
+        );
+        let gate = Arc::new(ServingGate::closed());
+        let health = Health::new(Duration::from_secs(1)).with_gate(Arc::clone(&gate));
+        assert_eq!(health.registry_state(now), RegistryState::Closed);
+        gate.open(1);
+        gate.heard_at(now);
+        assert_eq!(health.registry_state(now), RegistryState::Serving);
+        // thirty seconds of silence are not beyond the window; thirty-one are, and the gate is still open
+        assert_eq!(
+            health.registry_state(now + Duration::from_secs(30)),
+            RegistryState::Serving
+        );
+        assert_eq!(
+            health.registry_state(now + Duration::from_secs(31)),
+            RegistryState::Silent
+        );
+        assert!(gate.is_open(), "readiness fails, the gate rule is its own");
+        // an answer ends it
+        gate.heard_at(now + Duration::from_secs(31));
+        assert_eq!(
+            health.registry_state(now + Duration::from_secs(32)),
+            RegistryState::Serving
+        );
+        // a closed gate is closed whatever was heard
+        gate.close(2, vec!["schedules-v1".to_owned()]);
+        assert_eq!(
+            health.registry_state(now + Duration::from_secs(32)),
+            RegistryState::Closed
+        );
     }
 
     #[test]

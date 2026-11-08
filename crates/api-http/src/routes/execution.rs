@@ -1370,6 +1370,12 @@ async fn follow<B: Exec>(
             let _ = send(SseEvent::default().event("reconnect").data("{}")).await;
             return;
         }
+        // A process that stopped serving (the platform requires a capability this binary lacks) lets no stream
+        // run on: the client opens it again and meets the refusal, or another replica (FR-018-052).
+        if state.serving_gate().is_some_and(|gate| !gate.is_open()) {
+            let _ = send(SseEvent::default().event("reconnect").data("{}")).await;
+            return;
+        }
         // The role the stream opened with is not the role for fifteen minutes: whoever was removed
         // or lowered since is asked again, and the stream is cut for them.
         if now >= next_recheck {

@@ -134,6 +134,9 @@ pub struct EngineConfig {
     pub openbao: Option<sagat_infra_secrets::openbao::OpenBaoSettings>,
     pub blobs: Option<BlobSettings>,
     pub blob_transfer: BlobTransfer,
+    /// How the replica keeps its place in the instance-capability registry (`FR-018-052`). Not read from the
+    /// environment: a test sets it.
+    pub registry: sagat_application::instances::RegistrySettings,
 }
 
 /// The most candidates of one pass a scheduler acts on at once; each holds a database connection.
@@ -934,6 +937,7 @@ impl EngineConfig {
             openbao,
             blobs,
             blob_transfer,
+            registry: sagat_application::instances::RegistrySettings::default(),
         })
     }
 }

@@ -16,6 +16,7 @@ mod cancel_source;
 mod clocks;
 mod delay;
 mod firing;
+mod instances;
 mod reset;
 mod run_driven_locks;
 mod tripwire;

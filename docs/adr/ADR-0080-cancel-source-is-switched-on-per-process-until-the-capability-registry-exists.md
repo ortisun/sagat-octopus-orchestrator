@@ -40,3 +40,14 @@ Bad: the combination of the control plane on and every engine off is possible an
 ## Evidence
 
 `specs/018-schedules-bulk-operations/research.md` D2001 (the quota and the order), D2002 (the setting), D2009 (the pure function of the passes), G1989 (the mismatch), G1993 (no barrier test of the order across ADR-0050 yet; T018-012 stays open); `docs/runbooks/run-reset.md` section 4.2.
+
+## Amendments
+
+- **2026-11-08 (T018-080).** The instance-capability registry exists: migration `20270111000000_instance_registry`, the
+  registration of the control plane and of the engine before they serve, the heartbeat, the epoch check and the activation
+  functions (`docs/runbooks/instance-registry.md`; decisions D2013 to D2022 of `specs/018-schedules-bulk-operations/research.md`).
+  It exists for `schedules-v1` (feature 018, the handover of the cron triggers, T018-061), `access-narrowing-v1` (029) and
+  `payload-encoding-v1` (031). **It does not yet carry `CANCEL_SOURCE`**: no capability is defined for it and the engine does
+  not list one, so the two flags of decision 1, the order of decision 2 and the prohibition of decision 4 stand as written until a
+  change moves this feature (and the batch operations and the reset reapply) to the registry; that change supersedes this ADR.
+  G1965, G1988 and G1989 stay open for that reason (G1999).

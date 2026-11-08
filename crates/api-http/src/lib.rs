@@ -58,6 +58,7 @@ pub use extract::{Authenticated, authenticate_bearer, parse_bearer};
 pub use governance::{GovState, Governance};
 pub use limits::{
     DEFAULT_MAX_TRACKED_KEYS, MAX_RETRY_AFTER, RateLimitConfig, RateLimitConfigError, RateLimiter,
+    not_serving,
 };
 pub use routes::declared_operations::DeclaredOperationApiState;
 pub use routes::primitives::ApprovalApiState;
@@ -81,6 +82,10 @@ pub struct AppState<S, C> {
     pub(crate) ready_cache: Arc<Mutex<Option<(Instant, bool)>>>,
     /// Serialises readiness refreshes so concurrent probes share one storage ping.
     pub(crate) ready_refresh: Arc<tokio::sync::Mutex<()>>,
+    /// Whether this process may serve (the instance-capability registry, `FR-018-052`): while it is closed every
+    /// call but the liveness probe is answered `503 UNAVAILABLE` / `BINARY_CAPABILITY_MISSING`. `None` is a process
+    /// with no registry (a test), which serves.
+    pub(crate) serving_gate: Option<Arc<sagat_application::instances::ServingGate>>,
 }
 
 impl<S, C> AppState<S, C> {
@@ -125,7 +130,19 @@ impl<S, C> AppState<S, C> {
             )),
             ready_cache: Arc::new(Mutex::new(None)),
             ready_refresh: Arc::new(tokio::sync::Mutex::new(())),
+            serving_gate: None,
         }
+    }
+
+    /// Makes the state obey the gate of the process's registry membership: a closed gate refuses every call but
+    /// `GET /v1/health` with `503 UNAVAILABLE` and `details.reason = BINARY_CAPABILITY_MISSING`.
+    #[must_use]
+    pub fn with_serving_gate(
+        mut self,
+        gate: Arc<sagat_application::instances::ServingGate>,
+    ) -> Self {
+        self.serving_gate = Some(gate);
+        self
     }
 
     /// Replaces the per-subject budget (the default is [`RateLimitConfig::subject_default`]).
@@ -151,6 +168,7 @@ impl<S, C> Clone for AppState<S, C> {
             tenant_concurrency: Arc::clone(&self.tenant_concurrency),
             ready_cache: Arc::clone(&self.ready_cache),
             ready_refresh: Arc::clone(&self.ready_refresh),
+            serving_gate: self.serving_gate.clone(),
         }
     }
 }
@@ -233,6 +251,10 @@ where
         .route("/health", get(health::health))
         .route("/ready", get(health::ready::<S, C>))
         .merge(api)
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.serving_gate.clone(),
+            limits::require_serving,
+        ))
         .route_layer(from_fn(context::record_route));
 
     protect(Router::new().nest("/v1", v1).with_state(state), limits)
@@ -877,6 +899,9 @@ where
 
     let slots = Arc::new(tokio::sync::Semaphore::new(limits.max_in_flight.max(1)));
     let shed = || axum::middleware::from_fn_with_state(Arc::clone(&slots), limits::shed_excess);
+    // a process whose binary lacks a capability the platform requires serves nothing but its liveness (FR-018-052)
+    let serving =
+        || axum::middleware::from_fn_with_state(core.serving_gate.clone(), limits::require_serving);
 
     // Large streaming uploads have their own size/time budget. Ordinary JSON routes retain
     // their existing protection; no caller can smuggle a larger run request through this path.
@@ -893,6 +918,7 @@ where
                     axum::routing::post(blobs::upload::<B<S, C, P, X, E>>),
                 )
                 .route_layer(shed())
+                .route_layer(serving())
                 .route_layer(from_fn(context::record_route))
                 .with_state(state.clone()),
             upload_limits,
@@ -1153,6 +1179,7 @@ where
         .merge(database_executions)
         .merge(exec_routes)
         .merge(extra_routes)
+        .route_layer(serving())
         .route_layer(from_fn(context::record_route))
         .with_state(core);
 

@@ -426,6 +426,9 @@ pub struct ServeConfig {
     pub telemetry_lag_budget: Duration,
     pub blobs: Option<sagat_infra_blobstore::BlobSettings>,
     pub blob_transfer: sagat_api_http::HttpBlobTransfer,
+    /// How the process keeps its place in the instance-capability registry (`FR-018-052`). Not read from the
+    /// environment: a test sets it.
+    pub registry: sagat_application::instances::RegistrySettings,
 }
 
 impl ServeConfig {
@@ -626,6 +629,7 @@ impl ServeConfig {
             telemetry_lag_budget: Duration::from_secs(
                 optional(get, "SAGAT_TELEMETRY_LAG_BUDGET_SECS", 30u64)?.max(1),
             ),
+            registry: sagat_application::instances::RegistrySettings::default(),
             runbook_base: get("SAGAT_RUNBOOK_BASE_URL")
                 .map(|v| v.trim().to_owned())
                 .filter(|v| !v.is_empty())

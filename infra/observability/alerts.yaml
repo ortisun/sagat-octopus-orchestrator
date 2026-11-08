@@ -182,6 +182,27 @@ groups:
           summary: Batch jobs are active and no run has had an outcome from any of them for fifteen minutes.
           runbook: docs/runbooks/batch-operations.md#5-when-a-job-does-not-move
 
+      - alert: SagatInstanceGateClosed
+        # A control plane or an engine that is up and serves nothing: it has not registered in the instance registry
+        # (the database or the migration), or the platform requires a capability its build lacks (FR-018-052). Its
+        # readiness fails, so no traffic reaches it, which is why nobody else notices.
+        expr: instance_registry_gate_open == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: A process has served nothing for five minutes because the instance registry does not let it.
+          runbook: docs/runbooks/instance-registry.md#2-a-process-is-refused
+
+      - alert: SagatInstanceRegistrySilent
+        # The registry has not answered a process for longer than a process stays live (30 s): an activation no longer
+        # counts it, and it learns of no requirement. Readiness fails; a plain connection failure leaves it serving.
+        expr: instance_registry_last_beat_age_seconds > 30
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: A process has not been able to tell the instance registry that it is alive for more than thirty seconds.
+          runbook: docs/runbooks/instance-registry.md#3-while-it-runs
+
       - alert: SagatShardFencing
         expr: sum(rate(scheduler_fenced_total[5m])) > 0
         for: 10m

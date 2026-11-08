@@ -1468,6 +1468,53 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `apps/control-plane/`, `apps/execution-engine/src/lib.rs`, `tests/fault/schedules-bulk-operations/instances.rs`
   — activation-vs-registration race, stale-instance expiry, epoch change while serving (SC-018-017) —
   FR-018-052.
+  *Built 2026-11-08 and revised the same day after three independent reviews (correctness, security, architecture); not
+  ticked, review pending (D2013 to D2032 and G1996 to G2003 of `research.md`; ADR-0081, proposed).* **Done:** migration
+  `20270111000000_instance_registry` (it was `20270110000000` until `origin/develop` took that number for
+  `step_credential_roles`; it was unpublished, so it was renamed): `serving_instances` with `token_hash` (the SHA-256 of a
+  random per-start token that only the process holds; the runtime role cannot read the column), `platform_requirements`,
+  `platform_requirement_epoch`, the history table with the database role that acted; six `SECURITY DEFINER` functions, three
+  for a process (a process touches only the row it registered, by token) and three for the operator (not executable by
+  `sagat_app`); `ENABLE ALWAYS` guards; grants; `storage-classification.json`; a `down` that refuses requirements, history and live
+  processes; the three released-upgrade oracles moved to it. `crates/application/src/instances.rs` (kinds, capabilities, the rule,
+  `InstanceToken`, `ServingGate` with the time of the registry's last answer, `Member`: register, beat, `fail_closed`,
+  `observe`, `leave`); `crates/infra-postgres/src/instances.rs` (the process side; the operator's `activate`/`remove` under
+  their own lock and statement timeouts, with the feature's step in the same transaction; the mapping of a failure to a lost
+  connection). The control plane (`registry.rs`: a connection of its own, a heartbeat that asks again every second while the gate is
+  closed, `closes_the_gate`, the heartbeat supervised by `serve_until_the_heartbeat_ends`, leave after the drain; the gate in
+  `api-http`: middleware, `/v1/ready`, streams, uploads) and the engine (`capabilities(config)`: the capability follows the passes the
+  configuration runs; every loop through `while_serving`; the keeper; the connector supervisor; the worker gRPC admission per call
+  and per stream iteration; `/readyz` through `registry_state`; the heartbeat a critical task). A refused process stays up with a
+  closed gate and asks again (ADR-0081). Metrics `serving_instances_live{kind}`, `instance_registry_refusals_total{reason}`,
+  `instance_registry_gate_open` and `instance_registry_last_beat_age_seconds`; alerts `SagatInstanceGateClosed` and
+  `SagatInstanceRegistrySilent` with a promtool test (the CI step runs it); `docs/runbooks/instance-registry.md` with links and
+  metrics rows in the control plane, engine and observability runbooks; the ADR-0080 amendment; notes for 029 (G2001);
+  `contracts/errors.md`, `openapi.yaml`, `schema.d.ts`, `error.rs`. **Evidence (2026-11-08, after the reviews):**
+  `integration_schedules_bulk_operations` 506 passed in both roles (60 of them the registry's: `instances` 33, `instances_hostile`
+  7, `instances_migration` 2, `instances_process` 11, `instances_rest` 7), `fault_schedules_bulk_operations` 58 in both roles (9 of the
+  registry: the race in both orders held by a lock and watched in `pg_stat_activity`, the removal under the lock, the limit
+  under 24 concurrent registrations, the fail modes, the lock-order slot), `integration_platform_foundation` 101 in both roles
+  (the privilege audit lists the three operator functions), `contract_schedules_bulk_operations` 7,
+  `contract_developer_experience` 8, `contract_rest_security_multitenancy` 21, `fault_platform_foundation` 38,
+  `e2e_platform_foundation` 42, `integration_scalability_ha` 44, `sdk_conformance` 3 (1 ignored), the unit suites of
+  eight crates 1,689, `cargo fmt --check`, clippy `-D warnings` over the workspace, `check-architecture`, `check-agent-config`,
+  `check-design-docs`, `check-upgrade-boundary` and promtool (`check rules` 27 rules, `test rules`) clean. The flake
+  `counted::the_items_a_cancelled_job_marks_are_counted_as_cancelled_and_the_one_that_ran_as_succeeded` seen once in the first round
+  passed 40 of 40 runs single-threaded: not reproduced, not explained, not fixed. Mutants: 76 of the first round and 65 of the
+  second (the token checks of the SQL, serving on a full table, `closes_the_gate`/`fail_closed`, `capabilities(config)`, the gate of the
+  connector supervisor, of `while_serving`, of the readiness, of the worker admission and of the streams, the supervision of the
+  heartbeat, the operator's bounds): 58 killed at the first run (one of them by a hang), 7 survived (the registration as an
+  answer, the count of a lack that goes on, an epoch that went back, the pace of a closed loop, the end of the heartbeat with the
+  process; and two that had been run under a suite that does not hold their test) and were killed after four tests were added.
+  **Not done:** the command-line subcommand that activates and the handover (T018-061; it calls `PgInstanceStore::activate` with
+  the handover write as its step, and G1997 is closed by D2023 but G2002 lists what the command must also do); moving the flags of
+  batches, resets and their reapply to the registry (G1999); what a holder of the runtime role can still do (G2000: it can register
+  rows of its own, hold the registration lock open, hold a victim's row lock; the database cannot close what the role legitimately
+  calls); the released-upgrade profile of CI and the six-language SDK conformance with its toolchains (the
+  six local `release_upgrade` tests are `#[ignore]` and need the verified v0.2.0 build). **For the owner:** D2014 (recording a
+  requirement is the schema owner's, not the API's), D2016 (rows that are no longer live give way at the limit of 1,000), D2025 (a
+  process that finds the table full serves, loudly, and is not counted) and ADR-0081 are the agent's decisions.
+  *Left for the next touch of the workflow (2026-11-08):* `infra/observability/tests/instance_registry_test.yaml` (the promtool test of the two registry alerts) is not yet in the step of `.github/workflows/ci.yml` that runs `batch_stalled_test.yaml`: touching the workflow runs the whole stack on a pull request (Constitution 4.3.0), so the one-line change waits for the pull request that has to touch it anyway or for the release; until then the test has been run only by hand (`promtool test rules`, 27 rules).
 - [x] T018-081 [P] Rust SDK (D1040) — `sdks/rust/src/`, `sdks/rust/conformance/` — unit tests + scenarios —
   FR-018-048.
   *Done 2026-11-06.* Rust: `src/client/{schedules,batch,business,resets,wire}.rs`, runner `conformance/src/runtime/operations.rs`; 16 new tests (127 in all), `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` clean; 12 mutants killed. `start` returns `StartedRun` (it dereferences to `Run`); a 200 answer is accepted only when the conflict policy is `USE_EXISTING`. Nine scenarios equal to the goldens, twice in a row, and again in the full run of T018-068.

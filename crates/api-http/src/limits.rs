@@ -252,6 +252,47 @@ fn shed_retry_after() -> u32 {
     3 + NEXT.fetch_add(1, Ordering::Relaxed) % 6
 }
 
+/// The answer of a process whose registry gate is closed. A gate closed for want of a capability says which reason; one
+/// closed because the process has not registered yet (the registry cannot be asked, the migration was not run) is the
+/// plain "try again" of every other `503`.
+pub fn not_serving(gate: &sagat_application::instances::ServingGate) -> ApiError {
+    let refusal = ApiError::unavailable_after(10);
+    if gate.missing().is_empty() {
+        refusal
+    } else {
+        refusal.with_reason(sagat_application::instances::REASON_CAPABILITY_MISSING)
+    }
+}
+
+/// Middleware: while the process's registry gate is closed (the platform requires a capability this binary lacks,
+/// `FR-018-052`), refuse every call but the liveness probe `503 UNAVAILABLE` with `details.reason =
+/// BINARY_CAPABILITY_MISSING`. A process with no gate serves. One atomic load per request.
+pub async fn require_serving(
+    State(gate): State<Option<Arc<sagat_application::instances::ServingGate>>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let Some(gate) = gate.filter(|gate| !gate.is_open()) else {
+        return next.run(request).await;
+    };
+    // the route that matched names the probes, whether or not the matched path carries the /v1 it is nested under.
+    // Liveness is never refused (a restart would only be refused again); readiness is answered by its own handler,
+    // which probes the database first, so that the cause of a failure is logged, and then consults the gate.
+    let probe = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .is_some_and(|matched| {
+            matches!(
+                matched.as_str(),
+                "/v1/health" | "/health" | "/v1/ready" | "/ready"
+            )
+        });
+    if probe {
+        return next.run(request).await;
+    }
+    not_serving(&gate).into_response()
+}
+
 /// Middleware: refuse immediately when too many requests are already being served.
 pub async fn shed_excess(
     State(slots): State<Arc<Semaphore>>,

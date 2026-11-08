@@ -43,6 +43,7 @@ use tokio::net::{TcpListener, TcpStream};
 pub mod cleanup;
 pub mod cli;
 pub mod config;
+pub mod registry;
 
 /// Parsed workflow versions kept in memory (they are immutable, so they never go stale).
 const DEFINITION_CACHE_ENTRIES: usize = 256;
@@ -521,6 +522,20 @@ pub async fn serve_with_admin(
         tracing::info!("database role verified: it cannot rewrite the audit trail");
     }
     let service = IdentityService::new(store, SystemClock);
+    // The place of this process in the instance-capability registry (FR-018-052). Nothing is written until
+    // `register`, below, once everything that can fail from configuration has been built: a closed gate refuses every
+    // call until then.
+    // The registry has a connection of its own: the heartbeat of a healthy process must not wait for the pool that its
+    // requests may have saturated.
+    let registry_pool = connect(&registry::registry_pool_config(&config.database))
+        .await
+        .map_err(|e| RunError::Database(e.to_string()))?;
+    let member = registry::member(
+        &registry_pool,
+        sagat_application::instances::InstanceKind::ControlPlane,
+        registry::CAPABILITIES,
+        None,
+    );
     // Install the metrics recorder before the first request so nothing is missed. Idle series are
     // forgotten when the page is rendered, so a process nobody scrapes needs this timer.
     let metrics_upkeep = spawn_metrics_upkeep(Metrics::global(), METRICS_UPKEEP_INTERVAL);
@@ -529,7 +544,8 @@ pub async fn serve_with_admin(
     let state = AppState::with_rate_limit(service, verifier, serve.rate_limit)
         .map_err(|e| config::rate_limit_error(config::TENANT_RATE_VARS, e))?
         .with_subject_rate_limit(serve.subject_rate_limit)
-        .map_err(|e| config::rate_limit_error(config::SUBJECT_RATE_VARS, e))?;
+        .map_err(|e| config::rate_limit_error(config::SUBJECT_RATE_VARS, e))?
+        .with_serving_gate(Arc::clone(member.gate()));
     // Workflow documents are validated and parsed once per immutable version, then kept.
     let codec: Arc<dyn IrCodec> = Arc::new(JsonIrCodec);
     let cache = DefinitionCache::new(codec, DEFINITION_CACHE_ENTRIES);
@@ -781,9 +797,13 @@ pub async fn serve_with_admin(
 
     // One shutdown signal drives both listeners.
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-    tokio::spawn(async move {
-        shutdown.await;
-        let _ = stop_tx.send(true);
+    let stop_tx = Arc::new(stop_tx);
+    tokio::spawn({
+        let stop_tx = Arc::clone(&stop_tx);
+        async move {
+            shutdown.await;
+            let _ = stop_tx.send(true);
+        }
     });
     let clock_sync = schedule_clock.map(|clock| {
         let stop = stop_rx.clone();
@@ -804,6 +824,13 @@ pub async fn serve_with_admin(
             }
         })
     });
+
+    // Register before the first request is served: the one transaction that takes the requirement epoch, checks what
+    // the platform requires of a control plane against what this binary can do, and writes the row. Until it has
+    // registered, and while the platform requires what this binary lacks, the gate is closed: every call but liveness
+    // is refused and readiness fails (FR-018-052).
+    let mut heartbeat =
+        tokio::spawn(registry::join(&member, serve.registry, stop_rx.clone()).await);
 
     // Public settings only; never the database URL.
     tracing::info!(
@@ -835,11 +862,22 @@ pub async fn serve_with_admin(
         }
         None => None,
     };
-    if let Some(tls) = serve.tls.clone() {
-        sagat_api_http::serve_tls(listener, app, serve.server, tls, stopped(stop_rx)).await?;
-    } else {
-        sagat_api_http::serve(listener, app, serve.server, stopped(stop_rx)).await?;
+    // The heartbeat is supervised: if it ends while the server runs, the server is stopped and the process fails.
+    let serving = async {
+        if let Some(tls) = serve.tls.clone() {
+            sagat_api_http::serve_tls(listener, app, serve.server, tls, stopped(stop_rx)).await
+        } else {
+            sagat_api_http::serve(listener, app, serve.server, stopped(stop_rx)).await
+        }
+    };
+    let served = registry::serve_until_the_heartbeat_ends(serving, &mut heartbeat, &stop_tx).await;
+    // However the server ended, the membership ends with it, and only now: the heartbeat goes on while the server
+    // drains (an activation in the grace window still counts this replica), then the row is deleted, not left to expire.
+    let _ = stop_tx.send(true);
+    if !heartbeat.is_finished() {
+        let _ = tokio::time::timeout(Duration::from_secs(5), &mut heartbeat).await;
     }
+    member.leave().await;
     if let Some(admin) = admin {
         let _ = admin.await;
     }
@@ -849,7 +887,9 @@ pub async fn serve_with_admin(
     if let Some(task) = clock_sync {
         task.abort();
     }
+    registry_pool.close().await;
     pool.close().await;
+    served?;
     Ok(())
 }
 

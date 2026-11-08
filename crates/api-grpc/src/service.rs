@@ -91,6 +91,15 @@ impl<St, S, C, E, R> WorkerGrpc<St, S, C, E, R> {
         self
     }
 
+    /// Refuses every call while `gate` is closed (`UNAVAILABLE`, with the reason `BINARY_CAPABILITY_MISSING` when the
+    /// platform requires a capability this binary lacks): the worker protocol of a process that may not serve
+    /// (`FR-018-052`). Another replica serves the worker.
+    #[must_use]
+    pub fn with_serving_gate(self, gate: Arc<sagat_application::instances::ServingGate>) -> Self {
+        self.admission.set_serving_gate(gate);
+        self
+    }
+
     fn blob_access(&self) -> Result<&BlobAccess, Status> {
         self.blobs
             .as_ref()
@@ -636,6 +645,11 @@ where
                                 break;
                             }
                         };
+                    if let Some(refusal) = admission.not_serving() {
+                        place.send(Err(api(&refusal)));
+                        producer_reason.store(7, Ordering::Release);
+                        break;
+                    }
                     let Some(claim_ticket) = admission.admit_discovery() else {
                         metrics::counter!(
                             "worker_task_streams_refused_total",
