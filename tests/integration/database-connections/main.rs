@@ -14,6 +14,7 @@ mod lake_grpc;
 mod lake_lease;
 mod lake_read;
 mod lake_resolve;
+mod lake_result_grpc;
 mod output;
 mod output_blobs;
 mod policies;
@@ -332,6 +333,8 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(lake_grpc::run(provider.clone())).await;
     progress.enter("the blobs of a lake step on the wire");
     Box::pin(lake_blob_grpc::run(provider.clone())).await;
+    progress.enter("the result of a SQL step written by a lake step, on the wire");
+    Box::pin(lake_result_grpc::run(provider.clone())).await;
     progress.enter("output::run");
     Box::pin(output::run(provider.clone())).await;
     progress.enter("output_blobs::run");

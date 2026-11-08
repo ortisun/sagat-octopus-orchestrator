@@ -3288,7 +3288,9 @@ The other fixes were wording:
   read (G035-059), so either the driver reads that blob and turns the rows into JSON values for `stage_inline` (then the document names the
   blob, for instance `{"databaseResult": {"blob": "<id>"}}`), or the server turns it into an NDJSON blob when it builds the input (then the
   runner never sees the source). *Exit condition:* decided with the conversion (G035-059) and T035-056; the corpus case "a database result is a
-  source this runner does not serve" becomes an accepted case and a refused one.
+  source this runner does not serve" becomes an accepted case and a refused one. *Narrowed (D035-145, 2026-11-08):* the second way, in its inline form: the server turns a result kept
+  inline (up to 256 KiB) into inline records at the lease. What remains of this gap is a result kept as a blob, which is refused by name; the first way (the runner reads the blob)
+  and a blob of NDJSON made by the server are both still open, and the reader keeps refusing `records.databaseResult`.
 - **D035-144 — A lake lease reads exactly the blobs its document names: the catalog's word, a pin per attempt, and a `ReadBlob` that asks the pin (slice R of D035-130; T035-056).**
   **Decided by: delegate**. Designed by an independent read-only pass over the code (2026-11-08), whose findings are the ground of this record; it is a trust boundary,
   so the steps below each carry their own tests and the last one an independent review before it is merged.
@@ -3382,3 +3384,30 @@ The other fixes were wording:
   collapsed). And the lease is checked when a read starts, so a download in flight goes on after a cancel or a lapse, for up to the transfer timeout; that is the ordinary `ReadBlob`
   too. *Exit condition:* a budget of refused reads per attempt (after N, answer as stale without a write), and cutting the stream when the lease ends, with the transfer limits of
   the blob service.
+- **D035-145 — A lake write takes the result a SQL step retained: the server makes the records at the lease (slice R6 of D035-130; T035-056; narrows G035-067).**
+  **Decided by: delegate**, but one part of it is a question of the owner (O035-008, below) and the default taken is stated. Designed from the code of 2026-11-08.
+  - *What was found.* Publication already holds that a `databaseResult` source names a SQL node that runs before the write (`workflow.rs`, `InvalidIcebergNode`), and the egress check
+    gives every result field `pii` (`lake_egress.rs`). The runner's reader refuses `records.databaseResult` by name (D035-121). The retained result is the typed document of
+    feature 017 (`columns`, `rows` of `{type, value}`, `affectedRows`, `truncated`), kept inline in the step output up to `MAX_PAYLOAD_BYTES` (256 KiB) and, above that, as a blob.
+  - *Decided.* (1) **The server turns the result into inline records when it makes the lease document** (`worker/lake_result.rs`, called by `named_records`), so the runner never sees
+    the source and its reader keeps refusing `records.databaseResult`: there is no new wire. (2) **A row is an object keyed by its column, and each value is the cell's own**: an
+    integer and a decimal stay the strings of their digits (which the host reads exactly, `docs/guides/iceberg-type-mapping.md`, and which a JSON number would not hold past 2^53, G035-070),
+    a timestamp and a date are text, a JSON value is itself, and a `binary` cell stays the typed cell, which is how the host reads a binary column. (3) **The closed codes, all
+    permanent** (a result does not change): a node that produced no output (it failed, or an error edge went round it), a document that is not a whole result, a truncated one, a row
+    of the wrong width or a member more are `DATABASE_RESULT_UNAVAILABLE`; a statement that selects no column, two columns of one name or a column of no name are
+    `DATABASE_CONFIGURATION_INVALID` (the author wrote them, and nothing can be written); a result kept as a blob is `DATABASE_CAPABILITY_UNAVAILABLE`, by name, until the lease reads
+    it. (4) **The read is audited once with the lease** (`database.result_read`, for the run, naming the node and no value, as reading the result through the API is); a lease that
+    is not granted reads nothing and records nothing. (5) **No new right is asked of the initiator**, which is the question below.
+  - *Done (test first, each seen failing).* The converter and `named_records`: 7 cases in `lake_result_records.rs` (the order and the kinds of value, the binary cell, no row, 11 refusals
+    with their codes, a node without output, a blob, and that whatever the validator of the platform accepts the converter reads or names), 11 hand mutations, all killed. The wire
+    (`lake_result_grpc.rs`): the SQL runner leases the statement, resolves its credentials and completes it with a typed result; the lake runner is leased the write with the rows as its
+    records (the digits of an integer past 2^53 intact, no credential in the lease), once-audited; a result of two columns of one name fails the write for good with its code and leases
+    nothing; a write with inline records records no read. 4 hand mutations of the audit, all killed. The old test that expected `DATABASE_CAPABILITY_UNAVAILABLE` for any result source
+    was replaced by the blob case.
+  - *Not done.* A result above the inline bound (a blob of JSON up to 4 MiB), which stays refused by name: G035-067. The container end to end (T035-062).
+- **O035-008** — Must the initiator (or the publisher) of a run also hold `database:result:read` for a lake write to take a SQL result? *Recommendation: no.* The result is read by the
+  platform, for the run, inside the authority the workflow was admitted with: the SQL step was admitted for the connection it queried, the lake connection admits the publisher and the
+  initiator, every field of a result is `pii` for the egress check so the connection's ceiling is `pii` (which took the reveal grant of the namespace to set), and the read is audited.
+  `database:result:read` is the right to *see* the result through the API, which a lake write does not give; ADR-0035 item 10 forbids a bulk export through that route. *Cost of yes:* a
+  check of that permission for the initiator at the lease (the principal is known there: `database_claim` already admits the initiator for the connection), and a refusal code for it. Decided here as
+  "no, and audited" until the owner says otherwise.

@@ -127,7 +127,13 @@ pub fn named_records<E: ExpressionEvaluator + ?Sized>(
             .map_err(|_| DatabaseFailure::Configuration)
             .and_then(named_blobs)
             .map(NamedRecords::Blobs),
-        RecordSource::DatabaseResult(_) => Err(DatabaseFailure::Capability),
+        // The result the SQL step retained, read from the run's own data: a node that produced none (it failed, or an error edge went
+        // around it) leaves nothing to write.
+        RecordSource::DatabaseResult(node) => data
+            .root_output(node)
+            .ok_or(DatabaseFailure::ResultUnavailable)
+            .and_then(super::lake_result::result_records)
+            .map(NamedRecords::Inline),
     }
 }
 

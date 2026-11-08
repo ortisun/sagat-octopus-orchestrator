@@ -14,6 +14,7 @@ mod connection_wire;
 mod errors;
 mod ir;
 mod lake_lease_document;
+mod lake_result_records;
 mod openapi;
 mod proto;
 mod receipts;

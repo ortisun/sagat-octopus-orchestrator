@@ -74,7 +74,13 @@ the runner starts, and a value outside its bounds stops the runner: nothing is d
 **A configuration with a `lake` section makes a lake runner: it serves the lake activity and no SQL**, and one without it is
 the SQL runner it has always been (D035-143). The runner's own side is built: it polls, resolves the connection, runs the attempt
 in the sandbox and reports. What is not built is the rest of the stack around it (compose and Helm, the container end to end, a
-database result as the source of records), so do not rely on it to write to a table yet.
+database result kept as a blob as the source of records), so do not rely on it to write to a table yet.
+
+**The result of a SQL step as records** (D035-145). A write that names the node of a SQL step takes the result that step retained: the server turns its rows into
+records (one object a row, keyed by the column, each value as the cell holds it; a binary cell stays the typed cell) when it leases the write, so the runner sees inline
+records and nothing else. The lease is audited as a read of the result (`database.result_read`, for the run, naming the node and no value). A statement that selects no
+column, or two columns of one name, fails the write for good (`DATABASE_CONFIGURATION_INVALID`); a node that produced no result, `DATABASE_RESULT_UNAVAILABLE`; a result kept as
+a blob (above 256 KiB) is refused by name (`DATABASE_CAPABILITY_UNAVAILABLE`, G035-067). Owners: the initiator is asked for no `database:result:read` (O035-008).
 
 **Record blobs** (D035-144). A step whose records are blobs is leased only when every blob is a committed output of a step of the same run and
 the descriptor in the run's data is the catalog's; the lease pins them to the attempt it grants, and the runner's `ReadBlob` reads exactly those, while

@@ -12,6 +12,7 @@ mod database;
 mod lake_complete;
 pub mod lake_input;
 pub mod lake_lease;
+pub mod lake_result;
 mod output;
 mod scoped;
 mod scoped_capabilities;
@@ -1526,6 +1527,42 @@ where
             ttl: self.settings.lease_ttl,
             attempt_timeout: timeout,
         });
+        // A lake write that takes the result a SQL step retained reads it for the run: audited once with the lease, as reading it through
+        // the API is, naming the node and no value (D035-145). The lease is the one place the result is read.
+        let result_read = instance
+            .path()
+            .is_root()
+            .then(|| tx.parts().0.node(instance.node()))
+            .flatten()
+            .and_then(sagat_domain::workflow::Node::iceberg_write)
+            .and_then(|write| match write.records() {
+                sagat_domain::database::RecordSource::DatabaseResult(source) => {
+                    Some(source.clone())
+                }
+                _ => None,
+            });
+        if let Some(source) = result_read {
+            let actor = Principal::new(
+                session.tenant_id,
+                sagat_domain::identity::Subject::parse(&session.subject)
+                    .map_err(|_| AppError::Internal)?,
+                Role::DatabaseRunner,
+            );
+            effects.audit = Some(
+                AuditRecord::by(
+                    &actor,
+                    AuditAction::DatabaseResultRead,
+                    ResourceType::Run,
+                    tx.info().run_id.to_string(),
+                    trace_id.map(str::to_owned),
+                    self.clock.now(),
+                )
+                .with_reason(format!(
+                    "node:{source} read by the lake write {}",
+                    instance.node()
+                )),
+            );
+        }
         let fence = if instance.path().is_root() {
             let node = instance.node();
             self.engine
