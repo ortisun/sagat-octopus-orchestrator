@@ -269,6 +269,46 @@ pub trait DatabaseResultValidator: Send + Sync {
     ) -> Result<(), InvalidDatabaseResult>;
 }
 
+/// What the server knows of the write a lake receipt must be about (feature 035, D035-142). Not what the runner says it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpectedReceipt<'a> {
+    /// The effect key of the step: the idempotency key of its task.
+    pub effect_key: &'a str,
+    /// The branch or tag the step commits to.
+    pub reference: &'a str,
+    pub mode: sagat_domain::database::WriteMode,
+}
+
+/// Why a receipt is not the one of the step. Never carries the receipt: a value of it is not safe to print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidLakeReceipt {
+    #[error("the receipt is larger than a receipt can be")]
+    TooLarge,
+    #[error("the receipt does not hold as typed fields")]
+    Malformed,
+    #[error("the receipt is of a kind an Iceberg write does not produce")]
+    Kind,
+    #[error("the receipt reports an outcome an Iceberg write does not end with")]
+    Outcome,
+    #[error("the receipt is not about this step")]
+    Mismatch,
+}
+
+/// Receipt syntax belongs to an adapter. The server never stores what the runner sent: it reads it into typed fields that accept
+/// only what the contract names, checks it against the step, and stores the receipt built again from those fields.
+pub trait LakeReceiptCodec: Send + Sync {
+    /// The canonical bytes of the receipt of an Iceberg write, or the reason it is not the one of the step.
+    ///
+    /// # Errors
+    /// [`InvalidLakeReceipt`] for a receipt that is too large, does not hold as typed fields, is of another kind or outcome, or
+    /// names another effect key, ref or mode than `expected`.
+    fn rebuild(
+        &self,
+        receipt: &[u8],
+        expected: &ExpectedReceipt<'_>,
+    ) -> Result<Vec<u8>, InvalidLakeReceipt>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

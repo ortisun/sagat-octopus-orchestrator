@@ -22,6 +22,8 @@ mod diff;
 mod evaluator;
 mod lake;
 mod lake_egress;
+pub mod lake_receipt;
+pub use lake_receipt::JsonLakeReceiptCodec;
 mod operation_evaluator;
 mod schema;
 

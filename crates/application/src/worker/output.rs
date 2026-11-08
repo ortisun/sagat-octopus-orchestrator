@@ -163,7 +163,21 @@ where
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut database_secret_in_output = None;
-        if Self::managed_database(&mut tx, task) {
+        let managed = Self::managed_kind(&mut tx, task);
+        // A lake step reports a small receipt inline. It is read into typed fields and written again; the run keeps that, and
+        // nothing of the bytes that were sent. (A receipt has no member that can hold text the server did not supply, which is
+        // why it is not scanned for the secrets of the step as a SQL result is: D035-142.)
+        let lake_receipt = if managed == Some(sagat_domain::database::ManagedKind::Lake) {
+            if blob.is_some() {
+                return Err(AppError::NotAllowed(
+                    "a lake step reports its receipt inline",
+                ));
+            }
+            Some(self.lake_receipt(&mut tx, task, output).await?)
+        } else {
+            None
+        };
+        if managed == Some(sagat_domain::database::ManagedKind::Sql) {
             if blob
                 .as_ref()
                 .is_some_and(|blob| blob.content_type != "application/json")
@@ -200,6 +214,7 @@ where
             }
             database_secret_in_output = contains.then_some(before.0.meta.name);
         }
+        let output = lake_receipt.as_deref().unwrap_or(output);
         if blob.is_some() {
             if !task.instance.path().is_root() {
                 return Err(AppError::NotAllowed(

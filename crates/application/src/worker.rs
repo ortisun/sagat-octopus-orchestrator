@@ -9,6 +9,7 @@
 //! have happened (hence idempotency keys).
 
 mod database;
+mod lake_complete;
 pub mod lake_input;
 pub mod lake_lease;
 mod output;
@@ -571,6 +572,8 @@ pub struct WorkerService<S, C, E, R> {
     vault: Option<crate::secrets::SecretReader>,
     database_credentials: Option<Arc<dyn crate::database::DatabaseCredentialsCodec>>,
     database_results: Option<Arc<dyn crate::database::DatabaseResultValidator>>,
+    /// Rebuilds the receipt of a lake step; without it a lake step cannot be completed (feature 035, D035-142).
+    lake_receipts: Option<Arc<dyn crate::database::LakeReceiptCodec>>,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -603,6 +606,7 @@ where
             vault: None,
             database_credentials: None,
             database_results: None,
+            lake_receipts: None,
         }
     }
 
@@ -623,6 +627,17 @@ where
     ) -> Self {
         self.database_credentials = Some(credentials);
         self.database_results = Some(results);
+        self
+    }
+
+    /// The codec that rebuilds the receipt of an Iceberg write. Without it the completion of a lake step is refused: the server
+    /// stores a receipt it built, never the bytes a runner sent.
+    #[must_use]
+    pub fn with_lake_receipts(
+        mut self,
+        receipts: Arc<dyn crate::database::LakeReceiptCodec>,
+    ) -> Self {
+        self.lake_receipts = Some(receipts);
         self
     }
 
@@ -2353,13 +2368,21 @@ where
         Ok(Some(parse_ack(&stored, true, task.run_id)))
     }
 
+    fn managed_kind<Tx: RunTx>(
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Option<sagat_domain::database::ManagedKind> {
+        if !task.instance.path().is_root() {
+            return None;
+        }
+        tx.parts()
+            .0
+            .node_for_instance(task.instance)
+            .and_then(sagat_domain::workflow::Node::managed_kind)
+    }
+
     fn managed_database<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
-        task.instance.path().is_root()
-            && tx
-                .parts()
-                .0
-                .node_for_instance(task.instance)
-                .is_some_and(|n| n.managed_kind().is_some())
+        Self::managed_kind(tx, task).is_some()
     }
 
     fn database_write<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {

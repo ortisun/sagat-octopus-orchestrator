@@ -393,6 +393,21 @@ impl PgRunTx {
         })
     }
 
+    /// Whether the current attempt of a lake step holds a pin for every secret its connection names (feature 035, D035-142).
+    pub(super) async fn lake_resolved(&mut self, node: &NodeId) -> Result<bool, StoreError> {
+        let connection = self.database_connection(node).await?;
+        let slots = connection.config.secret_slots();
+        if slots.is_empty() {
+            return Ok(false);
+        }
+        for (role, _) in slots {
+            if self.database_pinned_secret(node, role).await?.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     pub(super) async fn database_pin(
         &mut self,
         node: &NodeId,

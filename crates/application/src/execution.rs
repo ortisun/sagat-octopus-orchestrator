@@ -1206,6 +1206,15 @@ pub trait RunTx: Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }
 
+    /// Whether the current attempt of a lake step holds a pin for every secret its connection names: whether it resolved
+    /// its credentials. A step that did not cannot have written, and is not completed.
+    fn lake_attempt_resolved(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
     /// Frozen connection/operation ceilings for retained output. Pause/revocation blocks new
     /// capability delivery, but cannot discard evidence of an already delivered attempt.
     fn database_result_limits(

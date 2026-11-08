@@ -991,6 +991,32 @@ async fn validator_and_revision_rejections_are_stable_and_do_not_schedule_work()
     assert_eq!(counts, (1, 2, 1, 0));
 }
 
+/// What an error body says, without the trace identifier it carries. That identifier is thirty-two random hexadecimal digits, so a
+/// short number the test looks for (the balance it tried to write) is spelled by it about once in a hundred and thirty runs: a
+/// check of the whole body is a flaky test, not a check of what leaked. Pull request 168 failed on it, `777` among the digits.
+fn what_a_body_says(body: &Value) -> String {
+    let mut said = body.clone();
+    if let Some(members) = said.as_object_mut() {
+        members.remove("traceId");
+    }
+    said.to_string()
+}
+
+#[test]
+fn a_trace_identifier_that_spells_a_number_is_not_the_body_saying_it() {
+    let body = json!({"code": "INTERNAL", "message": "internal error", "traceId": "0af7651916cd43dd8448eb2777c80319"});
+    assert!(
+        body.to_string().contains("777"),
+        "the whole body does contain it, which is what made the check flaky"
+    );
+    assert!(!what_a_body_says(&body).contains("777"));
+    let leaking = json!({"code": "INTERNAL", "message": "balance 777 refused", "traceId": "0af7651916cd43dd8448eb2c80319"});
+    assert!(
+        what_a_body_says(&leaking).contains("777"),
+        "and a body that does say it is still found"
+    );
+}
+
 #[tokio::test]
 async fn outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry() {
     let fixture = fixture("http-declared-rollback").await;
@@ -1020,7 +1046,7 @@ async fn outbox_failure_rolls_back_the_http_update_and_the_same_key_can_retry() 
     assert_eq!(failed.headers()["cache-control"], "no-store");
     let failed = json_of(failed).await;
     assert_eq!(failed["code"], "INTERNAL");
-    assert!(!failed.to_string().contains("777"));
+    assert!(!what_a_body_says(&failed).contains("777"));
     assert!(!failed.to_string().contains("injected"));
 
     let rolled_back: (i64, i64, i64, i64, i64) = sqlx::query_as(
