@@ -475,6 +475,61 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
             .version,
         1
     );
+    // The fence on the profile (D035-139): the resolve is refused to a runner whose binding is of another profile, or whose session does
+    // not offer the activity of the step, though nothing else changed. Registration cannot produce either state, so the rows are
+    // changed by hand and put back; the refusal is the one a missing grant gives.
+    let tenant = w.admin.tenant_id().as_uuid();
+    let subject = runner.subject().as_str().to_owned();
+    let set_profile = |profile: &'static str| {
+        let (pool, subject) = (w.db.pool.clone(), subject.clone());
+        async move {
+            sqlx::query("UPDATE worker_bindings SET profile=$3 WHERE tenant_id=$1 AND subject=$2")
+                .bind(tenant)
+                .bind(subject)
+                .bind(profile)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    let set_activities = |activities: &'static [&'static str]| {
+        let (pool, subject) = (w.db.pool.clone(), subject.clone());
+        async move {
+            sqlx::query(
+                "UPDATE worker_sessions SET activities=$3 WHERE tenant_id=$1 AND subject=$2",
+            )
+            .bind(tenant)
+            .bind(subject)
+            .bind(activities)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    set_profile("lake").await;
+    let refused = w.workers.resolve_database(&runner, &reference, None).await;
+    assert!(
+        matches!(refused, Err(AppError::NotBound)),
+        "a SQL step is not resolved for a runner whose binding is of the lake profile: {refused:?}"
+    );
+    set_profile("database").await;
+    set_activities(&["sagat.database.iceberg.write"]).await;
+    let refused = w.workers.resolve_database(&runner, &reference, None).await;
+    assert!(
+        matches!(refused, Err(AppError::NotBound)),
+        "nor for a session that offers the lake activity: {refused:?}"
+    );
+    set_activities(&["sagat.database.postgresql"]).await;
+    assert_eq!(
+        w.workers
+            .resolve_database(&runner, &reference, None)
+            .await
+            .unwrap()
+            .credential
+            .version,
+        1,
+        "put back, the same runner resolves again"
+    );
     // The rollback is refused while a role other than `primary` is pinned (on a connection of its own: a refused revert leaves
     // sqlx's migration lock behind, and the next rollback would wait for it).
     let mut connection = w.db.pool.acquire().await.unwrap();

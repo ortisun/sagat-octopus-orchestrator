@@ -106,6 +106,22 @@ pub fn managed_capabilities_allowed(role: Role, activities: &[String], minor: u3
     }
 }
 
+/// Whether the credentials of a step of `kind` may be handed to a session that offers `offered`, whose binding has the rows of
+/// `bindings` (their profiles, one per row): the session offers the managed activities of the profile of the kind, and the binding
+/// is of that profile alone. A binding with no row, or with rows that disagree, is not a binding of the profile. Registration and
+/// the lease already reach only such a session; this is the check in the transaction that delivers the secret, which does not trust
+/// that the rows it reads are the ones registration saw (D035-139).
+#[must_use]
+pub fn profile_fence(
+    kind: sagat_domain::database::ManagedKind,
+    offered: &[String],
+    bindings: &[BindingProfile],
+) -> bool {
+    managed_profile(offered) == Some(kind.profile())
+        && !bindings.is_empty()
+        && bindings.iter().all(|profile| *profile == kind.profile())
+}
+
 /// The profile a registration is for: `database` when it offers `sagat.database.postgresql` alone, `lake` when it offers
 /// `sagat.database.iceberg.write` alone, and `None` for anything else (an empty list, a mix, an ordinary activity, an
 /// activity the server does not serve yet). The binding of the identity must carry the same profile (D035-057).
