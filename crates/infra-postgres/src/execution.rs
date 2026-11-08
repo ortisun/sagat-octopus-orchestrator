@@ -3984,6 +3984,12 @@ impl RunTx for PgRunTx {
     ) -> Result<sagat_application::database::LakeLeaseFacts, StoreError> {
         self.lake_facts(node).await
     }
+    async fn lake_record_blobs(
+        &mut self,
+        ids: &[sagat_domain::blobs::BlobId],
+    ) -> Result<Vec<sagat_domain::blobs::BlobDescriptor>, StoreError> {
+        self.lake_blob_descriptors(ids).await
+    }
     async fn lake_attempt_resolved(&mut self, node: &NodeId) -> Result<bool, StoreError> {
         self.lake_resolved(node).await
     }

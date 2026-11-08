@@ -7,6 +7,7 @@ mod consumers;
 mod executor;
 mod key_rotation;
 mod lake;
+mod lake_blobs;
 mod lake_grpc;
 mod lake_lease;
 mod lake_resolve;
@@ -297,6 +298,8 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(lake_resolve::run(&w, &service, provider.clone())).await;
     progress.enter("the lease of a lake step");
     Box::pin(lake_lease::run(&w)).await;
+    progress.enter("the catalog's word on the blobs of a lake lease");
+    Box::pin(lake_blobs::run(&w)).await;
     progress.enter("ad_hoc::run");
     Box::pin(ad_hoc::run(&w)).await;
     progress.enter("admission::run");

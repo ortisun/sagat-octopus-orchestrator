@@ -1188,6 +1188,19 @@ pub trait RunTx: Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }
 
+    /// What the catalog says, inside this transaction, about the blobs of a record source (feature 035, R2). Only a blob this run's
+    /// own steps committed as an output is returned, with the descriptor the catalog holds; every other case (another run, another
+    /// namespace, another tenant, a run input, an upload not committed, a deleted blob, an id that does not exist) returns nothing,
+    /// all the same, so a descriptor in a JSON value proves nothing. A plain read: the lease holds the tenant's lock and does no
+    /// object I/O. Unsupported stores fail closed.
+    fn lake_record_blobs(
+        &mut self,
+        _ids: &[sagat_domain::blobs::BlobId],
+    ) -> impl Future<Output = Result<Vec<sagat_domain::blobs::BlobDescriptor>, StoreError>> + Send
+    {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
     /// Selected immutable connection and credential metadata; no provider I/O occurs here.
     fn database_input(
         &mut self,
