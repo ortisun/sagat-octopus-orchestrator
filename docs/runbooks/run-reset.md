@@ -209,7 +209,7 @@ take of a round, 1 to 1,000, default 10, so that one tenant's entries cannot fil
 `422 RESET_CANCEL_SOURCE_NOT_AVAILABLE` and nothing is cancelled; **a retry of a request that was accepted is answered from the
 register whatever the setting is now**.
 
-**Order of the rollout (ADR-0079): the engine first, then the control plane; to turn it off, the control plane first.** The
+**Order of the rollout (ADR-0080): the engine first, then the control plane; to turn it off, the control plane first.** The
 dangerous state is the control plane on and every engine off: a request is then accepted and answers `202`, **the customer's run
 is cancelled**, and nothing makes the replacement until an engine has the flag on. Nothing is lost (the entry waits in the
 register, counted against the limit): `scheduler_lag_seconds{pass="resets"}` grows once the sources have ended (the alert

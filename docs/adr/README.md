@@ -18,4 +18,4 @@ Recovery refinement: [ADR-0076](ADR-0076-compensation-failure-and-uncertain-effe
 
 Specification workflow: [ADR-0077](ADR-0077-egm-replaces-spec-kit.md) — proposed; EGM design docs replace Spec Kit (Constitution 4.0.0).
 
-Reset of a run that is still open: [ADR-0079](ADR-0079-cancel-source-is-switched-on-per-process-until-the-capability-registry-exists.md) — proposed; `CANCEL_SOURCE` is switched on per process, engine first, until the instance-capability registry of ADR-0050 decision 9 exists, and records the order of locks of its request (feature 018, T018-057).
+Reset of a run that is still open: [ADR-0080](ADR-0080-cancel-source-is-switched-on-per-process-until-the-capability-registry-exists.md) — proposed; `CANCEL_SOURCE` is switched on per process, engine first, until the instance-capability registry of ADR-0050 decision 9 exists, and records the order of locks of its request (feature 018, T018-057).

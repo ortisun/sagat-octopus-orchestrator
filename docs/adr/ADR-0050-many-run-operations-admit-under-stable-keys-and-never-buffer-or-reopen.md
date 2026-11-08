@@ -94,7 +94,7 @@ be delivered at creation without a buffer; `RunState::replay` rebuilds state for
    | 7 | 022 semaphores by (pool, scope, group, key) | ADR-0056 decision 2 |
    | 8 | 8a bookkeeping rows of a transaction whose subject is one existing run (018 batch job → item, obligation, pending-reset insert); 8b quota, rate and usage rows last, including 025 `ai_usage_daily` and the deferred content flush (ADR-0027) | usage rows are always last |
 
-   Recorded deviation (aligned, T018-057): the `CANCEL_SOURCE` request takes its source row (3R), then the pending-resets quota lock (8b), then inserts the entry (8a), then writes the receipt it read in slot 2; no cycle, argued in ADR-0079 decision 5.
+   Recorded deviation (aligned, T018-057): the `CANCEL_SOURCE` request takes its source row (3R), then the pending-resets quota lock (8b), then inserts the entry (8a), then writes the receipt it read in slot 2; no cycle, argued in ADR-0080 decision 5.
 
    Transitions on an existing run (claims, completions, approvals, stream appends, operation messages,
    agent rows) start at slot 3R with the run (chain before run), then take the rows their own ADR lists

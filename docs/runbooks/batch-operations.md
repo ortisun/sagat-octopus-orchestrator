@@ -28,7 +28,7 @@ A batch job applies **one action to many runs, one run at a time**, at a rate, i
 
 ## 3. Turning it on
 
-Off by default, in two places that **must agree**. Turn it on in the engines first and then in the control plane, and turn it off in the control plane first: the same order as the switch of the reset of an open run (ADR-0079), so that every job that is accepted has an engine to run it. The registry that would refuse a mismatch is not built (ADR-0050 decision 9):
+Off by default, in two places that **must agree**. Turn it on in the engines first and then in the control plane, and turn it off in the control plane first: the same order as the switch of the reset of an open run (ADR-0080), so that every job that is accepted has an engine to run it. The registry that would refuse a mismatch is not built (ADR-0050 decision 9):
 
 | Where | Setting | Default | What it does |
 |---|---|---|---|

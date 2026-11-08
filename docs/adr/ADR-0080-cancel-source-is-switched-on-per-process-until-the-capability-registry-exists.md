@@ -1,4 +1,4 @@
-# ADR-0079: `CANCEL_SOURCE` is switched on per process, engine first, until the instance-capability registry exists
+# ADR-0080: `CANCEL_SOURCE` is switched on per process, engine first, until the instance-capability registry exists
 
 **Status:** Proposed (2026-11-06)
 **Decided by:** agent (task T018-057), after the correctness, security and architecture reviews of 2026-11-06; the owner has not accepted it. Whether the feature may be on by default before the registry exists is the owner's (G1989).
