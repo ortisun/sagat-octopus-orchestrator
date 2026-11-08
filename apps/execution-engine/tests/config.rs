@@ -87,6 +87,46 @@ fn a_mistyped_schedule_setting_is_refused_not_guessed() {
 }
 
 #[test]
+fn batch_jobs_are_stored_but_run_nowhere_until_the_flag_is_set() {
+    let config = parse(&[]).expect("config");
+    assert!(!config.batches_enabled, "off by default");
+    assert_eq!(config.batches.batch, 100);
+    assert_eq!(config.batches.round_actions, 100);
+    assert_eq!(config.batch_poll, Duration::from_secs(1));
+
+    let on = parse(&[
+        ("SAGAT_BATCHES_ENABLED", "true"),
+        ("SAGAT_BATCHES_BATCH", "250"),
+        ("SAGAT_BATCHES_ROUND_ACTIONS", "1000"),
+        ("SAGAT_BATCHES_POLL_MS", "400"),
+    ])
+    .expect("config");
+    assert!(on.batches_enabled);
+    assert_eq!(on.batches.batch, 250);
+    assert_eq!(on.batches.round_actions, 1000);
+    assert_eq!(on.batch_poll, Duration::from_millis(400));
+}
+
+#[test]
+fn a_mistyped_batch_setting_is_refused_not_guessed() {
+    for (name, value) in [
+        ("SAGAT_BATCHES_ENABLED", "maybe"),
+        ("SAGAT_BATCHES_BATCH", "0"),
+        ("SAGAT_BATCHES_BATCH", "5001"),
+        ("SAGAT_BATCHES_ROUND_ACTIONS", "0"),
+        ("SAGAT_BATCHES_ROUND_ACTIONS", "1001"),
+        ("SAGAT_BATCHES_POLL_MS", "0"),
+        ("SAGAT_BATCHES_POLL_MS", "soon"),
+    ] {
+        let error = parse(&[(name, value)]).expect_err("refused");
+        assert!(
+            error.to_string().contains(name),
+            "{name}={value} was refused without naming the variable: {error}"
+        );
+    }
+}
+
+#[test]
 fn worker_budgets_are_larger_than_the_rest_api_s_but_finite() {
     let config = parse(&[]).expect("config");
     assert!(config.rate_limit.per_second >= 1000.0 && config.rate_limit.per_second.is_finite());

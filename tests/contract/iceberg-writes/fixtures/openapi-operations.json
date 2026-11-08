@@ -45,7 +45,7 @@
     "GET /namespaces/{namespaceId}/publication-policy": "257ae55b051cb593fd0714148e93c2c5dc4c31cef1bc2bad93c66c3ad99045ed",
     "GET /namespaces/{namespaceId}/quotas": "280b31d12f46958bf18830c8ad723701bf811f1523e573a7f5cc6ed07746d6f8",
     "GET /namespaces/{namespaceId}/runs/{runId}/database-results/{nodeId}": "af74c3c3b7b8e7f31267469e42662739c4abeddea6c7d58c8945e69c4abb2700",
-    "GET /namespaces/{namespaceId}/schedules": "11463e2c361ab93757e97f854dc617717c7623acbb56d4584eba300bd50216cf",
+    "GET /namespaces/{namespaceId}/schedules": "1ea962681fc2596e7a58f595f0da87ed21bf0d9de61e4d0c4d9842f155d1d29a",
     "GET /namespaces/{namespaceId}/schedules/{scheduleId}": "b299f6e8d9425ec6a2e4a6492fd3e73e2d225c95a35f988dbebb34a15f6c4e1a",
     "GET /namespaces/{namespaceId}/schedules/{scheduleId}/backfills": "c1e597f608feeb2009e1fb0feef5d1267ba0e01a8b6d99f07f1b13081aab7cfa",
     "GET /namespaces/{namespaceId}/script-executions": "530ead776b19a4f2025e71e61e67ce84db9da7ff1554eaff3f14f2fbd5d3e0dd",

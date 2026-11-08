@@ -44,6 +44,8 @@ tags:
     description: Quotas, worker bindings, secrets and egress policy of a tenant or namespace (feature 009).
   - name: Schedules
     description: Schedules that start runs at calendar, cron and interval times, with overlap, catch-up and pause policies (feature 018).
+  - name: Batch operations
+    description: Durable, rate-limited batch jobs that apply one action to many runs, one at a time and with a count of what became of each (feature 018).
   - name: Versions
     description: Approvals before a publication, the active version of a workflow and its history, and promotion between environments (feature 011).
 paths:
@@ -3741,11 +3743,15 @@ paths:
       tags: [Schedules]
       x-implemented: '018'
       description: |
-        Needs `schedule:read`. Never returns the input of the runs, only its digest.
+        Needs `schedule:read`. Never returns the input of the runs, only its digest. Every filter given has to hold; the order and the cursor are those of the listing without them, so a page ends where the next begins. A value that is not one of the listed ones is `400`.
       parameters:
         - {$ref: '#/components/parameters/NamespaceId'}
         - {$ref: '#/components/parameters/Cursor'}
         - {$ref: '#/components/parameters/Limit'}
+        - {name: state, in: query, description: 'A deleted schedule is never listed.', schema: {type: string, enum: [ACTIVE, PAUSED]}}
+        - {name: origin, in: query, description: 'API: written through the API. TRIGGER: kept by a cron trigger of a published workflow.', schema: {type: string, enum: [API, TRIGGER]}}
+        - {name: workflowId, in: query, description: 'The workflow the schedule starts (its current revision).', schema: {type: string, format: uuid}}
+        - {name: name, in: query, description: 'Names that start with this text.', schema: {type: string, maxLength: 128}}
       responses:
         '200': {description: 'A page of schedules', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SchedulePage'}}}}
         '400': {$ref: '#/components/responses/BadRequest'}
@@ -3939,6 +3945,29 @@ paths:
         '429': {$ref: '#/components/responses/QuotaExceeded'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/actions:
+    get:
+      operationId: listScheduleActions
+      summary: The decisions a schedule has made, newest first
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:read`. Every nominal time the schedule acted on has a decision (a run started, a time buffered, skipped, coalesced or missed), whether or not it started a run. Ordered by the instant of the decision, then by the key of the action, so a page ends where the next one begins. An outcome this version does not know is "another outcome".
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: outcome, in: query, schema: {$ref: '#/components/schemas/ScheduleActionOutcome'}}
+      responses:
+        '200': {description: 'A page of decisions', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleActionPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /namespaces/{namespaceId}/schedules/{scheduleId}/backfills:
     get:
       operationId: listScheduleBackfills
@@ -4007,6 +4036,151 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/batch-operations/preview:
+    post:
+      operationId: previewBatchOperation
+      summary: Count what a selector matches; changes nothing
+      tags: [Batch operations]
+      x-implemented: '018'
+      description: |
+        Needs `run:batch` and `run:read`. Counts the runs the selector matches up to `maxItems` (a count over `maxItems` is `capped`) and returns a sample of 20 ids; it reads for at most five seconds. A selector names a structured `filter`, a list of `runIds` or (while the query language of feature 020 is off) a `query`, which is refused with `QUERY_UNSUPPORTED_OPERATOR`. A selector that is malformed or over its ceiling is `BATCH_SELECTOR_INVALID`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false, required: [selector], properties: {selector: {$ref: '#/components/schemas/BatchSelector'}, maxItems: {type: integer, minimum: 1, maximum: 100000, default: 10000}}}
+      responses:
+        '200': {description: 'What the selector matches', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BatchPreview'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/batch-operations:
+    get:
+      operationId: listBatchOperations
+      summary: Batch jobs of a namespace, newest first
+      tags: [Batch operations]
+      x-implemented: '018'
+      description: |
+        Needs `run:read`.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: state, in: query, schema: {$ref: '#/components/schemas/BatchJobState'}}
+      responses:
+        '200': {description: 'A page of jobs', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BatchJobPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createBatchOperation
+      summary: Create a durable, rate-limited batch job
+      tags: [Batch operations]
+      x-implemented: '018'
+      description: |
+        Needs `run:batch` and every permission of the single action. Counts against `batch_jobs` (a namespace) and `tenant_batch_jobs` (a tenant). The job selects the runs that existed when it was created, waits for the transactions that were open then to end, and applies the action to one run at a time at no more than `itemsPerSecond`; each item is its own transaction under the key `batch:{job}:{run}`, so a repeated step changes nothing twice. The signal payload or update arguments are kept as content and never returned, nor is their digest. The keys that start with `batch:` or `schedule:` are the platform's own and are refused as an `Idempotency-Key`. A refusal names `details.reason` (`BATCH_SELECTOR_INVALID`, `BATCH_ACTION_PARAMETERS`, `BATCH_ACTION_UNAVAILABLE`, `BATCH_LIMITS_INVALID`, `BATCH_REASON_INVALID`, `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE`, `BATCH_SELECTOR_UNSUPPORTED`, `QUERY_UNSUPPORTED_OPERATOR`) and, where it can, `details.field` as a JSON pointer. A request sent again with the same key and body is answered with the first job.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BatchCreateRequest'}
+      responses:
+        '202': {description: 'The job, accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BatchJob'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/QuotaExceeded'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/batch-operations/{batchId}:
+    get:
+      operationId: getBatchOperation
+      summary: A batch job with its counters
+      tags: [Batch operations]
+      x-implemented: '018'
+      description: |
+        Needs `run:read`. The counters equal the outcomes of the items.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/BatchId'}
+      responses:
+        '200': {description: 'The job', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BatchJob'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/batch-operations/{batchId}/cancel:
+    post:
+      operationId: cancelBatchOperation
+      summary: Stop admitting items; nothing applied is undone
+      tags: [Batch operations]
+      x-implemented: '018'
+      description: |
+        Needs `run:batch`. The item in flight finishes, the items that were waiting become `CANCELLED`, and what was applied stays applied. Asking twice is asking once. A job that already ended is `409` `BATCH_NOT_CANCELLABLE`. The reason is checked (8 to 2000 characters of plain text) and kept in the audit record.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/BatchId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false, required: [reason], properties: {reason: {type: string, minLength: 8, maxLength: 2000}}}
+      responses:
+        '202': {description: 'The job, being cancelled', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BatchJob'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/batch-operations/{batchId}/items:
+    get:
+      operationId: listBatchItems
+      summary: The items of a batch job, in order
+      tags: [Batch operations]
+      x-implemented: '018'
+      description: |
+        Needs `run:read`. An item shows what became of one run: its state, a closed reason for a skip or a deferral, the `Error.code` of a failure, and the run a rerun created.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/BatchId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: state, in: query, schema: {$ref: '#/components/schemas/BatchItemState'}}
+      responses:
+        '200': {description: 'A page of items', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/BatchItemPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
 components:
   securitySchemes:
     webhookHmac: {type: apiKey, in: header, name: X-Octopus-Signature, description: 'Required only for endpoints configured with the HMAC profile.'}
@@ -4055,6 +4229,11 @@ components:
       schema: {type: integer, minimum: 1, maximum: 200, default: 50}
     ScheduleId:
       name: scheduleId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    BatchId:
+      name: batchId
       in: path
       required: true
       schema: {type: string, format: uuid}
@@ -4109,7 +4288,7 @@ components:
       name: resource
       in: path
       required: true
-      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations, schedules, schedule_backfills]}
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations, schedules, schedule_backfills, batch_jobs, tenant_batch_jobs]}
     ActivityName:
       name: activity
       in: path
@@ -5835,13 +6014,15 @@ components:
         database_connections 100/1000 (including paused), database_concurrency 16/64,
         tenant_database_concurrency 64/256, secret_provider_operations 32/128.
         Schedules (feature 018) are schedules 200/10000, counting active and paused ones, and
-        schedule_backfills 4/16, counting backfills that have not finished.
+        schedule_backfills 4/16, counting backfills that have not finished. Batch jobs (feature
+        018) are batch_jobs 2/16 in a namespace and tenant_batch_jobs 8/64 in a tenant, counting
+        the jobs that have not finished.
         Zero disables new admission for count/rate/retention resources, never means unlimited.
         Lowering a limit does not erase retained content or rewrite existing expiry.
       type: object
       required: [resource, limit, source, ceiling]
       properties:
-        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations, schedules, schedule_backfills]}
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations, schedules, schedule_backfills, batch_jobs, tenant_batch_jobs]}
         limit: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624}
         source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing; iteration_concurrency then remains disabled, while other resources use their platform default up to the ceiling.'}
         ceiling: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
@@ -7185,6 +7366,111 @@ components:
         start: {type: string, format: date-time}
         end: {type: string, format: date-time, description: 'Exclusive; not after now.'}
         overlap: {$ref: '#/components/schemas/ScheduleOverlapPolicy'}
+    BatchSelector:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [filter]
+          properties:
+            filter:
+              type: object
+              additionalProperties: false
+              properties:
+                workflowId: {type: string, format: uuid}
+                versionId: {type: string, format: uuid}
+                status: {type: array, maxItems: 13, items: {type: string}}
+                origin: {type: string}
+                scheduleId: {type: string, format: uuid}
+                createdAfter: {type: string, format: date-time}
+                createdBefore: {type: string, format: date-time}
+                businessIdPrefix: {type: string, minLength: 1, maxLength: 200, description: 'Not matched yet: refused with BATCH_SELECTOR_UNSUPPORTED until business ids are bound to runs.'}
+        - type: object
+          additionalProperties: false
+          required: [runIds]
+          properties:
+            runIds: {type: array, minItems: 1, maxItems: 1000, uniqueItems: true, items: {type: string, format: uuid}}
+        - type: object
+          additionalProperties: false
+          required: [query]
+          description: Feature 020 RunSelector query; refused with 422 QUERY_UNSUPPORTED_OPERATOR while 020's capability is off.
+          properties:
+            query: {type: string, maxLength: 4096}
+    BatchAction: {type: string, enum: [CANCEL, SIGNAL, UPDATE, RERUN, RETRY_STEP, PAUSE, RESUME, MARK_MANUAL_REVIEW, REPIN], description: 'Grows only. UPDATE and REPIN are refused with 422 BATCH_ACTION_UNAVAILABLE in this build: a declared update has no single-run use case a batch can call yet, and REPIN exists only when feature 019 is enabled.'}
+    BatchCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [selector, action, reason]
+      properties:
+        selector: {$ref: '#/components/schemas/BatchSelector'}
+        action: {$ref: '#/components/schemas/BatchAction'}
+        signal: {type: object, additionalProperties: false, required: [name, payload], properties: {name: {type: string, minLength: 1, maxLength: 128}, payload: {type: object}}}
+        update: {type: object, additionalProperties: false, required: [name], properties: {name: {type: string}, args: {}}}
+        stepId: {type: string, description: RETRY_STEP and MARK_MANUAL_REVIEW; a root step of the workflow.}
+        instancePath: {type: array, maxItems: 8, items: {$ref: '#/components/schemas/ApprovalScope'}, description: 'Not supported yet: a non-empty path is refused with BATCH_ACTION_PARAMETERS.'}
+        businessId: {type: string, enum: [KEEP, DROP], default: KEEP, description: RERUN only.}
+        repin: {type: object, description: REPIN only (feature 019); the action is unavailable while that feature is off.}
+        reason: {type: string, minLength: 8, maxLength: 2000, description: 'Plain text, trimmed: no control character, a new line included. It is kept with the job.'}
+        maxItems: {type: integer, minimum: 1, maximum: 100000, default: 10000}
+        itemsPerSecond: {type: number, exclusiveMinimum: 0, maximum: 200, default: 20}
+    BatchPreview:
+      type: object
+      required: [matched, capped, sample]
+      properties:
+        matched: {type: integer, minimum: 0}
+        capped: {type: boolean, description: More than maxItems matched.}
+        sample: {type: array, maxItems: 20, items: {type: string, format: uuid}}
+    BatchJobState: {type: string, enum: [SELECTING, RUNNING, CANCELLING, COMPLETED, CANCELLED, FAILED]}
+    BatchJob:
+      type: object
+      required: [batchId, action, state, createdBy, createdAt, counts]
+      properties:
+        batchId: {type: string, format: uuid}
+        action: {$ref: '#/components/schemas/BatchAction'}
+        state: {$ref: '#/components/schemas/BatchJobState'}
+        failureReason: {type: [string, 'null'], enum: [AUTHORITY_REVOKED, SELECTION_FAILED, null]}
+        createdBy: {type: string}
+        hasPayload: {type: boolean, description: 'Whether the job carries a signal payload or update arguments. Neither the value nor its digest is returned: a digest would let a reader of the job confirm a guess of a payload they may not read.'}
+        maxItems: {type: integer}
+        itemsPerSecond: {type: number}
+        counts:
+          type: object
+          required: [selected, succeeded, skipped, failed, cancelled, deferred]
+          properties:
+            selected: {type: integer, minimum: 0}
+            succeeded: {type: integer, minimum: 0}
+            skipped: {type: integer, minimum: 0}
+            failed: {type: integer, minimum: 0}
+            cancelled: {type: integer, minimum: 0}
+            deferred: {type: integer, minimum: 0}
+        createdAt: {type: string, format: date-time}
+        startedAt: {type: [string, 'null'], format: date-time}
+        finishedAt: {type: [string, 'null'], format: date-time}
+        expiresAt: {type: [string, 'null'], format: date-time}
+    BatchJobPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/BatchJob'}}
+        nextCursor: {type: [string, 'null']}
+    BatchItemState: {type: string, enum: [PENDING, DEFERRED, SUCCEEDED, SKIPPED, FAILED, CANCELLED]}
+    BatchItem:
+      type: object
+      required: [ordinal, runId, state]
+      properties:
+        ordinal: {type: integer, minimum: 0}
+        runId: {type: string, format: uuid}
+        state: {$ref: '#/components/schemas/BatchItemState'}
+        reason: {type: [string, 'null'], description: 'Closed code, e.g. ALREADY_TERMINAL, NOT_APPLICABLE, NOT_WAITING, RUN_CONTINUED, HIDDEN_FROM_CREATOR; for a deferred item the cause (QUOTA_EXCEEDED, RATE_LIMITED, CONCURRENCY_QUEUE_FULL, LOCK_WAIT).'}
+        errorCode: {type: [string, 'null'], description: Canonical Error.code of a FAILED item.}
+        attempts: {type: integer, minimum: 0}
+        newRunId: {type: [string, 'null'], format: uuid}
+        updatedAt: {type: string, format: date-time}
+    BatchItemPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/BatchItem'}}
+        nextCursor: {type: [string, 'null']}
     ScheduleBackfill:
       type: object
       required: [backfillId, start, end, state, overlap, counts]
@@ -7262,6 +7548,12 @@ components:
       required: [items]
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/Schedule'}}
+        nextCursor: {type: [string, 'null']}
+    ScheduleActionPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/ScheduleActionRecord'}}
         nextCursor: {type: [string, 'null']}
     ScheduleActionOutcome:
       type: string

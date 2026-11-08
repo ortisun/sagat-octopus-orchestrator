@@ -16,6 +16,7 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use sagat_api_grpc::{WorkerGrpc, serve as serve_grpc, worker_service};
 use sagat_api_http::{AppState, HttpJwksFetcher, TokenVerifier};
+use sagat_application::batch_executor::{BatchExecutor, ExecutorSettings};
 use sagat_application::blobs::BlobService;
 use sagat_application::clock::SystemClock;
 use sagat_application::entropy::SystemEntropy;
@@ -34,10 +35,11 @@ use sagat_infra_ir::schedule_calendar::SpecCalendar;
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_nats::NatsPublisher;
 use sagat_infra_postgres::{
-    DatabaseClock, PgBlobCatalog, PgIdentityStore, PgRunStore, PgScheduleStore, spawn_pool_metrics,
+    DatabaseClock, PgBatchStore, PgBlobCatalog, PgIdentityStore, PgRunStore, PgScheduleStore,
+    spawn_pool_metrics,
 };
 use sagat_scheduler::{
-    DeliveryWorker, EventDispatcher, Keeper, Monitor, OutboxDispatcher, Placement,
+    BatchPass, DeliveryWorker, EventDispatcher, Keeper, Monitor, OutboxDispatcher, Placement,
     ProjectorSettings, SchedulePass, Scheduler, TelemetryProjector,
 };
 use sagat_telemetry::Metrics;
@@ -53,8 +55,8 @@ pub use sagat_control_plane::{probe, shutdown_signal};
 pub use settings::EngineConfig;
 
 use loops::{
-    EngineDeliveries, EngineDispatcher, EngineEvents, EngineKeeper, EngineMonitor, EngineProjector,
-    EngineScheduler, EngineSchedules, Health,
+    EngineBatches, EngineDeliveries, EngineDispatcher, EngineEvents, EngineKeeper, EngineMonitor,
+    EngineProjector, EngineScheduler, EngineSchedules, Health,
 };
 use supervision::CriticalTasks;
 
@@ -420,6 +422,44 @@ pub async fn serve(
         );
     } else {
         tracing::info!("SAGAT_SCHEDULES_ENABLED is not set: schedules are stored but none fires");
+    }
+    if engine.batches_enabled {
+        // An item is applied as the job's creator through the same run service the API has. The
+        // items are paced by the database's clock, the one the jobs are stamped with.
+        let database_clock = DatabaseClock::new(pool.clone(), SystemClock);
+        let batches: Arc<EngineBatches> = Arc::new(BatchPass::new(
+            BatchExecutor::new(
+                PgBatchStore::new(pool.clone()),
+                RunService::new(
+                    store.clone(),
+                    SystemClock,
+                    Engine::new(JsonEvaluator),
+                    cache.clone(),
+                ),
+                PgIdentityStore::new(pool.clone()),
+                database_clock.clone(),
+                ExecutorSettings::default(),
+            ),
+            placement.clone(),
+            engine.batches,
+        ));
+        tasks.spawn_loop(
+            "batch pass",
+            loops::run_batches(
+                {
+                    let batches = Arc::clone(&batches);
+                    move || {
+                        let batches = Arc::clone(&batches);
+                        let clock = database_clock.clone();
+                        async move { loops::batch_round(&clock, &batches).await }
+                    }
+                },
+                engine.batch_poll,
+                stop_rx.clone(),
+            ),
+        );
+    } else {
+        tracing::info!("SAGAT_BATCHES_ENABLED is not set: batch jobs are stored but none runs");
     }
     tasks.spawn_loop(
         "event dispatcher",

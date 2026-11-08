@@ -8,6 +8,39 @@ type Schemas = components['schemas'];
 export type AuthContext = Schemas['AuthContext'];
 export type NamespaceResource = Schemas['NamespaceResource'];
 export type VersionDocument = Schemas['WorkflowVersionDocument'];
+export type Schedule = Schemas['Schedule'];
+export type ScheduleDescription = Schemas['ScheduleDescription'];
+export type ScheduleActionRecord = Schemas['ScheduleActionRecord'];
+export type ScheduleBackfill = Schemas['ScheduleBackfill'];
+/** The overlap policies of a schedule, and of a trigger or a backfill. */
+export type Overlap = Schemas['ScheduleOverlapPolicy'];
+/**
+ * What `createSchedule` and `updateSchedule` take. The generated type leaves the spec a union of
+ * unknowns and the input an empty object; the contract has them free documents the server validates.
+ */
+export interface ScheduleWrite {
+  name: string;
+  spec: Record<string, unknown>;
+  policies?: Record<string, unknown>;
+  action: { workflowId: string; versionPolicy?: 'ACTIVE' | 'PINNED'; versionId?: string; input: Record<string, unknown>; nominalTimeField?: string; runTimeoutMs?: number };
+  paused?: boolean;
+  note?: string;
+  remainingActions?: number;
+}
+export type BatchJob = Schemas['BatchJob'];
+export type BatchItem = Schemas['BatchItem'];
+export type BatchPreview = Schemas['BatchPreview'];
+export type BatchSelector = Schemas['BatchSelector'];
+/**
+ * What `createBatchOperation` takes. The generated type makes the fields that have a default
+ * required and the payload of a signal an empty object; the contract has them optional and free.
+ */
+export type BatchCreateRequest = Omit<Schemas['BatchCreateRequest'], 'businessId' | 'maxItems' | 'itemsPerSecond' | 'signal'> & {
+  businessId?: Schemas['BatchCreateRequest']['businessId'];
+  maxItems?: number;
+  itemsPerSecond?: number;
+  signal?: { name: string; payload: Record<string, unknown> };
+};
 
 async function collectPages<T>(load: (cursor: string | undefined) => Promise<Page<T>>): Promise<T[]> {
   const items: T[] = [];
@@ -50,6 +83,45 @@ export function endpoints(api: ApiClient) {
     journal: (id: string, query: { cursor?: string; limit?: number } = {}, signal?: AbortSignal) => api.get<Page<JournalEvent>>(path`/runs/${id}/events`, { query, signal }),
     telemetry: (id: string, signal?: AbortSignal) => api.get<RunTelemetry>(path`/runs/${id}/telemetry`, { signal }),
     operate: (id: string, request: OperationRequest, key?: string) => api.post<OperationResult>(path`/runs/${id}/operations`, { body: request, ...(key ? { key } : {}) }),
+
+    // Schedules (feature 018): the routes carry the namespace id, not its slug.
+    listSchedules: (namespaceId: string, query: { cursor?: string; limit?: number; state?: 'ACTIVE' | 'PAUSED'; origin?: 'API' | 'TRIGGER'; workflowId?: string; name?: string } = {}, signal?: AbortSignal) =>
+      api.get<Page<Schedule>>(path`/namespaces/${namespaceId}/schedules`, { query, signal }),
+    getSchedule: (namespaceId: string, id: string, query: { nextCount?: number; recentCount?: number } = {}, signal?: AbortSignal) =>
+      api.get<ScheduleDescription>(path`/namespaces/${namespaceId}/schedules/${id}`, { query, signal }),
+    createSchedule: (namespaceId: string, body: ScheduleWrite, key: string, signal?: AbortSignal) =>
+      api.post<Schedule>(path`/namespaces/${namespaceId}/schedules`, { body, key, signal }),
+    updateSchedule: (namespaceId: string, id: string, body: ScheduleWrite & { expectedRevision: number }, key: string, signal?: AbortSignal) =>
+      api.put<Schedule>(path`/namespaces/${namespaceId}/schedules/${id}`, { body, key, signal }),
+    deleteSchedule: (namespaceId: string, id: string, expectedRevision: number, key: string, signal?: AbortSignal) =>
+      api.delete<undefined>(path`/namespaces/${namespaceId}/schedules/${id}`, { query: { expectedRevision }, key, signal }),
+    pauseSchedule: (namespaceId: string, id: string, note: string, key: string, signal?: AbortSignal) =>
+      api.post<Schedule>(path`/namespaces/${namespaceId}/schedules/${id}/pause`, { body: { note }, key, signal }),
+    resumeSchedule: (namespaceId: string, id: string, note: string, key: string, signal?: AbortSignal) =>
+      api.post<Schedule>(path`/namespaces/${namespaceId}/schedules/${id}/resume`, { body: { note }, key, signal }),
+    triggerSchedule: (namespaceId: string, id: string, overlap: Overlap | undefined, key: string, signal?: AbortSignal) =>
+      api.post<ScheduleActionRecord>(path`/namespaces/${namespaceId}/schedules/${id}/trigger`, { body: overlap ? { overlap } : {}, key, signal }),
+    scheduleActions: (namespaceId: string, id: string, query: { cursor?: string; limit?: number; outcome?: string } = {}, signal?: AbortSignal) =>
+      api.get<Page<ScheduleActionRecord>>(path`/namespaces/${namespaceId}/schedules/${id}/actions`, { query, signal }),
+    scheduleBackfills: (namespaceId: string, id: string, signal?: AbortSignal) =>
+      api.get<{ items: ScheduleBackfill[] }>(path`/namespaces/${namespaceId}/schedules/${id}/backfills`, { signal }),
+    createBackfill: (namespaceId: string, id: string, body: { start: string; end: string; overlap?: Overlap }, key: string, signal?: AbortSignal) =>
+      api.post<ScheduleBackfill>(path`/namespaces/${namespaceId}/schedules/${id}/backfills`, { body, key, signal }),
+    cancelBackfill: (namespaceId: string, id: string, backfillId: string, key: string, signal?: AbortSignal) =>
+      api.post<ScheduleBackfill>(path`/namespaces/${namespaceId}/schedules/${id}/backfills/${backfillId}/cancel`, { key, signal }),
+
+    // Batch operations (feature 018): the routes carry the namespace id, not its slug.
+    previewBatch: (namespaceId: string, body: { selector: BatchSelector; maxItems?: number }, signal?: AbortSignal) =>
+      api.post<BatchPreview>(path`/namespaces/${namespaceId}/batch-operations/preview`, { body, signal }),
+    createBatch: (namespaceId: string, body: BatchCreateRequest, key: string, signal?: AbortSignal) =>
+      api.post<BatchJob>(path`/namespaces/${namespaceId}/batch-operations`, { body, key, signal }),
+    listBatches: (namespaceId: string, query: { cursor?: string; limit?: number; state?: string } = {}, signal?: AbortSignal) =>
+      api.get<Page<BatchJob>>(path`/namespaces/${namespaceId}/batch-operations`, { query, signal }),
+    getBatch: (namespaceId: string, id: string, signal?: AbortSignal) => api.get<BatchJob>(path`/namespaces/${namespaceId}/batch-operations/${id}`, { signal }),
+    batchItems: (namespaceId: string, id: string, query: { cursor?: string; limit?: number; state?: string } = {}, signal?: AbortSignal) =>
+      api.get<Page<BatchItem>>(path`/namespaces/${namespaceId}/batch-operations/${id}/items`, { query, signal }),
+    cancelBatch: (namespaceId: string, id: string, reason: string, key: string, signal?: AbortSignal) =>
+      api.post<BatchJob>(path`/namespaces/${namespaceId}/batch-operations/${id}/cancel`, { body: { reason }, key, signal }),
   };
 }
 

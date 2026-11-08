@@ -371,6 +371,9 @@ pub struct ServeConfig {
     /// Whether the schedule routes exist (`SAGAT_SCHEDULES_ENABLED`, off by default until the
     /// feature is released). The engine fires schedules under the same flag.
     pub schedules_enabled: bool,
+    /// Whether the batch operation routes exist (`SAGAT_BATCHES_ENABLED`, off by default until the
+    /// feature is released); the engine runs the jobs under the same flag.
+    pub batches_enabled: bool,
     /// Whether a workflow may hold an Apache Iceberg write (`SAGAT_LAKE_ENABLED`, feature 035, off by default).
     /// With it off, publishing such a workflow is refused with `LAKE_DISABLED`. With it on, publication still
     /// waits for the checks of access, allowed modes and data classification.
@@ -571,6 +574,7 @@ impl ServeConfig {
         Ok(Self {
             redis_callbacks: flag(get, "SAGAT_REDIS_CALLBACKS_ENABLED")?,
             schedules_enabled: flag(get, "SAGAT_SCHEDULES_ENABLED")?,
+            batches_enabled: flag(get, "SAGAT_BATCHES_ENABLED")?,
             lake_enabled: flag(get, "SAGAT_LAKE_ENABLED")?,
             tls,
             webhook_oidc,

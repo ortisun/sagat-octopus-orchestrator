@@ -695,11 +695,29 @@ impl ApiError {
                 });
                 e
             }
+            AppError::InvalidBatch { reason, field } => {
+                let mut e =
+                    Self::validation(format!("the batch operation is not acceptable: {reason}"));
+                e.parts.details = Some(match field {
+                    Some(field) => json!({ "reason": reason, "field": field }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
             AppError::ScheduleConflict { reason } => {
                 let mut e = Self::new(
                     StatusCode::CONFLICT,
                     ErrorCode::Conflict,
                     "the schedule is in a state that cannot take this request",
+                );
+                e.parts.details = Some(json!({ "reason": reason }));
+                e
+            }
+            AppError::BatchConflict { reason } => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the batch operation is in a state that cannot take this request",
                 );
                 e.parts.details = Some(json!({ "reason": reason }));
                 e

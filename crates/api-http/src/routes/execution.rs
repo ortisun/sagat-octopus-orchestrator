@@ -73,6 +73,14 @@ pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
             "the Idempotency-Key must be 8 to 160 printable ASCII characters",
         ));
     }
+    // The platform derives keys of its own for what a batch job and a schedule do to a run
+    // (`batch:{job}:{run}`, `schedule:{id}:cancel:...`); a caller who sent one first would decide
+    // what that effect is.
+    if key.starts_with("batch:") || key.starts_with("schedule:") {
+        return Err(ApiError::bad_request(
+            "the Idempotency-Key prefixes batch: and schedule: are reserved for the platform",
+        ));
+    }
     Ok(key)
 }
 

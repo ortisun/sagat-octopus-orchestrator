@@ -338,3 +338,91 @@ async fn a_backfill_resumes_after_the_committed_cursor_when_another_replica_take
     assert_eq!(state, "COMPLETED");
     assert_eq!(cursor, Some(start - Duration::hours(1)));
 }
+
+/// The schedules of two tenants: `many` of the first, due since two hours ago, and one of the
+/// second, due since one hour ago (so every one of the first is older than the second's).
+async fn a_backlog_and_a_latecomer(f: &Fixture, many: usize) -> (Vec<Uuid>, Uuid) {
+    let mut backlog = Vec::new();
+    for i in 0..many {
+        backlog.push(
+            f.create(&format!("backlog-{i}"), &hourly(), &json!({}), None)
+                .await
+                .id
+                .as_uuid(),
+        );
+    }
+    // an hour later, the other tenant writes its schedule
+    f.clock.advance(Duration::hours(1));
+    let workflow =
+        f.w.publish_as_other_tenant(crate::support::engine::chain("latecomer"))
+            .await;
+    let latecomer = f
+        .service
+        .create(
+            &f.w.other_admin,
+            f.w.other_namespace.id(),
+            f.write_of(
+                "latecomer",
+                &hourly(),
+                &json!({}),
+                Some(json!({"workflowId": workflow.to_string()})),
+            ),
+            &sagat_application::identity::RequestContext::default(),
+        )
+        .await
+        .expect("the other tenant's schedule");
+    // every first time has come, the backlog's first
+    f.clock.advance(Duration::hours(1) + Duration::seconds(5));
+    (backlog, latecomer.id.as_uuid())
+}
+
+#[tokio::test]
+async fn a_tenant_with_a_backlog_does_not_hold_back_another_tenants_due_schedule() {
+    let f = fixture_from(some_hours_ago()).await;
+    let (_backlog, latecomer) = a_backlog_and_a_latecomer(&f, 12).await;
+    let replica = replica_with(
+        &f,
+        "fair",
+        ScheduleSettings {
+            batch: 4,
+            steps_per_schedule: 1,
+            ..ScheduleSettings::default()
+        },
+    );
+    replica.keep().await;
+
+    let round = replica.pass.round().await;
+    assert_eq!(round.steps, 4, "the whole batch is used: {round:?}");
+    assert_eq!(
+        runs_of(&f, latecomer).await,
+        1,
+        "the tenant that is behind a backlog of older schedules is served in the same round"
+    );
+}
+
+#[tokio::test]
+async fn a_lone_tenant_with_a_backlog_still_gets_the_whole_batch() {
+    let f = fixture_from(some_hours_ago()).await;
+    for i in 0..12 {
+        f.create(&format!("alone-{i}"), &hourly(), &json!({}), None)
+            .await;
+    }
+    f.clock.advance(Duration::hours(1) + Duration::seconds(5));
+    let replica = replica_with(
+        &f,
+        "alone",
+        ScheduleSettings {
+            batch: 4,
+            steps_per_schedule: 1,
+            ..ScheduleSettings::default()
+        },
+    );
+    replica.keep().await;
+
+    let round = replica.pass.round().await;
+    assert_eq!(
+        (round.due, round.steps),
+        (4, 4),
+        "nobody is hiding: {round:?}"
+    );
+}

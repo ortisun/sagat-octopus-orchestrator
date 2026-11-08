@@ -15,11 +15,13 @@ use sagat_control_plane::stopped;
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_ir::schedule_calendar::SpecCalendar;
 use sagat_infra_nats::NatsPublisher;
-use sagat_infra_postgres::{DatabaseClock, PgIdentityStore, PgRunStore, PgScheduleStore};
+use sagat_infra_postgres::{
+    DatabaseClock, PgBatchStore, PgIdentityStore, PgRunStore, PgScheduleStore,
+};
 use sagat_scheduler::{
-    DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound, Keeper, Monitor,
-    MonitorRound, OutboxDispatcher, ProjectionRound, Report, Round, SchedulePass, ScheduleRound,
-    Scheduler, TelemetryProjector,
+    BatchPass, BatchRound, DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound,
+    Keeper, Monitor, MonitorRound, OutboxDispatcher, ProjectionRound, Report, Round, SchedulePass,
+    ScheduleRound, Scheduler, TelemetryProjector,
 };
 use tokio::sync::watch;
 
@@ -49,6 +51,12 @@ pub type EngineSchedules = SchedulePass<
     DatabaseClock<SystemClock>,
     PgIdentityStore,
     RunService<PgRunStore, SystemClock, JsonEvaluator>,
+>;
+pub type EngineBatches = BatchPass<
+    PgBatchStore,
+    RunService<PgRunStore, SystemClock, JsonEvaluator>,
+    PgIdentityStore,
+    DatabaseClock<SystemClock>,
 >;
 pub type EngineProjector = TelemetryProjector<PgRunStore>;
 pub type EngineMonitor = Monitor<PgRunStore>;
@@ -329,6 +337,47 @@ where
         }
     }
     tracing::info!("schedule pass stopped");
+}
+
+/// One round of the batch pass, after the clock it acts by has been read again: the items are
+/// paced by the database's time, which the jobs are stamped with, whatever this process's own says.
+pub async fn batch_round<L, R>(
+    clock: &DatabaseClock<L>,
+    pass: &BatchPass<PgBatchStore, R, PgIdentityStore, DatabaseClock<L>>,
+) -> BatchRound
+where
+    L: Clock,
+    R: sagat_application::batch_executor::ItemActions,
+{
+    if let Err(error) = clock.sync().await {
+        if !clock.is_synced() {
+            tracing::warn!(%error, "could not read the database clock yet; the batch pass waits");
+            return BatchRound {
+                failed: 1,
+                ..BatchRound::default()
+            };
+        }
+        tracing::warn!(%error, "could not read the database clock; the batch pass keeps the last difference");
+    }
+    pass.round().await
+}
+
+/// Runs the batch jobs that are due until stopped: the same rhythm as the schedule pass.
+pub async fn run_batches<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = BatchRound>,
+{
+    while !*stop.borrow() {
+        if round().await.did_work() {
+            tokio::task::yield_now().await;
+            continue;
+        }
+        if stop_during(jittered(poll, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("batch pass stopped");
 }
 
 /// Sends outbound webhooks until stopped: the same rhythm as the event dispatcher.

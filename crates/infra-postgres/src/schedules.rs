@@ -12,10 +12,11 @@ use sagat_application::schedule_codec::{
     target_to_json,
 };
 use sagat_application::schedules::{
-    AUTHORITY_REVOKED, ActionDedupe, ActionView, BackfillProgress, BackfillRecord, BackfillState,
-    BufferedAction, DueBackfill, DueSchedule, NewBackfill, NewSchedule, Obligation, Reconcile,
-    RecordedAction, Revise, ScheduleActivity, ScheduleAdmission, ScheduleDecision, ScheduleOrigin,
-    ScheduleRecord, ScheduleState, ScheduleStore, ShardFence, StateChange, TargetCheck,
+    AUTHORITY_REVOKED, ActionCursor, ActionDedupe, ActionView, BackfillProgress, BackfillRecord,
+    BackfillState, BufferedAction, DueBackfill, DueSchedule, NewBackfill, NewSchedule, Obligation,
+    Reconcile, RecordedAction, Revise, ScheduleActivity, ScheduleAdmission, ScheduleDecision,
+    ScheduleFilter, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, ShardFence,
+    StateChange, TargetCheck,
 };
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::execution::{RunId, RunStatus};
@@ -52,7 +53,7 @@ async fn lock_schedule(
     expected_state_version: u64,
     allow_paused: bool,
 ) -> Result<(), StoreError> {
-    check_fence(conn, schedule, fence).await?;
+    check_fence(conn, schedule.as_uuid(), fence).await?;
     let row: Option<(String, i64)> = sqlx::query_as(
         "SELECT state, state_version FROM schedules WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
     )
@@ -80,13 +81,13 @@ async fn lock_schedule(
 /// Takes the shard lease `FOR SHARE` and checks it is the one of this schedule, held by the owner
 /// and not run out by the database's clock. Without a fence (an HTTP command holds none) it checks
 /// nothing. A lease that is not held is a [`StoreError::StateConflict`].
-async fn check_fence(
+pub(crate) async fn check_fence(
     conn: &mut PgConnection,
-    schedule: ScheduleId,
+    owner_of: Uuid,
     fence: Option<&ShardFence>,
 ) -> Result<(), StoreError> {
     if let Some(fence) = fence {
-        let shard = Shard::of(schedule.as_uuid());
+        let shard = Shard::of(owner_of);
         let generation = i64::try_from(fence.lease.generation).ok();
         let (true, Some(generation)) = (fence.lease.shard == shard, generation) else {
             return Err(StoreError::StateConflict(
@@ -779,17 +780,30 @@ impl ScheduleStore for PgScheduleStore {
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
+        filter: &ScheduleFilter,
         after: Option<ScheduleId>,
         limit: u32,
     ) -> Result<Vec<ScheduleRecord>, StoreError> {
+        // Each part of the filter is optional in the statement, so the statement is one literal. A
+        // namespace holds at most as many schedules as its quota allows, which bounds the scan the
+        // filter makes over the head revisions.
         let rows = sqlx::query(select_schedules!(
             "WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.state <> 'DELETED' \
-             AND ($3::uuid IS NULL OR s.id < $3) ORDER BY s.id DESC LIMIT $4"
+             AND ($3::uuid IS NULL OR s.id < $3) \
+             AND ($5::text IS NULL OR s.state = $5) \
+             AND ($6::text IS NULL OR s.origin = $6) \
+             AND ($7::text IS NULL OR r.action->>'workflowId' = $7) \
+             AND ($8::text IS NULL OR starts_with(s.name, $8)) \
+             ORDER BY s.id DESC LIMIT $4"
         ))
         .bind(tenant.as_uuid())
         .bind(namespace.as_uuid())
         .bind(after.map(ScheduleId::as_uuid))
         .bind(i64::from(limit))
+        .bind(filter.state.map(ScheduleState::as_str))
+        .bind(filter.origin.map(ScheduleOrigin::as_str))
+        .bind(filter.workflow.map(|id| id.to_string()))
+        .bind(filter.name_prefix.as_deref())
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?;
@@ -1311,19 +1325,51 @@ impl ScheduleStore for PgScheduleStore {
         Ok(ScheduleActivity { counters, recent })
     }
 
+    async fn actions(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        outcome: Option<Outcome>,
+        after: Option<ActionCursor>,
+        limit: u32,
+    ) -> Result<Vec<ActionView>, StoreError> {
+        // newest decision first; the key of an action breaks the ties, so a page ends where the next
+        // one begins whatever is decided in between
+        let rows = sqlx::query(
+            "SELECT nominal_at, actual_at, kind, origin, revision, outcome, reason, run_id, backfill_id, \
+                    summary_count, summary_last_at, decided_at \
+             FROM schedule_actions WHERE tenant_id = $1 AND schedule_id = $2 \
+               AND ($3::text IS NULL OR outcome = $3) \
+               AND ($4::timestamptz IS NULL OR (decided_at, origin, nominal_at) < ($4, $5, $6)) \
+             ORDER BY decided_at DESC, origin DESC, nominal_at DESC LIMIT $7",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .bind(outcome.map(Outcome::as_str))
+        .bind(after.map(|cursor| cursor.decided_at))
+        .bind(after.map(|cursor| cursor.origin.as_str()))
+        .bind(after.map(|cursor| cursor.nominal_at))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        rows.iter().map(action_view).collect()
+    }
+
     async fn due_schedules(
         &self,
-        shards: &[Shard],
-        limit: u32,
+        window: &sagat_application::maintenance::Window,
     ) -> Result<Vec<DueSchedule>, StoreError> {
-        let shards: Vec<i16> = shards.iter().map(|s| i16::from(s.index())).collect();
+        let exclude: Vec<Uuid> = window.exclude.iter().map(|t| t.as_uuid()).collect();
         let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT tenant_id, id FROM schedules \
              WHERE shard = ANY($1) AND state = 'ACTIVE' AND next_wake_at <= clock_timestamp() \
+               AND tenant_id <> ALL($3::uuid[]) \
              ORDER BY next_wake_at, id LIMIT $2",
         )
-        .bind(shards)
-        .bind(i64::from(limit))
+        .bind(window.shards.indexes())
+        .bind(i64::from(window.limit))
+        .bind(exclude)
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?;
@@ -1573,7 +1619,7 @@ impl ScheduleStore for PgScheduleStore {
         at: OffsetDateTime,
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        check_fence(&mut tx, id, fence).await?;
+        check_fence(&mut tx, id.as_uuid(), fence).await?;
         // a debt another process has paid in the meantime is paid: nothing to change
         sqlx::query(
             "UPDATE schedule_obligations SET state = 'DONE', done_at = $5 \

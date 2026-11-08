@@ -155,6 +155,18 @@ pub enum AppError {
     /// contract): owned by a cron trigger, or waiting for the trigger handover.
     #[error("schedule conflict: {reason}")]
     ScheduleConflict { reason: &'static str },
+    /// A batch operation (feature 018) that is not acceptable: `reason` is the closed
+    /// `details.reason` of the contract and `field` the place of the request it concerns. Never a
+    /// payload.
+    #[error("invalid batch operation: {reason}")]
+    InvalidBatch {
+        reason: &'static str,
+        field: Option<String>,
+    },
+    /// A batch job that is in a state the request cannot be taken in (`details.reason` of the
+    /// contract): a job that already ended cannot be cancelled.
+    #[error("batch conflict: {reason}")]
+    BatchConflict { reason: &'static str },
     /// Another attempt was asked of a step whose last outcome is unknown; it must be settled
     /// (`RESOLVE_STEP`) before anything is repeated, by any role (feature 037).
     #[error("the step's last outcome is unknown and must be settled first")]

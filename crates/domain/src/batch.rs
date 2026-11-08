@@ -148,15 +148,21 @@ impl FromStr for Action {
     }
 }
 
-/// Why the operator ran the batch: 8 to 2000 characters, kept in the audit trail.
+/// Why the operator ran the batch: 8 to 2000 characters of plain text once trimmed, the rule the
+/// single-run use cases apply to the reason of each item (a reason they refuse would make every item
+/// of the job fail).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Justification(String);
 
 impl Justification {
     /// # Errors
-    /// [`BatchError::BadReason`] outside 8 to 2000 characters.
+    /// [`BatchError::BadReason`] outside 8 to 2000 characters after trimming, or with a control
+    /// character (a new line included).
     pub fn new(value: &str) -> Result<Self, BatchError> {
-        if !(MIN_REASON_CHARS..=MAX_REASON_CHARS).contains(&value.chars().count()) {
+        let value = value.trim();
+        if !(MIN_REASON_CHARS..=MAX_REASON_CHARS).contains(&value.chars().count())
+            || value.chars().any(char::is_control)
+        {
             return Err(BatchError::BadReason);
         }
         Ok(Self(value.to_owned()))

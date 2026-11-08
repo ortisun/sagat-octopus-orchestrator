@@ -532,18 +532,19 @@ pub async fn serve_with_admin(
         SystemClock,
         serve.runbook_base.clone(),
     ));
-    // The times a schedule is created, updated, resumed or triggered at are computed on the
-    // database's clock, whatever this process's own says (FR-018-005, D1802); it is kept in step
-    // below, once the shutdown signal exists.
-    let schedule_clock = serve
-        .schedules_enabled
+    // The times a schedule is created, updated, resumed or triggered at, and the slots of a batch
+    // job, are computed on the database's clock, whatever this process's own says (FR-018-005,
+    // D1802); it is kept in step below, once the shutdown signal exists.
+    let schedule_clock = (serve.schedules_enabled || serve.batches_enabled)
         .then(|| sagat_infra_postgres::DatabaseClock::new(pool.clone(), SystemClock));
     if let Some(clock) = &schedule_clock
         && let Err(error) = clock.sync().await
     {
-        tracing::warn!(%error, "could not read the database clock; schedules use this process's clock until it can");
+        tracing::warn!(%error, "could not read the database clock; schedules and batch jobs use this process's clock until it can");
     }
-    if let Some(schedule_clock) = schedule_clock.clone() {
+    if serve.schedules_enabled
+        && let Some(schedule_clock) = schedule_clock.clone()
+    {
         let ceilings = sagat_domain::schedules::Ceilings::default();
         let schedules = || sagat_infra_postgres::PgScheduleStore::new(pool.clone());
         governance =
@@ -568,6 +569,15 @@ pub async fn serve_with_admin(
                     ),
                     ceilings,
                 ),
+            )));
+    }
+    if serve.batches_enabled
+        && let Some(clock) = schedule_clock.clone()
+    {
+        governance =
+            governance.with_batches(Arc::new(sagat_application::batch::BatchService::new(
+                sagat_infra_postgres::PgBatchStore::new(pool.clone()),
+                clock,
             )));
     }
     let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =

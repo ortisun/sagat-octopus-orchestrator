@@ -168,8 +168,19 @@ groups:
         for: 5m
         labels: {severity: warning}
         annotations:
-          summary: A timer, wait, retry, lease or deadline has been overdue for more than a minute.
+          summary: A timer, wait, retry, lease, deadline, schedule or batch job has been overdue for more than a minute.
           runbook: docs/runbooks/scaling.md#scheduler-late
+
+      - alert: SagatBatchJobsStalled
+        # Jobs are active and no run has had an outcome for a quarter of an hour: the usual cause is a
+        # control plane that accepts jobs while no engine runs them (SAGAT_BATCHES_ENABLED), or a
+        # selection waiting for an old transaction. Neither is the scheduler being late.
+        expr: (max(batch_jobs_active) > 0) unless on() (sum(rate(batch_items_total[10m])) > 0)
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: Batch jobs are active and no run has had an outcome from any of them for fifteen minutes.
+          runbook: docs/runbooks/batch-operations.md#5-when-a-job-does-not-move
 
       - alert: SagatShardFencing
         expr: sum(rate(scheduler_fenced_total[5m])) > 0
