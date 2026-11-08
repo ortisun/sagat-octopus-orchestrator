@@ -26,7 +26,7 @@ minor when this feature merges (D035-043; drafts 020, 021, 025 and 026 also clai
     connection kind outside the profile of the caller's binding (D035-130 C), and the runner offering the activity by the
     agreed minor (G). The minor stays 1.6 for now, because nothing on the wire differs yet; the first wire
     difference takes the next free minor.
-- **`TaskLease` input** for these activities: the existing `input` payload carries the attempt input
+- **`TaskLease` input** (built since D035-138 for the lake activity from the run's data, inline records only; a blob source and a SQL result fail the step by name until `ReadBlob` is scoped to the run) for these activities: the existing `input` payload carries the attempt input
   of [lake-runtime.md](lake-runtime.md), minus credentials and the relay. That is `effectKey`,
   `firstAttemptStartedAt`, the table or target, mode, mapping, limits, and record references (blob
   ids or inline records). Credentials never travel in the lease.

@@ -43,7 +43,7 @@ fn iceberg(uri: &str, catalog_secret: &str, ceiling: EgressCeiling) -> Connectio
     )
 }
 
-fn iceberg_in(
+pub(crate) fn iceberg_in(
     uri: &str,
     catalog_secret: &str,
     ceiling: EgressCeiling,
@@ -81,7 +81,7 @@ fn iceberg_in(
     .unwrap()
 }
 
-fn write(
+pub(crate) fn write(
     name: &str,
     expected_revision: u32,
     status: ConnectionStatus,
@@ -407,7 +407,7 @@ pub async fn run(w: &World, secrets: &ManagedSecretService<PgRunStore, SystemClo
 
 /// The input of the workflows below: a list of records whose classification the schema states. The root is `public`,
 /// and the unmarked `id` inherits it.
-fn rows_schema() -> Value {
+pub(crate) fn rows_schema() -> Value {
     json!({
         "type": "object", "x-sagat-classification": "public",
         "properties": {"rows": {"type": "array", "items": {"type": "object", "properties": {
@@ -420,7 +420,12 @@ fn rows_schema() -> Value {
 }
 
 /// A workflow with one append step reading `input.rows`, mapping the given fields.
-fn append(name: &str, connection: &str, fields: &[&str], schema: Option<Value>) -> Value {
+pub(crate) fn append(
+    name: &str,
+    connection: &str,
+    fields: &[&str],
+    schema: Option<Value>,
+) -> Value {
     let mapping: Vec<Value> = fields
         .iter()
         .enumerate()
@@ -442,7 +447,7 @@ fn append(name: &str, connection: &str, fields: &[&str], schema: Option<Value>) 
 }
 
 /// Creates the draft as the administrator and publishes it as `who`, on a service that has the lake on.
-async fn publish_on_lake(
+pub(crate) async fn publish_on_lake(
     w: &World,
     who: &Principal,
     document: Value,

@@ -1133,6 +1133,12 @@ one commit carries the key.
   - the record references.
 
   Credentials never travel in the lease. Refs: FR-035-013, FR-035-018, contracts/worker-protocol.md.
+
+  *2026-11-08, partly done, left unticked (D035-138):* a lake runner is handed the step with the document made from the run's data: the effect key (the task's
+  key), the first attempt's instant from the database clock (the journal for a later attempt), the snapshot properties, the inline records, the effective
+  limits of the pinned revision, `priorAttemptMayHaveLeftFiles` from the journal. The code is in `worker/lake_input.rs` and `worker/lake_lease.rs` and the
+  lease path of `worker.rs`, not in `worker/database.rs`. Not done: the record references of a blob source and of a SQL result (refused by name until the
+  `ReadBlob` of the run exists).
 - [ ] T035-057 [US02] Implement the host's append path in
   `runners/lake/sagat_lake/{lookup.py,mapping.py,compat.py,modes/append.py}`:
   - lookup and commit follow D035-030;

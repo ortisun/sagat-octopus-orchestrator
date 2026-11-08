@@ -7,6 +7,7 @@ mod consumers;
 mod executor;
 mod key_rotation;
 mod lake;
+mod lake_lease;
 mod output;
 mod output_blobs;
 mod policies;
@@ -270,6 +271,8 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(lake::registration(&w)).await;
     progress.enter("one profile per identity");
     Box::pin(lake::profile_is_the_identitys(&w)).await;
+    progress.enter("the lease of a lake step");
+    Box::pin(lake_lease::run(&w)).await;
     progress.enter("ad_hoc::run");
     Box::pin(ad_hoc::run(&w)).await;
     progress.enter("admission::run");

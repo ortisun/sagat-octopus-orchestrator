@@ -2945,7 +2945,7 @@ The other fixes were wording:
   - *What it does not do.* A run of an Iceberg write can now be created and pinned, and then waits: nothing leases its step. `database_claim` and the
     resolve path read the SQL operation of the node, so a lake runner that registers has its claim refused at every poll. That is the work of C (resolve,
     two secrets), D (the input fed from the run), F (completion) and G (the runner's shell). **A deployment must not turn the lake on to write to a
-    table yet.**
+    table yet.** *(D035-138 lets a lake runner lease the step; it still cannot get its credentials.)*
   - *Not done (T035-055).* The lake quota rows (8 per namespace, 32 per tenant; `QuotaResource` is a domain-wide enum and the concurrency counts are blind
     to the kind), the `LakeRefused` audit at creation (`runs.rs`, which the 018 pull requests change), and a test of each creation path: the direct start
     and its replay are tested; child, event and rerun use the same store function and ad hoc refuses a lake write by construction (it asks for a SQL
@@ -2962,6 +2962,50 @@ The other fixes were wording:
     plane and test crates; the engine's and the control plane's tests; `integration_database_connections` 7 and as the runtime role 7;
     `integration_database_runner`; `integration_iceberg_writes` 50; `contract_iceberg_writes` 35; `contract_developer_experience`;
     `integration_platform_foundation` 102.
+- **D035-138 — A lake runner leases its step, with the attempt input made from the run's data (the lease half of D035-130: the feed of D, and the claim of C/E).**
+  **Decided by: delegate**. No migration, no contract file, no `Cargo.lock` change. With the lake off (the default) nothing a run can see changes.
+  - *What.* A lake runner of the `lake` profile, registered for `sagat.database.iceberg.write`, polls and is handed the step of a run whose
+    connection it may serve, with `input_json` = the document its own strict reader accepts, made **from the run's own data**:
+    `lake_lease_document` (`worker/lake_lease.rs`, pure) evaluates the record source over the run's data (`collection_source`, the same expression
+    semantics as the rest of the workflow), takes the strictest limits of the step and of the connection, and calls `lake_attempt_input` (D035-131).
+    The facts come from `RunTx::lake_lease_facts` (default `Err`, fail closed): the connection's limits **at the revision the run was admitted with**
+    (the pin, D035-137), the number of the workflow version (`workflow_versions.version_number`), and the instant of the first lease of the step. The
+    effect key is the task's own idempotency key (`{run}:{node}`, stable across attempts), a test holds the two equal.
+  - *The first attempt's instant is read from the journal and no column is added.* `min(occurred_at)` of the `step.leased` events of the node is the
+    instant by the database's clock that wrote it, bit for bit; for the first attempt, which has no event yet, it is the transaction's own time. An attempt
+    after the first with no such event fails closed (`Internal`) instead of guessing, because a retry that looked for what an earlier attempt wrote in the
+    wrong window could miss it. `priorAttemptMayHaveLeftFiles` is true when an earlier lease is in the journal.
+  - *The claim.* `database_admission` has a lake variant inside the one function, chosen by the managed kind: the role, `admit_node`, the pool refusal over
+    **both** secrets of the connection (catalog and storage), and a budget of its own, **8 attempts in a namespace and 32 in a tenant as constants until the
+    quota rows exist** (T035-055); the per-connection pool and the SQL limits are the SQL step's and are left out. The SQL concurrency count now excludes
+    lake attempts, so they no longer use up its budget. `LakeRefused` at a claim is a denial like a refused SQL claim, not an error of the whole poll.
+  - *What cannot be made fails the step for good.* The document is made **after** the claim was admitted, so that a runner which fails the role, pool or
+    concurrency checks cannot cause a permanent failure; then, if the data cannot make it, the step fails with a closed code, permanent (the data of a run
+    does not change, so a retry would fail the same way), the journal gets `step.leased` then `step.failed`, and no lease token exists
+    (`reject_input`, the general form of `reject_large_input`, with a metric label per reason). `DATABASE_CONFIGURATION_INVALID`: the record source does not
+    select a list of objects (a missing value, a scalar, a record that is not an object, a blob where inline was asked). `DATABASE_CAPABILITY_UNAVAILABLE`:
+    a blob source or the result of a SQL step, named instead of a step that hangs (the lease would have to mint the blob descriptors as a capability, which
+    waits for the `ReadBlob` scoped to the run; G035-067 for the SQL result). `ICEBERG_LIMIT_EXCEEDED`: a document over the 4 MiB the runner reads.
+  - *Evidence.* Pure: `lake_lease_document` (7 tests in `contract_iceberg_writes`, 42 in all; the suite did not compile without the module): the records are
+    the selected values and the reader reads them back, an empty selection, the strictest limits, each non-list-of-objects, the two unserved sources, an
+    oversized document is exactly `ICEBERG_LIMIT_EXCEEDED`. Real store (`lake_lease::run` in `integration_database_connections`, **written first and seen
+    failing: the poll returned nothing**): the runner is handed the step and its own reader accepts the document, and every lake task it is handed; the
+    effect key equals the task's key; the records are the selected values; no secret name travels; no `DatabaseDenied` audit for a healthy claim; a
+    **second attempt** after a retryable `CATALOG_UNAVAILABLE` has attempt 2, the same effect key, the same `firstAttemptStartedAt` and
+    `priorAttemptMayHaveLeftFiles: true`; a run without `rows` is not leased and fails once with `DATABASE_CONFIGURATION_INVALID` and the run is `Failed`; a
+    process with the lake off leases nothing, a paused connection stops the claim of a run admitted on it, and released the run is leased; and **eight
+    lake attempts at once in a namespace**, counting those leased before. The first lease test was written before the code; the edge cases after it, so **six hand mutations stand in for their red runs, all killed**:
+    no prior attempt reported, the first instant made up again, an unleasable input retryable, the namespace budget unbounded, the count of a lake attempt the
+    other kind's, and the claim ignoring the leasing process's switch. fmt and clippy `-D warnings`; the tests of `sagat-application` and the store;
+    `integration_database_connections` 7 and as the runtime role 7; `integration_database_runner`; `integration_iceberg_writes` 50;
+    `integration_durable_execution` 179; `integration_security_multitenancy` 126; the `database-connections` SDK scenario in Go, C#, Java and Rust against
+    the real runner.
+  - *Closes* G035-075 (a healthy lake claim is not a denial) and the SQL half of G035-074 (the SQL count excludes lake attempts).
+  - *Not done.* `ResolveDatabase` for a lake step: a runner that is handed the step cannot yet get its credentials (slice C, with the two-secret pin and
+    the sum type); the completion and failure reports of a lake step and the revert (F); `ReadBlob` scoped to the run, and with it the blob and
+    database-result record sources; the lake quota rows and the kind-aware `quotas.rs` and `database_results.rs` (G035-074's other half, T035-055);
+    the runner's own shell (G). Not tested: a secret pool that refuses the catalog secret or the storage secret separately, a role revoked between
+    registration and poll, and the document's limits after the connection was tightened (they come from the pinned revision by construction).
 - **G035-073 — A refused run of an Iceberg write is neither opaque nor audited at creation.** `audit_database_denial` (`runs.rs`) audits only
   `DatabaseUnavailable` and `DatabaseLimit`, and `LakeRefused` keeps its detail (the node, the field paths and classification levels) for a caller who holds
   `run:start` and `database:use`, where a refused SQL run is an opaque `NotFound`. The detail is the publisher's to see; a starter is not that person.
@@ -2971,8 +3015,11 @@ The other fixes were wording:
   route (`database_results.rs`) join `run_database_connections` without the kind of the connection, so a lake step that leases would consume the SQL
   budgets and a finished one would be readable through `database:result:read`. Latent: no lake step leases yet. *Exit condition:* before the first
   lake lease (slices C and F): filter by the managed kind, and give lake attempts their own quota rows (T035-055).
+  *2026-11-08, half closed by D035-138:* a lake step now leases; the SQL concurrency count excludes lake attempts and lake attempts have a budget of their
+  own (constants). Still open, and now reachable: the count in `quotas.rs`, the SQL result route (`database_results.rs`), and the quota rows.
 - **G035-075 — With the lake on, a lake runner's claim is refused and audited at every poll.** The snapshot and the admission of a claim read the SQL
   operation and the SQL secret of the node. Bounded by the poll rate, and a deployment is told not to turn the lake on yet. *Exit condition:* slice C.
+  *2026-11-08, closed by D035-138:* a lake claim reads the pool refusal over the connection's secrets and the lake budget, and a healthy one writes no denial.
 - **G035-076 — With the lake off, the replay of the start of a run that exists answers `NotFound`.** The run was created while the lake was on and is
   still running; a client retry is told the creation failed. It is what "refused as before" does to a run that exists. *Exit condition:* decide with
   T035-055 whether the replay of an existing run bypasses the switch (the pins exist), or the switch is documented as one that is not turned off while

@@ -1143,12 +1143,15 @@ where
             }
             // Measure the actual serialized context before granting any lease. Raw output sizes
             // do not bound it: JSON number normalization can expand a compact stored document.
-            let managed = instance.path().is_root()
-                && tx
-                    .parts()
+            let kind = if instance.path().is_root() {
+                tx.parts()
                     .0
                     .node_for_instance(&instance)
-                    .is_some_and(|n| n.managed_kind().is_some());
+                    .and_then(sagat_domain::workflow::Node::managed_kind)
+            } else {
+                None
+            };
+            let managed = kind.is_some();
             let input = if managed {
                 b"{}".to_vec()
             } else {
@@ -1179,7 +1182,11 @@ where
                 let denied = match admitted {
                     Ok(true) => false,
                     Ok(false)
-                    | Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => true,
+                    | Err(
+                        StoreError::DatabaseUnavailable
+                        | StoreError::DatabaseLimit
+                        | StoreError::LakeRefused { .. },
+                    ) => true,
                     Err(error) => return Err(error.into()),
                 };
                 if denied {
@@ -1207,6 +1214,41 @@ where
                     );
                     tx.persist(&[], effects).await?;
                     continue;
+                }
+            }
+            // The attempt input of an Iceberg write is made from the run's own data, after the claim was admitted, so
+            // that a runner which fails the role, pool or concurrency checks cannot cause a permanent failure. What cannot
+            // be made is a permanent failure of the step, with a closed code, and no lease (D035-138).
+            let input = if kind == Some(sagat_domain::database::ManagedKind::Lake) {
+                match self.lake_lease_input(&mut tx, &instance).await? {
+                    Ok(document) => document,
+                    Err(failure) => {
+                        let code =
+                            FailureCode::parse(failure.code()).map_err(|_| AppError::Internal)?;
+                        match self
+                            .reject_input(&mut tx, session, &instance, code, "lake_input", trace_id)
+                            .await
+                        {
+                            Ok(()) | Err(AppError::StateConflict(_)) => break,
+                            Err(other) => return Err(other),
+                        }
+                    }
+                }
+            } else {
+                input
+            };
+            if kind == Some(sagat_domain::database::ManagedKind::Lake) {
+                if input.len() > MAX_TASK_INPUT_BYTES {
+                    match self
+                        .reject_large_input(&mut tx, session, &instance, trace_id)
+                        .await
+                    {
+                        Ok(()) | Err(AppError::StateConflict(_)) => break,
+                        Err(other) => return Err(other),
+                    }
+                }
+                if input.len() > byte_budget - *bytes - run_bytes {
+                    break;
                 }
             }
             // The quota decision and READY -> LEASED transition share this run transaction. Its
@@ -1270,6 +1312,28 @@ where
         instance: &ExecutionInstanceId,
         trace_id: Option<&str>,
     ) -> Result<(), AppError> {
+        self.reject_input(
+            tx,
+            session,
+            instance,
+            FailureCode::run_data_limit(),
+            "run_data_limit",
+            trace_id,
+        )
+        .await
+    }
+
+    /// As [`Self::reject_large_input`] for any input that cannot be made: the step fails permanently with `code`, and
+    /// `reason` is the label of the metric. Nothing is leased and no token exists.
+    async fn reject_input<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        session: &SessionRecord,
+        instance: &ExecutionInstanceId,
+        code: FailureCode,
+        reason: &'static str,
+        trace_id: Option<&str>,
+    ) -> Result<(), AppError> {
         let effects = Effects::by(
             Actor::Worker(session.id.to_string()),
             trace_id.map(str::to_owned),
@@ -1285,7 +1349,7 @@ where
                         node,
                         execution::Failure {
                             fence,
-                            code: FailureCode::run_data_limit(),
+                            code: code.clone(),
                             retryable: false,
                             jitter_sample: 0.0,
                         },
@@ -1307,7 +1371,7 @@ where
                         &instance,
                         execution::Failure {
                             fence,
-                            code: FailureCode::run_data_limit(),
+                            code,
                             retryable: false,
                             jitter_sample: 0.0,
                         },
@@ -1319,9 +1383,62 @@ where
                 .await
                 .map_err(engine_error)?;
         }
-        metrics::counter!("worker_task_input_rejected_total", "reason" => "run_data_limit")
-            .increment(1);
+        metrics::counter!("worker_task_input_rejected_total", "reason" => reason).increment(1);
         Ok(())
+    }
+
+    /// The `input_json` of the lease of an Iceberg write, or the closed failure that says why it cannot be made. The outer
+    /// error is the store's (or a bug's); the inner one is the data's, and permanent.
+    async fn lake_lease_input<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Result<Vec<u8>, sagat_domain::database::DatabaseFailure>, AppError> {
+        let node = instance.node();
+        let facts = tx.lake_lease_facts(node).await?;
+        let info = tx.info().clone();
+        let write = tx
+            .parts()
+            .0
+            .node(node)
+            .and_then(sagat_domain::workflow::Node::iceberg_write)
+            .cloned()
+            .ok_or(AppError::Internal)?;
+        let workflow = tx.parts().0.name().as_str().to_owned();
+        let attempts = tx
+            .parts()
+            .1
+            .instance(instance)
+            .map_or(0, sagat_domain::execution::StepState::attempt);
+        // An earlier attempt has to be in the journal: without it the instant of the first one is unknown, and a document
+        // that guessed it would let a retry look for what an earlier attempt wrote in the wrong window.
+        if attempts > 0 && facts.first_leased_at.is_none() {
+            return Err(AppError::Internal);
+        }
+        let first_attempt_started_at = facts.first_leased_at.unwrap_or_else(|| tx.now());
+        let template = Self::task_template(tx.parts().0, instance);
+        let data = tx.data().await?;
+        let (_, effect_key, _) = self.task_identity(template, data, &info, instance)?;
+        let step_id = instance_step_id(info.version_id, info.run_id, instance).to_string();
+        let run_id = info.run_id.to_string();
+        let workflow_version = facts.workflow_version.to_string();
+        let lake_facts = lake_input::LakeFacts {
+            effect_key: &effect_key,
+            first_attempt_started_at,
+            run_id: &run_id,
+            step_id: &step_id,
+            workflow: &workflow,
+            workflow_version: &workflow_version,
+            prior_attempt_may_have_left_files: facts.first_leased_at.is_some(),
+            allow_empty: false,
+        };
+        Ok(lake_lease::lake_lease_document(
+            self.engine.evaluator(),
+            &write,
+            data,
+            &lake_facts,
+            facts.connection_limits,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)] // the already-bounded input belongs to this lease

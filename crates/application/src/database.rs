@@ -27,6 +27,17 @@ pub struct ConnectionRecord {
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
+/// What the lease of a lake step needs from the store, read in the lease transaction (feature 035, D035-138).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LakeLeaseFacts {
+    /// The limits of the connection at the revision the run was admitted with, not the revision in force.
+    pub connection_limits: sagat_domain::database::LakeLimits,
+    /// The number of the published version of the workflow the run is of.
+    pub workflow_version: u32,
+    /// When the first attempt of the step was leased, by the database's clock; `None` while no attempt has been.
+    pub first_leased_at: Option<OffsetDateTime>,
+}
+
 /// Metadata selected under current run/ACL locks. It is compared again after provider I/O.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatabaseInput {

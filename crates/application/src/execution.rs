@@ -1175,6 +1175,15 @@ pub trait RunTx: Send {
         async { Ok(false) }
     }
 
+    /// What the lease of an Iceberg write needs: the limits of the connection it was admitted with, the number of the
+    /// workflow version, and when its first attempt was leased. Unsupported stores fail closed.
+    fn lake_lease_facts(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<crate::database::LakeLeaseFacts, StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
     /// Selected immutable connection and credential metadata; no provider I/O occurs here.
     fn database_input(
         &mut self,
