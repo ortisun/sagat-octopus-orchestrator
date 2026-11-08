@@ -10,6 +10,7 @@
 
 mod database;
 pub mod lake_input;
+pub mod lake_lease;
 mod output;
 mod scoped;
 mod scoped_capabilities;
