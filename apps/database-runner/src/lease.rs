@@ -24,6 +24,20 @@ pub(crate) enum LeaseEnd {
     Lost,
 }
 
+/// How the heartbeats of a profile judge what happens to a lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Policy {
+    /// What the SQL attempt has always had: the first heartbeat that fails ends the lease, and so does a cancel (the end of a heartbeat
+    /// cancels the statement, which is never retried).
+    Sql,
+    /// What a lake write needs (D035-143). A heartbeat that fails in a way a retry may mend (the control plane unavailable, a timeout, a
+    /// rate limit) is tried again until the lease expires, so one network blip does not kill a write that is under way; one that is refused
+    /// ends the lease at once, and so does the expiry. A cancel the control plane asks for is signalled, and **the lease keeps being
+    /// renewed**: the attempt still has a report to make (a write that was started is reported as unknown), and a lease that ran out while
+    /// the container was being killed would lose it.
+    Lake,
+}
+
 pub(crate) struct Heartbeat {
     latest: watch::Receiver<Instant>,
     stop: CancellationToken,
@@ -37,7 +51,8 @@ impl Heartbeat {
         lease: &pb::TaskLease,
         worker_id: String,
         initial: Instant,
-        on_end: impl FnOnce(LeaseEnd) + Send + 'static,
+        policy: Policy,
+        mut on_end: impl FnMut(LeaseEnd) + Send + 'static,
     ) -> Self {
         let (updates, latest) = watch::channel(initial);
         let stop = CancellationToken::new();
@@ -54,6 +69,7 @@ impl Heartbeat {
         };
         let join = tokio::spawn(async move {
             let mut expires = initial;
+            let mut cancel_signalled = false;
             let end = loop {
                 let remaining = expires.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
@@ -73,11 +89,23 @@ impl Heartbeat {
                         .map_err(Failure::from)
                 })
                 .await;
-                let Ok(Ok(response)) = response else {
-                    break LeaseEnd::Lost;
+                let response = match response {
+                    Ok(Ok(response)) => response,
+                    // a failure a retry may mend: tried again after the pause, until the lease runs out (the top of the loop)
+                    Ok(Err(failure)) if policy == Policy::Lake && failure.retryable() => {
+                        continue;
+                    }
+                    // refused, or the lease ran out while the call was waiting
+                    Ok(Err(_)) | Err(_) => break LeaseEnd::Lost,
                 };
                 if response.cancel_requested {
-                    break LeaseEnd::CancelRequested;
+                    if policy == Policy::Sql {
+                        break LeaseEnd::CancelRequested;
+                    }
+                    if !cancel_signalled {
+                        cancel_signalled = true;
+                        on_end(LeaseEnd::CancelRequested);
+                    }
                 }
                 let Some(next) = capability::deadline(response.lease_expires_at_epoch_ms) else {
                     break LeaseEnd::Lost;
@@ -265,7 +293,7 @@ mod tests {
     }
 
     /// Starts heartbeats with a lease that lasts `lasts`, and says how they ended and how long it took.
-    async fn ended_after(fake: &Fake, lasts: Duration) -> (LeaseEnd, Duration) {
+    async fn ended_after(fake: &Fake, lasts: Duration, policy: Policy) -> (LeaseEnd, Duration) {
         let (rpc, _server, _home) = rpc(fake).await;
         let (ended, end) = oneshot::channel();
         let started = Instant::now();
@@ -274,8 +302,15 @@ mod tests {
             &lease(),
             uuid::Uuid::from_u128(7).to_string(),
             started + lasts,
-            move |end| {
-                let _ = ended.send(end);
+            policy,
+            {
+                let mut ended = Some(ended);
+
+                move |end| {
+                    if let Some(ended) = ended.take() {
+                        let _ = ended.send(end);
+                    }
+                }
             },
         );
         let end = tokio::time::timeout(Duration::from_secs(20), end)
@@ -286,7 +321,9 @@ mod tests {
     }
 
     async fn ended(fake: &Fake) -> LeaseEnd {
-        ended_after(fake, Duration::from_millis(600)).await.0
+        ended_after(fake, Duration::from_millis(600), Policy::Sql)
+            .await
+            .0
     }
 
     #[tokio::test]
@@ -320,9 +357,143 @@ mod tests {
             }));
         });
         // an answer with no expiry ends the lease at once, not when the expiry it had runs out
-        let (end, elapsed) = ended_after(&without, Duration::from_secs(6)).await;
+        let (end, elapsed) = ended_after(&without, Duration::from_secs(6), Policy::Sql).await;
         assert_eq!(end, LeaseEnd::Lost);
         assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn a_heartbeat_that_fails_for_a_moment_ends_a_strict_lease_and_not_a_tolerant_one() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // two beats the control plane cannot answer, then it can: a blip, not a lost lease
+        let blip = || {
+            let fake = Fake::default();
+            let beats = std::sync::Arc::new(AtomicUsize::new(0));
+            fake.with(|script| {
+                script.heartbeat = Some(Box::new(move |_| {
+                    if beats.fetch_add(1, Ordering::SeqCst) < 2 {
+                        Err(Status::unavailable("a blip"))
+                    } else {
+                        Ok(pb::HeartbeatResponse {
+                            lease_expires_at_epoch_ms: epoch_ms_in(Duration::from_secs(60)),
+                            cancel_requested: false,
+                        })
+                    }
+                }));
+            });
+            fake
+        };
+        let (end, _) = ended_after(&blip(), Duration::from_secs(2), Policy::Sql).await;
+        assert_eq!(
+            end,
+            LeaseEnd::Lost,
+            "the SQL attempt has always ended on the first"
+        );
+        // the tolerant lease is still renewed when the third beat is answered
+        let fake = blip();
+        let (rpc, _server, _home) = rpc(&fake).await;
+        let (ended, mut end) = oneshot::channel();
+        let heartbeat = Heartbeat::start(
+            rpc,
+            &lease(),
+            uuid::Uuid::from_u128(7).to_string(),
+            Instant::now() + Duration::from_secs(2),
+            Policy::Lake,
+            {
+                let mut ended = Some(ended);
+
+                move |end| {
+                    if let Some(ended) = ended.take() {
+                        let _ = ended.send(end);
+                    }
+                }
+            },
+        );
+        fake.until("the third heartbeat", |script| script.heartbeats.len() >= 3)
+            .await;
+        assert!(
+            end.try_recv().is_err(),
+            "a blip is not the end of the lease"
+        );
+        heartbeat.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_tolerant_lease_still_ends_when_it_is_refused_or_when_it_runs_out() {
+        let refused = Fake::default();
+        refused.with(|script| {
+            script.heartbeat = Some(Box::new(|_| Err(Status::permission_denied("not yours"))));
+        });
+        let (end, elapsed) = ended_after(&refused, Duration::from_secs(6), Policy::Lake).await;
+        assert_eq!(end, LeaseEnd::Lost);
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "a refusal is not waited out: {elapsed:?}"
+        );
+        // a control plane that never answers: the lease ends at its own expiry, not before and not never
+        let silent = Fake::default();
+        silent.with(|script| {
+            script.heartbeat = Some(Box::new(|_| Err(Status::unavailable("down"))));
+        });
+        let lasts = Duration::from_millis(900);
+        let (end, elapsed) = ended_after(&silent, lasts, Policy::Lake).await;
+        assert_eq!(end, LeaseEnd::Lost);
+        assert!(
+            elapsed >= lasts,
+            "not before the lease expires: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lake_lease_that_is_asked_to_cancel_is_signalled_once_and_keeps_being_renewed() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let fake = Fake::default();
+        let beats = std::sync::Arc::new(AtomicUsize::new(0));
+        fake.with(|script| {
+            let beats = std::sync::Arc::clone(&beats);
+            script.heartbeat = Some(Box::new(move |_| {
+                // the control plane asks for the cancel at every beat and then, at the fourth, no longer knows the lease
+                if beats.fetch_add(1, Ordering::SeqCst) < 3 {
+                    Ok(pb::HeartbeatResponse {
+                        lease_expires_at_epoch_ms: epoch_ms_in(Duration::from_secs(60)),
+                        cancel_requested: true,
+                    })
+                } else {
+                    Err(Status::permission_denied("not yours"))
+                }
+            }));
+        });
+        let (rpc, _server, _home) = rpc(&fake).await;
+        let (events, mut seen) = tokio::sync::mpsc::unbounded_channel();
+        let heartbeat = Heartbeat::start(
+            rpc,
+            &lease(),
+            uuid::Uuid::from_u128(7).to_string(),
+            Instant::now() + Duration::from_millis(900),
+            Policy::Lake,
+            move |end| {
+                let _ = events.send(end);
+            },
+        );
+        fake.until("the fourth heartbeat", |script| {
+            script.heartbeats.len() >= 4
+        })
+        .await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(20), seen.recv()).await,
+            Ok(Some(LeaseEnd::CancelRequested))
+        );
+        // the lease was renewed after the cancel was asked for: its deadline is the one the third answer gave, not the one it started with
+        assert!(
+            heartbeat.deadline(Instant::now() + Duration::from_secs(3600))
+                > Instant::now() + Duration::from_secs(30)
+        );
+        // and a lease that is then lost is signalled as lost, after the cancel and not instead of it
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(20), seen.recv()).await,
+            Ok(Some(LeaseEnd::Lost))
+        );
+        heartbeat.finish().await;
     }
 
     #[tokio::test]
@@ -335,8 +506,15 @@ mod tests {
             &lease(),
             uuid::Uuid::from_u128(7).to_string(),
             Instant::now() + Duration::from_millis(600),
-            move |end| {
-                let _ = ended.send(end);
+            Policy::Sql,
+            {
+                let mut ended = Some(ended);
+
+                move |end| {
+                    if let Some(ended) = ended.take() {
+                        let _ = ended.send(end);
+                    }
+                }
             },
         );
         fake.until("two heartbeats", |script| script.heartbeats.len() >= 2)
@@ -377,6 +555,7 @@ mod tests {
             &lease,
             uuid::Uuid::from_u128(7).to_string(),
             Instant::now() + Duration::from_secs(60),
+            Policy::Sql,
             |_| {},
         );
         let report = Report::Complete {
@@ -405,6 +584,7 @@ mod tests {
             &lease,
             uuid::Uuid::from_u128(7).to_string(),
             Instant::now() + Duration::from_secs(60),
+            Policy::Sql,
             |_| {},
         );
         for (profile, retryable) in [("database", false), ("lake", true)] {

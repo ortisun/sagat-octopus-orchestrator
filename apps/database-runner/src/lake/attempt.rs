@@ -13,6 +13,7 @@
 //! - *the report* is the driver's, sent with the flag the contract gives its code: `CompleteStep` with the receipt, `FailStep`
 //!   with a closed code, or nothing at all when the lease is gone. A completion the control plane refuses as not the step's
 //!   becomes `LAKE_HOST_PROTOCOL`: the host did not keep the protocol.
+use std::future::Future;
 use std::sync::Arc;
 
 use sagat_api_grpc::pb;
@@ -29,12 +30,12 @@ use sagat_telemetry::lake::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::driver::{Driver, Finished, Report as Finish};
+use super::driver::{Admitted, Driver, Finished, Report as Finish};
 use super::prepare::Blobs;
 use super::resolve::decode;
 use crate::{
     RunnerError, capability,
-    lease::{Heartbeat, LeaseEnd, Report, Unreported, report_until_ack},
+    lease::{Heartbeat, LeaseEnd, Policy, Report, Unreported, report_until_ack},
     rpc::Rpc,
 };
 
@@ -42,6 +43,14 @@ pub(crate) struct Task {
     pub lease: pb::TaskLease,
     pub namespace: NamespaceId,
     pub worker_id: String,
+}
+
+/// How a lease ended for the runner's books: told to the control plane, or given up with nothing to tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Disposition {
+    Reported,
+    /// The lease is gone, or the control plane could not be asked before anything was written: no report, and the lease expires on its own.
+    Abandoned,
 }
 
 /// What an attempt tells the control plane, or nothing.
@@ -82,18 +91,39 @@ fn serves(lease: &pb::TaskLease) -> bool {
         && matches!(lease.task_kind.as_str(), "" | "FORWARD")
 }
 
+/// Starts one lake lease. **The attempt is admitted here, when the lease is spawned, and not later inside the task**: a slot is taken
+/// before the serve loop looks at its free slots again, so that what it counts is exact. (Taking it inside the task left a window in
+/// which the loop spawned more attempts than there were free slots whenever a slot was held back for a container that might still be
+/// running.) The returned future holds the slot until the lease is over.
+pub(crate) fn launch<S, B, R, C>(
+    rpc: Rpc,
+    task: Task,
+    driver: Driver<S, B, R, C>,
+    drain: CancellationToken,
+) -> impl Future<Output = Result<Disposition, RunnerError>> + Send
+where
+    S: LakeSandbox,
+    B: Blobs,
+    R: Resolver + Clone,
+    C: Connector + Clone,
+{
+    let admission = serves(&task.lease).then(|| driver.admit(task.lease.input_json.as_bytes()));
+    run(rpc, task, driver, admission, drain)
+}
+
 /// Runs one lake lease to its report. `drain` is the runner's: once it is cancelled the lease is given up as lost, never cancelled,
 /// so a write that is under way is not reported as unknown by a rollout (the control plane's lease expiry decides what happens to it).
 ///
 /// # Errors
 /// [`RunnerError::Capability`] for a lease this profile does not serve, and [`RunnerError::Transport`] when the report did not
 /// reach the control plane.
-pub(crate) async fn run<S, B, R, C>(
+async fn run<S, B, R, C>(
     rpc: Rpc,
     task: Task,
     driver: Driver<S, B, R, C>,
+    admission: Option<Result<Admitted, Finished>>,
     drain: CancellationToken,
-) -> Result<(), RunnerError>
+) -> Result<Disposition, RunnerError>
 where
     S: LakeSandbox,
     B: Blobs,
@@ -102,64 +132,92 @@ where
 {
     let lease = &task.lease;
     let initial = capability::deadline(lease.expires_at_epoch_ms).ok_or(RunnerError::Capability)?;
-    if !serves(lease) {
-        return Err(RunnerError::Capability);
-    }
+    // a lease this profile does not serve gave up its slot with the admission that was never made
+    let admission = admission.ok_or(RunnerError::Capability)?;
     let signals = Arc::new(Signals {
         cancelled: CancellationToken::new(),
         lease_lost: drain.child_token(),
     });
-    let heartbeat = Heartbeat::start(rpc.clone(), lease, task.worker_id.clone(), initial, {
-        let signals = Arc::clone(&signals);
-        move |end| match end {
-            LeaseEnd::CancelRequested => signals.cancelled.cancel(),
-            LeaseEnd::Lost => signals.lease_lost.cancel(),
+    let heartbeat = Heartbeat::start(
+        rpc.clone(),
+        lease,
+        task.worker_id.clone(),
+        initial,
+        Policy::Lake,
+        {
+            let signals = Arc::clone(&signals);
+            move |end| match end {
+                LeaseEnd::CancelRequested => signals.cancelled.cancel(),
+                LeaseEnd::Lost => signals.lease_lost.cancel(),
+            }
+        },
+    );
+    let (outcome, written) = execute(&rpc, &task, &driver, admission, &signals).await;
+    let (result, sent) = match outcome {
+        Outcome::Nothing => (Ok(Disposition::Abandoned), Sent::Nothing),
+        Outcome::Report(report) => {
+            let (result, sent) = send(&rpc, lease, report, &heartbeat).await;
+            (result.map(|()| Disposition::Reported), sent)
         }
-    });
-    let outcome = execute(&rpc, &task, &driver, &signals).await;
-    let result = match outcome {
-        Outcome::Nothing => Ok(()),
-        Outcome::Report(report) => send(&rpc, lease, report, &heartbeat).await,
     };
+    record_written(written, sent);
     heartbeat.finish().await;
     result
+}
+
+/// What an attempt that reached a container says to the metrics about its write, once the report is settled.
+type Written = Option<(Labels, LakeWriteOutcome)>;
+
+/// The write is counted when it is settled, not when the host answered: a receipt the control plane refused is a write that failed.
+fn record_written(written: Written, sent: Sent) {
+    if let Some((labels, outcome)) = written {
+        let outcome = if sent == Sent::Downgraded {
+            LakeWriteOutcome::Failed
+        } else {
+            outcome
+        };
+        // append is the only mode this delivery writes
+        record_write(LakeMode::Append, labels.catalog, labels.storage, outcome);
+    }
 }
 
 async fn execute<S, B, R, C>(
     rpc: &Rpc,
     task: &Task,
     driver: &Driver<S, B, R, C>,
+    admission: Result<Admitted, Finished>,
     signals: &Signals,
-) -> Outcome
+) -> (Outcome, Written)
 where
     S: LakeSandbox,
     B: Blobs,
     R: Resolver + Clone,
     C: Connector + Clone,
 {
-    let lease = &task.lease;
     // before the connection is asked for: a full node or an input that is not one costs no disclosure
-    let admitted = match driver.admit(lease.input_json.as_bytes()) {
+    let admitted = match admission {
         Ok(admitted) => admitted,
-        Err(finished) => return outcome_of(finished),
+        Err(finished) => return (outcome_of(finished), None),
     };
     let connection = tokio::select! {
         biased;
-        () = signals.lease_lost.cancelled() => return Outcome::Nothing,
-        () = signals.cancelled.cancelled() => return failed(DatabaseFailure::Cancelled),
+        () = signals.lease_lost.cancelled() => return (Outcome::Nothing, None),
+        () = signals.cancelled.cancelled() => return (failed(DatabaseFailure::Cancelled), None),
         connection = resolve(rpc, task) => connection,
     };
     let connection = match connection {
         Ok(connection) => connection,
         // the slot goes back with the admission
-        Err(code) => return failed(code),
+        Err(Unresolved::Failed(code)) => return (failed(code), None),
+        Err(Unresolved::Transient) => return (Outcome::Nothing, None),
     };
     let labels = Labels::of(&connection);
     let finished = driver
         .run_admitted(admitted, connection, signals, || {})
         .await;
-    record(&finished, labels);
-    outcome_of(finished)
+    record_container(&finished);
+    let written = write_outcome(&finished).map(|outcome| (labels, outcome));
+    (outcome_of(finished), written)
 }
 
 /// The labels of the metrics of a write that come from its connection: closed sets, never a connection, a table or a run.
@@ -186,9 +244,9 @@ impl Labels {
     }
 }
 
-/// What the attempt tells the metrics: how the container ended, what the relay refused, and how the write ended. Nothing but the
-/// closed vocabulary of the telemetry crate can be said here. A write that never reached a container is not a write.
-fn record(finished: &Finished, labels: Labels) {
+/// What the container's attempt tells the metrics at once: how it ended, what the relay refused, and whether its directory had to be
+/// kept for the sweep. Nothing but the closed vocabulary of the telemetry crate, and a count, can be said here.
+fn record_container(finished: &Finished) {
     if let Some(exit) = finished.exit {
         record_sandbox_exit(exit);
     }
@@ -210,11 +268,20 @@ fn record(finished: &Finished, labels: Labels) {
             record_relay_denial(reason);
         }
     }
-    if finished.cause.is_some() {
-        return;
+    // a directory that could not be removed, or whose container was not confirmed gone, is left to the sweep: that is worth seeing
+    if finished.left.is_some() {
+        metrics::counter!("database_runner_lake_directories_total", "outcome" => "kept")
+            .increment(1);
     }
-    // append is the only mode this delivery writes
-    let outcome = match &finished.report {
+}
+
+/// How the write ended, as the metrics say it: `None` for an attempt that never reached a container, which is not a write, and for a
+/// lease that is gone, which has no outcome.
+fn write_outcome(finished: &Finished) -> Option<LakeWriteOutcome> {
+    if finished.cause.is_some() {
+        return None;
+    }
+    Some(match &finished.report {
         Finish::Complete(receipt) => match &**receipt {
             Receipt::Iceberg(committed) => match committed.outcome {
                 IcebergOutcome::Committed => LakeWriteOutcome::Committed,
@@ -227,28 +294,59 @@ fn record(finished: &Finished, labels: Labels) {
             LakeWriteOutcome::Unknown
         }
         Finish::Fail(_) => LakeWriteOutcome::Failed,
-        Finish::Abandon => return,
-    };
-    record_write(LakeMode::Append, labels.catalog, labels.storage, outcome);
+        Finish::Abandon => return None,
+    })
+}
+
+/// Why the connection of a lease could not be had.
+enum Unresolved {
+    /// The control plane said no, or the answer is not one the runner reads: the step fails with this code.
+    Failed(DatabaseFailure),
+    /// The control plane could not answer now (unavailable, slow, rate limited, a conflict, an error of its own). Nothing was written and
+    /// no secret was disclosed, so the step is not failed: the lease is given up and expires, and the step is leased again. Failing it
+    /// would spend an attempt and, for a code that is not retryable, the step itself, on a blip.
+    Transient,
 }
 
 /// Asks the control plane for the connection of the lease, and reads it.
-async fn resolve(rpc: &Rpc, task: &Task) -> Result<super::connection::Converted, DatabaseFailure> {
+async fn resolve(rpc: &Rpc, task: &Task) -> Result<super::connection::Converted, Unresolved> {
     let request = rpc
         .request(crate::rpc::task(&task.lease))
         .await
-        .map_err(|_| DatabaseFailure::Credential)?;
+        .map_err(|_| Unresolved::Failed(DatabaseFailure::Credential))?;
     let response = rpc
         .client
         .clone()
         .resolve_database(request)
         .await
         .map_err(|status| match status.code() {
-            tonic::Code::Unavailable | tonic::Code::DeadlineExceeded => DatabaseFailure::Credential,
-            _ => DatabaseFailure::Capability,
+            tonic::Code::Unavailable
+            | tonic::Code::DeadlineExceeded
+            | tonic::Code::ResourceExhausted
+            | tonic::Code::Aborted
+            | tonic::Code::Internal => Unresolved::Transient,
+            _ => Unresolved::Failed(DatabaseFailure::Capability),
         })?
         .into_inner();
-    decode(response, task.namespace)
+    // the tenant is known from here: it belongs in the span, with the identifiers the poll put there, and in no metric
+    if let Ok(tenant) = response
+        .tenant_id
+        .parse::<sagat_domain::identity::TenantId>()
+    {
+        tracing::Span::current().record("tenant_id", tracing::field::display(tenant));
+    }
+    decode(response, task.namespace).map_err(Unresolved::Failed)
+}
+
+/// What became of the report, for the metrics of the write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sent {
+    /// There was nothing to send.
+    Nothing,
+    /// Sent as it was, or not delivered at all.
+    AsIs,
+    /// A completion the control plane refused was sent as a failure instead.
+    Downgraded,
 }
 
 /// Sends the report. A completion the control plane refuses as invalid is the host's breach of the protocol: the step is failed
@@ -258,9 +356,9 @@ async fn send(
     lease: &pb::TaskLease,
     report: Report,
     heartbeat: &Heartbeat,
-) -> Result<(), RunnerError> {
+) -> (Result<(), RunnerError>, Sent) {
     match report_until_ack(rpc, lease, "lake", &report, heartbeat).await {
-        Ok(()) => Ok(()),
+        Ok(()) => (Ok(()), Sent::AsIs),
         Err(Unreported::Refused(tonic::Code::InvalidArgument))
             if matches!(report, Report::Complete { .. }) =>
         {
@@ -269,13 +367,15 @@ async fn send(
                 code: protocol.code(),
                 retryable: protocol.retryable(),
             };
-            report_until_ack(rpc, lease, "lake", &report, heartbeat)
+            let result = report_until_ack(rpc, lease, "lake", &report, heartbeat)
                 .await
-                .map_err(|_| RunnerError::Transport)
+                .map_err(|_| RunnerError::Transport);
+            (result, Sent::Downgraded)
         }
-        Err(_) => Err(RunnerError::Transport),
+        Err(_) => (Err(RunnerError::Transport), Sent::AsIs),
     }
 }
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -288,8 +388,8 @@ mod tests {
     use tonic::Status;
 
     use super::super::doubles::{
-        NoBlobs, NoDns, NoNetwork, Script, Scripted, World, answer, plain_failure_line,
-        receipt_line, world,
+        NoBlobs, NoDns, NoNetwork, Script, Scripted, SharedSandbox, World, answer,
+        plain_failure_line, receipt_line, world,
     };
     use super::super::fixtures::{input_json, my_uid, resolved_database, settings};
     use super::*;
@@ -335,17 +435,17 @@ mod tests {
             .for_tests(|_| Some(my_uid()))
         }
 
-        async fn run(
+        async fn run<S: LakeSandbox>(
             &self,
             lease: pb::TaskLease,
-            driver: Driver<Scripted, NoBlobs, NoDns, NoNetwork>,
-        ) -> Result<(), RunnerError> {
+            driver: Driver<S, NoBlobs, NoDns, NoNetwork>,
+        ) -> Result<Disposition, RunnerError> {
             let task = Task {
                 lease,
                 namespace: NAMESPACE_ID.parse().unwrap(),
                 worker_id: uuid::Uuid::from_u128(7).to_string(),
             };
-            run(self.rpc.clone(), task, driver, CancellationToken::new()).await
+            launch(self.rpc.clone(), task, driver, CancellationToken::new()).await
         }
     }
 
@@ -458,6 +558,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_slot_of_a_lease_is_taken_when_it_is_launched_and_not_when_the_task_first_runs() {
+        let setup = setup().await;
+        let driver = setup.driver(answer(receipt_line()));
+        let slots = std::sync::Arc::clone(driver.slots());
+        let task = Task {
+            lease: lease(Duration::from_secs(60)),
+            namespace: NAMESPACE_ID.parse().unwrap(),
+            worker_id: uuid::Uuid::from_u128(7).to_string(),
+        };
+        // the future has not been polled: the runner counts its free slots right after it spawns, and the count must already be exact
+        let launched = launch(setup.rpc.clone(), task, driver, CancellationToken::new());
+        assert_eq!(slots.in_use(), 1);
+        drop(launched);
+        assert_eq!(
+            slots.in_use(),
+            0,
+            "and a lease that is dropped gives it back"
+        );
+        // a lease the profile does not serve never takes one
+        let driver = setup.driver(answer(receipt_line()));
+        let slots = std::sync::Arc::clone(driver.slots());
+        let mut other = lease(Duration::from_secs(60));
+        other.activity_name = "sagat.database.postgresql".into();
+        let task = Task {
+            lease: other,
+            namespace: NAMESPACE_ID.parse().unwrap(),
+            worker_id: uuid::Uuid::from_u128(7).to_string(),
+        };
+        let launched = launch(setup.rpc.clone(), task, driver, CancellationToken::new());
+        assert_eq!(slots.in_use(), 0);
+        assert_eq!(launched.await, Err(RunnerError::Capability));
+    }
+
+    #[tokio::test]
     async fn a_full_node_is_told_and_the_connection_is_never_asked_for() {
         let setup = setup().await;
         let driver = setup.driver(answer(receipt_line()));
@@ -484,6 +618,21 @@ mod tests {
             script.database = Some(resolved_database("00000000-0000-0000-0000-000000000002"));
         });
         let driver = setup.driver(answer(receipt_line()));
+        let slots = std::sync::Arc::clone(driver.slots());
+        let sandbox = std::sync::Arc::new(Scripted::new(
+            setup.world.work.path(),
+            answer(receipt_line()),
+        ));
+        let driver = Driver::with_slots(
+            SharedSandbox(std::sync::Arc::clone(&sandbox)),
+            NoBlobs,
+            NoDns,
+            NoNetwork,
+            settings(setup.world.work.path()),
+            false,
+            slots.clone(),
+        )
+        .for_tests(|_| Some(my_uid()));
         setup
             .run(lease(Duration::from_secs(60)), driver)
             .await
@@ -494,8 +643,8 @@ mod tests {
                 "DATABASE_CAPABILITY_UNAVAILABLE"
             );
         });
-        let nothing = setup.driver(answer(receipt_line()));
-        assert!(nothing.slots().in_use() == 0);
+        assert!(sandbox.asked().is_empty(), "no container was asked for");
+        assert_eq!(slots.in_use(), 0, "and the slot of the lease is back");
     }
 
     #[tokio::test]
@@ -520,6 +669,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_control_plane_that_cannot_answer_for_a_moment_does_not_fail_a_step_that_wrote_nothing()
+     {
+        for code in [
+            tonic::Code::Unavailable,
+            tonic::Code::DeadlineExceeded,
+            tonic::Code::ResourceExhausted,
+            tonic::Code::Aborted,
+            tonic::Code::Internal,
+        ] {
+            let setup = setup().await;
+            setup
+                .fake
+                .with(|script| script.database_error = Some(Status::new(code, "not now")));
+            let driver = setup.driver(answer(receipt_line()));
+            let slots = std::sync::Arc::clone(driver.slots());
+            let ended = setup
+                .run(lease(Duration::from_secs(60)), driver)
+                .await
+                .expect("nothing to report is not a failure");
+            assert_eq!(ended, Disposition::Abandoned, "{code:?}");
+            setup.fake.with(|script| {
+                assert_eq!(script.resolved.len(), 1);
+                assert!(
+                    script.completed.is_empty() && script.failed.is_empty(),
+                    "{code:?}: no write was started, and the lease expires on its own and is leased again"
+                );
+            });
+            assert_eq!(slots.in_use(), 0);
+        }
+        // an answer that says no for good is a failure of the step
+        for code in [tonic::Code::PermissionDenied, tonic::Code::NotFound] {
+            let setup = setup().await;
+            setup
+                .fake
+                .with(|script| script.database_error = Some(Status::new(code, "no")));
+            let driver = setup.driver(answer(receipt_line()));
+            setup
+                .run(lease(Duration::from_secs(60)), driver)
+                .await
+                .expect("reported");
+            setup.fake.with(|script| {
+                assert_eq!(
+                    script.failed[0].error_code, "DATABASE_CAPABILITY_UNAVAILABLE",
+                    "{code:?}"
+                );
+            });
+        }
+    }
+
+    #[tokio::test]
     async fn a_completion_the_control_plane_refuses_as_not_the_step_s_is_a_breach_of_the_protocol()
     {
         let setup = setup().await;
@@ -539,6 +738,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_completion_refused_for_any_other_reason_is_not_turned_into_a_failure() {
+        let setup = setup().await;
+        setup.fake.with(|script| {
+            script.report_errors = [Status::permission_denied("not yours")].into();
+        });
+        let driver = setup.driver(answer(receipt_line()));
+        assert_eq!(
+            setup.run(lease(Duration::from_secs(60)), driver).await,
+            Err(RunnerError::Transport)
+        );
+        setup.fake.with(|script| {
+            assert_eq!(script.completed.len(), 1, "refused once, not retried");
+            assert!(
+                script.failed.is_empty(),
+                "and not reported as another ending"
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn a_cancel_after_the_host_has_the_request_is_an_unknown_outcome_through_the_shell() {
+        let setup = setup().await;
+        let sandbox = std::sync::Arc::new(Scripted::new(setup.world.work.path(), Script::Silent));
+        let driver = Driver::new(
+            SharedSandbox(std::sync::Arc::clone(&sandbox)),
+            NoBlobs,
+            NoDns,
+            NoNetwork,
+            settings(setup.world.work.path()),
+            false,
+        )
+        .for_tests(|_| Some(my_uid()));
+        // the control plane asks for the cancel only once the host has been sent the write
+        let requested = std::sync::Arc::clone(&sandbox.requested);
+        let fake = setup.fake.clone();
+        let asking = tokio::spawn(async move {
+            requested.notified().await;
+            fake.with(|script| {
+                script.heartbeat = Some(Box::new(|_| {
+                    Ok(pb::HeartbeatResponse {
+                        lease_expires_at_epoch_ms: epoch_ms_in(Duration::from_secs(60)),
+                        cancel_requested: true,
+                    })
+                }));
+            });
+        });
+        let ended = setup
+            .run(lease(Duration::from_secs(60)), driver)
+            .await
+            .expect("reported");
+        asking.await.unwrap();
+        assert_eq!(ended, Disposition::Reported);
+        setup.fake.with(|script| {
+            assert_eq!(script.failed[0].error_code, "OUTCOME_UNKNOWN");
+            assert!(
+                !script.failed[0].retryable,
+                "an unknown outcome is never repeated blindly"
+            );
+            assert!(script.completed.is_empty());
+        });
+    }
+
+    #[tokio::test]
     async fn a_lease_that_is_lost_reports_nothing() {
         let setup = setup().await;
         setup.fake.with(|script| {
@@ -546,10 +808,15 @@ mod tests {
         });
         // the host never connects: the attempt is waiting when the heartbeat finds the lease gone
         let driver = setup.driver(Script::NeverConnects);
-        setup
+        let ended = setup
             .run(lease(Duration::from_millis(900)), driver)
             .await
             .expect("nothing to report is not a failure");
+        assert_eq!(
+            ended,
+            Disposition::Abandoned,
+            "and it is not counted as reported"
+        );
         setup.fake.with(|script| {
             assert!(!script.heartbeats.is_empty());
             assert!(script.completed.is_empty() && script.failed.is_empty());
@@ -604,6 +871,15 @@ mod tests {
         }
     }
 
+    /// What the attempt counts for what it finished and how its report was sent: the container at once, the write when it is settled.
+    fn settle(finished: &Finished, sent: Sent) {
+        record_container(finished);
+        record_written(
+            write_outcome(finished).map(|outcome| (labels(), outcome)),
+            sent,
+        );
+    }
+
     /// What was counted, as `name{label=value,...}` and the amount, in order.
     fn seen(counted: Vec<crate::testing::Seen>) -> Vec<(String, u64)> {
         counted
@@ -637,9 +913,9 @@ mod tests {
     #[test]
     fn a_commit_is_counted_by_its_closed_labels_with_how_the_container_ended() {
         let counted = seen(crate::testing::counted(|| {
-            record(
+            settle(
                 &finished(committed(), Some(LakeSandboxExit::Completed)),
-                labels(),
+                Sent::AsIs,
             );
         }));
         assert_eq!(
@@ -656,10 +932,41 @@ mod tests {
     }
 
     #[test]
+    fn a_completion_the_control_plane_refused_is_counted_as_the_failure_it_became() {
+        let counted = seen(crate::testing::counted(|| {
+            settle(
+                &finished(committed(), Some(LakeSandboxExit::Completed)),
+                Sent::Downgraded,
+            );
+        }));
+        assert!(
+            counted
+                .iter()
+                .any(|(name, _)| name.ends_with("outcome=failed}")),
+            "{counted:?}"
+        );
+        assert!(!counted.iter().any(|(name, _)| name.contains("committed")));
+    }
+
+    #[test]
+    fn a_directory_kept_for_the_sweep_is_counted() {
+        let mut kept = finished(committed(), Some(LakeSandboxExit::Completed));
+        kept.left = Some(std::path::PathBuf::from("/work/kept"));
+        let counted = seen(crate::testing::counted(|| settle(&kept, Sent::AsIs)));
+        assert!(
+            counted.contains(&(
+                "database_runner_lake_directories_total{outcome=kept}".to_owned(),
+                1
+            )),
+            "{counted:?}"
+        );
+    }
+
+    #[test]
     fn a_failure_and_an_unknown_outcome_are_not_the_same_series() {
         let outcome = |report: Finish| {
             seen(crate::testing::counted(|| {
-                record(&finished(report, None), labels());
+                settle(&finished(report, None), Sent::AsIs);
             }))
         };
         assert!(
@@ -686,7 +993,7 @@ mod tests {
         );
         ended.relay_denials.address_forbidden = 2;
         ended.relay_denials.token_refused = 1;
-        let counted = seen(crate::testing::counted(|| record(&ended, labels())));
+        let counted = seen(crate::testing::counted(|| settle(&ended, Sent::AsIs)));
         let denials: Vec<_> = counted
             .iter()
             .filter(|(name, _)| name.starts_with("lake_relay_denials_total"))
@@ -706,7 +1013,7 @@ mod tests {
     fn an_attempt_that_never_reached_a_container_is_not_a_write() {
         let mut before = finished(failure(DatabaseFailure::LakeSandboxUnavailable), None);
         before.cause = Some(super::super::driver::Cause::NoSlot);
-        assert!(seen(crate::testing::counted(|| record(&before, labels()))).is_empty());
+        assert!(seen(crate::testing::counted(|| settle(&before, Sent::AsIs))).is_empty());
     }
 
     #[test]

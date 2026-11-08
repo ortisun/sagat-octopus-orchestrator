@@ -37,6 +37,8 @@ pub(crate) struct Script {
     pub tasks: VecDeque<pb::TaskLease>,
     /// The answer to `ResolveDatabase`; `None` is `NOT_FOUND`.
     pub database: Option<pb::ResolvedDatabase>,
+    /// A status `ResolveDatabase` answers with instead, when there is one.
+    pub database_error: Option<Status>,
     /// The answer to a heartbeat; by default the lease is extended by a minute and nothing is cancelled.
     pub heartbeat: Option<HeartbeatAnswer>,
     /// The first reports are refused with these statuses, in order, before one is accepted.
@@ -129,11 +131,14 @@ impl WorkerService for Fake {
         &self,
         request: Request<pb::ResolveSecretsRequest>,
     ) -> Result<Response<pb::ResolvedDatabase>, Status> {
-        let answer = self.with(|script| {
+        let (answer, error) = self.with(|script| {
             script.resolved.push(request.into_inner());
-            script.database.clone()
+            (script.database.clone(), script.database_error.clone())
         });
         self.touched();
+        if let Some(status) = error {
+            return Err(status);
+        }
         answer
             .map(Response::new)
             .ok_or_else(|| Status::not_found("nothing scripted"))

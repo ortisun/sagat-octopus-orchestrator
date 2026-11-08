@@ -342,6 +342,6 @@ impl super::shell::Launch for TestLaunch {
             Arc::clone(&self.slots),
         )
         .for_tests(|_| Some(super::fixtures::my_uid()));
-        Box::pin(super::attempt::run(rpc, task, driver, drain))
+        Box::pin(super::attempt::launch(rpc, task, driver, drain))
     }
 }

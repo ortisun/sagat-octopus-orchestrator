@@ -417,7 +417,7 @@ impl Runner {
                             let result = launched.await;
                             metrics::histogram!("database_runner_attempt_seconds")
                                 .record(started.elapsed().as_secs_f64());
-                            metrics::counter!("database_runner_attempts_total","outcome"=>if result.is_ok() { "reported" } else { "unacknowledged" }).increment(1);
+                            metrics::counter!("database_runner_attempts_total","outcome"=>match result { Ok(crate::lake::attempt::Disposition::Reported) => "reported", Ok(crate::lake::attempt::Disposition::Abandoned) => "abandoned", Err(_) => "unacknowledged" }).increment(1);
                         }
                         .instrument(span),
                     );

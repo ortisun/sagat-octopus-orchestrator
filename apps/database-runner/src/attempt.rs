@@ -2,7 +2,7 @@
 use crate::{
     RunnerError, capability,
     config::Config,
-    lease::{Heartbeat, LeaseEnd, Report, report_until_ack},
+    lease::{Heartbeat, LeaseEnd, Policy, Report, report_until_ack},
     rpc::{Failure, Rpc},
 };
 use sagat_api_grpc::pb;
@@ -54,7 +54,14 @@ pub(crate) async fn run(
         let cancelled = cancelled.clone();
         move |_: LeaseEnd| cancelled.cancel()
     };
-    let heartbeat = Heartbeat::start(rpc.clone(), lease, task.worker_id.clone(), initial, on_end);
+    let heartbeat = Heartbeat::start(
+        rpc.clone(),
+        lease,
+        task.worker_id.clone(),
+        initial,
+        Policy::Sql,
+        on_end,
+    );
     let outcome = execute(
         &rpc,
         &config_path,

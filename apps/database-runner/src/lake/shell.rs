@@ -25,7 +25,8 @@ pub(crate) const DRAIN_GRACE: Duration = Duration::from_secs(30);
 /// How often the work root is swept (the sandbox's own sweep runs at least once a minute, ADR-0079).
 pub(crate) const SWEEP_EVERY: Duration = Duration::from_secs(60);
 
-pub(crate) type Launched = Pin<Box<dyn Future<Output = Result<(), RunnerError>> + Send>>;
+pub(crate) type Launched =
+    Pin<Box<dyn Future<Output = Result<attempt::Disposition, RunnerError>> + Send>>;
 
 pub(crate) trait Launch: Send + Sync + 'static {
     /// How many attempts the runner can hold at once: its slots.
@@ -107,6 +108,6 @@ impl Launch for Production {
             self.development,
             Arc::clone(&self.slots),
         );
-        Box::pin(attempt::run(rpc, task, driver, drain))
+        Box::pin(attempt::launch(rpc, task, driver, drain))
     }
 }

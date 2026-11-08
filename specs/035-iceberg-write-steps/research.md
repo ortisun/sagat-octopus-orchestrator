@@ -3208,12 +3208,33 @@ The other fixes were wording:
   - *Honest limits.* The tests of the moved SQL code (2) and of the split (3) were written after the change, against the scripted service; (3) had no mutation runs, the existing 25 driver
     tests being its oracle. That the SQL attempt cancels on a lost lease is not pinned: it needs a database under the runner. **No test runs the shell against the real sandbox runner and a
     container**: the sandbox client and server are tested against each other (`sandbox-runner`), the driver against a scripted sandbox, and the shell against the same scripted one.
+  - *What two independent reviews found, and what was done (2026-11-08, security and correctness, each read-only over the code and given the spec and not my conclusions).* Nothing that
+    leaks a secret or crosses the tenant boundary. Fixed, test first and each with its mutation killed: **(1)** one heartbeat that failed for a moment ended the lease, so one network blip
+    killed a write that was under way: the lake policy now retries a heartbeat that fails in a way a retry may mend until the lease expires, and a refusal or the expiry still ends it
+    at once (`Policy::Lake`; the SQL attempt keeps `Policy::Sql`, which is what it was); **(2)** after a cancel the lease was no longer renewed, so a slow kill could let it run out before
+    the `OUTCOME_UNKNOWN` report: a lake lease keeps being renewed after the cancel is signalled, once, and a lease that is lost after it is signalled as lost; **(3)** a resolve that
+    failed because the control plane could not answer (unavailable, slow, rate limited, conflict, an error of its own) failed the step with a code that is not retryable: nothing was
+    written and no secret disclosed, so the lease is now given up, and expires, and the step is leased again; a refusal for good still fails it; **(4)** the free slots the loop counted
+    were not exact when a slot was held back, because the attempt took its slot inside the task, after the spawn, so the loop could spawn more attempts than free slots and fail one with
+    `LAKE_SANDBOX_UNAVAILABLE`, a retry spent on a step that was not at fault: the lease is admitted when it is launched; **(5)** a lease that was given up was counted as reported, and a
+    completion the control plane refused was counted as a commit before it became a failure: an `abandoned` outcome, and the write is counted when it is settled; **(6)** a kept attempt
+    directory was not counted (`database_runner_lake_directories_total{outcome="kept"}`) and the tenant was not recorded in the span; **(7)** a test that could not fail (it asserted that the
+    slots of a driver it had just made were free) now looks at the slots and the sandbox of the lease; and the tests the reviewer found missing were added (a refusal that is not
+    `InvalidArgument`, a cancel after the request is sent through the whole shell).
+  - *Found and not fixed: G035-079.* The host names the column of a schema mismatch and the runner drops it: `FailStep` carries only a closed code (`safe_message` is discarded by the
+    server, as `worker.rs` says for every managed failure), so the supervisor's "its column when it is a plain name" has nowhere to go. Same exit as G035-078 and O035-007: a
+    `worker.proto` field and a minor version. Residual copies of the secrets in the buffers of the transport (tonic and hyper keep the frame that carried them) are a limit the
+    SQL runner has too and this one does not close: not verified by a test, and said here. The work root has to be dedicated to the runner and not persistent (an `emptyDir`): the sweep
+    removes by the shape of a name and by age, and what an aborted attempt leaves is removed only by the next process, after about an hour.
   - *Not done: G035-078 and the rest of T035-058.* Compose and Helm, the container end to end (T035-062), the PostgreSQL proof of the whole chain with a real control plane (G8 of the design,
     which needs D035-142 merged), the phase histograms, the lookup counter, `ReadBlob` scoped to the run and the record sources other than inline.
 - **G035-078 — What the relay refused is counted, not audited.** The relay counts its denials by reason and the runner has them in the result of every attempt, but the worker protocol has no call to
   put them in the audit trail (`FailStep` and `CompleteStep` carry no such field), and a new field is a `worker.proto` change and a minor version. Until then they are a metric
   (`lake_relay_denials_total`) and the log of the attempt. T035-058 asks for the audit and stays open for it. *Exit condition:* the owner's word on the minor (the same question as the evidence on
   an unknown outcome, O035-007), or a decision that a metric is the record.
+- **G035-079 — The column the host names for a schema mismatch is dropped on the way to the control plane.** `ICEBERG_SCHEMA_MISMATCH` carries the column in the host's failure
+  line, and the runner keeps it when it is a plain name (`Failure.column`), but `FailStep` has no field for it and `safe_message` is discarded by the server. The person who reads the
+  failed run sees the code and not which column. *Exit condition:* a field in `worker.proto` and a minor version (with G035-078 and O035-007), or the decision that the code is enough.
 - **G035-073 — A refused run of an Iceberg write is neither opaque nor audited at creation.** `audit_database_denial` (`runs.rs`) audits only
   `DatabaseUnavailable` and `DatabaseLimit`, and `LakeRefused` keeps its detail (the node, the field paths and classification levels) for a caller who holds
   `run:start` and `database:use`, where a refused SQL run is an opaque `NotFound`. The detail is the publisher's to see; a starter is not that person.

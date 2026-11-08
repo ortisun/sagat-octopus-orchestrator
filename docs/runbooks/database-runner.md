@@ -128,6 +128,10 @@ runner for the SQL activity, of both, or of an ordinary activity beside either, 
 - *The connection is asked for after a slot is taken.* Asking discloses and audits the secrets, so a full node, or a lease
   input that is not one, costs no disclosure: the step fails with `LAKE_SANDBOX_UNAVAILABLE` (retryable) or
   `DATABASE_CONFIGURATION_INVALID`.
+- *A heartbeat that fails for a moment does not kill a write.* The heartbeats of a lake lease are tried again until the lease expires when
+  they fail in a way a retry may mend; a lease that is refused, or that runs out, is given up as lost. A cancel the control plane asks for
+  is signalled once and the lease keeps being renewed, so the report of an unknown outcome is not lost to a slow kill. And a control plane
+  that cannot answer `ResolveDatabase` does not fail the step: nothing was written, so the lease is given up, expires and is leased again.
 - *It reports a closed code and the flag of the contract.* A receipt completes the step; a failure of the host is reported with its
   code and whether the step may be tried again; a cancel the control plane asked for is `DATABASE_CANCELLED` before the host has the
   request and `OUTCOME_UNKNOWN` after; a lease that is lost is reported as nothing at all. A completion the control plane
@@ -138,7 +142,9 @@ runner for the SQL activity, of both, or of an ordinary activity beside either, 
   termination grace to more than 60 seconds** (30 for the attempts, up to 30 for the kills), or the kill will come first.
   A cancel would have reported every write that was under way as unknown on every rollout.
 - *It sweeps.* Every minute, the attempt directories under `workRoot` that no attempt owns any more (older than the longest
-  step, the hold-back of a slot and a margin) are removed. `workRoot` has to be a directory that exists when the runner starts.
+  step, the hold-back of a slot and a margin) are removed. `workRoot` has to be a directory that exists when the runner starts, **dedicated to the
+  runner and not persistent (an `emptyDir`)**: the sweep removes by the shape of a name and by age, and what an attempt that was aborted at a drain
+  leaves is removed only by the next process, after about an hour.
 - *Metrics* (closed labels, nothing of a table, a connection or a run): `lake_writes_total` (mode, catalog and storage kind,
   outcome), `lake_sandbox_exits_total` and `lake_relay_denials_total` (reason), and, from the runner,
   `database_runner_lake_directories_total` (removed or failed by the sweep). Not yet: the phase histograms, the effect-key
