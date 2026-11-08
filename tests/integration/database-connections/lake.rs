@@ -1135,3 +1135,149 @@ pub async fn registration(w: &World) {
         ));
     }
 }
+
+/// An identity is of one profile in the whole tenant, not one per namespace (D035-136, hardened after a security review):
+/// a stolen lake token must not register as a SQL runner in another namespace where the same identity is bound otherwise.
+pub async fn profile_is_the_identitys(w: &World) {
+    let ns = w.namespace.id();
+    let tenant = w.admin.tenant_id();
+    let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM namespaces WHERE id = $1")
+        .bind(ns.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .unwrap();
+    let other_ns: Uuid = sqlx::query_scalar(
+        "INSERT INTO namespaces (id, tenant_id, workspace_id, slug, environment, created_at) \
+         VALUES (gen_random_uuid(), $1, $2, 'profile-staging', 'dev', now()) RETURNING id",
+    )
+    .bind(tenant.as_uuid())
+    .bind(workspace)
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    let other_ns = sagat_domain::identity::NamespaceId::new(other_ns);
+    let runner = w.member("two-namespace-runner", Role::DatabaseRunner).await;
+    let subject = runner.subject().as_str().to_owned();
+    let write = "sagat.database.iceberg.write".to_owned();
+    let sql = "sagat.database.postgresql".to_owned();
+    let bind = |namespace, patterns: &[String], profile: Option<BindingProfile>| {
+        let patterns = patterns.to_vec();
+        let subject = subject.clone();
+        async move {
+            w.bindings
+                .bind_with_profile(
+                    &w.admin,
+                    namespace,
+                    &subject,
+                    &patterns,
+                    None,
+                    profile,
+                    &ctx(),
+                )
+                .await
+        }
+    };
+    let latest_reason = || async {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT reason FROM audit_records WHERE tenant_id = $1 AND action = $2 ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(tenant.as_uuid())
+        .bind(AuditAction::WorkerBound.as_str())
+        .fetch_one(&w.db.pool)
+        .await
+        .unwrap()
+        .unwrap_or_default()
+    };
+
+    // A lake runner in one namespace cannot be a database runner in another.
+    bind(ns, std::slice::from_ref(&write), Some(BindingProfile::Lake))
+        .await
+        .unwrap();
+    let conflict = bind(
+        other_ns,
+        std::slice::from_ref(&sql),
+        Some(BindingProfile::Database),
+    )
+    .await;
+    assert!(
+        matches!(conflict, Err(AppError::StateConflict(_))),
+        "the identity is of the lake profile in another namespace: {conflict:?}"
+    );
+    let nothing: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM worker_bindings WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+    )
+    .bind(tenant.as_uuid())
+    .bind(other_ns.as_uuid())
+    .bind(&subject)
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(nothing, 0, "a refused binding leaves nothing behind");
+
+    // The same profile is allowed, and an absent profile takes the one the identity already has elsewhere.
+    let view = bind(other_ns, std::slice::from_ref(&write), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        view.profile,
+        BindingProfile::Lake,
+        "an absent profile follows the identity, not the default"
+    );
+    let again = bind(
+        other_ns,
+        std::slice::from_ref(&write),
+        Some(BindingProfile::Lake),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.profile, BindingProfile::Lake);
+
+    // The audit says which profile is in force, whether or not the caller named it.
+    bind(ns, std::slice::from_ref(&write), None).await.unwrap();
+    assert!(
+        latest_reason().await.contains("profile: lake"),
+        "{}",
+        latest_reason().await
+    );
+
+    // Changing the profile means changing it everywhere: the other namespace's binding has to go first.
+    let change = bind(
+        ns,
+        std::slice::from_ref(&sql),
+        Some(BindingProfile::Database),
+    )
+    .await;
+    assert!(
+        matches!(change, Err(AppError::StateConflict(_))),
+        "{change:?}"
+    );
+    w.bindings
+        .unbind(&w.admin, other_ns, &subject, &ctx())
+        .await
+        .unwrap();
+    let view = bind(
+        ns,
+        std::slice::from_ref(&sql),
+        Some(BindingProfile::Database),
+    )
+    .await
+    .unwrap();
+    assert_eq!(view.profile, BindingProfile::Database);
+    assert!(latest_reason().await.contains("profile: database"));
+
+    // Binding again after an unbind, without naming the profile, falls back to the default; the audit says so.
+    w.bindings
+        .unbind(&w.admin, ns, &subject, &ctx())
+        .await
+        .unwrap();
+    bind(ns, std::slice::from_ref(&write), None).await.unwrap();
+    assert!(
+        latest_reason().await.contains("profile: database"),
+        "an unbind forgets the profile and the audit names the one that came back: {}",
+        latest_reason().await
+    );
+    w.bindings
+        .unbind(&w.admin, ns, &subject, &ctx())
+        .await
+        .unwrap();
+}

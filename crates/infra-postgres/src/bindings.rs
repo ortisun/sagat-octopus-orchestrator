@@ -90,26 +90,72 @@ impl BindingStore for PgRunStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
-        // The profile the identity has now is kept unless the caller names one; all its rows carry the same.
-        let kept: Option<String> = sqlx::query_scalar(
-            "SELECT min(profile) FROM worker_bindings \
-             WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
-        )
-        .bind(tenant.as_uuid())
-        .bind(namespace.as_uuid())
-        .bind(subject)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let profile = match (profile, kept) {
-            (Some(named), _) => named,
-            (None, Some(text)) => {
-                BindingProfile::parse(&text).ok_or_else(|| StoreError::Internal {
-                    detail: "a stored binding profile is not a profile".into(),
-                })?
-            }
-            (None, None) => BindingProfile::default(),
+        // An identity is of one profile in the whole tenant, not one per namespace: a stolen token of a lake runner must not be
+        // a SQL runner in the namespace next door. Changes of one identity's profile are serialised on their own key, taken
+        // after the namespace's (the order every writer of bindings uses), so two namespaces cannot disagree by racing.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("binding-profile:{tenant}:{subject}"))
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let parse_all = |texts: Vec<String>| -> Result<Vec<BindingProfile>, StoreError> {
+            texts
+                .iter()
+                .map(|text| {
+                    BindingProfile::parse(text).ok_or_else(|| StoreError::Internal {
+                        detail: "a stored binding profile is not a profile".into(),
+                    })
+                })
+                .collect()
         };
+        // The profile the identity has here is kept unless the caller names one; all its rows carry the same, and rows that
+        // disagree are not guessed at.
+        let here = parse_all(
+            sqlx::query_scalar(
+                "SELECT DISTINCT profile FROM worker_bindings \
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(subject)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_error)?,
+        )?;
+        // What it has in the other namespaces of the tenant.
+        let elsewhere = parse_all(
+            sqlx::query_scalar(
+                "SELECT DISTINCT profile FROM worker_bindings \
+                 WHERE tenant_id = $1 AND namespace_id <> $2 AND subject = $3",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace.as_uuid())
+            .bind(subject)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_error)?,
+        )?;
+        let disagree = |profiles: &[BindingProfile]| profiles.len() > 1;
+        // (An unbind needs no profile, so a state that disagrees can still be cleared by removing its bindings.)
+        if !patterns.is_empty() && (disagree(&elsewhere) || (profile.is_none() && disagree(&here)))
+        {
+            return Err(StoreError::Internal {
+                detail: "the bindings of one identity disagree about its profile".into(),
+            });
+        }
+        let profile = match profile {
+            Some(named) => named,
+            None => here
+                .first()
+                .or(elsewhere.first())
+                .copied()
+                .unwrap_or_default(),
+        };
+        if !patterns.is_empty() && elsewhere.first().is_some_and(|other| *other != profile) {
+            return Err(StoreError::StateConflict(
+                "the identity is bound with another profile in another namespace; unbind it there first",
+            ));
+        }
         let removed = sqlx::query(
             "DELETE FROM worker_bindings \
              WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
@@ -214,7 +260,16 @@ impl BindingStore for PgRunStore {
                     .map_err(store_error)?
                     .rows_affected();
         }
-        insert_audit(&mut tx, audit).await?;
+        // The audit names the profile in force, whether the caller named it or the store kept it.
+        let audit = if patterns.is_empty() {
+            audit.clone()
+        } else {
+            audit.clone().with_reason(format!(
+                "{}; profile: {profile}",
+                audit.reason().unwrap_or_default()
+            ))
+        };
+        insert_audit(&mut tx, &audit).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(Some(revoked))
     }
