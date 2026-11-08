@@ -1149,6 +1149,11 @@ one commit carries the key.
   limits of the pinned revision, `priorAttemptMayHaveLeftFiles` from the journal. The code is in `worker/lake_input.rs` and `worker/lake_lease.rs` and the
   lease path of `worker.rs`, not in `worker/database.rs`. Not done: the record references of a blob source and of a SQL result (refused by name until the
   `ReadBlob` of the run exists).
+
+  *2026-11-08, second part done, left unticked (D035-144):* the record references of a blob source are built (`named_records`, `lake_lease_document` take what the
+  catalog said about the blobs: the media type decides the format, 32 blobs and 2 GiB at most, the step's order) and the catalog's word is a method of the run's
+  transaction (`lake_record_blobs`) with the pin of the attempt (`step_lease_blobs`). Not done: the lease does not call them yet, so a blob source is still not
+  leased; the `ReadBlob` gate for a lake attempt; a SQL result as a source (G035-067).
 - [ ] T035-057 [US02] Implement the host's append path in
   `runners/lake/sagat_lake/{lookup.py,mapping.py,compat.py,modes/append.py}`:
   - lookup and commit follow D035-030;

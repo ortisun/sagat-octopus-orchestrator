@@ -7,13 +7,14 @@
 #![allow(clippy::expect_used, clippy::panic)]
 use crate::support::engine::{World, activity, document};
 use sagat_application::{
+    error::StoreError,
     execution::RunTx,
     runs::{Lock, RunStore},
 };
 use sagat_domain::{
     blobs::{BlobDescriptor, BlobId, ContentType},
-    execution::RunId,
-    workflow::Digest,
+    execution::{Fence, RunId},
+    workflow::{Digest, NodeId},
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -295,5 +296,169 @@ pub async fn run(w: &World) {
             .expect("the catalog"),
         vec![outsiders[0].1.clone()],
         "a run reads its own blob and not another run's"
+    );
+    drop(theirs_tx);
+
+    pins(w, run, tenant, &first, &second, &outsiders).await;
+}
+
+/// R3: the lease writes down which blobs the attempt it granted may read, and `ReadBlob` asks that list and nothing else.
+async fn pins(
+    w: &World,
+    run: RunId,
+    tenant: Uuid,
+    first: &BlobDescriptor,
+    second: &BlobDescriptor,
+    outsiders: &[(&str, BlobDescriptor)],
+) {
+    let node = NodeId::parse("store").expect("node");
+    let fence = Fence {
+        attempt: 1,
+        generation: 1,
+    };
+    let begin = || async {
+        w.store
+            .begin(w.admin.tenant_id(), run, Lock::Wait)
+            .await
+            .expect("the store")
+            .expect("the run")
+    };
+    let mut tx = begin().await;
+
+    // A blob that is not a committed output of the run is not pinned, whoever asks, and then nothing is: not even the blobs that are.
+    for (name, outsider) in outsiders {
+        assert_eq!(
+            tx.pin_lake_blobs(&node, fence, &[first.id(), outsider.id()])
+                .await,
+            Err(StoreError::MissingReference),
+            "{name}"
+        );
+    }
+    assert!(
+        !tx.lake_blob_pinned(&node, fence, first.id())
+            .await
+            .expect("the pins"),
+        "a refused list pins none"
+    );
+    // Nor an unbounded list.
+    let too_many: Vec<BlobId> = (0..33).map(|_| BlobId::generate()).collect();
+    assert_eq!(
+        tx.pin_lake_blobs(&node, fence, &too_many).await,
+        Err(StoreError::DatabaseLimit)
+    );
+
+    // What the lease names is pinned, for exactly the attempt and generation it granted, and pinning again is a no-op.
+    tx.pin_lake_blobs(&node, fence, &[first.id(), second.id()])
+        .await
+        .expect("the blobs of the run");
+    tx.pin_lake_blobs(&node, fence, &[first.id(), second.id()])
+        .await
+        .expect("the same lease again");
+    for blob in [first, second] {
+        assert!(
+            tx.lake_blob_pinned(&node, fence, blob.id())
+                .await
+                .expect("the pins"),
+            "the blob the lease named"
+        );
+    }
+    let elsewhere = [
+        (
+            "another attempt",
+            node.clone(),
+            Fence {
+                attempt: 2,
+                ..fence
+            },
+        ),
+        (
+            "another generation",
+            node.clone(),
+            Fence {
+                generation: 2,
+                ..fence
+            },
+        ),
+        ("another node", NodeId::parse("other").expect("node"), fence),
+    ];
+    for (name, node, fence) in &elsewhere {
+        assert!(
+            !tx.lake_blob_pinned(node, *fence, first.id())
+                .await
+                .expect("the pins"),
+            "{name}"
+        );
+    }
+    for (name, outsider) in outsiders {
+        assert!(
+            !tx.lake_blob_pinned(&node, fence, outsider.id())
+                .await
+                .expect("the pins"),
+            "a blob the lease did not name: {name}"
+        );
+    }
+    tx.commit().await.expect("the pins are kept");
+
+    // The pins are in the table once, and a new transaction reads them.
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM step_lease_blobs WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(tenant)
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("count");
+    assert_eq!(
+        rows, 2,
+        "one row for each blob, however often it was pinned"
+    );
+    let mut again = begin().await;
+    assert!(
+        again
+            .lake_blob_pinned(&node, fence, second.id())
+            .await
+            .expect("the pins")
+    );
+    drop(again);
+
+    // Immutable like the credential pins, and the blob cannot be deleted under them.
+    assert!(
+        sqlx::query("UPDATE step_lease_blobs SET attempt = 2 WHERE tenant_id = $1")
+            .bind(tenant)
+            .execute(&w.db.pool)
+            .await
+            .is_err(),
+        "a pin cannot be moved to another attempt"
+    );
+    assert!(
+        sqlx::query("DELETE FROM blobs WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant)
+            .bind(first.id().as_uuid())
+            .execute(&w.db.pool)
+            .await
+            .is_err(),
+        "the bytes of a blob a live attempt may read are not deleted"
+    );
+    // A pin names a blob and a run of one namespace: the namespace of the blob row and the run's must agree.
+    let other_namespace: Uuid =
+        sqlx::query_scalar("SELECT namespace_id FROM blobs WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant)
+            .bind(outsiders[1].1.id().as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("the blob of another namespace");
+    assert!(
+        sqlx::query(
+            "INSERT INTO step_lease_blobs (tenant_id, namespace_id, run_id, node_id, attempt, generation, blob_id) \
+             VALUES ($1, $2, $3, 'store', 1, 1, $4)",
+        )
+        .bind(tenant)
+        .bind(other_namespace)
+        .bind(run.as_uuid())
+        .bind(outsiders[1].1.id().as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .is_err(),
+        "a run of one namespace does not pin a blob of another"
     );
 }
