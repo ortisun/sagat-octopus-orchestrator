@@ -4,7 +4,14 @@ use sagat_application::{
     database::DatabaseInput,
     secrets::{StoredSecret, StoredValue},
 };
-use sagat_domain::secrets::SecretMeta;
+use sagat_domain::{
+    database::ManagedKind,
+    secrets::{SecretMeta, SecretName},
+};
+
+/// Concurrent lake attempts a tenant and a namespace may hold until the quota rows exist (T035-055, the ceilings of plan.md).
+const LAKE_TENANT_CONCURRENCY: i64 = 32;
+const LAKE_NAMESPACE_CONCURRENCY: i64 = 8;
 
 impl PgRunTx {
     pub(super) async fn database_role(&mut self, subject: &str) -> Result<bool, StoreError> {
@@ -82,11 +89,22 @@ impl PgRunTx {
         crate::database::admit_node(&mut self.tx, &self.info, &self.def, node, self.lake_enabled)
             .await?;
         let connection = self.database_connection(node).await?;
+        let kind = self
+            .def
+            .node(node)
+            .and_then(Node::managed_kind)
+            .ok_or(StoreError::DatabaseUnavailable)?;
+        // A SQL step uses the one secret of its connection; an Iceberg write uses the catalog's and the storage's, each of
+        // which has to be deliverable to this runner.
+        let secrets: Vec<SecretName> = match kind {
+            ManagedKind::Sql => vec![sql_secret(&connection)?.clone()],
+            ManagedKind::Lake => connection.config.secrets().into_iter().cloned().collect(),
+        };
         if crate::secrets::pool_refusal(
             &mut self.tx,
             self.info.tenant_id,
             self.info.namespace_id,
-            std::slice::from_ref(sql_secret(&connection)?),
+            &secrets,
             subject,
             false,
         )
@@ -95,13 +113,19 @@ impl PgRunTx {
         {
             return Ok(false);
         }
+        // The budgets of one kind are its own: a lake attempt does not use up the concurrency of the SQL steps (G035-074).
         let (tenant, namespace, pool): (i64,i64,i64) = sqlx::query_as(
             "SELECT count(*), count(*) FILTER (WHERE b.namespace_id=$2),
                     count(*) FILTER (WHERE b.namespace_id=$2 AND b.connection_id=$3)
              FROM steps s JOIN run_database_connections b ON b.tenant_id=s.tenant_id AND b.run_id=s.run_id AND b.node_id=s.node
-             WHERE s.tenant_id=$1 AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 AND s.status IN ('LEASED','RUNNING')")
+             WHERE s.tenant_id=$1 AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 AND s.status IN ('LEASED','RUNNING')
+               AND (COALESCE(s.activity,'') = $4) = $5")
             .bind(self.info.tenant_id.as_uuid()).bind(self.info.namespace_id.as_uuid()).bind(connection.id.as_uuid())
+            .bind(sagat_domain::database::ICEBERG_WRITE_ACTIVITY).bind(kind == ManagedKind::Lake)
             .fetch_one(&mut *self.tx).await.map_err(store_error)?;
+        if kind == ManagedKind::Lake {
+            return Ok(tenant < LAKE_TENANT_CONCURRENCY && namespace < LAKE_NAMESPACE_CONCURRENCY);
+        }
         let requested = self
             .def
             .node(node)
@@ -120,6 +144,46 @@ impl PgRunTx {
         Ok(tenant < i64::from(policy.tenant_concurrency)
             && namespace < i64::from(policy.namespace_concurrency)
             && pool < i64::from(effective.pool_size))
+    }
+
+    /// What the lease of an Iceberg write needs, read in the lease transaction (D035-138): the limits of the connection at the revision the
+    /// run was admitted with, the number of the workflow version, and the instant of the first lease of the step by the database's
+    /// clock (the journal's `occurred_at`; none until an attempt has been leased).
+    pub(super) async fn lake_facts(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<sagat_application::database::LakeLeaseFacts, StoreError> {
+        let connection = self.database_connection(node).await?;
+        let connection_limits = connection
+            .config
+            .as_iceberg()
+            .ok_or(StoreError::DatabaseUnavailable)?
+            .limits;
+        let version: i32 = sqlx::query_scalar(
+            "SELECT version_number FROM workflow_versions WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.version_id.as_uuid())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let first_leased_at: Option<OffsetDateTime> = sqlx::query_scalar(
+            "SELECT min(occurred_at) FROM run_events WHERE tenant_id=$1 AND run_id=$2 AND node=$3
+             AND COALESCE(cardinality(instance_path_nodes),0)=0 AND COALESCE(cardinality(instance_path_indices),0)=0
+             AND event_type='step.leased'",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(sagat_application::database::LakeLeaseFacts {
+            connection_limits,
+            workflow_version: u32::try_from(version)
+                .map_err(|_| corrupt("workflow version number"))?,
+            first_leased_at,
+        })
     }
 
     pub(super) async fn database_report_owner(

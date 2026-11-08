@@ -3978,6 +3978,12 @@ impl RunTx for PgRunTx {
     ) -> Result<(), StoreError> {
         self.database_pin(node, secret).await
     }
+    async fn lake_lease_facts(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<sagat_application::database::LakeLeaseFacts, StoreError> {
+        self.lake_facts(node).await
+    }
     async fn database_result_limits(
         &mut self,
         node: &NodeId,
