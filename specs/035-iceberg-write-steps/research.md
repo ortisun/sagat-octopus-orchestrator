@@ -3039,9 +3039,30 @@ The other fixes were wording:
     session changed to offer the lake activity, and put back the same runner resolves again (red first: the resolve succeeded). **Three hand mutations, all
     killed**: the store not applying the fence, the fence ignoring the binding, the fence ignoring what the session offers.
   - *Not done: the rest of T035-044.* The order of the design (an independent read-only design of 2026-11-08): the sum type for `DatabaseInput` and `ResolvedDatabase` with SQL
-    unchanged; the lake snapshot, the two pins and the two audits in the second transaction after both reads (sequential, catalog then storage; either secret
+    unchanged (done, D035-140); the lake snapshot, the two pins and the two audits in the second transaction after both reads (sequential, catalog then storage; either secret
     rotated between the phases makes the resolve fail and pins nothing); `ResolvedDatabase.iceberg` built by `iceberg_connection`; the retention and
     cleanup characterisation. Until then a lake runner that is handed its step cannot get its credentials.
+- **D035-140 — What a worker is handed for a managed step is a sum of the two kinds (slice C of D035-130, the second step: the types).**
+  **Decided by: delegate**. A refactor: nothing a SQL attempt can see changes, and the store does not yet select a lake step.
+  - *What.* `DatabaseInput` is a connection and a `DatabaseWork`: `Sql { operation, secret }` or `Lake { secrets }`, each secret a `SelectedSecret`
+    (its `SecretRole`, the stored secret the attempt is to use, and the version now in force). `DatabaseInput::secrets()` is the one list the resolve
+    reads from the provider and pins, whatever the kind. `ResolvedDatabase` is a connection, a lease expiry and a `ResolvedGrant`: `Sql { operation,
+    credential }` or `Lake(ResolvedLake { catalog, storage })`, each secret optional because a connection has the ones its shape names (D035-139). The
+    store pins a list (`pin_database_credentials`) under the role of each secret, and reads a pin by role (`database_pinned_secret(node, role)`); the
+    SQL paths ask for `primary`. The application refuses a lake input before it reads anything from the provider, and the wire mapping refuses a lake
+    grant, both marked as the pending half of T035-044.
+  - *Why a sum and not optional fields.* A struct with `operation: Option<_>` and a list of credentials would let a SQL step be handed no statement, or a lake
+    step a statement, and every consumer would have to remember which combination is possible. The compiler now holds that. The SQL secret is boxed: a
+    `SelectedSecret` is 360 bytes against the 24 of the lake list (clippy `large_enum_variant`).
+  - *Alternatives not taken.* A second trait method and a second struct for the lake (`lake_input`, `ResolvedLake` beside `ResolvedDatabase`): two resolve
+    paths in the application, the fences and the two-transaction shape written twice, and the gRPC handler choosing between them. One path that reads a list
+    is smaller and has one place to be wrong.
+  - *Evidence.* The existing SQL suites are the oracle, changed only where they read a field that moved (a helper `sql_grant` in the suite): fmt and clippy
+    `-D warnings` on the application, store, gRPC and test crates; the lib and crate-level tests of the application, gRPC and store crates; `integration_database_connections` 7 and as the
+    runtime role 7; `integration_database_runner` 1 (1 ignored, as before); `integration_platform_foundation` 102 (the privilege audit reads the changed pin
+    statements); `contract_iceberg_writes` 42. The architecture and agent-configuration checks.
+    *Not run for this step:* the `database-connections` SDK scenario, which the mapping change does not reach (the SQL wire answer is the same message); it
+    runs with the pull request and before the step that opens the lake arm.
 - **G035-073 — A refused run of an Iceberg write is neither opaque nor audited at creation.** `audit_database_denial` (`runs.rs`) audits only
   `DatabaseUnavailable` and `DatabaseLimit`, and `LakeRefused` keeps its detail (the node, the field paths and classification levels) for a caller who holds
   `run:start` and `database:use`, where a refused SQL run is an opaque `NotFound`. The detail is the publisher's to see; a starter is not that person.

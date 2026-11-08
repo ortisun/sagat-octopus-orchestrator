@@ -38,22 +38,70 @@ pub struct LakeLeaseFacts {
     pub first_leased_at: Option<OffsetDateTime>,
 }
 
+/// One secret a connection names, selected under the current run/ACL locks (feature 035, D035-140).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedSecret {
+    /// What the secret is for in the connection; the pin of the attempt is keyed by it.
+    pub role: sagat_domain::database::SecretRole,
+    /// The version the attempt is to use: the one it pinned, when it has pinned one.
+    pub stored: crate::secrets::StoredSecret,
+    /// Current authority even when the attempt has pinned an older retained credential.
+    pub current_version: Uuid,
+}
+
+/// What the step is to do, with the secrets it needs. A SQL step has one statement and one secret; a lake step has
+/// no statement and up to two secrets (the catalog's and the storage's), and which of them exist is the connection's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatabaseWork {
+    Sql {
+        operation: sagat_domain::database::DatabaseOperation,
+        secret: Box<SelectedSecret>,
+    },
+    Lake {
+        secrets: Vec<SelectedSecret>,
+    },
+}
+
 /// Metadata selected under current run/ACL locks. It is compared again after provider I/O.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatabaseInput {
     pub connection: ConnectionRecord,
-    pub operation: sagat_domain::database::DatabaseOperation,
-    pub secret: crate::secrets::StoredSecret,
-    /// Current authority even when the attempt has pinned an older retained credential.
-    pub current_secret_version: Uuid,
+    pub work: DatabaseWork,
+}
+
+impl DatabaseInput {
+    /// The secrets of the step, in the order they are read from the provider and pinned.
+    #[must_use]
+    pub fn secrets(&self) -> &[SelectedSecret] {
+        match &self.work {
+            DatabaseWork::Sql { secret, .. } => std::slice::from_ref(&**secret),
+            DatabaseWork::Lake { secrets } => secrets,
+        }
+    }
+}
+
+/// What a lake step is handed: the secrets of its connection that exist, each under its role.
+#[derive(Debug)]
+pub struct ResolvedLake {
+    pub catalog: Option<crate::worker::ResolvedSecret>,
+    pub storage: Option<crate::worker::ResolvedSecret>,
+}
+
+/// What the executor is handed for the work of its step.
+#[derive(Debug)]
+pub enum ResolvedGrant {
+    Sql {
+        operation: sagat_domain::database::DatabaseOperation,
+        credential: crate::worker::ResolvedSecret,
+    },
+    Lake(ResolvedLake),
 }
 
 /// A lease-bound capability for the isolated executor. Provider routing stays in the server.
 #[derive(Debug)]
 pub struct ResolvedDatabase {
     pub connection: ConnectionRecord,
-    pub operation: sagat_domain::database::DatabaseOperation,
-    pub credential: crate::worker::ResolvedSecret,
+    pub grant: ResolvedGrant,
     pub expires_at: OffsetDateTime,
 }
 

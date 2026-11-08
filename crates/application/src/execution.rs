@@ -1193,11 +1193,11 @@ pub trait RunTx: Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }
 
-    /// Records the credential before returning its value. The pin is immutable for this attempt.
-    fn pin_database_credential(
+    /// Records the credentials before returning their values, each under its role. Every pin is immutable for this attempt.
+    fn pin_database_credentials(
         &mut self,
         _node: &NodeId,
-        _secret: &StoredSecret,
+        _secrets: &[crate::database::SelectedSecret],
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }

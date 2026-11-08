@@ -1,11 +1,11 @@
 //! Managed executor admission and immutable per-attempt credential evidence. No provider I/O.
 use super::*;
 use sagat_application::{
-    database::DatabaseInput,
+    database::{DatabaseInput, DatabaseWork, SelectedSecret},
     secrets::{StoredSecret, StoredValue},
 };
 use sagat_domain::{
-    database::ManagedKind,
+    database::{ManagedKind, SecretRole},
     secrets::{SecretMeta, SecretName},
 };
 
@@ -305,8 +305,11 @@ impl PgRunTx {
             .bind(self.info.tenant_id.as_uuid()).bind(self.info.namespace_id.as_uuid()).bind(sql_secret(&connection)?.as_str())
             .fetch_optional(&mut *self.tx).await.map_err(store_error)?.ok_or(StoreError::DatabaseUnavailable)?;
         let current = crate::secrets::stored_from(&row)?;
-        let current_secret_version = current.meta.id;
-        let secret = self.database_pinned_secret(node).await?.unwrap_or(current);
+        let current_version = current.meta.id;
+        let secret = self
+            .database_pinned_secret(node, SecretRole::Primary)
+            .await?
+            .unwrap_or(current);
         // Reusing a logical name after deletion creates new authority. An old attempt must not
         // regain its previous credential merely because a different secret now has that name.
         let same_authority: bool = sqlx::query_scalar(
@@ -321,43 +324,52 @@ impl PgRunTx {
         }
         Ok(DatabaseInput {
             connection,
-            operation,
-            secret,
-            current_secret_version,
+            work: DatabaseWork::Sql {
+                operation,
+                secret: Box::new(SelectedSecret {
+                    role: SecretRole::Primary,
+                    stored: secret,
+                    current_version,
+                }),
+            },
         })
     }
 
     pub(super) async fn database_pin(
         &mut self,
         node: &NodeId,
-        secret: &StoredSecret,
+        secrets: &[SelectedSecret],
     ) -> Result<(), StoreError> {
-        let StoredValue::OpenBao(reference) = &secret.value else {
-            return Err(StoreError::DatabaseUnavailable);
-        };
-        if reference.tenant != self.info.tenant_id
-            || reference.namespace != self.info.namespace_id
-            || reference.operation != secret.meta.id
-        {
-            return Err(StoreError::DatabaseUnavailable);
-        }
-        let step = self
-            .state
-            .step(node)
-            .ok_or(StoreError::DatabaseUnavailable)?;
-        sqlx::query(
-            "INSERT INTO step_database_credentials(tenant_id,namespace_id,run_id,node_id,attempt,generation,provider_operation,secret_name,secret_version)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING")
-            .bind(self.info.tenant_id.as_uuid()).bind(self.info.namespace_id.as_uuid()).bind(self.info.run_id.as_uuid()).bind(node.as_str())
-            .bind(i64::from(step.attempt())).bind(i64::try_from(step.generation()).map_err(|_| corrupt("step generation"))?)
-            .bind(reference.operation).bind(secret.meta.name.as_str()).bind(i64::from(secret.meta.version))
-            .execute(&mut *self.tx).await.map_err(store_error)?;
-        let pinned = self
-            .database_pinned_secret(node)
-            .await?
-            .ok_or(StoreError::DatabaseUnavailable)?;
-        if pinned.meta.id != secret.meta.id || pinned.meta.version != secret.meta.version {
-            return Err(StoreError::DatabaseUnavailable);
+        // One pin per role, all in this transaction: a step that cannot pin every secret it was handed pins none.
+        for selected in secrets {
+            let secret = &selected.stored;
+            let StoredValue::OpenBao(reference) = &secret.value else {
+                return Err(StoreError::DatabaseUnavailable);
+            };
+            if reference.tenant != self.info.tenant_id
+                || reference.namespace != self.info.namespace_id
+                || reference.operation != secret.meta.id
+            {
+                return Err(StoreError::DatabaseUnavailable);
+            }
+            let step = self
+                .state
+                .step(node)
+                .ok_or(StoreError::DatabaseUnavailable)?;
+            sqlx::query(
+                "INSERT INTO step_database_credentials(tenant_id,namespace_id,run_id,node_id,attempt,generation,provider_operation,secret_name,secret_version,secret_role)
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING")
+                .bind(self.info.tenant_id.as_uuid()).bind(self.info.namespace_id.as_uuid()).bind(self.info.run_id.as_uuid()).bind(node.as_str())
+                .bind(i64::from(step.attempt())).bind(i64::try_from(step.generation()).map_err(|_| corrupt("step generation"))?)
+                .bind(reference.operation).bind(secret.meta.name.as_str()).bind(i64::from(secret.meta.version)).bind(selected.role.as_str())
+                .execute(&mut *self.tx).await.map_err(store_error)?;
+            let pinned = self
+                .database_pinned_secret(node, selected.role)
+                .await?
+                .ok_or(StoreError::DatabaseUnavailable)?;
+            if pinned.meta.id != secret.meta.id || pinned.meta.version != secret.meta.version {
+                return Err(StoreError::DatabaseUnavailable);
+            }
         }
         Ok(())
     }
@@ -389,6 +401,7 @@ impl PgRunTx {
     pub(super) async fn database_pinned_secret(
         &mut self,
         node: &NodeId,
+        role: SecretRole,
     ) -> Result<Option<StoredSecret>, StoreError> {
         let step = self
             .state
@@ -399,9 +412,10 @@ impl PgRunTx {
              FROM step_database_credentials p JOIN secret_provider_operations o
                ON o.tenant_id=p.tenant_id AND o.namespace_id=p.namespace_id AND o.id=p.provider_operation
              WHERE p.tenant_id=$1 AND p.namespace_id=$2 AND p.run_id=$3 AND p.node_id=$4 AND p.attempt=$5 AND p.generation=$6
-               AND p.secret_role='primary'")
+               AND p.secret_role=$7")
             .bind(self.info.tenant_id.as_uuid()).bind(self.info.namespace_id.as_uuid()).bind(self.info.run_id.as_uuid()).bind(node.as_str())
             .bind(i64::from(step.attempt())).bind(i64::try_from(step.generation()).map_err(|_| corrupt("step generation"))?)
+            .bind(role.as_str())
             .fetch_optional(&mut *self.tx).await.map_err(store_error)?;
         row.map(|row| {
             let operation = col(&row, "provider_operation")?;

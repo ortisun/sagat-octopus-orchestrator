@@ -32,6 +32,25 @@ use uuid::Uuid;
 
 mod bounded_stages;
 
+/// The statement and the credential a SQL step was handed. A SQL step is never handed a lake grant.
+#[allow(clippy::panic)]
+pub(crate) fn sql_grant(
+    resolved: &sagat_application::database::ResolvedDatabase,
+) -> (
+    &sagat_domain::database::DatabaseOperation,
+    &sagat_application::worker::ResolvedSecret,
+) {
+    match &resolved.grant {
+        sagat_application::database::ResolvedGrant::Sql {
+            operation,
+            credential,
+        } => (operation, credential),
+        sagat_application::database::ResolvedGrant::Lake(_) => {
+            panic!("a SQL step was handed a lake grant")
+        }
+    }
+}
+
 /// A world whose leases outlive the slowest machine this suite runs on.
 ///
 /// The default lease lasts 30 s. A scenario that leases a task early and uses it at the end took

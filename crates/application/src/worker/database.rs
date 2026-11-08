@@ -1,5 +1,6 @@
 //! Lease-bound managed database capabilities. Provider I/O separates two authority transactions.
 use super::*;
+use crate::database::DatabaseWork;
 
 impl<S, C, E, R> WorkerService<S, C, E, R>
 where
@@ -63,7 +64,15 @@ where
             tx.commit().await?;
             snapshot
         };
-        let value = reader.resolve(&before.secret).await?;
+        // A lake step is not served yet: the store does not select one (D035-140). Refused here, by name, so that the day it does
+        // the secrets are not read from the provider by a path that does not know what to do with them.
+        let DatabaseWork::Sql {
+            secret: selected, ..
+        } = &before.work
+        else {
+            return Err(AppError::Unavailable);
+        };
+        let value = reader.resolve(&selected.stored).await?;
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         self.live_capability_fence(principal, &mut tx, task).await?;
         let after = tx
@@ -77,8 +86,16 @@ where
             .lease_expiry_instance(task.instance)
             .await?
             .ok_or(AppError::StaleAttempt)?;
-        tx.pin_database_credential(task.instance.node(), &after.secret)
+        let DatabaseWork::Sql {
+            operation,
+            secret: selected,
+        } = after.work
+        else {
+            return Err(AppError::Unavailable);
+        };
+        tx.pin_database_credentials(task.instance.node(), std::slice::from_ref(&*selected))
             .await?;
+        let secret = selected.stored;
         let mut effects = Effects::by(
             Actor::Worker(principal.subject().as_str().to_owned()),
             trace_id.map(str::to_owned),
@@ -97,20 +114,22 @@ where
                 task.instance.node(),
                 task.fence.attempt,
                 task.fence.generation,
-                after.secret.meta.name,
-                after.secret.meta.version
+                secret.meta.name,
+                secret.meta.version
             )),
         );
         tx.persist(&[], effects).await?;
         tx.commit().await?;
         Ok(crate::database::ResolvedDatabase {
             connection: after.connection,
-            operation: after.operation,
             expires_at,
-            credential: ResolvedSecret {
-                name: after.secret.meta.name,
-                version: after.secret.meta.version,
-                value,
+            grant: crate::database::ResolvedGrant::Sql {
+                operation,
+                credential: ResolvedSecret {
+                    name: secret.meta.name,
+                    version: secret.meta.version,
+                    value,
+                },
             },
         })
     }
@@ -121,9 +140,12 @@ where
         mut input: crate::database::DatabaseInput,
     ) -> Result<crate::database::DatabaseInput, AppError> {
         use sagat_domain::database::{DatabaseOperation, Parameter};
+        // Only a SQL statement has parameters; a lake step has none to evaluate.
+        let crate::database::DatabaseWork::Sql { operation, .. } = &mut input.work else {
+            return Ok(input);
+        };
         let data = tx.data().await?;
-        let parameters = input
-            .operation
+        let parameters = operation
             .parameters()
             .iter()
             .map(|p| {
@@ -134,12 +156,12 @@ where
                     .map_err(|_| AppError::NotAllowed("invalid database parameter"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        input.operation = DatabaseOperation::new(
-            input.operation.connection.clone(),
-            input.operation.kind,
-            input.operation.statement(),
+        *operation = DatabaseOperation::new(
+            operation.connection.clone(),
+            operation.kind,
+            operation.statement(),
             parameters,
-            input.operation.limits,
+            operation.limits,
         )
         .map_err(|_| AppError::NotAllowed("invalid database parameters or limits"))?;
         Ok(input)

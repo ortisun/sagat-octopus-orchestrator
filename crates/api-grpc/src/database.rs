@@ -1,9 +1,22 @@
 //! Typed managed capability wire boundary. Never format SQL, parameter or credential values.
 use crate::pb;
-use sagat_application::{database::ResolvedDatabase, error::AppError};
+use sagat_application::{
+    database::{ResolvedDatabase, ResolvedGrant},
+    error::AppError,
+};
 use sagat_domain::database::{ConnectionConfig, OperationKind, Parameter, TlsPolicy, TypedValue};
 
 pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabase, AppError> {
+    let ResolvedGrant::Sql {
+        operation,
+        credential,
+    } = resolved.grant
+    else {
+        // The lake kinds are answered by the lake profile (feature 035, T035-044): the mapping of its grant is the next step.
+        return Err(AppError::NotAllowed(
+            "this connection is not served by the SQL profile",
+        ));
+    };
     let ConnectionConfig::Postgres {
         host,
         port,
@@ -27,7 +40,7 @@ pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabas
             String::new(),
         ),
     };
-    let l = resolved.operation.limits;
+    let l = operation.limits;
     Ok(pb::ResolvedDatabase {
         tenant_id: resolved.connection.tenant_id.to_string(),
         // The lake kinds are answered by the lake profile (feature 035); a PostgreSQL connection sets none of them.
@@ -45,13 +58,12 @@ pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabas
             tls: tls as i32,
             ca_pem,
         }),
-        operation: match resolved.operation.kind {
+        operation: match operation.kind {
             OperationKind::Query => pb::DatabaseOperationKind::DatabaseQuery,
             OperationKind::Execute => pb::DatabaseOperationKind::DatabaseExecute,
         } as i32,
-        statement: resolved.operation.statement().to_owned(),
-        parameters: resolved
-            .operation
+        statement: operation.statement().to_owned(),
+        parameters: operation
             .parameters()
             .iter()
             .map(|p| match p {
@@ -71,9 +83,9 @@ pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabas
             idle_timeout_ms: l.idle_timeout_ms,
         }),
         credential: Some(pb::ResolvedSecret {
-            name: resolved.credential.name.to_string(),
-            version: resolved.credential.version,
-            value: resolved.credential.value.expose().to_vec(),
+            name: credential.name.to_string(),
+            version: credential.version,
+            value: credential.value.expose().to_vec(),
         }),
         lease_expires_at_epoch_ms: i64::try_from(
             resolved.expires_at.unix_timestamp_nanos() / 1_000_000,
