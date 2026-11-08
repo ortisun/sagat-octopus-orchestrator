@@ -111,7 +111,10 @@ curl -X PUT "$SAGAT/namespaces/$NAMESPACE_ID/worker-bindings/$RUNNER_SUBJECT" \
 ```
 
 A binding made without `profile` is `database`, which is what every SQL runner has always been; a replacement that leaves
-`profile` out keeps the one in force. Changing the profile closes the sessions of the identity that offer the other profile's
+`profile` out keeps the one in force, and an identity has **one profile in the whole tenant**: binding it with another profile in a second
+namespace is refused (409) until its bindings elsewhere are removed. Removing the last binding of an identity forgets its profile, so bind it again
+with the profile named: the audit record of every binding says which profile came to be in force. During a rolling upgrade an older replica
+ignores the profile, so bind a lake runner to the exact activity, as above, and not to `*`, until every replica has the profile. Changing the profile closes the sessions of the identity that offer the other profile's
 activity (the answer counts them in `revoked`). The registration of a `database` runner for the lake activity, of a `lake`
 runner for the SQL activity, of both, or of an ordinary activity beside either, is refused as not bound.
 

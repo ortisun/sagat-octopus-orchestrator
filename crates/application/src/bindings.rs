@@ -203,9 +203,6 @@ where
         if let Some(pools) = &pool_texts {
             what.push_str(&format!("; pools: {}", pools.join(", ")));
         }
-        if let Some(profile) = profile {
-            what.push_str(&format!("; profile: {profile}"));
-        }
         let audit = self.audit(principal, AuditAction::WorkerBound, namespace, what, ctx);
         let revoked = self
             .store

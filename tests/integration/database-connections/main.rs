@@ -268,6 +268,8 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(lake::run(&w, &service)).await;
     progress.enter("registration of a lake runner");
     Box::pin(lake::registration(&w)).await;
+    progress.enter("one profile per identity");
+    Box::pin(lake::profile_is_the_identitys(&w)).await;
     progress.enter("ad_hoc::run");
     Box::pin(ad_hoc::run(&w)).await;
     progress.enter("admission::run");

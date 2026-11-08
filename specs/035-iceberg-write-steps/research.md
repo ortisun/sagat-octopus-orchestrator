@@ -2909,6 +2909,21 @@ The other fixes were wording:
     minutes**: when a revert fails, `Migrator::undo` returns before it unlocks, so the advisory lock stays on that pooled connection and the next
     rollback waits for the pool to drop it. The test now runs the refused rollback on a connection of its own and releases the lock (1.6 s).
   - *Not run.* The release-upgrade scenarios (`release_upgrade*`), which need the released producer build; the Studio's browser journeys.
+  - *Hardened the next day, after an independent security review (the first version overclaimed).* It said an identity is of one profile whatever it
+    is bound to; it was one profile **per namespace**. The same machine identity bound as `lake` in one namespace and as `database` in another could,
+    with a stolen lake token, register as a SQL runner in the second. Now an identity has **one profile in the whole tenant**: a binding that names
+    another profile than the identity has in any other namespace is refused (`StateConflict`, 409) and leaves nothing behind, an absent profile follows
+    the identity (its other namespaces) before it falls to the default, and the change is serialised on a key of its own (`binding-profile:{tenant}:
+    {subject}`), taken after the namespace's. Rows of one binding that disagree are not guessed at (a replacement that names no profile is refused;
+    an unbind still clears them). The audit record of every binding now names the profile that came to be in force, named or kept, so the quiet
+    downgrade of an unbind followed by a bind that names none (the profile is forgotten with the last binding and `database` comes back) is on record.
+    The `down` migration takes a `SHARE ROW EXCLUSIVE` lock before its guard, so a lake binding cannot be committed between the check and the drop. The
+    audit of a refused registration no longer says only that the binding changed. The runbook says an identity has one profile, that an unbind forgets
+    it, and that during a rolling upgrade an older replica ignores the profile, so a lake runner is bound to the exact activity and not to `*`.
+    Test first and seen failing (`lake::profile_is_the_identitys`: the cross-namespace bind succeeded), then three hand mutations, all killed: the
+    other namespaces not compared (`lake.rs:1197`), an absent profile that ignores them (`lake.rs:1213`) and an audit that does not name the profile
+    (`lake.rs:1226`). *Left as it is:* the response of a bind that names no pools or profile is read after the transaction (a concurrent change can show
+    in it; enforcement is not affected, and pools already behave so), and the registration refusals still return `NotBound` without telling the caller why.
   - *Not done.* `ResolveDatabase` refusing a kind outside the caller's profile (slice C), the runner offering the lake activity by the agreed minor (G), and
     a `--profile` for `sagat worker bind` (that command binds the identity of a worker's own token for development and keeps the profile in force).
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is

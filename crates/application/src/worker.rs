@@ -788,7 +788,9 @@ where
                 None,
                 self.clock.now(),
             )
-            .with_reason("the binding changed while the worker was registering");
+            .with_reason(
+                "the registration was refused: the binding, its profile, the role or the protocol did not cover it, or the binding changed while the worker was registering",
+            );
             if let Err(error) = self.store.record_unbound(&record).await {
                 tracing::error!(%error, action = %record.action(), "failed to record audit entry");
             }
