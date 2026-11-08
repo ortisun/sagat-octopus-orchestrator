@@ -94,7 +94,9 @@ pub(crate) async fn run(
         Err(failure) => failed(failure),
     };
     // An output/ack may be lost, but a report retry always reuses exactly the same content and key.
-    let result = report_until_ack(&rpc, lease, "database", &report, &heartbeat).await;
+    let result = report_until_ack(&rpc, lease, "database", &report, &heartbeat)
+        .await
+        .map_err(|_| RunnerError::Transport);
     heartbeat.finish().await;
     result
 }

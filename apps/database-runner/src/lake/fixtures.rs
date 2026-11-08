@@ -70,6 +70,19 @@ pub fn message() -> pb::IcebergConnection {
     }
 }
 
+/// What `ResolveDatabase` answers for a lake step of the namespace `namespace_id`.
+pub fn resolved_database(namespace_id: &str) -> pb::ResolvedDatabase {
+    pb::ResolvedDatabase {
+        tenant_id: uuid::Uuid::from_u128(1).to_string(),
+        namespace_id: namespace_id.into(),
+        connection_name: "lake-main".into(),
+        connection_id: uuid::Uuid::from_u128(7).to_string(),
+        connection_revision: 3,
+        iceberg: Some(message()),
+        ..pb::ResolvedDatabase::default()
+    }
+}
+
 pub fn converted() -> Converted {
     convert(&mut message()).unwrap()
 }

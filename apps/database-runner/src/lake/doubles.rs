@@ -206,6 +206,14 @@ pub(crate) fn failure_line(code: &str, column: &str) -> Vec<u8> {
     line
 }
 
+/// A failure of the host that names no column: only a schema mismatch may name one.
+pub(crate) fn plain_failure_line(code: &str) -> Vec<u8> {
+    let mut line =
+        serde_json::to_vec(&json!({"failure": {"code": code}, "relayDenials": 0})).unwrap();
+    line.push(b'\n');
+    line
+}
+
 pub(crate) fn answer(line: Vec<u8>) -> Script {
     Script::Answer { beats: 0, line }
 }

@@ -2,7 +2,7 @@
 //! reach the control plane exactly once in effect (feature 035, T035-058, D035-143). The SQL and the lake attempt share it; each
 //! says what the end of a lease means to it.
 use crate::{
-    RunnerError, capability,
+    capability,
     rpc::{Failure, Rpc},
 };
 use sagat_api_grpc::pb;
@@ -129,6 +129,15 @@ pub(crate) enum Report {
     },
 }
 
+/// Why a report did not reach the control plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unreported {
+    /// The control plane answered and refused it, with this status. Sending it again would be refused again.
+    Refused(tonic::Code),
+    /// It could not be delivered before the lease or the bound on reporting ran out.
+    Gone,
+}
+
 /// An output or an acknowledgement may be lost, but a retry of a report always sends exactly the same content under exactly the
 /// same key. `profile` names the kind of attempt in the key (`database`, `lake`).
 pub(crate) async fn report_until_ack(
@@ -137,17 +146,17 @@ pub(crate) async fn report_until_ack(
     profile: &str,
     report: &Report,
     heartbeat: &Heartbeat,
-) -> Result<(), RunnerError> {
+) -> Result<(), Unreported> {
     let bound = Instant::now() + Duration::from_secs(30);
     let mut pause = Duration::from_millis(100);
     loop {
         let deadline = heartbeat.deadline(bound);
         if deadline <= Instant::now() {
-            return Err(RunnerError::Transport);
+            return Err(Unreported::Gone);
         }
         let outcome = tokio::time::timeout_at(deadline, send_report(rpc, lease, profile, report))
             .await
-            .map_err(|_| RunnerError::Transport)?;
+            .map_err(|_| Unreported::Gone)?;
         match outcome {
             Ok(()) => return Ok(()),
             Err(error) if error.retryable() => {
@@ -155,7 +164,7 @@ pub(crate) async fn report_until_ack(
                 tokio::time::sleep_until((Instant::now() + pause).min(deadline)).await;
                 pause = (pause * 2).min(Duration::from_secs(1));
             }
-            Err(_) => return Err(RunnerError::Transport),
+            Err(error) => return Err(Unreported::Refused(error.code)),
         }
     }
 }

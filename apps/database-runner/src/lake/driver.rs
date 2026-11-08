@@ -385,6 +385,16 @@ where
         }
     }
 
+    /// A driver whose containers' users are the test's own, and whose held-back slots are free at once (the scripted host is in the
+    /// test's process, so the kernel reports that user as the peer).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn for_tests(mut self, peer_for_slot: fn(u32) -> Option<u32>) -> Self {
+        self.peer_for_slot = peer_for_slot;
+        self.quarantine = Duration::ZERO;
+        self
+    }
+
     /// The slots, for the runner's metrics.
     #[must_use]
     pub const fn slots(&self) -> &Arc<SlotPool> {
