@@ -4,14 +4,6 @@
 //! for this runner's namespace, it names a connection and a revision, it carries nothing of SQL, and its Iceberg connection is one
 //! the runner can open. **Every secret of the answer is zeroised on every path**, the ones that were read and the ones that were
 //! refused.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the lake attempt calls it, and the serve loop calls that (G5)"
-    )
-)]
-
 use sagat_api_grpc::pb;
 use sagat_domain::{database::DatabaseFailure, identity::NamespaceId};
 use zeroize::Zeroize as _;

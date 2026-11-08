@@ -13,11 +13,6 @@
 //! - *the report* is the driver's, sent with the flag the contract gives its code: `CompleteStep` with the receipt, `FailStep`
 //!   with a closed code, or nothing at all when the lease is gone. A completion the control plane refuses as not the step's
 //!   becomes `LAKE_HOST_PROTOCOL`: the host did not keep the protocol.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the serve loop of the lake profile calls it (G5)")
-)]
-
 use std::sync::Arc;
 
 use sagat_api_grpc::pb;

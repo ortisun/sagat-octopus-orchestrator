@@ -12,4 +12,5 @@ pub(crate) mod fixtures;
 pub mod prepare;
 pub(crate) mod resolve;
 pub mod settings;
+pub(crate) mod shell;
 pub mod sweep;

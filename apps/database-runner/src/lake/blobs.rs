@@ -164,7 +164,6 @@ pub struct LeaseBlobs {
 }
 
 impl LeaseBlobs {
-    #[expect(dead_code, reason = "the shell of the lake driver calls it (slice D)")]
     pub(crate) const fn new(rpc: Rpc, lease: pb::TaskLease) -> Self {
         Self { rpc, lease }
     }

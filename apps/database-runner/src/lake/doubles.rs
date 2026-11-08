@@ -74,6 +74,8 @@ pub(crate) enum Script {
     Answer { beats: usize, line: Vec<u8> },
     /// Is started and never connects.
     NeverConnects,
+    /// Connects and reads the request, which is then sent, and never answers.
+    Silent,
 }
 
 pub(crate) struct Scripted {
@@ -85,6 +87,8 @@ pub(crate) struct Scripted {
     pub(crate) kills: AtomicUsize,
     pub(crate) host: Mutex<Option<JoinHandle<()>>>,
     pub(crate) request: Arc<Mutex<Vec<u8>>>,
+    /// Woken when the host has read the request: from then on the write may have been done.
+    pub(crate) requested: Arc<tokio::sync::Notify>,
 }
 
 impl Scripted {
@@ -98,6 +102,7 @@ impl Scripted {
             kills: AtomicUsize::new(0),
             host: Mutex::new(None),
             request: Arc::default(),
+            requested: Arc::default(),
         }
     }
 
@@ -113,9 +118,12 @@ pub(crate) async fn host(
     id: String,
     script: Script,
     request: Arc<Mutex<Vec<u8>>>,
+    requested: Arc<tokio::sync::Notify>,
 ) {
-    let Script::Answer { beats, line } = script else {
-        return std::future::pending().await;
+    let (beats, line) = match script {
+        Script::Answer { beats, line } => (beats, line),
+        Script::NeverConnects => return std::future::pending().await,
+        Script::Silent => (usize::MAX, Vec::new()),
     };
     let directory = work.join(&id);
     let token = std::fs::read_to_string(directory.join("relay.token")).unwrap();
@@ -132,6 +140,10 @@ pub(crate) async fn host(
     let mut asked = Vec::new();
     stream.read_until(b'\n', &mut asked).await.unwrap();
     *request.lock().unwrap() = asked;
+    requested.notify_one();
+    if beats == usize::MAX {
+        return std::future::pending().await;
+    }
     for _ in 0..beats {
         stream
             .get_mut()
@@ -154,6 +166,7 @@ impl LakeSandbox for Scripted {
             request.attempt_id.clone(),
             self.script.clone(),
             Arc::clone(&self.request),
+            Arc::clone(&self.requested),
         ));
         *self.host.lock().unwrap() = Some(task);
         Ok(())
@@ -244,4 +257,80 @@ pub(crate) fn entries(directory: &Path) -> Vec<String> {
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect()
+}
+
+/// A scripted sandbox that more than one driver holds: the shell makes a driver for each lease.
+#[derive(Clone)]
+pub(crate) struct SharedSandbox(pub(crate) Arc<Scripted>);
+
+impl LakeSandbox for SharedSandbox {
+    async fn start(&self, request: &StartRequest) -> Result<(), SandboxError> {
+        self.0.start(request).await
+    }
+
+    async fn exited(&self, attempt_id: &str) {
+        self.0.exited(attempt_id).await;
+    }
+
+    async fn kill(&self, attempt_id: &str) -> ContainerExit {
+        self.0.kill(attempt_id).await
+    }
+}
+
+/// The lake runtime of a runner under test: a scripted sandbox, slots of its own, a short drain.
+pub(crate) struct TestLaunch {
+    pub(crate) sandbox: Arc<Scripted>,
+    pub(crate) settings: super::settings::Settings,
+    pub(crate) slots: Arc<super::driver::SlotPool>,
+    pub(crate) grace: std::time::Duration,
+    /// How many times the serve loop has asked for the free slots: each round of it does.
+    pub(crate) looked: tokio::sync::watch::Sender<usize>,
+}
+
+impl TestLaunch {
+    pub(crate) fn new(world: &World, script: Script, slots: u32) -> Arc<Self> {
+        let mut settings = super::fixtures::settings(world.work.path());
+        settings.slots = slots;
+        Arc::new(Self {
+            sandbox: Arc::new(Scripted::new(world.work.path(), script)),
+            slots: super::driver::SlotPool::new(slots),
+            settings,
+            grace: std::time::Duration::from_millis(300),
+            looked: tokio::sync::watch::channel(0).0,
+        })
+    }
+}
+
+impl super::shell::Launch for TestLaunch {
+    fn slots(&self) -> usize {
+        self.settings.slots as usize
+    }
+
+    fn free(&self) -> usize {
+        self.looked.send_modify(|rounds| *rounds += 1);
+        self.slots().saturating_sub(self.slots.in_use())
+    }
+
+    fn drain_grace(&self) -> std::time::Duration {
+        self.grace
+    }
+
+    fn launch(
+        &self,
+        rpc: crate::rpc::Rpc,
+        task: super::attempt::Task,
+        drain: CancellationToken,
+    ) -> super::shell::Launched {
+        let driver = super::driver::Driver::with_slots(
+            SharedSandbox(Arc::clone(&self.sandbox)),
+            NoBlobs,
+            NoDns,
+            NoNetwork,
+            self.settings.clone(),
+            false,
+            Arc::clone(&self.slots),
+        )
+        .for_tests(|_| Some(super::fixtures::my_uid()));
+        Box::pin(super::attempt::run(rpc, task, driver, drain))
+    }
 }
