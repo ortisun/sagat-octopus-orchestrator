@@ -3064,8 +3064,8 @@ The other fixes were wording:
     *Not run for this step:* the `database-connections` SDK scenario, which the mapping change does not reach (the SQL wire answer is the same message); it
     runs with the pull request and before the step that opens the lake arm.
 - **D035-141 — A lake step is handed its credentials: the snapshot, the reads, the pins and the audit (slice C of D035-130, the third step).**
-  **Decided by: delegate**. The store selects a lake step and the worker service resolves it; the wire answer is the next step, so a lake runner still
-  cannot be handed them over gRPC.
+  **Decided by: delegate**. The store selects a lake step, the worker service resolves it and the wire answers it; what carries out the attempt (the runner shell, slice G)
+  is not built, so nothing yet uses the answer.
   - *What.* The store (`lake_snapshot`, beside the SQL path, which keeps its order of checks) refuses a subject with none of the pools of any of the secrets
     of the connection, selects each secret by role (`selected_secret`, shared with SQL: the version the attempt pinned under that role, else the one in
     force; the name and the identity of the secret judged as before) and returns them in the order of `secret_slots()`. The worker service reads them from the
@@ -3097,14 +3097,26 @@ The other fixes were wording:
     **Eight hand mutations, all killed, each at its own assertion**: the pools of the secrets not applied; the second transaction not judging again; the pin
     ignored; the identity of the secret not checked; only the first secret pinned; the roles missing from the audit; the records after the first not set; the
     store not writing them. fmt, clippy `-D warnings`;
-    `integration_database_connections` 7 and as the runtime role 7; `integration_database_runner` 1 (1 ignored); `contract_iceberg_writes` 42; the lib and
-    crate-level tests of the application, store and gRPC crates.
+    `integration_database_connections` 7 and as the runtime role 7; `integration_database_runner` 1 (1 ignored); `contract_iceberg_writes` 45 (3 new); the lib and
+    crate-level tests of the application, store and gRPC crates; `check-architecture`, `check-agent-config`, `check-design-docs`.
   - *A test that could pass for the wrong reason.* The pool cases assert only that the resolve fails (the answer to a refused secret is the opaque `NotFound`,
     by design). They are not vacuous: the mutation that removes the pool check is killed there, which is the proof that the check is what refuses.
-  - *Not done: the rest of T035-044.* The wire mapping (`ResolvedDatabase.iceberg` built by `iceberg_connection`, the two secrets in the response, the bridge
-    test through the runner's own conversion); the retention and cleanup characterisation of the extra pins; `check_database_blob_upload` and the output scan
-    still read the `primary` pin, so a lake step that uploaded would be refused (read in the code, not exercised; its results go through slice F). The process that hosts the worker gRPC needs
-    `SAGAT_LAKE_ENABLED` for a lake step to be resolved at all (the store admits a lake node only with it); to be written in the runbook with the mapping.
+  - *The wire answer* (`crates/api-grpc/src/database.rs`, `response`, now public for the contract suite; the handler in `service.rs` was already generic).
+    A lake grant is answered with the connection as stored, `iceberg` built by `iceberg_connection` with the secrets under `catalog` and `storage`, the
+    lease expiry, and nothing of SQL (no `postgres`, no `credential`, no statement, no limits message). **The secrets that travel are exactly the ones the
+    connection names**: a grant with one the connection does not name, or without one it does, is refused (the store selects them from the connection, so it
+    cannot happen; the check is for the day it does), as is a lake grant over a PostgreSQL connection. Contract tests (`connection_wire`, through the
+    runner's own `convert`): the answer is read by the runner, each secret as the one sent; a vended storage sends only the catalog's; the mismatches are
+    refused. Three hand mutations, all killed: the match of the secrets removed; the two secrets swapped; the revision not answered.
+  - *Retention, characterised, not changed.* The release of the pins of a terminal run deletes them by run, so every role of every attempt goes together
+    and is audited once (`lake_resolve.rs`; the mutation that restricts the release to `primary` is killed). The cleanup of provider versions asks
+    only whether any pin names the operation, whatever its role, so a version a catalog or storage pin holds is kept.
+  - *The process that serves the worker gRPC needs `SAGAT_LAKE_ENABLED`*, as the one that leases does: with it off the resolve of a lake step is `NotFound`
+    and nothing is pinned (tested). Written in `docs/runbooks/database-runner.md` and `docs/quickstarts/errors.md`.
+  - *Not done, and why T035-044 is ticked anyway.* What the task asks for is built and each part has its test. Not exercised: the answer through the real gRPC
+    server with a lake step (the platform harness does not turn the lake on, and nothing would call it before the runner shell, slice G, which will be its
+    first caller); `check_database_blob_upload` and the output scan still read the `primary` pin, so a lake step that uploaded would be refused (read in the
+    code, not exercised; its results go through slice F).
 - **G035-073 — A refused run of an Iceberg write is neither opaque nor audited at creation.** `audit_database_denial` (`runs.rs`) audits only
   `DatabaseUnavailable` and `DatabaseLimit`, and `LakeRefused` keeps its detail (the node, the field paths and classification levels) for a caller who holds
   `run:start` and `database:use`, where a refused SQL run is an opaque `NotFound`. The detail is the publisher's to see; a starter is not that person.

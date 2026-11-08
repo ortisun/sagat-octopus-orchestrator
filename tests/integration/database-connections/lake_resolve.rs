@@ -405,9 +405,53 @@ pub async fn run(
     );
     release(second).await;
 
+    // The pins of an attempt are released with the retention of the terminal run, every role of every attempt together.
+    assert_eq!(pins(w, first).await.len(), 4);
+    sqlx::query(
+        "UPDATE runs SET finished_at = clock_timestamp() - interval '25 hours' WHERE tenant_id = $1 AND id = $2 AND finished_at IS NOT NULL",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(first.as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .unwrap();
+    assert!(
+        sagat_application::secret_cleanup::SecretCleanupStore::release_terminal_credential_pins(
+            &w.store, 128
+        )
+        .await
+        .unwrap()
+            >= 4
+    );
+    assert!(
+        pins(w, first).await.is_empty(),
+        "the catalog's and the storage's pins go together"
+    );
+    let released: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id = $1 AND action = $2 AND resource_id = $3",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(AuditAction::SecretAttemptPinsReleased.as_str())
+    .bind(first.to_string())
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(released, 1, "and the release is audited once for the run");
+
     // A connection whose catalog and storage name one secret: two roles, one secret, two pins.
     let shared = start(one, "lake-resolve-start-00002").await;
     let task = lease(shared).await;
+    // The process that serves the worker gRPC needs the lake on too: with it off the step is not found, and nothing is pinned.
+    assert!(
+        matches!(
+            w.workers
+                .resolve_database(&runner, &task_ref(&task), None)
+                .await,
+            Err(sagat_application::error::AppError::NotFound)
+        ),
+        "a process that has the lake off hands nothing over"
+    );
+    assert!(pins(w, shared).await.is_empty());
     let resolved = workers
         .resolve_database(&runner, &task_ref(&task), None)
         .await

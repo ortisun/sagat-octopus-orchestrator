@@ -118,6 +118,18 @@ ignores the profile, so bind a lake runner to the exact activity, as above, and 
 activity (the answer counts them in `revoked`). The registration of a `database` runner for the lake activity, of a `lake`
 runner for the SQL activity, of both, or of an ordinary activity beside either, is refused as not bound.
 
+**The credentials of a lake step** (D035-141). A lake runner that has leased its step asks `ResolveDatabase` for the connection and
+its secrets. Nothing is resolved unless the session offers the lake activity **and** its binding is of the profile `lake` alone
+(the same check the lease makes, repeated where the secret leaves). The answer carries the stored connection in `iceberg` and a
+`credentials` map with `catalog` and `storage`: only the ones the connection names (a catalog that delegates the storage credentials
+sends no `storage`), and nothing of SQL. The server reads the two secrets from OpenBao one after the other, catalog then storage, and
+hands them over only if neither changed while it read the other; then it pins each version under its role for the attempt, and
+writes one audit record `secret.resolved` for each (`... generation 1: catalog <name> v<n>` and `... storage <name> v<n>`),
+never the value. A second attempt reads what is in force then; the same attempt, asked again, gets the versions it pinned. The pins go with the
+terminal retention of the run, all roles together. **The process that serves the worker gRPC needs `SAGAT_LAKE_ENABLED=true`** too:
+without it the step is not found, as any lake node is on a process that has the lake off. The runner that carries out the attempt
+is not built yet, so a deployment should not rely on this to write to a table.
+
 ## Observe and recover
 
 - Standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `http/json` configure traces.
