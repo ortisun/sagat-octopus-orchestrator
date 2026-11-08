@@ -3226,8 +3226,9 @@ The other fixes were wording:
     `worker.proto` field and a minor version. Residual copies of the secrets in the buffers of the transport (tonic and hyper keep the frame that carried them) are a limit the
     SQL runner has too and this one does not close: not verified by a test, and said here. The work root has to be dedicated to the runner and not persistent (an `emptyDir`): the sweep
     removes by the shape of a name and by age, and what an aborted attempt leaves is removed only by the next process, after about an hour.
-  - *Not done: G035-078 and the rest of T035-058.* Compose and Helm, the container end to end (T035-062), the PostgreSQL proof of the whole chain with a real control plane (G8 of the design,
-    which needs D035-142 merged), the phase histograms, the lookup counter, `ReadBlob` scoped to the run and the record sources other than inline.
+  - *Not done: G035-078 and the rest of T035-058.* Compose and Helm, the container end to end (T035-062), the proof of the shell itself against a real control plane (the server's half is proved on the wire
+    by `lake_grpc.rs`, with a gRPC client in the runner's place; running the shell against that server needs the scripted sandbox in a crate the tests crate can use, which the
+    design asked to move behind a `test-support` feature), the phase histograms, the lookup counter, `ReadBlob` scoped to the run and the record sources other than inline.
 - **G035-078 — What the relay refused is counted, not audited.** The relay counts its denials by reason and the runner has them in the result of every attempt, but the worker protocol has no call to
   put them in the audit trail (`FailStep` and `CompleteStep` carry no such field), and a new field is a `worker.proto` change and a minor version. Until then they are a metric
   (`lake_relay_denials_total`) and the log of the attempt. T035-058 asks for the audit and stays open for it. *Exit condition:* the owner's word on the minor (the same question as the evidence on

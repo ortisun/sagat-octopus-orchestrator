@@ -1179,7 +1179,7 @@ one commit carries the key.
   else, polls for the slots it has free, resolves the connection after a slot is taken, runs the attempt through the driver, and reports `CompleteStep` with the receipt or `FailStep` with a
   closed code and the flag of the contract (or nothing when the lease is gone); a drain gives the leases up as lost; the work root is swept; the attempts are counted. A lake step goes from the
   poll to `CompleteStep` through the shell in a test with a scripted sandbox (132 tests in the runner, hand mutations killed). Not done: **the audit of the relay's denials** (the protocol has no
-  call for it: G035-078), and the proof against a real control plane and the real sandbox.
+  call for it: G035-078), and the proof of the shell itself against a real control plane and the real sandbox (the server's half is proved on the wire by `lake_grpc.rs`).
 - [ ] T035-059 [US02] Complete the step on the server, in
   `crates/application/src/worker/output.rs` and `crates/application/src/runs.rs`:
   - T6 stores the receipt as output, writes the journal, sets successor readiness and the outbox;
