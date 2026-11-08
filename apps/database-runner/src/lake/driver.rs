@@ -301,6 +301,21 @@ impl Drop for Running {
     }
 }
 
+/// An attempt that has a readable input and a slot, and has not asked for its connection yet (D035-143).
+pub struct Admitted {
+    input: AttemptInput,
+    slot: SlotGuard,
+    peer_uid: u32,
+}
+
+impl Admitted {
+    /// The slot it holds.
+    #[must_use]
+    pub const fn slot(&self) -> u32 {
+        self.slot.number()
+    }
+}
+
 /// The lake driver of one runner.
 pub struct Driver<S, B, R, C> {
     sandbox: S,
@@ -334,6 +349,29 @@ where
         development: bool,
     ) -> Self {
         let slots = SlotPool::new(settings.slots);
+        Self::with_slots(
+            sandbox,
+            blobs,
+            resolver,
+            connector,
+            settings,
+            development,
+            slots,
+        )
+    }
+
+    /// A driver that takes its slots from `slots`, which other drivers may share: the blobs are read under one lease, so the shell
+    /// makes a driver for each lease, and the slots belong to the runner (D035-143).
+    #[must_use]
+    pub fn with_slots(
+        sandbox: S,
+        blobs: B,
+        resolver: R,
+        connector: C,
+        settings: Settings,
+        development: bool,
+        slots: Arc<SlotPool>,
+    ) -> Self {
         Self {
             sandbox,
             blobs,
@@ -353,6 +391,38 @@ where
         &self.slots
     }
 
+    /// What an attempt needs before its credentials are worth disclosing: a lease input it can read, a free slot, and a user for
+    /// the slot. The shell asks the control plane for the connection (which discloses and audits the secrets) only after this, so
+    /// a full node or a bad input costs no disclosure. The slot is held until the returned value is run or dropped.
+    ///
+    /// # Errors
+    /// The [`Finished`] to report: the lease input is not an attempt input, every slot is in use, or the slot has no user.
+    pub fn admit(&self, input_json: &[u8]) -> Result<Admitted, Finished> {
+        let Ok(input) = AttemptInput::read(input_json) else {
+            return Err(Finished::failed(
+                DatabaseFailure::Configuration,
+                Cause::Input,
+            ));
+        };
+        let Some(slot) = self.slots.take() else {
+            return Err(Finished::failed(
+                DatabaseFailure::LakeSandboxUnavailable,
+                Cause::NoSlot,
+            ));
+        };
+        let Some(peer_uid) = (self.peer_for_slot)(slot.number()) else {
+            return Err(Finished::failed(
+                DatabaseFailure::Configuration,
+                Cause::NoUser,
+            ));
+        };
+        Ok(Admitted {
+            input,
+            slot,
+            peer_uid,
+        })
+    }
+
     /// Runs one attempt (see the module). `input_json` is the lease's input and `connection` its resolved connection, which is
     /// consumed. `on_heartbeat` is called once for each beat the host sent in time and must not block.
     pub async fn run(
@@ -362,20 +432,33 @@ where
         signals: &Signals,
         on_heartbeat: impl FnMut() + Send,
     ) -> Finished {
-        let Ok(input) = AttemptInput::read(input_json) else {
-            return Finished::failed(DatabaseFailure::Configuration, Cause::Input);
-        };
+        match self.admit(input_json) {
+            Ok(admitted) => {
+                self.run_admitted(admitted, connection, signals, on_heartbeat)
+                    .await
+            }
+            Err(finished) => finished,
+        }
+    }
+
+    /// Runs an attempt that was admitted, with the connection the control plane resolved for it.
+    pub async fn run_admitted(
+        &self,
+        admitted: Admitted,
+        connection: Converted,
+        signals: &Signals,
+        on_heartbeat: impl FnMut() + Send,
+    ) -> Finished {
+        let Admitted {
+            input,
+            slot,
+            peer_uid,
+        } = admitted;
         let expected = Expected {
             effect_key: input.effect_key().to_owned(),
             reference: input.reference().to_owned(),
         };
         let limits = effective(input.limits(), connection.limits, &self.settings);
-        let Some(slot) = self.slots.take() else {
-            return Finished::failed(DatabaseFailure::LakeSandboxUnavailable, Cause::NoSlot);
-        };
-        let Some(peer_uid) = (self.peer_for_slot)(slot.number()) else {
-            return Finished::failed(DatabaseFailure::Configuration, Cause::NoUser);
-        };
 
         // the step's time is the attempt's, staging included
         let deadline = Instant::now() + limits.timeout;
@@ -924,6 +1007,74 @@ mod tests {
             4,
             "the slots that were taken are still taken"
         );
+    }
+
+    // -- admission, before the connection is asked for (D035-143) -------------------------------------------------------
+
+    #[test]
+    fn an_attempt_is_admitted_before_its_credentials_are_asked_for_and_holds_its_slot_until_it_is_dropped()
+     {
+        let world = world();
+        let driver = driver(&world, answer(receipt_line()));
+        let admitted = driver.admit(&input_json(|_| {})).expect("admitted");
+        assert_eq!(driver.slots.in_use(), 1, "the slot is held from admission");
+        assert!(driver.sandbox.asked().is_empty());
+        drop(admitted);
+        assert_eq!(
+            driver.slots.in_use(),
+            0,
+            "an attempt whose connection could not be resolved gives its slot back"
+        );
+    }
+
+    #[test]
+    fn an_input_that_is_not_one_and_a_full_node_are_refused_at_admission_with_nothing_taken() {
+        let world = world();
+        let driver = driver(&world, answer(receipt_line()));
+        let refused = driver
+            .admit(b"{\"not\":\"an input\"}")
+            .err()
+            .expect("refused");
+        assert_eq!(refused.cause, Some(Cause::Input));
+        assert_eq!(driver.slots.in_use(), 0);
+        let _all: Vec<_> = (0..4).map(|_| driver.slots.take().unwrap()).collect();
+        let full = driver.admit(&input_json(|_| {})).err().expect("refused");
+        assert_eq!(full.cause, Some(Cause::NoSlot));
+        assert_eq!(failed_with(&full), DatabaseFailure::LakeSandboxUnavailable);
+        assert_eq!(driver.slots.in_use(), 4, "nothing more was taken");
+    }
+
+    #[test]
+    fn the_drivers_of_two_leases_share_the_slots_of_the_runner() {
+        let world = world();
+        let first = driver(&world, answer(receipt_line()));
+        let mut second = driver(&world, answer(receipt_line()));
+        second.slots = Arc::clone(&first.slots);
+        let _held: Vec<_> = (0..4)
+            .map(|_| first.admit(&input_json(|_| {})).expect("admitted"))
+            .collect();
+        assert_eq!(
+            second
+                .admit(&input_json(|_| {}))
+                .err()
+                .expect("refused")
+                .cause,
+            Some(Cause::NoSlot),
+            "the second lease finds the slots the first took"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_admitted_attempt_runs_as_one_that_was_not_split() {
+        let world = world();
+        let driver = driver(&world, answer(receipt_line()));
+        let admitted = driver.admit(&input_json(|_| {})).expect("admitted");
+        let finished = driver
+            .run_admitted(admitted, converted(), &signals(), || {})
+            .await;
+        assert!(matches!(finished.report, Report::Complete(_)));
+        assert!(finished.cause.is_none() && finished.request_sent);
+        assert_eq!(driver.slots.in_use(), 0, "and the slot is back");
     }
 
     #[tokio::test]
