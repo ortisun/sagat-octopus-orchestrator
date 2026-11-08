@@ -21,6 +21,7 @@ fn expected() -> ExpectedReceipt<'static> {
         effect_key: KEY,
         reference: "main",
         mode: WriteMode::Append,
+        allow_empty: false,
     }
 }
 
@@ -55,12 +56,55 @@ fn the_receipt_of_a_commit_is_stored_as_the_typed_fields_it_holds() {
     );
 }
 
+/// What the host sends for a batch with nothing in it: no snapshot, and no row added.
+fn empty() -> Value {
+    json!({
+        "kind": "iceberg", "outcome": "EMPTY_NO_COMMIT", "effectKey": KEY, "foundByLookup": false,
+        "mode": "append", "ref": "main", "rowsAdded": "0"
+    })
+}
+
 #[test]
-fn an_empty_batch_that_committed_nothing_is_a_receipt_of_the_step() {
-    let mut empty = sample("iceberg-committed.json");
-    empty["outcome"] = json!("EMPTY_NO_COMMIT");
-    empty.as_object_mut().unwrap().remove("snapshotId");
-    assert!(rebuild(&empty).is_ok());
+fn an_empty_batch_that_committed_nothing_is_a_receipt_of_the_step_only_when_the_step_allows_one() {
+    let allowing = ExpectedReceipt {
+        allow_empty: true,
+        ..expected()
+    };
+    assert!(
+        JsonLakeReceiptCodec
+            .rebuild(&serde_json::to_vec(&empty()).unwrap(), &allowing)
+            .is_ok()
+    );
+    // the lease of this delivery says an empty batch is a failure: a host that reports one is not the host that was written
+    assert_eq!(rebuild(&empty()), Err(InvalidLakeReceipt::Outcome));
+}
+
+#[test]
+fn a_receipt_whose_parts_contradict_each_other_is_refused() {
+    let allowing = ExpectedReceipt {
+        allow_empty: true,
+        ..expected()
+    };
+    let read = |receipt: &Value, expected: &ExpectedReceipt<'_>| {
+        JsonLakeReceiptCodec.rebuild(&serde_json::to_vec(receipt).unwrap(), expected)
+    };
+    // a commit has a snapshot
+    let mut headless = sample("iceberg-committed.json");
+    headless.as_object_mut().unwrap().remove("snapshotId");
+    assert_eq!(rebuild(&headless), Err(InvalidLakeReceipt::Inconsistent));
+    // nothing committed has neither a snapshot nor a row added
+    let mut snapshot = empty();
+    snapshot["snapshotId"] = json!("1");
+    assert_eq!(
+        read(&snapshot, &allowing),
+        Err(InvalidLakeReceipt::Inconsistent)
+    );
+    let mut rows = empty();
+    rows["rowsAdded"] = json!("5");
+    assert_eq!(
+        read(&rows, &allowing),
+        Err(InvalidLakeReceipt::Inconsistent)
+    );
 }
 
 #[test]

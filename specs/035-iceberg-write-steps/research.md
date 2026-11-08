@@ -3168,6 +3168,21 @@ The other fixes were wording:
     `SUCCEEDED`), and finds a replay of the same report `already_applied`. It passed on its first run, so it was shown to be able to fail: with the storage secret left out of the answer, it fails
     at the list of secrets. This closes the gap D035-141 and the first draft of this record named (the completion through the real gRPC server); what it does not cover is the runner's own
     requests against this server (D035-143 tests them against a scripted service).
+  - *What two more independent reviews found (2026-11-08, security and correctness of the server side, read-only; nothing that lets another principal obtain a secret) and what was done.*
+    Fixed, test first, each with its mutation killed: a completion that no resolve preceded was `Unavailable`, which reads as retryable though it never will succeed: it is `NotAllowed`
+    now (the missing codec stays `Unavailable`); a receipt the runner sent that is not the step's left no trace, against rule 10: a collapsing denial audit for the run now; a commit whose
+    receipt the run has no room to keep failed as `STORAGE_QUOTA_EXCEEDED` instead of `OUTCOME_UNKNOWN`, because `database_write` knew only SQL statements: every Iceberg write is a managed
+    write now (a test with the tenant's content quota at its usage, lifted again); the receipt was checked for identity and not for consistency: a commit without a snapshot, an empty receipt
+    with a snapshot or rows, and an empty receipt when the lease did not allow one (`APPEND_ALLOWS_EMPTY`, one value for the lease and the check) are refused, as the host writes them
+    (`runners/lake/sagat_lake/modes/append.py`); a failure to write a denial audit replaced the refusal the runner was told; the grant is built before the commit, so a failure to build it
+    leaves no pin and no record for a credential never delivered; `lake_snapshot` refuses a connection that is not Iceberg before reading a secret, and the SQL result route also excludes
+    a lake step by the kind of the connection, the authority, and not only by the denormalised activity. The tests: the held-read cases now include the run cancelled, the lease lapsing
+    and the attempt failed and leased again while a read is held (each fails, pins nothing and is audited), and the assertions that passed for any error name the error.
+  - *Decided, not changed (the reviews asked).* **A lake completion does not repeat the capability fence of a SQL completion** (lease unexpired, no cancel, no stop reason): the receipt is
+    the proof that a write happened, and a late receipt of a write that happened is better kept than refused; the domain's own fence (token, attempt, generation) holds, and what a cancel or
+    an expiry does to the step is the domain's to judge (a lease that lapsed under a lake step is `WAITING` for an operator with `LEASE_EXPIRED`, tested). **A repeated resolve of the same
+    attempt is not audited again** (an identical event is recorded once, as for SQL): the first disclosure is. **A pinned version outlives a rotation** for the attempt that holds it, until
+    its lease ends: rotating a leaked secret does not cut an attempt in flight (the runbook says so).
   - *Not done in this slice.* S5 (G035-077, O035-007). The per-write audit and the `lake_*` metrics (T035-061). `OUTCOME_UNKNOWN` evidence on the waiting step (O035-007). T035-059 stays unticked: it asks
     for T035-050 and T035-051 to pass, which need the runner and a container.
 - **G035-077 — D035-069 says the code already requires `saga:override` to retry an unknown outcome. It does not.** `review_instance` (`runs.rs`) maps

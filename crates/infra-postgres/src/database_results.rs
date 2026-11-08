@@ -103,12 +103,14 @@ async fn selected(
     current_permission(conn, &request.principal, Permission::DatabaseResultRead).await?;
     sqlx::query("SELECT s.step_id,s.attempt,s.generation,s.output_digest,p.content FROM steps s \
         JOIN run_database_connections d ON d.tenant_id=s.tenant_id AND d.run_id=s.run_id AND d.node_id=s.node \
+        JOIN database_connection_revisions r ON r.tenant_id=d.tenant_id AND r.namespace_id=d.namespace_id AND r.connection_id=d.connection_id AND r.revision=d.revision \
         JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.output_digest \
         WHERE s.tenant_id=$1 AND d.namespace_id=$2 AND s.run_id=$3 AND s.node=$4 \
         AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 AND s.status='SUCCEEDED' \
-        AND COALESCE(s.activity,'') <> $5 FOR SHARE OF s")
+        AND COALESCE(s.activity,'') <> $5 AND COALESCE(r.config->>'driver','postgresql') <> 'iceberg' FOR SHARE OF s")
         .bind(request.principal.tenant_id().as_uuid()).bind(request.namespace.as_uuid()).bind(request.run.as_uuid())
-        // The output of a lake step is a receipt, not rows: this route does not serve it (feature 035, G035-074).
+        // The output of a lake step is a receipt, not rows: this route does not serve it (feature 035, G035-074). Excluded by the activity of the
+        // step and, as the authority, by the kind of the connection it was admitted with: the activity is a denormalised column.
         .bind(request.node.as_str()).bind(sagat_domain::database::ICEBERG_WRITE_ACTIVITY).fetch_optional(conn).await.map_err(store_error)
 }
 fn digest(bytes: &[u8]) -> Result<Digest, StoreError> {

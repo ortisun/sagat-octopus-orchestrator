@@ -173,7 +173,17 @@ where
                     "a lake step reports its receipt inline",
                 ));
             }
-            Some(self.lake_receipt(&mut tx, task, output).await?)
+            match self.lake_receipt(&mut tx, task, output).await {
+                Ok(receipt) => Some(receipt),
+                Err(error) => {
+                    // the transaction is let go before the audit: it is written off the request path, on a connection of its own
+                    drop(tx);
+                    if matches!(error, AppError::NotAllowed(_)) {
+                        self.audit_lake_refusal(principal, task).await;
+                    }
+                    return Err(error);
+                }
+            }
         } else {
             None
         };

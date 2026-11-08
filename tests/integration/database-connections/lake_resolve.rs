@@ -519,8 +519,11 @@ pub async fn run(
         );
         driven.expect("the resolve read the provider twice");
         assert!(
-            outcome.is_err(),
-            "a secret that changed between the reads is not handed over"
+            matches!(
+                outcome,
+                Err(sagat_application::error::AppError::Unavailable)
+            ),
+            "a secret that changed between the reads is not handed over: {outcome:?}"
         );
         assert!(
             pins(w, run).await.is_empty(),
@@ -532,6 +535,98 @@ pub async fn run(
         })
         .await;
         release(task).await;
+    }
+
+    // Nothing about the secrets changes, but the lease does, while the first read is held: the run is cancelled, the lease lapses, or the
+    // attempt is failed and leased again. The second transaction repeats the whole fence, so the resolve fails, pins nothing and is
+    // audited; and what the runner did not use is let go (the lease scenario that follows counts what is in flight).
+    for (what, key) in [
+        ("the run is cancelled", "lake-resolve-start-00011"),
+        ("the lease lapses", "lake-resolve-start-00012"),
+        (
+            "the attempt is failed and leased again",
+            "lake-resolve-start-00013",
+        ),
+    ] {
+        let run = start(two, key).await;
+        let task = lease(run).await;
+        let reference = task_ref(&task);
+        let resolving = gated.resolve_database(&runner, &reference, None);
+        let driver = async {
+            // the first read is held: the first transaction has already passed
+            gate.entered.wait().await;
+            match what {
+                "the run is cancelled" => {
+                    w.operate(run, sagat_application::runs::RunOperation::Cancel)
+                        .await
+                        .expect("cancel the run");
+                }
+                "the lease lapses" => w.age_lease(run, "save").await,
+                _ => {
+                    workers
+                        .fail(
+                            &runner,
+                            &reference,
+                            "CATALOG_UNAVAILABLE",
+                            true,
+                            &format!("lake-resolve-retry-{key}"),
+                        )
+                        .await
+                        .expect("a retryable failure");
+                    w.age_retry(run, "save").await;
+                    w.scheduler.tick().await;
+                }
+            }
+            gate.resume.wait().await;
+            gate.entered.wait().await;
+            gate.resume.wait().await;
+        };
+        let (outcome, driven) = tokio::join!(
+            resolving,
+            tokio::time::timeout(Duration::from_secs(120), driver)
+        );
+        driven.expect("the resolve read the provider twice");
+        assert!(
+            matches!(
+                outcome,
+                Err(sagat_application::error::AppError::StaleAttempt
+                    | sagat_application::error::AppError::NotFound)
+            ),
+            "{what}: the credentials are not handed over: {outcome:?}"
+        );
+        assert!(
+            pins(w, run).await.is_empty(),
+            "{what}: and nothing is pinned"
+        );
+        crate::support::eventually("the audit of the refused resolve", || async {
+            (denials(w, run).await == 1).then_some(())
+        })
+        .await;
+        match what {
+            "the run is cancelled" => {}
+            "the lease lapses" => {
+                w.age_retry(run, "save").await;
+                w.scheduler.tick().await;
+                let after: (String, Option<String>, Option<String>) = sqlx::query_as(
+                    "SELECT status, waiting_kind, failure_code FROM steps WHERE run_id = $1 AND node = 'save'",
+                )
+                .bind(run.as_uuid())
+                .fetch_one(&w.db.pool)
+                .await
+                .unwrap();
+                assert_eq!(
+                    after,
+                    (
+                        "WAITING".into(),
+                        Some("OPERATOR".into()),
+                        Some("LEASE_EXPIRED".into())
+                    ),
+                    "a managed write whose lease lapsed may have happened: it waits for a person"
+                );
+            }
+            // the step is ready again and is leased as a second attempt, which the runner lets go
+            _ => release(lease(run).await).await,
+        }
     }
 
     // A secret limited to worker pools is not handed to a runner outside them, whichever role it plays: the storage's first, then
@@ -557,11 +652,13 @@ pub async fn run(
             .await
             .expect("limit the secret to a pool");
         assert!(
-            workers
-                .resolve_database(&runner, &task_ref(&task), None)
-                .await
-                .is_err(),
-            "the {restricted} secret is limited to {pool} and the runner is not in it"
+            matches!(
+                workers
+                    .resolve_database(&runner, &task_ref(&task), None)
+                    .await,
+                Err(sagat_application::error::AppError::NotFound)
+            ),
+            "the {restricted} secret is limited to {pool} and the runner is not in it: refused as the opaque not found"
         );
         assert!(
             pins(w, run).await.is_empty(),
@@ -609,11 +706,13 @@ pub async fn run(
     };
     // a completion that no resolve preceded is not one: the attempt never held the credentials of the write
     assert!(
-        workers
-            .complete(&runner, &reference, &compact, "lake-complete-0")
-            .await
-            .is_err(),
-        "a receipt for a write whose credentials were never handed over"
+        matches!(
+            workers
+                .complete(&runner, &reference, &compact, "lake-complete-0")
+                .await,
+            Err(sagat_application::error::AppError::NotAllowed(_))
+        ),
+        "a receipt for a write whose credentials were never handed over is a mistake of the runner, not a server that is down"
     );
     assert_eq!(state().await.1, None);
     workers
@@ -622,10 +721,13 @@ pub async fn run(
         .expect("the credentials");
     // a service with no codec cannot complete a lake step, and a receipt that is not the step's is not stored
     assert!(
-        uncoded
-            .complete(&runner, &reference, &compact, "lake-complete-1")
-            .await
-            .is_err()
+        matches!(
+            uncoded
+                .complete(&runner, &reference, &compact, "lake-complete-1")
+                .await,
+            Err(sagat_application::error::AppError::Unavailable)
+        ),
+        "a server with no codec is not configured for it, which is not the runner's mistake"
     );
     let with = |member: &str, value: Value| {
         let mut other = receipt.clone();
@@ -660,6 +762,11 @@ pub async fn run(
         ("LEASED", None),
         "nothing was stored and the step is still the attempt's"
     );
+    // a runner that keeps sending receipts that are not the step's is seen: one denial for the run, written off the request path
+    crate::support::eventually("the audit of the refused receipts", || async {
+        (denials(w, run).await == 1).then_some(())
+    })
+    .await;
     // the receipt of the step, sent with other whitespace and the members the other way round, is stored as the platform writes it
     let mut sent = String::from("{ ");
     for (n, (name, value)) in receipt.as_object().unwrap().iter().rev().enumerate() {
@@ -676,6 +783,7 @@ pub async fn run(
                 effect_key: &task.idempotency_key,
                 reference: "main",
                 mode: sagat_domain::database::WriteMode::Append,
+                allow_empty: false,
             },
         )
         .expect("the receipt of the step");
@@ -763,6 +871,63 @@ pub async fn run(
         )
     );
 
+    // A commit whose receipt the run has no room to keep is not a failed write: the write happened, so the step waits for an operator
+    // with an unknown outcome and is not failed with a code a retry would act on.
+    let tight = start(two, "lake-resolve-start-00010").await;
+    let task = lease(tight).await;
+    workers
+        .resolve_database(&runner, &task_ref(&task), None)
+        .await
+        .expect("the credentials");
+    let tenant = w.admin.tenant_id().as_uuid();
+    let mut quota = w.db.pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("quota-policy:tenant_content_bytes:{tenant}"))
+        .execute(&mut *quota)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) SELECT tenant_id, NULL, 'tenant_content_bytes', content_bytes + content_reserved_bytes, 'lake-receipt-test' FROM tenant_retained_usage WHERE tenant_id=$1")
+        .bind(tenant)
+        .execute(&mut *quota)
+        .await
+        .unwrap();
+    quota.commit().await.unwrap();
+    sqlx::query("UPDATE quota_accounting_control SET content_enforcement_enabled=true")
+        .execute(&w.db.pool)
+        .await
+        .unwrap();
+    let mut roomless = receipt.clone();
+    roomless["effectKey"] = json!(task.idempotency_key);
+    let kept = workers
+        .complete(
+            &runner,
+            &task_ref(&task),
+            &serde_json::to_vec(&roomless).unwrap(),
+            "lake-complete-quota",
+        )
+        .await;
+    // the quota is lifted again before anything is asserted: the scenarios that follow share the tenant
+    sqlx::query("DELETE FROM quota_limits WHERE updated_by = 'lake-receipt-test'")
+        .execute(&w.db.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE quota_accounting_control SET content_enforcement_enabled=false")
+        .execute(&w.db.pool)
+        .await
+        .unwrap();
+    let kept = kept.expect("the report of a write that happened is answered");
+    assert_eq!(
+        (kept.step_status.as_str(), kept.run_status.as_str()),
+        ("WAITING", "MANUAL_REVIEW")
+    );
+    let failure: Option<String> =
+        sqlx::query_scalar("SELECT failure_code FROM steps WHERE run_id = $1 AND node = 'save'")
+            .bind(tight.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(failure.as_deref(), Some("OUTCOME_UNKNOWN"));
+
     // The receipt of a lake step is not a SQL result: the route that serves those does not find it (it would otherwise be read
     // through the validator of rows, fail, and answer without a trace).
     {
@@ -802,10 +967,12 @@ pub async fn run(
         .await
         .expect("delete the storage's secret");
     assert!(
-        workers
-            .resolve_database(&runner, &task_ref(&task), None)
-            .await
-            .is_err(),
+        matches!(
+            workers
+                .resolve_database(&runner, &task_ref(&task), None)
+                .await,
+            Err(sagat_application::error::AppError::NotFound)
+        ),
         "a deleted secret is not handed over"
     );
     put(w, secrets, STORAGE, 0, "storage-canary-recreated").await;
