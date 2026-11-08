@@ -3,9 +3,11 @@
 
 pub mod blobs;
 pub mod connection;
+#[cfg(test)]
+pub(crate) mod doubles;
 pub mod driver;
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 pub mod prepare;
 pub mod settings;
 pub mod sweep;
