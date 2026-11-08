@@ -43,17 +43,42 @@ impl PgRunTx {
             .map_err(store_error)?;
         // Session before catalog/membership locks, as on claiming. The current lease token is
         // independently checked by WorkerService; this also binds the token to its machine owner.
-        let session: Option<OffsetDateTime> = sqlx::query_scalar(
-            "SELECT w.expires_at FROM steps s JOIN worker_sessions w ON w.tenant_id=s.tenant_id AND w.id::text=s.leased_by
+        let session: Option<(OffsetDateTime, Vec<String>)> = sqlx::query_as(
+            "SELECT w.expires_at, w.activities FROM steps s JOIN worker_sessions w ON w.tenant_id=s.tenant_id AND w.id::text=s.leased_by
              WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.node=$3 AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 AND w.namespace_id=$4
                AND w.subject=$5 AND w.accepted_protocol_minor>=6
              FOR SHARE OF w")
             .bind(self.info.tenant_id.as_uuid()).bind(self.info.run_id.as_uuid()).bind(node.as_str())
             .bind(self.info.namespace_id.as_uuid()).bind(subject)
             .fetch_optional(&mut *self.tx).await.map_err(store_error)?;
-        let Some(expires_at) = session else {
+        let Some((expires_at, offered)) = session else {
             return Ok(false);
         };
+        // The fence on the profile: the session offers the managed activities of the profile of this step, and its binding is of
+        // that profile alone. The shared binding lock is held, so the rows read here are the ones a binding change would wait for.
+        let kind = self
+            .def
+            .node(node)
+            .and_then(Node::managed_kind)
+            .ok_or(StoreError::DatabaseUnavailable)?;
+        let bound: Vec<String> = sqlx::query_scalar(
+            "SELECT profile FROM worker_bindings WHERE tenant_id=$1 AND namespace_id=$2 AND subject=$3",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(subject)
+        .fetch_all(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        let bound: Option<Vec<sagat_domain::binding::BindingProfile>> = bound
+            .iter()
+            .map(|text| sagat_domain::binding::BindingProfile::parse(text))
+            .collect();
+        if !bound
+            .is_some_and(|bound| sagat_application::worker::profile_fence(kind, &offered, &bound))
+        {
+            return Ok(false);
+        }
         // An unchanged-row lock wait can outlive expiry without rechecking a WHERE predicate.
         // Observe time after retaining this session guard on the owning run transaction.
         let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")

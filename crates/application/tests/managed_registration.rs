@@ -139,3 +139,44 @@ fn the_profile_of_a_registration_is_the_profile_of_the_activities_it_offers() {
         assert_eq!(managed_profile(&names(&neither)), None, "{neither:?}");
     }
 }
+
+#[test]
+fn credentials_are_handed_only_to_a_session_and_a_binding_of_the_profile_of_the_step() {
+    use sagat_application::worker::profile_fence;
+    use sagat_domain::{binding::BindingProfile, database::ManagedKind};
+    let sql = names(&[MANAGED_DATABASE_ACTIVITY]);
+    let lake = names(&[ICEBERG_WRITE_ACTIVITY]);
+    let (database, lake_profile) = (BindingProfile::Database, BindingProfile::Lake);
+    // the matching session and binding
+    assert!(profile_fence(ManagedKind::Sql, &sql, &[database]));
+    assert!(profile_fence(ManagedKind::Lake, &lake, &[lake_profile]));
+    // the other profile's session, the other profile's binding, or both
+    assert!(!profile_fence(ManagedKind::Sql, &lake, &[database]));
+    assert!(!profile_fence(ManagedKind::Lake, &sql, &[lake_profile]));
+    assert!(!profile_fence(ManagedKind::Sql, &sql, &[lake_profile]));
+    assert!(!profile_fence(ManagedKind::Lake, &lake, &[database]));
+    // a binding with no row, or with rows that disagree, is not a binding of the profile
+    assert!(!profile_fence(ManagedKind::Sql, &sql, &[]));
+    assert!(!profile_fence(
+        ManagedKind::Sql,
+        &sql,
+        &[database, lake_profile]
+    ));
+    assert!(!profile_fence(
+        ManagedKind::Lake,
+        &lake,
+        &[lake_profile, database]
+    ));
+    // a session that offers anything else, mixed or empty, is not of a profile at all
+    assert!(!profile_fence(ManagedKind::Sql, &[], &[database]));
+    assert!(!profile_fence(
+        ManagedKind::Sql,
+        &names(&[MANAGED_DATABASE_ACTIVITY, "ordinary"]),
+        &[database]
+    ));
+    assert!(!profile_fence(
+        ManagedKind::Lake,
+        &names(&[ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY]),
+        &[lake_profile]
+    ));
+}

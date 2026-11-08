@@ -3030,8 +3030,15 @@ The other fixes were wording:
     fmt and clippy `-D warnings`; the domain and store tests; `integration_database_connections` 7 and as the runtime role 7; `integration_database_runner`;
     `integration_platform_foundation` (the migrations: a rollback to empty and forward again include the new pair; the classification and the privilege audit);
     `contract_iceberg_writes`; the `database-connections` SDK scenario in Go, C#, Java and Rust.
-  - *Not done: the rest of T035-044.* The order of the design (an independent read-only design of 2026-11-08): the fence on the profile in `database_owner`
-    (defence in depth: the lease already reaches only a session of the right profile); the sum type for `DatabaseInput` and `ResolvedDatabase` with SQL
+  - *The fence on the profile (the next step of the design, done).* The transaction that delivers a secret (`database_owner`, under the shared binding lock and
+    the session's row lock) now refuses unless the session offers the managed activities of the profile of the step and its binding is of that profile alone
+    (`profile_fence`, pure, in `worker.rs`): a binding with no row, or rows that disagree, is not a binding of the profile. Registration and the lease already
+    reach only such a session; this is defence in depth in the one place the secret leaves, which does not trust that the rows it reads are the ones
+    registration saw. The refusal is `NotBound`, the one a missing grant gives. Pure test (every pairing of kind, session and binding, a mix, an empty list,
+    disagreeing rows; red by compile first); real store (`executor.rs`): with the binding changed to `lake` by hand a SQL step is not resolved, nor with the
+    session changed to offer the lake activity, and put back the same runner resolves again (red first: the resolve succeeded). **Three hand mutations, all
+    killed**: the store not applying the fence, the fence ignoring the binding, the fence ignoring what the session offers.
+  - *Not done: the rest of T035-044.* The order of the design (an independent read-only design of 2026-11-08): the sum type for `DatabaseInput` and `ResolvedDatabase` with SQL
     unchanged; the lake snapshot, the two pins and the two audits in the second transaction after both reads (sequential, catalog then storage; either secret
     rotated between the phases makes the resolve fail and pins nothing); `ResolvedDatabase.iceberg` built by `iceberg_connection`; the retention and
     cleanup characterisation. Until then a lake runner that is handed its step cannot get its credentials.
