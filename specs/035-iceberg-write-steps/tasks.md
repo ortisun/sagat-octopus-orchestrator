@@ -929,6 +929,11 @@ test to every catalog and storage type.
   `crates/api-grpc/src/service.rs` and `crates/application/src/worker/database.rs`. `catalogSecret` and
   `storageSecret` are each compared, pinned and audited separately (017 two-phase), and only the lake
   profile may resolve the kind. Refs: FR-035-003, FR-035-026, D035-057.
+
+  *2026-11-08, first part done, left unticked (D035-139):* the pin of an attempt is keyed by the role of the secret (`primary`, `catalog`, `storage`;
+  migration `20270110000000_step_credential_roles`, `SecretRole`, `secret_slots`), and a SQL attempt reads only its primary pin. Not done: the profile
+  fence of the resolve, the lake snapshot and pins in `worker/database.rs` and `execution/database.rs`, and `ResolvedDatabase.iceberg` in
+  `crates/api-grpc/src/database.rs` (the task text says `service.rs`).
 - [ ] T035-045 [US01] Implement the probe activity `sagat.database.lake.probe`:
   - wire it in `apps/database-runner/src/lake.rs`;
   - write the host operation in `runners/lake/sagat_lake/probe.py`, with pytest: authenticate, load

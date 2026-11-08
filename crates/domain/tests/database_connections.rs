@@ -975,3 +975,95 @@ fn every_lake_reason_has_a_stable_name_and_the_debug_form_shows_no_secret_value(
     let shown = format!("{:?}", ConnectionConfig::iceberg(lake()).expect("valid"));
     assert!(shown.contains("catalog-oauth") && shown.contains("lake-s3"));
 }
+
+// ---- The secrets of a connection and the role each plays (feature 035, D035-139) -------------------------------------------
+
+#[test]
+fn each_secret_of_a_connection_has_a_role_and_they_come_in_a_fixed_order() {
+    use sagat_domain::database::SecretRole;
+    fn slots(config: &ConnectionConfig) -> Vec<(SecretRole, String)> {
+        config
+            .secret_slots()
+            .into_iter()
+            .map(|(role, secret)| (role, secret.as_str().to_owned()))
+            .collect()
+    }
+    // a PostgreSQL connection has its one secret, the primary one
+    let postgres = config("db.example.com").expect("a valid connection");
+    assert_eq!(
+        slots(&postgres),
+        vec![(SecretRole::Primary, "orders-access".to_owned())]
+    );
+    // an Iceberg connection has the catalog's and the storage's, in that order, and either or both or neither
+    let both = ConnectionConfig::iceberg(lake()).expect("a lake connection");
+    assert_eq!(
+        slots(&both),
+        vec![
+            (SecretRole::Catalog, "catalog-oauth".to_owned()),
+            (SecretRole::Storage, "lake-s3".to_owned())
+        ]
+    );
+    // REST with vended storage: the catalog's secret alone
+    let mut catalog_only = lake();
+    catalog_only.catalog = IcebergCatalog::Rest(RestCatalog {
+        access_delegation: AccessDelegation::VendedCredentials,
+        ..rest()
+    });
+    catalog_only.storage.credentials = StorageCredentials::Vended;
+    catalog_only.storage_secret = None;
+    assert_eq!(
+        slots(&ConnectionConfig::iceberg(catalog_only).expect("a lake connection")),
+        vec![(SecretRole::Catalog, "catalog-oauth".to_owned())]
+    );
+    // Hive (no catalog secret) with static storage: the storage secret alone
+    let mut storage_only = lake();
+    storage_only.catalog = IcebergCatalog::Hive(HiveCatalog {
+        uris: vec!["thrift://hive.example:9083".to_owned()],
+        tls: HiveTls::Required,
+    });
+    storage_only.catalog_secret = None;
+    assert_eq!(
+        slots(&ConnectionConfig::iceberg(storage_only).expect("a lake connection")),
+        vec![(SecretRole::Storage, "lake-s3".to_owned())]
+    );
+    // a valid connection always has at least one: REST needs the catalog's, Hive needs the storage's, and vended storage needs REST
+    // the slots are the secrets, in the same order
+    assert_eq!(
+        both.secret_slots()
+            .into_iter()
+            .map(|(_, secret)| secret)
+            .collect::<Vec<_>>(),
+        both.secrets()
+    );
+}
+
+#[test]
+fn a_secret_role_is_one_of_three_closed_names_and_nothing_else() {
+    use sagat_domain::database::SecretRole;
+    for role in [
+        SecretRole::Primary,
+        SecretRole::Catalog,
+        SecretRole::Storage,
+    ] {
+        assert_eq!(SecretRole::parse(role.as_str()), Some(role));
+    }
+    assert_eq!(
+        [
+            SecretRole::Primary,
+            SecretRole::Catalog,
+            SecretRole::Storage
+        ]
+        .map(SecretRole::as_str),
+        ["primary", "catalog", "storage"]
+    );
+    for refused in ["", "Primary", "sql", "catalog ", "STORAGE", "*"] {
+        assert_eq!(SecretRole::parse(refused), None, "{refused:?}");
+    }
+}
+
+#[test]
+fn a_kind_of_managed_step_belongs_to_one_binding_profile() {
+    use sagat_domain::{binding::BindingProfile, database::ManagedKind};
+    assert_eq!(ManagedKind::Sql.profile(), BindingProfile::Database);
+    assert_eq!(ManagedKind::Lake.profile(), BindingProfile::Lake);
+}

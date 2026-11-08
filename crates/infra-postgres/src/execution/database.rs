@@ -373,7 +373,8 @@ impl PgRunTx {
             "SELECT p.provider_operation,p.secret_name,p.secret_version,o.actor,o.created_at
              FROM step_database_credentials p JOIN secret_provider_operations o
                ON o.tenant_id=p.tenant_id AND o.namespace_id=p.namespace_id AND o.id=p.provider_operation
-             WHERE p.tenant_id=$1 AND p.namespace_id=$2 AND p.run_id=$3 AND p.node_id=$4 AND p.attempt=$5 AND p.generation=$6")
+             WHERE p.tenant_id=$1 AND p.namespace_id=$2 AND p.run_id=$3 AND p.node_id=$4 AND p.attempt=$5 AND p.generation=$6
+               AND p.secret_role='primary'")
             .bind(self.info.tenant_id.as_uuid()).bind(self.info.namespace_id.as_uuid()).bind(self.info.run_id.as_uuid()).bind(node.as_str())
             .bind(i64::from(step.attempt())).bind(i64::try_from(step.generation()).map_err(|_| corrupt("step generation"))?)
             .fetch_optional(&mut *self.tx).await.map_err(store_error)?;

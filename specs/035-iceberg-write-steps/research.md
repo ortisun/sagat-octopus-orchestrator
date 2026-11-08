@@ -3006,6 +3006,35 @@ The other fixes were wording:
     database-result record sources; the lake quota rows and the kind-aware `quotas.rs` and `database_results.rs` (G035-074's other half, T035-055);
     the runner's own shell (G). Not tested: a secret pool that refuses the catalog secret or the storage secret separately, a role revoked between
     registration and poll, and the document's limits after the connection was tightened (they come from the pinned revision by construction).
+- **D035-139 — The credential pin of an attempt is keyed by the role of the secret (slice C of D035-130, the first half: the vocabulary and the schema).**
+  **Decided by: delegate**. One migration. Nothing a SQL attempt can see changes, and no lake credential is resolved yet.
+  - *What.* `SecretRole` (`primary`, `catalog`, `storage`) and `ConnectionConfig::secret_slots()` in the domain: the secrets of a connection with the role each
+    plays, in a fixed order (the primary one of a SQL connection; the catalog's then the storage's of a lake one). `ManagedKind::profile()`: the binding
+    profile of the runner that executes a kind. Migration `20270110000000_step_credential_roles`: `step_database_credentials.secret_role`
+    (`primary` by default, so every existing pin reads as it always did; a CHECK that makes it one of the three names; the primary key gains the role, so
+    an attempt can pin one secret per role and no role twice). The pin stays immutable by the trigger it already has. The `down` takes a
+    `SHARE ROW EXCLUSIVE` lock, then refuses while any pin is not `primary`, because an older engine reads one pin per attempt and would read the wrong one
+    or none. A SQL attempt reads **only its primary pin** (`database_pinned_secret`), so a pin of another role beside it can never be read as its
+    credential. The column is classified and the upgrade oracles follow the stamp.
+  - *A fact the design check turned up.* A valid lake connection always has at least one secret (REST needs the catalog's, Hive needs the static
+    storage's, vended storage needs REST), so the "zero secrets" case of the plan cannot occur; the code that comes will still treat an empty list as a
+    resolve with nothing to read.
+  - *Evidence.* Domain: 3 tests (`SecretRole` round trip and refusals; `secret_slots` for every valid shape of connection and equal in order to `secrets()`; each kind
+    has one profile), red by compile first. Real store, in `executor.rs` (the SQL resolve flow with OpenBao): a pin written without a role reads
+    `primary`; a catalog and a storage pin of the same attempt are accepted; a role twice, `primary` again, `sql` and the empty name are refused; the role is
+    immutable; with the primary pin moved to the end of the table and the others one version apart, a SQL attempt still reads version 1; the rollback is
+    refused (on a connection of its own, releasing sqlx's migration lock) while a catalog pin exists, and the extra pins are removed by an operator. **Red first
+    (the column did not exist); then four hand mutations, all killed**: the rollback guard removed; the key without the role; the role not a closed list; and
+    the SQL read of any pin. **The last one survived the first version of the test** (the primary row happened to come first in the heap, so an unfiltered
+    `fetch_optional` still found it); the test now moves the primary pin to the end and gives the others another version, and the mutation is killed.
+    fmt and clippy `-D warnings`; the domain and store tests; `integration_database_connections` 7 and as the runtime role 7; `integration_database_runner`;
+    `integration_platform_foundation` (the migrations: a rollback to empty and forward again include the new pair; the classification and the privilege audit);
+    `contract_iceberg_writes`; the `database-connections` SDK scenario in Go, C#, Java and Rust.
+  - *Not done: the rest of T035-044.* The order of the design (an independent read-only design of 2026-11-08): the fence on the profile in `database_owner`
+    (defence in depth: the lease already reaches only a session of the right profile); the sum type for `DatabaseInput` and `ResolvedDatabase` with SQL
+    unchanged; the lake snapshot, the two pins and the two audits in the second transaction after both reads (sequential, catalog then storage; either secret
+    rotated between the phases makes the resolve fail and pins nothing); `ResolvedDatabase.iceberg` built by `iceberg_connection`; the retention and
+    cleanup characterisation. Until then a lake runner that is handed its step cannot get its credentials.
 - **G035-073 — A refused run of an Iceberg write is neither opaque nor audited at creation.** `audit_database_denial` (`runs.rs`) audits only
   `DatabaseUnavailable` and `DatabaseLimit`, and `LakeRefused` keeps its detail (the node, the field paths and classification levels) for a caller who holds
   `run:start` and `database:use`, where a refused SQL run is an opaque `NotFound`. The detail is the publisher's to see; a starter is not that person.
