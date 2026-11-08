@@ -19,8 +19,8 @@ use sagat_domain::{
 use serde_json::json;
 use uuid::Uuid;
 
-const NDJSON: &str = "application/x-ndjson";
-const PARQUET: &str = "application/vnd.apache.parquet";
+pub(super) const NDJSON: &str = "application/x-ndjson";
+pub(super) const PARQUET: &str = "application/vnd.apache.parquet";
 
 /// The step of a run the blob would be an output of.
 struct Step {
@@ -52,6 +52,26 @@ pub(super) async fn committed_output(w: &World, run: RunId) -> BlobDescriptor {
     Row::output(tenant, w.namespace.id().as_uuid(), run, &step)
         .insert(w)
         .await
+}
+
+/// A blob of the given id, media type and size that the run's own step committed as an output: the descriptor a workflow value can
+/// name before the row exists (a run's input is fixed when it starts, and the blob is committed by a step that runs after).
+pub(super) async fn committed_output_as(
+    w: &World,
+    run: RunId,
+    id: BlobId,
+    content_type: &'static str,
+    size: i64,
+) -> BlobDescriptor {
+    let tenant = w.admin.tenant_id().as_uuid();
+    let step = step_of(w, tenant, run).await;
+    Row {
+        content_type,
+        size,
+        ..Row::output(tenant, w.namespace.id().as_uuid(), run, &step)
+    }
+    .insert_as(w, id)
+    .await
 }
 
 /// What the lease of a lake step does for the blobs it names: pins them to the attempt it granted, in its own transaction.
@@ -101,7 +121,10 @@ impl Row {
     }
 
     async fn insert(&self, w: &World) -> BlobDescriptor {
-        let id = BlobId::generate();
+        self.insert_as(w, BlobId::generate()).await
+    }
+
+    async fn insert_as(&self, w: &World, id: BlobId) -> BlobDescriptor {
         let measured = self.state != "UPLOADING";
         let deleting = self.state == "DELETING";
         sqlx::query(

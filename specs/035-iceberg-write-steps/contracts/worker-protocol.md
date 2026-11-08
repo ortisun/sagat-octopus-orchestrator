@@ -26,7 +26,7 @@ minor when this feature merges (D035-043; drafts 020, 021, 025 and 026 also clai
     connection kind outside the profile of the caller's binding (D035-130 C), and the runner offering the activity by the
     agreed minor (G). The minor stays 1.6 for now, because nothing on the wire differs yet; the first wire
     difference takes the next free minor.
-- **`TaskLease` input** (built since D035-138 for the lake activity from the run's data, inline records only; a blob source and a SQL result fail the step by name until `ReadBlob` is scoped to the run) for these activities: the existing `input` payload carries the attempt input
+- **`TaskLease` input** (built since D035-138 for the lake activity from the run's data: inline records, and, since D035-144, the blobs of earlier steps of the run; a SQL result fails the step by name, G035-067) for these activities: the existing `input` payload carries the attempt input
   of [lake-runtime.md](lake-runtime.md), minus credentials and the relay. That is `effectKey`,
   `firstAttemptStartedAt`, the table or target, mode, mapping, limits, and record references (blob
   ids or inline records). Credentials never travel in the lease.
@@ -37,6 +37,13 @@ minor when this feature merges (D035-043; drafts 020, 021, 025 and 026 also clai
   `PostgresConnection`. Every secret of the connection (for Iceberg, `catalogSecret` and
   `storageSecret`) is compared, pinned and audited separately. The runner zeroises them when the
   attempt ends.
-- **`ReadBlob`** is unchanged; the lake profile uses it for record blobs (lease-checked, audited).
+- **`ReadBlob`** is unchanged on the wire; the lake profile uses it for record blobs (D035-144). The server takes the blobs of a blob source from the catalog and not from
+  the descriptors in the run's data (the blob must be a committed output of a step of this run, and its size, digest and media type must be the catalog's), and the lease
+  **pins** them to the attempt and the generation it grants. A lake attempt reads a blob only when the pin of exactly its fence names it, while its run is live (not
+  cancelled, stopped or finished), and every other managed step reads none. A blob the pin does not name is `NOT_FOUND`, the answer for a blob that does not exist; the
+  refusal is audited once for the run (`database.denied`, no blob named) and a read is audited (`blob.read`) before its first byte. A lease whose blobs the catalog does not
+  vouch for is not granted: the step fails for good with `DATABASE_RESULT_UNAVAILABLE` (a blob that is not this run's or whose descriptor differs from the catalog's),
+  `DATABASE_CONFIGURATION_INVALID` (not one to 32 distinct descriptors, or a media type that is not `application/x-ndjson` or `application/vnd.apache.parquet`) or
+  `ICEBERG_LIMIT_EXCEEDED` (more than 2 GiB together).
 - **Failures**: `FailStep` carries the codes of [errors.md](errors.md), which the server parses with
   `DatabaseFailure::parse`, as for 017 failures.

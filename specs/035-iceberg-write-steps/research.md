@@ -3334,5 +3334,14 @@ The other fixes were wording:
     (`executor.rs`). 9 hand mutations: 7 killed (the pin check, the fence of the pin, the stricter fence, SQL allowed, the answer, the audit, and a distinct audit per refusal, whose
     first pattern did not test that and was corrected). **Two survive by construction:** "a lake attempt may upload" (`check_blob_upload` never carries a blob, so the `false` of the arm is a second
     line and not the first) and "the handler uses the old check" (the scenario calls the service, not the gRPC handler; the wire test of the next step is the one that holds it).
-  - *Not done in this slice.* The lease that calls the lookup and the pin (a blob source is still refused at the lease), with the wire test over gRPC and the independent review of the
-    trust boundary; a SQL result as a source (G035-067).
+  - *The lease (done, test first).* `lake_lease_input` takes the names from the source, asks the catalog in the same transaction and builds the document from its word; the poll loop
+    pins the blobs to the fence of the lease it just granted (`task.fence`), after `lease_one` and before the transaction commits, so a lease that is not granted pins nothing and a
+    granted one never lacks its pins. The scenario (`lake_blob_lease.rs`; the blob rows are written between the start of a run and its lease, since a run's input is fixed at the
+    start and a step commits the blob afterwards; the connection has the `pii` ceiling every blob needs, which takes the reveal grant for as long as it is written) leases a run of two
+    blobs (the order, the formats read back by the runner's own reader, the pins of the attempt, a read of each and the refusal of the run's unnamed blob) and fails for good, leasing
+    nothing and pinning nothing, a descriptor of another run's blob, one that lies about the size, a blob that is not a file of records, two gibibytes and a byte, and thirty-three
+    blobs, each with its closed code; a retry is a lease of its own, with pins of its own, and the first attempt's token reads nothing. 6 hand mutations, all killed (the catalog not
+    asked, the pin missing, for the previous attempt, for another generation and of an empty list, and the document made from the run's data: that last one is caught by the pin's own
+    check, a second line, which refuses what the catalog does not vouch for and fails the poll, so a forged descriptor could not be leased even if the document trusted it).
+  - *Not done in this slice.* The wire test over gRPC (the handler is held only by the review and by that test; it needs the harness of #169) and the independent review of the
+    trust boundary; a SQL result as a source (G035-067); the container end to end (T035-062).

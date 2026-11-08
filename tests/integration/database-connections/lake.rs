@@ -457,6 +457,13 @@ pub(crate) fn append(
     document
 }
 
+/// A workflow with one append step reading its records from the blobs `input.parts` names.
+pub(crate) fn append_blobs(name: &str, connection: &str, fields: &[&str]) -> Value {
+    let mut document = append(name, connection, fields, None);
+    document["nodes"][0]["records"] = json!({"blobs": "input.parts"});
+    document
+}
+
 /// Creates the draft as the administrator and publishes it as `who`, on a service that has the lake on.
 pub(crate) async fn publish_on_lake(
     w: &World,

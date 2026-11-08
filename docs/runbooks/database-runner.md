@@ -73,8 +73,14 @@ An optional `lake` section turns on the runner's lake profile. **Absent means of
 the runner starts, and a value outside its bounds stops the runner: nothing is defaulted that is a decision about security.
 **A configuration with a `lake` section makes a lake runner: it serves the lake activity and no SQL**, and one without it is
 the SQL runner it has always been (D035-143). The runner's own side is built: it polls, resolves the connection, runs the attempt
-in the sandbox and reports. What is not built is the rest of the stack around it (compose and Helm, the container end to end,
-record blobs and database results as the source of records), so do not rely on it to write to a table yet.
+in the sandbox and reports. What is not built is the rest of the stack around it (compose and Helm, the container end to end, a
+database result as the source of records), so do not rely on it to write to a table yet.
+
+**Record blobs** (D035-144). A step whose records are blobs is leased only when every blob is a committed output of a step of the same run and
+the descriptor in the run's data is the catalog's; the lease pins them to the attempt it grants, and the runner's `ReadBlob` reads exactly those, while
+the run is live. A step that names a blob that is not the run's, or lies about its size or digest, fails for good (`DATABASE_RESULT_UNAVAILABLE`) and is
+never leased. A runner that asks for any other blob is answered as if it did not exist, and one `database.denied` record names the run (never the blob):
+seeing it means a runner asked for something its lease did not name, which a correct runner never does.
 
 ```json
 "lake": {

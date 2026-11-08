@@ -1250,9 +1250,9 @@ where
             // The attempt input of an Iceberg write is made from the run's own data, after the claim was admitted, so
             // that a runner which fails the role, pool or concurrency checks cannot cause a permanent failure. What cannot
             // be made is a permanent failure of the step, with a closed code, and no lease (D035-138).
-            let input = if kind == Some(sagat_domain::database::ManagedKind::Lake) {
+            let (input, record_blobs) = if kind == Some(sagat_domain::database::ManagedKind::Lake) {
                 match self.lake_lease_input(&mut tx, &instance).await? {
-                    Ok(document) => document,
+                    Ok(leased) => leased,
                     Err(failure) => {
                         let code =
                             FailureCode::parse(failure.code()).map_err(|_| AppError::Internal)?;
@@ -1266,7 +1266,7 @@ where
                     }
                 }
             } else {
-                input
+                (input, Vec::new())
             };
             if kind == Some(sagat_domain::database::ManagedKind::Lake) {
                 if input.len() > MAX_TASK_INPUT_BYTES {
@@ -1319,6 +1319,12 @@ where
                 .await
             {
                 Ok(task) => {
+                    // The blobs the document names are pinned to the attempt just granted, in the transaction that grants it: the
+                    // allow-list of its `ReadBlob`, from the catalog's own word (D035-144).
+                    if !record_blobs.is_empty() {
+                        tx.pin_lake_blobs(instance.node(), task.fence, &record_blobs)
+                            .await?;
+                    }
                     run_bytes += task.input.len();
                     leased.push(task);
                 }
@@ -1418,13 +1424,15 @@ where
         Ok(())
     }
 
-    /// The `input_json` of the lease of an Iceberg write, or the closed failure that says why it cannot be made. The outer
-    /// error is the store's (or a bug's); the inner one is the data's, and permanent.
+    /// The `input_json` of the lease of an Iceberg write and the blobs it names (to be pinned to the attempt the lease grants), or the
+    /// closed failure that says why it cannot be made. The outer error is the store's (or a bug's); the inner one is the data's, and
+    /// permanent.
     async fn lake_lease_input<Tx: RunTx>(
         &self,
         tx: &mut Tx,
         instance: &ExecutionInstanceId,
-    ) -> Result<Result<Vec<u8>, sagat_domain::database::DatabaseFailure>, AppError> {
+    ) -> Result<Result<(Vec<u8>, Vec<BlobId>), sagat_domain::database::DatabaseFailure>, AppError>
+    {
         let node = instance.node();
         let facts = tx.lake_lease_facts(node).await?;
         let info = tx.info().clone();
@@ -1468,13 +1476,22 @@ where
             prior_attempt_may_have_left_files: facts.first_leased_at.is_some(),
             allow_empty: lake_input::APPEND_ALLOWS_EMPTY,
         };
+        // The catalog's word, in this transaction, on the blobs the source names (none for inline records): the document is made from
+        // what it vouches for and not from the descriptors of the run's data.
+        let ids = records.blob_ids();
+        let found = if ids.is_empty() {
+            Vec::new()
+        } else {
+            tx.lake_record_blobs(&ids).await?
+        };
         Ok(lake_lease::lake_lease_document(
             &write,
             &lake_facts,
             records,
-            &[],
+            &found,
             facts.connection_limits,
-        ))
+        )
+        .map(|document| (document, ids)))
     }
 
     #[allow(clippy::too_many_arguments)] // the already-bounded input belongs to this lease
