@@ -67,10 +67,15 @@ pub(crate) async fn authority_of(
 /// What the managed database steps of a workflow ask of the subject behind a run: `None` for a
 /// workflow with none, otherwise whether any of them writes.
 pub(crate) fn database_writes(definition: &WorkflowDefinition) -> Option<bool> {
+    // An Iceberg write is a write (it needs `database:write`, as an `execute` does), and a workflow that holds one has
+    // managed steps even when it holds no SQL one: its run takes the same locks and the same authority re-check.
+    let lake = definition.nodes().any(|n| n.iceberg_write().is_some());
     let mut operations = definition.nodes().filter_map(|n| n.database_operation());
-    let first = operations.next()?;
+    let Some(first) = operations.next() else {
+        return lake.then_some(true);
+    };
     Some(
-        first.kind == OperationKind::Execute
+        lake || first.kind == OperationKind::Execute
             || operations.any(|op| op.kind == OperationKind::Execute),
     )
 }
@@ -338,10 +343,12 @@ async fn check_definition(
             }
             (*id, *revision, write.refusal_by(iceberg))
         };
-        // A step that pins a revision is judged by the current one too: a mode or a ceiling that was tightened since applies
-        // to it, so pinning an older revision cannot loosen what the connection says now.
+        // A step that names a revision is judged by the current one too: a mode or a ceiling that was tightened since applies
+        // to it, so naming an older revision cannot loosen what the connection says now. A run that already exists is not:
+        // it keeps the revision it was admitted with, as a SQL run does, so the replay of its start and the claim of its step
+        // are judged by that revision, and the way to stop it is to pause the connection, which refuses both.
         let refusal = match (refusal, pinned_revision) {
-            (None, Some(_)) => {
+            (None, Some(_)) if pin.is_none() => {
                 let key = (name, None);
                 let (_, _, current) = if let Some(found) = resolved.get(&key) {
                     found
@@ -428,4 +435,97 @@ async fn resolve_connection(
         }
     }
     Ok((id, revision, config))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+    use super::database_writes;
+    use sagat_domain::{
+        database::{
+            ColumnMapping, ConnectionRef, DatabaseLimits, DatabaseOperation, IcebergWrite,
+            IcebergWriteParts, LakeLimits, OperationKind, RecordSource, TableIdentifier,
+            WriteIntent,
+        },
+        identity::Slug,
+        workflow::{Expression, Node, NodeId, NodeKind, WorkflowDefinition},
+    };
+
+    fn id(text: &str) -> NodeId {
+        NodeId::parse(text).expect("a node id")
+    }
+
+    fn connection(name: &str) -> ConnectionRef {
+        ConnectionRef::new(Slug::parse(name).expect("name"), None).expect("a reference")
+    }
+
+    fn sql(node: &str, kind: OperationKind) -> Node {
+        Node::database(
+            id(node),
+            DatabaseOperation::new(
+                connection("orders-db"),
+                kind,
+                "SELECT 1",
+                vec![],
+                DatabaseLimits::default(),
+            )
+            .expect("an operation"),
+        )
+    }
+
+    fn lake(node: &str) -> Node {
+        let write = IcebergWrite::new(IcebergWriteParts {
+            connection: connection("lake-main"),
+            table: TableIdentifier::new(vec!["sales".to_owned()], "orders").expect("a table"),
+            reference: "main".to_owned(),
+            intent: WriteIntent::Append,
+            records: RecordSource::Inline(Expression::parse("input.orders").expect("expression")),
+            mapping: vec![ColumnMapping::new("/id", "id").expect("a mapping")],
+            ignore_unknown_fields: false,
+            limits: LakeLimits::default(),
+            revert: false,
+        })
+        .expect("a write");
+        Node::iceberg(id(node), write)
+    }
+
+    /// The nodes in a line, then an end.
+    fn line(nodes: Vec<Node>) -> WorkflowDefinition {
+        let entry = nodes
+            .first()
+            .map_or_else(|| id("done"), |node| node.id().clone());
+        let mut linked: Vec<Node> = Vec::new();
+        let mut next = id("done");
+        for node in nodes.into_iter().rev() {
+            let current = node.id().clone();
+            linked.push(node.with_next(next));
+            next = current;
+        }
+        linked.reverse();
+        linked.push(Node::new(id("done"), NodeKind::End { output: None }));
+        WorkflowDefinition::new(Slug::parse("flow").expect("name"), entry, linked)
+            .expect("a definition")
+    }
+
+    #[test]
+    fn what_a_workflow_asks_of_the_subject_behind_a_run_counts_an_iceberg_write_as_a_write() {
+        assert_eq!(database_writes(&line(vec![])), None, "no managed step");
+        assert_eq!(
+            database_writes(&line(vec![sql("read", OperationKind::Query)])),
+            Some(false)
+        );
+        assert_eq!(
+            database_writes(&line(vec![sql("write", OperationKind::Execute)])),
+            Some(true)
+        );
+        assert_eq!(
+            database_writes(&line(vec![lake("save")])),
+            Some(true),
+            "a workflow with an Iceberg write and no SQL step has managed steps, and writes"
+        );
+        assert_eq!(
+            database_writes(&line(vec![sql("read", OperationKind::Query), lake("save")])),
+            Some(true)
+        );
+    }
 }
