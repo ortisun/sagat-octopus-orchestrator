@@ -3321,5 +3321,18 @@ The other fixes were wording:
     `lake_blob_pinned`): the roll-back test was written after the migration (the scenario of the pins was written first and seen failing against a stub that accepted everything);
     8 hand mutations killed (the attempt, the generation and the node of the check, the all-or-none list, the repeated pin, the `RESTRICT` of the foreign key, the immutability
     trigger and the guard of `down`). The three upgrade tests that pin the schema boundary moved to the new stamp.
-  - *Not done in this slice.* The `ReadBlob` gate for a lake attempt (stricter than the ordinary read, `NotFound` for a blob the pin does not name, the same audit before the
-    bytes), the lease that calls all of it, and with it the attempt matrix of the trust boundary and the independent review; a SQL result as a source (G035-067).
+  - *The gate (done, test first).* `WorkerService::check_blob_read(principal, task, blob, trace)` replaces `check_lease` in the `ReadBlob` handler, so the check names the blob and
+    runs **before** the store is asked about it. For an ordinary step nothing changes. A managed step is still refused everything except one door: a **lake** attempt reading a blob
+    the lease of exactly its attempt and generation pinned; the check that names no blob, the upload and every SQL step stay `NotAllowed`. The lake read is held to the stricter fence
+    of a report (`attempt_authority_fence`: a run told to stop, a cancel requested or a finished run is given nothing more) on top of the lease, the binding and the owner of the
+    session that the ordinary check already makes. A blob the pin does not name is `NotFound`, the same answer as one that does not exist (another run, a run's unnamed blob, an id
+    that was never made), and **the refusal is audited once for the run, without naming the blob** (`database.denied`, one constant reason: an identical event is recorded once, so a
+    runner that tries one blob after another cannot fill the trail; the test sees six refusals of three blobs written as one record). A failure to write the refusal down is logged
+    and the answer is still `NotFound`, as for a denied registration. The scenario (`lake_read.rs`, application level, real store and worker service) covers: the named blob read and
+    audited once however often; the unnamed, another run's and a missing blob; the lease check and the upload; a wrong attempt, generation and token; a sibling lake runner and an
+    ordinary worker (`NotBound`); the attempt that reported, then the retry whose pin is not its own, then its own pin; a lapsed lease; a cancelled run; and a SQL attempt naming any blob
+    (`executor.rs`). 9 hand mutations: 7 killed (the pin check, the fence of the pin, the stricter fence, SQL allowed, the answer, the audit, and a distinct audit per refusal, whose
+    first pattern did not test that and was corrected). **Two survive by construction:** "a lake attempt may upload" (`check_blob_upload` never carries a blob, so the `false` of the arm is a second
+    line and not the first) and "the handler uses the old check" (the scenario calls the service, not the gRPC handler; the wire test of the next step is the one that holds it).
+  - *Not done in this slice.* The lease that calls the lookup and the pin (a blob source is still refused at the lease), with the wire test over gRPC and the independent review of the
+    trust boundary; a SQL result as a source (G035-067).

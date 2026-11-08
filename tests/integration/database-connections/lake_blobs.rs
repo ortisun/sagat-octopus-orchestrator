@@ -45,6 +45,29 @@ async fn step_of(w: &World, tenant: Uuid, run: RunId) -> Step {
     }
 }
 
+/// A blob the run's own step committed as an output, for the scenarios that read it.
+pub(super) async fn committed_output(w: &World, run: RunId) -> BlobDescriptor {
+    let tenant = w.admin.tenant_id().as_uuid();
+    let step = step_of(w, tenant, run).await;
+    Row::output(tenant, w.namespace.id().as_uuid(), run, &step)
+        .insert(w)
+        .await
+}
+
+/// What the lease of a lake step does for the blobs it names: pins them to the attempt it granted, in its own transaction.
+pub(super) async fn pin(w: &World, run: RunId, node: &str, fence: Fence, ids: &[BlobId]) {
+    let mut tx = w
+        .store
+        .begin(w.admin.tenant_id(), run, Lock::Wait)
+        .await
+        .expect("the store")
+        .expect("the run");
+    tx.pin_lake_blobs(&NodeId::parse(node).expect("node"), fence, ids)
+        .await
+        .expect("the blobs of the run");
+    tx.commit().await.expect("the pins are kept");
+}
+
 /// A row of the catalog, written as the owner does: the state machine that reaches it is the blob service's, and is tested there.
 struct Row {
     tenant: Uuid,

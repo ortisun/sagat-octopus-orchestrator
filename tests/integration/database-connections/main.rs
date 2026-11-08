@@ -10,6 +10,7 @@ mod lake;
 mod lake_blobs;
 mod lake_grpc;
 mod lake_lease;
+mod lake_read;
 mod lake_resolve;
 mod output;
 mod output_blobs;
@@ -296,6 +297,9 @@ async fn managed_secret_lifecycle(progress: Progress) {
     // Before the lease scenario: that one leaves the budget of the namespace spent, and this one needs a lease.
     progress.enter("the credentials of a lake step");
     Box::pin(lake_resolve::run(&w, &service, provider.clone())).await;
+    // Before the lease scenario, which counts the lake attempts in flight: this one ends the steps it leased.
+    progress.enter("the read of the blobs of a lake attempt");
+    Box::pin(lake_read::run(&w)).await;
     progress.enter("the lease of a lake step");
     Box::pin(lake_lease::run(&w)).await;
     progress.enter("the catalog's word on the blobs of a lake lease");

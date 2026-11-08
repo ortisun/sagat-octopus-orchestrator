@@ -1843,6 +1843,32 @@ where
         self.check_blob_access(principal, task, false, None).await
     }
 
+    /// Whether `task` may read `blob` right now, before a byte of the store is touched. For an ordinary step this is
+    /// [`Self::check_lease`]. A managed step reads no blob through it, except a lake attempt, and only a blob the lease of exactly
+    /// this attempt named (feature 035, D035-144).
+    pub async fn check_blob_read(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        blob: BlobId,
+        trace_id: Option<&str>,
+    ) -> Result<BlobScope, AppError>
+    where
+        S: PathExecutionStore,
+    {
+        self.check_blob_access(
+            principal,
+            task,
+            false,
+            Some(BlobUse {
+                blob,
+                trace_id,
+                audit: false,
+            }),
+        )
+        .await
+    }
+
     /// Uploads cannot bypass the inline-output secret guard. Until streaming content scanning is
     /// available, attempts declaring secrets are refused before any bytes reach object storage.
     pub async fn check_blob_upload(
@@ -1868,9 +1894,18 @@ where
     where
         S: PathExecutionStore,
     {
-        self.check_blob_access(principal, task, false, Some((blob, trace_id)))
-            .await
-            .map(|_| ())
+        self.check_blob_access(
+            principal,
+            task,
+            false,
+            Some(BlobUse {
+                blob,
+                trace_id,
+                audit: true,
+            }),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn check_blob_access(
@@ -1878,12 +1913,15 @@ where
         principal: &Principal,
         task: &TaskRef<'_>,
         writing: bool,
-        audit_read: Option<(BlobId, Option<&str>)>,
+        read: Option<BlobUse<'_>>,
     ) -> Result<BlobScope, AppError>
     where
         S: PathExecutionStore,
     {
         principal.authorize(Permission::WorkerExecute)?;
+        let audit_read = read
+            .filter(|read| read.audit)
+            .map(|read| (read.blob, read.trace_id));
         if !task.instance.path().is_root() {
             return self
                 .check_path_blob_access(principal, task, writing, audit_read)
@@ -1907,12 +1945,34 @@ where
                 return Err(AppError::StaleAttempt);
             }
         }
-        if Self::managed_database(&mut tx, task) {
-            return Err(AppError::NotAllowed(if writing {
-                "managed database results require content scanning"
-            } else {
-                "managed database inputs are resolved through the capability"
-            }));
+        if let Some(kind) = Self::managed_kind(&mut tx, task) {
+            // One door is open to a managed step: a lake attempt reads a blob the lease of exactly this attempt named, and nothing
+            // else (D035-144). The check that names no blob, the upload and every SQL step stay refused.
+            match (kind, writing, read) {
+                (sagat_domain::database::ManagedKind::Lake, false, Some(read)) => {
+                    if !self
+                        .lake_blob_allowed(principal, &mut tx, task, read.blob)
+                        .await?
+                    {
+                        // A refusal is the answer whether or not it could be written down; the failure is logged, as for a denied
+                        // registration.
+                        let effects = self.lake_read_denial(principal, task, read.trace_id);
+                        if let Err(error) = tx.persist(&[], effects).await {
+                            tracing::error!(%error, "failed to record a refused lake blob read");
+                        } else if let Err(error) = tx.commit().await {
+                            tracing::error!(%error, "failed to record a refused lake blob read");
+                        }
+                        return Err(AppError::NotFound);
+                    }
+                }
+                _ => {
+                    return Err(AppError::NotAllowed(if writing {
+                        "managed database results require content scanning"
+                    } else {
+                        "managed database inputs are resolved through the capability"
+                    }));
+                }
+            }
         }
         if writing && !Self::declared_secrets(&mut tx, task).is_empty() {
             return Err(AppError::NotAllowed(
@@ -1926,6 +1986,50 @@ where
             tx.commit().await?;
         }
         Ok(scope)
+    }
+
+    /// Whether the lease of a lake attempt allows it to read `blob`: the attempt must be live, as for a report (a run that was told to
+    /// stop, or that finished, is given nothing more), and the lease of exactly this attempt and generation must have named the
+    /// blob. `false` is answered as `NotFound`, the same as for a blob that does not exist, so the answer says nothing about what
+    /// does (see [`Self::lake_read_denial`]).
+    async fn lake_blob_allowed<Tx: RunTx>(
+        &self,
+        principal: &Principal,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+        blob: BlobId,
+    ) -> Result<bool, AppError> {
+        self.attempt_authority_fence(principal, tx, task, false)
+            .await?;
+        Ok(tx
+            .lake_blob_pinned(task.instance.node(), task.fence, blob)
+            .await?)
+    }
+
+    /// The refusal of a lake read, audited once for the run without naming the blob: an identical event is recorded once, so a runner
+    /// that tries one blob after another cannot fill the trail.
+    fn lake_read_denial(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        trace_id: Option<&str>,
+    ) -> Effects {
+        let mut effects = Effects::by(
+            Actor::Worker(principal.subject().as_str().to_owned()),
+            trace_id.map(str::to_owned),
+        );
+        effects.audit = Some(
+            AuditRecord::by(
+                principal,
+                AuditAction::DatabaseDenied,
+                ResourceType::Run,
+                task.run_id.to_string(),
+                trace_id.map(str::to_owned),
+                self.clock.now(),
+            )
+            .with_reason("a lake attempt asked for a blob its lease did not name"),
+        );
+        effects
     }
 
     /// Resolves the report target. Scoped new reports require their exact live lease before
@@ -2643,6 +2747,14 @@ where
             run_status,
         })
     }
+}
+
+/// A read of one blob that a blob check is made for: the blob, the trace of the call, and whether the read is to be audited now.
+#[derive(Clone, Copy)]
+struct BlobUse<'a> {
+    blob: BlobId,
+    trace_id: Option<&'a str>,
+    audit: bool,
 }
 
 fn parse_ack(stored: &str, already_applied: bool, run: RunId) -> StepAck {
