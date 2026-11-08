@@ -222,3 +222,38 @@ impl Drop for Active {
         self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::{Fake, NAMESPACE_SLUG, home, serve_fake};
+
+    /// The SQL shell as it is, pinned before the lake shell is built beside it (D035-143): what it offers when it registers, the
+    /// session it polls with, and how much it asks for.
+    #[tokio::test]
+    async fn the_sql_runner_registers_for_the_sql_activity_and_polls_with_its_session() {
+        let fake = Fake::default();
+        let server = serve_fake(fake.clone()).await;
+        let home = home(&server, None);
+        let runner = Runner::start(home.config.clone()).await.unwrap();
+        let stop = CancellationToken::new();
+        let serving = tokio::spawn(runner.serve(stop.clone()));
+        fake.until("a poll", |script| !script.polled.is_empty())
+            .await;
+        stop.cancel();
+        serving.await.unwrap();
+        fake.with(|script| {
+            let registration = &script.registered[0];
+            assert_eq!(registration.worker_name, format!("runner/{NAMESPACE_SLUG}"));
+            assert_eq!(registration.namespace, NAMESPACE_SLUG);
+            let capabilities = registration.capabilities.as_ref().unwrap();
+            assert_eq!(capabilities.activities, [MANAGED_DATABASE_ACTIVITY]);
+            assert_eq!(capabilities.max_inflight, 4);
+            assert_eq!(capabilities.protocol_version, "1.6");
+            let poll = &script.polled[0];
+            assert_eq!(poll.worker_id, uuid::Uuid::from_u128(7).to_string());
+            assert_eq!(poll.session_token, "session-token");
+            assert_eq!(poll.max_tasks, 4);
+        });
+    }
+}

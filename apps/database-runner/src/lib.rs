@@ -8,6 +8,8 @@ pub mod lake;
 mod rpc;
 mod runner;
 mod slots;
+#[cfg(test)]
+mod testing;
 pub use runner::Runner;
 
 /// Closed errors: never format transport, provider, SQL, parameters or credential diagnostics.
