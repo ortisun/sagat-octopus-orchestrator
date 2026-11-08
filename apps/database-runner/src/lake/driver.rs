@@ -41,13 +41,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use sagat_domain::database::DatabaseFailure;
-use sagat_infra_lake::attempt::{LakeSandbox, Plan, Signals, run_attempt};
-use sagat_infra_lake::control::ControlConfig;
+use sagat_infra_lake::attempt::{AttemptOutcome, LakeSandbox, Plan, Signals, run_attempt};
+use sagat_infra_lake::control::{ControlConfig, ControlFailure};
 use sagat_infra_lake::protocol::{AttemptInput, Receipt, WriteMode};
 use sagat_infra_lake::relay::{Connector, Relay, RelayDenials, Resolver};
 use sagat_infra_lake::sandbox_api::{Class, Reason, uid_for_slot};
 use sagat_infra_lake::staging::AttemptDir;
-use sagat_infra_lake::supervisor::{Disposition, Failure};
+use sagat_infra_lake::supervisor::{Disposition, Ended, Failure};
+use sagat_telemetry::lake::LakeSandboxExit;
 use tokio::time::Instant;
 
 use super::connection::Converted;
@@ -185,6 +186,8 @@ pub struct Finished {
     pub relay_denials: RelayDenials,
     /// Why the sandbox said no, when it answered and said no.
     pub sandbox_refusal: Option<Reason>,
+    /// How the container ended, as the closed reason of the metrics; `None` when none was asked for.
+    pub exit: Option<LakeSandboxExit>,
     /// Where the attempt directory was left, when it could not be removed: because the container was not confirmed gone, or
     /// because something in it could not be removed. The caller counts it and the sweep takes it.
     pub left: Option<PathBuf>,
@@ -199,6 +202,7 @@ impl Finished {
             container_ended: true,
             relay_denials: RelayDenials::default(),
             sandbox_refusal: None,
+            exit: None,
             left: None,
         }
     }
@@ -301,6 +305,21 @@ impl Drop for Running {
     }
 }
 
+/// An attempt that has a readable input and a slot, and has not asked for its connection yet (D035-143).
+pub struct Admitted {
+    input: AttemptInput,
+    slot: SlotGuard,
+    peer_uid: u32,
+}
+
+impl Admitted {
+    /// The slot it holds.
+    #[must_use]
+    pub const fn slot(&self) -> u32 {
+        self.slot.number()
+    }
+}
+
 /// The lake driver of one runner.
 pub struct Driver<S, B, R, C> {
     sandbox: S,
@@ -334,6 +353,29 @@ where
         development: bool,
     ) -> Self {
         let slots = SlotPool::new(settings.slots);
+        Self::with_slots(
+            sandbox,
+            blobs,
+            resolver,
+            connector,
+            settings,
+            development,
+            slots,
+        )
+    }
+
+    /// A driver that takes its slots from `slots`, which other drivers may share: the blobs are read under one lease, so the shell
+    /// makes a driver for each lease, and the slots belong to the runner (D035-143).
+    #[must_use]
+    pub fn with_slots(
+        sandbox: S,
+        blobs: B,
+        resolver: R,
+        connector: C,
+        settings: Settings,
+        development: bool,
+        slots: Arc<SlotPool>,
+    ) -> Self {
         Self {
             sandbox,
             blobs,
@@ -347,10 +389,52 @@ where
         }
     }
 
+    /// A driver whose containers' users are the test's own, and whose held-back slots are free at once (the scripted host is in the
+    /// test's process, so the kernel reports that user as the peer).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn for_tests(mut self, peer_for_slot: fn(u32) -> Option<u32>) -> Self {
+        self.peer_for_slot = peer_for_slot;
+        self.quarantine = Duration::ZERO;
+        self
+    }
+
     /// The slots, for the runner's metrics.
     #[must_use]
     pub const fn slots(&self) -> &Arc<SlotPool> {
         &self.slots
+    }
+
+    /// What an attempt needs before its credentials are worth disclosing: a lease input it can read, a free slot, and a user for
+    /// the slot. The shell asks the control plane for the connection (which discloses and audits the secrets) only after this, so
+    /// a full node or a bad input costs no disclosure. The slot is held until the returned value is run or dropped.
+    ///
+    /// # Errors
+    /// The [`Finished`] to report: the lease input is not an attempt input, every slot is in use, or the slot has no user.
+    pub fn admit(&self, input_json: &[u8]) -> Result<Admitted, Finished> {
+        let Ok(input) = AttemptInput::read(input_json) else {
+            return Err(Finished::failed(
+                DatabaseFailure::Configuration,
+                Cause::Input,
+            ));
+        };
+        let Some(slot) = self.slots.take() else {
+            return Err(Finished::failed(
+                DatabaseFailure::LakeSandboxUnavailable,
+                Cause::NoSlot,
+            ));
+        };
+        let Some(peer_uid) = (self.peer_for_slot)(slot.number()) else {
+            return Err(Finished::failed(
+                DatabaseFailure::Configuration,
+                Cause::NoUser,
+            ));
+        };
+        Ok(Admitted {
+            input,
+            slot,
+            peer_uid,
+        })
     }
 
     /// Runs one attempt (see the module). `input_json` is the lease's input and `connection` its resolved connection, which is
@@ -362,20 +446,33 @@ where
         signals: &Signals,
         on_heartbeat: impl FnMut() + Send,
     ) -> Finished {
-        let Ok(input) = AttemptInput::read(input_json) else {
-            return Finished::failed(DatabaseFailure::Configuration, Cause::Input);
-        };
+        match self.admit(input_json) {
+            Ok(admitted) => {
+                self.run_admitted(admitted, connection, signals, on_heartbeat)
+                    .await
+            }
+            Err(finished) => finished,
+        }
+    }
+
+    /// Runs an attempt that was admitted, with the connection the control plane resolved for it.
+    pub async fn run_admitted(
+        &self,
+        admitted: Admitted,
+        connection: Converted,
+        signals: &Signals,
+        on_heartbeat: impl FnMut() + Send,
+    ) -> Finished {
+        let Admitted {
+            input,
+            slot,
+            peer_uid,
+        } = admitted;
         let expected = Expected {
             effect_key: input.effect_key().to_owned(),
             reference: input.reference().to_owned(),
         };
         let limits = effective(input.limits(), connection.limits, &self.settings);
-        let Some(slot) = self.slots.take() else {
-            return Finished::failed(DatabaseFailure::LakeSandboxUnavailable, Cause::NoSlot);
-        };
-        let Some(peer_uid) = (self.peer_for_slot)(slot.number()) else {
-            return Finished::failed(DatabaseFailure::Configuration, Cause::NoUser);
-        };
 
         // the step's time is the attempt's, staging included
         let deadline = Instant::now() + limits.timeout;
@@ -454,6 +551,7 @@ where
         .await;
         // the request holds the credentials: it goes as soon as the attempt is over
         drop(request);
+        let exit = exit_of(&outcome);
         let left = running.settle(outcome.container_ended);
 
         let report = match outcome.disposition {
@@ -477,242 +575,40 @@ where
             container_ended: outcome.container_ended,
             relay_denials: outcome.relay_denials,
             sandbox_refusal: outcome.sandbox_refusal,
+            exit: Some(exit),
             left,
         }
+    }
+}
+
+/// How the container ended, as one of the closed reasons of the metrics. A memory kill is that whatever else the attempt did.
+fn exit_of(outcome: &AttemptOutcome) -> LakeSandboxExit {
+    if outcome.memory_killed {
+        return LakeSandboxExit::MemoryKilled;
+    }
+    match &outcome.ended {
+        Ended::Conversation(Ok(_)) => LakeSandboxExit::Completed,
+        Ended::Conversation(Err(ControlFailure::Silent)) => LakeSandboxExit::HeartbeatMissed,
+        Ended::Conversation(Err(ControlFailure::Protocol(_))) => LakeSandboxExit::ProtocolError,
+        Ended::SandboxUnavailable | Ended::HostNeverConnected => LakeSandboxExit::StartFailed,
+        Ended::DeadlinePassed => LakeSandboxExit::Deadline,
+        Ended::Cancelled => LakeSandboxExit::Cancelled,
+        Ended::LeaseLost => LakeSandboxExit::LeaseLost,
     }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use std::io;
-    use std::net::{IpAddr, SocketAddr};
-    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use sagat_infra_lake::attempt::{ContainerExit, SandboxError, StartRequest};
+    use sagat_infra_lake::attempt::SandboxError;
     use serde_json::{Value, json};
-    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, DuplexStream};
-    use tokio::net::UnixStream;
-    use tokio::task::JoinHandle;
-    use tokio_util::sync::CancellationToken;
 
+    use super::super::doubles::*;
     use super::super::fixtures::{converted, input_json, message, my_uid, settings};
-    use super::super::prepare::BlobError;
     use super::*;
-
-    // -- the doubles ---------------------------------------------------------------------------------------------------
-
-    #[derive(Clone)]
-    struct NoDns;
-
-    impl Resolver for NoDns {
-        async fn resolve(&self, _host: &str, _port: u16) -> io::Result<Vec<IpAddr>> {
-            Err(io::Error::other("no name server in this test"))
-        }
-    }
-
-    #[derive(Clone)]
-    struct NoNetwork;
-
-    impl Connector for NoNetwork {
-        type Stream = DuplexStream;
-
-        async fn connect(&self, _address: SocketAddr) -> io::Result<DuplexStream> {
-            Err(io::Error::other("no network in this test"))
-        }
-    }
-
-    /// A source that never answers: a `ReadBlob` that stalls.
-    struct Stalled;
-
-    impl Blobs for Stalled {
-        type Reader = io::Cursor<Vec<u8>>;
-
-        async fn open(
-            &self,
-            _blob: sagat_domain::blobs::BlobId,
-        ) -> Result<Self::Reader, BlobError> {
-            std::future::pending().await
-        }
-    }
-
-    fn by_blob(document: &mut Value) {
-        document["records"] =
-            json!({"blobs": [{"id": "0192f5aa-0000-7000-8000-00000000000a", "format": "ndjson"}]});
-    }
-
-    struct NoBlobs;
-
-    impl Blobs for NoBlobs {
-        type Reader = io::Cursor<Vec<u8>>;
-
-        async fn open(
-            &self,
-            _blob: sagat_domain::blobs::BlobId,
-        ) -> Result<Self::Reader, BlobError> {
-            Err(BlobError)
-        }
-    }
-
-    /// What the scripted host does once the sandbox "starts" it.
-    #[derive(Clone)]
-    enum Script {
-        /// Connects, reads the request, sends this many beats and then this line, and closes.
-        Answer { beats: usize, line: Vec<u8> },
-        /// Is started and never connects.
-        NeverConnects,
-    }
-
-    struct Scripted {
-        work: std::path::PathBuf,
-        script: Script,
-        start_error: Option<SandboxError>,
-        kill_unconfirmed: bool,
-        asked: Mutex<Vec<StartRequest>>,
-        kills: AtomicUsize,
-        host: Mutex<Option<JoinHandle<()>>>,
-        request: Arc<Mutex<Vec<u8>>>,
-    }
-
-    impl Scripted {
-        fn new(work: &Path, script: Script) -> Self {
-            Self {
-                work: work.to_path_buf(),
-                script,
-                start_error: None,
-                kill_unconfirmed: false,
-                asked: Mutex::new(Vec::new()),
-                kills: AtomicUsize::new(0),
-                host: Mutex::new(None),
-                request: Arc::default(),
-            }
-        }
-
-        fn asked(&self) -> Vec<StartRequest> {
-            self.asked.lock().unwrap().clone()
-        }
-    }
-
-    /// The host at the wire, as `crates/infra-lake/tests/attempt.rs` plays it: the token from the file in the attempt
-    /// directory, the relay socket, `CONTROL`, the request line, then one ending.
-    async fn host(
-        work: std::path::PathBuf,
-        id: String,
-        script: Script,
-        request: Arc<Mutex<Vec<u8>>>,
-    ) {
-        let Script::Answer { beats, line } = script else {
-            return std::future::pending().await;
-        };
-        let directory = work.join(&id);
-        let token = std::fs::read_to_string(directory.join("relay.token")).unwrap();
-        let mut stream = BufReader::new(
-            UnixStream::connect(directory.join("relay.sock"))
-                .await
-                .unwrap(),
-        );
-        stream
-            .get_mut()
-            .write_all(format!("SAGAT-RELAY/1 {}\nCONTROL\n", token.trim_end()).as_bytes())
-            .await
-            .unwrap();
-        let mut asked = Vec::new();
-        stream.read_until(b'\n', &mut asked).await.unwrap();
-        *request.lock().unwrap() = asked;
-        for _ in 0..beats {
-            stream
-                .get_mut()
-                .write_all(b"{\"heartbeat\":true}\n")
-                .await
-                .unwrap();
-        }
-        stream.get_mut().write_all(&line).await.unwrap();
-        stream.get_mut().shutdown().await.unwrap();
-    }
-
-    impl LakeSandbox for Scripted {
-        async fn start(&self, request: &StartRequest) -> Result<(), SandboxError> {
-            self.asked.lock().unwrap().push(request.clone());
-            if let Some(error) = self.start_error {
-                return Err(error);
-            }
-            let task = tokio::spawn(host(
-                self.work.clone(),
-                request.attempt_id.clone(),
-                self.script.clone(),
-                Arc::clone(&self.request),
-            ));
-            *self.host.lock().unwrap() = Some(task);
-            Ok(())
-        }
-
-        async fn exited(&self, _attempt_id: &str) {
-            std::future::pending().await
-        }
-
-        async fn kill(&self, _attempt_id: &str) -> ContainerExit {
-            self.kills.fetch_add(1, Ordering::SeqCst);
-            if let Some(task) = self.host.lock().unwrap().take() {
-                task.abort();
-            }
-            ContainerExit {
-                memory_killed: false,
-                ended: !self.kill_unconfirmed,
-            }
-        }
-    }
-
-    // -- the fixture ---------------------------------------------------------------------------------------------------
-
-    fn receipt_line() -> Vec<u8> {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/contract/iceberg-writes/fixtures/receipts/iceberg-committed.json");
-        let receipt: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        let mut line = serde_json::to_vec(&json!({"receipt": receipt, "relayDenials": 0})).unwrap();
-        line.push(b'\n');
-        line
-    }
-
-    /// The receipt fixture after `edit`, as the line the host sends.
-    fn receipt_line_with(edit: impl FnOnce(&mut Value)) -> Vec<u8> {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/contract/iceberg-writes/fixtures/receipts/iceberg-committed.json");
-        let mut receipt: Value =
-            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        edit(&mut receipt);
-        let mut line = serde_json::to_vec(&json!({"receipt": receipt, "relayDenials": 0})).unwrap();
-        line.push(b'\n');
-        line
-    }
-
-    fn failure_line(code: &str, column: &str) -> Vec<u8> {
-        let mut line = serde_json::to_vec(
-            &json!({"failure": {"code": code, "column": column}, "relayDenials": 0}),
-        )
-        .unwrap();
-        line.push(b'\n');
-        line
-    }
-
-    fn answer(line: Vec<u8>) -> Script {
-        Script::Answer { beats: 0, line }
-    }
-
-    struct World {
-        // a short path: a Unix socket's path is limited to about a hundred bytes
-        work: tempfile::TempDir,
-    }
-
-    fn world() -> World {
-        World {
-            work: tempfile::Builder::new()
-                .prefix("dr")
-                .tempdir_in("/tmp")
-                .unwrap(),
-        }
-    }
 
     fn driver(world: &World, script: Script) -> Driver<Scripted, NoBlobs, NoDns, NoNetwork> {
         Driver {
@@ -744,20 +640,6 @@ mod tests {
             peer_for_slot: |_| Some(my_uid()),
             quarantine: Duration::ZERO,
         }
-    }
-
-    fn signals() -> Signals {
-        Signals {
-            cancelled: CancellationToken::new(),
-            lease_lost: CancellationToken::new(),
-        }
-    }
-
-    fn entries(directory: &Path) -> Vec<String> {
-        std::fs::read_dir(directory)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect()
     }
 
     async fn run(
@@ -923,6 +805,133 @@ mod tests {
             driver.slots.in_use(),
             4,
             "the slots that were taken are still taken"
+        );
+    }
+
+    // -- admission, before the connection is asked for (D035-143) -------------------------------------------------------
+
+    #[test]
+    fn an_attempt_is_admitted_before_its_credentials_are_asked_for_and_holds_its_slot_until_it_is_dropped()
+     {
+        let world = world();
+        let driver = driver(&world, answer(receipt_line()));
+        let admitted = driver.admit(&input_json(|_| {})).expect("admitted");
+        assert_eq!(driver.slots.in_use(), 1, "the slot is held from admission");
+        assert!(driver.sandbox.asked().is_empty());
+        drop(admitted);
+        assert_eq!(
+            driver.slots.in_use(),
+            0,
+            "an attempt whose connection could not be resolved gives its slot back"
+        );
+    }
+
+    #[test]
+    fn an_input_that_is_not_one_and_a_full_node_are_refused_at_admission_with_nothing_taken() {
+        let world = world();
+        let driver = driver(&world, answer(receipt_line()));
+        let refused = driver
+            .admit(b"{\"not\":\"an input\"}")
+            .err()
+            .expect("refused");
+        assert_eq!(refused.cause, Some(Cause::Input));
+        assert_eq!(driver.slots.in_use(), 0);
+        let _all: Vec<_> = (0..4).map(|_| driver.slots.take().unwrap()).collect();
+        let full = driver.admit(&input_json(|_| {})).err().expect("refused");
+        assert_eq!(full.cause, Some(Cause::NoSlot));
+        assert_eq!(failed_with(&full), DatabaseFailure::LakeSandboxUnavailable);
+        assert_eq!(driver.slots.in_use(), 4, "nothing more was taken");
+    }
+
+    #[test]
+    fn the_drivers_of_two_leases_share_the_slots_of_the_runner() {
+        let world = world();
+        let first = driver(&world, answer(receipt_line()));
+        let mut second = driver(&world, answer(receipt_line()));
+        second.slots = Arc::clone(&first.slots);
+        let _held: Vec<_> = (0..4)
+            .map(|_| first.admit(&input_json(|_| {})).expect("admitted"))
+            .collect();
+        assert_eq!(
+            second
+                .admit(&input_json(|_| {}))
+                .err()
+                .expect("refused")
+                .cause,
+            Some(Cause::NoSlot),
+            "the second lease finds the slots the first took"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_admitted_attempt_runs_as_one_that_was_not_split() {
+        let world = world();
+        let driver = driver(&world, answer(receipt_line()));
+        let admitted = driver.admit(&input_json(|_| {})).expect("admitted");
+        let finished = driver
+            .run_admitted(admitted, converted(), &signals(), || {})
+            .await;
+        assert!(matches!(finished.report, Report::Complete(_)));
+        assert!(finished.cause.is_none() && finished.request_sent);
+        assert_eq!(driver.slots.in_use(), 0, "and the slot is back");
+    }
+
+    // -- how the container ended, for the metrics (D035-143) ----------------------------------------------------------
+
+    #[tokio::test]
+    async fn how_the_container_ended_is_one_of_the_closed_reasons() {
+        use sagat_telemetry::lake::LakeSandboxExit as Exit;
+        let world = world();
+        let make = |script: Script| driver(&world, script);
+        // the host answered, with a receipt or with a failure: the conversation ran to its end
+        let attempt = make(answer(receipt_line()));
+        let finished = run(&attempt, &input_json(|_| {}), &signals()).await;
+        assert_eq!(finished.exit, Some(Exit::Completed));
+        let attempt = make(answer(failure_line("ICEBERG_SCHEMA_MISMATCH", "amount")));
+        let finished = run(&attempt, &input_json(|_| {}), &signals()).await;
+        assert_eq!(finished.exit, Some(Exit::Completed));
+        // a host that never connects
+        let mut attempt = make(Script::NeverConnects);
+        attempt.settings.host_start = Duration::from_millis(100);
+        let finished = run(&attempt, &input_json(|_| {}), &signals()).await;
+        assert_eq!(finished.exit, Some(Exit::StartFailed));
+        // a cancel and a lost lease, once the host has the request
+        for (cancelled, expected) in [(true, Exit::Cancelled), (false, Exit::LeaseLost)] {
+            let attempt = make(Script::Silent);
+            let signals = signals();
+            let ends = if cancelled {
+                signals.cancelled.clone()
+            } else {
+                signals.lease_lost.clone()
+            };
+            let requested = std::sync::Arc::clone(&attempt.sandbox.requested);
+            let ending = tokio::spawn(async move {
+                requested.notified().await;
+                ends.cancel();
+            });
+            let finished = run(&attempt, &input_json(|_| {}), &signals).await;
+            ending.await.unwrap();
+            assert_eq!(finished.exit, Some(expected));
+        }
+        // the memory limit killed the container: that is the reason, whatever ended the attempt
+        let mut attempt = make(Script::Silent);
+        attempt.sandbox.memory_killed = true;
+        let killed = signals();
+        let ends = killed.cancelled.clone();
+        let requested = std::sync::Arc::clone(&attempt.sandbox.requested);
+        let ending = tokio::spawn(async move {
+            requested.notified().await;
+            ends.cancel();
+        });
+        let finished = run(&attempt, &input_json(|_| {}), &killed).await;
+        ending.await.unwrap();
+        assert_eq!(finished.exit, Some(Exit::MemoryKilled));
+        // nothing was started: no container, no reason
+        let attempt = make(answer(receipt_line()));
+        let _all: Vec<_> = (0..4).map(|_| attempt.slots.take().unwrap()).collect();
+        assert_eq!(
+            run(&attempt, &input_json(|_| {}), &signals()).await.exit,
+            None
         );
     }
 

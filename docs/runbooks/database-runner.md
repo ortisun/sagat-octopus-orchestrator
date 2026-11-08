@@ -71,8 +71,10 @@ the same length/character and namespace constraints apply.
 
 An optional `lake` section turns on the runner's lake profile. **Absent means off.** Present, it is validated whole when
 the runner starts, and a value outside its bounds stops the runner: nothing is defaulted that is a decision about security.
-**Today the section is read and validated and nothing serves lake activities yet** (the attempt driver is built in slices,
-`specs/035-iceberg-write-steps/research.md` D035-123); do not rely on it to write to a table.
+**A configuration with a `lake` section makes a lake runner: it serves the lake activity and no SQL**, and one without it is
+the SQL runner it has always been (D035-143). The runner's own side is built: it polls, resolves the connection, runs the attempt
+in the sandbox and reports. What is not built is the rest of the stack around it (compose and Helm, the container end to end,
+record blobs and database results as the source of records), so do not rely on it to write to a table yet.
 
 ```json
 "lake": {
@@ -117,6 +119,36 @@ with the profile named: the audit record of every binding says which profile cam
 ignores the profile, so bind a lake runner to the exact activity, as above, and not to `*`, until every replica has the profile. Changing the profile closes the sessions of the identity that offer the other profile's
 activity (the answer counts them in `revoked`). The registration of a `database` runner for the lake activity, of a `lake`
 runner for the SQL activity, of both, or of an ordinary activity beside either, is refused as not bound.
+
+**What a lake runner does** (D035-143).
+
+- *It holds as many attempts as it has slots.* It registers with `min(maxConcurrent, slots)` as what it can hold, asks each poll for
+  at most the slots nobody holds (at most four), and neither registers nor polls while there is none. A slot whose container may
+  still be running is held back until the container's own deadline has passed, so a full node can be a node with a slot held back.
+- *The connection is asked for after a slot is taken.* Asking discloses and audits the secrets, so a full node, or a lease
+  input that is not one, costs no disclosure: the step fails with `LAKE_SANDBOX_UNAVAILABLE` (retryable) or
+  `DATABASE_CONFIGURATION_INVALID`.
+- *A heartbeat that fails for a moment does not kill a write.* The heartbeats of a lake lease are tried again until the lease expires when
+  they fail in a way a retry may mend; a lease that is refused, or that runs out, is given up as lost. A cancel the control plane asks for
+  is signalled once and the lease keeps being renewed, so the report of an unknown outcome is not lost to a slow kill. And a control plane
+  that cannot answer `ResolveDatabase` does not fail the step: nothing was written, so the lease is given up, expires and is leased again.
+- *It reports a closed code and the flag of the contract.* A receipt completes the step; a failure of the host is reported with its
+  code and whether the step may be tried again; a cancel the control plane asked for is `DATABASE_CANCELLED` before the host has the
+  request and `OUTCOME_UNKNOWN` after; a lease that is lost is reported as nothing at all. A completion the control plane
+  refuses as not the step's is failed as `LAKE_HOST_PROTOCOL`.
+- *Stopping it is not cancelling it.* On `SIGTERM` it stops polling, lets the attempts that are running finish for 30 seconds,
+  and then gives their leases up as lost (the containers are killed and nothing is reported); the control plane's lease expiry
+  decides what happens to the step, and the next attempt finds a commit that was made by its key. **Set the pod's
+  termination grace to more than 60 seconds** (30 for the attempts, up to 30 for the kills), or the kill will come first.
+  A cancel would have reported every write that was under way as unknown on every rollout.
+- *It sweeps.* Every minute, the attempt directories under `workRoot` that no attempt owns any more (older than the longest
+  step, the hold-back of a slot and a margin) are removed. `workRoot` has to be a directory that exists when the runner starts, **dedicated to the
+  runner and not persistent (an `emptyDir`)**: the sweep removes by the shape of a name and by age, and what an attempt that was aborted at a drain
+  leaves is removed only by the next process, after about an hour.
+- *Metrics* (closed labels, nothing of a table, a connection or a run): `lake_writes_total` (mode, catalog and storage kind,
+  outcome), `lake_sandbox_exits_total` and `lake_relay_denials_total` (reason), and, from the runner,
+  `database_runner_lake_directories_total` (removed or failed by the sweep). Not yet: the phase histograms, the effect-key
+  lookup counter, and the audit of what the relay refused (the protocol has no call for it: G035-078).
 
 **The credentials of a lake step** (D035-141). A lake runner that has leased its step asks `ResolveDatabase` for the connection and
 its secrets. Nothing is resolved unless the session offers the lake activity **and** its binding is of the profile `lake` alone
