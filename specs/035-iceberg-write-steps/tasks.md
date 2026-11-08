@@ -1153,7 +1153,8 @@ one commit carries the key.
   *2026-11-08, second part done, left unticked (D035-144):* the record references of a blob source are built (`named_records`, `lake_lease_document` take what the
   catalog said about the blobs: the media type decides the format, 32 blobs and 2 GiB at most, the step's order) and the catalog's word is a method of the run's
   transaction (`lake_record_blobs`) with the pin of the attempt (`step_lease_blobs`); the lease calls them, and a lake attempt reads the blobs its lease named through `ReadBlob`
-  and nothing else. Not done: the wire test over gRPC and the independent review of the trust boundary; a SQL result as a source (G035-067).
+  and nothing else; the wire test over gRPC (`lake_blob_grpc.rs`) and two independent reviews of the trust boundary are done (D035-144). Not done: a SQL result as a source
+  (G035-067), the container end to end (T035-062), the limits of G035-080 and G035-081.
 - [ ] T035-057 [US02] Implement the host's append path in
   `runners/lake/sagat_lake/{lookup.py,mapping.py,compat.py,modes/append.py}`:
   - lookup and commit follow D035-030;

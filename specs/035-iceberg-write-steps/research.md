@@ -3361,8 +3361,13 @@ The other fixes were wording:
     exists. Of the three conditions a read is held to beyond the lease (the cancel of the step, the stop reason of the run, a finished run), **the three mutations that drop one each survive**:
     a cancel sets both the cancel of the step and the stop reason, so either refuses it alone (dropping both is killed), and a finished run has no live lease for the checks before to
     accept. They are kept because a report is held to the same three, and the survivors are the price of two conditions that overlap, not a path that no test reaches.
-  - *Not done in this slice.* The wire test over gRPC (the handler is held only by the review and by that test; it needs the harness of #169); a SQL result as a source (G035-067);
-    the container end to end (T035-062).
+  - *The wire (done, after #169 gave the harness).* `lake_blob_grpc.rs`: a real control plane, real PostgreSQL, a blob store holding the bytes, the REST API that writes the `pii`
+    connection (the administrator holds the reveal grant for as long as it takes) and publishes and starts the run, and a gRPC client as the lake runner. The lease names the blob; `ReadBlob`
+    returns its header and its bytes as the catalog and the store hold them; a blob of the same run with a row and bytes that the lease did not name, one whose object is gone and an id that
+    was never made are all `NOT_FOUND` with the same words (the object that is gone proves that the decision comes before the store, which would say `INTERNAL`: `BlobReadError::Lost`, read from `blobs.rs` and not run); the upload is shut. The
+    mutation that makes the handler use the old check, which survived the application-level scenario, is killed here. The order of the check and the store is held by the lost object
+    and was not mutation-tested (the handler cannot be reordered without the check's own answer).
+  - *Not done in this slice.* A SQL result as a source (G035-067); the container end to end (T035-062); the limits of G035-080 and G035-081.
 - **G035-080 — Pins of lake blobs are never deleted.** `step_lease_blobs` rows go with their run, and nothing purges a run, so up to 32 rows per lake attempt that names blobs stay for
   ever (the credential pins of a lake or SQL attempt do the same), and the rollback of the migration that makes the table stays closed until an operator deletes them. *Exit condition:*
   the retention of runs (or of their pins) when it exists; the `down` guard can then let the pins of finished runs through.
