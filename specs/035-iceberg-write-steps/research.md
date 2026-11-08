@@ -3161,8 +3161,14 @@ The other fixes were wording:
     (1 ignored); `contract_iceberg_writes` 45; `integration_platform_foundation` 102 (the privilege audit reads the changed result query);
     `integration_durable_execution` 179 (the completion of every ordinary step goes through the code that changed); the lib and crate tests of the application,
     store, IR, lake, gRPC, scheduler and runner crates; the architecture, agent-configuration and design-doc checks.
-  - *Not done in this slice.* S5 (G035-077, O035-007). The completion through the real gRPC server (the harness cannot make a lake step before the runner shell,
-    slice G). The per-write audit and the `lake_*` metrics (T035-061). `OUTCOME_UNKNOWN` evidence on the waiting step (O035-007). T035-059 stays unticked: it asks
+  - *The wire, exercised afterwards* (`lake_grpc.rs`, in the same lifecycle; the harness gained `Options.lake`). A real control plane over real PostgreSQL and OpenBao: the secrets and
+    the Iceberg connection are created through the REST API, the workflow of an Iceberg write is published and started through it, a runner identity of the `lake` profile is bound through it, and
+    a gRPC client stands in for the lake runner: it leases the step (the lake activity, the run asked for), resolves its connection (the message of the lake with `catalog` and `storage` and
+    nothing of SQL, no secret in its `Debug`), has a receipt of another effect refused as `InvalidArgument` with the run still `RUNNING`, completes the step with the receipt of the step (the run is
+    `SUCCEEDED`), and finds a replay of the same report `already_applied`. It passed on its first run, so it was shown to be able to fail: with the storage secret left out of the answer, it fails
+    at the list of secrets. This closes the gap D035-141 and the first draft of this record named (the completion through the real gRPC server); what it does not cover is the runner's own
+    requests against this server (D035-143 tests them against a scripted service).
+  - *Not done in this slice.* S5 (G035-077, O035-007). The per-write audit and the `lake_*` metrics (T035-061). `OUTCOME_UNKNOWN` evidence on the waiting step (O035-007). T035-059 stays unticked: it asks
     for T035-050 and T035-051 to pass, which need the runner and a container.
 - **G035-077 — D035-069 says the code already requires `saga:override` to retry an unknown outcome. It does not.** `review_instance` (`runs.rs`) maps
   `Retry` to `run:operate` and only `Skip` and `Resolve` to `saga:override`, and the domain refuses a retry of an unknown outcome outright

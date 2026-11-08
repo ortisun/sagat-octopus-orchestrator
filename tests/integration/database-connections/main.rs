@@ -7,6 +7,7 @@ mod consumers;
 mod executor;
 mod key_rotation;
 mod lake;
+mod lake_grpc;
 mod lake_lease;
 mod lake_resolve;
 mod output;
@@ -316,6 +317,8 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(executor::run(provider.clone())).await;
     progress.enter("executor::grpc");
     Box::pin(executor::grpc(provider.clone())).await;
+    progress.enter("the lake step on the wire");
+    Box::pin(lake_grpc::run(provider.clone())).await;
     progress.enter("output::run");
     Box::pin(output::run(provider.clone())).await;
     progress.enter("output_blobs::run");
