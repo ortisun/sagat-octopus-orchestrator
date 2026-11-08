@@ -5945,6 +5945,7 @@ dependencies = [
  "jsonschema",
  "sagat-domain",
  "sagat-infra-database",
+ "sagat-infra-ir",
  "sagat-telemetry",
  "serde",
  "serde_json",

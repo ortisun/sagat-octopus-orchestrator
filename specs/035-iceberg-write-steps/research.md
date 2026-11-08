@@ -3117,6 +3117,33 @@ The other fixes were wording:
     server with a lake step (the platform harness does not turn the lake on, and nothing would call it before the runner shell, slice G, which will be its
     first caller); `check_database_blob_upload` and the output scan still read the `primary` pin, so a lake step that uploaded would be refused (read in the
     code, not exercised; its results go through slice F).
+- **D035-142 — The server completes a lake step from a receipt it rebuilds (slice F of D035-130; T035-059, T6 of the plan).**
+  **Decided by: delegate**. Designed by an independent read-only pass over the code (2026-11-08), whose findings are the ground of this record. Steps S1 to S4
+  below; S5 (the operator decisions on an unknown outcome) is **not** taken here: it is G035-077 and O035-007, right after this record.
+  - *What a lake `CompleteStep` met before this slice* (read in the code): the managed branch of `complete` takes the primary pin of the step, which a lake
+    step does not have, and answers `Unavailable`; it would also have met the SQL result validator, which refuses unknown members, and the SQL credential
+    codec, which refuses a lake secret. So a committed write could not be reported at all.
+  - *S1, the receipt is rebuilt* (done). The port `LakeReceiptCodec` (application) reads the runner's receipt into typed fields and returns the receipt written again
+    from those fields; the server stores that and never the bytes it was sent. The adapter `JsonLakeReceiptCodec` lives with the typed receipt in `sagat-infra-ir`
+    (`lake_receipt.rs`, moved from `sagat-infra-lake`, which re-exports it, so the runner is unchanged): the control plane and the engine must not link the
+    lake runtime, which carries the database drivers. It refuses a receipt over 16 KiB, a member the contract does not name, a count that is not a canonical
+    decimal string, a kind other than `iceberg`, the outcome `REVERTED` (the receipt of a compensation, not of the step) and any receipt whose effect key, ref
+    or mode is not the step's (`ExpectedReceipt`, built by the server from what it knows of the step). *Evidence:* 6 tests in `crates/infra-ir/tests/lake_receipt.rs`
+    over the fixtures of the contract (red by compile first); **eight hand mutations, all killed, each at its own test**: each of the three comparisons removed,
+    the runner's bytes stored as they came, a revert accepted, the object-storage kind answered as another error, the contract's members forwarded, the size
+    not bounded. fmt, clippy `-D warnings`, `check-architecture`, the tests of the application, IR, lake and runner crates, `contract_iceberg_writes` 45.
+    Nothing calls the codec yet.
+- **G035-077 — D035-069 says the code already requires `saga:override` to retry an unknown outcome. It does not.** `review_instance` (`runs.rs`) maps
+  `Retry` to `run:operate` and only `Skip` and `Resolve` to `saga:override`, and the domain refuses a retry of an unknown outcome outright
+  (`retry_review`: `OutcomeUnresolved`, pinned by `operator_actions.rs`). The authorization matrix, FR-035-045 and D035-069 promise an operator can
+  `RETRY_STEP` a lake write whose outcome is unknown, with `saga:override`. Found by the design pass of D035-142. Until O035-007 is answered the only ways
+  out of an unknown outcome are the ones the code has: resolve it by decision (`saga:override`), or let the run go on to its compensation.
+- **O035-007** — May an operator retry a lake write whose outcome is unknown? *Recommendation: yes, for Iceberg writes only.* The effect key lets the next
+  attempt find the commit or prove it absent (D035-030), so the retry does not write twice; it needs `run:operate` **and** `saga:override`, and the step is
+  leased again with `priorAttemptMayHaveLeftFiles`. SQL steps and everything else stay refused. It reverses, for one kind of step, a rule of the domain that
+  its tests pin ("an unknown outcome is never retried"), and it changes `retry_review` and the check in `review_instance`, so it is the owner's call. The
+  evidence on the waiting step (the target ref, the window searched, whether the key was found elsewhere) needs a closed reason on the wire, which is a
+  `worker.proto` change and a minor version: the same question.
 - **G035-073 — A refused run of an Iceberg write is neither opaque nor audited at creation.** `audit_database_denial` (`runs.rs`) audits only
   `DatabaseUnavailable` and `DatabaseLimit`, and `LakeRefused` keeps its detail (the node, the field paths and classification levels) for a caller who holds
   `run:start` and `database:use`, where a refused SQL run is an opaque `NotFound`. The detail is the publisher's to see; a starter is not that person.

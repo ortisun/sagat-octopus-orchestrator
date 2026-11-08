@@ -11,7 +11,6 @@
 //! test needs no sleep.
 
 mod attempt_input;
-mod receipt;
 mod write_body;
 
 use std::collections::VecDeque;
@@ -23,7 +22,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 use zeroize::{Zeroize as _, Zeroizing};
 
-pub use receipt::{
+pub use sagat_infra_ir::lake_receipt::{
     Count, EffectKey, FormatVersion, IcebergOutcome, IcebergReceipt, ObjectFormat, ObjectOutcome,
     ObjectStorageReceipt, Receipt, RefName, RowLevelMode, Sha256Hex, SnapshotId, WriteMode,
 };
