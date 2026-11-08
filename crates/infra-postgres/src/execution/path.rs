@@ -695,6 +695,9 @@ impl PgPathExecutionTx {
         if let Some(audit) = &effects.audit {
             insert_audit(&mut self.tx, audit).await?;
         }
+        for audit in &effects.further_audits {
+            insert_audit(&mut self.tx, audit).await?;
+        }
         if let Some((idempotency, result)) = &effects.idempotency
             && !remember(
                 &mut self.tx,

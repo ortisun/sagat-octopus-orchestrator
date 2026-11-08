@@ -8,6 +8,7 @@ mod executor;
 mod key_rotation;
 mod lake;
 mod lake_lease;
+mod lake_resolve;
 mod output;
 mod output_blobs;
 mod policies;
@@ -290,6 +291,9 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(lake::registration(&w)).await;
     progress.enter("one profile per identity");
     Box::pin(lake::profile_is_the_identitys(&w)).await;
+    // Before the lease scenario: that one leaves the budget of the namespace spent, and this one needs a lease.
+    progress.enter("the credentials of a lake step");
+    Box::pin(lake_resolve::run(&w, &service, provider.clone())).await;
     progress.enter("the lease of a lake step");
     Box::pin(lake_lease::run(&w)).await;
     progress.enter("ad_hoc::run");

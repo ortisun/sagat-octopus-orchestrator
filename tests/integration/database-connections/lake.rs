@@ -49,6 +49,17 @@ pub(crate) fn iceberg_in(
     ceiling: EgressCeiling,
     modes: Vec<WriteMode>,
 ) -> ConnectionConfig {
+    iceberg_secrets(uri, catalog_secret, "db-credentials", ceiling, modes)
+}
+
+/// A REST connection with a static storage credential, whose two secrets are named apart.
+pub(crate) fn iceberg_secrets(
+    uri: &str,
+    catalog_secret: &str,
+    storage_secret: &str,
+    ceiling: EgressCeiling,
+    modes: Vec<WriteMode>,
+) -> ConnectionConfig {
     ConnectionConfig::iceberg(IcebergConfig {
         catalog: IcebergCatalog::Rest(RestCatalog {
             uri: uri.to_owned(),
@@ -74,7 +85,7 @@ pub(crate) fn iceberg_in(
         warehouse_locations: vec!["s3://lake/warehouse/".to_owned()],
         allowed_modes: modes,
         catalog_secret: Some(SecretName::parse(catalog_secret).unwrap()),
-        storage_secret: Some(SecretName::parse("db-credentials").unwrap()),
+        storage_secret: Some(SecretName::parse(storage_secret).unwrap()),
         egress_ceiling: ceiling,
         limits: LakeLimits::default(),
     })

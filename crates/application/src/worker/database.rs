@@ -1,6 +1,7 @@
 //! Lease-bound managed database capabilities. Provider I/O separates two authority transactions.
 use super::*;
-use crate::database::DatabaseWork;
+use crate::database::{DatabaseWork, ResolvedGrant, ResolvedLake};
+use sagat_domain::database::SecretRole;
 
 impl<S, C, E, R> WorkerService<S, C, E, R>
 where
@@ -64,15 +65,16 @@ where
             tx.commit().await?;
             snapshot
         };
-        // A lake step is not served yet: the store does not select one (D035-140). Refused here, by name, so that the day it does
-        // the secrets are not read from the provider by a path that does not know what to do with them.
-        let DatabaseWork::Sql {
-            secret: selected, ..
-        } = &before.work
-        else {
+        // A step with no secret to hand over is not one this capability serves: refused before the provider is read.
+        if before.secrets().is_empty() {
             return Err(AppError::Unavailable);
-        };
-        let value = reader.resolve(&selected.stored).await?;
+        }
+        // One read at a time, in the order of the input (the catalog's, then the storage's), holding no lock: the provider is slow
+        // and may be down, and what is read is judged again, all of it, by the second transaction.
+        let mut values = Vec::with_capacity(before.secrets().len());
+        for selected in before.secrets() {
+            values.push(reader.resolve(&selected.stored).await?);
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         self.live_capability_fence(principal, &mut tx, task).await?;
         let after = tx
@@ -86,51 +88,77 @@ where
             .lease_expiry_instance(task.instance)
             .await?
             .ok_or(AppError::StaleAttempt)?;
-        let DatabaseWork::Sql {
-            operation,
-            secret: selected,
-        } = after.work
-        else {
-            return Err(AppError::Unavailable);
-        };
-        tx.pin_database_credentials(task.instance.node(), std::slice::from_ref(&*selected))
+        tx.pin_database_credentials(task.instance.node(), after.secrets())
             .await?;
-        let secret = selected.stored;
         let mut effects = Effects::by(
             Actor::Worker(principal.subject().as_str().to_owned()),
             trace_id.map(str::to_owned),
         );
-        effects.audit = Some(
+        // One record for each secret, in the order they were read: which role, which secret, which version, never what it holds.
+        // A SQL step has the one, named as it always was. The role is in the text, so that one secret under two roles is two
+        // events and not one that repeats (an identical event is recorded once).
+        let resource = format!("{}/run {}", tx.info().namespace_id, task.run_id);
+        let mut records = after.secrets().iter().map(|selected| {
+            let secret = &selected.stored.meta;
+            let handed = match selected.role {
+                SecretRole::Primary => format!("{} v{}", secret.name, secret.version),
+                role => format!("{} {} v{}", role.as_str(), secret.name, secret.version),
+            };
             AuditRecord::by(
                 principal,
                 AuditAction::SecretResolved,
                 ResourceType::Secret,
-                format!("{}/run {}", tx.info().namespace_id, task.run_id),
+                resource.clone(),
                 trace_id.map(str::to_owned),
                 self.clock.now(),
             )
             .with_reason(format!(
-                "database node {} attempt {} generation {}: {} v{}",
+                "database node {} attempt {} generation {}: {handed}",
                 task.instance.node(),
                 task.fence.attempt,
                 task.fence.generation,
-                secret.meta.name,
-                secret.meta.version
-            )),
-        );
+            ))
+        });
+        effects.audit = records.next();
+        effects.further_audits = records.collect();
         tx.persist(&[], effects).await?;
         tx.commit().await?;
+        let resolved = |selected: crate::database::SelectedSecret, value| ResolvedSecret {
+            name: selected.stored.meta.name,
+            version: selected.stored.meta.version,
+            value,
+        };
+        let grant = match after.work {
+            DatabaseWork::Sql { operation, secret } => {
+                let value = values.pop().ok_or(AppError::Internal)?;
+                ResolvedGrant::Sql {
+                    operation,
+                    credential: resolved(*secret, value),
+                }
+            }
+            DatabaseWork::Lake { secrets } => {
+                let mut lake = ResolvedLake {
+                    catalog: None,
+                    storage: None,
+                };
+                for (selected, value) in secrets.into_iter().zip(values) {
+                    let slot = match selected.role {
+                        SecretRole::Catalog => &mut lake.catalog,
+                        SecretRole::Storage => &mut lake.storage,
+                        // A lake connection has no primary secret, and a role twice is a role the store never selects.
+                        SecretRole::Primary => return Err(AppError::Internal),
+                    };
+                    if slot.replace(resolved(selected, value)).is_some() {
+                        return Err(AppError::Internal);
+                    }
+                }
+                ResolvedGrant::Lake(lake)
+            }
+        };
         Ok(crate::database::ResolvedDatabase {
             connection: after.connection,
             expires_at,
-            grant: crate::database::ResolvedGrant::Sql {
-                operation,
-                credential: ResolvedSecret {
-                    name: secret.meta.name,
-                    version: secret.meta.version,
-                    value,
-                },
-            },
+            grant,
         })
     }
 
