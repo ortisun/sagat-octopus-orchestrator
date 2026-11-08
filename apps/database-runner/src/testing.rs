@@ -7,7 +7,7 @@
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -30,6 +30,7 @@ pub(crate) struct Script {
     pub polled: Vec<pb::PollTasksRequest>,
     pub resolved: Vec<pb::ResolveSecretsRequest>,
     pub heartbeats: Vec<pb::HeartbeatRequest>,
+    /// Every report the service was sent, the ones it refused too: a retry is the same request again.
     pub completed: Vec<pb::CompleteStepRequest>,
     pub failed: Vec<pb::FailStepRequest>,
     /// Handed out by the polls, in order, as many as each poll asks for.
@@ -103,7 +104,6 @@ impl WorkerService for Fake {
             worker_id: uuid::Uuid::from_u128(7).to_string(),
             session_token: "session-token".into(),
             accepted_protocol_version: "1.6".into(),
-            ..Default::default()
         }))
     }
 
@@ -150,7 +150,6 @@ impl WorkerService for Fake {
                     Ok(pb::HeartbeatResponse {
                         lease_expires_at_epoch_ms: epoch_ms_in(Duration::from_secs(60)),
                         cancel_requested: false,
-                        ..Default::default()
                     })
                 },
                 |answer| answer(&request),
@@ -166,26 +165,24 @@ impl WorkerService for Fake {
         &self,
         request: Request<pb::CompleteStepRequest>,
     ) -> Result<Response<pb::StepCommandResponse>, Status> {
-        if let Some(status) = self.report_error() {
-            self.touched();
-            return Err(status);
-        }
         self.with(|script| script.completed.push(request.into_inner()));
         self.touched();
-        Ok(Response::new(pb::StepCommandResponse::default()))
+        match self.report_error() {
+            Some(status) => Err(status),
+            None => Ok(Response::new(pb::StepCommandResponse::default())),
+        }
     }
 
     async fn fail_step(
         &self,
         request: Request<pb::FailStepRequest>,
     ) -> Result<Response<pb::StepCommandResponse>, Status> {
-        if let Some(status) = self.report_error() {
-            self.touched();
-            return Err(status);
-        }
         self.with(|script| script.failed.push(request.into_inner()));
         self.touched();
-        Ok(Response::new(pb::StepCommandResponse::default()))
+        match self.report_error() {
+            Some(status) => Err(status),
+            None => Ok(Response::new(pb::StepCommandResponse::default())),
+        }
     }
 
     async fn stream_tasks(
@@ -250,7 +247,8 @@ pub(crate) async fn serve_fake(fake: Fake) -> Server {
 
 /// The directory of a runner under test: its token, and the configuration it reads.
 pub(crate) struct Home {
-    pub directory: tempfile::TempDir,
+    /// Held so that the directory outlives the runner that reads it.
+    pub _directory: tempfile::TempDir,
     pub config: PathBuf,
 }
 
@@ -277,11 +275,8 @@ pub(crate) fn home(server: &Server, lake: Option<serde_json::Value>) -> Home {
     }
     let config = directory.path().join("runner.json");
     std::fs::write(&config, serde_json::to_vec(&document).unwrap()).expect("the configuration");
-    Home { directory, config }
-}
-
-impl Home {
-    pub fn path(&self) -> &Path {
-        self.directory.path()
+    Home {
+        _directory: directory,
+        config,
     }
 }

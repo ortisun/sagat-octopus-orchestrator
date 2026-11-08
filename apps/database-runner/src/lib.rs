@@ -5,6 +5,7 @@ pub mod config;
 /// The lake profile of the runner (feature 035). Public so that what is built here, and not yet called by the driver, is not
 /// a dead-code allowance that would outlive the driver: an item of a public module is part of the crate's surface.
 pub mod lake;
+mod lease;
 mod rpc;
 mod runner;
 mod slots;
