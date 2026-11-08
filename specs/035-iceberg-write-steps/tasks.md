@@ -819,6 +819,9 @@ three conditions pass.
   setting in the execution engine and the check at run admission (`runs.rs`, `worker.rs`), which T035-055 owns because
   admission of an Iceberg run does not exist before it; until then no definition can hold the node past the store's fail-closed
   guard, so no run can meet the gap.
+
+  *2026-11-08 (D035-137):* the engine has the setting (strict boolean, off by default) and both stores carry it; the check at run admission is in the
+  store's `check_definition` and not in `runs.rs`/`worker.rs` (which the 018 pull requests change). Left unticked with T035-055.
 - [x] T035-037 [P] Register the metric families of plan.md "Observability" in
   `crates/telemetry/src/metrics.rs`. T035-021 passes. Refs: FR-035-030.
 
@@ -1118,6 +1121,11 @@ one commit carries the key.
     plan's ceilings).
 
   Refs: FR-035-024, FR-035-028.
+
+  *2026-11-08, partly done, left unticked (D035-137):* a run of an Iceberg write is admitted when `lake.enabled` is on (control plane and engine) and its
+  step is pinned to the connection and the revision it was admitted with; a replay or a claim consults the pin. The pins are in the store's
+  `check_definition` (`database/admission.rs`), not in `runs.rs`. Not done: the quota rows, the `LakeRefused` audit at creation (`runs.rs`), and a test of
+  each of the child, event and rerun paths.
 - [ ] T035-056 [US02] Build the attempt input in `crates/application/src/worker/database.rs`:
   - `effectKey`;
   - `firstAttemptStartedAt` from the database clock;

@@ -137,6 +137,8 @@ pub struct PgRunStore {
     pub(crate) definitions: PgDefinitionStore,
     breaker: BreakerPolicy,
     pub(crate) scoped_worker_protocol: bool,
+    /// The deployment's `lake.enabled` (feature 035): whether a run may carry an Iceberg write. Off unless set.
+    pub(crate) lake_enabled: bool,
 }
 
 impl PgRunStore {
@@ -149,7 +151,16 @@ impl PgRunStore {
             cache,
             breaker: BreakerPolicy::default(),
             scoped_worker_protocol: false,
+            lake_enabled: false,
         }
+    }
+
+    /// Lets a run carry an Apache Iceberg write: the deployment's `lake.enabled`, off by default (D035-059, D035-137).
+    /// Publication has its own switch; a process that admits runs sets this one from the same setting.
+    #[must_use]
+    pub const fn with_lake_enabled(mut self, enabled: bool) -> Self {
+        self.lake_enabled = enabled;
+        self
     }
 
     /// When the compensations of a provider operation stop being leased (FR-003-003).
@@ -370,6 +381,7 @@ impl PgRunStore {
             timer_read_states,
             event_wait_read_states,
             breaker: self.breaker,
+            lake_enabled: self.lake_enabled,
             script_retention: BTreeMap::new(),
             signals: Vec::new(),
             chain_lock,
@@ -467,6 +479,7 @@ impl PgRunStore {
                 &definition,
                 Some(run),
                 Some(&info),
+                self.lake_enabled,
             )
             .await?;
         }
@@ -1109,6 +1122,7 @@ impl RunStore for PgRunStore {
                     &new.definition,
                     None,
                     Some(info),
+                    self.lake_enabled,
                 )
                 .await?
             } else {
@@ -1292,6 +1306,7 @@ impl RunStore for PgRunStore {
                     input_digest,
                     stored: BTreeSet::new(),
                     breaker: self.breaker,
+                    lake_enabled: self.lake_enabled,
                     script_retention: BTreeMap::new(),
                     signals: Vec::new(),
                     chain_lock: None,
@@ -3325,6 +3340,8 @@ pub struct PgRunTx {
     timer_read_states: BTreeMap<ExecutionInstanceId, TimerReadState>,
     event_wait_read_states: BTreeMap<ExecutionInstanceId, EventWaitReadState>,
     breaker: BreakerPolicy,
+    /// The store's `lake.enabled`, for the admission of a claim.
+    lake_enabled: bool,
     /// Pins selected under the retention-policy fence before a lease is granted. `persist` adds
     /// them to the matching immutable `step.leased` detail in this transaction.
     script_retention: BTreeMap<NodeId, ScriptRetentionPins>,

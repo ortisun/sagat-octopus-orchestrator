@@ -9,9 +9,11 @@ use sagat_application::{
     database::{ConnectionService, ConnectionWrite},
     definitions::IrError,
     error::AppError,
+    execution::Engine,
     managed_secrets::{ManagedSecretService, ManagedSecretWrite},
     publishing::Promotion,
     reveal_grants::RevealGrantService,
+    runs::{RunService, StartRun},
     worker::Capabilities,
 };
 use sagat_domain::{
@@ -27,6 +29,7 @@ use sagat_domain::{
     identity::{Environment, Permission, Principal, Role, Slug},
     secrets::{SecretName, SecretValue},
 };
+use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -602,6 +605,159 @@ async fn publication(
         )
         .await;
     assert!(matches!(run, Err(AppError::NotFound)), "{run:?}");
+
+    // With the lake turned on in the process that admits runs (`lake.enabled`, D035-137), the same run is admitted, and
+    // the revision it was admitted with is the one it keeps: the pin is recorded, and a replay of the start consults it.
+    let lake_runs = RunService::new(
+        w.store.clone().with_lake_enabled(true),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        w.cache.clone(),
+    );
+    let start = || StartRun {
+        namespace: "payments",
+        workflow: published,
+        version: None,
+        input: br#"{"rows":[]}"#,
+        correlation_id: None,
+        deadline: None,
+        key: "lake-run-start-0000002",
+    };
+    let started = lake_runs
+        .start(&w.admin, &start(), &ctx())
+        .await
+        .expect("a run of an Iceberg write is admitted with the lake on")
+        .info
+        .run_id;
+    let pins: Vec<(String, i32)> = sqlx::query_as(
+        "SELECT node_id, revision FROM run_database_connections WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(started.as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        pins,
+        vec![("save".to_owned(), 1)],
+        "the connection and the revision the run was admitted with"
+    );
+    let replayed = lake_runs
+        .start(&w.admin, &start(), &ctx())
+        .await
+        .expect("the same start is answered again")
+        .info
+        .run_id;
+    assert_eq!(replayed, started, "a replay of the start is the same run");
+    // A run whose pin is gone is not re-resolved by name: its admission is refused, as a SQL step's is.
+    sqlx::query("DELETE FROM run_database_connections WHERE tenant_id = $1 AND run_id = $2")
+        .bind(w.admin.tenant_id().as_uuid())
+        .bind(started.as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .unwrap();
+    let unpinned = lake_runs.start(&w.admin, &start(), &ctx()).await;
+    assert!(
+        matches!(unpinned, Err(AppError::NotFound)),
+        "a run admitted with a pin is not admitted again without one, and says what a refused SQL run says: {unpinned:?}"
+    );
+
+    // A connection tightened after a run was admitted: the run keeps the revision it was admitted with, so the replay of its
+    // start is still that run (and a claim is judged by the same revision); a run started afterwards is judged by the
+    // revision in force and refused by name.
+    catalog
+        .put(
+            &w.admin,
+            ns,
+            write(
+                "lake-admitted",
+                0,
+                ConnectionStatus::Active,
+                iceberg_in(
+                    "https://catalog.example/api",
+                    "db-credentials",
+                    EgressCeiling::Internal,
+                    vec![WriteMode::Append],
+                ),
+            ),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let admitted = publish_on_lake(
+        w,
+        &w.admin,
+        append(
+            "lake-admitted-flow",
+            "lake-admitted",
+            &["/id", "/total"],
+            Some(rows_schema()),
+        ),
+    )
+    .await
+    .expect("a workflow on the connection is published");
+    let admitted_start = |key: &'static str| StartRun {
+        namespace: "payments",
+        workflow: admitted,
+        version: None,
+        input: br#"{"rows":[]}"#,
+        correlation_id: None,
+        deadline: None,
+        key,
+    };
+    let first = lake_runs
+        .start(&w.admin, &admitted_start("lake-run-start-0000003"), &ctx())
+        .await
+        .expect("admitted on revision 1")
+        .info
+        .run_id;
+    catalog
+        .put(
+            &w.admin,
+            ns,
+            write(
+                "lake-admitted",
+                1,
+                ConnectionStatus::Active,
+                iceberg_in(
+                    "https://catalog.example/api",
+                    "db-credentials",
+                    EgressCeiling::Internal,
+                    vec![WriteMode::Overwrite],
+                ),
+            ),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let again = lake_runs
+        .start(&w.admin, &admitted_start("lake-run-start-0000003"), &ctx())
+        .await
+        .expect("the replay of an admitted run does not re-judge it by the revision in force")
+        .info
+        .run_id;
+    assert_eq!(again, first, "the replay is the same run");
+    let pinned_revision: i32 = sqlx::query_scalar(
+        "SELECT revision FROM run_database_connections WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(first.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        pinned_revision, 1,
+        "the pin still names the revision the run was admitted with"
+    );
+    assert_eq!(
+        refusal_of(
+            lake_runs
+                .start(&w.admin, &admitted_start("lake-run-start-0000004"), &ctx())
+                .await
+        ),
+        LakeRefusal::ModeNotAllowed(WriteMode::Append),
+        "a run started after the tightening is judged by the revision in force"
+    );
 
     // A `pii` field is refused by an `internal` ceiling, and named by its path and class.
     assert_eq!(

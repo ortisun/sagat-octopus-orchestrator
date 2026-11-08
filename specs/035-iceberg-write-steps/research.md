@@ -2926,6 +2926,57 @@ The other fixes were wording:
     in it; enforcement is not affected, and pools already behave so), and the registration refusals still return `NotBound` without telling the caller why.
   - *Not done.* `ResolveDatabase` refusing a kind outside the caller's profile (slice C), the runner offering the lake activity by the agreed minor (G), and
     a `--profile` for `sagat worker bind` (that command binds the identity of a worker's own token for development and keeps the profile in force).
+- **D035-137 — A run may carry an Iceberg write when the deployment turns the lake on (slice E of D035-130, the first half).** **Decided by:
+  delegate**. No migration, no contract change, no `Cargo.lock` change. **Off by default**, and with it off nothing a run can see changes.
+  - *What.* `lake.enabled` (`SAGAT_LAKE_ENABLED`) now reaches the processes that admit and lease runs: `PgRunStore::with_lake_enabled`, set from
+    `ServeConfig.lake_enabled` in the control plane (the store that starts runs) and from the new `EngineConfig.lake_enabled` in the execution engine
+    (the store that admits a claim; `SAGAT_LAKE_ENABLED` is parsed strictly there too, a mistyped value is refused). The guard in `check_definition`
+    that refused every run carrying an Iceberg write now refuses it only when the flag is off. **The lake loop of the same function now honours the run's
+    pins like the SQL loop**: for an existing run the connection and the revision are the ones it was admitted with, a run with no pin for the node is
+    refused, and an explicit revision on the node that disagrees with the pin is refused, so a floating write does not re-resolve at claim or replay.
+    **The pin wins once a run exists** (*corrected the same day after an independent review*): the check that judges a step naming a revision by the
+    revision in force too (so that naming an older one cannot loosen a tightened mode or ceiling) applies at publication and at creation only. My first
+    version let it run on every replay and claim as well, which refused the replay of an admitted run after the connection was tightened, and made a
+    claim fail the whole lease call (`LakeRefused` is not a denial). A run keeps the revision it was admitted with, as a SQL run does, and the way to
+    stop it is to pause the connection, which both refuse. `database_writes` now counts an Iceberg write as a write, so the run of a lake-only
+    workflow started by a schedule takes the same locks and the same authority re-check as one with a SQL step.
+    The quickstart for `LAKE_DISABLED` says the setting belongs on the engine replicas too, and no longer says publication waits for checks that exist.
+    The setting is read by the shared `flag()` (`true`, `false`, `yes`, `no`, `1`, `0`; empty is false; anything else is refused), as D035-087 says loosely.
+  - *What it does not do.* A run of an Iceberg write can now be created and pinned, and then waits: nothing leases its step. `database_claim` and the
+    resolve path read the SQL operation of the node, so a lake runner that registers has its claim refused at every poll. That is the work of C (resolve,
+    two secrets), D (the input fed from the run), F (completion) and G (the runner's shell). **A deployment must not turn the lake on to write to a
+    table yet.**
+  - *Not done (T035-055).* The lake quota rows (8 per namespace, 32 per tenant; `QuotaResource` is a domain-wide enum and the concurrency counts are blind
+    to the kind), the `LakeRefused` audit at creation (`runs.rs`, which the 018 pull requests change), and a test of each creation path: the direct start
+    and its replay are tested; child, event and rerun use the same store function and ad hoc refuses a lake write by construction (it asks for a SQL
+    operation), none of them tested separately.
+  - *Evidence.* In `lake::run` of `integration_database_connections`: the start of a published Iceberg workflow is refused with the lake off (unchanged)
+    and admitted with it on, with one pin (`save`, revision 1); the replay of the start is the same run; with the pin deleted the replay is refused.
+    **Written after the code, so three hand mutations stand in for the red run, all killed**: the switch ignored so a run is always refused
+    (`lake.rs:629`), the switch ignored so a run is always admitted (`lake.rs:607`), and the lake loop not consulting the pins (`lake.rs:660`). The
+    fixes of the review were written test first and seen failing: a connection tightened after a run was admitted (revision 2 no longer allows an
+    append) leaves the replay of the run's start as that run with its pin on revision 1, and a run started afterwards is refused by name
+    (`ModeNotAllowed(Append)`), red with the old behaviour (`InvalidDefinition(LakeWriteRefused …)` on the replay); an unpinned replay answers the exact
+    `NotFound` a refused SQL run does; `database_writes` has a unit test (`None` where `Some(true)` was expected, red). The
+    engine's setting has a test that did not compile before the field existed. fmt and clippy `-D warnings` for the store, application, engine, control
+    plane and test crates; the engine's and the control plane's tests; `integration_database_connections` 7 and as the runtime role 7;
+    `integration_database_runner`; `integration_iceberg_writes` 50; `contract_iceberg_writes` 35; `contract_developer_experience`;
+    `integration_platform_foundation` 102.
+- **G035-073 — A refused run of an Iceberg write is neither opaque nor audited at creation.** `audit_database_denial` (`runs.rs`) audits only
+  `DatabaseUnavailable` and `DatabaseLimit`, and `LakeRefused` keeps its detail (the node, the field paths and classification levels) for a caller who holds
+  `run:start` and `database:use`, where a refused SQL run is an opaque `NotFound`. The detail is the publisher's to see; a starter is not that person.
+  *Exit condition:* T035-055, in `runs.rs` once the 018 pull requests have landed: audit it, and answer a run start with the opaque refusal while
+  publication keeps the detail.
+- **G035-074 — The SQL queries do not tell a lake step from a SQL one.** The concurrency counts (`execution/database.rs`, `quotas.rs`) and the SQL result
+  route (`database_results.rs`) join `run_database_connections` without the kind of the connection, so a lake step that leases would consume the SQL
+  budgets and a finished one would be readable through `database:result:read`. Latent: no lake step leases yet. *Exit condition:* before the first
+  lake lease (slices C and F): filter by the managed kind, and give lake attempts their own quota rows (T035-055).
+- **G035-075 — With the lake on, a lake runner's claim is refused and audited at every poll.** The snapshot and the admission of a claim read the SQL
+  operation and the SQL secret of the node. Bounded by the poll rate, and a deployment is told not to turn the lake on yet. *Exit condition:* slice C.
+- **G035-076 — With the lake off, the replay of the start of a run that exists answers `NotFound`.** The run was created while the lake was on and is
+  still running; a client retry is told the creation failed. It is what "refused as before" does to a run that exists. *Exit condition:* decide with
+  T035-055 whether the replay of an existing run bypasses the switch (the pins exist), or the switch is documented as one that is not turned off while
+  lake runs are in flight.
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.
