@@ -51,7 +51,7 @@ impl Runner {
                 Some(Arc::new(Production::new(
                     settings,
                     config.development_loopback,
-                )))
+                )?))
             }
             None => None,
         };
@@ -290,6 +290,28 @@ impl Runner {
             .collect();
         let mut tasks = tokio::task::JoinSet::<()>::new();
         let drain = CancellationToken::new();
+        // The attempt directories no attempt owns any more (a container that outlived its runner, a directory that could not be
+        // removed) are swept for as long as the runner serves.
+        let sweeping = lake.work_root().map(|root| {
+            tokio::spawn(crate::lake::sweep::keep_sweeping(
+                root,
+                lake.sweep_every(),
+                crate::lake::sweep::SWEEP_AFTER,
+                stop.clone(),
+                |pass| match pass {
+                    Ok(swept) => {
+                        metrics::counter!("database_runner_lake_directories_total","outcome"=>"removed")
+                            .increment(swept.removed as u64);
+                        metrics::counter!("database_runner_lake_directories_total","outcome"=>"failed")
+                            .increment(swept.failed as u64);
+                    }
+                    Err(_) => {
+                        metrics::counter!("database_runner_lake_sweeps_total","outcome"=>"unreadable")
+                            .increment(1);
+                    }
+                },
+            ))
+        });
         let mut next = 0;
         'serving: loop {
             let start = next;
@@ -431,6 +453,10 @@ impl Runner {
                 }
             }
         }
+        // it stops with `stop`, which has been cancelled: this waits for the pass that may be under way
+        if let Some(sweeping) = sweeping {
+            let _ = sweeping.await;
+        }
     }
 }
 
@@ -450,6 +476,14 @@ mod tests {
     use crate::testing::{Fake, NAMESPACE_SLUG, home, serve_fake};
     use std::time::Duration;
 
+    /// The runner ends, within a bound: a runner that cannot be stopped fails its test and does not hang the suite.
+    async fn ended(serving: tokio::task::JoinHandle<()>) {
+        tokio::time::timeout(Duration::from_secs(20), serving)
+            .await
+            .expect("the runner ends when it is stopped")
+            .unwrap();
+    }
+
     /// The SQL shell as it is, pinned before the lake shell is built beside it (D035-143): what it offers when it registers, the
     /// session it polls with, and how much it asks for.
     #[tokio::test]
@@ -463,7 +497,7 @@ mod tests {
         fake.until("a poll", |script| !script.polled.is_empty())
             .await;
         stop.cancel();
-        serving.await.unwrap();
+        ended(serving).await;
         fake.with(|script| {
             let registration = &script.registered[0];
             assert_eq!(registration.worker_name, format!("runner/{NAMESPACE_SLUG}"));
@@ -521,7 +555,7 @@ mod tests {
         fake.until("a poll", |script| !script.polled.is_empty())
             .await;
         stop.cancel();
-        serving.await.unwrap();
+        ended(serving).await;
         fake.with(|script| {
             let capabilities = script.registered[0].capabilities.as_ref().unwrap();
             assert_eq!(capabilities.activities, [ICEBERG_WRITE_ACTIVITY]);
@@ -552,7 +586,7 @@ mod tests {
         fake.until("a poll", |script| !script.polled.is_empty())
             .await;
         stop.cancel();
-        serving.await.unwrap();
+        ended(serving).await;
         fake.with(|script| {
             let capabilities = script.registered[0].capabilities.as_ref().unwrap();
             assert_eq!(capabilities.activities, [ICEBERG_WRITE_ACTIVITY]);
@@ -563,6 +597,45 @@ mod tests {
             "slots": 2, "relayAllowCidrs": ["0.0.0.0/0"], "relayDenyCidrs": []});
         let broken = crate::testing::home(&server, Some(bad));
         assert!(Runner::start(broken.config.clone()).await.is_err());
+        // and so does a work root that is not there
+        let missing = serde_json::json!({"workRoot": "/tmp/dr-no-such-directory", "sandboxSocket": "/run/sagat/x.sock",
+            "sandboxUid": 10002, "slots": 2, "relayAllowCidrs": ["0.0.0.0/0"], "relayDenyCidrs": ["10.0.0.0/8"]});
+        let absent = crate::testing::home(&server, Some(missing));
+        assert!(Runner::start(absent.config.clone()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_lake_runner_sweeps_the_attempt_directories_nobody_owns_and_the_sweep_ends_with_it() {
+        use crate::lake::sweep::SWEEP_AFTER;
+        use std::time::SystemTime;
+        let fake = Fake::default();
+        let server = serve_fake(fake.clone()).await;
+        let home = home(&server, None);
+        let world = world();
+        let stale = world.work.path().join(uuid::Uuid::new_v4().to_string());
+        let young = world.work.path().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir(&stale).unwrap();
+        std::fs::create_dir(&young).unwrap();
+        std::fs::File::open(&stale)
+            .unwrap()
+            .set_modified(SystemTime::now() - SWEEP_AFTER - Duration::from_secs(60))
+            .unwrap();
+        let launch = TestLaunch::new(&world, Script::NeverConnects, 2);
+        let runner = Runner::start_with(home.config.clone(), launch)
+            .await
+            .unwrap();
+        let stop = CancellationToken::new();
+        let serving = tokio::spawn(runner.serve(stop.clone()));
+        crate::testing::eventually("the sweep of the stale directory", || !stale.exists()).await;
+        assert!(
+            young.exists(),
+            "a directory that may be an attempt's is left"
+        );
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(20), serving)
+            .await
+            .expect("the runner ends, so the sweep did")
+            .unwrap();
     }
 
     #[tokio::test]
@@ -584,7 +657,7 @@ mod tests {
         fake.until("the receipt", |script| !script.completed.is_empty())
             .await;
         stop.cancel();
-        serving.await.unwrap();
+        ended(serving).await;
         fake.with(|script| {
             assert_eq!(script.completed.len(), 1);
             assert_eq!(script.completed[0].task_id, "task-1");
@@ -626,7 +699,7 @@ mod tests {
         fake.until("a poll", |script| !script.polled.is_empty())
             .await;
         stop.cancel();
-        serving.await.unwrap();
+        ended(serving).await;
         fake.with(|script| assert!(script.polled.iter().all(|poll| poll.max_tasks == 1)));
     }
 

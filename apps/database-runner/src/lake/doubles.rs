@@ -315,6 +315,14 @@ impl super::shell::Launch for TestLaunch {
         self.grace
     }
 
+    fn work_root(&self) -> Option<std::path::PathBuf> {
+        Some(self.settings.work_root.clone())
+    }
+
+    fn sweep_every(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(20)
+    }
+
     fn launch(
         &self,
         rpc: crate::rpc::Rpc,

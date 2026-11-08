@@ -22,6 +22,9 @@ const CONNECT: Duration = Duration::from_secs(10);
 /// How long a drain lets the attempts that are running finish before it gives their leases up.
 pub(crate) const DRAIN_GRACE: Duration = Duration::from_secs(30);
 
+/// How often the work root is swept (the sandbox's own sweep runs at least once a minute, ADR-0079).
+pub(crate) const SWEEP_EVERY: Duration = Duration::from_secs(60);
+
 pub(crate) type Launched = Pin<Box<dyn Future<Output = Result<(), RunnerError>> + Send>>;
 
 pub(crate) trait Launch: Send + Sync + 'static {
@@ -34,6 +37,17 @@ pub(crate) trait Launch: Send + Sync + 'static {
     /// How long a drain waits for the attempts that are running before it gives their leases up.
     fn drain_grace(&self) -> Duration {
         DRAIN_GRACE
+    }
+
+    /// Where the attempt directories are made, to be swept of the ones no attempt owns any more. `None` for a runtime with no
+    /// directories of its own.
+    fn work_root(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// How often the work root is swept.
+    fn sweep_every(&self) -> Duration {
+        SWEEP_EVERY
     }
 
     /// Runs one lease to its report. `drain` is cancelled when the runner gives up the leases it holds.
@@ -49,17 +63,23 @@ pub(crate) struct Production {
 }
 
 impl Production {
-    pub(crate) fn new(settings: Settings, development: bool) -> Self {
+    /// # Errors
+    /// [`RunnerError::Configuration`] when the work root is not a directory: the attempts could not be made, and the sweep would find
+    /// nothing to be sure of.
+    pub(crate) fn new(settings: Settings, development: bool) -> Result<Self, RunnerError> {
+        if !std::fs::metadata(&settings.work_root).is_ok_and(|root| root.is_dir()) {
+            return Err(RunnerError::Configuration);
+        }
         // the process at the socket must run as the sandbox's user: a socket replaced by another user's is not the sandbox
         let sandbox = SocketSandbox::new(settings.sandbox_socket.clone())
             .expecting_server(settings.sandbox_uid);
         let slots = SlotPool::new(settings.slots);
-        Self {
+        Ok(Self {
             sandbox,
             settings,
             development,
             slots,
-        }
+        })
     }
 }
 
@@ -70,6 +90,10 @@ impl Launch for Production {
 
     fn free(&self) -> usize {
         self.slots().saturating_sub(self.slots.in_use())
+    }
+
+    fn work_root(&self) -> Option<std::path::PathBuf> {
+        Some(self.settings.work_root.clone())
     }
 
     fn launch(&self, rpc: Rpc, task: Task, drain: CancellationToken) -> Launched {

@@ -280,3 +280,19 @@ pub(crate) fn home(server: &Server, lake: Option<serde_json::Value>) -> Home {
         config,
     }
 }
+
+/// Waits until `condition` holds, looking every few milliseconds, for at most twenty seconds; panics naming `what`. For a change the
+/// runner makes on the disk, which nothing wakes a test for.
+pub(crate) async fn eventually(what: &str, condition: impl Fn() -> bool) {
+    let wait = async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    if tokio::time::timeout(Duration::from_secs(20), wait)
+        .await
+        .is_err()
+    {
+        panic!("{what} never happened");
+    }
+}
