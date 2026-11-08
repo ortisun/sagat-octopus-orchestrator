@@ -1182,6 +1182,11 @@ one commit carries the key.
   - `RETRY_STEP` and `RESOLVE_STEP` on it need `saga:override`.
 
   T035-050 and T035-051 pass. Refs: FR-035-019, D035-069, constitution III.
+
+  *2026-11-08, first part done, left unticked (D035-142):* the receipt is rebuilt by the server (`LakeReceiptCodec`, `JsonLakeReceiptCodec`) and the step is
+  completed from it (`worker/lake_complete.rs`: the attempt resolved its credentials, the receipt is the step's, the run keeps the rebuilt bytes); the SQL
+  result route does not serve a lake step. Not done: `OUTCOME_UNKNOWN` to `WAITING(OPERATOR)` with evidence, and `RETRY_STEP`/`RESOLVE_STEP` with
+  `saga:override` (the code does not do what D035-069 says: G035-077, O035-007), the completion through the real gRPC server, and T035-050 and T035-051.
 - [ ] T035-060 [US02] Add ad hoc Iceberg writes. Write the failing test
   `tests/integration/iceberg-writes/ad_hoc.rs` first: the same lookup, refusals and unknown outcomes as
   a published step. Then implement `crates/application/src/runs/ad_hoc.rs`

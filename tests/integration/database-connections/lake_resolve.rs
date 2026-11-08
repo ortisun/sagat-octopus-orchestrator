@@ -13,6 +13,7 @@ use crate::{
 use sagat_application::{
     clock::SystemClock,
     database::{ConnectionService, ResolvedGrant},
+    database::{ExpectedReceipt, LakeReceiptCodec},
     entropy::SystemEntropy,
     execution::Engine,
     managed_secrets::{ManagedSecretService, ManagedSecretWrite},
@@ -29,10 +30,11 @@ use sagat_domain::{
     identity::Role,
     secrets::SecretValue,
 };
-use sagat_infra_ir::JsonEvaluator;
+use sagat_infra_ir::{JsonEvaluator, JsonLakeReceiptCodec};
 use sagat_infra_postgres::PgRunStore;
 use sagat_infra_secrets::openbao::OpenBao;
-use serde_json::json;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
@@ -175,6 +177,15 @@ pub async fn run(
         w.cache.clone(),
     );
     let workers = WorkerService::new(
+        lake_store.clone(),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        settings(),
+    )
+    .with_secret_provider(provider.clone())
+    .with_lake_receipts(Arc::new(JsonLakeReceiptCodec));
+    let uncoded = WorkerService::new(
         lake_store.clone(),
         SystemClock,
         Engine::new(JsonEvaluator),
@@ -574,6 +585,209 @@ pub async fn run(
             .expect("with the pool granted the credentials are handed over");
         assert_eq!(pins(w, run).await.len(), 2);
         release(task).await;
+    }
+
+    // The step is completed with a receipt the server builds again, and with nothing else (D035-142).
+    let run = start(two, "lake-resolve-start-00008").await;
+    let task = lease(run).await;
+    let reference = task_ref(&task);
+    let receipt = json!({
+        "kind": "iceberg", "outcome": "COMMITTED", "effectKey": task.idempotency_key, "foundByLookup": false,
+        "mode": "append", "ref": "main", "snapshotId": "8744736658442914487", "sequenceNumber": "12", "schemaId": 3,
+        "formatVersion": 2, "rowLevelMode": "NONE", "rowsAdded": "1", "dataFilesAdded": "1", "bytesWritten": "512",
+        "ignoredFields": "0", "droppedValues": "0"
+    });
+    let compact = serde_json::to_vec(&receipt).unwrap();
+    let state = || async {
+        sqlx::query_as::<_, (String, Option<Vec<u8>>)>(
+            "SELECT status, output_digest FROM steps WHERE run_id = $1 AND node = 'save'",
+        )
+        .bind(run.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .unwrap()
+    };
+    // a completion that no resolve preceded is not one: the attempt never held the credentials of the write
+    assert!(
+        workers
+            .complete(&runner, &reference, &compact, "lake-complete-0")
+            .await
+            .is_err(),
+        "a receipt for a write whose credentials were never handed over"
+    );
+    assert_eq!(state().await.1, None);
+    workers
+        .resolve_database(&runner, &reference, None)
+        .await
+        .expect("the credentials");
+    // a service with no codec cannot complete a lake step, and a receipt that is not the step's is not stored
+    assert!(
+        uncoded
+            .complete(&runner, &reference, &compact, "lake-complete-1")
+            .await
+            .is_err()
+    );
+    let with = |member: &str, value: Value| {
+        let mut other = receipt.clone();
+        other[member] = value;
+        serde_json::to_vec(&other).unwrap()
+    };
+    let mut extra = receipt.clone();
+    extra["firstRow"] = json!({"email": "someone@example.com"});
+    let refused = [
+        with("effectKey", json!("another-run:save")),
+        with("ref", json!("audit")),
+        with("mode", json!("overwrite")),
+        with("outcome", json!("REVERTED")),
+        with("kind", json!("object_storage")),
+        serde_json::to_vec(&extra).unwrap(),
+        br#"{"not":"a receipt"}"#.to_vec(),
+    ];
+    for (n, bytes) in refused.iter().enumerate() {
+        let key = format!("lake-complete-refused-{n}");
+        assert!(
+            matches!(
+                workers.complete(&runner, &reference, bytes, &key).await,
+                Err(sagat_application::error::AppError::NotAllowed(_))
+            ),
+            "refusal {n}: {}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+    let (status, digest) = state().await;
+    assert_eq!(
+        (status.as_str(), digest),
+        ("LEASED", None),
+        "nothing was stored and the step is still the attempt's"
+    );
+    // the receipt of the step, sent with other whitespace and the members the other way round, is stored as the platform writes it
+    let mut sent = String::from("{ ");
+    for (n, (name, value)) in receipt.as_object().unwrap().iter().rev().enumerate() {
+        if n > 0 {
+            sent.push_str(" ,\n ");
+        }
+        sent.push_str(&format!("{}: {value}", json!(name)));
+    }
+    sent.push_str(" }");
+    let canonical = JsonLakeReceiptCodec
+        .rebuild(
+            sent.as_bytes(),
+            &ExpectedReceipt {
+                effect_key: &task.idempotency_key,
+                reference: "main",
+                mode: sagat_domain::database::WriteMode::Append,
+            },
+        )
+        .expect("the receipt of the step");
+    assert_ne!(
+        canonical,
+        sent.as_bytes(),
+        "what is stored is not what was sent"
+    );
+    let acked = workers
+        .complete(&runner, &reference, sent.as_bytes(), "lake-complete-2")
+        .await
+        .expect("the receipt of the step completes it");
+    assert!(!acked.already_applied);
+    assert_eq!(
+        w.run_status(run).await,
+        sagat_domain::execution::RunStatus::Succeeded
+    );
+    let (status, digest) = state().await;
+    assert_eq!(status, "SUCCEEDED");
+    assert_eq!(
+        digest.as_deref(),
+        Some(Sha256::digest(&canonical).as_slice()),
+        "the output of the step is the receipt the server wrote"
+    );
+    assert_ne!(
+        digest.as_deref(),
+        Some(Sha256::digest(sent.as_bytes()).as_slice())
+    );
+    // the same report again is the same completion; the same key for other bytes is not, and a new report finds the step done
+    assert!(
+        workers
+            .complete(&runner, &reference, sent.as_bytes(), "lake-complete-2")
+            .await
+            .expect("a replay")
+            .already_applied
+    );
+    assert!(matches!(
+        workers
+            .complete(&runner, &reference, &compact, "lake-complete-2")
+            .await,
+        Err(sagat_application::error::AppError::IdempotencyKeyReused)
+    ));
+    assert!(matches!(
+        workers
+            .complete(&runner, &reference, &compact, "lake-complete-3")
+            .await,
+        Err(sagat_application::error::AppError::StaleAttempt)
+    ));
+
+    // A write whose outcome the runner cannot tell waits for an operator, with the code and nothing else; it is not retried or failed.
+    let unknown = start(two, "lake-resolve-start-00009").await;
+    let task = lease(unknown).await;
+    workers
+        .resolve_database(&runner, &task_ref(&task), None)
+        .await
+        .expect("the credentials");
+    let ack = workers
+        .fail(
+            &runner,
+            &task_ref(&task),
+            "OUTCOME_UNKNOWN",
+            false,
+            "lake-resolve-unknown",
+        )
+        .await
+        .expect("the report of an unknown outcome");
+    assert_eq!(
+        (ack.step_status.as_str(), ack.run_status.as_str()),
+        ("WAITING", "MANUAL_REVIEW")
+    );
+    let waiting: (String, Option<String>, Option<String>, Option<Vec<u8>>) = sqlx::query_as(
+        "SELECT status, waiting_kind, failure_code, output_digest FROM steps WHERE run_id = $1 AND node = 'save'",
+    )
+    .bind(unknown.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        waiting,
+        (
+            "WAITING".into(),
+            Some("OPERATOR".into()),
+            Some("OUTCOME_UNKNOWN".into()),
+            None
+        )
+    );
+
+    // The receipt of a lake step is not a SQL result: the route that serves those does not find it (it would otherwise be read
+    // through the validator of rows, fail, and answer without a trace).
+    {
+        use sagat_application::database_results::{
+            DatabaseResultRequest, DatabaseResultService, DatabaseResultUseCase,
+        };
+        let results = DatabaseResultService::new(
+            w.store.clone(),
+            SystemClock,
+            sagat_infra_ir::JsonDatabaseResultValidator,
+            None,
+        );
+        let prepared = results
+            .prepare(DatabaseResultRequest {
+                principal: w.admin.clone(),
+                namespace: ns,
+                run,
+                node: sagat_domain::workflow::NodeId::parse("save").unwrap(),
+                trace_id: None,
+            })
+            .await;
+        assert!(
+            matches!(prepared, Err(sagat_application::error::AppError::NotFound)),
+            "the result route of SQL steps does not serve a lake step"
+        );
     }
 
     // A logical name that is deleted and written again is a new secret: an attempt that pinned the old one does not get it back.

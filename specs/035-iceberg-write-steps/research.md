@@ -3119,7 +3119,8 @@ The other fixes were wording:
     code, not exercised; its results go through slice F).
 - **D035-142 — The server completes a lake step from a receipt it rebuilds (slice F of D035-130; T035-059, T6 of the plan).**
   **Decided by: delegate**. Designed by an independent read-only pass over the code (2026-11-08), whose findings are the ground of this record. Steps S1 to S4
-  below; S5 (the operator decisions on an unknown outcome) is **not** taken here: it is G035-077 and O035-007, right after this record.
+  below (the design proposed a scan of the receipt for the secrets and a second transaction; see *No scan* for why they are not here); S5 (the operator
+  decisions on an unknown outcome) is **not** taken here: it is G035-077 and O035-007, right after this record.
   - *What a lake `CompleteStep` met before this slice* (read in the code): the managed branch of `complete` takes the primary pin of the step, which a lake
     step does not have, and answers `Unavailable`; it would also have met the SQL result validator, which refuses unknown members, and the SQL credential
     codec, which refuses a lake secret. So a committed write could not be reported at all.
@@ -3133,6 +3134,36 @@ The other fixes were wording:
     the runner's bytes stored as they came, a revert accepted, the object-storage kind answered as another error, the contract's members forwarded, the size
     not bounded. fmt, clippy `-D warnings`, `check-architecture`, the tests of the application, IR, lake and runner crates, `contract_iceberg_writes` 45.
     Nothing calls the codec yet.
+  - *S2, the step is completed from the rebuilt receipt* (done). In the transaction of the completion (`worker/lake_complete.rs`, `output.rs`): the service
+    has the codec (`with_lake_receipts`, wired in the engine and in the test harness); the attempt has **resolved its credentials** (the store says every secret
+    its connection names has a pin for this attempt and generation: `lake_attempt_resolved`; a completion no resolve preceded is refused, as the SQL path
+    refuses one with no pin); the receipt is rebuilt against the step as the server knows it (the effect key from the same `task_identity` the lease used, the ref
+    and the mode from the node); the output the run keeps, the journal, the successors and the outbox are then the ones the completion already writes, with
+    **the rebuilt bytes in place of the runner's**. The idempotency of the report is still of the bytes sent, so a replay of the same report is the same
+    completion and the same key for other bytes is `IdempotencyKeyReused`. A refusal is `Unavailable` (no codec, no resolve) or `NotAllowed("invalid lake
+    receipt")` and leaves the step leased, for the runner to report the failure it has. A blob output for a lake step is refused by name.
+  - *No scan of the receipt for the secrets of the step* (the design pass proposed one, with a second transaction around the vault reads, as the SQL path has).
+    The receipt has no member that can hold text the server did not supply: the effect key and the ref are compared with what the server knows, and every
+    other member is a count, an identifier, a flag or a member of a closed set. The scan of a SQL result exists because rows are arbitrary; here the typed
+    rebuild is the mechanism (D035-062), and not scanning means the completion needs no read of the vault, so a vault that is down cannot fail a completion
+    after the commit it reports. A count can carry a few bytes of a secret in its digits; no scan finds that, and the SQL scan does not claim to either.
+  - *The SQL result route does not serve a lake step* (G035-074, the result half): `database_results.rs` excludes the lake activity, so the receipt of a lake
+    step is `NotFound` there instead of an unaudited failure of the validator of rows.
+  - *Evidence.* In `lake_resolve.rs`, inside the lifecycle of `integration_database_connections` (real PostgreSQL and OpenBao): no completion before the resolve; no
+    completion with a service that has no codec; seven receipts that are not the step's (another effect key, another ref, another mode, `REVERTED`, another kind, a
+    member the contract does not name, not a receipt) are refused and leave the step `LEASED` with no output; the receipt of the step, sent with other whitespace
+    and the members the other way round, completes it, the run is `SUCCEEDED` and `steps.output_digest` is the digest of the canonical bytes and not of the sent
+    ones; the same report is `already_applied`, the same key for other bytes is `IdempotencyKeyReused`, a new key finds the step done (`StaleAttempt`); the SQL
+    result route answers `NotFound` for the step; and `OUTCOME_UNKNOWN`, reported by the runner, leaves the step `WAITING` for the `OPERATOR` with that code and
+    no output (existing behaviour, now pinned for a lake step). **Red first** (the refusals were `Unavailable`, not `NotAllowed`; the route served the receipt). **Four hand
+    mutations, all killed**: the pin check removed; a service with no codec storing what was sent; the sent bytes stored instead of the rebuilt; a refused receipt
+    stored all the same. fmt, clippy `-D warnings`; `integration_database_connections` 7 and as the runtime role 7; `integration_database_runner` 1
+    (1 ignored); `contract_iceberg_writes` 45; `integration_platform_foundation` 102 (the privilege audit reads the changed result query);
+    `integration_durable_execution` 179 (the completion of every ordinary step goes through the code that changed); the lib and crate tests of the application,
+    store, IR, lake, gRPC, scheduler and runner crates; the architecture, agent-configuration and design-doc checks.
+  - *Not done in this slice.* S5 (G035-077, O035-007). The completion through the real gRPC server (the harness cannot make a lake step before the runner shell,
+    slice G). The per-write audit and the `lake_*` metrics (T035-061). `OUTCOME_UNKNOWN` evidence on the waiting step (O035-007). T035-059 stays unticked: it asks
+    for T035-050 and T035-051 to pass, which need the runner and a container.
 - **G035-077 — D035-069 says the code already requires `saga:override` to retry an unknown outcome. It does not.** `review_instance` (`runs.rs`) maps
   `Retry` to `run:operate` and only `Skip` and `Resolve` to `saga:override`, and the domain refuses a retry of an unknown outcome outright
   (`retry_review`: `OutcomeUnresolved`, pinned by `operator_actions.rs`). The authorization matrix, FR-035-045 and D035-069 promise an operator can
@@ -3154,7 +3185,8 @@ The other fixes were wording:
   budgets and a finished one would be readable through `database:result:read`. Latent: no lake step leases yet. *Exit condition:* before the first
   lake lease (slices C and F): filter by the managed kind, and give lake attempts their own quota rows (T035-055).
   *2026-11-08, half closed by D035-138:* a lake step now leases; the SQL concurrency count excludes lake attempts and lake attempts have a budget of their
-  own (constants). Still open, and now reachable: the count in `quotas.rs`, the SQL result route (`database_results.rs`), and the quota rows.
+  own (constants). Still open, and now reachable: the count in `quotas.rs` and the quota rows.
+  *2026-11-08, the result route closed by D035-142:* `database_results.rs` excludes the lake activity.
 - **G035-075 — With the lake on, a lake runner's claim is refused and audited at every poll.** The snapshot and the admission of a claim read the SQL
   operation and the SQL secret of the node. Bounded by the poll rate, and a deployment is told not to turn the lake on yet. *Exit condition:* slice C.
   *2026-11-08, closed by D035-138:* a lake claim reads the pool refusal over the connection's secrets and the lake budget, and a healthy one writes no denial.
