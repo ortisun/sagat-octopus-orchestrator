@@ -4634,6 +4634,24 @@
       ]
     },
     {
+      "table": "step_database_credentials",
+      "column": "secret_role",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Closed enum, `primary`, `catalog` or `storage`, enforced by the CHECK step_database_credentials_role_valid. Writer/source: execution/database.rs."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/database.rs"
+      ]
+    },
+    {
       "table": "steps",
       "column": "activity",
       "sql_type": "text",
