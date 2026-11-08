@@ -3039,9 +3039,84 @@ The other fixes were wording:
     session changed to offer the lake activity, and put back the same runner resolves again (red first: the resolve succeeded). **Three hand mutations, all
     killed**: the store not applying the fence, the fence ignoring the binding, the fence ignoring what the session offers.
   - *Not done: the rest of T035-044.* The order of the design (an independent read-only design of 2026-11-08): the sum type for `DatabaseInput` and `ResolvedDatabase` with SQL
-    unchanged; the lake snapshot, the two pins and the two audits in the second transaction after both reads (sequential, catalog then storage; either secret
+    unchanged (done, D035-140); the lake snapshot (done, D035-141), the two pins and the two audits in the second transaction after both reads (sequential, catalog then storage; either secret
     rotated between the phases makes the resolve fail and pins nothing); `ResolvedDatabase.iceberg` built by `iceberg_connection`; the retention and
     cleanup characterisation. Until then a lake runner that is handed its step cannot get its credentials.
+- **D035-140 — What a worker is handed for a managed step is a sum of the two kinds (slice C of D035-130, the second step: the types).**
+  **Decided by: delegate**. A refactor: nothing a SQL attempt can see changes, and the store does not yet select a lake step.
+  - *What.* `DatabaseInput` is a connection and a `DatabaseWork`: `Sql { operation, secret }` or `Lake { secrets }`, each secret a `SelectedSecret`
+    (its `SecretRole`, the stored secret the attempt is to use, and the version now in force). `DatabaseInput::secrets()` is the one list the resolve
+    reads from the provider and pins, whatever the kind. `ResolvedDatabase` is a connection, a lease expiry and a `ResolvedGrant`: `Sql { operation,
+    credential }` or `Lake(ResolvedLake { catalog, storage })`, each secret optional because a connection has the ones its shape names (D035-139). The
+    store pins a list (`pin_database_credentials`) under the role of each secret, and reads a pin by role (`database_pinned_secret(node, role)`); the
+    SQL paths ask for `primary`. The application refuses a lake input before it reads anything from the provider, and the wire mapping refuses a lake
+    grant, both marked as the pending half of T035-044.
+  - *Why a sum and not optional fields.* A struct with `operation: Option<_>` and a list of credentials would let a SQL step be handed no statement, or a lake
+    step a statement, and every consumer would have to remember which combination is possible. The compiler now holds that. The SQL secret is boxed: a
+    `SelectedSecret` is 360 bytes against the 24 of the lake list (clippy `large_enum_variant`).
+  - *Alternatives not taken.* A second trait method and a second struct for the lake (`lake_input`, `ResolvedLake` beside `ResolvedDatabase`): two resolve
+    paths in the application, the fences and the two-transaction shape written twice, and the gRPC handler choosing between them. One path that reads a list
+    is smaller and has one place to be wrong.
+  - *Evidence.* The existing SQL suites are the oracle, changed only where they read a field that moved (a helper `sql_grant` in the suite): fmt and clippy
+    `-D warnings` on the application, store, gRPC and test crates; the lib and crate-level tests of the application, gRPC and store crates; `integration_database_connections` 7 and as the
+    runtime role 7; `integration_database_runner` 1 (1 ignored, as before); `integration_platform_foundation` 102 (the privilege audit reads the changed pin
+    statements); `contract_iceberg_writes` 42. The architecture and agent-configuration checks.
+    *Not run for this step:* the `database-connections` SDK scenario, which the mapping change does not reach (the SQL wire answer is the same message); it
+    runs with the pull request and before the step that opens the lake arm.
+- **D035-141 — A lake step is handed its credentials: the snapshot, the reads, the pins and the audit (slice C of D035-130, the third step).**
+  **Decided by: delegate**. The store selects a lake step, the worker service resolves it and the wire answers it; what carries out the attempt (the runner shell, slice G)
+  is not built, so nothing yet uses the answer.
+  - *What.* The store (`lake_snapshot`, beside the SQL path, which keeps its order of checks) refuses a subject with none of the pools of any of the secrets
+    of the connection, selects each secret by role (`selected_secret`, shared with SQL: the version the attempt pinned under that role, else the one in
+    force; the name and the identity of the secret judged as before) and returns them in the order of `secret_slots()`. The worker service reads them from the
+    provider **one after the other, catalog then storage**, holding no lock; the second transaction selects again, compares **all** of it (`before != after`),
+    pins the list, writes the audit and commits; the grant is built after the commit, each secret under its role. Nothing is pinned and nothing is handed over if
+    either secret changed between the phases.
+  - *One audit record for each secret* (contracts/worker-protocol.md: every secret is "compared, pinned and audited separately"). `Effects` carried one
+    record, so it gains `further_audits`, written after `audit` by the three persist paths of the store, in the transaction that pins. The reason of a record
+    is `<role> <name> v<version>` after the node, attempt and generation (`... generation 1: catalog a v1`), never what the secret holds. A SQL step writes the
+    one it always wrote (`<name> v<version>`, no role). The role is in the text on purpose: an identical event is recorded once, so a connection whose
+    catalog and storage name one secret would otherwise leave one record for two disclosures. *A mistake of this step, recorded:* the first version wrote one
+    record listing both secrets, because `Effects` carried one; I read the contract again before the pull request, and the test was changed first (red: one
+    record where two were expected), then the field and the writers.
+  - *Empty list refused, in both layers.* A valid lake connection names at least one secret (D035-139), so a connection read back with none is not one this
+    capability serves. The store and the service refuse it before anything is read, **which amends D035-139**, which said the code would treat an empty list as
+    a resolve with nothing to read: a runner handed nothing is a runner that was not meant to run.
+  - *A connection whose catalog and storage name one secret* reads it twice and pins it twice, once per role: two reads of the same version is the price of
+    one rule for both roles. Not deduplicated.
+  - *Sequential, not concurrent, reads.* Two reads at once would halve the latency of a slow provider; the verdict is the same either way. Sequential keeps the
+    failure of the first read from starting the second, and makes the held-read tests deterministic (the barrier holds the first read while the second secret
+    changes, then the second while the first changes). Revisit if the provider latency shows in the metric `database_capability_seconds`.
+  - *Evidence.* New scenario `lake_resolve.rs` in the lifecycle of `integration_database_connections` (real PostgreSQL, real OpenBao): a connection with two
+    secrets is resolved, each value and version under its role, nothing printed (`Debug`) and nothing in the audit; two pins, one per role; one audit record
+    for each; the pin wins over a later rotation of the catalog's secret, and the second attempt reads the new version and pins it beside the old
+    rows; a connection with one secret for both roles gives two pins and two audit records (an identical resolve of the same attempt adds none); with the first read held and the storage secret rotated, and with the second held and the
+    catalog rotated, the resolve fails, pins nothing and is audited as a denial (waited for, the denial is written off the request path); a secret limited
+    to a pool is refused to a runner outside it, the storage's and then the catalog's, and handed over once the pool is granted; a name deleted and written
+    again does not regain the pin of the deleted secret. **Red first**: the resolve was refused (`NotFound`) because the store selected only the SQL secret.
+    **Eight hand mutations, all killed, each at its own assertion**: the pools of the secrets not applied; the second transaction not judging again; the pin
+    ignored; the identity of the secret not checked; only the first secret pinned; the roles missing from the audit; the records after the first not set; the
+    store not writing them. fmt, clippy `-D warnings`;
+    `integration_database_connections` 7 and as the runtime role 7; `integration_database_runner` 1 (1 ignored); `contract_iceberg_writes` 45 (3 new); the lib and
+    crate-level tests of the application, store and gRPC crates; `check-architecture`, `check-agent-config`, `check-design-docs`.
+  - *A test that could pass for the wrong reason.* The pool cases assert only that the resolve fails (the answer to a refused secret is the opaque `NotFound`,
+    by design). They are not vacuous: the mutation that removes the pool check is killed there, which is the proof that the check is what refuses.
+  - *The wire answer* (`crates/api-grpc/src/database.rs`, `response`, now public for the contract suite; the handler in `service.rs` was already generic).
+    A lake grant is answered with the connection as stored, `iceberg` built by `iceberg_connection` with the secrets under `catalog` and `storage`, the
+    lease expiry, and nothing of SQL (no `postgres`, no `credential`, no statement, no limits message). **The secrets that travel are exactly the ones the
+    connection names**: a grant with one the connection does not name, or without one it does, is refused (the store selects them from the connection, so it
+    cannot happen; the check is for the day it does), as is a lake grant over a PostgreSQL connection. Contract tests (`connection_wire`, through the
+    runner's own `convert`): the answer is read by the runner, each secret as the one sent; a vended storage sends only the catalog's; the mismatches are
+    refused. Three hand mutations, all killed: the match of the secrets removed; the two secrets swapped; the revision not answered.
+  - *Retention, characterised, not changed.* The release of the pins of a terminal run deletes them by run, so every role of every attempt goes together
+    and is audited once (`lake_resolve.rs`; the mutation that restricts the release to `primary` is killed). The cleanup of provider versions asks
+    only whether any pin names the operation, whatever its role, so a version a catalog or storage pin holds is kept.
+  - *The process that serves the worker gRPC needs `SAGAT_LAKE_ENABLED`*, as the one that leases does: with it off the resolve of a lake step is `NotFound`
+    and nothing is pinned (tested). Written in `docs/runbooks/database-runner.md` and `docs/quickstarts/errors.md`.
+  - *Not done, and why T035-044 is ticked anyway.* What the task asks for is built and each part has its test. Not exercised: the answer through the real gRPC
+    server with a lake step (the platform harness does not turn the lake on, and nothing would call it before the runner shell, slice G, which will be its
+    first caller); `check_database_blob_upload` and the output scan still read the `primary` pin, so a lake step that uploaded would be refused (read in the
+    code, not exercised; its results go through slice F).
 - **G035-073 — A refused run of an Iceberg write is neither opaque nor audited at creation.** `audit_database_denial` (`runs.rs`) audits only
   `DatabaseUnavailable` and `DatabaseLimit`, and `LakeRefused` keeps its detail (the node, the field paths and classification levels) for a caller who holds
   `run:start` and `database:use`, where a refused SQL run is an opaque `NotFound`. The detail is the publisher's to see; a starter is not that person.

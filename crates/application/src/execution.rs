@@ -885,6 +885,9 @@ pub struct Effects {
     pub renewal: Option<LeaseRenewal>,
     /// The audit record of an operator action, committed with the change it describes.
     pub audit: Option<AuditRecord>,
+    /// Further audit records of the same command, committed with it and after `audit`: a command that discloses several
+    /// secrets audits each on its own (feature 035, contracts/worker-protocol.md).
+    pub further_audits: Vec<AuditRecord>,
     /// The idempotency record of the command, with the result a replay should return.
     pub idempotency: Option<(Idempotency, String)>,
     /// `READY` steps to write a fresh wake-up notification for (their notification was lost).
@@ -910,6 +913,7 @@ impl Effects {
             lease: None,
             renewal: None,
             audit: None,
+            further_audits: Vec::new(),
             idempotency: None,
             rehint: Vec::new(),
             rehint_instances: Vec::new(),
@@ -1193,11 +1197,11 @@ pub trait RunTx: Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }
 
-    /// Records the credential before returning its value. The pin is immutable for this attempt.
-    fn pin_database_credential(
+    /// Records the credentials before returning their values, each under its role. Every pin is immutable for this attempt.
+    fn pin_database_credentials(
         &mut self,
         _node: &NodeId,
-        _secret: &StoredSecret,
+        _secrets: &[crate::database::SelectedSecret],
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }

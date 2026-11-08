@@ -309,7 +309,10 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .resolve_database(&runner, &reference, None)
         .await
         .unwrap();
-    assert_eq!(first.credential.value.expose(), b"executor-canary-00000000");
+    assert_eq!(
+        crate::sql_grant(&first).1.value.expose(),
+        b"executor-canary-00000000"
+    );
     assert_eq!(first.connection.revision, 1);
     assert!(!format!("{first:?}").contains("executor-canary"));
     assert!(
@@ -357,10 +360,10 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .resolve_database(&runner, &reference, None)
         .await
         .unwrap();
-    assert_eq!(again.credential.version, 1);
+    assert_eq!(crate::sql_grant(&again).1.version, 1);
     assert_eq!(
-        again.credential.value.expose(),
-        first.credential.value.expose(),
+        crate::sql_grant(&again).1.value.expose(),
+        crate::sql_grant(&first).1.value.expose(),
         "the original attempt pin survives the logical retention window"
     );
     let pins: i64 =
@@ -466,15 +469,12 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .unwrap();
     reorder.commit().await.unwrap();
     // A SQL attempt still reads exactly its one secret, whatever else is pinned beside it.
-    assert_eq!(
-        w.workers
-            .resolve_database(&runner, &reference, None)
-            .await
-            .unwrap()
-            .credential
-            .version,
-        1
-    );
+    let resolved = w
+        .workers
+        .resolve_database(&runner, &reference, None)
+        .await
+        .unwrap();
+    assert_eq!(crate::sql_grant(&resolved).1.version, 1);
     // The fence on the profile (D035-139): the resolve is refused to a runner whose binding is of another profile, or whose session does
     // not offer the activity of the step, though nothing else changed. Registration cannot produce either state, so the rows are
     // changed by hand and put back; the refusal is the one a missing grant gives.
@@ -520,13 +520,13 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         "nor for a session that offers the lake activity: {refused:?}"
     );
     set_activities(&["sagat.database.postgresql"]).await;
+    let resolved = w
+        .workers
+        .resolve_database(&runner, &reference, None)
+        .await
+        .unwrap();
     assert_eq!(
-        w.workers
-            .resolve_database(&runner, &reference, None)
-            .await
-            .unwrap()
-            .credential
-            .version,
+        crate::sql_grant(&resolved).1.version,
         1,
         "put back, the same runner resolves again"
     );
@@ -789,7 +789,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .resolve_database(&runner, &next_ref, None)
         .await
         .unwrap();
-    assert_eq!(credential.credential.version, 8);
+    assert_eq!(crate::sql_grant(&credential).1.version, 8);
     w.secrets
         .delete(&w.admin, ns, "executor-credentials", &ctx())
         .await

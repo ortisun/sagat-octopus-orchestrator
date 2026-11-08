@@ -251,3 +251,200 @@ fn what_the_platform_stores_and_the_host_cannot_open_is_answered_and_refused_by_
         );
     }
 }
+/// A `ResolvedDatabase` for a lake step: the connection as stored, the two secrets as the server resolved them.
+fn resolved_lake(
+    iceberg: IcebergConfig,
+    catalog: Option<&[u8]>,
+    storage: Option<&[u8]>,
+) -> sagat_application::database::ResolvedDatabase {
+    use sagat_application::{
+        database::{ConnectionRecord, ResolvedDatabase, ResolvedGrant, ResolvedLake},
+        worker::ResolvedSecret,
+    };
+    use sagat_domain::{
+        database::{ConnectionConfig, ConnectionId, ConnectionStatus},
+        identity::{NamespaceId, Slug, TenantId},
+        secrets::{SecretName, SecretValue},
+    };
+    let now = time::OffsetDateTime::now_utc();
+    let secret = |name: &str, bytes: &[u8]| ResolvedSecret {
+        name: SecretName::parse(name).expect("a name"),
+        version: 1,
+        value: SecretValue::new(bytes.to_vec()).expect("a value"),
+    };
+    ResolvedDatabase {
+        connection: ConnectionRecord {
+            id: ConnectionId::new(uuid::Uuid::from_u128(7)),
+            tenant_id: TenantId::new(uuid::Uuid::from_u128(1)),
+            namespace_id: NamespaceId::new(uuid::Uuid::from_u128(2)),
+            name: Slug::parse("lake-main").expect("a slug"),
+            revision: 3,
+            status: ConnectionStatus::Active,
+            config: ConnectionConfig::iceberg(iceberg).expect("a valid connection"),
+            created_at: now,
+            updated_at: now,
+        },
+        expires_at: now + time::Duration::minutes(5),
+        grant: ResolvedGrant::Lake(ResolvedLake {
+            catalog: catalog.map(|bytes| secret("lake-catalog", bytes)),
+            storage: storage.map(|bytes| secret("lake-storage", bytes)),
+        }),
+    }
+}
+
+/// The configuration with the secrets it names, as a valid connection has them.
+fn with_secrets(mut iceberg: IcebergConfig, catalog: bool, storage: bool) -> IcebergConfig {
+    use sagat_domain::secrets::SecretName;
+    iceberg.catalog_secret = catalog.then(|| SecretName::parse("lake-catalog").expect("name"));
+    iceberg.storage_secret = storage.then(|| SecretName::parse("lake-storage").expect("name"));
+    iceberg
+}
+
+#[test]
+fn the_answer_to_a_lake_step_is_the_connection_the_runner_reads_with_its_secrets_and_nothing_of_sql()
+ {
+    let catalog_secret = br#"{"clientId":"c","clientSecret":"s"}"#;
+    let storage_secret = br#"{"accessKeyId":"a","secretAccessKey":"k"}"#;
+    let oauth = RestAuth::OAuth2 {
+        token_uri: "https://auth.example/token".to_owned(),
+        scope: None,
+    };
+    let stored = with_secrets(
+        config(
+            rest(None, oauth, AccessDelegation::None),
+            s3(None, false, "eu-west-1"),
+            StorageCredentials::Static,
+        ),
+        true,
+        true,
+    );
+    let mut answer = sagat_api_grpc::database::response(resolved_lake(
+        stored,
+        Some(catalog_secret),
+        Some(storage_secret),
+    ))
+    .expect("a lake step is answered");
+    assert_eq!(answer.connection_name, "lake-main");
+    assert_eq!(answer.connection_revision, 3);
+    assert_eq!(answer.tenant_id, "00000000-0000-0000-0000-000000000001");
+    assert_eq!(answer.namespace_id, "00000000-0000-0000-0000-000000000002");
+    assert_eq!(answer.connection_id, "00000000-0000-0000-0000-000000000007");
+    assert!(
+        answer.lease_expires_at_epoch_ms > 0,
+        "the lease the secrets are bound to"
+    );
+    // nothing of SQL travels with it
+    assert!(answer.postgres.is_none() && answer.credential.is_none());
+    assert!(answer.statement.is_empty() && answer.parameters.is_empty() && answer.limits.is_none());
+    assert!(answer.object_storage.is_none() && answer.clickhouse.is_none());
+    let mut message = answer.iceberg.take().expect("the Iceberg connection");
+    let converted = convert(&mut message).expect("the runner reads what the server answers");
+    assert_eq!(
+        plain(&converted.catalog_secret),
+        document(&json!({"clientId": "c", "clientSecret": "s"}))
+    );
+    assert_eq!(
+        plain(&converted.storage_secret),
+        document(&json!({"accessKeyId": "a", "secretAccessKey": "k"}))
+    );
+
+    // a catalog that delegates the storage credentials: the storage secret is not there, and is not answered
+    let vended = with_secrets(
+        config(
+            rest(None, RestAuth::Bearer, AccessDelegation::VendedCredentials),
+            s3(None, false, "eu-west-1"),
+            StorageCredentials::Vended,
+        ),
+        true,
+        false,
+    );
+    let mut answer =
+        sagat_api_grpc::database::response(resolved_lake(vended, Some(br#"{"token":"t"}"#), None))
+            .expect("answered");
+    let mut message = answer.iceberg.take().expect("the Iceberg connection");
+    assert_eq!(
+        message.credentials.keys().collect::<Vec<_>>(),
+        ["catalog"],
+        "only the secrets that exist travel"
+    );
+    let converted = convert(&mut message).expect("read");
+    assert!(converted.storage_secret.is_empty());
+}
+
+#[test]
+fn a_lake_grant_is_not_answered_for_a_connection_that_is_not_a_lake() {
+    use sagat_domain::database::{ConnectionConfig, DatabaseLimits};
+    let mut resolved = resolved_lake(
+        with_secrets(
+            config(
+                rest(None, RestAuth::Bearer, AccessDelegation::None),
+                s3(None, false, "eu-west-1"),
+                StorageCredentials::Static,
+            ),
+            true,
+            true,
+        ),
+        Some(b"{}"),
+        Some(b"{}"),
+    );
+    resolved.connection.config = ConnectionConfig::postgres(
+        "db.example",
+        5432,
+        "app",
+        TlsPolicy::DevelopmentPlaintext,
+        sagat_domain::secrets::SecretName::parse("db-credentials").expect("name"),
+        DatabaseLimits::default(),
+    )
+    .expect("a PostgreSQL connection");
+    assert!(
+        sagat_api_grpc::database::response(resolved).is_err(),
+        "a lake grant over a PostgreSQL connection is refused, not answered"
+    );
+}
+#[test]
+fn a_lake_grant_that_does_not_match_the_secrets_the_connection_names_is_not_answered() {
+    let statics = || {
+        config(
+            rest(None, RestAuth::Bearer, AccessDelegation::None),
+            s3(None, false, "eu-west-1"),
+            StorageCredentials::Static,
+        )
+    };
+    let vended = || {
+        config(
+            rest(None, RestAuth::Bearer, AccessDelegation::VendedCredentials),
+            s3(None, false, "eu-west-1"),
+            StorageCredentials::Vended,
+        )
+    };
+    let answered = |iceberg, catalog: Option<&[u8]>, storage: Option<&[u8]>| {
+        sagat_api_grpc::database::response(resolved_lake(iceberg, catalog, storage)).is_ok()
+    };
+    // the shapes that match are answered
+    assert!(answered(
+        with_secrets(statics(), true, true),
+        Some(b"{}"),
+        Some(b"{}")
+    ));
+    assert!(answered(
+        with_secrets(vended(), true, false),
+        Some(b"{}"),
+        None
+    ));
+    // a secret the connection does not name is never sent, and one it names is never missing
+    assert!(!answered(
+        with_secrets(vended(), true, false),
+        Some(b"{}"),
+        Some(b"{}")
+    ));
+    assert!(!answered(
+        with_secrets(statics(), true, true),
+        Some(b"{}"),
+        None
+    ));
+    assert!(!answered(
+        with_secrets(statics(), true, true),
+        None,
+        Some(b"{}")
+    ));
+}

@@ -1,5 +1,7 @@
 //! Lease-bound managed database capabilities. Provider I/O separates two authority transactions.
 use super::*;
+use crate::database::{DatabaseWork, ResolvedGrant, ResolvedLake};
+use sagat_domain::database::SecretRole;
 
 impl<S, C, E, R> WorkerService<S, C, E, R>
 where
@@ -63,7 +65,16 @@ where
             tx.commit().await?;
             snapshot
         };
-        let value = reader.resolve(&before.secret).await?;
+        // A step with no secret to hand over is not one this capability serves: refused before the provider is read.
+        if before.secrets().is_empty() {
+            return Err(AppError::Unavailable);
+        }
+        // One read at a time, in the order of the input (the catalog's, then the storage's), holding no lock: the provider is slow
+        // and may be down, and what is read is judged again, all of it, by the second transaction.
+        let mut values = Vec::with_capacity(before.secrets().len());
+        for selected in before.secrets() {
+            values.push(reader.resolve(&selected.stored).await?);
+        }
         let mut tx = self.open(principal, task, Lock::Wait).await?;
         self.live_capability_fence(principal, &mut tx, task).await?;
         let after = tx
@@ -77,41 +88,77 @@ where
             .lease_expiry_instance(task.instance)
             .await?
             .ok_or(AppError::StaleAttempt)?;
-        tx.pin_database_credential(task.instance.node(), &after.secret)
+        tx.pin_database_credentials(task.instance.node(), after.secrets())
             .await?;
         let mut effects = Effects::by(
             Actor::Worker(principal.subject().as_str().to_owned()),
             trace_id.map(str::to_owned),
         );
-        effects.audit = Some(
+        // One record for each secret, in the order they were read: which role, which secret, which version, never what it holds.
+        // A SQL step has the one, named as it always was. The role is in the text, so that one secret under two roles is two
+        // events and not one that repeats (an identical event is recorded once).
+        let resource = format!("{}/run {}", tx.info().namespace_id, task.run_id);
+        let mut records = after.secrets().iter().map(|selected| {
+            let secret = &selected.stored.meta;
+            let handed = match selected.role {
+                SecretRole::Primary => format!("{} v{}", secret.name, secret.version),
+                role => format!("{} {} v{}", role.as_str(), secret.name, secret.version),
+            };
             AuditRecord::by(
                 principal,
                 AuditAction::SecretResolved,
                 ResourceType::Secret,
-                format!("{}/run {}", tx.info().namespace_id, task.run_id),
+                resource.clone(),
                 trace_id.map(str::to_owned),
                 self.clock.now(),
             )
             .with_reason(format!(
-                "database node {} attempt {} generation {}: {} v{}",
+                "database node {} attempt {} generation {}: {handed}",
                 task.instance.node(),
                 task.fence.attempt,
                 task.fence.generation,
-                after.secret.meta.name,
-                after.secret.meta.version
-            )),
-        );
+            ))
+        });
+        effects.audit = records.next();
+        effects.further_audits = records.collect();
         tx.persist(&[], effects).await?;
         tx.commit().await?;
+        let resolved = |selected: crate::database::SelectedSecret, value| ResolvedSecret {
+            name: selected.stored.meta.name,
+            version: selected.stored.meta.version,
+            value,
+        };
+        let grant = match after.work {
+            DatabaseWork::Sql { operation, secret } => {
+                let value = values.pop().ok_or(AppError::Internal)?;
+                ResolvedGrant::Sql {
+                    operation,
+                    credential: resolved(*secret, value),
+                }
+            }
+            DatabaseWork::Lake { secrets } => {
+                let mut lake = ResolvedLake {
+                    catalog: None,
+                    storage: None,
+                };
+                for (selected, value) in secrets.into_iter().zip(values) {
+                    let slot = match selected.role {
+                        SecretRole::Catalog => &mut lake.catalog,
+                        SecretRole::Storage => &mut lake.storage,
+                        // A lake connection has no primary secret, and a role twice is a role the store never selects.
+                        SecretRole::Primary => return Err(AppError::Internal),
+                    };
+                    if slot.replace(resolved(selected, value)).is_some() {
+                        return Err(AppError::Internal);
+                    }
+                }
+                ResolvedGrant::Lake(lake)
+            }
+        };
         Ok(crate::database::ResolvedDatabase {
             connection: after.connection,
-            operation: after.operation,
             expires_at,
-            credential: ResolvedSecret {
-                name: after.secret.meta.name,
-                version: after.secret.meta.version,
-                value,
-            },
+            grant,
         })
     }
 
@@ -121,9 +168,12 @@ where
         mut input: crate::database::DatabaseInput,
     ) -> Result<crate::database::DatabaseInput, AppError> {
         use sagat_domain::database::{DatabaseOperation, Parameter};
+        // Only a SQL statement has parameters; a lake step has none to evaluate.
+        let crate::database::DatabaseWork::Sql { operation, .. } = &mut input.work else {
+            return Ok(input);
+        };
         let data = tx.data().await?;
-        let parameters = input
-            .operation
+        let parameters = operation
             .parameters()
             .iter()
             .map(|p| {
@@ -134,12 +184,12 @@ where
                     .map_err(|_| AppError::NotAllowed("invalid database parameter"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        input.operation = DatabaseOperation::new(
-            input.operation.connection.clone(),
-            input.operation.kind,
-            input.operation.statement(),
+        *operation = DatabaseOperation::new(
+            operation.connection.clone(),
+            operation.kind,
+            operation.statement(),
             parameters,
-            input.operation.limits,
+            operation.limits,
         )
         .map_err(|_| AppError::NotAllowed("invalid database parameters or limits"))?;
         Ok(input)

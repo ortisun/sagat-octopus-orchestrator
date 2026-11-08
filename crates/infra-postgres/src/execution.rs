@@ -3971,12 +3971,12 @@ impl RunTx for PgRunTx {
     ) -> Result<sagat_application::database::DatabaseInput, StoreError> {
         self.database_snapshot(node, subject).await
     }
-    async fn pin_database_credential(
+    async fn pin_database_credentials(
         &mut self,
         node: &NodeId,
-        secret: &sagat_application::secrets::StoredSecret,
+        secrets: &[sagat_application::database::SelectedSecret],
     ) -> Result<(), StoreError> {
-        self.database_pin(node, secret).await
+        self.database_pin(node, secrets).await
     }
     async fn lake_lease_facts(
         &mut self,
@@ -3994,7 +3994,8 @@ impl RunTx for PgRunTx {
         &mut self,
         node: &NodeId,
     ) -> Result<Option<sagat_application::secrets::StoredSecret>, StoreError> {
-        self.database_pinned_secret(node).await
+        self.database_pinned_secret(node, sagat_domain::database::SecretRole::Primary)
+            .await
     }
 
     async fn current_worker_authorized(&mut self, subject: &str) -> Result<bool, StoreError> {
@@ -4691,6 +4692,9 @@ impl RunTx for PgRunTx {
 
         // 5. Audit and idempotency commit with everything above.
         if let Some(audit) = &effects.audit {
+            insert_audit(&mut self.tx, audit).await?;
+        }
+        for audit in &effects.further_audits {
             insert_audit(&mut self.tx, audit).await?;
         }
         if let Some((idempotency, result)) = &effects.idempotency
@@ -5444,6 +5448,9 @@ impl PgRunTx {
         }
         self.persisted = version;
         if let Some(audit) = &effects.audit {
+            insert_audit(&mut self.tx, audit).await?;
+        }
+        for audit in &effects.further_audits {
             insert_audit(&mut self.tx, audit).await?;
         }
         if let Some((idempotency, result)) = &effects.idempotency

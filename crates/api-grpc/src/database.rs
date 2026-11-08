@@ -1,9 +1,24 @@
 //! Typed managed capability wire boundary. Never format SQL, parameter or credential values.
+use crate::lake_connection::{LakeSecrets, iceberg_connection};
 use crate::pb;
-use sagat_application::{database::ResolvedDatabase, error::AppError};
+use sagat_application::{
+    database::{ResolvedDatabase, ResolvedGrant, ResolvedLake},
+    error::AppError,
+};
 use sagat_domain::database::{ConnectionConfig, OperationKind, Parameter, TlsPolicy, TypedValue};
 
-pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabase, AppError> {
+/// The answer to a managed step, by what the server resolved for it: a statement with its credential for a SQL step, a connection with its
+/// secrets for a lake step. A grant over a connection of the other kind is refused, never answered.
+pub fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabase, AppError> {
+    let (operation, credential) = match resolved.grant {
+        ResolvedGrant::Sql {
+            operation,
+            credential,
+        } => (operation, credential),
+        ResolvedGrant::Lake(lake) => {
+            return lake_response(&resolved.connection, &lake, resolved.expires_at);
+        }
+    };
     let ConnectionConfig::Postgres {
         host,
         port,
@@ -27,7 +42,7 @@ pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabas
             String::new(),
         ),
     };
-    let l = resolved.operation.limits;
+    let l = operation.limits;
     Ok(pb::ResolvedDatabase {
         tenant_id: resolved.connection.tenant_id.to_string(),
         // The lake kinds are answered by the lake profile (feature 035); a PostgreSQL connection sets none of them.
@@ -45,13 +60,12 @@ pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabas
             tls: tls as i32,
             ca_pem,
         }),
-        operation: match resolved.operation.kind {
+        operation: match operation.kind {
             OperationKind::Query => pb::DatabaseOperationKind::DatabaseQuery,
             OperationKind::Execute => pb::DatabaseOperationKind::DatabaseExecute,
         } as i32,
-        statement: resolved.operation.statement().to_owned(),
-        parameters: resolved
-            .operation
+        statement: operation.statement().to_owned(),
+        parameters: operation
             .parameters()
             .iter()
             .map(|p| match p {
@@ -71,9 +85,9 @@ pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabas
             idle_timeout_ms: l.idle_timeout_ms,
         }),
         credential: Some(pb::ResolvedSecret {
-            name: resolved.credential.name.to_string(),
-            version: resolved.credential.version,
-            value: resolved.credential.value.expose().to_vec(),
+            name: credential.name.to_string(),
+            version: credential.version,
+            value: credential.value.expose().to_vec(),
         }),
         lease_expires_at_epoch_ms: i64::try_from(
             resolved.expires_at.unix_timestamp_nanos() / 1_000_000,
@@ -81,6 +95,38 @@ pub(crate) fn response(resolved: ResolvedDatabase) -> Result<pb::ResolvedDatabas
         .map_err(|_| AppError::Internal)?,
     })
 }
+/// A lake step: the connection as it is stored, the secrets the server resolved under their roles, and nothing of SQL. The secrets
+/// that travel are exactly the ones the connection names: a grant that has one it does not name, or lacks one it does, is not
+/// answered (the store selects them from the connection, so it cannot happen; the check is for the day it does).
+fn lake_response(
+    connection: &sagat_application::database::ConnectionRecord,
+    lake: &ResolvedLake,
+    expires_at: time::OffsetDateTime,
+) -> Result<pb::ResolvedDatabase, AppError> {
+    let refused = || AppError::NotAllowed("this connection is not served by the lake profile");
+    let config = connection.config.as_iceberg().ok_or_else(refused)?;
+    if config.catalog_secret.is_some() != lake.catalog.is_some()
+        || config.storage_secret.is_some() != lake.storage.is_some()
+    {
+        return Err(refused());
+    }
+    let secrets = LakeSecrets {
+        catalog: lake.catalog.as_ref().map(|secret| secret.value.expose()),
+        storage: lake.storage.as_ref().map(|secret| secret.value.expose()),
+    };
+    Ok(pb::ResolvedDatabase {
+        tenant_id: connection.tenant_id.to_string(),
+        namespace_id: connection.namespace_id.to_string(),
+        connection_name: connection.name.to_string(),
+        connection_id: connection.id.to_string(),
+        connection_revision: connection.revision,
+        iceberg: Some(iceberg_connection(config, &secrets)),
+        lease_expires_at_epoch_ms: i64::try_from(expires_at.unix_timestamp_nanos() / 1_000_000)
+            .map_err(|_| AppError::Internal)?,
+        ..Default::default()
+    })
+}
+
 fn value(value: &TypedValue) -> Result<pb::DatabaseValue, AppError> {
     use pb::database_value::Value;
     Ok(pb::DatabaseValue {

@@ -925,7 +925,7 @@ test to every catalog and storage type.
   `egressCeiling` is open on both kinds) and the reason `CREDENTIAL_IN_URI` with the other thirteen, each with advice.
   Not done: `GET /database-drivers` listing `iceberg` (with the probe, T035-045) and `UNKNOWN_CONNECTION_KIND`, which
   belongs to the publication that meets a connection of a kind it cannot use.
-- [ ] T035-044 [US01] Resolve the Iceberg connection. `ResolvedDatabase.iceberg` is built in
+- [x] T035-044 [US01] Resolve the Iceberg connection. `ResolvedDatabase.iceberg` is built in
   `crates/api-grpc/src/service.rs` and `crates/application/src/worker/database.rs`. `catalogSecret` and
   `storageSecret` are each compared, pinned and audited separately (017 two-phase), and only the lake
   profile may resolve the kind. Refs: FR-035-003, FR-035-026, D035-057.
@@ -934,6 +934,11 @@ test to every catalog and storage type.
   migration `20270110000000_step_credential_roles`, `SecretRole`, `secret_slots`), and a SQL attempt reads only its primary pin. Not done: the profile
   fence of the resolve, the lake snapshot and pins in `worker/database.rs` and `execution/database.rs`, and `ResolvedDatabase.iceberg` in
   `crates/api-grpc/src/database.rs` (the task text says `service.rs`).
+
+  *2026-11-08, done (D035-139..141):* the fence on the profile (`profile_fence`, `executor.rs`), the sum type (D035-140), the lake snapshot, the sequential
+  reads, the pins and one audit record for each secret (`lake_resolve.rs` in the lifecycle of `integration_database_connections`, 7 and as the runtime role 7),
+  and the wire answer (`connection_wire`, 3 tests through the runner's own `convert`). Evidence, and the hand mutations (every one killed): D035-139, D035-141.
+  Not exercised: the answer through the real gRPC server with a lake step (its first caller is the runner shell, slice G).
 - [ ] T035-045 [US01] Implement the probe activity `sagat.database.lake.probe`:
   - wire it in `apps/database-runner/src/lake.rs`;
   - write the host operation in `runners/lake/sagat_lake/probe.py`, with pytest: authenticate, load
