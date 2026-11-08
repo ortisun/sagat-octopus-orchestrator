@@ -21,7 +21,12 @@ use sagat_domain::{
     identity::NamespaceId,
 };
 use sagat_infra_lake::attempt::{LakeSandbox, Signals};
+use sagat_infra_lake::protocol::{IcebergOutcome, Receipt};
 use sagat_infra_lake::relay::{Connector, Resolver};
+use sagat_telemetry::lake::{
+    LakeCatalogType, LakeMode, LakeRelayDenial, LakeStorageType, LakeWriteOutcome,
+    record_relay_denial, record_sandbox_exit, record_write,
+};
 use tokio_util::sync::CancellationToken;
 
 use super::driver::{Driver, Finished, Report as Finish};
@@ -149,11 +154,82 @@ where
         // the slot goes back with the admission
         Err(code) => return failed(code),
     };
-    outcome_of(
-        driver
-            .run_admitted(admitted, connection, signals, || {})
-            .await,
-    )
+    let labels = Labels::of(&connection);
+    let finished = driver
+        .run_admitted(admitted, connection, signals, || {})
+        .await;
+    record(&finished, labels);
+    outcome_of(finished)
+}
+
+/// The labels of the metrics of a write that come from its connection: closed sets, never a connection, a table or a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Labels {
+    catalog: LakeCatalogType,
+    storage: LakeStorageType,
+}
+
+impl Labels {
+    fn of(connection: &super::connection::Converted) -> Self {
+        let catalog = match connection.catalog["type"].as_str() {
+            Some("glue") => LakeCatalogType::Glue,
+            Some("hive") => LakeCatalogType::Hive,
+            Some("jdbc") => LakeCatalogType::Jdbc,
+            _ => LakeCatalogType::Rest,
+        };
+        let storage = match connection.storage["type"].as_str() {
+            Some("gcs") => LakeStorageType::Gcs,
+            Some("adls") => LakeStorageType::Adls,
+            _ => LakeStorageType::S3,
+        };
+        Self { catalog, storage }
+    }
+}
+
+/// What the attempt tells the metrics: how the container ended, what the relay refused, and how the write ended. Nothing but the
+/// closed vocabulary of the telemetry crate can be said here. A write that never reached a container is not a write.
+fn record(finished: &Finished, labels: Labels) {
+    if let Some(exit) = finished.exit {
+        record_sandbox_exit(exit);
+    }
+    let denials = finished.relay_denials;
+    for (reason, count) in [
+        (
+            LakeRelayDenial::EndpointNotDeclared,
+            denials.endpoint_not_declared,
+        ),
+        (LakeRelayDenial::AddressForbidden, denials.address_forbidden),
+        (LakeRelayDenial::ResolutionFailed, denials.resolution_failed),
+        (LakeRelayDenial::TokenRefused, denials.token_refused),
+        (
+            LakeRelayDenial::RequestUnsupported,
+            denials.request_unsupported,
+        ),
+    ] {
+        for _ in 0..count {
+            record_relay_denial(reason);
+        }
+    }
+    if finished.cause.is_some() {
+        return;
+    }
+    // append is the only mode this delivery writes
+    let outcome = match &finished.report {
+        Finish::Complete(receipt) => match &**receipt {
+            Receipt::Iceberg(committed) => match committed.outcome {
+                IcebergOutcome::Committed => LakeWriteOutcome::Committed,
+                IcebergOutcome::EmptyNoCommit => LakeWriteOutcome::EmptyNoCommit,
+                IcebergOutcome::Reverted => LakeWriteOutcome::Reverted,
+            },
+            Receipt::ObjectStorage(_) => LakeWriteOutcome::Failed,
+        },
+        Finish::Fail(failure) if failure.code == DatabaseFailure::OutcomeUnknown => {
+            LakeWriteOutcome::Unknown
+        }
+        Finish::Fail(_) => LakeWriteOutcome::Failed,
+        Finish::Abandon => return,
+    };
+    record_write(LakeMode::Append, labels.catalog, labels.storage, outcome);
 }
 
 /// Asks the control plane for the connection of the lease, and reads it.
@@ -206,6 +282,8 @@ mod tests {
     use std::time::Duration;
 
     use sagat_domain::database::DatabaseFailure;
+    use sagat_infra_lake::protocol::Receipt;
+    use sagat_telemetry::lake::LakeSandboxExit;
     use serde_json::Value;
     use tonic::Status;
 
@@ -502,5 +580,153 @@ mod tests {
             );
             assert!(script.completed.is_empty());
         });
+    }
+
+    // -- the metrics (D035-143) ----------------------------------------------------------------------------------------
+
+    fn finished(report: Finish, exit: Option<LakeSandboxExit>) -> Finished {
+        Finished {
+            report,
+            cause: None,
+            request_sent: true,
+            container_ended: true,
+            relay_denials: sagat_infra_lake::relay::RelayDenials::default(),
+            sandbox_refusal: None,
+            exit,
+            left: None,
+        }
+    }
+
+    fn labels() -> Labels {
+        Labels {
+            catalog: LakeCatalogType::Rest,
+            storage: LakeStorageType::S3,
+        }
+    }
+
+    /// What was counted, as `name{label=value,...}` and the amount, in order.
+    fn seen(counted: Vec<crate::testing::Seen>) -> Vec<(String, u64)> {
+        counted
+            .into_iter()
+            .map(|(name, labels, count)| {
+                let labels: Vec<String> = labels
+                    .into_iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect();
+                (format!("{name}{{{}}}", labels.join(",")), count)
+            })
+            .collect()
+    }
+
+    fn committed() -> Finish {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/contract/iceberg-writes/fixtures/receipts/iceberg-committed.json");
+        let receipt: Receipt =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        Finish::Complete(Box::new(receipt))
+    }
+
+    fn failure(code: DatabaseFailure) -> Finish {
+        Finish::Fail(sagat_infra_lake::supervisor::Failure {
+            code,
+            column: None,
+            reason: None,
+        })
+    }
+
+    #[test]
+    fn a_commit_is_counted_by_its_closed_labels_with_how_the_container_ended() {
+        let counted = seen(crate::testing::counted(|| {
+            record(
+                &finished(committed(), Some(LakeSandboxExit::Completed)),
+                labels(),
+            );
+        }));
+        assert_eq!(
+            counted,
+            [
+                ("lake_sandbox_exits_total{reason=completed}".to_owned(), 1),
+                (
+                    "lake_writes_total{mode=append,catalog_type=rest,storage_type=s3,outcome=committed}"
+                        .to_owned(),
+                    1
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failure_and_an_unknown_outcome_are_not_the_same_series() {
+        let outcome = |report: Finish| {
+            seen(crate::testing::counted(|| {
+                record(&finished(report, None), labels());
+            }))
+        };
+        assert!(
+            outcome(failure(DatabaseFailure::IcebergSchemaMismatch))[0]
+                .0
+                .ends_with("outcome=failed}")
+        );
+        assert!(
+            outcome(failure(DatabaseFailure::OutcomeUnknown))[0]
+                .0
+                .ends_with("outcome=unknown}")
+        );
+        assert!(
+            outcome(Finish::Abandon).is_empty(),
+            "a lease that is gone has no outcome to count"
+        );
+    }
+
+    #[test]
+    fn what_the_relay_refused_is_counted_by_reason_and_never_by_destination() {
+        let mut ended = finished(
+            failure(DatabaseFailure::LakeHostProtocol),
+            Some(LakeSandboxExit::ProtocolError),
+        );
+        ended.relay_denials.address_forbidden = 2;
+        ended.relay_denials.token_refused = 1;
+        let counted = seen(crate::testing::counted(|| record(&ended, labels())));
+        let denials: Vec<_> = counted
+            .iter()
+            .filter(|(name, _)| name.starts_with("lake_relay_denials_total"))
+            .map(|(name, count)| (name.as_str(), *count))
+            .collect();
+        assert_eq!(
+            denials,
+            [
+                ("lake_relay_denials_total{reason=address_forbidden}", 1),
+                ("lake_relay_denials_total{reason=address_forbidden}", 1),
+                ("lake_relay_denials_total{reason=token_refused}", 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_attempt_that_never_reached_a_container_is_not_a_write() {
+        let mut before = finished(failure(DatabaseFailure::LakeSandboxUnavailable), None);
+        before.cause = Some(super::super::driver::Cause::NoSlot);
+        assert!(seen(crate::testing::counted(|| record(&before, labels()))).is_empty());
+    }
+
+    #[test]
+    fn the_labels_of_a_write_come_from_the_kind_of_its_connection() {
+        let mut connection = super::super::fixtures::converted();
+        assert_eq!(
+            Labels::of(&connection),
+            Labels {
+                catalog: LakeCatalogType::Rest,
+                storage: LakeStorageType::S3
+            }
+        );
+        connection.catalog = serde_json::json!({"type": "glue"});
+        connection.storage = serde_json::json!({"type": "gcs"});
+        assert_eq!(
+            Labels::of(&connection),
+            Labels {
+                catalog: LakeCatalogType::Glue,
+                storage: LakeStorageType::Gcs
+            }
+        );
     }
 }

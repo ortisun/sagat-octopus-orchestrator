@@ -41,13 +41,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use sagat_domain::database::DatabaseFailure;
-use sagat_infra_lake::attempt::{LakeSandbox, Plan, Signals, run_attempt};
-use sagat_infra_lake::control::ControlConfig;
+use sagat_infra_lake::attempt::{AttemptOutcome, LakeSandbox, Plan, Signals, run_attempt};
+use sagat_infra_lake::control::{ControlConfig, ControlFailure};
 use sagat_infra_lake::protocol::{AttemptInput, Receipt, WriteMode};
 use sagat_infra_lake::relay::{Connector, Relay, RelayDenials, Resolver};
 use sagat_infra_lake::sandbox_api::{Class, Reason, uid_for_slot};
 use sagat_infra_lake::staging::AttemptDir;
-use sagat_infra_lake::supervisor::{Disposition, Failure};
+use sagat_infra_lake::supervisor::{Disposition, Ended, Failure};
+use sagat_telemetry::lake::LakeSandboxExit;
 use tokio::time::Instant;
 
 use super::connection::Converted;
@@ -185,6 +186,8 @@ pub struct Finished {
     pub relay_denials: RelayDenials,
     /// Why the sandbox said no, when it answered and said no.
     pub sandbox_refusal: Option<Reason>,
+    /// How the container ended, as the closed reason of the metrics; `None` when none was asked for.
+    pub exit: Option<LakeSandboxExit>,
     /// Where the attempt directory was left, when it could not be removed: because the container was not confirmed gone, or
     /// because something in it could not be removed. The caller counts it and the sweep takes it.
     pub left: Option<PathBuf>,
@@ -199,6 +202,7 @@ impl Finished {
             container_ended: true,
             relay_denials: RelayDenials::default(),
             sandbox_refusal: None,
+            exit: None,
             left: None,
         }
     }
@@ -547,6 +551,7 @@ where
         .await;
         // the request holds the credentials: it goes as soon as the attempt is over
         drop(request);
+        let exit = exit_of(&outcome);
         let left = running.settle(outcome.container_ended);
 
         let report = match outcome.disposition {
@@ -570,8 +575,25 @@ where
             container_ended: outcome.container_ended,
             relay_denials: outcome.relay_denials,
             sandbox_refusal: outcome.sandbox_refusal,
+            exit: Some(exit),
             left,
         }
+    }
+}
+
+/// How the container ended, as one of the closed reasons of the metrics. A memory kill is that whatever else the attempt did.
+fn exit_of(outcome: &AttemptOutcome) -> LakeSandboxExit {
+    if outcome.memory_killed {
+        return LakeSandboxExit::MemoryKilled;
+    }
+    match &outcome.ended {
+        Ended::Conversation(Ok(_)) => LakeSandboxExit::Completed,
+        Ended::Conversation(Err(ControlFailure::Silent)) => LakeSandboxExit::HeartbeatMissed,
+        Ended::Conversation(Err(ControlFailure::Protocol(_))) => LakeSandboxExit::ProtocolError,
+        Ended::SandboxUnavailable | Ended::HostNeverConnected => LakeSandboxExit::StartFailed,
+        Ended::DeadlinePassed => LakeSandboxExit::Deadline,
+        Ended::Cancelled => LakeSandboxExit::Cancelled,
+        Ended::LeaseLost => LakeSandboxExit::LeaseLost,
     }
 }
 
@@ -852,6 +874,65 @@ mod tests {
         assert!(matches!(finished.report, Report::Complete(_)));
         assert!(finished.cause.is_none() && finished.request_sent);
         assert_eq!(driver.slots.in_use(), 0, "and the slot is back");
+    }
+
+    // -- how the container ended, for the metrics (D035-143) ----------------------------------------------------------
+
+    #[tokio::test]
+    async fn how_the_container_ended_is_one_of_the_closed_reasons() {
+        use sagat_telemetry::lake::LakeSandboxExit as Exit;
+        let world = world();
+        let make = |script: Script| driver(&world, script);
+        // the host answered, with a receipt or with a failure: the conversation ran to its end
+        let attempt = make(answer(receipt_line()));
+        let finished = run(&attempt, &input_json(|_| {}), &signals()).await;
+        assert_eq!(finished.exit, Some(Exit::Completed));
+        let attempt = make(answer(failure_line("ICEBERG_SCHEMA_MISMATCH", "amount")));
+        let finished = run(&attempt, &input_json(|_| {}), &signals()).await;
+        assert_eq!(finished.exit, Some(Exit::Completed));
+        // a host that never connects
+        let mut attempt = make(Script::NeverConnects);
+        attempt.settings.host_start = Duration::from_millis(100);
+        let finished = run(&attempt, &input_json(|_| {}), &signals()).await;
+        assert_eq!(finished.exit, Some(Exit::StartFailed));
+        // a cancel and a lost lease, once the host has the request
+        for (cancelled, expected) in [(true, Exit::Cancelled), (false, Exit::LeaseLost)] {
+            let attempt = make(Script::Silent);
+            let signals = signals();
+            let ends = if cancelled {
+                signals.cancelled.clone()
+            } else {
+                signals.lease_lost.clone()
+            };
+            let requested = std::sync::Arc::clone(&attempt.sandbox.requested);
+            let ending = tokio::spawn(async move {
+                requested.notified().await;
+                ends.cancel();
+            });
+            let finished = run(&attempt, &input_json(|_| {}), &signals).await;
+            ending.await.unwrap();
+            assert_eq!(finished.exit, Some(expected));
+        }
+        // the memory limit killed the container: that is the reason, whatever ended the attempt
+        let mut attempt = make(Script::Silent);
+        attempt.sandbox.memory_killed = true;
+        let killed = signals();
+        let ends = killed.cancelled.clone();
+        let requested = std::sync::Arc::clone(&attempt.sandbox.requested);
+        let ending = tokio::spawn(async move {
+            requested.notified().await;
+            ends.cancel();
+        });
+        let finished = run(&attempt, &input_json(|_| {}), &killed).await;
+        ending.await.unwrap();
+        assert_eq!(finished.exit, Some(Exit::MemoryKilled));
+        // nothing was started: no container, no reason
+        let attempt = make(answer(receipt_line()));
+        let _all: Vec<_> = (0..4).map(|_| attempt.slots.take().unwrap()).collect();
+        assert_eq!(
+            run(&attempt, &input_json(|_| {}), &signals()).await.exit,
+            None
+        );
     }
 
     #[tokio::test]

@@ -281,6 +281,51 @@ pub(crate) fn home(server: &Server, lake: Option<serde_json::Value>) -> Home {
     }
 }
 
+/// One increment of a counter, as a test saw it: the name, its labels, the amount.
+pub(crate) type Seen = (String, Vec<(String, String)>, u64);
+
+/// Records the counters that are incremented while `f` runs on this thread, and returns them. A histogram, a gauge and a description
+/// are ignored: the metrics of the lake are counters and the closed labels of the telemetry crate.
+pub(crate) fn counted(f: impl FnOnce()) -> Vec<Seen> {
+    use metrics::{
+        Counter, CounterFn, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
+    };
+
+    struct Sink(Arc<Mutex<Vec<Seen>>>);
+    struct Cell(Key, Arc<Mutex<Vec<Seen>>>);
+    impl CounterFn for Cell {
+        fn increment(&self, value: u64) {
+            let labels = self
+                .0
+                .labels()
+                .map(|label| (label.key().to_owned(), label.value().to_owned()))
+                .collect();
+            self.1
+                .lock()
+                .unwrap()
+                .push((self.0.name().to_owned(), labels, value));
+        }
+        fn absolute(&self, _: u64) {}
+    }
+    impl Recorder for Sink {
+        fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn register_counter(&self, key: &Key, _: &Metadata<'_>) -> Counter {
+            Counter::from_arc(Arc::new(Cell(key.clone(), Arc::clone(&self.0))))
+        }
+        fn register_gauge(&self, _: &Key, _: &Metadata<'_>) -> Gauge {
+            Gauge::noop()
+        }
+        fn register_histogram(&self, _: &Key, _: &Metadata<'_>) -> Histogram {
+            Histogram::noop()
+        }
+    }
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    metrics::with_local_recorder(&Sink(Arc::clone(&seen)), f);
+    seen.lock().unwrap().clone()
+}
+
 /// Waits until `condition` holds, looking every few milliseconds, for at most twenty seconds; panics naming `what`. For a change the
 /// runner makes on the disk, which nothing wakes a test for.
 pub(crate) async fn eventually(what: &str, condition: impl Fn() -> bool) {

@@ -83,6 +83,8 @@ pub(crate) struct Scripted {
     pub(crate) script: Script,
     pub(crate) start_error: Option<SandboxError>,
     pub(crate) kill_unconfirmed: bool,
+    /// What the sandbox says about how the container died: the memory limit killed it.
+    pub(crate) memory_killed: bool,
     pub(crate) asked: Mutex<Vec<StartRequest>>,
     pub(crate) kills: AtomicUsize,
     pub(crate) host: Mutex<Option<JoinHandle<()>>>,
@@ -98,6 +100,7 @@ impl Scripted {
             script,
             start_error: None,
             kill_unconfirmed: false,
+            memory_killed: false,
             asked: Mutex::new(Vec::new()),
             kills: AtomicUsize::new(0),
             host: Mutex::new(None),
@@ -182,7 +185,7 @@ impl LakeSandbox for Scripted {
             task.abort();
         }
         ContainerExit {
-            memory_killed: false,
+            memory_killed: self.memory_killed,
             ended: !self.kill_unconfirmed,
         }
     }
