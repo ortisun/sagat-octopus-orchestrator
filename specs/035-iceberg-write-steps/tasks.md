@@ -1174,6 +1174,12 @@ one commit carries the key.
 - [ ] T035-058 [US02] Add the activity `sagat.database.iceberg.write` to
   `apps/database-runner/src/lake.rs`: rebuild the receipt, report `CompleteStep` or `FailStep`, and
   audit relay denials. Refs: FR-035-023, FR-035-027.
+
+  *2026-11-08, mostly done, left unticked (D035-143, G035-078):* the runner's shell serves the activity: a lake section makes a lake runner that registers for it and nothing
+  else, polls for the slots it has free, resolves the connection after a slot is taken, runs the attempt through the driver, and reports `CompleteStep` with the receipt or `FailStep` with a
+  closed code and the flag of the contract (or nothing when the lease is gone); a drain gives the leases up as lost; the work root is swept; the attempts are counted. A lake step goes from the
+  poll to `CompleteStep` through the shell in a test with a scripted sandbox (132 tests in the runner, hand mutations killed). Not done: **the audit of the relay's denials** (the protocol has no
+  call for it: G035-078), and the proof against a real control plane and the real sandbox.
 - [ ] T035-059 [US02] Complete the step on the server, in
   `crates/application/src/worker/output.rs` and `crates/application/src/runs.rs`:
   - T6 stores the receipt as output, writes the journal, sets successor readiness and the outbox;

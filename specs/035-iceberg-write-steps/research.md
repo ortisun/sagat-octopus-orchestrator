@@ -3175,6 +3175,45 @@ The other fixes were wording:
   its tests pin ("an unknown outcome is never retried"), and it changes `retry_review` and the check in `review_instance`, so it is the owner's call. The
   evidence on the waiting step (the target ref, the window searched, whether the key was found elsewhere) needs a closed reason on the wire, which is a
   `worker.proto` change and a minor version: the same question.
+- **D035-143 — The lake runner's shell: the part of the runner that talks to the control plane around the driver (slice G of D035-130; T035-058).**
+  **Decided by: delegate**. Designed by an independent read-only pass over the code (2026-11-08), whose findings are the ground of this record.
+  - *What was found.* The driver (`run_attempt`, `Driver`) already took a resolved connection and the two signals, but nothing in the binary called it: `Driver::new`
+    appeared only in its own tests, `keep_sweeping` and `LeaseBlobs::new` were never called, and the validated lake section was discarded. The SQL shell hard-coded its
+    activity, mapped a cancel, a lost lease and a failed heartbeat to one token, and sent `retryable: false` for every failure.
+  - *What was built, in the order it was built (each a commit, tests first where the code was new).* (1) A scripted worker service on a loopback port, and a test that pins what
+    the SQL shell registers and polls with, before anything was built beside it. (2) The heartbeats and the terminal report, moved out of the SQL attempt to a module both
+    use: the end of a lease says why (`CancelRequested` or `Lost`) and leaves what it means to the attempt, a report carries its own `retryable` flag, and the key names
+    the profile (`database-complete-…` is what it always was). (3) The driver splits admission (a readable input, a free slot, the slot's user) from the run, so the
+    connection, which discloses and audits the secrets, is asked for after it; `with_slots` lets the driver made for each lease share the runner's slots. (4) The lake
+    attempt: the lease is checked (a root forward task of the lake activity with an expiry), the heartbeats start, the attempt is admitted, the connection is resolved
+    under the same signals and read by a reader that zeroises every secret of the answer on every path, the driver runs, and the report is sent. (5) The serve loop and the
+    production runtime. (6) The sweeper. (7) The metrics.
+  - *Two tokens, and a drain that is a lost lease.* A cancel the control plane asked for is `cancelled`; a lease that is lost is `lease_lost`; a drain gives the leases up as
+    lost and **never** cancels them, because the supervisor's table makes a cancel after the request is sent `OUTCOME_UNKNOWN`, and a rollout would make every write under way
+    unknown. What a lost lease leaves is the lease expiring and the next attempt's lookup by the effect key. The grace is 30 s for the attempts and up to 30 s to settle
+    the kills; a pod's termination grace has to be longer (the runbook says so; it is G035-066's kind of obligation, which no test can hold).
+  - *The configuration decides the profile.* A `lake` section makes a lake runner that offers the lake activity and no SQL, and a section that is wrong, or a `workRoot` that
+    is not a directory, stops the runner at start; it is not left off or served as SQL. The lake section still needs the SQL `deployment` and `namespaces` blocks of the file
+    (only the namespace ids and slugs are used): a default, recorded rather than changed.
+  - *A refused completion is a breach of the protocol.* The server (D035-142) refuses a receipt that is not the step's as `NotAllowed`, which is `InvalidArgument` on the wire;
+    the runner then fails the step with `LAKE_HOST_PROTOCOL` (retryable). It cannot happen while the driver holds the host to the request, so it is a check, tested with a scripted refusal.
+  - *Evidence.* 132 tests in the runner (it had 98): the scripted service, the SQL pin, the shared lease machinery (5), admission (4), the answer reader (4), the attempt (9 against the
+    scripted service and the scripted host on the real relay socket, plus 5 of the metrics), the serve loop (6: the activity offered, the slots, no poll without a free slot, a drain that
+    reports nothing, the profile chosen by the configuration, the sweep), the exit reasons (1). **The milestone: a lake step goes from the poll to `CompleteStep` through the shell**
+    (`a_lake_step_goes_from_the_poll_to_the_receipt_through_the_shell`). Hand mutations, every one killed, each at its own test: 6 of the lease machinery (one survived at first, a heartbeat
+    with no expiry passing because the old expiry ran out; the test now ends before it could), 10 of the attempt and the answer reader, 7 of the serve loop, 4 of the sweep wiring, 8 of the
+    metrics (one survived at first, the memory kill, because the scripted sandbox never reported one). Two lessons about the tests themselves: a mutation hung every shell test because they
+    waited for the runner with no bound, so every wait is bounded; a plain `sleep` is only where nothing wakes a test (the disk). `integration_database_runner` (the SQL runner against a real
+    PostgreSQL) passes as before after every step that touched the SQL attempt.
+  - *Honest limits.* The tests of the moved SQL code (2) and of the split (3) were written after the change, against the scripted service; (3) had no mutation runs, the existing 25 driver
+    tests being its oracle. That the SQL attempt cancels on a lost lease is not pinned: it needs a database under the runner. **No test runs the shell against the real sandbox runner and a
+    container**: the sandbox client and server are tested against each other (`sandbox-runner`), the driver against a scripted sandbox, and the shell against the same scripted one.
+  - *Not done: G035-078 and the rest of T035-058.* Compose and Helm, the container end to end (T035-062), the PostgreSQL proof of the whole chain with a real control plane (G8 of the design,
+    which needs D035-142 merged), the phase histograms, the lookup counter, `ReadBlob` scoped to the run and the record sources other than inline.
+- **G035-078 — What the relay refused is counted, not audited.** The relay counts its denials by reason and the runner has them in the result of every attempt, but the worker protocol has no call to
+  put them in the audit trail (`FailStep` and `CompleteStep` carry no such field), and a new field is a `worker.proto` change and a minor version. Until then they are a metric
+  (`lake_relay_denials_total`) and the log of the attempt. T035-058 asks for the audit and stays open for it. *Exit condition:* the owner's word on the minor (the same question as the evidence on
+  an unknown outcome, O035-007), or a decision that a metric is the record.
 - **G035-073 — A refused run of an Iceberg write is neither opaque nor audited at creation.** `audit_database_denial` (`runs.rs`) audits only
   `DatabaseUnavailable` and `DatabaseLimit`, and `LakeRefused` keeps its detail (the node, the field paths and classification levels) for a caller who holds
   `run:start` and `database:use`, where a refused SQL run is an opaque `NotFound`. The detail is the publisher's to see; a starter is not that person.
