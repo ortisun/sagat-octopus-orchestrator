@@ -203,3 +203,126 @@ fn every_forward_migration_has_a_rollback() {
         "each forward migration needs a matching .down.sql"
     );
 }
+
+/// The stamp of the migration before the one that gives a worker binding its profile (D035-136).
+const BEFORE_BINDING_PROFILE: i64 = 20_261_231_000_000;
+
+#[tokio::test]
+async fn the_binding_profile_rolls_back_only_while_every_binding_is_of_the_database_profile() {
+    let db = migrated_db().await;
+    let tenant: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO tenants (id, slug, created_at) VALUES (gen_random_uuid(), 'acme', now()) RETURNING id",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("tenant");
+    let workspace: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO workspaces (id, tenant_id, slug, created_at) VALUES (gen_random_uuid(), $1, 'main', now()) RETURNING id",
+    )
+    .bind(tenant)
+    .fetch_one(&db.pool)
+    .await
+    .expect("workspace");
+    let namespace: sqlx::types::Uuid = sqlx::query_scalar(
+        "INSERT INTO namespaces (id, tenant_id, workspace_id, slug, environment, created_at) \
+         VALUES (gen_random_uuid(), $1, $2, 'dev', 'dev', now()) RETURNING id",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .fetch_one(&db.pool)
+    .await
+    .expect("namespace");
+
+    // A binding written without a profile reads as the database profile.
+    sqlx::query(
+        "INSERT INTO worker_bindings (tenant_id, namespace_id, subject, pattern, updated_by) \
+         VALUES ($1, $2, 'sql-runner', 'sagat.database.postgresql', 'admin')",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .execute(&db.pool)
+    .await
+    .expect("binding");
+    let default: String =
+        sqlx::query_scalar("SELECT profile FROM worker_bindings WHERE subject = 'sql-runner'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("profile");
+    assert_eq!(default, "database");
+
+    // Only the two names are a profile.
+    let invalid = sqlx::query(
+        "INSERT INTO worker_bindings (tenant_id, namespace_id, subject, pattern, updated_by, profile) \
+         VALUES ($1, $2, 'odd-runner', '*', 'admin', 'sql')",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .execute(&db.pool)
+    .await;
+    assert!(invalid.is_err(), "a profile is `database` or `lake`");
+
+    // A lake binding stops the rollback, with the message that says why.
+    sqlx::query(
+        "INSERT INTO worker_bindings (tenant_id, namespace_id, subject, pattern, updated_by, profile) \
+         VALUES ($1, $2, 'lake-runner', 'sagat.database.iceberg.write', 'admin', 'lake')",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .execute(&db.pool)
+    .await
+    .expect("lake binding");
+    // sqlx takes an advisory lock for a rollback and does not release it when a revert fails, so the refused
+    // rollback runs on a connection of its own and lets the lock go: the next rollback would wait on it for as
+    // long as the pool keeps the connection (about twenty minutes).
+    let mut connection = db.pool.acquire().await.expect("a connection");
+    let refused = MIGRATOR
+        .undo(&mut *connection, BEFORE_BINDING_PROFILE)
+        .await
+        .expect_err("a lake binding blocks the rollback");
+    sqlx::query("SELECT pg_advisory_unlock_all()")
+        .execute(&mut *connection)
+        .await
+        .expect("release the migration lock");
+    drop(connection);
+    let message = refused.to_string();
+    assert!(
+        message.contains("cannot roll back worker binding profiles"),
+        "{message}"
+    );
+    let still_there: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+         WHERE table_name = 'worker_bindings' AND column_name = 'profile')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("column");
+    assert!(still_there, "a refused rollback leaves the column in place");
+
+    // Once the operator has re-bound it, the rollback goes through and forward restores the default.
+    sqlx::query("DELETE FROM worker_bindings WHERE subject = 'lake-runner'")
+        .execute(&db.pool)
+        .await
+        .expect("remove the lake binding");
+    MIGRATOR
+        .undo(&db.pool, BEFORE_BINDING_PROFILE)
+        .await
+        .expect("rollback of the profile alone");
+    let gone: bool = sqlx::query_scalar(
+        "SELECT NOT EXISTS (SELECT 1 FROM information_schema.columns \
+         WHERE table_name = 'worker_bindings' AND column_name = 'profile')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("column");
+    assert!(gone, "the column is dropped");
+    migrate(&db.pool).await.expect("forward again");
+    let restored: String =
+        sqlx::query_scalar("SELECT profile FROM worker_bindings WHERE subject = 'sql-runner'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("profile after forward");
+    assert_eq!(
+        restored, "database",
+        "the surviving binding reads as the default again"
+    );
+}

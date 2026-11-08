@@ -4,7 +4,7 @@ use crate::pool::BeginSafely;
 use sagat_application::bindings::{BindingStore, Revoked, StoredBinding};
 use sagat_application::error::StoreError;
 use sagat_domain::audit::AuditRecord;
-use sagat_domain::binding::{ActivityPattern, first_uncovered};
+use sagat_domain::binding::{ActivityPattern, BindingProfile, first_uncovered};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use uuid::Uuid;
 
@@ -32,11 +32,12 @@ impl BindingStore for PgRunStore {
         tenant: TenantId,
         namespace: NamespaceId,
     ) -> Result<Vec<StoredBinding>, StoreError> {
-        let rows: Vec<(String, Vec<String>, Vec<String>)> = sqlx::query_as(
+        let rows: Vec<(String, Vec<String>, Vec<String>, String)> = sqlx::query_as(
             "SELECT b.subject, array_agg(b.pattern ORDER BY b.pattern), \
                     COALESCE((SELECT array_agg(p.pool ORDER BY p.pool) FROM worker_binding_pools p \
                               WHERE p.tenant_id = b.tenant_id AND p.namespace_id = b.namespace_id \
-                                AND p.subject = b.subject), '{}') \
+                                AND p.subject = b.subject), '{}'), \
+                    min(b.profile) \
              FROM worker_bindings b \
              WHERE b.tenant_id = $1 AND b.namespace_id = $2 \
              GROUP BY b.tenant_id, b.namespace_id, b.subject ORDER BY b.subject",
@@ -46,14 +47,20 @@ impl BindingStore for PgRunStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?;
-        Ok(rows
-            .into_iter()
-            .map(|(subject, patterns, pools)| StoredBinding {
-                subject,
-                patterns,
-                pools,
+        rows.into_iter()
+            .map(|(subject, patterns, pools, profile)| {
+                Ok(StoredBinding {
+                    subject,
+                    patterns,
+                    pools,
+                    profile: BindingProfile::parse(&profile).ok_or_else(|| {
+                        StoreError::Internal {
+                            detail: "a stored binding profile is not a profile".into(),
+                        }
+                    })?,
+                })
             })
-            .collect())
+            .collect()
     }
 
     #[allow(clippy::too_many_arguments)] // the port's signature
@@ -64,6 +71,7 @@ impl BindingStore for PgRunStore {
         subject: &str,
         patterns: &[String],
         pools: Option<&[String]>,
+        profile: Option<BindingProfile>,
         changed_by: &str,
         audit: &AuditRecord,
     ) -> Result<Option<Revoked>, StoreError> {
@@ -82,6 +90,26 @@ impl BindingStore for PgRunStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
+        // The profile the identity has now is kept unless the caller names one; all its rows carry the same.
+        let kept: Option<String> = sqlx::query_scalar(
+            "SELECT min(profile) FROM worker_bindings \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(subject)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let profile = match (profile, kept) {
+            (Some(named), _) => named,
+            (None, Some(text)) => {
+                BindingProfile::parse(&text).ok_or_else(|| StoreError::Internal {
+                    detail: "a stored binding profile is not a profile".into(),
+                })?
+            }
+            (None, None) => BindingProfile::default(),
+        };
         let removed = sqlx::query(
             "DELETE FROM worker_bindings \
              WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
@@ -127,14 +155,15 @@ impl BindingStore for PgRunStore {
         }
         if !patterns.is_empty() {
             sqlx::query(
-                "INSERT INTO worker_bindings (tenant_id, namespace_id, subject, pattern, updated_by) \
-                 SELECT $1, $2, $3, p, $5 FROM unnest($4::text[]) AS t(p)",
+                "INSERT INTO worker_bindings (tenant_id, namespace_id, subject, pattern, updated_by, profile) \
+                 SELECT $1, $2, $3, p, $5, $6 FROM unnest($4::text[]) AS t(p)",
             )
             .bind(tenant.as_uuid())
             .bind(namespace.as_uuid())
             .bind(subject)
             .bind(patterns)
             .bind(changed_by)
+            .bind(profile.as_str())
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -155,7 +184,12 @@ impl BindingStore for PgRunStore {
         .map_err(store_error)?;
         let doomed: Vec<Uuid> = sessions
             .into_iter()
-            .filter(|(_, activities)| first_uncovered(&parsed, activities).is_some())
+            .filter(|(_, activities)| {
+                // No longer covered, or a dedicated runner of another profile than the binding now has.
+                first_uncovered(&parsed, activities).is_some()
+                    || sagat_application::worker::managed_profile(activities)
+                        .is_some_and(|offered| offered != profile)
+            })
             .map(|(id, _)| id)
             .collect();
         let mut revoked = Revoked::default();

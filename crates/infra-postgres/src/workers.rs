@@ -244,8 +244,8 @@ impl WorkerStore for PgRunStore {
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
-        let bound: Vec<String> = sqlx::query_scalar(
-            "SELECT pattern FROM worker_bindings \
+        let bound_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT pattern, profile FROM worker_bindings \
              WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
         )
         .bind(session.tenant_id.as_uuid())
@@ -254,6 +254,12 @@ impl WorkerStore for PgRunStore {
         .fetch_all(&mut *tx)
         .await
         .map_err(store_error)?;
+        // All the rows of an identity carry one profile; two would be a binding nobody wrote.
+        let profiles: std::collections::BTreeSet<&str> = bound_rows
+            .iter()
+            .map(|(_, profile)| profile.as_str())
+            .collect();
+        let bound: Vec<&String> = bound_rows.iter().map(|(pattern, _)| pattern).collect();
         let patterns = bound
             .iter()
             .map(|text| ActivityPattern::parse(text))
@@ -282,7 +288,17 @@ impl WorkerStore for PgRunStore {
             .activities
             .iter()
             .any(|a| a.starts_with(sagat_domain::database::MANAGED_DATABASE_PREFIX));
+        // A dedicated runner registers only for the managed activities of the profile its binding carries (D035-057),
+        // whatever its patterns cover: a runner bound to `*` is still of one profile.
+        let profile_matches = !managed
+            || (profiles.len() == 1
+                && profiles
+                    .iter()
+                    .next()
+                    .and_then(|text| sagat_domain::binding::BindingProfile::parse(text))
+                    == sagat_application::worker::managed_profile(&session.activities));
         if !role.is_some_and(|role| role.grants(sagat_domain::identity::Permission::WorkerExecute))
+            || !profile_matches
             || (managed && role != Some(sagat_domain::identity::Role::DatabaseRunner))
             || role.is_some_and(|role| {
                 !sagat_application::worker::managed_capabilities_allowed(

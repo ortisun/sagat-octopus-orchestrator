@@ -16,6 +16,7 @@ use sagat_application::{
 };
 use sagat_domain::{
     audit::AuditAction,
+    binding::BindingProfile,
     classification::{EgressCeiling, Level},
     database::{
         AccessDelegation, ConnectionConfig, ConnectionStatus, DatabaseLimits, EgressRefusal,
@@ -967,9 +968,10 @@ async fn promotion(
     );
 }
 
-/// A lake runner registers for the write activity alone, and only under a binding that covers it (feature 035,
-/// D035-135): through the real store, the membership role, the binding patterns and the negotiated minor. No lake step
-/// can start yet (the admission guard is closed), so this is the whole of what registering gives it.
+/// A dedicated runner registers for the managed activities of **the profile its binding carries**, and only under a
+/// binding that covers them (feature 035, D035-057, D035-135): through the real store, the membership role, the binding
+/// patterns and profile, and the negotiated minor. No lake step can start yet (the admission guard is closed), so this is
+/// the whole of what registering gives a lake runner.
 pub async fn registration(w: &World) {
     let ns = w.namespace.id();
     let lake = w.member("lake-machine", Role::DatabaseRunner).await;
@@ -983,6 +985,16 @@ pub async fn registration(w: &World) {
     let write = "sagat.database.iceberg.write";
     let sql = "sagat.database.postgresql";
     let refused = |result: Result<_, AppError>| matches!(result, Err(AppError::NotBound));
+    let bind = |patterns: &[&str], profile: Option<BindingProfile>| {
+        let patterns: Vec<String> = patterns.iter().map(|text| (*text).to_owned()).collect();
+        let subject = lake.subject().as_str().to_owned();
+        async move {
+            w.bindings
+                .bind_with_profile(&w.admin, ns, &subject, &patterns, None, profile, &ctx())
+                .await
+                .unwrap()
+        }
+    };
 
     // Without a binding nothing registers; a binding for the SQL activity does not cover the lake one.
     assert!(refused(
@@ -990,16 +1002,12 @@ pub async fn registration(w: &World) {
             .register(&lake, "payments", "lake-unbound", &caps(&[write], "1.6"))
             .await
     ));
-    w.bindings
-        .bind(
-            &w.admin,
-            ns,
-            lake.subject().as_str(),
-            &[sql.to_owned()],
-            &ctx(),
-        )
-        .await
-        .unwrap();
+    let view = bind(&[sql], None).await;
+    assert_eq!(
+        view.profile,
+        BindingProfile::Database,
+        "a new binding is of the database profile"
+    );
     assert!(refused(
         w.workers
             .register(
@@ -1011,17 +1019,25 @@ pub async fn registration(w: &World) {
             .await
     ));
 
-    // A binding that names the write activity is the authority for it, and for nothing else.
-    w.bindings
-        .bind(
-            &w.admin,
-            ns,
-            lake.subject().as_str(),
-            &[write.to_owned()],
-            &ctx(),
-        )
-        .await
-        .unwrap();
+    // Covering the write activity is not enough: the binding is still of the database profile.
+    bind(&[write], None).await;
+    assert!(
+        refused(
+            w.workers
+                .register(
+                    &lake,
+                    "payments",
+                    "lake-wrong-profile",
+                    &caps(&[write], "1.6")
+                )
+                .await
+        ),
+        "a binding of the database profile does not register the lake activity, even when it names it"
+    );
+
+    // Naming the profile makes the identity a lake runner, for the lake activity and for nothing else.
+    let view = bind(&[write], Some(BindingProfile::Lake)).await;
+    assert_eq!(view.profile, BindingProfile::Lake);
     assert!(refused(
         w.workers
             .register(&lake, "payments", "lake-too-old", &caps(&[write], "1.5"))
@@ -1039,8 +1055,30 @@ pub async fn registration(w: &World) {
         .unwrap();
     assert_eq!(registered.accepted_protocol_version, "1.6");
 
-    // Everything bound: the profile rule still holds, because it does not come from the binding.
-    w.bind_everything(&lake).await;
+    // A replacement that does not name the profile keeps it, and the session stays.
+    let view = bind(&[write], None).await;
+    assert_eq!(
+        view.profile,
+        BindingProfile::Lake,
+        "an absent profile keeps the one in force"
+    );
+    assert_eq!(view.revoked.sessions, 0);
+
+    // Bound to everything, a lake runner is still a lake runner: the SQL activity is covered by `*` and refused.
+    let view = bind(&["*"], None).await;
+    assert_eq!(view.profile, BindingProfile::Lake);
+    assert_eq!(
+        view.revoked.sessions, 0,
+        "the session offers an activity of its own profile"
+    );
+    assert!(
+        refused(
+            w.workers
+                .register(&lake, "payments", "lake-wildcard-sql", &caps(&[sql], "1.6"))
+                .await
+        ),
+        "a wildcard does not let a lake runner register as a database runner"
+    );
     for (name, activities) in [
         ("lake-mixed", vec![write, sql]),
         ("lake-ordinary", vec![write, "ordinary"]),
@@ -1056,6 +1094,36 @@ pub async fn registration(w: &World) {
             "{name}"
         );
     }
+
+    // Changing the profile closes the session of the other one, and the binding reads it back.
+    let view = bind(&["*"], Some(BindingProfile::Database)).await;
+    assert_eq!(view.profile, BindingProfile::Database);
+    assert_eq!(
+        view.revoked.sessions, 1,
+        "the lake session is closed when the identity becomes a database runner"
+    );
+    let listed = w.bindings.list(&w.admin, ns, &ctx()).await.unwrap();
+    let mine = listed
+        .iter()
+        .find(|binding| binding.subject == lake.subject().as_str())
+        .expect("the binding is listed");
+    assert_eq!(mine.profile, BindingProfile::Database);
+    assert!(refused(
+        w.workers
+            .register(&lake, "payments", "lake-now-sql", &caps(&[write], "1.6"))
+            .await
+    ));
+    assert!(
+        w.workers
+            .register(&lake, "payments", "sql-machine", &caps(&[sql], "1.6"))
+            .await
+            .is_ok(),
+        "the same wildcard registers the SQL profile once the identity is of it"
+    );
+    w.bindings
+        .unbind(&w.admin, ns, lake.subject().as_str(), &ctx())
+        .await
+        .unwrap();
 
     // The reserved prefix stays closed to every other role, whatever it is bound to.
     for principal in [&w.worker, &w.runner_identity] {
