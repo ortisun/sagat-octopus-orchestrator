@@ -78,6 +78,9 @@ pub struct EngineConfig {
     /// Whether the replica fires schedules (`SAGAT_SCHEDULES_ENABLED`, off by default until the
     /// feature is released): the REST routes can create schedules either way, none fires without it.
     pub schedules_enabled: bool,
+    /// Whether a run may carry an Apache Iceberg write (`SAGAT_LAKE_ENABLED`, feature 035, off by default). It is the
+    /// control plane's setting too, and a replica that leases the work reads it where it admits the claim.
+    pub lake_enabled: bool,
     pub schedules: ScheduleSettings,
     /// Pause between schedule rounds when the last one found nothing to do.
     pub schedule_poll: Duration,
@@ -564,6 +567,7 @@ impl EngineConfig {
         )?);
 
         let schedules_enabled = flag(get, "SAGAT_SCHEDULES_ENABLED")?;
+        let lake_enabled = flag(get, "SAGAT_LAKE_ENABLED")?;
         let schedule_defaults = ScheduleSettings::default();
         let schedules = ScheduleSettings {
             batch: u32::try_from(positive(
@@ -809,6 +813,7 @@ impl EngineConfig {
             events,
             event_poll,
             schedules_enabled,
+            lake_enabled,
             schedules,
             schedule_poll,
             deliveries,

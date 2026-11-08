@@ -227,6 +227,7 @@ impl DefinitionStore for PgDefinitionStore {
             definition,
             None,
             None,
+            false,
         )
         .await?;
         tx.commit().await.map_err(store_error)
@@ -483,6 +484,7 @@ impl DefinitionStore for PgDefinitionStore {
                 definition,
                 None,
                 None,
+                false,
             )
             .await?;
             // The same publication, made by a request that committed while this one waited for the

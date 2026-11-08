@@ -2911,6 +2911,31 @@ The other fixes were wording:
   - *Not run.* The release-upgrade scenarios (`release_upgrade*`), which need the released producer build; the Studio's browser journeys.
   - *Not done.* `ResolveDatabase` refusing a kind outside the caller's profile (slice C), the runner offering the lake activity by the agreed minor (G), and
     a `--profile` for `sagat worker bind` (that command binds the identity of a worker's own token for development and keeps the profile in force).
+- **D035-137 — A run may carry an Iceberg write when the deployment turns the lake on (slice E of D035-130, the first half).** **Decided by:
+  delegate**. No migration, no contract change, no `Cargo.lock` change. **Off by default**, and with it off nothing a run can see changes.
+  - *What.* `lake.enabled` (`SAGAT_LAKE_ENABLED`) now reaches the processes that admit and lease runs: `PgRunStore::with_lake_enabled`, set from
+    `ServeConfig.lake_enabled` in the control plane (the store that starts runs) and from the new `EngineConfig.lake_enabled` in the execution engine
+    (the store that admits a claim; `SAGAT_LAKE_ENABLED` is parsed strictly there too, a mistyped value is refused). The guard in `check_definition`
+    that refused every run carrying an Iceberg write now refuses it only when the flag is off. **The lake loop of the same function now honours the run's
+    pins like the SQL loop**: for an existing run the connection and the revision are the ones it was admitted with, a run with no pin for the node is
+    refused, and an explicit revision on the node that disagrees with the pin is refused, so a floating write does not re-resolve at claim or replay.
+    The quickstart for `LAKE_DISABLED` says the setting belongs on the engine replicas too.
+  - *What it does not do.* A run of an Iceberg write can now be created and pinned, and then waits: nothing leases its step. `database_claim` and the
+    resolve path read the SQL operation of the node, so a lake runner that registers has its claim refused at every poll. That is the work of C (resolve,
+    two secrets), D (the input fed from the run), F (completion) and G (the runner's shell). **A deployment must not turn the lake on to write to a
+    table yet.**
+  - *Not done (T035-055).* The lake quota rows (8 per namespace, 32 per tenant; `QuotaResource` is a domain-wide enum and the concurrency counts are blind
+    to the kind), the `LakeRefused` audit at creation (`runs.rs`, which the 018 pull requests change), and a test of each creation path: the direct start
+    and its replay are tested; child, event and rerun use the same store function and ad hoc refuses a lake write by construction (it asks for a SQL
+    operation), none of them tested separately.
+  - *Evidence.* In `lake::run` of `integration_database_connections`: the start of a published Iceberg workflow is refused with the lake off (unchanged)
+    and admitted with it on, with one pin (`save`, revision 1); the replay of the start is the same run; with the pin deleted the replay is refused.
+    **Written after the code, so three hand mutations stand in for the red run, all killed**: the switch ignored so a run is always refused
+    (`lake.rs:629`), the switch ignored so a run is always admitted (`lake.rs:607`), and the lake loop not consulting the pins (`lake.rs:660`). The
+    engine's setting has a test that did not compile before the field existed. fmt and clippy `-D warnings` for the store, application, engine, control
+    plane and test crates; the engine's and the control plane's tests; `integration_database_connections` 7 and as the runtime role 7;
+    `integration_database_runner`; `integration_iceberg_writes` 50; `contract_iceberg_writes` 35; `contract_developer_experience`;
+    `integration_platform_foundation` 102.
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

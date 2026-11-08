@@ -68,6 +68,25 @@ fn schedules_are_stored_but_fire_nowhere_until_the_flag_is_set() {
 }
 
 #[test]
+fn a_run_may_carry_an_iceberg_write_only_when_the_lake_flag_is_set() {
+    assert!(!parse(&[]).expect("config").lake_enabled, "off by default");
+    assert!(
+        parse(&[("SAGAT_LAKE_ENABLED", "true")])
+            .expect("config")
+            .lake_enabled
+    );
+    assert!(
+        !parse(&[("SAGAT_LAKE_ENABLED", "false")])
+            .expect("config")
+            .lake_enabled
+    );
+    assert!(
+        parse(&[("SAGAT_LAKE_ENABLED", "maybe")]).is_err(),
+        "a mistyped switch is refused, not guessed"
+    );
+}
+
+#[test]
 fn a_mistyped_schedule_setting_is_refused_not_guessed() {
     for (name, value) in [
         ("SAGAT_SCHEDULES_ENABLED", "maybe"),

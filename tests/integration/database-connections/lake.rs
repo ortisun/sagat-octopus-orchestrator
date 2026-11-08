@@ -9,9 +9,11 @@ use sagat_application::{
     database::{ConnectionService, ConnectionWrite},
     definitions::IrError,
     error::AppError,
+    execution::Engine,
     managed_secrets::{ManagedSecretService, ManagedSecretWrite},
     publishing::Promotion,
     reveal_grants::RevealGrantService,
+    runs::{RunService, StartRun},
     worker::Capabilities,
 };
 use sagat_domain::{
@@ -27,6 +29,7 @@ use sagat_domain::{
     identity::{Environment, Permission, Principal, Role, Slug},
     secrets::{SecretName, SecretValue},
 };
+use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -602,6 +605,62 @@ async fn publication(
         )
         .await;
     assert!(matches!(run, Err(AppError::NotFound)), "{run:?}");
+
+    // With the lake turned on in the process that admits runs (`lake.enabled`, D035-137), the same run is admitted, and
+    // the revision it was admitted with is the one it keeps: the pin is recorded, and a replay of the start consults it.
+    let lake_runs = RunService::new(
+        w.store.clone().with_lake_enabled(true),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        w.cache.clone(),
+    );
+    let start = || StartRun {
+        namespace: "payments",
+        workflow: published,
+        version: None,
+        input: br#"{"rows":[]}"#,
+        correlation_id: None,
+        deadline: None,
+        key: "lake-run-start-0000002",
+    };
+    let started = lake_runs
+        .start(&w.admin, &start(), &ctx())
+        .await
+        .expect("a run of an Iceberg write is admitted with the lake on")
+        .info
+        .run_id;
+    let pins: Vec<(String, i32)> = sqlx::query_as(
+        "SELECT node_id, revision FROM run_database_connections WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(started.as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        pins,
+        vec![("save".to_owned(), 1)],
+        "the connection and the revision the run was admitted with"
+    );
+    let replayed = lake_runs
+        .start(&w.admin, &start(), &ctx())
+        .await
+        .expect("the same start is answered again")
+        .info
+        .run_id;
+    assert_eq!(replayed, started, "a replay of the start is the same run");
+    // A run whose pin is gone is not re-resolved by name: its admission is refused, as a SQL step's is.
+    sqlx::query("DELETE FROM run_database_connections WHERE tenant_id = $1 AND run_id = $2")
+        .bind(w.admin.tenant_id().as_uuid())
+        .bind(started.as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .unwrap();
+    let unpinned = lake_runs.start(&w.admin, &start(), &ctx()).await;
+    assert!(
+        unpinned.is_err(),
+        "a run admitted with a pin is not admitted again without one: {unpinned:?}"
+    );
 
     // A `pii` field is refused by an `internal` ceiling, and named by its path and class.
     assert_eq!(

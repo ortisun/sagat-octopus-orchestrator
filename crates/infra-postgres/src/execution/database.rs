@@ -79,7 +79,8 @@ impl PgRunTx {
         if !self.database_role(subject).await? {
             return Ok(false);
         }
-        crate::database::admit_node(&mut self.tx, &self.info, &self.def, node).await?;
+        crate::database::admit_node(&mut self.tx, &self.info, &self.def, node, self.lake_enabled)
+            .await?;
         let connection = self.database_connection(node).await?;
         if crate::secrets::pool_refusal(
             &mut self.tx,
@@ -173,7 +174,8 @@ impl PgRunTx {
         if !self.database_owner(node, subject).await? {
             return Err(StoreError::DatabaseUnavailable);
         }
-        crate::database::admit_node(&mut self.tx, &self.info, &self.def, node).await?;
+        crate::database::admit_node(&mut self.tx, &self.info, &self.def, node, self.lake_enabled)
+            .await?;
         let connection = self.database_connection(node).await?;
         if crate::secrets::pool_refusal(
             &mut self.tx,

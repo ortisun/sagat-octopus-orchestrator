@@ -75,8 +75,10 @@ pub(crate) fn database_writes(definition: &WorkflowDefinition) -> Option<bool> {
     )
 }
 
-/// Resolved revisions only; connection settings and all credentials stay out of admission receipts.
+/// Resolved revisions only; connection settings and all credentials stay out of admission receipts. `lake_enabled` is the
+/// deployment's `lake.enabled`: without it a run that would carry an Iceberg write is refused (feature 035, D035-137).
 #[tracing::instrument(skip_all, name = "database.admit")]
+#[allow(clippy::too_many_arguments)] // one admission scope, with optional existing run and the deployment's lake switch
 pub(crate) async fn admit_definition(
     conn: &mut PgConnection,
     tenant: TenantId,
@@ -85,6 +87,7 @@ pub(crate) async fn admit_definition(
     definition: &WorkflowDefinition,
     pinned: Option<RunId>,
     run_info: Option<&RunInfo>,
+    lake_enabled: bool,
 ) -> Result<Vec<(NodeId, ConnectionId, u32)>, StoreError> {
     if !definition
         .nodes()
@@ -94,7 +97,15 @@ pub(crate) async fn admit_definition(
     }
     let started = std::time::Instant::now();
     let result = check_definition(
-        conn, tenant, namespace, actors, definition, pinned, run_info, None,
+        conn,
+        tenant,
+        namespace,
+        actors,
+        definition,
+        pinned,
+        run_info,
+        None,
+        lake_enabled,
     )
     .await;
     let outcome = match &result {
@@ -117,6 +128,7 @@ pub(crate) async fn admit_node(
     info: &RunInfo,
     definition: &WorkflowDefinition,
     node: &NodeId,
+    lake_enabled: bool,
 ) -> Result<(), StoreError> {
     let actors = run_actors(conn, info).await?;
     check_definition(
@@ -128,6 +140,7 @@ pub(crate) async fn admit_node(
         Some(info.run_id),
         Some(info),
         Some(node),
+        lake_enabled,
     )
     .await?;
     Ok(())
@@ -143,6 +156,7 @@ async fn check_definition(
     pinned: Option<RunId>,
     run_info: Option<&RunInfo>,
     selected: Option<&NodeId>,
+    lake_enabled: bool,
 ) -> Result<Vec<(NodeId, ConnectionId, u32)>, StoreError> {
     let operations: Vec<_> = definition
         .nodes()
@@ -157,10 +171,13 @@ async fn check_definition(
     if operations.is_empty() && lake_writes.is_empty() {
         return Ok(Vec::new());
     }
-    // An Iceberg write is admitted for publication and for the author's feedback only. A run of one has no admission yet
-    // (T035-055: connection pins on the direct, child, event, rerun and ad hoc paths, and quota rows), so a run that would
+    // An Iceberg write is admitted for publication and for the author's feedback always, and for a run only when the
+    // deployment has turned the lake on (`lake.enabled`, off by default; D035-059, D035-137). Until then a run that would
     // carry one is refused, as a connection nobody may use is, instead of starting and waiting for a worker that is not there.
-    if !lake_writes.is_empty() && (pinned.is_some() || run_info.is_some() || selected.is_some()) {
+    if !lake_writes.is_empty()
+        && !lake_enabled
+        && (pinned.is_some() || run_info.is_some() || selected.is_some())
+    {
         return Err(StoreError::DatabaseUnavailable);
     }
     // Same order as catalog/secret writes. Membership and existing ACL rows remain locked through
@@ -277,7 +294,20 @@ async fn check_definition(
     }
     for (node, write) in lake_writes {
         let name = write.connection().name.as_str();
-        let pinned_revision = write.connection().revision.map(i64::from);
+        // A run that exists uses the revision it was admitted with, whatever the connection has become since: a floating
+        // write must not re-resolve at claim or replay (D035-130 E).
+        let pin = if pinned.is_some() {
+            Some(
+                *pins
+                    .get(node.as_str())
+                    .ok_or(StoreError::DatabaseUnavailable)?,
+            )
+        } else {
+            None
+        };
+        let pinned_revision = pin
+            .map(|(_, r)| i64::from(r))
+            .or(write.connection().revision.map(i64::from));
         let (id, revision, refusal) = {
             let key = (name, pinned_revision);
             let (id, revision, config) = if let Some(found) = resolved.get(&key) {
@@ -297,6 +327,15 @@ async fn check_definition(
             };
             // A lake write can only use a lake connection; a SQL connection is unusable here, as a lake one is to a SQL node.
             let iceberg = config.as_iceberg().ok_or(StoreError::DatabaseUnavailable)?;
+            // The pin is the connection and the revision the run was admitted with; nothing else stands in for it.
+            if pin.is_some_and(|p| p != (*id, *revision))
+                || write
+                    .connection()
+                    .revision
+                    .is_some_and(|r| i64::from(r) != i64::from(*revision))
+            {
+                return Err(StoreError::DatabaseUnavailable);
+            }
             (*id, *revision, write.refusal_by(iceberg))
         };
         // A step that pins a revision is judged by the current one too: a mode or a ceiling that was tightened since applies
