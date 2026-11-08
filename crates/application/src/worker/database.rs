@@ -40,7 +40,10 @@ where
                 self.clock.now(),
             )
             .with_reason("managed database capability refused");
-            RunStore::record_denial(&self.store, &audit).await?;
+            // a failure to write the audit must not replace the refusal the runner is told
+            if RunStore::record_denial(&self.store, &audit).await.is_err() {
+                tracing::warn!("the denial of a refused managed capability could not be recorded");
+            }
         }
         result
     }
@@ -121,8 +124,8 @@ where
         });
         effects.audit = records.next();
         effects.further_audits = records.collect();
-        tx.persist(&[], effects).await?;
-        tx.commit().await?;
+        // What is handed over is built before anything is committed: a failure to build it must not leave a pin and a record for a
+        // credential that was never delivered.
         let resolved = |selected: crate::database::SelectedSecret, value| ResolvedSecret {
             name: selected.stored.meta.name,
             version: selected.stored.meta.version,
@@ -155,6 +158,8 @@ where
                 ResolvedGrant::Lake(lake)
             }
         };
+        tx.persist(&[], effects).await?;
+        tx.commit().await?;
         Ok(crate::database::ResolvedDatabase {
             connection: after.connection,
             expires_at,

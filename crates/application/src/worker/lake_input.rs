@@ -63,6 +63,9 @@ pub enum LakeRecords {
     Blobs(Vec<LakeBlob>),
 }
 
+/// An append never allows an empty write. The lease says so and the receipt is held to it, from this one value.
+pub const APPEND_ALLOWS_EMPTY: bool = false;
+
 /// What the server knows about this attempt.
 #[derive(Debug, Clone, Copy)]
 pub struct LakeFacts<'a> {

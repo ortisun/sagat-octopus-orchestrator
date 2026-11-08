@@ -162,6 +162,12 @@ terminal retention of the run, all roles together. **The process that serves the
 without it the step is not found, as any lake node is on a process that has the lake off. The runner that carries out the attempt
 is not built yet, so a deployment should not rely on this to write to a table.
 
+**The completion of a lake step** (D035-142). The runner reports `CompleteStep` with the receipt of the write. The server reads it into typed fields, holds it to the step (the
+effect key, the ref, the mode, that a commit has a snapshot and that an empty batch is not accepted), and keeps the receipt it wrote again: never the bytes the runner sent. A completion
+that no resolve preceded, or a receipt that is not the step's, is refused (`INVALID_ARGUMENT`), leaves the step as it was and is audited once for the run; a lake step cannot upload a
+blob. A step whose lease lapsed waits for an operator (`LEASE_EXPIRED`), and a commit whose receipt the run has no room to keep waits with an unknown outcome. **Rotating a secret does not
+cut an attempt that is in flight**: the attempt keeps the version it pinned until its lease ends.
+
 ## Observe and recover
 
 - Standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `http/json` configure traces.

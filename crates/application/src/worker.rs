@@ -1461,7 +1461,7 @@ where
             workflow: &workflow,
             workflow_version: &workflow_version,
             prior_attempt_may_have_left_files: facts.first_leased_at.is_some(),
-            allow_empty: false,
+            allow_empty: lake_input::APPEND_ALLOWS_EMPTY,
         };
         Ok(lake_lease::lake_lease_document(
             self.engine.evaluator(),
@@ -2385,14 +2385,19 @@ where
         Self::managed_kind(tx, task).is_some()
     }
 
+    /// Whether the step is a managed write: a SQL statement that executes, or an Iceberg write (every lake step writes). What a write
+    /// reports as done cannot be treated as undone when its report cannot be kept: its outcome is unknown, not failed.
     fn database_write<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
-        task.instance.path().is_root()
-            && tx
-                .parts()
-                .0
-                .node(task.instance.node())
-                .and_then(sagat_domain::workflow::Node::database_operation)
-                .is_some_and(|op| op.kind == sagat_domain::database::OperationKind::Execute)
+        if !task.instance.path().is_root() {
+            return false;
+        }
+        let node = tx.parts().0.node(task.instance.node());
+        node.is_some_and(|node| {
+            node.managed_kind() == Some(sagat_domain::database::ManagedKind::Lake)
+                || node
+                    .database_operation()
+                    .is_some_and(|op| op.kind == sagat_domain::database::OperationKind::Execute)
+        })
     }
 
     /// The secrets the step declares, from its definition.

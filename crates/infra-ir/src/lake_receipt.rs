@@ -329,9 +329,25 @@ impl LakeReceiptCodec for JsonLakeReceiptCodec {
                 Receipt::Iceberg(iceberg) => iceberg,
                 Receipt::ObjectStorage(_) => return Err(InvalidLakeReceipt::Kind),
             };
-        // The revert of a commit is the receipt of a compensation; an Iceberg write ends in a commit or in nothing to commit.
-        if iceberg.outcome == IcebergOutcome::Reverted {
-            return Err(InvalidLakeReceipt::Outcome);
+        // The revert of a commit is the receipt of a compensation; an Iceberg write ends in a commit or, when the lease allows it, in nothing
+        // to commit.
+        match iceberg.outcome {
+            IcebergOutcome::Reverted => return Err(InvalidLakeReceipt::Outcome),
+            IcebergOutcome::EmptyNoCommit if !expected.allow_empty => {
+                return Err(InvalidLakeReceipt::Outcome);
+            }
+            _ => {}
+        }
+        // The parts must agree with the outcome, as the host writes them: a commit has a snapshot; nothing committed has neither a snapshot
+        // nor a row added. Later steps read these fields.
+        let adds_rows = iceberg.rows_added.is_some_and(|rows| rows.get() != 0);
+        let consistent = match iceberg.outcome {
+            IcebergOutcome::Committed => iceberg.snapshot_id.is_some(),
+            IcebergOutcome::EmptyNoCommit => iceberg.snapshot_id.is_none() && !adds_rows,
+            IcebergOutcome::Reverted => true,
+        };
+        if !consistent {
+            return Err(InvalidLakeReceipt::Inconsistent);
         }
         if iceberg.effect_key.as_str() != expected.effect_key
             || iceberg.reference.as_str() != expected.reference

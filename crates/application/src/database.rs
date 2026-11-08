@@ -277,6 +277,9 @@ pub struct ExpectedReceipt<'a> {
     /// The branch or tag the step commits to.
     pub reference: &'a str,
     pub mode: sagat_domain::database::WriteMode,
+    /// Whether the lease said an empty batch may end the step without a commit. When it did not, a receipt that says one did is not the
+    /// host's the step was given to.
+    pub allow_empty: bool,
 }
 
 /// Why a receipt is not the one of the step. Never carries the receipt: a value of it is not safe to print.
@@ -290,6 +293,8 @@ pub enum InvalidLakeReceipt {
     Kind,
     #[error("the receipt reports an outcome an Iceberg write does not end with")]
     Outcome,
+    #[error("the parts of the receipt contradict each other")]
+    Inconsistent,
     #[error("the receipt is not about this step")]
     Mismatch,
 }

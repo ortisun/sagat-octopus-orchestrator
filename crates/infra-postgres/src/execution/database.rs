@@ -327,6 +327,10 @@ impl PgRunTx {
         subject: &str,
         connection: sagat_application::database::ConnectionRecord,
     ) -> Result<DatabaseInput, StoreError> {
+        // refused before any secret is read: a step of the lake is only ever of an Iceberg connection
+        if connection.config.as_iceberg().is_none() {
+            return Err(StoreError::DatabaseUnavailable);
+        }
         let slots = connection.config.secret_slots();
         // A valid lake connection always names one: with none there is nothing to hand over, and a step that is handed nothing is
         // not one this runner can run.
