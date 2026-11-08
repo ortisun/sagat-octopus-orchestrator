@@ -2859,7 +2859,7 @@ The other fixes were wording:
     register as one profile in one session and as the other in the next, which the persisted profile would forbid, and which matters for "a stolen lake
     token cannot reach PostgreSQL credentials" (D035-058). With no lake work in existence that costs nothing today, and it is **a condition on the
     next step**: admission of a lake run (D035-130 E) does not open before the profile is persisted (T035-025, T035-026) or a decision accepts this form
-    with its consequence written. `contracts/worker-protocol.md` says so.
+    with its consequence written. `contracts/worker-protocol.md` says so. *Closed on 2026-11-08 by D035-136: the profile is persisted.*
   - *Decisions.* The minor stays 1.6 and is not raised for the lake profile: the `ResolvedDatabase` fields it needs are already in the 1.6 schema, the lake
     runner is first-party, an old server refuses the new activity at registration (`NotBound`: the reverted rule answered it in the red run) and an old runner never
     offers it. *Exit condition:* the first lake wire difference, or a second lake runner of another version, takes the next free minor (the drafts 020, 021, 025
@@ -2875,6 +2875,42 @@ The other fixes were wording:
     runtime role 7, `integration_database_runner` 1 (1 ignored), `integration_iceberg_writes` 50; `contract_iceberg_writes` after the contract note.
   - *Not done.* The persisted profile and `ResolveDatabase` refusing a kind outside it (T035-025, T035-026, slice C); the lease of lake work, which is
     admission (E); the runner's own offering of the activity by the agreed minor (`apps/database-runner/src`, slice G).
+- **D035-136 — The profile of a dedicated runner is persisted on its binding (slice C1 of D035-130; the condition of D035-135).** **Decided by:
+  delegate**. One migration, one REST field, no new minor, no `Cargo.lock` change. A lake step still cannot start.
+  - *What.* `worker_bindings.profile` (`database` by default, or `lake`; CHECK `worker_bindings_profile_valid`), migration
+    `20270109000000_worker_binding_profile` (additive: a constant default, so no rewrite; the `down` refuses while any binding is not `database`, with
+    `object_not_in_prerequisite_state`). Every row of one identity in one namespace carries the same value: the store replaces them together under
+    the identity's advisory lock, and a registration that finds two refuses. `BindingProfile` in the domain; `managed_profile(activities)` in the
+    application is the profile an offer is for (`managed_capabilities_allowed` is now written with it). **A dedicated runner registers only when the
+    profile of its binding is the profile of what it offers**, whatever its patterns cover, so a runner bound to `*` is of one profile and the
+    reasoning of D035-058 (a stolen lake token cannot reach PostgreSQL credentials) holds. A replacement that changes the profile closes the
+    sessions that offer the other one, counted in `revoked`, and releases their attempts, as it does for a pattern that no longer covers.
+  - *REST.* `PUT /namespaces/{id}/worker-bindings/{subject}` takes an optional `profile` (`database` or `lake`; absent keeps the one in force, `database`
+    for a new binding; another value is 422), and a binding in any answer carries `profile` (required in the schema: the server always sends it). The
+    Studio's generated types follow (`npm run api`, `npm run check:api`), the audit record of the change names the profile when it is given.
+    Bindings made before this read as `database`, which is what every dedicated runner has been, and an older engine ignores the column.
+  - *Merge note.* The upgrade oracles (`release_upgrade*.rs`) now say `20270109000000`. The 018 branches carry migrations to `20270108000000` and their own
+    oracle edit; whichever merges second keeps the larger stamp (`scripts/check-upgrade-boundary.py` fails otherwise).
+  - *Evidence.* Domain test of `BindingProfile` (it did not compile before the type); `managed_registration.rs` gained the profile of an offer. The
+    persisted rule in the real store is `lake::registration` of `tests/integration/database-connections`: a new binding is `database`; naming the lake
+    activity under it is refused; naming `lake` registers it; an absent profile keeps it; a wildcard under `lake` refuses the SQL activity and under
+    `database` refuses the lake one; changing the profile closes the other profile's session (1) and the binding lists the new one. **Written after the
+    code, so three hand mutations stand in for the red run, and all three were killed**: registration ignoring the persisted profile (`lake.rs:1024`), a
+    profile change that closes nothing (`lake.rs:1101`, "the lake session is closed…", left 0) and an absent profile that resets to the default
+    (`lake.rs:1060`, left `Database`). Six REST scenarios in `contract_rest_security_multitenancy` (17 pass): `lake` and `database` are 200, `sql`,
+    `Lake` and `5` are 422, a viewer is 403. fmt and clippy `-D warnings` for the domain, application, store, HTTP, gRPC and test crates; the tests of
+    `sagat-domain`, `sagat-application` and `sagat-api-http`; `integration_database_connections` 7 and as the runtime role 7;
+    `contract_iceberg_writes` 35; `contract_developer_experience` 8; `integration_platform_foundation` 101 before the migration test and 102 with it (the migrations and the privilege audit);
+    `integration_security_multitenancy` 126; the storage classification has the column; the Studio typechecks against the regenerated types.
+  - *The migration.* `migrations::the_binding_profile_rolls_back_only_while_every_binding_is_of_the_database_profile` (in
+    `integration_platform_foundation`, 102 tests): a binding written without a profile reads `database`; `sql` is refused by the CHECK; with a `lake`
+    binding the rollback is refused with the guard's message and leaves the column; after the binding is removed it rolls back, and forward
+    restores the default. A hand mutation of the guard (`IF false`) is killed at the refused rollback. **The first version of the test took twenty
+    minutes**: when a revert fails, `Migrator::undo` returns before it unlocks, so the advisory lock stays on that pooled connection and the next
+    rollback waits for the pool to drop it. The test now runs the refused rollback on a connection of its own and releases the lock (1.6 s).
+  - *Not run.* The release-upgrade scenarios (`release_upgrade*`), which need the released producer build; the Studio's browser journeys.
+  - *Not done.* `ResolveDatabase` refusing a kind outside the caller's profile (slice C), the runner offering the lake activity by the agreed minor (G), and
+    a `--profile` for `sagat worker bind` (that command binds the identity of a worker's own token for development and keeps the profile in force).
 - **G035-065 — The slot range is not configurable.** ADR-0079 rule 5 has the node configure the range of slots; any slot below 4096 is
   accepted. One lake runner to a sandbox runner (the owner label) makes that harmless. *Exit condition:* a range in the configuration the day
   two lake runners share a node.

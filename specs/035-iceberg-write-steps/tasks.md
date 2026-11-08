@@ -534,7 +534,8 @@ three conditions pass.
 
   Update `crates/infra-postgres/storage-classification.json` as data-model.md §6 says. T035-013 passes.
   Refs: D035-044, D035-059.
-- [ ] T035-026 Implement profile binding:
+- [ ] T035-026 Implement profile binding (*2026-11-08, D035-136: the column is in its own migration, `20270109000000_worker_binding_profile`, and not in
+  the `20270115000000` one of T035-025, which keeps the rest of its list*):
   - persist `profile` in the worker-binding store of `crates/infra-postgres/src/`;
   - in `crates/application/src/worker/database.rs`, `managed_capabilities_allowed` accepts only the
     profile's activities, and only under the negotiated minor;
@@ -544,9 +545,12 @@ three conditions pass.
   T035-014 passes. Refs: D035-057.
 
   *2026-11-07, partly done, left unticked (D035-135):* `managed_capabilities_allowed` accepts one profile at a time by the activities offered
-  (`sagat.database.postgresql` alone or `sagat.database.iceberg.write` alone, from minor 1.6; the unserved activities are refused). Not done, and a
-  condition of admission (D035-130 E): `worker_bindings.profile` (T035-025), `ResolveDatabase` refusing a kind outside the profile, and the runner offering
-  the activity by the agreed minor. The task text names `worker/database.rs`; the function is in `worker.rs`.
+  (`sagat.database.postgresql` alone or `sagat.database.iceberg.write` alone, from minor 1.6; the unserved activities are refused). The task text names
+  `worker/database.rs`; the function is in `worker.rs`.
+
+  *2026-11-08, partly done, left unticked (D035-136):* the profile is persisted on the binding (`worker_bindings.profile`, store, service, REST, Studio
+  types) and a registration must match it, so the first bullet of the task is done. Not done: `ResolveDatabase` refusing a kind outside the profile
+  (slice C) and the runner offering the activity by the agreed minor (slice G).
 - [ ] T035-027 [P] Separate the lake build:
   - a `lake` cargo feature in `apps/database-runner/Cargo.toml`;
   - a new workspace crate `crates/infra-lake/`, the only crate that enables `object_store` 0.14.2

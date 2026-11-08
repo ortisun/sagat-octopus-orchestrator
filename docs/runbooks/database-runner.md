@@ -100,6 +100,21 @@ the runner starts, and a value outside its bounds stops the runner: nothing is d
   `maxCommitRetries` (4, at most 16), `maxDecodedBytes` (16 GiB), `maxMetadataBytes` (64 MiB), `hostStartSecs` (30),
   `killLimitSecs` (20) and `largeAboveBytes` (none).
 
+**The identity of a lake runner carries the profile `lake`** (D035-136). A dedicated runner registers only for the managed
+activities of the profile its binding carries, whatever its patterns cover, so a runner bound to `*` is still of one profile
+and a stolen lake token cannot register as a SQL runner. Bind it with the profile named, and with the activity it serves:
+
+```sh
+curl -X PUT "$SAGAT/namespaces/$NAMESPACE_ID/worker-bindings/$RUNNER_SUBJECT" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"activities": ["sagat.database.iceberg.write"], "profile": "lake"}'
+```
+
+A binding made without `profile` is `database`, which is what every SQL runner has always been; a replacement that leaves
+`profile` out keeps the one in force. Changing the profile closes the sessions of the identity that offer the other profile's
+activity (the answer counts them in `revoked`). The registration of a `database` runner for the lake activity, of a `lake`
+runner for the SQL activity, of both, or of an ordinary activity beside either, is refused as not bound.
+
 ## Observe and recover
 
 - Standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `http/json` configure traces.

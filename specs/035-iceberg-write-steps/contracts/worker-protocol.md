@@ -18,12 +18,14 @@ minor when this feature merges (D035-043; drafts 020, 021, 025 and 026 also clai
   - A runner offers the new activities only when the agreed minor includes them, so a new runner
     against an old server still registers for PostgreSQL. An old runner never sees them.
   - `ResolveDatabase` refuses a connection kind outside the caller's profile.
-  - **Status (D035-135).** Built: one profile per registration, judged by the activities offered
-    (`sagat.database.postgresql` alone, or `sagat.database.iceberg.write` alone), from minor 1.6, and an activity the
-    server does not serve yet is refused. **Not built: the profile persisted on the binding** (T035-025, T035-026).
-    Until it is, an identity bound to a wildcard chooses its profile at each registration, so **admission of a lake
-    run (D035-130 E) does not open before the profile is persisted.** The minor stays 1.6 for now, because nothing on
-    the wire differs yet; the first wire difference takes the next free minor.
+  - **Status (D035-135, D035-136).** Built: one profile per registration, judged by the activities offered
+    (`sagat.database.postgresql` alone, or `sagat.database.iceberg.write` alone), from minor 1.6; an activity the
+    server does not serve yet is refused; **and the profile persisted on the binding** (`worker_bindings.profile`,
+    `database` by default, set by `PUT /namespaces/{id}/worker-bindings/{subject}`), which a registration must
+    match, so a runner bound to a wildcard is still of one profile. Not built: `ResolveDatabase` refusing a
+    connection kind outside the profile of the caller's binding (D035-130 C), and the runner offering the activity by the
+    agreed minor (G). The minor stays 1.6 for now, because nothing on the wire differs yet; the first wire
+    difference takes the next free minor.
 - **`TaskLease` input** for these activities: the existing `input` payload carries the attempt input
   of [lake-runtime.md](lake-runtime.md), minus credentials and the relay. That is `effectKey`,
   `firstAttemptStartedAt`, the table or target, mode, mapping, limits, and record references (blob

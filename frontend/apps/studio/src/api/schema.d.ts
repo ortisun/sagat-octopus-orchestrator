@@ -3790,6 +3790,11 @@ export interface components {
             subject: string;
             /** @description Activity names, `<prefix>.*` or `*`. */
             activities: string[];
+            /**
+             * @description What kind of managed work a dedicated runner (`database-runner`) may register for: `database` serves SQL steps, `lake` serves Iceberg writes. A runner registers only for the managed activities of its profile, whatever its patterns cover. It means nothing to an ordinary worker. Bindings made before profiles existed read as `database`.
+             * @enum {string}
+             */
+            profile: "database" | "lake";
             /** @description The worker pools the identity was granted in this namespace; a secret that lists pools is delivered only to identities that hold one of them. */
             pools?: string[];
             revoked?: components["schemas"]["RevokedWorkers"];
@@ -3801,6 +3806,11 @@ export interface components {
             activities: string[];
             /** @description Replaces the pools the identity is granted. Absent leaves them as they are; an empty list takes them all away. Removing the binding removes them too. */
             pools?: string[];
+            /**
+             * @description Sets the profile of a dedicated runner. Absent keeps the one it has (`database` for a new binding). A runner whose session offers the managed activities of another profile is closed when the profile changes.
+             * @enum {string}
+             */
+            profile?: "database" | "lake";
         };
         Secret: {
             name: string;

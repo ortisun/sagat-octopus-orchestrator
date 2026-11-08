@@ -116,3 +116,26 @@ fn no_other_role_registers_under_the_reserved_prefix() {
         ));
     }
 }
+
+#[test]
+fn the_profile_of_a_registration_is_the_profile_of_the_activities_it_offers() {
+    use sagat_application::worker::managed_profile;
+    use sagat_domain::binding::BindingProfile;
+    assert_eq!(
+        managed_profile(&names(&[MANAGED_DATABASE_ACTIVITY])),
+        Some(BindingProfile::Database)
+    );
+    assert_eq!(
+        managed_profile(&names(&[ICEBERG_WRITE_ACTIVITY, ICEBERG_WRITE_ACTIVITY])),
+        Some(BindingProfile::Lake)
+    );
+    for neither in [
+        vec![],
+        vec![MANAGED_DATABASE_ACTIVITY, ICEBERG_WRITE_ACTIVITY],
+        vec![ICEBERG_WRITE_ACTIVITY, "ordinary"],
+        vec!["ordinary"],
+        vec![ICEBERG_REVERT_ACTIVITY],
+    ] {
+        assert_eq!(managed_profile(&names(&neither)), None, "{neither:?}");
+    }
+}

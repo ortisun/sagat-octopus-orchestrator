@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::binding::BindingProfile;
 use sagat_domain::execution::{
     self, ExecutionInstanceId, FailureCode, Fence, Progress, RunEvent, RunId, RunStatus, StepStatus,
 };
@@ -94,19 +95,30 @@ pub const STREAM_PROTOCOL_MINOR: u32 = 4;
 /// work that cannot come.
 #[must_use]
 pub fn managed_capabilities_allowed(role: Role, activities: &[String], minor: u32) -> bool {
-    use sagat_domain::database::{
-        ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX,
-    };
+    use sagat_domain::database::MANAGED_DATABASE_PREFIX;
     if role == Role::DatabaseRunner {
-        minor >= DATABASE_PROTOCOL_MINOR
-            && !activities.is_empty()
-            && [MANAGED_DATABASE_ACTIVITY, ICEBERG_WRITE_ACTIVITY]
-                .iter()
-                .any(|profile| activities.iter().all(|a| a == profile))
+        minor >= DATABASE_PROTOCOL_MINOR && managed_profile(activities).is_some()
     } else {
         activities
             .iter()
             .all(|a| !a.starts_with(MANAGED_DATABASE_PREFIX))
+    }
+}
+
+/// The profile a registration is for: `database` when it offers `sagat.database.postgresql` alone, `lake` when it offers
+/// `sagat.database.iceberg.write` alone, and `None` for anything else (an empty list, a mix, an ordinary activity, an
+/// activity the server does not serve yet). The binding of the identity must carry the same profile (D035-057).
+#[must_use]
+pub fn managed_profile(activities: &[String]) -> Option<BindingProfile> {
+    use sagat_domain::database::{ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY};
+    if activities.is_empty() {
+        None
+    } else if activities.iter().all(|a| a == MANAGED_DATABASE_ACTIVITY) {
+        Some(BindingProfile::Database)
+    } else if activities.iter().all(|a| a == ICEBERG_WRITE_ACTIVITY) {
+        Some(BindingProfile::Lake)
+    } else {
+        None
     }
 }
 
