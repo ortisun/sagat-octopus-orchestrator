@@ -1450,6 +1450,11 @@ where
         let template = Self::task_template(tx.parts().0, instance);
         let data = tx.data().await?;
         let (_, effect_key, _) = self.task_identity(template, data, &info, instance)?;
+        // What the source names is owned from here on, so that the run's data is not borrowed while the catalog is asked.
+        let records = match lake_lease::named_records(self.engine.evaluator(), &write, data) {
+            Ok(records) => records,
+            Err(failure) => return Ok(Err(failure)),
+        };
         let step_id = instance_step_id(info.version_id, info.run_id, instance).to_string();
         let run_id = info.run_id.to_string();
         let workflow_version = facts.workflow_version.to_string();
@@ -1464,10 +1469,10 @@ where
             allow_empty: lake_input::APPEND_ALLOWS_EMPTY,
         };
         Ok(lake_lease::lake_lease_document(
-            self.engine.evaluator(),
             &write,
-            data,
             &lake_facts,
+            records,
+            &[],
             facts.connection_limits,
         ))
     }

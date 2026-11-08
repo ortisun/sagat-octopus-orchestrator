@@ -39,6 +39,17 @@ pub enum BlobFormat {
 }
 
 impl BlobFormat {
+    /// The format of a blob of records by its media type, which is the catalog's and not the workflow's: only the two types the
+    /// contract names (`workflow-lake.schema.json`, `records.blobs`) are record files.
+    #[must_use]
+    pub fn of_media_type(media_type: &str) -> Option<Self> {
+        match media_type {
+            "application/x-ndjson" => Some(Self::Ndjson),
+            "application/vnd.apache.parquet" => Some(Self::Parquet),
+            _ => None,
+        }
+    }
+
     const fn wire(self) -> &'static str {
         match self {
             Self::Ndjson => "ndjson",
