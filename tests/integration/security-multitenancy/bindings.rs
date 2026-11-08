@@ -551,7 +551,7 @@ async fn a_binding_change_is_audited_with_what_it_grants() {
         vec![
             (
                 "worker.bound".to_owned(),
-                "audited: payments.*, audit.log".to_owned()
+                "audited: payments.*, audit.log; profile: database".to_owned()
             ),
             ("worker.unbound".to_owned(), "audited".to_owned()),
         ]
