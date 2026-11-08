@@ -38,9 +38,9 @@ minor when this feature merges (D035-043; drafts 020, 021, 025 and 026 also clai
   `storageSecret`) is compared, pinned and audited separately. The runner zeroises them when the
   attempt ends.
 - **`ReadBlob`** is unchanged on the wire; the lake profile uses it for record blobs (D035-144). The server takes the blobs of a blob source from the catalog and not from
-  the descriptors in the run's data (the blob must be a committed output of a step of this run, and its size, digest and media type must be the catalog's), and the lease
+  the descriptors in the run's data (the blob must be a committed output of a step of this run, not of a child run, and its size, digest and media type must be the catalog's), and the lease
   **pins** them to the attempt and the generation it grants. A lake attempt reads a blob only when the pin of exactly its fence names it, while its run is live (not
-  cancelled, stopped or finished), and every other managed step reads none. A blob the pin does not name is `NOT_FOUND`, the answer for a blob that does not exist; the
+  cancelled, stopped or finished; checked when a read starts, so a download in flight is not cut, G035-081), and every other managed step reads none. A blob the pin does not name is `NOT_FOUND`, the answer for a blob that does not exist; the
   refusal is audited once for the run (`database.denied`, no blob named) and a read is audited (`blob.read`) before its first byte. A lease whose blobs the catalog does not
   vouch for is not granted: the step fails for good with `DATABASE_RESULT_UNAVAILABLE` (a blob that is not this run's or whose descriptor differs from the catalog's),
   `DATABASE_CONFIGURATION_INVALID` (not one to 32 distinct descriptors, or a media type that is not `application/x-ndjson` or `application/vnd.apache.parquet`) or

@@ -467,23 +467,35 @@ async fn pins(
     );
     drop(again);
 
-    // Immutable like the credential pins, and the blob cannot be deleted under them.
-    assert!(
-        sqlx::query("UPDATE step_lease_blobs SET attempt = 2 WHERE tenant_id = $1")
-            .bind(tenant)
-            .execute(&w.db.pool)
-            .await
-            .is_err(),
-        "a pin cannot be moved to another attempt"
+    // Immutable like the credential pins, and the blob cannot be deleted under them. Each refusal is the one that says why (the
+    // SQLSTATE), so a permission error or a mistyped column cannot stand for the rule.
+    let sqlstate = |result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>| {
+        result
+            .expect_err("refused")
+            .as_database_error()
+            .and_then(|error| error.code().map(|code| code.to_string()))
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        sqlstate(
+            sqlx::query("UPDATE step_lease_blobs SET attempt = 2 WHERE tenant_id = $1")
+                .bind(tenant)
+                .execute(&w.db.pool)
+                .await
+        ),
+        "23514",
+        "a pin cannot be moved to another attempt (check_violation of the immutability trigger)"
     );
-    assert!(
-        sqlx::query("DELETE FROM blobs WHERE tenant_id = $1 AND id = $2")
-            .bind(tenant)
-            .bind(first.id().as_uuid())
-            .execute(&w.db.pool)
-            .await
-            .is_err(),
-        "the bytes of a blob a live attempt may read are not deleted"
+    assert_eq!(
+        sqlstate(
+            sqlx::query("DELETE FROM blobs WHERE tenant_id = $1 AND id = $2")
+                .bind(tenant)
+                .bind(first.id().as_uuid())
+                .execute(&w.db.pool)
+                .await
+        ),
+        "23503",
+        "the bytes of a blob a live attempt may read are not deleted (foreign_key_violation)"
     );
     // A pin names a blob and a run of one namespace: the namespace of the blob row and the run's must agree.
     let other_namespace: Uuid =
@@ -493,18 +505,37 @@ async fn pins(
             .fetch_one(&w.db.pool)
             .await
             .expect("the blob of another namespace");
-    assert!(
-        sqlx::query(
-            "INSERT INTO step_lease_blobs (tenant_id, namespace_id, run_id, node_id, attempt, generation, blob_id) \
-             VALUES ($1, $2, $3, 'store', 1, 1, $4)",
-        )
-        .bind(tenant)
-        .bind(other_namespace)
-        .bind(run.as_uuid())
-        .bind(outsiders[1].1.id().as_uuid())
-        .execute(&w.db.pool)
-        .await
-        .is_err(),
-        "a run of one namespace does not pin a blob of another"
+    assert_eq!(
+        sqlstate(
+            sqlx::query(
+                "INSERT INTO step_lease_blobs (tenant_id, namespace_id, run_id, node_id, attempt, generation, blob_id) \
+                 VALUES ($1, $2, $3, 'store', 1, 1, $4)",
+            )
+            .bind(tenant)
+            .bind(other_namespace)
+            .bind(run.as_uuid())
+            .bind(outsiders[1].1.id().as_uuid())
+            .execute(&w.db.pool)
+            .await
+        ),
+        "23503",
+        "a run of one namespace does not pin a blob of another (foreign_key_violation)"
     );
+
+    // The runtime role reads and writes pins and nothing else: nothing of the product deletes one (a pin goes with its run) or updates
+    // one, and a role that could delete the allow-list of a live attempt could also write it again.
+    for (privilege, granted) in [
+        ("SELECT", true),
+        ("INSERT", true),
+        ("UPDATE", false),
+        ("DELETE", false),
+    ] {
+        let has: bool =
+            sqlx::query_scalar("SELECT has_table_privilege('sagat_app', 'step_lease_blobs', $1)")
+                .bind(privilege)
+                .fetch_one(&w.db.pool)
+                .await
+                .expect("the privilege");
+        assert_eq!(has, granted, "{privilege} on the pins for the runtime role");
+    }
 }

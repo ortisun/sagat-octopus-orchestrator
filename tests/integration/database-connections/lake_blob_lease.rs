@@ -234,7 +234,8 @@ pub async fn run(w: &World) {
     .await;
     committed_output_as(w, too_big, big1, PARQUET, GIB).await;
     committed_output_as(w, too_big, big2, PARQUET, GIB + 1).await;
-    // Thirty-three blobs: refused before the catalog is asked.
+    // Thirty-three blobs: refused before the catalog is asked. Were it asked, the store would refuse a list of 33 itself
+    // (`DatabaseLimit`) and the poll would fail, not the step: the poll below is what holds the order.
     let crowd: Vec<Value> = (0..33)
         .map(|_| descriptor(BlobId::generate(), 1, NDJSON))
         .collect();
@@ -397,7 +398,7 @@ pub async fn run(w: &World) {
         .await;
     assert!(
         matches!(stale, Err(AppError::StaleAttempt)),
-        "and the first attempt's lease no longer reads: {stale:?}"
+        "and the first attempt's token reads nothing (the pin of the second attempt is keyed by its own fence, which lake_read.rs holds): {stale:?}"
     );
 
     // The namespace's budget of lake attempts is counted by the scenario that follows: the step ends for good.

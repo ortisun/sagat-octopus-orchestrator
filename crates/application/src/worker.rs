@@ -1967,10 +1967,7 @@ where
             // else (D035-144). The check that names no blob, the upload and every SQL step stay refused.
             match (kind, writing, read) {
                 (sagat_domain::database::ManagedKind::Lake, false, Some(read)) => {
-                    if !self
-                        .lake_blob_allowed(principal, &mut tx, task, read.blob)
-                        .await?
-                    {
+                    if !self.lake_blob_allowed(&mut tx, task, read.blob).await? {
                         // A refusal is the answer whether or not it could be written down; the failure is logged, as for a denied
                         // registration.
                         let effects = self.lake_read_denial(principal, task, read.trace_id);
@@ -2005,19 +2002,28 @@ where
         Ok(scope)
     }
 
-    /// Whether the lease of a lake attempt allows it to read `blob`: the attempt must be live, as for a report (a run that was told to
-    /// stop, or that finished, is given nothing more), and the lease of exactly this attempt and generation must have named the
-    /// blob. `false` is answered as `NotFound`, the same as for a blob that does not exist, so the answer says nothing about what
-    /// does (see [`Self::lake_read_denial`]).
+    /// Whether the lease of a lake attempt allows it to read `blob`. The lease, the binding, the owner of the session and the exact
+    /// attempt and generation were checked by the caller; a read is held, as a report is (`attempt_authority_fence`), to a run that
+    /// is still live: one that was told to stop, whose step has a cancel requested, or that finished is given nothing more. Then the
+    /// lease of exactly this attempt and generation must have named the blob. `false` is answered as `NotFound`, the same as for a
+    /// blob that does not exist, so the answer says nothing about what does (see [`Self::lake_read_denial`]).
     async fn lake_blob_allowed<Tx: RunTx>(
         &self,
-        principal: &Principal,
         tx: &mut Tx,
         task: &TaskRef<'_>,
         blob: BlobId,
     ) -> Result<bool, AppError> {
-        self.attempt_authority_fence(principal, tx, task, false)
-            .await?;
+        let live = {
+            let (_, state) = tx.parts();
+            state
+                .instance(task.instance)
+                .is_some_and(|step| !step.cancel_requested())
+                && state.stop_reason().is_none()
+                && !state.is_finished()
+        };
+        if !live {
+            return Err(AppError::StaleAttempt);
+        }
         Ok(tx
             .lake_blob_pinned(task.instance.node(), task.fence, blob)
             .await?)

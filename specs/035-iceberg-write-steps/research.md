@@ -3343,5 +3343,31 @@ The other fixes were wording:
     blobs, each with its closed code; a retry is a lease of its own, with pins of its own, and the first attempt's token reads nothing. 6 hand mutations, all killed (the catalog not
     asked, the pin missing, for the previous attempt, for another generation and of an empty list, and the document made from the run's data: that last one is caught by the pin's own
     check, a second line, which refuses what the catalog does not vouch for and fails the poll, so a forged descriptor could not be leased even if the document trusted it).
-  - *Not done in this slice.* The wire test over gRPC (the handler is held only by the review and by that test; it needs the harness of #169) and the independent review of the
-    trust boundary; a SQL result as a source (G035-067); the container end to end (T035-062).
+  - *What two independent reviews found (2026-11-08, security and correctness, read-only, given the diff and the record and not my conclusions) and what was done.* Neither found a
+    way for another run, namespace or tenant, a run input, an upload not committed or a blob being deleted to be read; for a read to outlive the lease at the next request; for the
+    answer or its audit to tell what exists or to fill the trail; or for a pin to be written that the catalog does not vouch for. They verified, by reading, that the pin and the
+    read use the same fence with no off-by-one, that a lease without its pins or a pin without its lease cannot be committed (the pin sits in the transaction of the lease, so a
+    failure of it rolls back the run's batch and no other run's), that no state change of a committed blob exists between the lookup and the pin, that the sums cannot wrap, and that
+    an ordinary step's `ReadBlob` is exactly what it was. What they found, all low, and what was done with each: (1) *the migration's comment was wrong and its `down` can never be
+    satisfied*: pins go with their run and nothing purges a run, so once a lake step that names blobs was leased the rollback is closed. The text now says so and the guard's error
+    carries the operator's way out (delete the pins of attempts that are over, as the owner: they authorize nothing and the reads are in the audit trail); the guard stays strict, as
+    for the credential pins; **G035-080**. (2) *`DELETE` was granted to the runtime role and nothing deletes a pin*: dropped, and a test holds `SELECT` and `INSERT` granted and
+    `UPDATE` and `DELETE` not (two mutations). (3) *the refusals of the pin's constraints were asserted as "an error"*: they are pinned to their SQLSTATE now (`23514`, `23503`). (4)
+    *each lake read took the namespace's secrets lock and the run's lock, and the gate repeated the binding, owner and lease checks it had just made*: the repeat is gone (the read
+    keeps what a report is held to beyond them: a cancel of the step, a stop reason, a finished run); a limit on refused reads per attempt is **G035-081**. (5) *two comments claimed
+    more than their assertions*: the 33-blob case does hold the order (the store would refuse a list of 33 itself and fail the poll, so the poll that must not fail is the proof) and
+    its comment now says so; the assertion about the first attempt's token no longer claims to prove that the pin is keyed by the attempt (`lake_read.rs` does). (6) *a blob the run's
+    child committed is not this run's*: it fails as unavailable; "earlier steps" is enforced by what the run's data holds, since an expression can name only an output that
+    exists. Of the three conditions a read is held to beyond the lease (the cancel of the step, the stop reason of the run, a finished run), **the three mutations that drop one each survive**:
+    a cancel sets both the cancel of the step and the stop reason, so either refuses it alone (dropping both is killed), and a finished run has no live lease for the checks before to
+    accept. They are kept because a report is held to the same three, and the survivors are the price of two conditions that overlap, not a path that no test reaches.
+  - *Not done in this slice.* The wire test over gRPC (the handler is held only by the review and by that test; it needs the harness of #169); a SQL result as a source (G035-067);
+    the container end to end (T035-062).
+- **G035-080 — Pins of lake blobs are never deleted.** `step_lease_blobs` rows go with their run, and nothing purges a run, so up to 32 rows per lake attempt that names blobs stay for
+  ever (the credential pins of a lake or SQL attempt do the same), and the rollback of the migration that makes the table stays closed until an operator deletes them. *Exit condition:*
+  the retention of runs (or of their pins) when it exists; the `down` guard can then let the pins of finished runs through.
+- **G035-081 — The reads of a lake attempt are not limited, and a stream outlives its lease.** A compromised lake runner with a live lease can call `ReadBlob` as often as it likes: each
+  call takes the run's lock and the namespace's secrets lock (the one every heartbeat of a managed attempt already takes) and a refused one writes an audit transaction (one record,
+  collapsed). And the lease is checked when a read starts, so a download in flight goes on after a cancel or a lapse, for up to the transfer timeout; that is the ordinary `ReadBlob`
+  too. *Exit condition:* a budget of refused reads per attempt (after N, answer as stale without a write), and cutting the stream when the lease ends, with the transfer limits of
+  the blob service.

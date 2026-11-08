@@ -7,9 +7,11 @@
 -- blob (committed output of this run) and not from the descriptor the workflow held.
 --
 -- Additive: an older engine never reads or writes the table, and leases no lake step. The rows are as immutable as the credential pins
--- they are modelled on, and as short-lived: they go with the run. The foreign key to the blob restricts its deletion for as long as a
--- pin exists, so no sweep or retention job removes bytes a live attempt was allowed to read (a committed blob is never swept; the
--- constraint keeps that true if it changes). The index serves that check.
+-- they are modelled on, and they stay as long as the run does (the foreign key to the run cascades), which today is for ever: nothing
+-- purges a run, so there is no retention of pins either (up to 32 rows per lake attempt that names blobs). The runtime role may read and
+-- insert them and nothing else: a pin is never updated and nothing of the product deletes one. The foreign key to the blob restricts
+-- its deletion for as long as a pin exists, so no sweep or retention job removes bytes a live attempt was allowed to read (a committed
+-- blob is never swept; the constraint keeps that true if it changes). The index serves that check.
 
 CREATE TABLE step_lease_blobs (
     tenant_id uuid NOT NULL,
@@ -36,6 +38,6 @@ ALTER TABLE step_lease_blobs ENABLE ALWAYS TRIGGER step_lease_blob_immutable;
 
 DO $grants$ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sagat_app') THEN
-        GRANT SELECT, INSERT, DELETE ON step_lease_blobs TO sagat_app;
+        GRANT SELECT, INSERT ON step_lease_blobs TO sagat_app;
     END IF;
 END $grants$;
