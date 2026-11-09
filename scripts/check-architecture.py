@@ -6,6 +6,7 @@ Reads `cargo metadata` and fails when:
     non-allowlisted crate at all;
   * a layer depends on a layer it must not know about (application -> adapters, ...);
   * a package other than the test package depends on the `iceberg` crates, whatever the kind;
+  * the lake runner reaches the container engine, directly or through any crate it links (ADR-0079, rule 2);
   * the workspace dependency graph has a cycle.
 
 Usage: python3 scripts/check-architecture.py [--metadata FILE]
@@ -29,6 +30,11 @@ DOMAIN_FORBIDDEN = {
 # The `iceberg` crate and its `iceberg-*` siblings may be used by the test package only (any kind).
 ICEBERG_CRATE = "iceberg"
 ICEBERG_TEST_ONLY_PACKAGES = {"sagat-tests"}
+
+# ADR-0079, rule 2: the lake runner holds no container-engine access. The sandbox runner is the one process that links the engine
+# (`bollard`, through the crate that wraps it), and the lake runner asks it for an attempt over a socket instead.
+LAKE_RUNNER_PACKAGES = {"sagat-database-runner", "sagat-infra-lake"}
+CONTAINER_ENGINE_CRATES = {"bollard", "sagat-infra-sandbox"}
 
 # Crates that are application services (they orchestrate ports) rather than adapters or utilities.
 APPLICATION_CRATES = {"scheduler", "saga"}
@@ -101,6 +107,34 @@ def main(argv):
                     f"'{p['name']}' must not depend on '{d}': the Iceberg crates are test-only "
                     f"(the independent reader lives in the tests package; writes use the Python lake runtime, ADR-0071)"
                 )
+
+    # What the lake runner links, directly or through any crate it links: the way in is named, so the edge to cut can be seen. Normal and
+    # build dependencies count (they end up in what ships or in how it is built); a dev dependency does not (nothing that ships links it).
+    build_deps = {
+        p["name"]: sorted({d["name"] for d in p["dependencies"] if d.get("kind") == "build"})
+        for p in pkgs.values()
+    }
+    if "sagat-application" in graph:
+        for missing in sorted(LAKE_RUNNER_PACKAGES - graph.keys()):
+            errors.append(
+                f"'{missing}' is named by ADR-0079 and the workspace has no such package: the rule would check nothing "
+                f"(rename it in LAKE_RUNNER_PACKAGES with the package)"
+            )
+    for holder in sorted(LAKE_RUNNER_PACKAGES & graph.keys()):
+        seen = {holder: [holder]}
+        queue = [holder]
+        while queue:
+            current = queue.pop(0)
+            for dep in graph.get(current, []) + (build_deps.get(current, []) if current == holder else []):
+                if dep not in seen:
+                    seen[dep] = seen[current] + [dep]
+                    if dep in graph:
+                        queue.append(dep)
+        for engine in sorted(CONTAINER_ENGINE_CRATES & seen.keys()):
+            errors.append(
+                f"'{holder}' must not reach '{engine}' ({' -> '.join(seen[engine])}): the lake runner holds no container-engine access, "
+                f"it asks the sandbox runner for an attempt (ADR-0079, rule 2)"
+            )
 
     for name, deps in graph.items():
         layer = layer_of(by_name[name]["manifest_path"], root)

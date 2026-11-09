@@ -12,8 +12,9 @@ holds the container-engine socket and is hard to reverse once the lake runner an
 mode) and [ADR-0013](ADR-0013-scripts-run-in-containers-the-control-plane-never-touches.md) (the process that starts containers is not
 the process that holds the data). Supersedes nothing.
 **Enforced by:** Planned; **review-only until each exists** (the list says which are not testable and why):
-- `scripts/check-architecture.py`, on the **resolved** graph of `cargo metadata` (the script reads direct dependencies today):
-  `sagat-database-runner` and `sagat-infra-lake` reach neither `bollard` nor `sagat-infra-sandbox` (rule 2); and a test over
+- `scripts/check-architecture.py`: `sagat-database-runner` and `sagat-infra-lake` reach neither `bollard` nor `sagat-infra-sandbox` (rule 2). **Built (2026-11-09,
+  D035-147):** over the declared graph of `cargo metadata`, which is a superset of the resolved one (an optional dependency counts), following every workspace crate, normal and build
+  dependencies counting and a dev dependency not, and naming the way in; a rule that names a package the workspace no longer has fails. Not built: a test over
   `infra/docker/*.yaml` and the Helm templates that the lake runner's service mounts no engine socket (rule 2);
 - `apps/sandbox-runner` tests against an in-memory engine double: lake mode refuses to start with script or build configuration, and
   script mode has no lake listener (rule 1); an unknown request member, an image, mount, capability, command or limit is refused,
