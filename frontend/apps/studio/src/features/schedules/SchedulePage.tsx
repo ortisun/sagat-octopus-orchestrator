@@ -62,7 +62,11 @@ function Summary({ schedule }: { schedule: ScheduleDescription }) {
       <h1 id="schedule-title">
         {schedule.name} <StatusBadge view={state} />
       </h1>
-      {schedule.origin === 'TRIGGER' ? <Banner tone="info">A cron trigger owns this schedule, so its rule is changed through the trigger.</Banner> : null}
+      {schedule.origin === 'TRIGGER' ? (
+        <Banner tone="info">
+          A cron trigger owns this schedule, so its rule is changed through the trigger. Pausing, resuming and running it now work once an operator has handed the cron triggers over to the schedule pass; until then the platform refuses them and says so.
+        </Banner>
+      ) : null}
       {schedule.exhausted ? <Banner tone="info">It has taken every action it was allowed, so it acts no more.</Banner> : null}
       {schedule.state === 'PAUSED' && schedule.note ? (
         <Banner tone="info" title="Paused:">

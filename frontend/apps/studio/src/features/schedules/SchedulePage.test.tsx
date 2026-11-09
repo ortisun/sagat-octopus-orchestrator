@@ -69,6 +69,40 @@ describe('A schedule', () => {
     expect(screen.getByRole('button', { name: 'Pause' })).toBeVisible();
   });
 
+  it('says, for a schedule a cron trigger owns, that its controls wait for the operator and says the refusal in words', async () => {
+    const { user, platform } = await mount({
+      routes: {
+        [`GET ${BASE}/${ID}`]: () => described({ origin: 'TRIGGER', triggerId: '0194f5e2-7b1c-7000-8000-0000000000e1' }),
+        [`POST ${BASE}/${ID}/pause`]: () => failure(409, 'CONFLICT', 'SCHEDULE_TRIGGER_HANDOVER_PENDING'),
+        [`POST ${BASE}/${ID}/trigger`]: () => failure(409, 'CONFLICT', 'SCHEDULE_TRIGGER_HANDOVER_PENDING'),
+      },
+    });
+    expect(await screen.findByText(/once an operator has handed the cron triggers over/)).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Pause' }));
+    await user.type(inDialog().getByRole('textbox'), 'maintenance');
+    await user.click(inDialog().getByRole('button', { name: 'Confirm pause' }));
+    expect(await inDialog().findByText(/Pausing the schedule failed/)).toBeVisible();
+    expect(inDialog().getByText('SCHEDULE_TRIGGER_HANDOVER_PENDING', { selector: 'code' })).toBeVisible();
+    expect(screen.queryByText('The schedule is paused.')).not.toBeInTheDocument();
+    expect(writes(platform).map((call) => call.method)).toEqual(['POST']);
+  });
+
+  it('disables pause and run now of a schedule a cron trigger owns, with the reason, until the handover, and enables them after it', async () => {
+    await mount({ routes: { [`GET ${BASE}/${ID}`]: () => described({ origin: 'TRIGGER', triggerId: '0194f5e2-7b1c-7000-8000-0000000000e1', controllable: false }) } });
+    expect(await screen.findByText(/an operator has not handed the cron triggers over/)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Run now' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Pause' })).toHaveAttribute('title', expect.stringContaining('handed the cron triggers over'));
+  });
+
+  it('offers pause and run now of a schedule a cron trigger owns once the platform says the control is open', async () => {
+    await mount({ routes: { [`GET ${BASE}/${ID}`]: () => described({ origin: 'TRIGGER', triggerId: '0194f5e2-7b1c-7000-8000-0000000000e1', controllable: true }) } });
+    await screen.findByRole('heading', { name: /nightly/ });
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Run now' })).toBeEnabled();
+    expect(screen.queryByText(/an operator has not handed the cron triggers over/)).not.toBeInTheDocument();
+  });
+
   it('says so when it is not there', async () => {
     await mount({ routes: { [`GET ${BASE}/${ID}`]: () => failure(404, 'NOT_FOUND') } });
     expect(await screen.findByText(/Loading the schedule failed/)).toBeVisible();

@@ -21,11 +21,40 @@ export function ScheduleControls({ schedule, namespaceId }: { schedule: Schedule
   const start = useCan('run:start');
   const owned = schedule.origin === 'TRIGGER';
   const paused = schedule.state === 'PAUSED';
+  // A schedule a cron trigger owns answers to the legacy cron pass until an operator hands the triggers over: the platform says
+  // so with `controllable: false`, and refuses the three actions anyway (`SCHEDULE_TRIGGER_HANDOVER_PENDING`).
+  const waiting = owned && schedule.controllable === false;
+  const reason = 'Not yet: an operator has not handed the cron triggers over to the schedule pass, so the platform refuses this.';
   return (
     <div className="toolbar" role="group" aria-label="Actions on the schedule">
-      {operate && !paused && !schedule.exhausted ? <Pause schedule={schedule} namespaceId={namespaceId} /> : null}
-      {operate && start && paused ? <Resume schedule={schedule} namespaceId={namespaceId} /> : null}
-      {operate && start ? <Trigger schedule={schedule} namespaceId={namespaceId} /> : null}
+      {waiting && operate ? (
+        <>
+          {!paused && !schedule.exhausted ? (
+            <Button disabled title={reason}>
+              Pause
+            </Button>
+          ) : null}
+          {start && paused ? (
+            <Button disabled title={reason}>
+              Resume
+            </Button>
+          ) : null}
+          {start ? (
+            <Button disabled title={reason}>
+              Run now
+            </Button>
+          ) : null}
+          <p className="muted" role="note">
+            {reason}
+          </p>
+        </>
+      ) : (
+        <>
+          {operate && !paused && !schedule.exhausted ? <Pause schedule={schedule} namespaceId={namespaceId} /> : null}
+          {operate && start && paused ? <Resume schedule={schedule} namespaceId={namespaceId} /> : null}
+          {operate && start ? <Trigger schedule={schedule} namespaceId={namespaceId} /> : null}
+        </>
+      )}
       {write && start && !owned ? (
         <Link className="btn" to={`/schedules/${schedule.scheduleId}/edit`}>
           Edit

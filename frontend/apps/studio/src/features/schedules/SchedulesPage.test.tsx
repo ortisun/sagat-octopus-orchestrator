@@ -32,6 +32,21 @@ describe('The list of schedules', () => {
     expect(within(rows[1]!).getByText('Keep one')).toBeVisible();
   });
 
+  it('marks the schedule a cron trigger owns, and only that one', async () => {
+    await mount({
+      routes: {
+        [`GET ${BASE}`]: () => ({
+          items: [schedule(), schedule({ scheduleId: '0194f5e2-7b1c-7000-8000-0000000000c4', name: 'trigger-5d0c', origin: 'TRIGGER', triggerId: '0194f5e2-7b1c-7000-8000-0000000000e1' })],
+          nextCursor: null,
+        }),
+      },
+    });
+    const table = await screen.findByRole('table', { name: 'Schedules' });
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(within(rows[0]!).queryByText(/cron trigger/)).not.toBeInTheDocument();
+    expect(within(rows[1]!).getByText(/cron trigger/)).toBeVisible();
+  });
+
   it('shows no next time for a schedule that is paused or has no action left', async () => {
     await mount({
       routes: {

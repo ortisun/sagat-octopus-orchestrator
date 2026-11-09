@@ -109,6 +109,7 @@ function Schedules() {
                 <tr key={schedule.scheduleId}>
                   <th scope="row">
                     <Link to={`/schedules/${schedule.scheduleId}`}>{schedule.name}</Link>
+                    {schedule.origin === 'TRIGGER' ? <small className="muted"> · cron trigger</small> : null}
                   </th>
                   <td>
                     <StatusBadge view={scheduleState(schedule)} />
