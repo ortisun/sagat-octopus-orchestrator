@@ -3437,3 +3437,16 @@ The other fixes were wording:
   `database:result:read` is the right to *see* the result through the API, which a lake write does not give; ADR-0035 item 10 forbids a bulk export through that route. *Cost of yes:* a
   check of that permission for the initiator at the lease (the principal is known there: `database_claim` already admits the initiator for the connection), and a refusal code for it. Decided here as
   "no, and audited" until the owner says otherwise.
+- **D035-146 — A committed Iceberg write is audited once, at the completion (FR-035-030; T035-061).** **Decided by: delegate.** FR-035-030 and plan.md ("writes (once per committed write)") say a write is audited;
+  `data-model.md` §5 listed the actions of the feature and none for a write, and the trail held the refusals of a lake step and not its commits. (1) **A new action, `IcebergWriteCommitted`**
+  (`iceberg.write_committed`), is recorded for the run in the transaction of the completion of a lake step, made from the receipt the server built (D035-142) and from the step, never from what the runner sent:
+  the node, the connection, the table (`namespace.name`) and the snapshot, and the rows added when the receipt has them. Nothing a row held, no partition value, no location, no credential and no
+  effect key reaches it, and only digits come from the receipt (the snapshot and the count are read again with their digits checked, at most 20). (2) **Once per write:** a replay of the report
+  returns its stored answer before any effect is built; a refused receipt is not a commit (its record is the denial, as before); a receipt that is not of a commit (a write of no record, a revert, another
+  kind) is not audited as one; the action does not collapse repeats, since a write is not something a caller repeats and none must be hidden. (3) **A commit the run had no room to keep is audited as the commit
+  it was:** the run records an unknown outcome (D035-142, review), and the recovery that records it carries the audit, so the trail and the step do not disagree about whether the table changed. (4) **Done, test first:**
+  the wire scenario (`lake_grpc.rs`: none for a refused receipt; one for the completion, naming the step, the connection, the table, the snapshot and the rows, and none of a value, a credential, a
+  location or the effect key; still one after a replay) and the commit the run could not keep (`lake_resolve.rs`: 0 where 1 was expected until the recovery carried the audit), and three unit tests of the
+  reading of the receipt. 6 hand mutations killed; a seventh, a write of no record audited as a commit, survives by construction (such a receipt has no snapshot and a snapshot is required).
+  (5) **Not done here:** the audit of an unknown outcome as such (the operator's decision is the audited event, D035-069, and waits for O035-007), of a revert (T035-105), and the spans,
+  the server-side metrics and the canaries of T035-061.
