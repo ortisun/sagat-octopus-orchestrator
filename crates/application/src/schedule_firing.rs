@@ -13,7 +13,7 @@ use std::future::Future;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{RunId, RunStatus};
-use sagat_domain::identity::{Permission, Principal, Subject};
+use sagat_domain::identity::{Permission, Principal, Role, Subject};
 use sagat_domain::schedules::{
     ActionKind, Ceilings, Decision, Origin, Outcome, Overlap, Reason, Recovery, RecoveryStep,
     Release, ScheduleId, Standing, Summary, VersionPolicy, decide, failure_pauses,
@@ -35,12 +35,21 @@ use crate::definitions::Idempotency;
 use crate::error::{AppError, StoreError};
 use crate::identity::{IdentityStore, RequestContext};
 use crate::runs::NO_PUBLISHED_VERSION;
+use crate::schedule_triggers::{TriggerTick, cron_document};
 use crate::schedules::{
     AUTHORITY_REVOKED, ActionDedupe, ActionView, AutoPause, BackfillProgress, DueBackfill,
     DueSchedule, ManualRequest, NewObligation, Obligation, Reconcile, RecordedAction,
     ScheduleAdmission, ScheduleAfter, ScheduleCalendar, ScheduleDecision, ScheduleOrigin,
     ScheduleRecord, ScheduleState, ScheduleStore, ShardFence, next_times, obligation_key,
+    require_handover,
 };
+
+/// Why the admission of a trigger-owned schedule's run is refused when its cron trigger is not in force any more (an
+/// older control plane dropped it): the schedule is removed by the next step, as the reconciliation would.
+pub const TRIGGER_GONE: &str = "the cron trigger of the schedule is no longer in force";
+
+/// What a person who asks for a run, or for a backfill, of such a schedule is told: a documented reason, not the sentence above.
+pub const TRIGGER_GONE_REASON: &str = "SCHEDULE_TRIGGER_GONE";
 
 /// What a schedule starts, as the run service needs it.
 #[derive(Debug, Clone)]
@@ -220,11 +229,8 @@ where
             .await?
             .filter(|r| r.state != ScheduleState::Deleted)
             .ok_or(AppError::NotFound)?;
-        if record.origin == ScheduleOrigin::Trigger {
-            return Err(AppError::ScheduleConflict {
-                reason: "SCHEDULE_TRIGGER_HANDOVER_PENDING",
-            });
-        }
+        // a schedule a cron trigger owns answers to the legacy cron pass until the operator hands over
+        require_handover(&self.store, &record).await?;
         // the instant is kept to the microsecond: that is what the identity of the action and the
         // stored times are, so a replay is answered with exactly what the first request was
         let now = micros(self.clock.now());
@@ -281,6 +287,7 @@ where
                     after,
                     manual: Some(ManualRequest { dedupe, audit }),
                     backfill: None,
+                    trigger: self.trigger_tick(&record, false).await?,
                 };
                 match self.start_run(&record, &principal, admission, ctx).await {
                     Ok(_) => {}
@@ -322,6 +329,7 @@ where
                         outcome,
                         reason,
                         summary: None,
+                        run: None,
                     }],
                     after,
                     pause: None,
@@ -453,10 +461,28 @@ where
                     .await,
             );
         };
-        if self
-            .store
-            .action_exists(record.tenant_id, record.id, Origin::Spec, time)
-            .await?
+        // A time the schedule acted on, or one the legacy cron pass started under feature 004's key (that pass leaves no
+        // action row, only the run), is acted on already: the backfill counts it and goes on.
+        let trigger_tick = self.trigger_tick(&record, false).await;
+        // its cron trigger is gone (an older control plane dropped it): the backfill is refused, once, and the reconciliation
+        // removes the schedule and its backfills; it is not an error that comes back every round
+        if matches!(&trigger_tick, Err(AppError::ScheduleConflict { reason }) if *reason == TRIGGER_GONE_REASON)
+        {
+            return Ok(Fired::Refused(TRIGGER_GONE));
+        }
+        let started_by_the_legacy_pass = match &trigger_tick {
+            Ok(Some(tick)) => self
+                .store
+                .tick_run(record.tenant_id, tick.trigger, time)
+                .await?
+                .is_some(),
+            _ => false,
+        };
+        if started_by_the_legacy_pass
+            || self
+                .store
+                .action_exists(record.tenant_id, record.id, Origin::Spec, time)
+                .await?
         {
             let seen = progress(time, Some("ALREADY_ACTED"), false);
             return self.committed(
@@ -491,6 +517,7 @@ where
                     },
                     manual: None,
                     backfill: Some(progress(time, Some("STARTED"), false)),
+                    trigger: trigger_tick?,
                 };
                 match self
                     .start_run(&record, &principal, admission, &RequestContext::default())
@@ -533,6 +560,7 @@ where
                     outcome,
                     reason,
                     summary: None,
+                    run: None,
                 };
                 let step = progress(time, Some(outcome.as_str()), false);
                 let mut owing = decision(vec![action], step);
@@ -635,23 +663,30 @@ where
             );
         }
 
-        // 2. whose authority every action is checked against, today
-        let authorized = match Subject::parse(&record.authorized_by) {
-            Ok(subject) => self
-                .identity
-                .find_membership(record.tenant_id, &subject)
-                .await?
-                .filter(|m| {
-                    m.role().grants(Permission::RunStart)
-                        && (record.policies.overlap() != Overlap::CancelOther
-                            || m.role().grants(Permission::RunOperate))
-                }),
-            Err(_) => None,
+        // 2. whose authority every action is checked against, today. A cron trigger's schedule acts as the engine, as the
+        // legacy cron pass does: `system:engine` is no member, nothing can revoke it, and what the run may do is the
+        // publisher's (`FR-018-017`).
+        let trigger_owned = record.origin == ScheduleOrigin::Trigger;
+        let principal = if trigger_owned {
+            Principal::new(record.tenant_id, Subject::engine(), Role::Operator)
+        } else {
+            let authorized = match Subject::parse(&record.authorized_by) {
+                Ok(subject) => self
+                    .identity
+                    .find_membership(record.tenant_id, &subject)
+                    .await?
+                    .filter(|m| {
+                        m.role().grants(Permission::RunStart)
+                            && (record.policies.overlap() != Overlap::CancelOther
+                                || m.role().grants(Permission::RunOperate))
+                    }),
+                Err(_) => None,
+            };
+            let Some(membership) = authorized else {
+                return self.revoke_authority(&record, fence, now).await;
+            };
+            Principal::new(record.tenant_id, system.clone(), membership.role())
         };
-        let Some(membership) = authorized else {
-            return self.revoke_authority(&record, fence, now).await;
-        };
-        let principal = Principal::new(record.tenant_id, system.clone(), membership.role());
 
         // 2b. a cancellation the schedule owes an open run (`CANCEL_OTHER`) is paid before anything else
         if let Some(owed) = self
@@ -696,6 +731,7 @@ where
                 },
                 manual: None,
                 backfill: None,
+                trigger: self.trigger_tick(&record, false).await?,
             };
             return self.start(&record, &principal, admission, now, &ctx).await;
         }
@@ -742,6 +778,7 @@ where
             outcome,
             reason: None,
             summary: Some((summary.count, summary.last)),
+            run: None,
         };
         let (time, coalesced, recovery_after) =
             match plan_recovery_step(&due_times, now, kept, &record.policies, &self.ceilings) {
@@ -826,6 +863,57 @@ where
             recovery: recovery_after,
             extra,
         };
+        // The tick of a cron trigger's schedule never waits for an open run and is never counted against what `ALLOW_ALL`
+        // tracks: every tick starts, as the legacy cron pass starts it.
+        let standing = if trigger_owned {
+            Standing {
+                open_runs: 0,
+                buffered: 0,
+                remaining: None,
+            }
+        } else {
+            standing
+        };
+        let tick = match self.trigger_tick(&record, true).await {
+            Ok(tick) => tick,
+            // its cron trigger is gone (an older control plane dropped it): the schedule goes with it, as the
+            // reconciliation would remove it, and nothing starts for a trigger nobody asked for
+            Err(AppError::StateConflict(TRIGGER_GONE)) => {
+                return self.committed(
+                    self.store
+                        .remove_trigger_schedule(
+                            record.tenant_id,
+                            record.id,
+                            record.state_version,
+                            fence.as_ref(),
+                            now,
+                        )
+                        .await,
+                );
+            }
+            Err(other) => return Err(other),
+        };
+        // The other pass (or this one before a crash) started the tick already: the action is recorded as that, with the
+        // run it found, and the schedule moves on (`SC-018-005`).
+        if let Some(tick) = tick
+            && let Some(run) = self
+                .store
+                .tick_run(record.tenant_id, tick.trigger, time)
+                .await?
+        {
+            let action = RecordedAction {
+                nominal_at: time,
+                kind: ActionKind::Scheduled,
+                revision: record.revision,
+                outcome: Outcome::AlreadyActed,
+                reason: None,
+                summary: None,
+                run: Some(run),
+            };
+            return self
+                .record_owing(&record, fence, vec![action], after, Vec::new(), now)
+                .await;
+        }
         match decide(&record.policies, &standing, &self.ceilings) {
             Decision::Start => {
                 after.remaining_actions = record.remaining_actions.map(|n| n.saturating_sub(1));
@@ -840,6 +928,16 @@ where
                     after,
                     manual: None,
                     backfill: None,
+                    trigger: tick,
+                };
+                // the trace of a run the clock started begins here, as the legacy pass begins it
+                let ctx = if tick.is_some() {
+                    RequestContext {
+                        trace_id: Some(sagat_telemetry::TraceId::generate().to_string()),
+                        ..RequestContext::default()
+                    }
+                } else {
+                    ctx
                 };
                 self.start(&record, &principal, admission, now, &ctx).await
             }
@@ -866,6 +964,7 @@ where
                     outcome,
                     reason,
                     summary: None,
+                    run: None,
                 };
                 // `CANCEL_OTHER` owes every run it found open an ordinary cancellation, recorded
                 // with the action that waits for them
@@ -1015,6 +1114,42 @@ where
         )
     }
 
+    /// Says that the action of a cron trigger's schedule is the trigger's: the trigger it follows, and the workflow and
+    /// version in force it starts. `None` for any other schedule. `engine` is whether nobody asked for the time (a
+    /// `SCHEDULED` action), which makes the run the engine's own.
+    ///
+    /// # Errors
+    /// [`AppError::StateConflict`] with [`TRIGGER_GONE`] when the trigger is no longer in force.
+    async fn trigger_tick(
+        &self,
+        record: &ScheduleRecord,
+        engine: bool,
+    ) -> Result<Option<TriggerTick>, AppError> {
+        let Some(trigger) = record
+            .trigger_id
+            .filter(|_| record.origin == ScheduleOrigin::Trigger)
+        else {
+            return Ok(None);
+        };
+        let source = self
+            .store
+            .trigger_source(record.tenant_id, trigger)
+            .await?
+            .ok_or(if engine {
+                AppError::StateConflict(TRIGGER_GONE)
+            } else {
+                AppError::ScheduleConflict {
+                    reason: TRIGGER_GONE_REASON,
+                }
+            })?;
+        Ok(Some(TriggerTick {
+            trigger,
+            workflow: source.workflow,
+            version: source.version,
+            engine,
+        }))
+    }
+
     /// Starts the run of an action. A refusal to admit it keeps the time owed.
     async fn start(
         &self,
@@ -1070,27 +1205,37 @@ where
         ctx: &RequestContext,
     ) -> Result<RunId, AppError> {
         let nominal = admission.nominal_at;
-        let version = match record.target.version() {
-            VersionPolicy::Active => None,
-            VersionPolicy::Pinned(id) => Some(id),
+        let version = match (admission.trigger, record.target.version()) {
+            // a cron trigger's schedule starts the version in force of its trigger, as the legacy pass does
+            (Some(tick), _) => Some(tick.version),
+            (None, VersionPolicy::Active) => None,
+            (None, VersionPolicy::Pinned(id)) => Some(id),
         };
+        let workflow = admission
+            .trigger
+            .map_or_else(|| record.target.workflow(), |tick| tick.workflow);
         let namespace = self
             .store
             .namespace_slug(record.tenant_id, record.namespace_id)
             .await?
             .ok_or(AppError::Internal)?;
-        let input = match record.input_digest {
-            Some(digest) => self
-                .store
-                .input(record.tenant_id, &digest)
-                .await?
-                .ok_or(AppError::Internal)?,
-            None => b"{}".to_vec(),
+        let input = if let Some(tick) = admission.trigger {
+            // the `cron.fired` event of feature 004, whoever asks for the time: a workflow with a cron trigger reads it
+            cron_document(tick.trigger, nominal, self.clock.now())
+        } else {
+            let input = match record.input_digest {
+                Some(digest) => self
+                    .store
+                    .input(record.tenant_id, &digest)
+                    .await?
+                    .ok_or(AppError::Internal)?,
+                None => b"{}".to_vec(),
+            };
+            with_nominal_time(input, record.target.nominal_time_field(), nominal)?
         };
-        let input = with_nominal_time(input, record.target.nominal_time_field(), nominal)?;
         let request = ScheduledStart {
             namespace: &namespace,
-            workflow: record.target.workflow(),
+            workflow,
             version,
             input: &input,
         };
@@ -1162,6 +1307,7 @@ where
                 outcome: Outcome::AuthorityRevoked,
                 reason: Some("AUTHORITY_REVOKED"),
                 summary: None,
+                run: None,
             }],
             after: ScheduleAfter {
                 next_action_at: None,

@@ -80,13 +80,14 @@ pub(crate) async fn register_triggers(
 ) -> Result<(), StoreError> {
     let tenant = workflow.tenant_id();
     let kept: Vec<Uuid> = triggers.iter().map(|t| t.id).collect();
-    sqlx::query(
-        "DELETE FROM workflow_triggers WHERE tenant_id = $1 AND workflow_id = $2 AND id <> ALL($3)",
+    // the triggers that leave are known by id, so that their schedules leave in the same transaction
+    let dropped: Vec<Uuid> = sqlx::query_scalar(
+        "DELETE FROM workflow_triggers WHERE tenant_id = $1 AND workflow_id = $2 AND id <> ALL($3) RETURNING id",
     )
     .bind(tenant.as_uuid())
     .bind(workflow.id().as_uuid())
     .bind(&kept)
-    .execute(&mut **tx)
+    .fetch_all(&mut **tx)
     .await
     .map_err(store_error)?;
     for trigger in triggers {
@@ -113,7 +114,18 @@ pub(crate) async fn register_triggers(
         .await
         .map_err(store_error)?;
     }
-    Ok(())
+    // The cron triggers of the version in force have a schedule each (feature 018, `FR-018-017`), made, kept or removed
+    // in this transaction.
+    crate::trigger_schedules::publish(
+        tx,
+        tenant,
+        workflow.namespace_id(),
+        workflow.id(),
+        version,
+        triggers,
+        &dropped,
+    )
+    .await
 }
 
 async fn persist_declared_operations(

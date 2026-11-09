@@ -1351,8 +1351,26 @@ where
             root: run_id,
             business_id: None,
         };
-        let audit = match rerun {
-            None => AuditRecord::by(
+        // The tick of a cron trigger's schedule that nobody asked for is the legacy cron pass's run: started and audited
+        // by the engine, with the reason the legacy pass gives, so that whichever pass reaches the tick starts the same
+        // run (feature 018, `FR-018-017`).
+        let engine_tick = scheduled.as_ref().and_then(|admission| {
+            admission
+                .trigger
+                .filter(|tick| tick.engine)
+                .map(|tick| (tick, admission.nominal_at))
+        });
+        let audit = match (rerun, engine_tick) {
+            (None, Some((tick, nominal))) => AuditRecord::engine(
+                principal.tenant_id(),
+                AuditAction::RunStarted,
+                ResourceType::Run,
+                run_id.to_string(),
+                crate::schedule_triggers::tick_reason(tick.trigger, nominal),
+                ctx.trace_id.clone(),
+                now,
+            ),
+            (None, None) => AuditRecord::by(
                 principal,
                 AuditAction::RunStarted,
                 ResourceType::Run,
@@ -1360,12 +1378,15 @@ where
                 ctx.trace_id.clone(),
                 now,
             ),
-            Some(Rerun {
-                reset: Some(reset),
-                of,
-                reason,
-                ..
-            }) => AuditRecord::by(
+            (
+                Some(Rerun {
+                    reset: Some(reset),
+                    of,
+                    reason,
+                    ..
+                }),
+                _,
+            ) => AuditRecord::by(
                 principal,
                 AuditAction::RunReset,
                 ResourceType::Run,
@@ -1388,7 +1409,7 @@ where
                     pending.reset
                 )),
             )),
-            Some(rerun) => AuditRecord::by(
+            (Some(rerun), _) => AuditRecord::by(
                 principal,
                 AuditAction::RunRerun,
                 ResourceType::Run,
@@ -1494,18 +1515,27 @@ where
             };
         }
         if let Some(admission) = &scheduled {
-            // an action is recognised by its schedule and its nominal time, whatever the caller sends
-            idempotency = Idempotency {
-                scope: format!("schedule:{}", admission.schedule),
-                key: admission.run_key(),
-                fingerprint: fingerprint(&[
-                    b"schedule.action",
-                    admission.schedule.to_string().as_bytes(),
-                    admission.run_key().as_bytes(),
-                    workflow.id().to_string().as_bytes(),
-                    version.version.id().to_string().as_bytes(),
-                    request.input,
-                ]),
+            // an action is recognised by its schedule and its nominal time, whatever the caller sends; the time of a
+            // cron trigger's schedule is recognised by its trigger and its tick, as feature 004 has it, so that the
+            // legacy pass and this one never start it twice (the input is not part of it: a tick is one run)
+            idempotency = match admission.tick() {
+                Some(tick) => Idempotency {
+                    scope: tick.scope,
+                    key: tick.key,
+                    fingerprint: tick.fingerprint,
+                },
+                None => Idempotency {
+                    scope: format!("schedule:{}", admission.schedule),
+                    key: admission.run_key(),
+                    fingerprint: fingerprint(&[
+                        b"schedule.action",
+                        admission.schedule.to_string().as_bytes(),
+                        admission.run_key().as_bytes(),
+                        workflow.id().to_string().as_bytes(),
+                        version.version.id().to_string().as_bytes(),
+                        request.input,
+                    ]),
+                },
             };
         }
         let (input, input_binding) = match input_blob {
@@ -1573,6 +1603,7 @@ where
             pending_reset: reset.and_then(|reset| reset.pending).cloned(),
         };
         let scheduled_start = new.schedule.is_some();
+        let by_dispatcher = engine_tick.is_some();
         let start_receipt = new.idempotency.clone();
         // The instant the entry is held until, to the microsecond: the journal and the column hold
         // the same number, so a replay of the one is the other.
@@ -1597,6 +1628,7 @@ where
             run_id,
             created,
             scheduled_start,
+            by_dispatcher,
             held_until_us,
             with.map(|with| (with, &start_receipt)),
             reset,
@@ -1612,6 +1644,7 @@ where
         run_id: RunId,
         created: Admitted<S::Tx>,
         scheduled: bool,
+        by_dispatcher: bool,
         held_until_us: Option<i64>,
         with: Option<(WithStart<'_>, &Idempotency)>,
         reset: Option<ResetStart<'_>>,
@@ -1715,8 +1748,13 @@ where
             Admitted::Created(mut tx) => {
                 let pending_completion = reset.is_some_and(|reset| reset.pending.is_some());
                 let mut reapplied: Vec<ReapplyEntry> = Vec::new();
+                // the journal of the tick of a cron trigger says what the legacy pass's does: the dispatcher did it
                 let effects = Effects::by(
-                    Actor::Principal(principal.subject().as_str().to_owned()),
+                    if by_dispatcher {
+                        Actor::System("event-dispatcher")
+                    } else {
+                        Actor::Principal(principal.subject().as_str().to_owned())
+                    },
                     ctx.trace_id.clone(),
                 );
                 if let Some(reset) = reset {

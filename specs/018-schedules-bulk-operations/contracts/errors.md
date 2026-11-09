@@ -8,6 +8,7 @@ caller or another tenant's identifier. A foreign resource is `NOT_FOUND` without
 
 | `code` | HTTP | `details.reason` | Retryable | Raised by | Remediation (one sentence, closed table) |
 | --- | --- | --- | --- | --- | --- |
+| `VALIDATION_FAILED` | 422 | `SCHEDULE_NAME_RESERVED` | no | create/update schedule | The name is one a schedule of a cron trigger has or may fall back to (`trigger-` and 32 hex digits, optionally `-` and digits); choose another. |
 | `VALIDATION_FAILED` | 422 | `SCHEDULE_SPEC_INVALID` | no | create/update schedule | A spec field is outside its domain or ceiling; `details.field` names the JSON pointer. |
 | `VALIDATION_FAILED` | 422 | `SCHEDULE_NEVER_FIRES` | no | create/update | The spec has no occurrence between `startAt` and `endAt`. |
 | `VALIDATION_FAILED` | 422 | `SCHEDULE_TOO_FREQUENT` | no | create/update | Two occurrences are closer than the minimum spacing; widen the spec. |
@@ -20,6 +21,7 @@ caller or another tenant's identifier. A foreign resource is `NOT_FOUND` without
 | `CONFLICT` | 409 | `SCHEDULE_TRIGGER_OWNED` | no | update/delete of an origin `TRIGGER` schedule | Change the cron trigger in the workflow definition and publish it. |
 | `CONFLICT` | 409 | `SCHEDULE_DELETED` | no | operate a deleted schedule | The schedule no longer exists for new actions. |
 | `UNAVAILABLE` | 503 | `BINARY_CAPABILITY_MISSING` (shared with 029 and 031) | yes | any API call but `GET /v1/health`, `GET /v1/ready` included, served by a process whose binary lacks a capability recorded as required for its kind in the instance-capability registry (the process learns of a requirement at its next heartbeat, at most about 10 s; a stream ends with a `reconnect` event) | The service cannot serve this call now: try again. If it keeps happening, tell the operator of the platform. |
+| `CONFLICT` | 409 | `SCHEDULE_TRIGGER_GONE` | no | trigger-now (run now) of a `TRIGGER` schedule whose cron trigger is no longer in force (an older control plane dropped it) | The cron trigger of this schedule is no longer in force; the schedule is removed with it. Publish the trigger again to have it back. |
 | `CONFLICT` | 409 | `SCHEDULE_TRIGGER_HANDOVER_PENDING` | no | pause/resume/trigger of a `TRIGGER` schedule before the operator handover | The legacy cron pass still runs; the operator completes the handover once every engine is upgraded. |
 | `QUOTA_EXCEEDED` | 429 | `SCHEDULE_LIMIT`, `BACKFILL_CONCURRENCY`, `BATCH_LIMIT`, `PENDING_RESET_LIMIT` | no | create | A namespace or tenant ceiling is reached; free capacity or ask an administrator. |
 | `VALIDATION_FAILED` | 422 | `BUSINESS_ID_INVALID` | no | start options | 1 to 200 visible ASCII characters. |

@@ -101,10 +101,6 @@ fn the_audit_actions_have_the_names_of_the_plan() {
             AuditAction::ScheduleInputDisclosed,
             "schedule.input_disclosed",
         ),
-        (
-            AuditAction::ScheduleTriggerHandover,
-            "schedule.trigger_handover",
-        ),
         (AuditAction::BatchCreated, "batch.created"),
         (AuditAction::BatchCancelled, "batch.cancelled"),
         (AuditAction::BatchFinished, "batch.finished"),

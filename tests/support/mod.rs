@@ -32,6 +32,7 @@ pub mod schedules;
 pub mod scope_flow;
 pub mod scripts;
 pub mod signed;
+pub mod trigger_schedules;
 pub mod worker;
 
 /// A sibling Cargo binary from the same target and profile as the running integration test.

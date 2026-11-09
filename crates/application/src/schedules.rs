@@ -246,6 +246,9 @@ pub struct RecordedAction {
     pub reason: Option<&'static str>,
     /// How many times a summary stands for, and the last of them.
     pub summary: Option<(u32, OffsetDateTime)>,
+    /// The run the action stands for when it started none of its own: the one a trigger-owned schedule found already
+    /// started by the legacy cron pass (`ALREADY_ACTED`).
+    pub run: Option<Uuid>,
 }
 
 /// The `Idempotency-Key` of a manual action, recorded in the transaction that makes the action: a
@@ -352,6 +355,28 @@ pub fn authorize_cancelling(principal: &Principal, overlap: Overlap) -> Result<(
     Ok(())
 }
 
+/// Refuses the control of a trigger-owned schedule (pause, resume, trigger-now, backfill) until the cron triggers have
+/// been handed over to the schedule pass: `SCHEDULE_TRIGGER_HANDOVER_PENDING`. A schedule of another origin is not
+/// asked about.
+///
+/// # Errors
+/// [`AppError::ScheduleConflict`] while the handover has not happened, and the store's errors.
+pub async fn require_handover<S: ScheduleStore>(
+    store: &S,
+    record: &ScheduleRecord,
+) -> Result<(), AppError> {
+    if record.origin != ScheduleOrigin::Trigger {
+        return Ok(());
+    }
+    if store.trigger_control_open().await? {
+        Ok(())
+    } else {
+        Err(AppError::ScheduleConflict {
+            reason: "SCHEDULE_TRIGGER_HANDOVER_PENDING",
+        })
+    }
+}
+
 /// The reason the admission of a schedule's run is refused when the subject it acts for no longer
 /// holds the authority (`FR-018-015`): a [`StoreError::StateConflict`](crate::error::StoreError) with
 /// this text, which the firing tells apart from "another process acted first".
@@ -388,6 +413,9 @@ pub struct ScheduleAdmission {
     pub manual: Option<ManualRequest>,
     /// Set by a step of a backfill: where it got to, committed with the run.
     pub backfill: Option<BackfillProgress>,
+    /// Set when the schedule is a cron trigger's (`TRIGGER` origin): the run has the identity feature 004 gave the
+    /// tick, so that the legacy cron pass and this one start one run between them.
+    pub trigger: Option<crate::schedule_triggers::TriggerTick>,
 }
 
 /// What rides with a manual action when it starts a run.
@@ -398,6 +426,17 @@ pub struct ManualRequest {
 }
 
 impl ScheduleAdmission {
+    /// The identity of the run when the schedule is a cron trigger's and the time is one of its own (scheduled or
+    /// backfilled): feature 004's, scope `trigger:{id}` and key `cron-{epoch}`, so that it is the same run whichever
+    /// pass or backfill reaches the tick. `None` for every other action: the scope `schedule:{id}` and
+    /// [`Self::run_key`], as ever.
+    #[must_use]
+    pub fn tick(&self) -> Option<crate::schedule_triggers::TickIdentity> {
+        let tick = self.trigger?;
+        (self.kind.origin() == Origin::Spec)
+            .then(|| crate::schedule_triggers::tick_identity(tick.trigger, self.nominal_at))
+    }
+
     /// The key the run is admitted under, within the scope `schedule:{id}`: `nominal-{epoch ms}` for
     /// a scheduled or backfilled time and `manual-{epoch µs}` for trigger-now, so a manual action
     /// never shares an identity with a scheduled time.
@@ -831,6 +870,39 @@ pub trait ScheduleStore: Send + Sync {
         retry_at: OffsetDateTime,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// Whether the control of trigger-owned schedules is open: the cron triggers were handed over and the engines have had time
+    /// to learn of it ([`crate::schedule_triggers::HandoverCache::CONTROL_WAIT_SECONDS`] after the commit, by the database's
+    /// clock). One row.
+    fn trigger_control_open(&self) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// The cron trigger `trigger` is now: the workflow and the version in force. `None` when the trigger is gone (an
+    /// older control plane dropped it) or is not a cron trigger.
+    fn trigger_source(
+        &self,
+        tenant: TenantId,
+        trigger: Uuid,
+    ) -> impl Future<Output = Result<Option<crate::schedule_triggers::TriggerSource>, StoreError>> + Send;
+
+    /// The run the tick `epoch` of `trigger` already started under feature 004's key, if one did (the legacy cron
+    /// pass, or this pass before a crash): what makes the second pass to reach a tick record `ALREADY_ACTED`.
+    fn tick_run(
+        &self,
+        tenant: TenantId,
+        trigger: Uuid,
+        nominal: OffsetDateTime,
+    ) -> impl Future<Output = Result<Option<Uuid>, StoreError>> + Send;
+
+    /// Removes the schedule of a trigger that is gone, as a tombstone, under the fence and the compare-and-swap of a
+    /// step of the pass. `StateConflict` when either no longer holds.
+    fn remove_trigger_schedule(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        expected_state_version: u64,
+        fence: Option<&ShardFence>,
+        now: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
     /// Deletes: the schedule stays as a tombstone, its name is free, its waiting actions become
     /// `DROPPED_DELETED`, its runs are untouched. `false` when there was nothing to delete.
     /// `RevisionConflict` when `expected_revision` is given and the head is another one.
@@ -1233,6 +1305,9 @@ where
         principal.authorize(Permission::ScheduleWrite)?;
         principal.authorize(Permission::RunStart)?;
         authorize_cancelling(principal, write.policies.overlap())?;
+        if crate::schedule_triggers::is_reserved_name(write.name.as_str()) {
+            return Err(invalid("SCHEDULE_NAME_RESERVED", "/name"));
+        }
         let now = self.clock.now();
         let input = self.check(principal, namespace, &write, now).await?;
         let id = ScheduleId::generate();
@@ -1399,6 +1474,13 @@ where
         Ok(self.load(principal, id).await?.namespace_id)
     }
 
+    /// A trigger-owned schedule is paused, resumed, triggered and backfilled only once the operator has handed the cron
+    /// triggers over (`FR-018-017`): until then the legacy cron pass fires them and ignores a pause. Read from the
+    /// database, one row, only for a schedule a trigger owns; anything but `HANDED_OVER` refuses.
+    async fn require_handover(&self, record: &ScheduleRecord) -> Result<(), AppError> {
+        require_handover(&self.store, record).await
+    }
+
     async fn load(
         &self,
         principal: &Principal,
@@ -1408,6 +1490,16 @@ where
             Some(record) if record.state != ScheduleState::Deleted => Ok(record),
             Some(_) | None => Err(AppError::NotFound),
         }
+    }
+
+    /// Whether the control of the schedules of cron triggers is open (D2046, D2053): the triggers were handed over and the
+    /// engines have had time to learn of it. What the Studio asks before it offers pause, resume and run now; the refusal
+    /// `SCHEDULE_TRIGGER_HANDOVER_PENDING` stays the authority.
+    ///
+    /// # Errors
+    /// [`AppError::Unavailable`] or [`AppError::Internal`] when the store fails.
+    pub async fn trigger_control_open(&self) -> Result<bool, AppError> {
+        Ok(self.store.trigger_control_open().await?)
     }
 
     /// The schedules of a namespace, newest first, those after `after` in that order.
@@ -1465,6 +1557,12 @@ where
             return Err(AppError::ScheduleConflict {
                 reason: "SCHEDULE_TRIGGER_OWNED",
             });
+        }
+        // a schedule made before the names were reserved keeps its name and stays editable; it cannot be renamed to one (D2078)
+        if write.name.as_str() != current.name.as_str()
+            && crate::schedule_triggers::is_reserved_name(write.name.as_str())
+        {
+            return Err(invalid("SCHEDULE_NAME_RESERVED", "/name"));
         }
         if current.revision != expected_revision {
             return Err(AppError::RevisionConflict {
@@ -1609,12 +1707,8 @@ where
             return Err(invalid("SCHEDULE_SPEC_INVALID", "/note"));
         }
         let current = self.load(principal, id).await?;
-        if current.origin == ScheduleOrigin::Trigger {
-            // trigger-owned schedules answer to the legacy cron pass until the operator hands over
-            return Err(AppError::ScheduleConflict {
-                reason: "SCHEDULE_TRIGGER_HANDOVER_PENDING",
-            });
-        }
+        // trigger-owned schedules answer to the legacy cron pass until the operator hands over
+        self.require_handover(&current).await?;
         let now = self.clock.now();
         let resuming = state == ScheduleState::Active;
         if resuming {
@@ -1643,7 +1737,9 @@ where
                         by: subject.clone(),
                         at: now,
                     }),
-                    authorized_by: resuming.then_some(subject),
+                    // the authority of a trigger-owned schedule is the engine's, whoever resumes it
+                    authorized_by: (resuming && current.origin != ScheduleOrigin::Trigger)
+                        .then_some(subject),
                     next_action_at,
                     next_actual_at,
                     updated_at: now,
@@ -1677,11 +1773,7 @@ where
             authorize_cancelling(principal, overlap)?;
         }
         let schedule = self.load(principal, id).await?;
-        if schedule.origin == ScheduleOrigin::Trigger {
-            return Err(AppError::ScheduleConflict {
-                reason: "SCHEDULE_TRIGGER_HANDOVER_PENDING",
-            });
-        }
+        self.require_handover(&schedule).await?;
         let now = self.clock.now();
         if request.start >= request.end || request.end > now {
             return Err(invalid("BACKFILL_RANGE_INVALID", "/end"));
@@ -1798,6 +1890,9 @@ pub type ScheduleFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>
 
 /// What the HTTP layer asks of the schedules. Implemented by [`ScheduleService`].
 pub trait ScheduleUseCase: Send + Sync {
+    /// Whether the control of the schedules of cron triggers is open ([`ScheduleService::trigger_control_open`]).
+    fn trigger_control_open(&self) -> ScheduleFuture<'_, bool>;
+
     fn namespace_of<'a>(
         &'a self,
         principal: &'a Principal,

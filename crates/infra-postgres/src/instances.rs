@@ -202,6 +202,27 @@ impl PgInstanceStore {
         }
     }
 
+    /// Runs the feature's own activation in the operator's transaction with the requirement epoch held `FOR UPDATE`, without
+    /// recording a requirement: for a feature whose requirement was recorded before and whose own activation did not happen
+    /// (the handover of the cron triggers, when `schedules-v1` was recorded by hand). The same bounds, the same rule that the
+    /// step reads and does not lock what a registering process may hold.
+    ///
+    /// # Errors
+    /// [`ChangeRefused::Store`] when the registry or the step fails; nothing was changed.
+    pub async fn run_locked<F>(&self, feature: F) -> Result<(), ChangeRefused>
+    where
+        F: for<'c> FnOnce(&'c mut sqlx::PgConnection) -> FeatureStep<'c> + Send,
+    {
+        let mut tx = self.operator_transaction().await?;
+        sqlx::query("SELECT platform_requirement_lock()")
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        self.within_the_step(&mut tx, feature).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(())
+    }
+
     /// The same command in reverse. Takes the epoch lock first, then runs `verify` (the feature checks that nothing
     /// depends on the requirement; an error leaves the requirement where it is), then removes the requirement and
     /// moves the epoch. A requirement that is not recorded is `Removed::NotRecorded` and `verify` does not run.

@@ -216,8 +216,8 @@ async fn insert_recorded(
     sqlx::query(
         "INSERT INTO schedule_actions \
          (tenant_id, schedule_id, origin, nominal_at, kind, revision, outcome, reason, decided_at, \
-          summary_count, summary_last_at, backfill_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+          summary_count, summary_last_at, backfill_id, run_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(tenant.as_uuid())
     .bind(schedule.as_uuid())
@@ -235,6 +235,7 @@ async fn insert_recorded(
     )
     .bind(action.summary.map(|(_, last)| last))
     .bind(backfill)
+    .bind(action.run)
     .execute(conn)
     .await
     .map_err(conflict_on_duplicate)?;
@@ -329,7 +330,7 @@ pub(crate) async fn record_start(
     sqlx::query(
         "UPDATE schedules SET state_version = state_version + 1, next_action_at = $3, \
          next_actual_at = $4, retry_at = CASE WHEN $10 THEN retry_at ELSE NULL END, \
-         remaining_actions = $5, tracked_runs = array_append(tracked_runs, $6), \
+         remaining_actions = $5, tracked_runs = CASE WHEN $13 THEN tracked_runs ELSE array_append(tracked_runs, $6) END, \
          buffered = GREATEST(buffered - $8, 0), counters = $9, updated_at = $7, \
          recovery_until = CASE WHEN $10 THEN recovery_until ELSE $11 END, \
          recovery_acts = CASE WHEN $10 THEN recovery_acts ELSE $12 END, \
@@ -354,6 +355,9 @@ pub(crate) async fn record_start(
     .bind(admission.kind != ActionKind::Scheduled)
     .bind(admission.after.recovery.map(|r| r.until))
     .bind(admission.after.recovery.map(|r| recovery_acts_column(r.acts_left)))
+    // a tick of a cron trigger's own schedule is never tracked: it never waits for an open run, and the run is not
+    // counted against the ceiling of what `ALLOW_ALL` tracks (the legacy pass has no such limit)
+    .bind(admission.trigger.is_some_and(|tick| tick.engine))
     .execute(&mut *conn)
     .await
     .map_err(store_error)?;
@@ -983,6 +987,46 @@ impl ScheduleStore for PgScheduleStore {
         insert_audit(&mut tx, audit).await?;
         tx.commit().await.map_err(store_error)?;
         self.schedule(change.tenant_id, change.id).await
+    }
+
+    async fn trigger_control_open(&self) -> Result<bool, StoreError> {
+        self.read_control_open().await
+    }
+
+    async fn trigger_source(
+        &self,
+        tenant: TenantId,
+        trigger: Uuid,
+    ) -> Result<Option<sagat_application::schedule_triggers::TriggerSource>, StoreError> {
+        self.read_trigger_source(tenant, trigger).await
+    }
+
+    async fn tick_run(
+        &self,
+        tenant: TenantId,
+        trigger: Uuid,
+        nominal: OffsetDateTime,
+    ) -> Result<Option<Uuid>, StoreError> {
+        self.read_tick_run(tenant, trigger, nominal).await
+    }
+
+    async fn remove_trigger_schedule(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+        expected_state_version: u64,
+        fence: Option<&ShardFence>,
+        _now: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        self.remove_gone(
+            tenant,
+            id,
+            None,
+            expected_state_version,
+            fence,
+            id.as_uuid(),
+        )
+        .await
     }
 
     async fn delete_schedule(

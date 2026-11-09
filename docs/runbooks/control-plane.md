@@ -15,7 +15,7 @@ code in this repository; what is **not** covered is listed at the end so nobody 
 | Quota ceilings | `control-plane quota-ceiling` with `SAGAT_CEILING_TENANT_ID`, `SAGAT_CEILING_RESOURCE`, `SAGAT_CEILING_VALUE` (a number, or `default` to withdraw) | The most a tenant's administrators may set for a quota; only this command raises it. Audited as `system:operator`. See `docs/runbooks/security-governance.md` |
 | OIDC provider | `SAGAT_OIDC_JWKS_URI` (HTTPS) | Only its public keys are fetched; no token is ever sent to it |
 
-Two database roles exist on purpose. The **owner** role runs `migrate` and `provision-tenant`. The
+Two database roles exist on purpose. The **owner** role runs `migrate`, `provision-tenant` and `schedule-trigger-handover` (the audited handover of the cron triggers to the schedule pass, [`schedules.md`](schedules.md) section 6). The
 API serves requests as **`sagat_app`**, which owns nothing, cannot alter or delete audit rows and
 cannot change the schema. Never point the API at the owner role: outside `SAGAT_ENV=dev`, `serve`
 checks the role it is connected as and **refuses to start** (exit code 2, before it listens) when
@@ -45,7 +45,7 @@ is skipped, which is why the local Docker stack (dev) also works with the owner 
   and follows the triggers those writes fire when the trigger function is not `SECURITY DEFINER`.
   A statement without a privilege fails the test unless it is in the `ALLOWED` list of that file with
   a reason (today: `provision-tenant` and `seed-dev` write `tenants` and `memberships`, and
-  `scheduling-weight` writes `tenant_scheduling`, all as the owner; one unused helper; two
+  `scheduling-weight` writes `tenant_scheduling`, and `schedule-trigger-handover` calls two owner-only functions, all as the owner; one unused helper; two
   statements whose text is assembled at run time). An `ALLOWED` entry that no longer excuses
   anything also fails. Besides it, `SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test -p sagat-tests --test
   integration_workflow_primitives` re-runs every API-backed test with the API connected as `sagat_app`.
@@ -129,7 +129,7 @@ logs for that value to follow one request.
 | `408` | The request exceeded `SAGAT_REQUEST_TIMEOUT_SECS`, or its body stopped arriving for `SAGAT_BODY_IDLE_TIMEOUT_SECS` (default 5 s between pieces of the body) | Slow database or client; check `http_request_duration_seconds`. A client that trickles one byte at a time is bounded only by the request timeout |
 | Every call but `/v1/health` is `503` with `details.reason` `BINARY_CAPABILITY_MISSING`, and `/v1/ready` fails, at start or after an activation (the log says `BINARY_CAPABILITY_MISSING: the platform requires ...`) | The platform records a requirement (a feature that every control plane has to honour was activated) that this build lacks | Upgrade or stop the replica; another replica serves the call. [`instance-registry.md`](instance-registry.md) |
 | Process refuses to start | Missing/invalid setting (exit code 2, names the variable), or `DATABASE_URL` without TLS outside dev | Fix the named variable; the message never includes the URL's password. For the standalone healthcheck, TLS settings require `SAGAT_HTTP_TLS_CERT`, a DNS-only server name and an exact IP socket in `SAGAT_HEALTHCHECK_ADDR` |
-| Process exits with code 2 and `database role '<name>' is too privileged to serve requests: ...` | `DATABASE_URL` of `serve` points at the owner role, a superuser, or a role that may rewrite `audit_records` (the message lists each reason) | Use the runtime role (`sagat_app`) in the `serve` environment; keep the owner role for `migrate` and `provision-tenant` only. Do not grant the runtime role more to make this go away |
+| Process exits with code 2 and `database role '<name>' is too privileged to serve requests: ...` | `DATABASE_URL` of `serve` points at the owner role, a superuser, or a role that may rewrite `audit_records` (the message lists each reason) | Use the runtime role (`sagat_app`) in the `serve` environment; keep the owner role for `migrate`, `provision-tenant` and `schedule-trigger-handover` only. Do not grant the runtime role more to make this go away |
 | Process exits with code 2 and `the audit trail does not exist yet ... run control-plane migrate` | `serve` started before the migrations (outside dev the privileges cannot be verified without the table) | Run `migrate` with the owner role first; start the API afterwards (let the orchestrator restart it) |
 
 ### Limits and the settings behind them

@@ -43,6 +43,7 @@ use tokio::net::{TcpListener, TcpStream};
 pub mod cleanup;
 pub mod cli;
 pub mod config;
+pub mod handover;
 pub mod registry;
 
 /// Parsed workflow versions kept in memory (they are immutable, so they never go stale).
@@ -84,6 +85,10 @@ pub enum RunError {
     Unhealthy(String),
     #[error("secret cleanup could not finish; retry the command")]
     Cleanup,
+    /// An operator command that was understood and is deliberately not carried out, with the sentence that says what to
+    /// do next (the engines that lack a capability, a count that is not the one expected, a role that may not run it).
+    #[error("{0}")]
+    Declined(String),
 }
 
 impl RunError {
@@ -94,6 +99,7 @@ impl RunError {
             | Self::Refused(_)
             | Self::Auth(_)
             | Self::Studio(_)
+            | Self::Declined(_)
             | Self::LeastPrivilege(_) => 2,
             Self::Database(_)
             | Self::Migrate(_)

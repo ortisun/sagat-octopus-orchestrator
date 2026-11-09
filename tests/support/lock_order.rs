@@ -28,13 +28,26 @@ use tokio::task::JoinHandle;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Slot {
     /// The requirement epoch of the instance registry (`FR-018-052`): `FOR SHARE` to register, `FOR UPDATE` to record a
-    /// requirement. It is the first slot because the activation holds it while the feature's step runs, so the step
-    /// takes no lock a transaction that read the epoch may hold: it reads, it does not lock.
+    /// requirement. It is the first slot because the activation holds it while the feature's step runs. The step of the
+    /// handover is the one that **does lock** (it narrows ADR-0081 decision 2, "the step reads the epoch, it does not lock",
+    /// ADR-0082): the two slots below, which no transaction that reads the epoch ever takes, so none of them can wait for the
+    /// activation while holding what the activation wants.
     RegistryEpoch,
+    /// The table of the cron triggers (`workflow_triggers`), `SHARE ROW EXCLUSIVE`, for at most two seconds (D2070): taken by
+    /// the census of the handover and by `schedule_trigger_handover_complete`, in that order of the two and before the handover
+    /// row, through `schedule_trigger_handover_lock()`. The test of the order is derived from `pg_locks`
+    /// (`trigger_round3::the_function_takes_the_table_of_the_triggers_before_the_handover_row`), not from this list.
+    TriggersTable,
+    /// The singleton `schedule_trigger_handover` (feature 018): taken by the handover inside the registry epoch's slot and after the
+    /// table, `FOR UPDATE`, by the function that moves it (D2046, D2070); read by everything else without a lock.
+    HandoverRow,
     /// 026 public-link row or 027 app-session row.
     Entry,
     /// The request receipt.
     Receipt,
+    /// The row of a cron trigger (`workflow_triggers`): `FOR SHARE` by the reconciliation, written by a publication, before the row of
+    /// the schedule it owns (D2050): the two writers of that pair take them in this order, so neither can abort the other.
+    TriggerRow,
     /// Run-creating aggregates: a schedule or pending-reset row, then a business-id row.
     Aggregate,
     /// Existing runs the transaction acts on: chain before run.

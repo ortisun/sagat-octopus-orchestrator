@@ -138,7 +138,10 @@ the registry has its own command (`control-plane schedule-trigger-handover` for 
 transaction** locks the epoch, verifies every live process of the required kinds, records the requirement, moves the epoch,
 writes the history and does the feature's own step. The transaction is bounded (lock wait 2 s, statement 3 s, the feature's step
 3 s): a step that takes longer is rolled back, because every process that registers waits for the epoch meanwhile. **The
-feature's step reads, it does not lock**: it must not take a lock that a transaction reading the epoch may hold. If a live
+feature's step reads, it does not lock**: it must not take a lock that a transaction reading the epoch may hold. (The one
+step that locks, because a publication in flight is invisible to a count, is the cron-trigger handover: it takes the table of
+the cron triggers for at most two seconds and the handover row, which no transaction that reads the epoch ever takes; ADR-0082
+narrows this rule for it and says why.) If a live
 process lacks the capability the command is refused and says how many and which (up to sixteen instance ids): upgrade or stop
 them, wait 30 seconds if you stopped them without a clean stop, and run it again.
 
@@ -165,6 +168,10 @@ The processes that were refused start serving at their next try (within a second
 requirement would otherwise run without being counted. It is not true of the **schema**: the `down` of the migration refuses once
 any row of the history exists (the history is evidence), so rolling the schema back needs the history read, exported and removed
 on purpose by the owner.
+
+### The first activation: the cron triggers (018)
+
+`control-plane schedule-trigger-handover` requires `schedules-v1` of every live execution engine and, in the same transaction, hands the cron triggers over from the legacy cron pass to the schedule pass. It takes `--operator`, `--expect-live N` and `--dry-run`, runs with the owner role, and is idempotent; the procedure, its refusals and the rollback hazard are in [`schedules.md`](schedules.md) section 6.
 
 ## 6. What the registry does not protect against
 

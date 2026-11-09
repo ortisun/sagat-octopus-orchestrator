@@ -27,6 +27,7 @@ use sagat_application::instances::InstanceKind;
 use sagat_application::reset_completion::ResetCompleter;
 use sagat_application::runs::RunService;
 use sagat_application::schedule_firing::ScheduleFiring;
+use sagat_application::schedule_triggers::TriggerReconciler;
 use sagat_application::worker::WorkerService;
 use sagat_control_plane::config::{self, Config, Environment};
 use sagat_control_plane::{
@@ -43,7 +44,8 @@ use sagat_infra_postgres::{
 };
 use sagat_scheduler::{
     BatchPass, DeliveryWorker, EventDispatcher, Keeper, Monitor, OutboxDispatcher, Placement,
-    ProjectorSettings, ResetPass, Round, SchedulePass, Scheduler, TelemetryProjector,
+    ProjectorSettings, ResetPass, Round, SchedulePass, Scheduler, TelemetryProjector, TriggerPass,
+    TriggerSettings,
 };
 use sagat_telemetry::Metrics;
 use tokio::net::TcpListener;
@@ -60,7 +62,7 @@ pub use settings::EngineConfig;
 
 use loops::{
     EngineBatches, EngineDeliveries, EngineDispatcher, EngineEvents, EngineKeeper, EngineMonitor,
-    EngineProjector, EngineResets, EngineScheduler, EngineSchedules, Health,
+    EngineProjector, EngineResets, EngineScheduler, EngineSchedules, EngineTriggers, Health,
 };
 use supervision::CriticalTasks;
 
@@ -460,6 +462,39 @@ pub async fn serve(
             placement.clone(),
             engine.schedules,
         ));
+        // The cron triggers become schedules (`FR-018-017`): publication makes them, and this pass makes the ones it did
+        // not (an older control plane, the triggers older than the feature). It runs in the processes that run the
+        // schedule pass, in `LEGACY` and after the handover alike.
+        let triggers: Arc<EngineTriggers> = Arc::new(TriggerPass::new(
+            TriggerReconciler::new(
+                PgScheduleStore::new(pool.clone()),
+                SpecCalendar,
+                database_clock.clone(),
+            ),
+            placement.clone(),
+            TriggerSettings::default(),
+        ));
+        let trigger_clock = database_clock.clone();
+        tasks.spawn_loop(
+            "trigger schedules",
+            loops::run_triggers(
+                {
+                    let triggers = Arc::clone(&triggers);
+                    let gate = Arc::clone(&gate);
+                    move || {
+                        let triggers = Arc::clone(&triggers);
+                        let clock = trigger_clock.clone();
+                        let gate = Arc::clone(&gate);
+                        async move {
+                            loops::while_serving(&gate, || loops::trigger_round(&clock, &triggers))
+                                .await
+                        }
+                    }
+                },
+                loops::TRIGGER_POLL,
+                stop_rx.clone(),
+            ),
+        );
         tasks.spawn_loop(
             "schedule pass",
             loops::run_schedules(

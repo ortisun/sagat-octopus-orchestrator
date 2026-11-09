@@ -222,8 +222,20 @@ pub async fn list_schedules<B: Governance>(
     } else {
         None
     };
+    // one read of the handover for the page, and only when a schedule of a cron trigger is on it
+    let control_open = if found
+        .iter()
+        .any(|s| s.origin == sagat_application::schedules::ScheduleOrigin::Trigger)
+    {
+        schedules(&state)?.trigger_control_open().await?
+    } else {
+        false
+    };
     Ok(Json(SchedulePageBody {
-        items: found.iter().map(ScheduleBody::from).collect(),
+        items: found
+            .iter()
+            .map(|record| ScheduleBody::from(record).controllable_when(control_open))
+            .collect(),
         next_cursor,
     }))
 }
@@ -301,7 +313,12 @@ pub async fn get_schedule<B: Governance>(
             query.recent_count.unwrap_or(10).min(100),
         )
         .await?;
-    Ok(Json(ScheduleDescriptionBody::from(&description)))
+    let mut body = ScheduleDescriptionBody::from(&description);
+    if description.record.origin == sagat_application::schedules::ScheduleOrigin::Trigger {
+        let open = schedules(&state)?.trigger_control_open().await?;
+        body.schedule = body.schedule.controllable_when(open);
+    }
+    Ok(Json(body))
 }
 
 /// `POST …/schedules/{scheduleId}/input-disclosures` (`FR-018-042`): the values of the input of a
@@ -418,7 +435,8 @@ pub async fn pause_schedule<B: Governance>(
     let paused = schedules(&state)?
         .pause(&caller.session.principal, id, note, &caller.ctx)
         .await?;
-    Ok(Json(ScheduleBody::from(&paused)))
+    // a pause of a schedule a cron trigger owns succeeded: the control is open
+    Ok(Json(ScheduleBody::from(&paused).controllable_when(true)))
 }
 
 pub async fn resume_schedule<B: Governance>(
@@ -441,7 +459,7 @@ pub async fn resume_schedule<B: Governance>(
     let resumed = schedules(&state)?
         .resume(&caller.session.principal, id, note, &caller.ctx)
         .await?;
-    Ok(Json(ScheduleBody::from(&resumed)))
+    Ok(Json(ScheduleBody::from(&resumed).controllable_when(true)))
 }
 
 pub async fn trigger_schedule<B: Governance>(

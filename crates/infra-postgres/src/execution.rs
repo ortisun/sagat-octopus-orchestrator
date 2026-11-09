@@ -1147,7 +1147,15 @@ impl RunStore for PgRunStore {
                 if database.is_some() {
                     crate::quotas::lock_secrets(&mut tx, tenant, new.info.namespace_id).await?;
                 }
-                crate::schedules::recheck_authority(&mut tx, tenant, schedule, database).await?;
+                // a cron trigger's schedule acts as the engine whatever starts the run (the tick, the release of an action that
+                // waited, a run-now whose waiting action was released): `system:engine` is no member and holds no authority to
+                // look at again (database steps stand on the publisher). A backfill and a run-now of a person keep theirs.
+                let engine = schedule.trigger.is_some()
+                    && schedule.authority == sagat_domain::identity::Subject::engine().as_str();
+                if !engine {
+                    crate::schedules::recheck_authority(&mut tx, tenant, schedule, database)
+                        .await?;
+                }
             }
             // The member who asked for the reset is looked at again where the run is admitted, under the lock
             // of their membership: a revocation that has returned stops the run.

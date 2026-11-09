@@ -11,6 +11,8 @@ use sagat_api_http::error::ErrorCode;
 /// The reasons that operations raise today.
 const RAISED: &[&str] = &[
     "SCHEDULE_SPEC_INVALID",
+    "SCHEDULE_NAME_RESERVED",
+    "SCHEDULE_TRIGGER_GONE",
     "SCHEDULE_NEVER_FIRES",
     "SCHEDULE_TOO_FREQUENT",
     "SCHEDULE_ZONE_UNKNOWN",

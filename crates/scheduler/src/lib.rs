@@ -22,6 +22,7 @@ mod resets;
 mod schedules;
 mod shards;
 mod telemetry;
+mod trigger_schedules;
 
 pub use batches::{BatchPass, BatchRound, BatchSettings};
 pub use deliveries::{DeliveryRound, DeliverySettings, DeliveryWorker};
@@ -39,3 +40,4 @@ pub use shards::{Keeper, KeeperSettings, Placement, Round, Snapshot};
 pub use telemetry::{
     ProjectionRound, ProjectorSettings, TelemetryProjector, state as projection_state,
 };
+pub use trigger_schedules::{TriggerPass, TriggerRound, TriggerSettings};

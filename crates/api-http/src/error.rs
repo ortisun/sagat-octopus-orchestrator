@@ -166,6 +166,9 @@ impl ErrorCode {
             }
             // feature 018: the sentences of `specs/018-schedules-bulk-operations/contracts/errors.md`,
             // which a contract test keeps equal to this table
+            (Self::ValidationFailed, "SCHEDULE_NAME_RESERVED") => {
+                "The name is one a schedule of a cron trigger has or may fall back to (`trigger-` and 32 hex digits, optionally `-` and digits); choose another."
+            }
             (Self::ValidationFailed, "SCHEDULE_SPEC_INVALID") => {
                 "A spec field is outside its domain or ceiling; `details.field` names the JSON pointer."
             }
@@ -189,6 +192,9 @@ impl ErrorCode {
             }
             (Self::Conflict, "SCHEDULE_TRIGGER_OWNED") => {
                 "Change the cron trigger in the workflow definition and publish it."
+            }
+            (Self::Conflict, "SCHEDULE_TRIGGER_GONE") => {
+                "The cron trigger of this schedule is no longer in force; the schedule is removed with it. Publish the trigger again to have it back."
             }
             (Self::Conflict, "SCHEDULE_TRIGGER_HANDOVER_PENDING") => {
                 "The legacy cron pass still runs; the operator completes the handover once every engine is upgraded."

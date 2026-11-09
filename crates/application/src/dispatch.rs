@@ -309,6 +309,12 @@ pub trait EventDispatchStore: Send + Sync {
         counted: bool,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
+    /// Where the cron triggers fire from (feature 018, `FR-018-017`): the legacy cron pass runs only while the state is
+    /// not `HANDED_OVER`. One row.
+    fn trigger_handover(
+        &self,
+    ) -> impl Future<Output = Result<crate::schedule_triggers::HandoverState, StoreError>> + Send;
+
     /// The registered event triggers of the namespace that could be about this source and type.
     fn triggers_matching(
         &self,

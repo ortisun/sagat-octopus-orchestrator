@@ -414,3 +414,147 @@ async fn a_recovery_is_whole_and_bounded() {
         assert!(refused.is_err(), "{why} is refused");
     }
 }
+// --- the schedule of a cron trigger (US07, the rest of T018-029) ---------------------------------------------------------
+
+mod trigger_owned {
+    //! The schedule of a cron trigger after an outage: catch-up `ONE` over a window of 366 days. One run for the outage, the
+    //! other times summarised, the key of the earliest time acted on as feature 004 keys it, and the same run the legacy
+    //! cron pass makes of the same outage.
+    use sagat_application::schedule_firing::Fired;
+    use time::{Duration, OffsetDateTime};
+    use uuid::Uuid;
+
+    use crate::support::trigger_schedules::{Triggers, cron_workflow, triggers};
+
+    /// Midnight UTC `days` days ago.
+    fn midnight(days: i64) -> OffsetDateTime {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        OffsetDateTime::from_unix_timestamp(now - now % 86_400 - days * 86_400).expect("instant")
+    }
+
+    async fn keys(t: &Triggers, trigger: Uuid) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT idempotency_key FROM command_dedupe WHERE scope = $1 ORDER BY idempotency_key",
+        )
+        .bind(format!("trigger:{trigger}"))
+        .fetch_all(&t.w.db.pool)
+        .await
+        .expect("keys")
+    }
+
+    #[tokio::test]
+    async fn an_outage_inside_the_window_is_one_run_at_the_earliest_time_and_the_same_run_the_legacy_pass_makes()
+     {
+        // the schedule pass
+        let t = triggers().await;
+        let (workflow, _) = t.publish(cron_workflow("outage", "0 0 * * *", "UTC")).await;
+        let (trigger, ..) = t.trigger_of("outage").await;
+        t.reconcile().await;
+        let schedule = t.schedule_of(trigger).await.expect("schedule");
+        let first = midnight(40);
+        t.due_at(trigger, &schedule, first).await;
+        t.clock.set(OffsetDateTime::now_utc());
+        let mut steps = 0;
+        for _ in 0..20 {
+            match t.fire(&schedule).await {
+                Fired::Acted => steps += 1,
+                _ => break,
+            }
+        }
+        assert!(steps >= 1);
+        let runs = t.runs_of(workflow).await;
+        assert_eq!(runs.len(), 1, "one run for the whole outage");
+        assert_eq!(
+            keys(&t, trigger).await,
+            [format!("cron-{}", first.unix_timestamp())],
+            "the key of the earliest missed time"
+        );
+        let actions = t.actions_of(&schedule).await;
+        let (started, coalesced): (Vec<_>, Vec<_>) = actions
+            .iter()
+            .partition(|(_, outcome, _)| outcome == "STARTED");
+        assert_eq!((started.len(), started[0].0), (1, first));
+        assert_eq!(
+            coalesced.len(),
+            1,
+            "the other times are one summary: {actions:?}"
+        );
+        assert_eq!(coalesced[0].1, "COALESCED");
+        let counted: i32 = sqlx::query_scalar(
+            "SELECT summary_count FROM schedule_actions WHERE schedule_id = $1 AND outcome = 'COALESCED'",
+        )
+        .bind(schedule.id.as_uuid())
+        .fetch_one(&t.w.db.pool)
+        .await
+        .expect("count");
+        assert!(
+            counted >= 39,
+            "every missed time after the first is counted: {counted}"
+        );
+        assert!(t.read(&schedule).await.next_action_at.expect("next") > OffsetDateTime::now_utc());
+
+        // the legacy pass, over the same outage in a world of its own
+        let l = triggers().await;
+        let (legacy_workflow, _) = l.publish(cron_workflow("outage", "0 0 * * *", "UTC")).await;
+        let (legacy_trigger, ..) = l.trigger_of("outage").await;
+        sqlx::query("UPDATE workflow_triggers SET next_fire_at = $2 WHERE id = $1")
+            .bind(legacy_trigger)
+            .bind(first)
+            .execute(&l.w.db.pool)
+            .await
+            .expect("due");
+        assert_eq!(l.w.dispatcher.tick().await.runs_started, 1);
+        assert_eq!(l.runs_of(legacy_workflow).await.len(), 1);
+        assert_eq!(
+            keys(&l, legacy_trigger).await,
+            [format!("cron-{}", first.unix_timestamp())],
+            "the same key, for the same time"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_outage_longer_than_the_window_summarises_what_is_older_than_366_days_and_acts_on_the_earliest_time_inside_it()
+     {
+        let t = triggers().await;
+        let (workflow, _) = t.publish(cron_workflow("long", "0 0 * * *", "UTC")).await;
+        let (trigger, ..) = t.trigger_of("long").await;
+        t.reconcile().await;
+        let schedule = t.schedule_of(trigger).await.expect("schedule");
+        t.due_at(trigger, &schedule, midnight(400)).await;
+        t.clock.set(OffsetDateTime::now_utc());
+        for _ in 0..30 {
+            if t.fire(&schedule).await != Fired::Acted {
+                break;
+            }
+        }
+        assert_eq!(t.runs_of(workflow).await.len(), 1);
+        let rows: Vec<(String, Option<i32>)> = sqlx::query_as(
+            "SELECT outcome, summary_count FROM schedule_actions WHERE schedule_id = $1 ORDER BY nominal_at",
+        )
+        .bind(schedule.id.as_uuid())
+        .fetch_all(&t.w.db.pool)
+        .await
+        .expect("actions");
+        let outcomes: Vec<&str> = rows.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(
+            outcomes,
+            ["MISSED_CATCHUP_WINDOW", "STARTED", "COALESCED"],
+            "older than the window is missed, the earliest inside it starts, the rest is one summary: {rows:?}"
+        );
+        let missed = rows[0].1.expect("count");
+        assert!(
+            (33..=35).contains(&missed),
+            "about 34 daily times fall outside the 366 days: {missed}"
+        );
+        // the key is that of the time acted on, which is the first one inside the window
+        let key = keys(&t, trigger).await;
+        assert_eq!(key.len(), 1);
+        let epoch: i64 = key[0].trim_start_matches("cron-").parse().expect("epoch");
+        let acted = OffsetDateTime::from_unix_timestamp(epoch).expect("instant");
+        let cutoff = OffsetDateTime::now_utc() - Duration::days(366);
+        assert!(
+            acted >= cutoff && acted < cutoff + Duration::days(1) + Duration::seconds(1),
+            "{acted} {cutoff}"
+        );
+    }
+}

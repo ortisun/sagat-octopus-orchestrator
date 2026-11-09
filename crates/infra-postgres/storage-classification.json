@@ -3699,6 +3699,23 @@
       ]
     },
     {
+      "table": "schedule_trigger_handover",
+      "column": "changed_db_role",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The database role of the session that made the handover (session_user); CHECK limits it to 128 characters and the table holds one row. Deployment-level, no tenant; written only by `schedule_trigger_handover_complete`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/trigger_schedules.rs"
+      ]
+    },
+    {
       "table": "script_artifacts",
       "column": "content",
       "sql_type": "bytea",

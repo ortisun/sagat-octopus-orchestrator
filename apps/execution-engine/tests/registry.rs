@@ -178,6 +178,7 @@ fn every_loop_the_engine_spawns_obeys_the_gate_and_the_set_of_loops_is_the_one_l
         "scheduler",
         "housekeeping",
         "schedule pass",
+        "trigger schedules",
         "batch pass",
         "reset pass",
         "event dispatcher",

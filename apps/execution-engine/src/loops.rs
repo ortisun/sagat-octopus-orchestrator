@@ -22,7 +22,8 @@ use sagat_infra_postgres::{
 use sagat_scheduler::{
     BatchPass, BatchRound, DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound,
     Keeper, Monitor, MonitorRound, OutboxDispatcher, ProjectionRound, Report, ResetPass,
-    ResetRound, Round, SchedulePass, ScheduleRound, Scheduler, TelemetryProjector,
+    ResetRound, Round, SchedulePass, ScheduleRound, Scheduler, TelemetryProjector, TriggerPass,
+    TriggerRound,
 };
 use tokio::sync::watch;
 
@@ -53,6 +54,7 @@ pub type EngineSchedules = SchedulePass<
     PgIdentityStore,
     RunService<PgRunStore, SystemClock, JsonEvaluator>,
 >;
+pub type EngineTriggers = TriggerPass<PgScheduleStore, SpecCalendar, DatabaseClock<SystemClock>>;
 pub type EngineBatches = BatchPass<
     PgBatchStore,
     RunService<PgRunStore, SystemClock, JsonEvaluator>,
@@ -404,6 +406,59 @@ where
         }
     }
     tracing::info!("schedule pass stopped");
+}
+
+/// How often the reconciliation of trigger-owned schedules looks at the cron triggers: it finds what publication did not
+/// (an older control plane, the triggers older than the feature), which is no hurry, and its one query walks the triggers
+/// of the replica's shards (D2038).
+pub const TRIGGER_POLL: Duration = Duration::from_secs(5);
+
+/// One round of the reconciliation of trigger-owned schedules, after the clock it plans by has been moved to the
+/// database's time: the next time of a schedule it makes is the first one after the database's now.
+pub async fn trigger_round<L>(
+    clock: &DatabaseClock<L>,
+    pass: &TriggerPass<PgScheduleStore, SpecCalendar, DatabaseClock<L>>,
+) -> TriggerRound
+where
+    L: Clock,
+{
+    if let Err(error) = clock.sync().await {
+        if !clock.is_synced() {
+            tracing::warn!(%error, "could not read the database clock yet; the reconciliation of trigger schedules waits");
+            return TriggerRound {
+                failed: 1,
+                ..TriggerRound::default()
+            };
+        }
+        tracing::warn!(%error, "could not read the database clock; the reconciliation keeps the last difference");
+    }
+    pass.round().await
+}
+
+/// Keeps the schedules of the cron triggers equal to the triggers until stopped: a round that wrote something is
+/// followed at once by the next (a backlog drains at full speed), an idle one by a pause.
+pub async fn run_triggers<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = TriggerRound>,
+{
+    while !*stop.borrow() {
+        let done = round().await;
+        // a round that wrote is followed by a pause that keeps the writes to a bounded rate, never by the next round at once:
+        // an upgrade that leaves a great many triggers is worked through at that pace (D2047)
+        let pause = if done.did_work() {
+            done.pause_after()
+        } else if done.sweeping {
+            // the window did not reach the last trigger: the next one follows soon, not after the poll
+            TriggerRound::SWEEP_PAUSE.min(poll)
+        } else {
+            poll
+        };
+        if stop_during(jittered(pause, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("trigger schedule reconciliation stopped");
 }
 
 /// One round of the batch pass, after the clock it acts by has been read again: the items are

@@ -57,6 +57,7 @@ mod scripts;
 mod secrets;
 mod signals;
 mod telemetry;
+mod trigger_schedules;
 mod versioning;
 mod workers;
 
@@ -83,6 +84,10 @@ pub use schedules::PgScheduleStore;
 pub use scoped_leaf_finish::PgScopedLeafFinishStore;
 pub use sqlx::PgPool;
 pub use telemetry::PROJECTOR_LEASE;
+pub use trigger_schedules::{
+    Census, HandoverWritten, complete_handover, engine_census, handover_step, may_hand_over,
+    read_epoch, read_handover_row,
+};
 /// The query that finds the runs a worker may claim, exposed so a test can check its plan.
 #[doc(hidden)]
 pub use workers::CLAIMABLE as CLAIMABLE_SQL;

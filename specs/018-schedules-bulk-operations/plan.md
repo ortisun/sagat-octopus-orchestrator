@@ -267,7 +267,7 @@ run's trace.
 **Audit actions** (added to `crates/domain/src/audit.rs`): `schedule.created`, `schedule.updated`,
 `schedule.deleted`, `schedule.paused`, `schedule.resumed`, `schedule.auto_paused`,
 `schedule.triggered`, `schedule.backfill_requested`, `schedule.backfill_cancelled`,
-`schedule.input_disclosed`, `schedule.trigger_handover`, `batch.created`, `batch.cancelled`, `batch.finished`, `run.reset`,
+`schedule.input_disclosed`, `batch.created`, `batch.cancelled`, `batch.finished`, `run.reset`,
 `run.reset_requested`. Runs started by a schedule, with-start, rerun and reset reuse `run.started`
 and `run.rerun`; batch item effects reuse the single action's audit (`run.cancel_requested`,
 `run.signalled`, `run.updated`, `run.paused`, `run.resumed`, `run.marked_for_review`,
@@ -292,6 +292,9 @@ decision on alerts): `SCHEDULE_PAUSED_BY_SYSTEM`, `BATCH_STALLED` as additive al
    031 shipped it first, in a release before the handover can be used.
    The migration creates one trigger-owned schedule per existing cron trigger with
    `next_action_at = next_fire_at`; the reconciliation pass keeps them equal afterwards.
+   *Amended 2026-11-08 (D2033, T018-060):* no migration makes them. Publication makes the schedules of the triggers it registers
+   (in the publishing transaction) and the reconciliation pass makes the rest, with the trigger's `next_fire_at` as the next time while
+   `LEGACY`: a migration cannot plan a next time without the calendar.
 2. **Dual run and handover.** While the handover state is `LEGACY`, the old cron pass (old and new
    engines) and the new schedule pass may both fire a tick; the shared key (`trigger:{id}`/
    `cron-{epoch}`) starts one run and a replayed key records `ALREADY_ACTED`; trigger-owned schedules

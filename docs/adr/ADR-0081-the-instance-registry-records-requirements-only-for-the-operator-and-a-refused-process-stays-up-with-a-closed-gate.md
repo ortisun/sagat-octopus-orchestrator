@@ -45,3 +45,9 @@ Bad: the operator needs the owner credentials to activate (a runbook step, as fo
 ## Evidence
 
 `specs/018-schedules-bulk-operations/research.md` D2013 to D2032 and G1996 to G2003; `docs/runbooks/instance-registry.md`; the mutation results of T018-080 in `specs/018-schedules-bulk-operations/tasks.md`; ADR-0050 decision 9 and ADR-0080.
+
+## Amendments
+
+- **2026-11-08 (ADR-0082).** Decision 2's rule that the feature's step "reads, does not lock" is narrowed for the step of the cron-trigger handover, which takes the table lock of `workflow_triggers` (bounded at two seconds) and the handover row, for the reason and with the safety argument given in ADR-0082. It stands for every other step.
+- **2026-11-08, a gap (G2022 of feature 018).** The alert rule test of this ADR, `infra/observability/tests/instance_registry_test.yaml`, exists and passes locally with `promtool test rules`, but the CI step of `.github/workflows/ci.yml` that runs `promtool test rules` lists only `batch_stalled_test.yaml`, so CI does not run it. The line to add after `/tests/batch_stalled_test.yaml` is ` /tests/instance_registry_test.yaml /tests/trigger_schedules_test.yaml`; the workflow is changed with the next change of it.
+

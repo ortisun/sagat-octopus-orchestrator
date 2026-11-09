@@ -53,6 +53,7 @@ pub mod schedule_api;
 pub mod schedule_codec;
 pub mod schedule_disclosure;
 pub mod schedule_firing;
+pub mod schedule_triggers;
 pub mod schedules;
 pub mod scope_frontier;
 pub mod scoped_leaf_finish;

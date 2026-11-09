@@ -174,6 +174,12 @@ audited operator command, which is an activation of the instance-capability regi
 `schedules-v1` from every live `EXECUTION_ENGINE` instance and records that requirement in the same
 transaction.
 
+*As built (T018-060, T018-061, migration `20270112000000_trigger_handover`; D2033 to D2045).* The row also holds `changed_db_role` (the `session_user` of the
+operator's session). It changes only through `schedule_trigger_handover_complete(actor)`, a definer function the runtime role cannot execute, which refuses unless
+`schedules-v1` is recorded for the engines and never moves a handed-over row back (a guard, `ENABLE ALWAYS`); `schedule_trigger_handover_census()` is the owner's read
+of the live engines. There is no tenant audit record (the registry's `platform_requirement_history` row of the same transaction is the evidence, D2042). A
+`TRIGGER` schedule is named `trigger-<hex of the trigger id>`, authorised by `system:engine`, and is not counted by the `schedules` quota (D2034).
+
 ### Instance-capability registry (owned by 018; used by 029 and 031)
 
 One deployment-level registry (not tenant-scoped) through which every serving process — each control-plane

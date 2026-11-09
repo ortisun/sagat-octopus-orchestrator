@@ -8,6 +8,7 @@
 //! one finishes the job without doing anything twice. A failure that is not a crash is retried with
 //! backoff until the event is set aside as dead, where an operator can see it and why.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sagat_application::clock::{Clock, SystemClock};
@@ -24,6 +25,9 @@ use sagat_application::execution::{
 };
 use sagat_application::quotas::RunLimits;
 use sagat_application::runs::{Admitted, Lock, NewRun, RunStore};
+use sagat_application::schedule_triggers::{
+    HandoverCache, cron_document, tick_identity, tick_reason,
+};
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::events::{
     GIVE_UP_AFTER, MAX_DISPATCH_ATTEMPTS, capacity_backoff, dispatch_backoff,
@@ -122,6 +126,11 @@ pub struct EventDispatcher<S, E, R> {
     clock: Arc<dyn Clock>,
     /// Only fairness position. Every pending scan remains durable in PostgreSQL after restart.
     scan_cursor: Mutex<Option<WaitingStep>>,
+    /// Whether the cron triggers were handed over to the schedule pass, remembered between rounds.
+    handover: HandoverCache,
+    /// How many reads of the handover state failed in a row: a pass that cannot read it goes on firing (a tick fired twice
+    /// starts once; one not fired is lost), so the run of failures is what an operator is told (D2075).
+    handover_failures: AtomicU32,
 }
 
 impl<S, E, R> std::fmt::Debug for EventDispatcher<S, E, R> {
@@ -152,6 +161,8 @@ where
             cron: None,
             clock: Arc::new(SystemClock),
             scan_cursor: Mutex::new(None),
+            handover: HandoverCache::new(HandoverCache::LEGACY_BOUND),
+            handover_failures: AtomicU32::new(0),
         }
     }
 
@@ -159,6 +170,14 @@ where
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// How long the dispatcher believes the cron triggers have not been handed over to the schedule pass before it reads
+    /// the state again (two seconds by default; a test that moves the state by hand reads it at every round with zero).
+    #[must_use]
+    pub fn with_handover_bound(mut self, bound: std::time::Duration) -> Self {
+        self.handover = HandoverCache::new(bound);
         self
     }
 
@@ -682,6 +701,42 @@ where
         Ok(Woken::Yes)
     }
 
+    /// Whether the cron triggers were handed over to the schedule pass. A state that cannot be read, or that this build does
+    /// not know, is not a handover: firing a tick twice starts it once (the key), and not firing it would lose it.
+    async fn cron_handed_over(&self) -> bool {
+        let now = std::time::Instant::now();
+        if let Some(known) = self.handover.recall(now) {
+            return known;
+        }
+        match self.store.trigger_handover().await {
+            Ok(state) => {
+                self.handover_failures.store(0, Ordering::Relaxed);
+                metrics::gauge!("cron_handover_read_consecutive_failures").set(0.0);
+                let handed = state.is_handed_over();
+                self.handover.remember(now, handed);
+                if handed {
+                    tracing::info!(
+                        "the cron triggers were handed over to the schedule pass: this replica's legacy cron pass has stopped"
+                    );
+                }
+                handed
+            }
+            Err(error) => {
+                // Failing closed would lose ticks on a fleet whose engines do not run the schedule pass (the census guarantees
+                // `schedules-v1` at the handover, not before it), and this process cannot tell which fleet it is in: the pass goes
+                // on, a tick it fires twice starts once (the key), and the run of failures is counted and alerted on (D2075).
+                let failed = self
+                    .handover_failures
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1);
+                metrics::counter!("cron_handover_read_failures_total").increment(1);
+                metrics::gauge!("cron_handover_read_consecutive_failures").set(f64::from(failed));
+                tracing::warn!(%error, failed, "could not read whether the cron triggers were handed over; the legacy cron pass goes on");
+                false
+            }
+        }
+    }
+
     /// Fires the cron triggers whose time has come.
     ///
     /// A firing is made first, under an idempotency key that names the scheduled instant, and the
@@ -694,6 +749,11 @@ where
         let Some(calendar) = &self.cron else {
             return;
         };
+        // After the operator's handover the schedule pass fires the cron triggers and this pass starts nothing (D1034):
+        // the state is read at most every two seconds, and a handover is never read again.
+        if self.cron_handed_over().await {
+            return;
+        }
         let due = match self.store.due_cron_triggers(self.settings.batch).await {
             Ok(due) => due,
             Err(error) => {
@@ -702,6 +762,11 @@ where
             }
         };
         for trigger in due {
+            // The state is read (cached, at most two seconds old) before each trigger and not once for the round: a start can
+            // take as long as the database lets it, and a round that began before the handover must not fire after it (D2072).
+            if self.cron_handed_over().await {
+                return;
+            }
             let Some(schedule) = &trigger.registration.schedule else {
                 continue;
             };
@@ -731,25 +796,14 @@ where
             };
             let lag = (now - scheduled).as_seconds_f64().max(0.0);
             metrics::histogram!("cron_fire_lag_seconds").record(lag);
-            let epoch = scheduled.unix_timestamp();
-            let at = ClaimedEvent::rfc3339(scheduled);
-            let fired = ClaimedEvent::rfc3339(now);
-            let data = format!(r#"{{"scheduledAt":"{at}","firedAt":"{fired}"}}"#);
-            let event_id = format!("cron:{id}:{epoch}");
-            let document = self.engine.evaluator().event_document(&EventView {
-                id: &event_id,
-                source: "cron",
-                event_type: "cron.fired",
-                subject: None,
-                correlation_key: None,
-                occurred_at: Some(&at),
-                received_at: &fired,
-                data: data.as_bytes(),
-            });
+            // the identity, the reason and the document of a tick are the ones the schedule pass uses (one implementation:
+            // `application::schedule_triggers`), so that whichever pass reaches the tick starts the same run
+            let identity = tick_identity(id, scheduled);
+            let document = cron_document(id, scheduled, now);
             let firing = Firing {
-                key: format!("cron-{epoch}"),
-                fingerprint: epoch.to_be_bytes().to_vec(),
-                reason: format!("cron trigger {id} scheduled for {at}"),
+                key: identity.key,
+                fingerprint: identity.fingerprint,
+                reason: tick_reason(id, scheduled),
                 event: None,
             };
             match self.start(&trigger, &firing, &document).await {

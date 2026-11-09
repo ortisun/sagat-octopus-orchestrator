@@ -221,7 +221,6 @@ pub enum AuditAction {
     /// The input of a schedule was shown to a reader, at the level their grants allow.
     ScheduleInputDisclosed,
     /// An operator handed the cron triggers over to the schedule pass (`FR-018-017`).
-    ScheduleTriggerHandover,
     /// A batch job was created, cancelled, or finished by itself.
     BatchCreated,
     BatchCancelled,
@@ -418,7 +417,6 @@ impl AuditAction {
             Self::ScheduleBackfillRequested => "schedule.backfill_requested",
             Self::ScheduleBackfillCancelled => "schedule.backfill_cancelled",
             Self::ScheduleInputDisclosed => "schedule.input_disclosed",
-            Self::ScheduleTriggerHandover => "schedule.trigger_handover",
             Self::BatchCreated => "batch.created",
             Self::BatchCancelled => "batch.cancelled",
             Self::BatchFinished => "batch.finished",

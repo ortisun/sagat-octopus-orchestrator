@@ -1,7 +1,7 @@
 //! Command-line parsing. Deliberately tiny: a handful of subcommands and no flags.
 
 /// What the process was asked to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Run the HTTP API (the default).
     Serve,
@@ -19,12 +19,28 @@ pub enum Command {
     QuotaCeiling,
     /// Set the weight of a tenant in the scheduler's passes, or withdraw it, then exit.
     SchedulingWeight,
+    /// Hand the cron triggers over from the legacy cron pass to the schedule pass (feature 018), then exit. Needs the
+    /// schema-owning database role.
+    ScheduleTriggerHandover(HandoverArgs),
     /// Print a new signing key for scripts (`SAGAT_SCRIPT_SIGNING_KEY`) and exit. Needs no database.
     ScriptKey,
     /// Probe the local API's liveness endpoint; for container health checks.
     Healthcheck,
     Help,
     Version,
+}
+
+/// The flags of `schedule-trigger-handover`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HandoverArgs {
+    /// `--operator NAME`: who is making the handover, recorded with the database role of the session.
+    pub operator: Option<String>,
+    /// `--expect-live N`: how many live execution engines the operator expects.
+    pub expect_live: Option<u32>,
+    /// `--dry-run`: verify and change nothing.
+    pub dry_run: bool,
+    /// `--apply`: do it. Without it the command only verifies and says so (the handover has no way back).
+    pub apply: bool,
 }
 
 /// The arguments were not understood.
@@ -37,7 +53,11 @@ pub struct UsageError(pub String);
 /// [`UsageError`] for an unknown subcommand or extra arguments.
 pub fn parse(args: &[String]) -> Result<Command, UsageError> {
     let mut args = args.iter().map(String::as_str);
-    let command = match args.next() {
+    let first = args.next();
+    if first == Some("schedule-trigger-handover") {
+        return parse_handover(args);
+    }
+    let command = match first {
         None | Some("serve") => Command::Serve,
         Some("migrate") => Command::Migrate,
         Some("seed-dev") => Command::SeedDev,
@@ -58,6 +78,53 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
     }
 }
 
+fn parse_handover<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<Command, UsageError> {
+    let mut parsed = HandoverArgs::default();
+    while let Some(arg) = args.next() {
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) => (flag, Some(value)),
+            None => (arg, None),
+        };
+        let mut value = |name: &str| -> Result<String, UsageError> {
+            let given = inline
+                .map(str::to_owned)
+                .or_else(|| args.next().map(str::to_owned))
+                .ok_or_else(|| UsageError(format!("{name} needs a value")))?;
+            // an option is never a value: `--operator --dry-run` must not record `--dry-run` as who did it
+            if given.starts_with('-') {
+                return Err(UsageError(format!(
+                    "{name} needs a value, not the option '{given}'"
+                )));
+            }
+            Ok(given)
+        };
+        match flag {
+            "--operator" => parsed.operator = Some(value("--operator")?),
+            "--expect-live" => {
+                let text = value("--expect-live")?;
+                parsed.expect_live = Some(text.parse::<u32>().map_err(|_| {
+                    UsageError(format!(
+                        "--expect-live needs a whole number of engines, not '{text}'"
+                    ))
+                })?);
+            }
+            "--dry-run" if inline.is_none() => parsed.dry_run = true,
+            "--apply" if inline.is_none() => parsed.apply = true,
+            other => {
+                return Err(UsageError(format!(
+                    "unexpected argument '{other}' for schedule-trigger-handover"
+                )));
+            }
+        }
+    }
+    if parsed.apply && parsed.dry_run {
+        return Err(UsageError(
+            "--apply and --dry-run contradict each other: choose one".to_owned(),
+        ));
+    }
+    Ok(Command::ScheduleTriggerHandover(parsed))
+}
+
 pub const USAGE: &str = "\
 Sagat Octopus Orchestrator control plane
 
@@ -73,6 +140,8 @@ COMMANDS:
     cleanup-secrets  Retire expired unreferenced OpenBao credentials (one batch; 60 second deadline)
     quota-ceiling  Grant a tenant a quota ceiling (SAGAT_CEILING_TENANT_ID, _RESOURCE, _VALUE; a number or default)
     scheduling-weight  Set a tenant's weight in the scheduler's passes, 1 to 16 (SAGAT_WEIGHT_TENANT_ID, SAGAT_WEIGHT_VALUE; a number or default)
+    schedule-trigger-handover  Hand the cron triggers over from the legacy cron pass to the schedule pass; audited, once, with the
+                  owner role: schedule-trigger-handover --operator NAME [--expect-live N] [--dry-run | --apply]
     script-key    Print a new Ed25519 key for SAGAT_SCRIPT_SIGNING_KEY (it signs the artifacts of scripts)
     healthcheck   Probe the local API (GET /v1/health); exit 0 when healthy
     version       Print the version
@@ -89,7 +158,8 @@ ENVIRONMENT (serve):
     Outside SAGAT_ENV=dev, serve checks its database role at start and exits with code 2 if the
     role is a superuser, owns audit_records, or may UPDATE/DELETE/TRUNCATE it: use the
     least-privilege runtime role (sagat_app) here and the owner role only for migrate,
-    provision-tenant and the commands that record a requirement of the instance registry.
+    provision-tenant and schedule-trigger-handover (and any later command that records a
+    requirement of the instance registry).
     SAGAT_OIDC_ISSUER                expected token issuer (required)
     SAGAT_OIDC_AUDIENCE               expected token audience (required)
     SAGAT_OIDC_JWKS_URI               signing keys URL, https (required)
@@ -163,6 +233,16 @@ ENVIRONMENT (cleanup-secrets):
 ENVIRONMENT (provision-tenant):
     SAGAT_PROVISION_TENANT            tenant slug (required)
     SAGAT_PROVISION_ADMIN             subject of the first administrator (required)
+
+ENVIRONMENT (schedule-trigger-handover):
+    Run it with the schema-owning database role (DATABASE_URL of the owner, as for migrate). It requires
+    schedules-v1 of every live execution engine and records the handover in one transaction.
+    --operator NAME       who is making the handover (required, except with --dry-run); recorded with the database role
+    --expect-live N       how many live execution engines you expect (seen within 30 seconds); the command refuses when the
+                          count differs, and, without it, when none is live
+    --apply               do it. Without it the command only verifies, as --dry-run does, and says so: the handover has no way back
+    --dry-run             verify everything (engines, capability, convergence of the triggers, privilege) and change nothing
+    A second run says it is already handed over and exits 0. There is no command to go back.
 
 ENVIRONMENT (healthcheck):
     SAGAT_HEALTHCHECK_ADDR            address to probe                [127.0.0.1:8080]

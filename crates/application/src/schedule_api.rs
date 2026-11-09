@@ -40,6 +40,10 @@ where
     I: IdentityStore + 'static,
     R: ScheduledStarts + 'static,
 {
+    fn trigger_control_open(&self) -> ScheduleFuture<'_, bool> {
+        Box::pin(self.service.trigger_control_open())
+    }
+
     fn namespace_of<'a>(
         &'a self,
         principal: &'a Principal,

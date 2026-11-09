@@ -376,8 +376,10 @@ pub(crate) async fn lock_schedules(
     lock(conn, QuotaResource::Schedules, tenant, Some(namespace)).await
 }
 
-/// A new schedule fits in its namespace: active and paused ones count, deleted ones do not. The
-/// caller holds [`lock_schedules`].
+/// A new schedule fits in its namespace: active and paused ones count, deleted ones do not, and neither do the
+/// schedules of cron triggers (`TRIGGER` origin): the quota is the tenant's to spend on the schedules it makes, and a
+/// publication must never be refused, or a schedule made impossible, because of it (D2034). The caller holds
+/// [`lock_schedules`].
 pub(crate) async fn ensure_room_for_schedule(
     conn: &mut PgConnection,
     tenant: TenantId,
@@ -386,7 +388,7 @@ pub(crate) async fn ensure_room_for_schedule(
 ) -> Result<(), StoreError> {
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM schedules \
-         WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED'",
+         WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED' AND origin = 'API'",
     )
     .bind(tenant.as_uuid())
     .bind(namespace.as_uuid())
@@ -1179,7 +1181,7 @@ impl QuotaStore for PgRunStore {
                 .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,
             QuotaResource::Schedules => sqlx::query_scalar(
                 "SELECT count(*) FROM schedules \
-                 WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED'",
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED' AND origin = 'API'",
             )
             .bind(tenant.as_uuid())
             .bind(namespace)

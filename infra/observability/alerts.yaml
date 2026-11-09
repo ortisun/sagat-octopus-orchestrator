@@ -182,6 +182,68 @@ groups:
           summary: Batch jobs are active and no run has had an outcome from any of them for fifteen minutes.
           runbook: docs/runbooks/batch-operations.md#5-when-a-job-does-not-move
 
+      - alert: SagatTriggerScheduleReconcileFailing
+        # The reconciliation of the schedules of the cron triggers keeps failing for an entry or for the round: a trigger whose
+        # expression or zone this build cannot read, every name taken, or a query that does not finish. Look at the logs: every line
+        # names the tenant and the trigger.
+        expr: increase(trigger_schedule_reconcile_failures_total[15m]) > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: The reconciliation of the schedules of the cron triggers has been failing for fifteen minutes.
+          runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
+
+      - alert: SagatTriggerScheduleReconcileStale
+        # An engine that runs the schedule pass has not completed a round of the reconciliation for more than a minute (its loop
+        # died, or the database does not answer it). The gauge is set by every round, including that of a replica that holds no
+        # shard (it has nothing to do and is alive), so it says only that the loop runs; it exists only where the pass runs, that is,
+        # where `schedules-v1` is listed.
+        expr: time() - trigger_schedule_last_round_timestamp_seconds > 60
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: The reconciliation of the schedules of the cron triggers has not completed a round in an engine for more than a minute.
+          runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
+
+      - alert: SagatTriggersUnconverged
+        # Cron triggers in force with no schedule equal to them, over every shard: after the handover nothing fires them. The same
+        # number the handover command refuses on.
+        expr: max(trigger_schedule_unconverged) > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: Cron triggers have had no schedule equal to them for thirty minutes.
+          runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
+
+      - alert: SagatTriggersUnconvergedAfterHandover
+        # After the handover nothing but the schedule pass fires the cron triggers, so a trigger with no schedule equal to it is a
+        # trigger that does not fire (an older control plane published it, or its expression cannot be read): five minutes, not thirty.
+        expr: max(trigger_schedule_unconverged) > 0 and on() max(trigger_schedule_handed_over) == 1
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: After the handover, cron triggers have had no schedule equal to them for five minutes, so they do not fire.
+          runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
+
+      - alert: SagatCronLegacyFiredAfterHandover
+        # An engine binary older than the registry release went on firing cron triggers after the handover, ignoring a pause. It is
+        # seen only while one build that runs the schedule pass is up, and only for ticks whose nominal time is after the handover.
+        expr: increase(cron_legacy_fires_after_handover_total[15m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: An engine binary older than the registry release fired a cron trigger after the handover.
+          runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
+
+      - alert: SagatCronHandoverUnreadable
+        # The legacy cron pass cannot read whether the cron triggers were handed over, and goes on firing (a tick fired twice starts
+        # once, one not fired is lost): after the handover such an engine ignores a pause.
+        expr: max by (instance) (cron_handover_read_consecutive_failures) >= 5
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: An engine cannot read whether the cron triggers were handed over and its legacy cron pass goes on firing.
+          runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
+
       - alert: SagatInstanceGateClosed
         # A control plane or an engine that is up and serves nothing: it has not registered in the instance registry
         # (the database or the migration), or the platform requires a capability its build lacks (FR-018-052). Its
