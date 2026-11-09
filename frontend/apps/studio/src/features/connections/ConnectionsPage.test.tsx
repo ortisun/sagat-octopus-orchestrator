@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { AUTH_CONTEXT, TOKEN, fakePlatform, renderApp } from '../../../test/render';
@@ -7,7 +7,7 @@ import { ConnectionsPage } from './ConnectionsPage';
 
 const canary = 'postgres-password-private';
 const LAKE_DRIVER = { id: 'iceberg', catalogTypes: ['rest'], storageTypes: ['s3'], modes: ['append'] };
-async function mount(failure?: 'secret' | 'connection' | 'provider', permissions = ['namespace:read', 'database:manage', 'secret:read', 'secret:manage'], seed?: Record<string, unknown>, lake: boolean | 'without' = false) {
+async function mount(failure?: 'secret' | 'connection' | 'provider', permissions = ['namespace:read', 'database:manage', 'secret:read', 'secret:manage'], seed?: Record<string, unknown>, lake: boolean | 'without' = false, extra: Parameters<typeof fakePlatform>[0] = {}) {
   let saved: Record<string, unknown> | undefined = seed;
   const drivers = () => ({ items: lake === 'without' ? [{ id: 'postgresql' }] : [{ id: 'postgresql' }, LAKE_DRIVER] });
   const platform = fakePlatform({
@@ -15,6 +15,7 @@ async function mount(failure?: 'secret' | 'connection' | 'provider', permissions
     'GET /namespaces/ns-1/connections': () => ({ items: saved ? [saved] : [] }),
     'GET /namespaces/ns-2/connections': () => ({ items: [] }),
     ...(lake ? { 'GET /namespaces/ns-1/database-drivers': drivers, 'GET /namespaces/ns-2/database-drivers': drivers } : {}),
+    ...extra,
     'DELETE /namespaces/ns-1/connections/orders-db': () => { saved = undefined; return { status: 'DELETED' }; },
     'GET /namespaces/ns-1/secrets': () => ({ items: [{ name: 'existing-access', version: 1, provider: 'openbao' }, { name: 'legacy-access', version: 1, provider: 'local' }] }),
     'PUT *': (init, url) => {
@@ -49,7 +50,8 @@ describe('Database connections', () => {
       id: 'connection-2', namespaceId: 'ns-1', name: 'lake-main', revision: 3, status: 'ACTIVE', createdAt: '2026-11-04T10:00:00Z', updatedAt: '2026-11-04T10:00:00Z',
       config: { driver: 'iceberg', catalog: { type: 'glue', glue: { region: 'us-east-1', catalogId: '123456789012' } }, storage: { type: 's3', s3: { region: 'us-east-1' }, credentials: 'static' }, warehouseLocations: ['s3://warehouse/'], catalogSecret: 'catalog-access' },
     };
-    await mount(undefined, ['namespace:read', 'database:manage', 'run:read', 'secret:read'], lake);
+    // the deployment lists the Iceberg driver, so what keeps the probe away is the connection's shape: no runner opens a Glue catalog
+    await mount(undefined, ['namespace:read', 'database:manage', 'run:read', 'secret:read'], lake, true);
     await screen.findByText('lake-main');
     expect(screen.getByText('iceberg')).toBeInTheDocument();
     expect(screen.getByText('catalog-access')).toBeInTheDocument();
@@ -410,5 +412,101 @@ describe('Iceberg connection rules the first tests missed', () => {
     await user.click(await screen.findByRole('button', { name: 'Edit connection orders-db' }));
     await screen.findByLabelText('Host');
     expect(screen.queryByLabelText('Connection type')).not.toBeInTheDocument();
+  });
+});
+
+const PROBE_PERMISSIONS = ['namespace:read', 'database:manage', 'secret:read', 'run:read', 'run:start', 'database:use', 'database:adhoc'];
+const PROBE_URL = 'GET /namespaces/ns-1/connections/lake-main/probe';
+const checks = (...outcomes: [string, string?][]) => ['CATALOG_AUTH', 'WAREHOUSE', 'STORAGE_ACCESS'].map((check, i) => ({ check, outcome: outcomes[i]?.[0] ?? 'SKIPPED', ...(outcomes[i]?.[1] ? { code: outcomes[i]?.[1] } : {}) }));
+/** What the platform answers to the latest probe of `lake-main`: a run that ended (or not), the revision it tested and what it found. */
+const probed = (over: Record<string, unknown>) => ({ run: { runId: 'run-9', status: 'SUCCEEDED' }, revision: 4, failureCode: null, ...over });
+async function probeOf(latest: Record<string, unknown> | null, more: Parameters<typeof fakePlatform>[0] = {}) {
+  const mounted = await mount(undefined, PROBE_PERMISSIONS, SAVED_LAKE, true, { [PROBE_URL]: () => latest, ...more });
+  await mounted.user.click(await screen.findByRole('button', { name: 'Probe connection lake-main' }));
+  return { ...mounted, dialog: await screen.findByRole('dialog') };
+}
+describe('The probe of an Iceberg connection', () => {
+  it('is offered for a connection the deployment can probe, and not when the deployment does not list the driver', async () => {
+    await mount(undefined, PROBE_PERMISSIONS, SAVED_LAKE, true);
+    expect(await screen.findByRole('button', { name: 'Probe connection lake-main' })).toBeInTheDocument();
+  });
+  it('is not offered to someone who may not read runs', async () => {
+    await mount(undefined, PROBE_PERMISSIONS.filter(permission => permission !== 'run:read'), SAVED_LAKE, true);
+    await screen.findByText('lake-main');
+    await screen.findByRole('button', { name: 'Edit connection lake-main' });
+    expect(screen.queryByRole('button', { name: 'Probe connection lake-main' })).not.toBeInTheDocument();
+  });
+  it('is not offered when the deployment does not list the Iceberg driver', async () => {
+    await mount(undefined, PROBE_PERMISSIONS, SAVED_LAKE, 'without');
+    await screen.findByText('lake-main');
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Probe connection lake-main' })).not.toBeInTheDocument());
+  });
+  it('names what it checks and says that saving proves nothing', async () => {
+    const { dialog } = await probeOf(null);
+    expect(await within(dialog).findByText('No probe has been recorded.')).toBeInTheDocument();
+    expect(within(dialog).getByText(/catalog, the warehouse and the storage/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Saving a connection does not prove it works/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/fixed read-only check/)).not.toBeInTheDocument();
+  });
+  it('shows each check by name and outcome, and confirms the revision only when every check passed', async () => {
+    const { dialog } = await probeOf(probed({ checks: checks(['PASSED'], ['PASSED'], ['PASSED']) }));
+    const list = await within(dialog).findByRole('list', { name: 'Checks of the probe' });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows.map(row => row.textContent)).toEqual([
+      expect.stringContaining('Catalog authentication'), expect.stringContaining('Warehouse'), expect.stringContaining('Storage access'),
+    ]);
+    for (const row of rows) expect(row).toHaveTextContent('Passed');
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Confirmed: every check passed for revision 4.');
+  });
+  it('does not confirm a connection whose check failed, and shows the closed code of the failure', async () => {
+    const { dialog } = await probeOf(probed({ failureCode: 'STORAGE_UNAVAILABLE', checks: checks(['PASSED'], ['PASSED'], ['FAILED', 'STORAGE_UNAVAILABLE']) }));
+    const list = await within(dialog).findByRole('list', { name: 'Checks of the probe' });
+    expect(within(list).getAllByRole('listitem')[2]).toHaveTextContent(/Failed.*STORAGE_UNAVAILABLE/);
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Not confirmed');
+    expect(within(dialog).queryByText(/Confirmed: every check passed/)).not.toBeInTheDocument();
+  });
+  it('shows a check that did not run as skipped and not as passed, and does not confirm the connection', async () => {
+    const { dialog } = await probeOf(probed({ failureCode: 'DATABASE_AUTHENTICATION_FAILED', checks: checks(['FAILED', 'DATABASE_AUTHENTICATION_FAILED'], ['SKIPPED'], ['SKIPPED']) }));
+    const rows = within(await within(dialog).findByRole('list', { name: 'Checks of the probe' })).getAllByRole('listitem');
+    expect(rows[1]).toHaveTextContent('Skipped');
+    expect(rows[1]).not.toHaveTextContent('Passed');
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Not confirmed');
+  });
+  it('does not confirm a connection when one check passed and another was skipped', async () => {
+    const { dialog } = await probeOf(probed({ checks: checks(['PASSED'], ['PASSED'], ['SKIPPED']) }));
+    await within(dialog).findByRole('list', { name: 'Checks of the probe' });
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Not confirmed');
+  });
+  it('does not take a probe with no checks for a healthy connection', async () => {
+    const { dialog } = await probeOf(probed({ failureCode: 'DATABASE_RESULT_UNAVAILABLE' }));
+    expect(await within(dialog).findByRole('status')).toHaveTextContent(/cannot be read.*not confirmed/);
+    expect(within(dialog).queryByRole('list', { name: 'Checks of the probe' })).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/Confirmed: every check passed/)).not.toBeInTheDocument();
+  });
+  it('does not confirm the current revision with a probe of an older one', async () => {
+    const { dialog } = await probeOf(probed({ revision: 3, checks: checks(['PASSED'], ['PASSED'], ['PASSED']) }));
+    await within(dialog).findByRole('list', { name: 'Checks of the probe' });
+    expect(within(dialog).getByText(/tested an older revision/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Confirmed: every check passed/)).not.toBeInTheDocument();
+  });
+  it('says nothing yet of a probe that has not ended', async () => {
+    const { dialog } = await probeOf(probed({ run: { runId: 'run-9', status: 'RUNNING' } }));
+    await within(dialog).findByText('Latest probe');
+    expect(within(dialog).queryByText(/Confirmed|Not confirmed/)).not.toBeInTheDocument();
+  });
+  it('shows a probe that the platform failed with its code and no checks, and does not confirm it', async () => {
+    const { dialog } = await probeOf(probed({ run: { runId: 'run-9', status: 'FAILED' }, failureCode: 'LAKE_SANDBOX_UNAVAILABLE' }));
+    expect(await within(dialog).findByText('LAKE_SANDBOX_UNAVAILABLE')).toBeInTheDocument();
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Not confirmed');
+  });
+  it('starts the probe of the current revision', async () => {
+    const { user, platform, dialog } = await probeOf(null, { 'POST /namespaces/ns-1/connections/lake-main/probe': () => ({ runId: 'run-10', status: 'RUNNING' }) });
+    expect(platform.calls.some(call => call.method === 'POST')).toBe(false);
+    await user.click(within(dialog).getByRole('button', { name: 'Start probe' }));
+    await waitFor(() => expect(platform.calls.some(call => call.method === 'POST')).toBe(true));
+    const post = platform.calls.find(call => call.method === 'POST');
+    expect(post?.url).toContain('/namespaces/ns-1/connections/lake-main/probe');
+    expect(JSON.parse(post?.init.body as string)).toMatchObject({ revision: 4 });
+    expect(await within(dialog).findByText(/Probe accepted/)).toBeInTheDocument();
   });
 });

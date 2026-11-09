@@ -976,7 +976,7 @@ test to every catalog and storage type.
   correctness reviewer, whose findings are in research.md (S6b note) and fixed except G035-092 (O035-009); the runner's library suite is 186 (141 before the slice), `probe_wire` 32, 33 hand mutations of the review batch
   (31 killed, 1 survived, 1 equivalent), the runbook updated. **Not done** — S6c, the REST start of an Iceberg probe and `GET /database-drivers` (T035-043); a real container's run of a probe (S8's canary); a test of the relay's
   deadline of a probe (the survivor); a re-offer of the probe when a binding is widened (the runner is restarted).
-- [ ] T035-046 [P] [US01] Add the Iceberg connection to the Studio, in
+- [x] T035-046 [P] [US01] Add the Iceberg connection to the Studio, in
   `frontend/apps/studio/src/features/connections/{ConnectionForm.tsx,ConnectionProbe.tsx,api.ts}`:
   - an Iceberg form with REST and S3 sections;
   - 017's inline OpenBao secret create and select;
@@ -996,6 +996,11 @@ test to every catalog and storage type.
   mutations all caught; `npm run lint`, `typecheck`, `check:api`, `npm test` (87 files, 1,217 tests) and `npm run build` pass.
   **Not done:** the per-check probe results (they need T035-045 and a field in the contract), the other catalog and storage
   shapes (T035-078), and the server listing `iceberg` in `GET .../database-drivers` (T035-036, T035-043).
+
+  *2026-11-09, ticked (slice S7):* the per-check probe results are in `ConnectionProbe.tsx`, and the page offers the probe of an Iceberg connection the deployment lists and a runner opens. A connection is confirmed only when a probe that ended tested the
+  current revision and every check passed; a failed or skipped check, a platform failure, a result that cannot be read and an older revision are not. Evidence: `ConnectionsPage.test.tsx` (43 passed; the 13 new are the describe
+  "The probe of an Iceberg connection", 11 of 12 seen failing first), 15 hand mutations killed, `npm audit` 0, `lint`, `typecheck`, `npm test` 87 files / 1,230 tests, `build`, `check:api`. The list the form depends on is served (`GET …/database-drivers`,
+  S6c) and the probe is started by the REST probe (S6c). **Not tried in a browser** and the browser journeys (T035-074) are not run: the first real look is S8's canary.
 
 **Checkpoint**: US01 on REST + S3 works and is tested on its own.
 
