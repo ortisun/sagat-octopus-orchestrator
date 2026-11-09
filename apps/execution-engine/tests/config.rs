@@ -173,6 +173,89 @@ fn a_mistyped_reset_setting_is_refused_not_guessed() {
     }
 }
 
+/// The window of the expiry of a reset that waits (D2059, OD-2026-11-08-1): a day unless set, an hour to seven days
+/// accepted, both ends included.
+#[test]
+fn a_reset_that_waits_expires_after_a_day_unless_the_deployment_sets_a_window_from_an_hour_to_seven_days()
+ {
+    const NAME: &str = "SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS";
+    let hour = 3_600;
+    let week = 7 * 24 * 3_600;
+    assert_eq!(
+        parse(&[]).expect("config").resets.expiry,
+        Duration::from_secs(24 * 3_600),
+        "a day by default"
+    );
+    // empty is unset, as for every other setting
+    assert_eq!(
+        parse(&[(NAME, "")]).expect("config").resets.expiry,
+        Duration::from_secs(24 * 3_600)
+    );
+    for (given, held) in [
+        ("3600", hour),
+        ("3601", hour + 1),
+        ("5400", 5_400),
+        ("86400", 24 * 3_600),
+        (" 7200 ", 7_200),
+        ("604799", week - 1),
+        ("604800", week),
+    ] {
+        let config = parse(&[(NAME, given)]).expect("config");
+        assert_eq!(
+            config.resets.expiry,
+            Duration::from_secs(held),
+            "{NAME}={given}"
+        );
+    }
+    // the window does not move the other settings of the pass, and they do not move it
+    let tuned = parse(&[
+        ("SAGAT_RESET_CANCEL_SOURCE_BATCH", "7"),
+        ("SAGAT_RESET_CANCEL_SOURCE_PER_TENANT", "2"),
+    ])
+    .expect("config");
+    assert_eq!(tuned.resets.expiry, Duration::from_secs(24 * 3_600));
+    let wide = parse(&[(NAME, "7200")]).expect("config");
+    assert_eq!((wide.resets.batch, wide.resets.per_tenant), (100, 10));
+    // the flag is not what sets it, and turning the pass off does not change what the window reads
+    let on = parse(&[("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true")]).expect("config");
+    assert_eq!(on.resets.expiry, Duration::from_secs(24 * 3_600));
+}
+
+#[test]
+fn a_window_outside_an_hour_to_seven_days_or_not_a_whole_number_of_seconds_refuses_to_start_naming_the_variable()
+ {
+    const NAME: &str = "SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS";
+    for given in [
+        "0",
+        "1",
+        "3599",
+        "604801",
+        "31536000",
+        "-3600",
+        "24h",
+        "1d",
+        "86400s",
+        "1.5",
+        "86400.0",
+        "soon",
+        "99999999999999999999999",
+    ] {
+        let error = parse(&[(NAME, given)]).expect_err(given);
+        assert!(
+            error.to_string().contains(NAME),
+            "{NAME}={given} was refused without naming the variable: {error}"
+        );
+    }
+    // an out-of-range value is a refusal and not a clamp: the message says the bounds
+    let message = parse(&[(NAME, "3599")]).expect_err("too short").to_string();
+    assert!(
+        message.contains("3600") && message.contains("604800"),
+        "{message}"
+    );
+    // it refuses even where the pass is off: a deployment that sets a window means it
+    assert!(parse(&[(NAME, "60"), ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "false")]).is_err());
+}
+
 #[test]
 fn the_usage_lists_the_settings_of_the_pass_that_completes_pending_resets() {
     for variable in [
@@ -180,6 +263,7 @@ fn the_usage_lists_the_settings_of_the_pass_that_completes_pending_resets() {
         "SAGAT_RESET_CANCEL_SOURCE_BATCH",
         "SAGAT_RESET_CANCEL_SOURCE_PER_TENANT",
         "SAGAT_RESET_CANCEL_SOURCE_POLL_MS",
+        "SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS",
     ] {
         assert!(
             cli::USAGE.contains(variable),
@@ -945,6 +1029,49 @@ fn the_pass_that_completes_resets_is_absent_unless_the_operator_turned_it_on() {
     assert_eq!(
         optional_passes(&all),
         [PASS_SCHEDULES, PASS_BATCHES, PASS_RESETS]
+    );
+}
+
+/// The expiry of a reset that waits is a step of the reset pass, not a pass of its own (D2080): the flag governs the
+/// completion and the expiry together. With it off in an engine nothing there expires an entry, however the window is set,
+/// so an entry accepted while some engine had the flag on holds its place until an engine with the flag on runs (and
+/// every entry older than the window then expires, a few at a time). The runbook says it; this is the test that no
+/// other path exists.
+#[test]
+fn with_the_flag_off_the_engine_runs_no_pass_that_expires_a_reset_either() {
+    use sagat_execution_engine::settings::{
+        PASS_BATCHES, PASS_RESETS, PASS_SCHEDULES, optional_passes,
+    };
+    const FLAG: &str = "SAGAT_RESET_CANCEL_SOURCE_ENABLED";
+    const WINDOW: &str = "SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS";
+    // a window set, the flag not: the window is read (a deployment that sets it means it) and starts nothing
+    for off in [
+        vec![(WINDOW, "3600")],
+        vec![(WINDOW, "3600"), (FLAG, "false")],
+    ] {
+        let config = parse(&off).expect("config");
+        assert!(!config.reset_cancel_source_enabled, "{off:?}");
+        assert_eq!(config.resets.expiry, Duration::from_secs(3_600), "{off:?}");
+        assert!(
+            optional_passes(&config).is_empty(),
+            "nothing runs with the flag off, so nothing expires: {off:?}"
+        );
+    }
+    // the flag on: one pass, the one that completes and expires
+    let on = parse(&[(WINDOW, "3600"), (FLAG, "true")]).expect("config");
+    assert_eq!(optional_passes(&on), [PASS_RESETS]);
+    // there is no pass of the expiry besides it, whatever else is on
+    let everything = parse(&[
+        (FLAG, "true"),
+        (WINDOW, "7200"),
+        ("SAGAT_SCHEDULES_ENABLED", "true"),
+        ("SAGAT_BATCHES_ENABLED", "true"),
+    ])
+    .expect("config");
+    assert_eq!(
+        optional_passes(&everything),
+        [PASS_SCHEDULES, PASS_BATCHES, PASS_RESETS],
+        "three passes and no fourth that expires"
     );
 }
 

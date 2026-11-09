@@ -420,3 +420,106 @@ async fn a_step_in_flight_needs_the_acknowledgement_and_a_request_without_it_can
     assert_eq!(status, 202, "{made}");
     assert_eq!(p.status(&run).await, "CANCELLING");
 }
+
+// ------------------------------------------------------------------ the expiry of an entry that waits (D2059)
+
+/// What a caller reads of an entry that waited a whole window for a source that did not end: over HTTP, as the register
+/// shows it to who may read runs. The expiry is made by the engine's step on the API's own store (the runtime role in the
+/// runtime-role sweep), under a clock a window past the request.
+#[tokio::test]
+async fn an_entry_that_expired_reads_failed_with_its_reason_and_no_run_and_the_source_is_as_it_was()
+{
+    use sagat_application::reset_completion::{
+        Completed, DueReset, ResetCompleter, SOURCE_DID_NOT_END,
+    };
+    use sagat_domain::execution::ResetId;
+    use sagat_infra_postgres::PgIdentityStore;
+    use time::OffsetDateTime;
+
+    use crate::cancel_source_expiry::NeverCompletes;
+    use crate::support::schedules::TestClock;
+
+    let p = platform().await;
+    let workflow = p.publish("orders", &chain_ir("orders")).await;
+    let run = in_flight(&p, &workflow).await;
+    let (status, made) = reset_with(&p, &run, "cancel-source-key-0060", &cancel_source(1)).await;
+    assert_eq!(status, 202, "{made}");
+    let reset_id = made["resetId"].as_str().expect("id").to_owned();
+    let id = ResetId::new(reset_id.parse().expect("an id"));
+    let asked: OffsetDateTime =
+        sqlx::query_scalar("SELECT created_at FROM run_resets WHERE id = $1")
+            .bind(id.as_uuid())
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("when it was asked");
+
+    // inside the window it waits, and the read says so
+    let completer = |at: OffsetDateTime| {
+        ResetCompleter::new(
+            p.api.executions.clone(),
+            NeverCompletes,
+            PgIdentityStore::new(p.api.api_pool.clone()),
+            TestClock::at(at),
+        )
+    };
+    let day = time::Duration::days(1);
+    let due = DueReset {
+        tenant_id: p.tenant,
+        id,
+    };
+    assert_eq!(
+        completer(asked + day - time::Duration::microseconds(1))
+            .expire(&due, asked - time::Duration::microseconds(1), None)
+            .await
+            .expect("inside the window"),
+        Completed::Idle
+    );
+    let (_, waiting) = p
+        .rest(Method::GET, &format!("/runs/{run}/resets/{reset_id}"), None)
+        .await;
+    assert_eq!(waiting["state"], "PENDING_SOURCE", "{waiting}");
+
+    // a window after the request, with the source still being cancelled, it ends
+    assert_eq!(
+        completer(asked + day)
+            .expire(&due, asked, None)
+            .await
+            .expect("the expiry"),
+        Completed::Expired
+    );
+    let (status, one) = p
+        .rest(Method::GET, &format!("/runs/{run}/resets/{reset_id}"), None)
+        .await;
+    assert_eq!(status, 200, "{one}");
+    assert_eq!(one["state"], "FAILED", "{one}");
+    assert_eq!(one["failureReason"], SOURCE_DID_NOT_END, "{one}");
+    assert_eq!(one["newRunId"], Value::Null, "{one}");
+    assert_eq!(one["sourceRunId"], run);
+    assert_eq!(one["reapplyReport"], json!([]));
+    let (_, listed) = p
+        .rest(Method::GET, &format!("/runs/{run}/resets"), None)
+        .await;
+    assert_eq!(
+        listed["items"].as_array().expect("items").len(),
+        1,
+        "{listed}"
+    );
+    assert_eq!(listed["items"][0]["state"], "FAILED");
+    assert_eq!(listed["items"][0]["failureReason"], SOURCE_DID_NOT_END);
+    // the run was cancelled by the request and stays so: the expiry did not touch it
+    assert_eq!(p.status(&run).await, "CANCELLING");
+    // and the place is free: nothing waits in the namespace
+    let waiting: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_resets WHERE tenant_id = $1 AND state = 'PENDING_SOURCE'",
+    )
+    .bind(p.tenant.as_uuid())
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("the register");
+    assert_eq!(waiting, 0);
+    // a retry of the request that was accepted is still answered from the register, whatever became of the entry
+    let (status, again) = reset_with(&p, &run, "cancel-source-key-0060", &cancel_source(1)).await;
+    assert_eq!(status, 202, "{again}");
+    assert_eq!(again["resetId"], reset_id);
+    assert_eq!(again["state"], "FAILED", "{again}");
+}

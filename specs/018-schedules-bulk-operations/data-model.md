@@ -286,11 +286,11 @@ block item retention; the item keeps the identifier only.
 
 `(tenant_id, id)` PK; `namespace_id`, `source_run_id` (FK runs), `source_sequence bigint`,
 `prefix_digest bytea(32)`, `reapply` (closed), `business_id_policy` (`KEEP`, `DROP`), `source_policy`,
-`state` (`PENDING_SOURCE`, `CREATED`, `FAILED`), `failure_reason` (`BOUNDARY_NO_LONGER_ELIGIBLE`, `ADMISSION_REFUSED`, `BUSINESS_ID_IN_USE`, `CONCURRENCY_PERMIT_UNAVAILABLE`, `RUN_PURGED` and, added by D1998, `AUTHORITY_REVOKED`, `REEXECUTION_NOT_ACKNOWLEDGED`, `REAPPLY_TOO_MANY`), `acknowledged_reexecution boolean` (what the request acknowledged, immutable, D1999), `new_run_id uuid null` (FK runs),
+`state` (`PENDING_SOURCE`, `CREATED`, `FAILED`), `failure_reason` (`BOUNDARY_NO_LONGER_ELIGIBLE`, `ADMISSION_REFUSED`, `BUSINESS_ID_IN_USE`, `CONCURRENCY_PERMIT_UNAVAILABLE`, `RUN_PURGED` and, added by D1998, `AUTHORITY_REVOKED`, `REEXECUTION_NOT_ACKNOWLEDGED`, `REAPPLY_TOO_MANY` and, added by D2059 (migration `20270113000000_reset_expiry`), `SOURCE_DID_NOT_END`: the entry waited a whole window for a source that did not end), `acknowledged_reexecution boolean` (what the request acknowledged, immutable, D1999), `new_run_id uuid null` (FK runs),
 `actor`, `reason text` (8..2000, content), `reapply_report jsonb` (closed list ≤ 256 of
 `{sequence, kind: SIGNAL|UPDATE, name|operation, outcome, reason?}`, D1985: a name, never a payload, an argument or a digest;
 protected), `shard` generated, `created_at`, `completed_at`.
-Index `(shard, created_at) WHERE state = 'PENDING_SOURCE'` for the pass, and `(tenant_id, namespace_id) WHERE state = 'PENDING_SOURCE'` for the count that judges the limit of the namespace (D2001, review J). `source_policy` and `acknowledged_reexecution` keep what the request said, also for a source that had ended and was reset at once (D2011).
+Index `(shard, created_at) WHERE state = 'PENDING_SOURCE'` for the pass, and `(tenant_id, namespace_id) WHERE state = 'PENDING_SOURCE'` for the count that judges the limit of the namespace (D2001, review J); the scan of the entries past their window (D2061) reads through one of them. An entry expires when `created_at` is at or before the clock of the pass minus the window (24 hours, the engine's setting from 1 hour to 7 days) and its source has not ended (D2059); `created_at` is the database's `clock_timestamp()` of the transaction of the source, never a process clock (D2079, which closed G2014). `source_policy` and `acknowledged_reexecution` keep what the request said, also for a source that had ended and was reset at once (D2011).
 
 ### Journal
 

@@ -44,6 +44,8 @@ pub struct MonitorConfig {
 /// The passes of the engine that run only where the operator asked for them, by name (D2009).
 pub const PASS_SCHEDULES: &str = "schedules";
 pub const PASS_BATCHES: &str = "batches";
+/// The pass of the resets that wait for their source: it completes them when the source has ended **and expires them when
+/// it did not end within the window**; the expiry is not a pass of its own, so the flag governs both (D2080).
 pub const PASS_RESETS: &str = "resets";
 
 /// Which of the optional passes this configuration runs: a function of the configuration alone, so that "the pass that
@@ -109,7 +111,8 @@ pub struct EngineConfig {
     pub batch_poll: Duration,
     /// Whether the replica completes the resets that wait for their source run to end
     /// (`SAGAT_RESET_CANCEL_SOURCE_ENABLED`, off by default until the feature is released): the REST routes can accept
-    /// them either way (under the same variable of the control plane), none is completed without it.
+    /// them either way (under the same variable of the control plane), none is completed without it, **and none expires**:
+    /// the expiry is a step of the same pass (D2080).
     pub reset_cancel_source_enabled: bool,
     pub resets: ResetSettings,
     /// Pause between rounds of the pass that completes pending resets when the last one found nothing to do.
@@ -313,6 +316,27 @@ fn seconds(
         name,
         optional(get, name, default.as_secs())?,
     )?))
+}
+
+/// How long a reset that waits for its source may wait before it expires (`SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS`,
+/// D2059): whole seconds like the other durations of the engine, a day when unset, an hour at least and seven days at
+/// most. A value outside the bounds, or one that is not a whole number of seconds, is refused naming the variable
+/// instead of being brought to a bound: a window that is not the one the operator meant is an entry that expires
+/// earlier, or later, than they said.
+fn reset_expiry(get: Lookup<'_>) -> Result<Duration, ConfigError> {
+    const NAME: &str = "SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS";
+    let given = seconds(get, NAME, ResetSettings::DEFAULT_EXPIRY)?;
+    if given < ResetSettings::MIN_EXPIRY || given > ResetSettings::MAX_EXPIRY {
+        return Err(ConfigError::Invalid {
+            name: NAME,
+            reason: format!(
+                "must be from {} (an hour) to {} (seven days) seconds",
+                ResetSettings::MIN_EXPIRY.as_secs(),
+                ResetSettings::MAX_EXPIRY.as_secs()
+            ),
+        });
+    }
+    Ok(given)
 }
 
 fn capacity(get: Lookup<'_>, name: &'static str, default: usize) -> Result<usize, ConfigError> {
@@ -704,6 +728,7 @@ impl EngineConfig {
                 name: "SAGAT_RESET_CANCEL_SOURCE_PER_TENANT",
                 reason: format!("must be at most {}", ResetSettings::MAX_BATCH),
             })?,
+            expiry: reset_expiry(get)?,
         };
         let reset_poll = Duration::from_millis(positive(
             "SAGAT_RESET_CANCEL_SOURCE_POLL_MS",

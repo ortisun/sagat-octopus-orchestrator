@@ -524,15 +524,24 @@ where
     pass.round().await
 }
 
-/// Completes the pending resets whose source has ended until stopped: the same rhythm as the batch pass.
+/// Completes the pending resets whose source has ended, and expires those whose source did not end in time, until
+/// stopped: the rhythm of the batch pass, except that a round that expired entries is followed by the pause they cost at a
+/// hundred a second (the caps of a round bound the round and not a rate, and the first rounds of an engine with the
+/// expiry expire everything that is older than the window: D2081).
 pub async fn run_resets<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = ResetRound>,
 {
     while !*stop.borrow() {
-        if round().await.did_work() {
-            tokio::task::yield_now().await;
+        let done = round().await;
+        if done.did_work() {
+            let pause = done.pause_after();
+            if pause.is_zero() {
+                tokio::task::yield_now().await;
+            } else if stop_during(jittered(pause, &SystemEntropy), &stop).await {
+                break;
+            }
             continue;
         }
         if stop_during(jittered(poll, &SystemEntropy), &stop).await {
@@ -609,6 +618,46 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The loop of the reset pass rests after a round that expired entries, for what they cost at the rate (D2081): the
+    /// first round of an engine with this version expires every entry that is older than the window, and the cap of a round
+    /// is a bound on the round, not a rate. The test only asserts a lower bound on the time between two rounds (a sleep
+    /// never returns early), so it cannot be flaky on a loaded machine; the sizes of the pauses are the unit test of
+    /// `ResetRound::pause_after`.
+    #[tokio::test]
+    async fn the_loop_of_the_reset_pass_rests_after_a_round_that_expired_entries() {
+        use std::sync::Mutex;
+        use std::time::Instant;
+
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let calls: Arc<Mutex<Vec<Instant>>> = Arc::default();
+        let seen = Arc::clone(&calls);
+        let round = move || {
+            let mut calls = seen.lock().expect("calls");
+            calls.push(Instant::now());
+            let n = calls.len();
+            drop(calls);
+            if n == 2 {
+                // the second round is the last: the loop stops at the next look at the flag
+                stop_tx.send(true).expect("stop");
+            }
+            async move {
+                // 20 entries cost 200 ms at a hundred a second; the loop jitters the pause by -20 % at the least
+                ResetRound {
+                    expired: if n == 1 { 20 } else { 0 },
+                    ..ResetRound::default()
+                }
+            }
+        };
+        run_resets(round, Duration::from_secs(60), stop_rx).await;
+        let calls = calls.lock().expect("calls");
+        assert_eq!(calls.len(), 2);
+        let between = calls[1].duration_since(calls[0]);
+        assert!(
+            between >= Duration::from_millis(160),
+            "the next round followed at once: {between:?}"
+        );
+    }
 
     struct Fixed(f64);
 

@@ -14,9 +14,9 @@ const THIS: i64 = 20_270_108_000_000;
 /// The migration before it: where a rollback of this one alone stops.
 const PREVIOUS: i64 = 20_270_107_000_000;
 
-const CHECK_VIOLATION: &str = "23514";
+pub(crate) const CHECK_VIOLATION: &str = "23514";
 
-fn code<T>(result: Result<T, sqlx::Error>) -> String {
+pub(crate) fn code<T>(result: Result<T, sqlx::Error>) -> String {
     match result {
         Ok(_) => panic!("the statement was expected to fail"),
         Err(sqlx::Error::Database(e)) => e.code().map(|c| c.to_string()).unwrap_or_default(),
@@ -25,7 +25,7 @@ fn code<T>(result: Result<T, sqlx::Error>) -> String {
 }
 
 /// An entry of the register as the schema takes it, with the columns a case is about.
-async fn entry(
+pub(crate) async fn entry(
     f: &Fixture,
     source: Uuid,
     policy: &str,

@@ -9,19 +9,23 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use sagat_application::execution::{Actor, Effects, RunTx as _};
-use sagat_application::reset_completion::{DueReset, PendingResetStore, ResetFailure};
+use sagat_application::reset_completion::{
+    DueReset, Expiry, PendingResetStore, ResetExpiry, ResetFailure, SOURCE_DID_NOT_END,
+};
 use sagat_application::runs::{
     PendingAdmission, PendingRegistration, PendingReset, RESET_ALREADY_COMPLETED, RerunBusinessId,
     ResetRecord, ResetRegistration, ResetSource, ResetSourcePolicy, ResetState, RestoredPrefix,
     Retained, SourceEvent, report_from_json, report_json,
 };
 use sagat_application::schedules::AUTHORITY_REVOKED;
+use sagat_domain::audit::AuditRecord;
 use sagat_domain::execution::{AddressedRunEvent, ResetId, ResetReapply, RunEvent};
 use sagat_domain::identity::{NamespaceId, Role};
 use sagat_domain::sharding::Shard;
 use serde_json::{Value, json};
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, PgPool};
+use time::OffsetDateTime;
 
 use super::{
     NodeId, PgRunStore, PgRunTx, StoreError, TenantId, Uuid, col, corrupt, decode,
@@ -700,6 +704,21 @@ async fn lock_pending_row(
     }
 }
 
+/// The scan of the entries whose source did not end within the window (D2061), the way [`due_resets`](PendingResetStore)
+/// scans the entries whose source has ended: the oldest `$3` entries of each tenant, then the oldest `$2` of those, among
+/// the entries of the shards `$1` that wait (`state = 'PENDING_SOURCE'`, the predicate of the partial index
+/// `run_resets_pending_idx (shard, created_at)`), requested at or before `$5`, whose source is still open, leaving out
+/// those named in `$4`. A constant so that a test can ask the planner what it does with it.
+#[doc(hidden)]
+pub const EXPIRED_RESETS_SQL: &str = "SELECT due.tenant_id, due.id FROM ( \
+         SELECT r.tenant_id, r.id, r.created_at, \
+                row_number() OVER (PARTITION BY r.tenant_id ORDER BY r.created_at, r.id) AS nth \
+         FROM run_resets r \
+         JOIN runs s ON s.tenant_id = r.tenant_id AND s.id = r.source_run_id \
+         WHERE r.shard = ANY($1) AND r.state = 'PENDING_SOURCE' AND r.created_at <= $5 \
+           AND s.finished_at IS NULL AND r.id <> ALL($4::uuid[])) due \
+     WHERE due.nth <= $3 ORDER BY due.created_at, due.id LIMIT $2";
+
 impl PendingResetStore for PgRunStore {
     async fn due_resets(
         &self,
@@ -729,6 +748,34 @@ impl PendingResetStore for PgRunStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|(tenant, id)| DueReset {
+                tenant_id: TenantId::new(tenant),
+                id: ResetId::new(id),
+            })
+            .collect())
+    }
+
+    async fn expired_resets(
+        &self,
+        shards: &[Shard],
+        limit: u32,
+        per_tenant: u32,
+        skipping: &[ResetId],
+        requested_by: OffsetDateTime,
+    ) -> Result<Vec<DueReset>, StoreError> {
+        let shards: Vec<i16> = shards.iter().map(|s| i16::from(s.index())).collect();
+        let skipping: Vec<Uuid> = skipping.iter().map(|id| id.as_uuid()).collect();
+        let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(EXPIRED_RESETS_SQL)
+            .bind(shards)
+            .bind(i64::from(limit))
+            .bind(i64::from(per_tenant))
+            .bind(skipping)
+            .bind(requested_by)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_error)?;
         Ok(rows
             .into_iter()
             .map(|(tenant, id)| DueReset {
@@ -783,25 +830,94 @@ impl PendingResetStore for PgRunStore {
     async fn fail_reset(&self, failure: &ResetFailure<'_>) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         lock_pending_row(&mut tx, failure.tenant_id, failure.id, failure.fence).await?;
-        let failed = sqlx::query(
-            "UPDATE run_resets SET state = 'FAILED', failure_reason = $3, completed_at = $4 \
-             WHERE tenant_id = $1 AND id = $2 AND state = 'PENDING_SOURCE'",
+        end_locked_entry(
+            &mut tx,
+            failure.tenant_id,
+            failure.id,
+            failure.reason,
+            failure.at,
+            failure.audit,
         )
-        .bind(failure.tenant_id.as_uuid())
-        .bind(failure.id.as_uuid())
-        .bind(failure.reason)
-        .bind(failure.at)
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?
-        .rows_affected();
-        if failed != 1 {
-            return Err(corrupt("the entry of a pending reset"));
-        }
-        insert_audit(&mut tx, failure.audit).await?;
+        .await?;
         tx.commit().await.map_err(store_error)?;
         Ok(())
     }
+
+    /// The expiry (D2059): the fence and the lock of the entry as for a failure, then, under that lock, whether the
+    /// entry is past its window and whether the source is still open, and only then the one write that every ending of an
+    /// entry is ([`end_locked_entry`]), with its audit record, in the same transaction. The row of the source is taken
+    /// with `FOR SHARE ... SKIP LOCKED`: the transaction that ends a run holds that row, so an entry whose source is being
+    /// ended, or is in the hands of any other transaction, is left for the next round and never waited for (D2060, and
+    /// an ended source wins); and one that has ended before this read is the completion's. The lock order is the
+    /// completion's: the fence of the shard, the entry, then the run (aggregate before run, plan row 18).
+    async fn expire_reset(&self, expiry: &ResetExpiry<'_>) -> Result<Expiry, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        lock_pending_row(&mut tx, expiry.tenant_id, expiry.id, expiry.fence).await?;
+        let source: Option<(bool, bool)> = sqlx::query_as(
+            "SELECT s.finished_at IS NOT NULL, r.created_at <= $3 \
+             FROM run_resets r \
+             JOIN runs s ON s.tenant_id = r.tenant_id AND s.id = r.source_run_id \
+             WHERE r.tenant_id = $1 AND r.id = $2 \
+             FOR SHARE OF s SKIP LOCKED",
+        )
+        .bind(expiry.tenant_id.as_uuid())
+        .bind(expiry.id.as_uuid())
+        .bind(expiry.requested_by)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        // the transaction ends with nothing written when the entry is not to be ended
+        let Some((source_ended, due)) = source else {
+            return Ok(Expiry::SourceBusy);
+        };
+        if source_ended {
+            return Ok(Expiry::SourceEnded);
+        }
+        if !due {
+            return Ok(Expiry::NotDue);
+        }
+        end_locked_entry(
+            &mut tx,
+            expiry.tenant_id,
+            expiry.id,
+            SOURCE_DID_NOT_END,
+            expiry.at,
+            expiry.audit,
+        )
+        .await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(Expiry::Expired)
+    }
+}
+
+/// The one write that ends an entry that waits (a failure of the completion and the expiry alike): `FAILED` with the
+/// reason and the time, and the audit record, in the transaction that holds the fence and the lock of the entry. The
+/// place of the entry in its namespace is freed by this (the count of a namespace is the count of the entries that
+/// wait), not by a second statement.
+async fn end_locked_entry(
+    tx: &mut PgConnection,
+    tenant: TenantId,
+    id: ResetId,
+    reason: &str,
+    at: OffsetDateTime,
+    audit: &AuditRecord,
+) -> Result<(), StoreError> {
+    let failed = sqlx::query(
+        "UPDATE run_resets SET state = 'FAILED', failure_reason = $3, completed_at = $4 \
+         WHERE tenant_id = $1 AND id = $2 AND state = 'PENDING_SOURCE'",
+    )
+    .bind(tenant.as_uuid())
+    .bind(id.as_uuid())
+    .bind(reason)
+    .bind(at)
+    .execute(&mut *tx)
+    .await
+    .map_err(store_error)?
+    .rows_affected();
+    if failed != 1 {
+        return Err(corrupt("the entry of a pending reset"));
+    }
+    insert_audit(tx, audit).await
 }
 
 #[cfg(test)]

@@ -569,6 +569,15 @@ pub async fn serve(
         // The run of a pending reset is created as the member who asked, through the same run service the API has.
         // The reapply of what the source received is not asked of this process again: the request that was accepted
         // stands, and the engine has no setting for it (D1990, D1997); an Update it delivers needs the evaluator.
+        // The window of the expiry is this engine's own and applies to the entries of the shards it holds, which move
+        // between engines: the effective window is the one of the engine that holds the lease, so every engine is set to
+        // the same value (D2082). Said once, here, so that a fleet with two values can be read in the logs.
+        tracing::info!(
+            expiry_secs = engine.resets.expiry.as_secs(),
+            batch = engine.resets.batch,
+            per_tenant = engine.resets.per_tenant,
+            "the reset pass completes the resets whose source has ended and expires those whose source did not end within the window"
+        );
         let database_clock = DatabaseClock::new(pool.clone(), SystemClock);
         let resets: Arc<EngineResets> = Arc::new(ResetPass::new(
             ResetCompleter::new(
@@ -607,8 +616,11 @@ pub async fn serve(
             ),
         );
     } else {
+        // the expiry is a step of the same pass: with the flag off nothing here expires an entry either, so an entry
+        // accepted while the flag was on holds its place in its namespace until an engine with the flag on runs (D2080)
         tracing::info!(
-            "SAGAT_RESET_CANCEL_SOURCE_ENABLED is not set: resets that wait for their source are stored but none is completed"
+            "SAGAT_RESET_CANCEL_SOURCE_ENABLED is not set: resets that wait for their source are stored but none is completed \
+             and none expires, so an entry that waits keeps its place in its namespace until an engine with the flag on runs"
         );
     }
     tasks.spawn_loop(

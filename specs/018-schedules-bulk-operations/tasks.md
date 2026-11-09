@@ -1279,6 +1279,65 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `REMATERIALIZE` reasons have no producer); a withdrawal or an expiry of an entry (G1991, for the owner); a durable bound on the retries of an
   entry that fails for a reason that is not an outcome (G1990: the backoff is in memory and an entry is never given up); the observation that an engine without the flag makes nothing (G1992 (2): its
   decision is a tested pure function, the observation itself cannot be); a point that becomes ineligible end to end (G1979 (2), G1992 (1)); no browser journey covers the Studio dialog.
+  *Note 2026-11-09, not ticked, review pending: the expiry of an entry that waits (owner decision OD-2026-11-08-1, D2059 to D2068, G2015 to G2018; G2014 was withdrawn, see the note of the review below).*
+  **Done (built, tests below):** an entry still `PENDING_SOURCE` a whole window after its request (24 h; the engine's
+  `SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS`, 3,600 to 604,800 inclusive, strict, engine only) with its source open ends `FAILED`
+  `SOURCE_DID_NOT_END`, no run, its place freed (the count is derived), the source untouched, audited by `system:engine`, counted
+  `workflow_reset_completions_total{outcome="expired"}`; one transaction that writes what a failure writes (`end_locked_entry`), under the
+  fence and the lock of the entry, the source read `FOR SHARE ... SKIP LOCKED` and never waited for, an ended source always the
+  completion's; bounded per round and per tenant, with the completion's backoff; migration `20270113000000_reset_expiry` (the CHECK of the
+  reasons; the maintainer renumbers); REST/OpenAPI text, `errors.md`, CLI words, Studio words and dialog text; runbook 4.2/6/7, ADR-0080
+  amendment, `owner-decisions.md` (status "Built 2026-11-09, review pending", not "Built, reviewed"), plan row 18 and the limits table.
+  **Not done:** a withdrawal call (not asked: G2018); an alert and its `promtool` test (`promtool` is not installed: G2016); a signal before an
+  entry expires (G2016); the plan of the scan
+  measured at the size of a deployment (G2015); the SDK scenario `reset` does not exercise the expiry and was not changed (it cannot wait a
+  day); the three upgrade oracles now expect `20270113000000` and were **not run**; **no mutation battery** (OD-2026-11-06-2); the review by the
+  correctness, security and architecture reviewers has not been made, so the flag stays off.
+  **Evidence on this tree (each command run here, exit 0):** `cargo fmt --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings` (its
+  first run refused an unread field of a test helper, removed); `scripts/check-architecture.py`, `check-agent-config.py`, `check-design-docs.py`;
+  `integration_schedules_bulk_operations` 610 passed, 1 ignored (as before) as the owner and again with `SAGAT_TEST_AS_RUNTIME_ROLE=1`, 21 of
+  them new (`cancel_source_expiry` 18, `reset_expiry_migration` 2, `cancel_source_rest::an_entry_that_expired_...` 1); `fault_schedules_bulk_operations`
+  74 passed in both roles, 6 of them new (`cancel_source_expiry`); `integration_platform_foundation` 101 passed in both roles (the audit of the
+  privileges of the runtime role, which reads the Rust string literals as SQL, with the new statements in the tree); `contract_schedules_bulk_operations` 7; `contract_developer_experience` 8 (without
+  the bless switch, `docs/reference` unchanged: no help of the `sagat` CLI changed); `contract_rest_security_multitenancy` 21; unit and doc tests of
+  `sagat-cli`, `-control-plane`, `-execution-engine`, `-scheduler`, `-application`, `-infra-postgres`, `-api-http`, `-domain`: 1,719 passed, 0 failed
+  (new: the window and `did_work` of the scheduler, the two configuration tests of the engine, the one of the control plane, the CLI and the Studio
+  words); Studio lint, typecheck, 98 files and 1,438 tests, `npm run api` and `check:api`; the registry tests of `sdk_conformance` (3 passed, 1
+  ignored) and `SAGAT_SDK_SCENARIO=reset ... -- --ignored` in the six languages, equal and without the bless switch (it needs
+  `SAGAT_RUST_SDK_TARGET_DIR`, an owned directory outside the repository; a first run without it failed in `prepare.sh` for Rust and proved nothing).
+  **Seen failing for the right reason first:** the integration tests of the expiry against a store that returned nothing (16 of 18), the
+  configuration test of the control plane (its `--help` did not say the window is the engine's), the two of the engine with the window read as
+  the default, the CLI words (the raw name was printed) and the Studio words. **Not seen failing before the code:** `reset_expiry_migration` (written
+  after the migration), the REST test, and the six fault tests (written after the store; the two guards they stand for, the look at the source
+  under `FOR SHARE ... SKIP LOCKED` and the check that it has ended, were taken out by hand for one run and `an_entry_is_never_both_expired_and_completed_whichever_comes_first`
+  and `an_expiry_and_a_completion_that_meet_at_the_entry_make_one_outcome_and_the_ended_source_wins` (renamed `..._make_one_outcome` on 2026-11-09: it is the race test, not the guard test, D2060) failed, then both were put back).
+  *Note 2026-11-09 (second), not ticked: the findings of the three independent reviews of the expiry (correctness, security, architecture: no blocker, no tenant leak, "an ended
+  source wins" and "never both" held at every interleaving they traced), fixed in the same tree. D2079 to D2082, G2014 withdrawn, G2024 to G2026.*
+  **A. The clock.** G2014 was wrong and is closed: `created_at` is `clock_timestamp()` of the transaction of the source (`register_pending` refuses any other), the control plane's clock stamps
+  only the audit records (D2079). Guards, red under a hand mutant first and then put back: `a_control_plane_whose_clock_is_three_hours_off_neither_cuts_the_window_short_nor_stretches_it` (run
+  service on a clock +3 h and -3 h; the mutant that binds the audit record's time into `created_at` failed it at the bracket of two readings of the database's clock, `skew 3h: asked at 08:29, the
+  database read 05:29`); `an_engine_whose_clock_is_three_hours_off_reads_the_window_on_the_database_clock` (through `loops::reset_round`; the mutant that removes its `sync()` failed it, `expired: 1`
+  at 22 hours). The text of D2060 and the doc of `ResetExpiry::requested_by` that said a caller that computed the cutoff wrongly could not end an entry inside its window were false and are corrected.
+  **B. The flag off in an engine.** Runbook (sections 4.2 and 6), the log line of an engine with the pass off, `optional_passes`' doc, D2059/D2060/D2080 and G2024 say that nothing expires an entry then;
+  `with_the_flag_off_the_engine_runs_no_pass_that_expires_a_reset_either` pins it (it pins what was already so: it was not red first, and no mutant is named for it).
+  **C. ADR-0080.** "Enforced by" lists the checks of the expiry; decision 5 no longer says that the completion takes "never a source row" and says what the completion and the expiry take; the alert with
+  its `promtool` test is recorded as a precondition for lifting decision 4 (G2026), and no untested alert was written.
+  **D. Tests that passed under a mutant.** (1) The store test and part (2) of the fault test now hold the source with an uncommitted `UPDATE runs SET updated_at = updated_at` (`FOR NO KEY UPDATE`); with
+  `FOR KEY SHARE ... SKIP LOCKED` in the store the store test, the fault test and the new busy test all failed (`Expired` where `SourceBusy` was expected), then `FOR SHARE` was put back. (2) The fault call
+  is bounded with `within`: with `SKIP LOCKED` removed it failed after 60 s (`did not finish within 60s`) instead of hanging, then it was put back. (3) The fault test is renamed
+  `an_expiry_and_a_completion_that_meet_at_the_entry_make_one_outcome` (the race test) and says which tests cover the guard. (4) The two assertions decided by other CHECKs are gone from
+  `the_list_of_reasons_admits_the_expiry_and_stays_closed`. (5) `reset_expiry_migration` reads the migration before `THIS` from the migrator, with a test that pins `THIS`.
+  **E. Pacing, a busy source, mixed windows.** (1) `SourceBusy` is `Completed::Busy`: left out for a second (`Backoff::BUSY`), counted (`ResetRound.busy`), logged at debug with the ids; the integration test
+  and the unit test were red against the old mapping (`busy: 0`, the entry forgotten, the newer one never looked at). (2) `ResetRound::pause_after`: a round that expired entries rests for what they cost at a
+  hundred a second (at least 200 ms); the unit test and the loop test were red against a pause of zero (`the next round followed at once: 20µs`). (3) The runbook and D2062/D2082 say that each engine
+  applies its window to the shards it holds and shards move (set the same value everywhere), and each engine logs its window once when the pass starts (that line is not tested: G2025).
+  **F. Accepted, not done:** the re-validation of the CHECK under `ACCESS EXCLUSIVE` (D2063), the cutoff in SQL, the duplicated literal and the `#[doc(hidden)]` export (D2082).
+  **Evidence on this tree (each command run here, exit 0):** `cargo fmt --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `scripts/check-architecture.py`, `check-agent-config.py`,
+  `check-design-docs.py`; `integration_schedules_bulk_operations` 614 passed, 1 ignored, as the owner and with `SAGAT_TEST_AS_RUNTIME_ROLE=1` (4 more than before: the two clock tests, the busy test and the pin of
+  `THIS`); `fault_schedules_bulk_operations` 74 in both roles; `integration_platform_foundation` 101 in both roles; `contract_schedules_bulk_operations` 7; `contract_developer_experience` 8; `contract_rest_security_multitenancy` 21;
+  unit and doc tests of the eight crates 1,723 passed, 0 failed (4 more: the busy backoff and the pause of the scheduler, the loop test and the engine's configuration test of the flag); `sdk_conformance` registry 3
+  passed, 1 ignored, and the scenario `reset` equal in the six languages without bless; Studio lint, typecheck, 98 files and 1,438 tests, `check:api`. **Not run:** the three upgrade oracles; no mutation battery
+  (OD-2026-11-06-2: the hand-made mutants above are one-line edits to see a named test fail, each put back, not a battery); no `promtool`.
 - [x] T018-058 [US6] Telemetry projector skips the restored prefix and links the source span —
   `crates/application/src/telemetry.rs`, `crates/scheduler/src/telemetry.rs` — no duplicate attempt
   spans — FR-018-037, FR-018-044.

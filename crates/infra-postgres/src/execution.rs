@@ -13,6 +13,8 @@ mod database;
 mod path;
 mod path_read;
 mod resets;
+#[doc(hidden)]
+pub use resets::EXPIRED_RESETS_SQL;
 mod scoped_events;
 mod worker_capacity;
 use scoped_events::EventWaitReadState;

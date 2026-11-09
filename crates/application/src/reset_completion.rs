@@ -9,6 +9,15 @@
 //! lease moved or that the entry was completed first, and commits nothing (two engines never complete one entry
 //! twice). The failure of an entry is fenced the same way.
 //!
+//! **An entry whose source does not end expires** (D2059, owner decision OD-2026-11-08-1). An entry still
+//! `PENDING_SOURCE` a whole window after its request, while its source is open, ends `FAILED` with the reason
+//! [`SOURCE_DID_NOT_END`]: no run is made, the place in the namespace is freed (the count of the namespace is the count
+//! of the entries that wait, so ending the entry is what frees it), and the source stays as the request left it,
+//! cancelled. It is the same write as any other failure of an entry (one transaction, the fence, the lock of the entry),
+//! with two conditions read under that lock: the entry is past the window on the clock the pass is given (the database's,
+//! corrected by the engine) and its source is still open and not being changed by anyone. A source that has ended wins,
+//! however late: the entry is then completed as always. An entry is never both expired and completed.
+//!
 //! **The requester is checked at the completion**, with the membership they hold then: a reset needs `run:operate`
 //! and `run:start` (and the right to deliver again what it reapplies). Without them the entry fails
 //! `AUTHORITY_REVOKED` and nothing is created.
@@ -58,6 +67,44 @@ pub struct DueReset {
     pub id: ResetId,
 }
 
+/// The reason an entry that waited for a source that never ended is failed with (D2059): written by the expiry, never by
+/// the judgement of the completion, so it is not one of [`FAILURE_REASONS`].
+pub const SOURCE_DID_NOT_END: &str = "SOURCE_DID_NOT_END";
+
+/// The expiry of a pending reset, written under the fence of its shard.
+#[derive(Debug, Clone, Copy)]
+pub struct ResetExpiry<'a> {
+    pub tenant_id: TenantId,
+    pub id: ResetId,
+    /// The entry expires only if it was requested at or before this instant. **The caller decides it**: it is the clock of
+    /// the pass (an engine's is the database's, `DatabaseClock`) minus the window, and the store only compares the
+    /// `created_at` of the entry with the value it is given, under the lock of the entry (a second reading of the same
+    /// column, not a second source of time). This trait is the engine's own and nothing a tenant sends reaches it, so a
+    /// caller that computed the instant wrongly would end entries wrongly: the clock the pass is given is what the tests
+    /// pin (`an_engine_whose_clock_is_three_hours_off_reads_the_window_on_the_database_clock`).
+    pub requested_by: OffsetDateTime,
+    /// When the entry ended: the clock of the pass.
+    pub at: OffsetDateTime,
+    pub fence: Option<&'a ShardFence>,
+    /// The audit record of the expiry, committed with it.
+    pub audit: &'a AuditRecord,
+}
+
+/// What the store did with an expiry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Expiry {
+    /// The entry is `FAILED` with [`SOURCE_DID_NOT_END`], and its audit record is written.
+    Expired,
+    /// The entry was requested after the instant the caller gave (it is not past its window by the caller's clock):
+    /// nothing changed.
+    NotDue,
+    /// The source has ended: nothing changed, and the entry is completed as always (an ended source wins).
+    SourceEnded,
+    /// Another transaction holds the row of the source, so it may be ending: nothing changed, the pass looks again in
+    /// its next round. The expiry never waits for a run (D2060).
+    SourceBusy,
+}
+
 /// The failure of a pending reset, written under the fence of its shard.
 #[derive(Debug, Clone, Copy)]
 pub struct ResetFailure<'a> {
@@ -85,6 +132,27 @@ pub trait PendingResetStore: Send + Sync {
         skipping: &[ResetId],
     ) -> impl Future<Output = Result<Vec<DueReset>, StoreError>> + Send;
 
+    /// The pending resets of the shards given that were requested at or before `requested_by` and whose source is still
+    /// open, oldest first, at most `limit` and at most `per_tenant` of any one tenant, leaving out those named in
+    /// `skipping` (D2061). It reads the index of the entries that wait, never the register as a whole.
+    fn expired_resets(
+        &self,
+        shards: &[Shard],
+        limit: u32,
+        per_tenant: u32,
+        skipping: &[ResetId],
+        requested_by: OffsetDateTime,
+    ) -> impl Future<Output = Result<Vec<DueReset>, StoreError>> + Send;
+
+    /// Ends a pending entry whose source did not end in time, in one transaction that checks the fence, locks the entry,
+    /// looks at the window and at the source (without waiting for it) and writes the failure and the audit record
+    /// the way [`Self::fail_reset`] does. [`StoreError::StateConflict`] when the lease is not held or the entry is not
+    /// pending any more.
+    fn expire_reset(
+        &self,
+        expiry: &ResetExpiry<'_>,
+    ) -> impl Future<Output = Result<Expiry, StoreError>> + Send;
+
     /// The entry, if it is still pending.
     fn pending_reset(
         &self,
@@ -109,11 +177,19 @@ pub enum Completed {
     Created,
     /// The entry was failed with this closed reason.
     Failed(&'static str),
+    /// The entry waited a whole window for a source that did not end and was failed with [`SOURCE_DID_NOT_END`].
+    Expired,
+    /// The entry is past its window but the row of its source is in the hands of another transaction (which may be ending
+    /// the run): nothing changed, and the pass leaves the entry out for a short time instead of taking its slot again at
+    /// once (D2081).
+    Busy,
     /// The lease of the shard is no longer held, or the entry was completed first: nothing changed.
     Refused(&'static str),
 }
 
-/// The closed reasons a pending reset fails with, and the label each has in `workflow_reset_completions_total`.
+/// The closed reasons the completion of a pending reset fails with (the judgement of the platform on the journal the
+/// source ended with), and the label each has in `workflow_reset_completions_total{outcome="failed"}`. The expiry has
+/// its own, [`SOURCE_DID_NOT_END`], under `outcome="expired"`.
 pub const FAILURE_REASONS: [&str; 6] = [
     "BOUNDARY_NO_LONGER_ELIGIBLE",
     "ADMISSION_REFUSED",
@@ -187,6 +263,51 @@ where
         &self.store
     }
 
+    /// The time the completer acts by: the database's, corrected by the engine, in a process (D2059).
+    #[must_use]
+    pub fn now(&self) -> OffsetDateTime {
+        self.clock.now()
+    }
+
+    /// Ends an entry whose source did not end within the window, or leaves it where it is: `requested_by` is the clock
+    /// of the pass minus the window. Nothing is created and the source is not touched.
+    ///
+    /// # Errors
+    /// [`AppError::Unavailable`] or [`AppError::Internal`] when the store fails; the entry is tried again later and is
+    /// never recorded as failed for it.
+    pub async fn expire(
+        &self,
+        due: &DueReset,
+        requested_by: OffsetDateTime,
+        fence: Option<ShardFence>,
+    ) -> Result<Completed, AppError> {
+        let Some(entry) = self.store.pending_reset(due.tenant_id, due.id).await? else {
+            return Ok(Completed::Idle);
+        };
+        let now = self.clock.now();
+        let audit = engine_record(&entry, SOURCE_DID_NOT_END, now);
+        let expiry = ResetExpiry {
+            tenant_id: entry.tenant_id,
+            id: entry.id,
+            requested_by,
+            at: now,
+            fence: fence.as_ref(),
+            audit: &audit,
+        };
+        match self.store.expire_reset(&expiry).await {
+            Ok(Expiry::Expired) => {
+                count("expired", SOURCE_DID_NOT_END);
+                Ok(Completed::Expired)
+            }
+            Ok(Expiry::SourceBusy) => Ok(Completed::Busy),
+            Ok(Expiry::NotDue | Expiry::SourceEnded) => Ok(Completed::Idle),
+            Err(StoreError::StateConflict(why)) if is_known_race(why) => {
+                Ok(Completed::Refused(why))
+            }
+            Err(other) => Err(other.into()),
+        }
+    }
+
     /// Completes one entry: creates its run, or fails it, or leaves it where it is.
     ///
     /// # Errors
@@ -246,18 +367,7 @@ where
         fence: Option<ShardFence>,
         now: OffsetDateTime,
     ) -> Result<Completed, AppError> {
-        // the platform ends the entry: the record names the engine, not a person, and carries the closed reason
-        // and never the justification of the requester
-        let engine = Principal::new(entry.tenant_id, Subject::engine(), Role::Operator);
-        let audit = AuditRecord::by(
-            &engine,
-            AuditAction::RunReset,
-            ResourceType::Run,
-            entry.source.to_string(),
-            None,
-            now,
-        )
-        .with_reason(format!("completes reset {}: failed {reason}", entry.id));
+        let audit = engine_record(entry, reason, now);
         let failure = ResetFailure {
             tenant_id: entry.tenant_id,
             id: entry.id,
@@ -279,8 +389,25 @@ where
     }
 }
 
+/// The record of the platform ending an entry (a failure, or the expiry): the engine is the actor, not a person, the
+/// words are closed (the id of the entry and the reason) and the justification of the requester is never in it. The
+/// requester stays the actor of the request, whose records are written with it.
+fn engine_record(entry: &PendingReset, reason: &'static str, now: OffsetDateTime) -> AuditRecord {
+    let engine = Principal::new(entry.tenant_id, Subject::engine(), Role::Operator);
+    AuditRecord::by(
+        &engine,
+        AuditAction::RunReset,
+        ResourceType::Run,
+        entry.source.to_string(),
+        None,
+        now,
+    )
+    .with_reason(format!("completes reset {}: failed {reason}", entry.id))
+}
+
 /// Counts a completion once it is committed (`workflow_reset_completions_total`). The labels are the closed sets
-/// of the outcomes and the reasons; none is a tenant, a run or a reset.
+/// of the outcomes (`created`, `failed`, `expired`) and the reasons (`none`, the six of [`FAILURE_REASONS`] and, for
+/// `expired` only, [`SOURCE_DID_NOT_END`]); none is a tenant, a run or a reset.
 fn count(outcome: &'static str, reason: &'static str) {
     metrics::counter!("workflow_reset_completions_total", "outcome" => outcome, "reason" => reason)
         .increment(1);

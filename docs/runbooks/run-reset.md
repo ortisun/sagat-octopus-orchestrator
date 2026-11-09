@@ -4,7 +4,7 @@ For operators who start a run again from the middle of one that ended ("the firs
 and for the people who answer for what that repeats. It says what a reset does and promises, which points exist, what to read
 before confirming, and what to do when a reset is refused.
 
-Design: decisions D1976 to D1979, D1982 to D1995 and D1996 to D2005, gaps G1980, G1982 to G1988 and G1989 to G1992 in [`specs/018-schedules-bulk-operations/research.md`](../../specs/018-schedules-bulk-operations/research.md);
+Design: decisions D1976 to D1979, D1982 to D1995, D1996 to D2005, D2059 to D2068 and D2079 to D2082 (the expiry), gaps G1980, G1982 to G1988, G1989 to G1992, G2015 to G2018 and G2024 to G2026 in [`specs/018-schedules-bulk-operations/research.md`](../../specs/018-schedules-bulk-operations/research.md);
 the contract is the `Operations` tag of [`openapi.yaml`](../../specs/001-platform-foundation/contracts/openapi.yaml)
 (`listResetPoints`, `previewReset`, `resetRun`, `listRunResets`, `getRunReset`).
 
@@ -204,16 +204,28 @@ that the request did not need is harmless and one that it needed is never skippe
 (it makes the run); both read the same variable and it means the same, off by default (`true`/`false`, `yes`/`no`, `1`/`0`;
 unset or empty is off; anything else is refused naming the variable). The engine also reads `SAGAT_RESET_CANCEL_SOURCE_BATCH`
 (entries completed in a round, 1 to 1,000, default 100), `SAGAT_RESET_CANCEL_SOURCE_PER_TENANT` (how many of them one tenant may
-take of a round, 1 to 1,000, default 10, so that one tenant's entries cannot fill the round) and `SAGAT_RESET_CANCEL_SOURCE_POLL_MS`
-(pause when a round found nothing, default 1,000). Where the control plane has it off, a request for an open source is
+take of a round, 1 to 1,000, default 10, so that one tenant's entries cannot fill the round), `SAGAT_RESET_CANCEL_SOURCE_POLL_MS`
+(pause when a round found nothing, default 1,000) and `SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS` (how long an entry waits for its source to end,
+in seconds: from 3,600, an hour, to 604,800, seven days, both included; default 86,400, a day; anything else, a unit (`24h`) or a
+fraction, refuses to start naming the variable; **the engine alone reads it**, the control plane expires nothing and does not need it).
+**Set the same value on every engine:** an engine applies its window to the entries of the shards it holds, and shards move between
+engines, so the window an entry is judged by is the one of the engine that holds its shard when a round looks (D2082, G2025); each
+engine logs its `expiry_secs`, `batch` and `per_tenant` once when the pass starts. **The flag governs the completion and the expiry
+together:** with it off in an engine, that engine does neither (see the order of the rollout below).
+Where the control plane has it off, a request for an open source is
 `422 RESET_CANCEL_SOURCE_NOT_AVAILABLE` and nothing is cancelled; **a retry of a request that was accepted is answered from the
 register whatever the setting is now**.
 
 **Order of the rollout (ADR-0080): the engine first, then the control plane; to turn it off, the control plane first.** The
 dangerous state is the control plane on and every engine off: a request is then accepted and answers `202`, **the customer's run
-is cancelled**, and nothing makes the replacement until an engine has the flag on. Nothing is lost (the entry waits in the
-register, counted against the limit): `scheduler_lag_seconds{pass="resets"}` grows once the sources have ended (the alert
-`SagatSchedulerLate`), and turning the flag on in one engine makes the runs (G1989). The registry that would refuse the
+is cancelled**, and nothing makes the replacement until an engine has the flag on. No entry is destroyed (it waits in the
+register, counted against the limit), **but nothing expires it either: the expiry is a step of the same pass, so an engine with the
+flag off neither completes nor expires** (D2080, G2024). Every entry that was accepted keeps its place in its namespace, up to the
+limit, **until an engine with the flag on runs**; then the runs are made for the sources that have ended (G1989) and **every entry
+older than the window expires at once, 100 a second** (the pause after a round that expired entries, so that the writes keep that
+pace). `scheduler_lag_seconds{pass="resets"}` grows once the sources have ended (the alert `SagatSchedulerLate`); for an entry
+whose source is still open nothing fires, and `workflow_resets_pending` staying high is the sign. An engine with the flag off says
+so in its log when it starts. The registry that would refuse the
 mismatch is not built (ADR-0050 decision 9, T018-080), so do not leave the control plane on while the engines are being
 changed. The engine takes the entries of the shards it holds, like the pass of the batch jobs: several engines never make one
 run twice (a lease that moved, or an entry that another engine completed first, refuses the step and changes nothing).
@@ -238,17 +250,46 @@ accepted stands.
 **A failed reset leaves a cancelled run and no replacement.** The request cancelled the source and nothing takes that back, so
 when `workflow_reset_completions_total{outcome="failed"}` rises, read `GET /runs/{id}/resets` for the reasons (the label says
 the same) and start the run again by hand (`sagat workflow start`, or a new reset of the ended source with the reason fixed:
-the ended source is reset at once). Only these reasons end an entry; a failure of the platform itself (storage, a lease that
+the ended source is reset at once). Only these reasons, and the expiry below (`SOURCE_DID_NOT_END`, which `outcome="failed"` does not count),
+end an entry; a failure of the platform itself (storage, a lease that
 moved, a connection limit, an error nobody foresaw) leaves the entry pending and is tried again after a pause that doubles from
 2 s to 5 minutes, with a warning in the engine's log that names `tenant_id` and `reset_id`; one entry in that state does not
 hold the others (each tenant takes at most `SAGAT_RESET_CANCEL_SOURCE_PER_TENANT` places of a round, and an entry that failed
 is left out of the scan until its time).
 
-**The one lever on an entry that waits is the authority of the member who asked.** There is no call to withdraw an entry and
-none expires (G1991, an owner decision). Removing the member, or their `run:operate` or `run:start`, makes the engine end the
-entry `FAILED` `AUTHORITY_REVOKED` **when the source has ended**, not before: it does not free the place of the namespace while
-the source is open. The only way to free the place sooner is to end the source (retry, skip or resolve the step, or cancel
-the run's compensation). An administrator can raise the limit of a namespace up to the hard ceiling of 64, no further.
+**What an operator can do about an entry that waits: end the source, or let the entry expire. There is no call to withdraw it**
+(G1991, G2018: the owner decided the expiry, OD-2026-11-08-1, and left the withdrawal for later). Removing the member, or their
+`run:operate` or `run:start`, makes the engine end the entry `FAILED` `AUTHORITY_REVOKED` **when the source has ended**, not
+before: it does not free the place of the namespace while the source is open. The ways to free the place are to end the source
+(retry, skip or resolve the step, or cancel the run's compensation; the run is cancelled already, so it ends once what is in
+flight has reported), which makes the run the entry asked for (or fails it with one of the reasons above), or to wait for the
+expiry (below). An administrator can raise the limit of a namespace up to the hard ceiling of 64, no further.
+
+**An entry whose source does not end expires** (D2059). An entry that is still `PENDING_SOURCE` **a whole window after its request**
+(24 hours; the deployment sets 1 hour to 7 days with `SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS` on the engine) while its source is
+still open (a run in `MANUAL_REVIEW` is open) ends `FAILED` with the reason **`SOURCE_DID_NOT_END`**: no run is made, the entry
+leaves `workflow_resets_pending` and its place in the namespace is free again (a new request is accepted at the limit). What the
+operator sees: `GET /runs/{id}/resets` and the Studio and the CLI show the entry as one that could not be made, with
+`failureReason: SOURCE_DID_NOT_END` in words; `workflow_reset_completions_total{outcome="expired",reason="SOURCE_DID_NOT_END"}` rises
+by one; the audit trail of the source has one `run.reset` record by `system:engine` that says `completes reset {id}: failed
+SOURCE_DID_NOT_END`, and nothing the requester wrote; the engine's log has one line with `tenant_id`, `reset_id` and the window.
+What the expiry does **not** do: it never touches the source, which the request cancelled and which stays cancelled (still ending,
+or in manual review, for as long as it takes), and it makes no run. **What to do:** end the source before the window is over (the
+steps in the table of the source are the same as for any run that does not end), or let the entry expire; once the source has
+ended, reset it again with a new `Idempotency-Key`, which is made at once (a retry with the key of the request that expired is
+answered from the register, with the entry as it is now: `FAILED`). **An ended source always wins**: an entry whose source has
+ended is completed in the next round even if the window is long over, and an entry is never both expired and completed. The window
+is counted **from the request**, on the database's clock, so a restart of the engine does not start it again; the first round
+of an engine with this version expires, a few at a time, **every entry that is already older than the window** (read the register
+before you turn the flag on with entries in it). A round expires at most `SAGAT_RESET_CANCEL_SOURCE_BATCH` entries and
+`SAGAT_RESET_CANCEL_SOURCE_PER_TENANT` of any one tenant, oldest first, apart from the completions, **and a round that expired entries
+is followed by the pause they cost at a hundred a second** (a full round of 100 rests a second; at least 200 ms for any), so the first
+rounds of an engine with this version expire the old entries at that pace and not as fast as the database allows; a failure of the
+platform in one entry leaves it pending, with a warning that names `tenant_id` and `reset_id`, and does not stop the others; an entry
+past its window whose source **another transaction holds at that moment** (the one that may be ending the run) is left for a
+second and tried again, without a warning (a debug line names the ids). The migration
+`reset_expiry` (the list of the reasons the register admits) must be applied **before** an engine with this version runs: against
+the older schema the write of the reason is refused and every expiry stays pending with that warning.
 
 **Reading the audit trail: the join is by the reset id.** The four records of one reset name the id of the entry in their
 reason and nothing else of it but closed words: `reset {id} requested at {N}...` and `cancelled for the reset {id}` on the
@@ -257,11 +298,13 @@ source (the request), `reset from {source} at {N}... completes reset {id}: ...` 
 `GET /runs/{id}/resets` and `sagat workflow resets` show; the trace id of the request is on the request's records only,
 because the engine's pass has no request.
 
-**An entry waits for as long as its source is open, and nothing expires it.** A source in `MANUAL_REVIEW` (a compensation that
+**An entry waits for its source for the window, and no longer.** A source in `MANUAL_REVIEW` (a compensation that
 failed, an unknown outcome) is open: the entry waits for an operator to act on the run (retry, skip or resolve the step); when
-the run ends the entry is completed in the next round. There is no call that withdraws an entry (G1991): it ends `CREATED` or
-`FAILED`. Entries count against the namespace's limit while they wait: **16 per namespace by default, at most 64**
-(`429 QUOTA_EXCEEDED`, `details.reason` `PENDING_RESET_LIMIT`), so a source that never ends holds a place. `GET /runs/{id}/resets`,
+the run ends the entry is completed in the next round, **if that is within the window**; if the window is over first, the entry
+expired (above). There is no call that withdraws an entry (G1991, G2018): it ends `CREATED` or `FAILED`. Entries count against the
+namespace's limit while they wait: **16 per namespace by default, at most 64** (`429 QUOTA_EXCEEDED`, `details.reason`
+`PENDING_RESET_LIMIT`), so a source that never ends holds a place for the window at most **where an engine runs the pass: with the flag
+off in every engine nothing expires an entry and the places stay pinned until one runs** (G2024). `GET /runs/{id}/resets`,
 `sagat workflow resets <run>` and the Studio list the entries with their state and reason.
 
 ## 5. When a reset is refused
@@ -289,8 +332,8 @@ the run ends the entry is completed in the next round. There is no call that wit
 | Metric | Labels | Meaning |
 |---|---|---|
 | `workflow_reset_reapply_total` | `kind` (`SIGNAL`, `UPDATE`), `outcome` (`REAPPLIED`, `REJECTED`, `NOT_REAPPLIED`), `reason` (the closed reasons of section 4.1, `none` when there is none) | What a reset delivered again, counted once the reset is committed: a reset that was refused, cut off or answered from the register counts nothing. No tenant, run, signal or operation is a label |
-| `workflow_reset_completions_total` | `outcome` (`created`, `failed`), `reason` (`none` for `created`; for `failed` one of the closed reasons of section 4.2) | The resets that waited for their source and were completed, counted once the transaction is committed: a step on an entry that was completed first, whose source is open, or that lost its lease counts nothing. No tenant, run or reset is a label |
-| `workflow_resets_pending` | | Resets waiting for their source (gauge, from the monitor of the engine). **Every replica sets it to the same count**, so read it with `max`, never `sum`: a sum multiplies the count by the number of replicas |
+| `workflow_reset_completions_total` | `outcome` (`created`, `failed`, `expired`), `reason` (`none` for `created`; for `failed` one of the six closed reasons of the table of section 4.2; for `expired` always `SOURCE_DID_NOT_END`) | The resets that waited for their source and were completed or expired, counted once the transaction is committed: a step on an entry that was completed first, whose source is open and is not past its window, whose source is in the hands of another transaction, or that lost its lease counts nothing. `failed` is the judgement of the platform on the journal the source ended with and does not count an expiry. No tenant, run or reset is a label |
+| `workflow_resets_pending` | | Resets waiting for their source (gauge, from the monitor of the engine); it falls when an entry is completed, fails or expires. **Every replica sets it to the same count**, so read it with `max`, never `sum`: a sum multiplies the count by the number of replicas |
 | `scheduler_fenced_total{kind="reset"}` | `kind` | Steps of the pass that were refused because the replica no longer held the lease of the shard (an entry that another engine completed first is not counted: it is an ordinary race). A few during a rebalance are normal; a count that keeps rising says two replicas dispute a shard |
 | `workflow_reset_completions_total{outcome="failed"}` | `reason` | An entry ended `FAILED`: the source was cancelled and no run replaces it. Read the reasons (section 4.2) and start the run again by hand if it is still wanted |
 | `scheduler_lag_seconds{pass="resets"}` | | How long the oldest pending reset whose source has **ended** has waited for the engine to make its run (0 when none): the engine has the pass off, no replica holds the shard, or it is failing (look at its log). A source that is still open is not lag: the entry waits for the run |
@@ -303,7 +346,10 @@ an Update made through the API (G1986); their events are in the journal, and the
 
 - **Delivering again what was received below the root** (an iteration of a collection or a loop; G1983): not delivered, and not
   reported.
-- **Withdrawing a reset that waits** (G1991) and **an expiry for one** (D2000): an entry ends `CREATED` or `FAILED` and nothing else.
+- **Withdrawing a reset that waits** (G1991, G2018): an entry ends `CREATED` or `FAILED` (by the judgement of the platform, or by expiring) and nothing else. The expiry
+  is built (section 4.2); **no alert fires when one expires and nothing says that an entry is about to** (G2016): read `workflow_reset_completions_total{outcome="expired"}`.
+  An alert on `increase(workflow_reset_completions_total{outcome="expired"}[1h]) > 0`, **with its `promtool` rule test, is a precondition for turning the feature on by default**
+  (ADR-0080 decision 4, G2026); none is written until it can be tested.
 - **A permit of a concurrency key and the checks of the features that are not approved** (`CONCURRENCY_PERMIT_UNAVAILABLE`,
   `RUN_PURGED` and the reasons of a `REMATERIALIZE` rule exist as names; nothing writes them yet).
 - **Points inside a collection, a parallel branch, a loop iteration or a child scope** (G1980 (1)).

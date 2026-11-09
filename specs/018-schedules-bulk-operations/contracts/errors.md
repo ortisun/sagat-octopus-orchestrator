@@ -74,6 +74,10 @@ be applied (`RESOURCE_UNAVAILABLE`, `VARIABLE_NOT_FOUND`, `SNAPSHOT_RETIRED`, as
 `AUTHORITY_REVOKED` (the member who asked no longer holds `run:operate`, `run:start` or what the reapply needs, or is
 no longer a member), `REEXECUTION_NOT_ACKNOWLEDGED` (steps completed after the point and the request did not
 acknowledge the re-execution) and `REAPPLY_TOO_MANY` (the source received more to deliver again than a reset may).
+The expiry of a reset that waits (D2059, OD-2026-11-08-1) adds one, written by the same pass and not by its judgement of the final
+journal: `SOURCE_DID_NOT_END` (the source run had not ended when the time a reset waits for it was over: 24 hours after the request
+unless the operator of the platform set another time, from 1 hour to 7 days; no run was made and the place in the namespace is free;
+the run stays cancelled; end the run, then reset it again).
 Reapply `reason`: `NO_WAITING_STEP`, `AFTER_UNDELIVERED_SIGNAL`, `UPDATE_REJECTED`, `NOT_RETAINED`,
 `LEGACY_EVENT`, `REAPPLY_LIMIT`.
 

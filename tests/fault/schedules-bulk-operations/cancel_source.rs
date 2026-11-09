@@ -34,7 +34,7 @@ use crate::tripwire::{Tripwire, table_digests};
 
 const WHY: &str = "the second step used a wrong price list";
 
-struct Completions(Arc<World>);
+pub(crate) struct Completions(pub(crate) Arc<World>);
 
 impl ResetCompletions for Completions {
     async fn complete(
@@ -64,18 +64,18 @@ fn completer(f: &Fixture) -> Completer {
 
 /// A source of two activities that has not ended: `a` is done and `b`, the last, is leased to a worker. When the
 /// worker completes `b` the source ends on its own.
-struct Open {
-    run: RunId,
-    b: ClaimedTask,
-    after_a: u64,
+pub(crate) struct Open {
+    pub(crate) run: RunId,
+    pub(crate) b: ClaimedTask,
+    pub(crate) after_a: u64,
 }
 
 /// The worker that serves the activities of every source of a test: sessions of one identity are limited.
-async fn worker(f: &Fixture) -> Session {
+pub(crate) async fn worker(f: &Fixture) -> Session {
     f.w.session(&["act.a", "act.b"]).await
 }
 
-async fn open_pair(f: &Fixture, session: &Session) -> Open {
+pub(crate) async fn open_pair(f: &Fixture, session: &Session) -> Open {
     let workflow =
         f.w.publish(document(
             &format!("cancel-source-fault-{}", Uuid::now_v7()),
@@ -104,14 +104,14 @@ async fn open_pair(f: &Fixture, session: &Session) -> Open {
     }
 }
 
-async fn finish(f: &Fixture, session: &Session, open: &Open) {
+pub(crate) async fn finish(f: &Fixture, session: &Session, open: &Open) {
     f.w.complete(session, &open.b, &json!({"done": "b"}))
         .await
         .expect("b completes");
     assert!(f.w.run_status(open.run).await.is_terminal());
 }
 
-fn asking(sequence: u64) -> ResetRequest<'static> {
+pub(crate) fn asking(sequence: u64) -> ResetRequest<'static> {
     ResetRequest {
         sequence,
         reason: WHY,
@@ -122,20 +122,25 @@ fn asking(sequence: u64) -> ResetRequest<'static> {
     }
 }
 
-async fn request(f: &Fixture, run: RunId, sequence: u64, key: &str) -> Result<ResetMade, AppError> {
+pub(crate) async fn request(
+    f: &Fixture,
+    run: RunId,
+    sequence: u64,
+    key: &str,
+) -> Result<ResetMade, AppError> {
     f.w.runs
         .reset(&f.w.admin, run, asking(sequence), key, &ctx())
         .await
 }
 
-fn due(f: &Fixture, id: ResetId) -> DueReset {
+pub(crate) fn due(f: &Fixture, id: ResetId) -> DueReset {
     DueReset {
         tenant_id: f.w.admin.tenant_id(),
         id,
     }
 }
 
-async fn made_from(f: &Fixture, source: RunId) -> Vec<Uuid> {
+pub(crate) async fn made_from(f: &Fixture, source: RunId) -> Vec<Uuid> {
     sqlx::query_scalar("SELECT id FROM runs WHERE rerun_of = $1 ORDER BY id")
         .bind(source.as_uuid())
         .fetch_all(&f.w.db.pool)
@@ -170,7 +175,7 @@ async fn receipts(f: &Fixture, key: &str) -> i64 {
 }
 
 /// Waits until `n` backends of this database wait on a lock (`pg_stat_activity`, not a time), at most two minutes.
-async fn wait_for_backends_on_locks(f: &Fixture, n: i64, stage: &str) {
+pub(crate) async fn wait_for_backends_on_locks(f: &Fixture, n: i64, stage: &str) {
     within(stage, std::time::Duration::from_secs(120), async {
         loop {
             let waiting: i64 = sqlx::query_scalar(

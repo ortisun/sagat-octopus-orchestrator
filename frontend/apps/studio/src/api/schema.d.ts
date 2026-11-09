@@ -3674,7 +3674,7 @@ export interface components {
              * @enum {string}
              */
             state: "PENDING_SOURCE" | "CREATED" | "FAILED";
-            /** @description Why a reset that failed did (FAILED only). One of BOUNDARY_NO_LONGER_ELIGIBLE (the point is not one of the journal the source ended with), ADMISSION_REFUSED (a quota or the platform refused the run), BUSINESS_ID_IN_USE, AUTHORITY_REVOKED (the member who asked no longer holds what a reset needs), REEXECUTION_NOT_ACKNOWLEDGED (steps completed after the point and the request did not acknowledge them), REAPPLY_TOO_MANY, CONCURRENCY_PERMIT_UNAVAILABLE, RUN_PURGED. The list grows only: read a name you do not know as another reason. */
+            /** @description Why a reset that failed did (FAILED only). One of BOUNDARY_NO_LONGER_ELIGIBLE (the point is not one of the journal the source ended with), ADMISSION_REFUSED (a quota or the platform refused the run), BUSINESS_ID_IN_USE, AUTHORITY_REVOKED (the member who asked no longer holds what a reset needs), REEXECUTION_NOT_ACKNOWLEDGED (steps completed after the point and the request did not acknowledge them), REAPPLY_TOO_MANY, SOURCE_DID_NOT_END (the source run had not ended when the time a reset waits for it was over, a day unless the operator of the platform set another, from one hour to seven days: no run is made and the place in the namespace is free), CONCURRENCY_PERMIT_UNAVAILABLE, RUN_PURGED. The list grows only: read a name you do not know as another reason. */
             failureReason?: string | null;
             /** Format: uuid */
             newRunId?: string | null;

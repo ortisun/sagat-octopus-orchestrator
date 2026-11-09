@@ -196,7 +196,10 @@ pub(crate) async fn stops(f: &Fixture, run: RunId) -> i64 {
 }
 
 /// `(state, failure reason, new run, completed)` of an entry of the register.
-async fn outcome(f: &Fixture, id: ResetId) -> (String, Option<String>, Option<Uuid>, bool) {
+pub(crate) async fn outcome(
+    f: &Fixture,
+    id: ResetId,
+) -> (String, Option<String>, Option<Uuid>, bool) {
     sqlx::query_as(
         "SELECT state, failure_reason, new_run_id, completed_at IS NOT NULL \
          FROM run_resets WHERE id = $1",
@@ -208,7 +211,7 @@ async fn outcome(f: &Fixture, id: ResetId) -> (String, Option<String>, Option<Uu
 }
 
 /// `(reason)` of the audit records of `action` about `resource`, oldest first.
-async fn audited(f: &Fixture, action: &str, resource: RunId) -> Vec<String> {
+pub(crate) async fn audited(f: &Fixture, action: &str, resource: RunId) -> Vec<String> {
     sqlx::query_scalar(
         "SELECT coalesce(reason, '') FROM audit_records WHERE action = $1 AND resource_id = $2 \
          ORDER BY created_at, id",
@@ -1046,7 +1049,7 @@ async fn keeping_the_identifier_binds_it_when_it_is_free_and_dropping_it_starts_
 }
 
 /// An entry as a request would have written it, for a source that has ended, with the digest and the point given.
-async fn plant(
+pub(crate) async fn plant(
     f: &Fixture,
     source: RunId,
     sequence: i64,
@@ -1086,7 +1089,7 @@ async fn plant_in(
 }
 
 /// As [`plant_in`], with the id given (the shard of an entry is a function of its id).
-async fn plant_with(
+pub(crate) async fn plant_with(
     f: &Fixture,
     id: ResetId,
     namespace: sagat_domain::identity::NamespaceId,
@@ -1116,7 +1119,7 @@ async fn plant_with(
     id
 }
 
-async fn digest_of(f: &Fixture, source: RunId, sequence: usize) -> Vec<u8> {
+pub(crate) async fn digest_of(f: &Fixture, source: RunId, sequence: usize) -> Vec<u8> {
     let rows =
         f.w.store
             .reset_source(f.w.admin.tenant_id(), source)
@@ -2193,7 +2196,7 @@ async fn a_source_the_requester_cannot_see_is_an_anomaly_that_leaves_the_entry_p
 
 /// A source in the other tenant that has ended, and the entry that waits for it (a request cancels a run nothing is
 /// running, so the source is over at once).
-async fn other_tenant_entry(f: &Fixture) -> ResetId {
+pub(crate) async fn other_tenant_entry(f: &Fixture) -> ResetId {
     let workflow =
         f.w.publish_as_other_tenant(document(
             &format!("cancel-source-other-{}", Uuid::now_v7()),
@@ -2840,6 +2843,7 @@ async fn a_round_takes_no_more_of_a_tenant_than_its_share_though_the_batch_would
         ResetSettings {
             batch: 100,
             per_tenant: 1,
+            ..ResetSettings::default()
         },
     )
     .await;

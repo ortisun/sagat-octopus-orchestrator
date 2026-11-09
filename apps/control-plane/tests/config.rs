@@ -1030,6 +1030,29 @@ fn cancelling_a_source_for_a_reset_is_an_explicit_strict_operator_switch() {
     );
 }
 
+/// The expiry of a reset that waits is the engine's alone (D2059): the control plane accepts the request and expires
+/// nothing, so it has no window to read, does not refuse a deployment that sets one for both processes, and its `--help`
+/// says where the setting lives.
+#[test]
+fn the_window_of_the_expiry_of_a_reset_that_waits_is_not_a_setting_of_the_control_plane() {
+    let reference = ServeConfig::from_lookup(&env(&OIDC)).expect("defaults");
+    for value in ["7200", "0", "soon", "24h", "99999999999999999999999"] {
+        let mut values = OIDC.to_vec();
+        values.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"));
+        values.push(("SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS", value));
+        let config = ServeConfig::from_lookup(&env(&values))
+            .unwrap_or_else(|error| panic!("{value}: the control plane read it: {error}"));
+        // what it does read is as before
+        assert!(config.reset_cancel_source_enabled, "{value}");
+        assert_eq!(config.batches_enabled, reference.batches_enabled, "{value}");
+    }
+    let help = cli::USAGE;
+    assert!(
+        help.contains("SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS") && help.contains("engine only"),
+        "the help of the control plane says that the window is the engine's"
+    );
+}
+
 #[test]
 fn the_lake_is_an_explicit_strict_operator_switch_and_off_by_default() {
     assert!(
