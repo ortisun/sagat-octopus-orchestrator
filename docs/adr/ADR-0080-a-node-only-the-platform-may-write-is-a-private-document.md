@@ -6,8 +6,10 @@
 schema that "parses only for one origin", could not be stored: every restore validates against that schema.
 **Refines / supersedes:** none. It follows the way [ADR-0071](ADR-0071-lake-writes-and-destinations-are-managed-effects-recovered-at-the-destination.md)
 and feature 017 keep the platform's own runs (ad hoc and probe) as private definitions of a workflow flagged `internal`.
-**Enforced by:** `crates/infra-ir/tests/private_documents.rs` (the public entry points refuse a private node and the private ones accept
-it; the private schema is the public one plus the private node types and nothing else) and, in the slice that wires the loader, an
+**Enforced by:** `crates/infra-ir/tests/private_documents.rs` (no public entry point accepts a private node; the private ones accept it and
+give the domain a probe; a private document still obeys every other rule of the schema; an ordinary document parses to the same bytes
+in both) and two tests in `crates/infra-ir/src/schema.rs` (the private schema is the public one plus the private node types and nothing
+else, byte for byte; no private node type appears in the text of `workflow.schema.json`) and, in the slice that wires the loader, an
 integration test that a probe version restores and that no public path reaches the private entry. The two source-text rules (only
 two callers use a private entry) are added to `crates/application/tests/managed_kind_sites.rs` in that slice.
 

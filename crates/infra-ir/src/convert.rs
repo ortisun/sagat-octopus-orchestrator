@@ -537,6 +537,9 @@ fn nodes(raw_nodes: &[Value], at: &str, structured: bool) -> Result<Vec<Node>, I
             Node::database(id, crate::database::operation(node, &at)?)
         } else if kind == "icebergWrite" {
             Node::iceberg(id, crate::lake::write(node, &at)?)
+        } else if kind == "icebergProbe" {
+            // Only a private document reaches here: the public schema refuses the type before conversion (ADR-0080).
+            Node::lake_probe(id, crate::lake::probe(node, &at)?)
         } else {
             let kind = kind_of(node, kind, &at, &id, structured)?;
             Node::new(id, kind)
