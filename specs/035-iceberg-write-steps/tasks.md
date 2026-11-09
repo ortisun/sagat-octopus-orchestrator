@@ -1216,6 +1216,9 @@ one commit carries the key.
     value, file location, credential or host error text in logs, spans, audit, journal, receipt or API.
 
   Refs: FR-035-030, NFR-035-SEC.
+
+  *2026-11-09, one part done, left unticked (D035-146):* the audit once per committed write (`iceberg.write_committed`, in the transaction of the completion, from the receipt the server built; a commit
+  the run could not keep is audited too). Not done: the spans, the server-side metrics (the runner counts its attempts, D035-143), and the canary test.
 - [ ] T035-062 [US02] Add the example `examples/iceberg/orders-append.workflow.json` and the e2e test
   `tests/e2e/iceberg-writes/append.rs` (happy path and a recovered crash, quickstart scenario 2).
   Refs: FR-035-032, SC-035-003.

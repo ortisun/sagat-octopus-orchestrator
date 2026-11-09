@@ -184,7 +184,8 @@ reuse the code's existing grants:
 **Audit actions.** These reuse or add the following, none carrying values, paths or table contents:
 
 - `DatabaseConnectionChanged` (reused, now for the new kinds), `DatabaseCatalogBrowsed`,
-  `DestinationDecided` (retry, skip, resolve), `IcebergRevertRequested`;
+  `DestinationDecided` (retry, skip, resolve), `IcebergRevertRequested`, `IcebergWriteCommitted` (once for each
+  committed write, naming the node, the connection, the table and the snapshot: D035-146);
 - subscription purpose and ceiling changes;
 - relay denials, reported in the result.
 

@@ -200,11 +200,17 @@ fn the_audit_actions_of_the_lake_have_stable_names_and_none_collapses_repeats() 
         AuditAction::IcebergRevertRequested.as_str(),
         "iceberg.revert_requested"
     );
+    assert_eq!(
+        AuditAction::IcebergWriteCommitted.as_str(),
+        "iceberg.write_committed"
+    );
 
     for action in [
         AuditAction::DatabaseCatalogBrowsed,
         AuditAction::DestinationDecided,
         AuditAction::IcebergRevertRequested,
+        // One record for each committed write: a write is not something a caller repeats, and none is hidden by collapsing.
+        AuditAction::IcebergWriteCommitted,
     ] {
         assert!(!action.collapses_repeats(), "{action}");
         assert_eq!(action.repeat_window(), None, "{action}");

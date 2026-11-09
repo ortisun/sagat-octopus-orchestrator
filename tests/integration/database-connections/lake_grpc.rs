@@ -169,6 +169,20 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .expect_err("a receipt of another effect");
     assert_eq!(refused.code(), tonic::Code::InvalidArgument, "{refused:?}");
     assert_eq!(p.status(&run).await, "RUNNING");
+    let committed = || async {
+        sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT resource_id, reason FROM audit_records WHERE tenant_id = $1 AND action = 'iceberg.write_committed' AND resource_id = $2",
+        )
+        .bind(p.tenant.as_uuid())
+        .bind(&run)
+        .fetch_all(&p.api.db.pool)
+        .await
+        .expect("the audit records")
+    };
+    assert!(
+        committed().await.is_empty(),
+        "a receipt that was refused is not a committed write"
+    );
 
     // The receipt of the step completes it, through the real server.
     let good = receipt(&lease.idempotency_key);
@@ -178,7 +192,26 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .await
         .expect("the receipt of the step completes it");
     assert_eq!(p.status(&run).await, "SUCCEEDED");
-    // a replay of the same report is the same completion
+    // The committed write is audited once, for the run: where it was written and which snapshot it made, and nothing it held.
+    let written = committed().await;
+    assert_eq!(written.len(), 1, "{written:?}");
+    let reason = written[0].1.as_deref().expect("a reason");
+    for (what, text) in [
+        ("the step", "node:save"),
+        ("the connection", "connection:warehouse"),
+        ("the table", "table:sales.orders"),
+        ("the snapshot", "snapshot:8744736658442914487"),
+        ("the rows", "rows:1"),
+    ] {
+        assert!(reason.contains(text), "the record names {what}: {reason}");
+    }
+    for forbidden in ["r-1", "CANARY", "s3://", &lease.idempotency_key] {
+        assert!(
+            !reason.contains(forbidden),
+            "no value, credential or location, nor the effect key, in the record: {reason}"
+        );
+    }
+    // a replay of the same report is the same completion, and the same write: one record
     let replay = worker
         .client
         .complete_step(worker.req(complete(&good, "lake-wire-complete")))
@@ -186,4 +219,5 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .expect("a replay")
         .into_inner();
     assert!(replay.already_applied);
+    assert_eq!(committed().await.len(), 1, "a replay is not a second write");
 }
