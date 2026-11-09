@@ -522,13 +522,13 @@ async fn pins(
         "a run of one namespace does not pin a blob of another (foreign_key_violation)"
     );
 
-    // The runtime role reads and writes pins and nothing else: nothing of the product deletes one (a pin goes with its run) or updates
-    // one, and a role that could delete the allow-list of a live attempt could also write it again.
+    // The runtime role reads, writes and, for the retention of a terminal run (the job that releases the credential pins, D035-147), deletes
+    // pins, and does nothing else: a pin is never updated (the trigger refuses it as well).
     for (privilege, granted) in [
         ("SELECT", true),
         ("INSERT", true),
         ("UPDATE", false),
-        ("DELETE", false),
+        ("DELETE", true),
     ] {
         let has: bool =
             sqlx::query_scalar("SELECT has_table_privilege('sagat_app', 'step_lease_blobs', $1)")
