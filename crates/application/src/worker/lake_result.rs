@@ -84,9 +84,20 @@ pub fn result_records(content: &[u8]) -> Result<Vec<Value>, DatabaseFailure> {
 fn value_of(cell: &Value) -> Result<Value, DatabaseFailure> {
     let cell = exactly(cell, &["type", "value"])?;
     let kind = cell["type"].as_str().ok_or(UNAVAILABLE)?;
-    Ok(if kind == "binary" {
-        Value::Object(cell.clone())
-    } else {
-        cell["value"].clone()
-    })
+    if kind == "binary" {
+        return Ok(Value::Object(cell.clone()));
+    }
+    let value = &cell["value"];
+    // The host reads `{"type": "binary", "value": …}` as bytes, so a JSON value of the database that spells exactly that would be written as
+    // bytes. It is refused: the result cannot be records without being misread.
+    if kind == "json"
+        && value.as_object().is_some_and(|object| {
+            object.len() == 2
+                && object.get("type") == Some(&Value::from("binary"))
+                && object.contains_key("value")
+        })
+    {
+        return Err(UNAVAILABLE);
+    }
+    Ok(value.clone())
 }

@@ -1528,7 +1528,8 @@ where
             attempt_timeout: timeout,
         });
         // A lake write that takes the result a SQL step retained reads it for the run: audited once with the lease, as reading it through
-        // the API is, naming the node and no value (D035-145). The lease is the one place the result is read.
+        // the API is, naming the node, the write, its connection and who started the run, and no value (D035-145). The lease is the one place
+        // the result is read.
         let result_read = instance
             .path()
             .is_root()
@@ -1537,11 +1538,11 @@ where
             .and_then(sagat_domain::workflow::Node::iceberg_write)
             .and_then(|write| match write.records() {
                 sagat_domain::database::RecordSource::DatabaseResult(source) => {
-                    Some(source.clone())
+                    Some((source.clone(), write.connection().name.clone()))
                 }
                 _ => None,
             });
-        if let Some(source) = result_read {
+        if let Some((source, connection)) = result_read {
             let actor = Principal::new(
                 session.tenant_id,
                 sagat_domain::identity::Subject::parse(&session.subject)
@@ -1558,8 +1559,9 @@ where
                     self.clock.now(),
                 )
                 .with_reason(format!(
-                    "node:{source} read by the lake write {}",
-                    instance.node()
+                    "node:{source} read by the lake write {} on the connection {connection}, for the run started by {}",
+                    instance.node(),
+                    tx.info().started_by
                 )),
             );
         }

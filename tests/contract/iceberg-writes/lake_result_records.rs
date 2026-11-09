@@ -8,7 +8,10 @@
 use sagat_application::{
     database::DatabaseResultValidator,
     execution::RunData,
-    worker::lake_lease::{NamedRecords, named_records},
+    worker::{
+        lake_input::LakeRecords,
+        lake_lease::{NamedRecords, named_records},
+    },
 };
 use sagat_domain::blobs::BlobId;
 use sagat_domain::database::{
@@ -136,6 +139,79 @@ fn a_binary_cell_stays_the_typed_cell_the_host_reads() {
 }
 
 #[test]
+fn a_json_value_is_a_value_unless_it_is_spelled_as_a_typed_binary_cell() {
+    let spelled = |value: Value| {
+        records_of(&result(
+            &json!([{"name": "j", "type": "json"}]),
+            &json!([[{"type": "json", "value": value.clone()}]]),
+        ))
+        .map(|mut records| records.remove(0)["j"].clone())
+    };
+    for value in [
+        json!({"type": "binary"}),
+        json!({"type": "text", "value": "x"}),
+        json!({"type": "binary", "value": "AAEC", "more": 1}),
+        json!({"kind": "binary", "value": "AAEC"}),
+        json!(["binary", "AAEC"]),
+        json!("binary"),
+    ] {
+        assert_eq!(spelled(value.clone()), Ok(value.clone()), "{value}");
+    }
+}
+
+/// The other half of `runners/lake/tests/test_result_records.py`: each cell of the one list both are held to becomes the value the host is
+/// tested with, and is a cell the platform keeps (a list of cells the validator would refuse would hold the host to nothing).
+#[test]
+fn every_cell_of_the_shared_fixture_becomes_the_value_the_host_is_held_to() {
+    let document = super::read_json(&super::fixtures().join("result-records/cells.json"));
+    let cases = document["cells"].as_array().expect("the cells");
+    assert!(
+        cases.len() >= 14,
+        "the fixture is the list of every kind of cell"
+    );
+    for case in cases {
+        let name = case["name"].as_str().expect("a name");
+        let cell = &case["cell"];
+        let kind = cell["type"].as_str().expect("a type");
+        // A null cell sits in a column of some type: the value of the cell says it is null.
+        let column = if kind == "null" { "text" } else { kind };
+        let retained = result(&json!([{"name": "x", "type": column}]), &json!([[cell]]));
+        let bytes = serde_json::to_vec(&retained).expect("JSON");
+        assert!(
+            JsonDatabaseResultValidator
+                .validate(&bytes, DatabaseLimits::MAX)
+                .is_ok(),
+            "{name}: the platform keeps this cell"
+        );
+        assert_eq!(
+            records_of(&retained),
+            Ok(vec![json!({"x": case["record"]})]),
+            "{name}"
+        );
+    }
+}
+
+/// The rows of a result are values of the customer: whatever prints the records of a write (a `{:?}` in a log, a panic, a test that fails)
+/// prints how many there are, and never what they say.
+#[test]
+fn the_records_of_a_write_print_how_many_they_are_and_never_what_they_say() {
+    let records = records_of(&result(
+        &json!([{"name": "id", "type": "text"}]),
+        &json!([[{"type": "text", "value": "CANARY-ROW"}]]),
+    ))
+    .expect("records");
+    let named = NamedRecords::Inline(records.clone());
+    let leased = LakeRecords::Inline(records);
+    for (what, printed) in [
+        ("the named records", format!("{named:?}")),
+        ("the records of the document", format!("{leased:?}")),
+    ] {
+        assert!(!printed.contains("CANARY"), "{what}: {printed}");
+        assert!(printed.contains('1'), "{what} say how many: {printed}");
+    }
+}
+
+#[test]
 fn a_result_of_no_row_is_a_selection_of_no_record_and_the_write_decides_what_that_means() {
     let records = records_of(&result(
         &json!([{"name": "id", "type": "text"}]),
@@ -207,6 +283,15 @@ fn what_cannot_be_records_fails_for_good_with_the_code_that_says_why() {
             DatabaseFailure::ResultUnavailable,
         ),
         (
+            // The host reads this very shape as bytes for a binary column: a value of the database that spells it would be written as such.
+            "a json value that spells a typed binary cell",
+            result(
+                &json!([{"name": "j", "type": "json"}]),
+                &json!([[{"type": "json", "value": {"type": "binary", "value": "AAEC"}}]]),
+            ),
+            DatabaseFailure::ResultUnavailable,
+        ),
+        (
             "a column that names no type",
             result(&json!([{"name": "id", "type": 7}]), &json!([])),
             DatabaseFailure::ResultUnavailable,
@@ -262,13 +347,14 @@ fn whatever_the_validator_of_the_result_accepts_is_a_result_the_lease_can_read()
             &json!([[{"type": kind, "value": value}], [{"type": "null", "value": null}]]),
         );
         let bytes = serde_json::to_vec(&document).expect("JSON");
-        let accepted = validator.validate(&bytes, DatabaseLimits::MAX).is_ok();
-        let converted = records_of(&document);
-        if accepted {
-            let records = converted.unwrap_or_else(|error| panic!("{kind}: {error:?}"));
-            assert_eq!(records.len(), 2, "{kind}");
-            assert_eq!(records[1]["c"], Value::Null, "a null cell is null: {kind}");
-        }
+        // Every kind of the list is one the validator keeps: were one dropped from it the loop would skip it, and say nothing.
+        assert!(
+            validator.validate(&bytes, DatabaseLimits::MAX).is_ok(),
+            "the validator keeps a {kind} cell"
+        );
+        let records = records_of(&document).unwrap_or_else(|error| panic!("{kind}: {error:?}"));
+        assert_eq!(records.len(), 2, "{kind}");
+        assert_eq!(records[1]["c"], Value::Null, "a null cell is null: {kind}");
     }
     // The shapes the validator accepts and the converter names: no column, a column twice.
     for document in [

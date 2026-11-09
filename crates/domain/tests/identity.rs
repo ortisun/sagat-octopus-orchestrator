@@ -10,6 +10,50 @@ use time::OffsetDateTime;
 
 const NOW: OffsetDateTime = OffsetDateTime::UNIX_EPOCH;
 
+/// Every built-in role. The match is exhaustive on purpose: a new role is a compile error here until it is listed and judged.
+fn every_role() -> [Role; 7] {
+    let _judged = |role: Role| match role {
+        Role::Admin
+        | Role::Developer
+        | Role::Operator
+        | Role::Viewer
+        | Role::Worker
+        | Role::Runner
+        | Role::DatabaseRunner => (),
+    };
+    [
+        Role::Admin,
+        Role::Developer,
+        Role::Operator,
+        Role::Viewer,
+        Role::Worker,
+        Role::Runner,
+        Role::DatabaseRunner,
+    ]
+}
+
+/// What lets a lake write take the result a SQL step retained without asking the initiator for `database:result:read` (D035-145, O035-008): to
+/// cause a write into a lake a principal needs `database:write`, and no role has it without the right to read a result. Were one given it, a
+/// lake write would be a bulk export of results to a principal who may not see them, which ADR-0035 (item 10) refuses; then the lease would
+/// have to ask for the permission, and this test is where that is noticed.
+#[test]
+fn no_role_may_write_to_a_database_without_the_right_to_read_a_result() {
+    for role in every_role() {
+        if role.grants(Permission::DatabaseWrite) {
+            assert!(
+                role.grants(Permission::DatabaseResultRead),
+                "{role:?} may write to a database and may not read a result"
+            );
+        }
+    }
+    assert!(
+        every_role()
+            .iter()
+            .any(|role| role.grants(Permission::DatabaseWrite)),
+        "the invariant is about at least one role: if none writes, the question is moot and this test says so"
+    );
+}
+
 #[test]
 fn database_executor_is_a_separate_machine_identity() {
     let role = "database-runner"

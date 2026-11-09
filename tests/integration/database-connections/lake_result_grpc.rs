@@ -224,13 +224,15 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
     // Reading the result for a write is audited once, for the run, as reading it through the API is.
     let reads = result_reads(&p, &run).await;
     assert_eq!(reads.len(), 1, "{reads:?}");
-    assert!(
-        reads[0]
-            .1
-            .as_deref()
-            .is_some_and(|reason| reason.contains("node:read")),
-        "the record names the node whose result was read, and no value: {reads:?}"
-    );
+    let reason = reads[0].1.as_deref().expect("a reason");
+    for (what, text) in [
+        ("the node whose result was read", "node:read"),
+        ("the write that read it", "lake write save"),
+        ("where it was written", "result-warehouse"),
+        ("who started the run", HUMAN),
+    ] {
+        assert!(reason.contains(text), "the record names {what}: {reason}");
+    }
     assert!(
         !format!("{reads:?}").contains("r-1"),
         "the audit record carries no value of the result"
