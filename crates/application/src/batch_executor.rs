@@ -373,7 +373,8 @@ where
             None => None,
         };
         let key = format!("batch:{}:{}", job.id, item.run_id);
-        let ctx = RequestContext::default();
+        // a rerun makes a run with no request to take a trace from: the item begins one (D2087)
+        let ctx = RequestContext::default().traced();
         let request = ItemRequest {
             principal,
             job,

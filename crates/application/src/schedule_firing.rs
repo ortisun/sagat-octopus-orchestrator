@@ -930,15 +930,6 @@ where
                     backfill: None,
                     trigger: tick,
                 };
-                // the trace of a run the clock started begins here, as the legacy pass begins it
-                let ctx = if tick.is_some() {
-                    RequestContext {
-                        trace_id: Some(sagat_telemetry::TraceId::generate().to_string()),
-                        ..RequestContext::default()
-                    }
-                } else {
-                    ctx
-                };
                 self.start(&record, &principal, admission, now, &ctx).await
             }
             Decision::Exhausted => {
@@ -1204,6 +1195,10 @@ where
         admission: ScheduleAdmission,
         ctx: &RequestContext,
     ) -> Result<RunId, AppError> {
+        // A run the clock starts has no request to take a trace from. It begins one, as the legacy cron pass does (the one
+        // place that does it for every start of this module: a due time, a buffered release, a backfill step, trigger-now
+        // without a trace): a run with no trace id is not told to the collector (D2084). A request's own trace is kept.
+        let ctx = &ctx.traced();
         let nominal = admission.nominal_at;
         let version = match (admission.trigger, record.target.version()) {
             // a cron trigger's schedule starts the version in force of its trigger, as the legacy pass does

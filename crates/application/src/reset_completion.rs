@@ -335,7 +335,8 @@ where
             return self.fail(&entry, "AUTHORITY_REVOKED", fence, now).await;
         };
         let principal = Principal::new(entry.tenant_id, requester, membership.role());
-        let ctx = RequestContext::default();
+        // the run this makes has no request to take a trace from: it begins one, or it is never told to the collector (D2087)
+        let ctx = RequestContext::default().traced();
         match self
             .actions
             .complete(&principal, &entry, fence.clone(), &ctx)
