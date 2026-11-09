@@ -1153,8 +1153,11 @@ one commit carries the key.
   *2026-11-08, second part done, left unticked (D035-144):* the record references of a blob source are built (`named_records`, `lake_lease_document` take what the
   catalog said about the blobs: the media type decides the format, 32 blobs and 2 GiB at most, the step's order) and the catalog's word is a method of the run's
   transaction (`lake_record_blobs`) with the pin of the attempt (`step_lease_blobs`); the lease calls them, and a lake attempt reads the blobs its lease named through `ReadBlob`
-  and nothing else; the wire test over gRPC (`lake_blob_grpc.rs`) and two independent reviews of the trust boundary are done (D035-144). Not done: a SQL result as a source
-  (G035-067), the container end to end (T035-062), the limits of G035-080 and G035-081.
+  and nothing else; the wire test over gRPC (`lake_blob_grpc.rs`) and two independent reviews of the trust boundary are done (D035-144).
+
+  *2026-11-08, third part done, left unticked (D035-145):* the result a SQL step kept inline is the records of a write that names its node: the server makes them when it leases the write
+  (`worker/lake_result.rs`), audited as a read of the result, with the rows as objects keyed by column and the digits of an integer intact, proved on the wire with a SQL runner and a lake
+  runner (`lake_result_grpc.rs`). Not done: a result kept as a blob (G035-067), the container end to end (T035-062), the limits of G035-080 and G035-081.
 - [ ] T035-057 [US02] Implement the host's append path in
   `runners/lake/sagat_lake/{lookup.py,mapping.py,compat.py,modes/append.py}`:
   - lookup and commit follow D035-030;
@@ -1746,6 +1749,10 @@ deployment, documentation, reviews and gates.
     audit, journal or API responses.
 
   Rerun T035-015, T035-018 and T035-031. Refs: NFR-035-SEC, SC-035-006.
+
+  *2026-11-09, one case done, left unticked:* a lake runner of another tenant, holding every id and token of a lease, is answered for a read, the audit of a read and the credentials exactly as
+  for a run that does not exist, and leaves nothing in the lease's tenant's trail (`lake_read.rs`; it pins a property the worker service already had, so it passed when written, and no
+  mutation was run: the property is the one line, `begin(principal.tenant_id(), …)`, that the whole suite depends on). Not done: the battery over the connection, browse and destination routes, and the canaries.
 - [ ] T035-118 [P] Add the classification battery in `tests/integration/iceberg-writes/classification.rs`:
   every `secret` field, every field above the ceiling, and every undeclared field against a ceiling
   below `pii` is refused, for every kind, with zero relay or destination connections. Refs:

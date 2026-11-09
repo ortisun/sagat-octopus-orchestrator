@@ -18,7 +18,7 @@ use sagat_domain::database::{
     RecordSource, TableIdentifier, WriteIntent,
 };
 use sagat_domain::identity::Slug;
-use sagat_domain::workflow::{Digest, Expression, NodeId};
+use sagat_domain::workflow::{Digest, Expression};
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_lake::protocol::{AttemptInput, Records};
 use serde_json::{Value, json};
@@ -201,20 +201,6 @@ fn what_is_not_a_list_of_objects_is_a_configuration_failure() {
         assert_eq!(refused, DatabaseFailure::Configuration, "{name}");
         assert_eq!(refused.code(), "DATABASE_CONFIGURATION_INVALID");
     }
-}
-
-#[test]
-fn a_source_the_lease_cannot_serve_yet_is_refused_by_name_and_not_left_to_hang() {
-    // The result of a SQL step is G035-067: the runner's reader refuses it by name, so the lease must not make it.
-    let refused = lease(
-        RecordSource::DatabaseResult(NodeId::parse("read").expect("node")),
-        LakeLimits::default(),
-        LakeLimits::default(),
-        &json!({}),
-    )
-    .expect_err("not served");
-    assert_eq!(refused, DatabaseFailure::Capability);
-    assert_eq!(refused.code(), "DATABASE_CAPABILITY_UNAVAILABLE");
 }
 
 #[test]

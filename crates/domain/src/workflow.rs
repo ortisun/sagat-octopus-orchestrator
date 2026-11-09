@@ -1851,10 +1851,12 @@ fn check_iceberg_sources(
         else {
             continue;
         };
-        let runs_before = map
-            .get(source)
-            .is_some_and(|origin| origin.database_operation().is_some())
-            && can_reach(map, &owners, source, &node.id);
+        // A statement that executes retains no column, so a write of its result could never have a record: only a query is a source.
+        let runs_before = map.get(source).is_some_and(|origin| {
+            origin
+                .database_operation()
+                .is_some_and(|operation| operation.kind == OperationKind::Query)
+        }) && can_reach(map, &owners, source, &node.id);
         if !runs_before {
             return Err(WorkflowError::InvalidIcebergNode);
         }

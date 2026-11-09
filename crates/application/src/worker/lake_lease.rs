@@ -26,13 +26,23 @@ use crate::collection_source::{CollectionSource, parse_descriptor};
 use crate::execution::{ExpressionEvaluator, RunData};
 
 /// What the record source of a step names, before anything has vouched for it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum NamedRecords {
     /// The records themselves, each a JSON value (the document builder refuses one that is not an object).
     Inline(Vec<serde_json::Value>),
     /// The blobs the expression names, as the run's data described them. A descriptor in a JSON value proves nothing: only what the
     /// catalog says about the blob counts.
     Blobs(Vec<BlobDescriptor>),
+}
+
+/// The records are values of the customer: they print how many there are and never what they say.
+impl std::fmt::Debug for NamedRecords {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Inline(records) => write!(f, "Inline({} records)", records.len()),
+            Self::Blobs(blobs) => f.debug_tuple("Blobs").field(blobs).finish(),
+        }
+    }
 }
 
 impl NamedRecords {
@@ -127,7 +137,13 @@ pub fn named_records<E: ExpressionEvaluator + ?Sized>(
             .map_err(|_| DatabaseFailure::Configuration)
             .and_then(named_blobs)
             .map(NamedRecords::Blobs),
-        RecordSource::DatabaseResult(_) => Err(DatabaseFailure::Capability),
+        // The result the SQL step retained, read from the run's own data: a node that produced none (it failed, or an error edge went
+        // around it) leaves nothing to write.
+        RecordSource::DatabaseResult(node) => data
+            .root_output(node)
+            .ok_or(DatabaseFailure::ResultUnavailable)
+            .and_then(super::lake_result::result_records)
+            .map(NamedRecords::Inline),
     }
 }
 

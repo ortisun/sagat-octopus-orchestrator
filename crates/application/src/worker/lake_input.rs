@@ -66,12 +66,22 @@ pub struct LakeBlob {
 }
 
 /// The records of the attempt, already evaluated from the step's expression.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum LakeRecords {
     /// The records themselves: each one a JSON object.
     Inline(Vec<Value>),
     /// One to [`MAX_RECORD_BLOBS`] blobs, each once.
     Blobs(Vec<LakeBlob>),
+}
+
+/// The records are values of the customer: they print how many there are and never what they say.
+impl std::fmt::Debug for LakeRecords {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Inline(records) => write!(f, "Inline({} records)", records.len()),
+            Self::Blobs(blobs) => f.debug_tuple("Blobs").field(blobs).finish(),
+        }
+    }
 }
 
 /// An append never allows an empty write. The lease says so and the receipt is held to it, from this one value.

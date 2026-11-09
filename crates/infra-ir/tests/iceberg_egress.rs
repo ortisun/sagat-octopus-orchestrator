@@ -7,7 +7,10 @@
 //! database results and blobs carry none either.
 #![allow(clippy::expect_used, clippy::panic)]
 
-use sagat_application::definitions::IrCodec;
+use sagat_application::{
+    classification::ClassificationFindingCode,
+    definitions::{IrCodec, IrError},
+};
 use sagat_domain::{
     classification::Level,
     database::{EgressField, IcebergWrite},
@@ -326,6 +329,54 @@ fn a_database_result_is_pii_whatever_a_schema_says() {
     assert_eq!(
         levels_of(&bytes),
         levels(&[("/id", Level::Pii), ("/total", Level::Pii)])
+    );
+}
+
+/// A SQL step that declares the classification of its output.
+fn query_declaring(schema: Value) -> Value {
+    json!({"id": "query", "type": "database", "connectionRef": {"name": "orders-db"},
+        "operation": "query", "statement": "SELECT 1", "outputSchema": schema, "next": "save"})
+}
+
+/// What makes `a_database_result_is_pii_whatever_a_schema_says` true: the output of a SQL step is not a place a schema may classify (016
+/// takes an output schema from an activity, a script, a wait and a child, and refuses an annotation anywhere else). Were it one, a
+/// `secret` declared there would have to be as strict for the result source as it is for the inline source of the same write, and this
+/// module would have to read it (D035-145, the security review of the result source).
+#[test]
+fn the_output_of_a_sql_step_cannot_declare_a_classification_so_there_is_none_to_lose() {
+    let schema = json!({
+        "type": "object", "x-sagat-classification": "public",
+        "properties": {"password_hash": {"type": "string", "x-sagat-classification": "secret"}}
+    });
+    let bytes = document(
+        Some(rows_schema()),
+        vec![
+            query_declaring(schema),
+            step(json!({"databaseResult": "query"}), &["/id"]),
+            json!({"id": "done", "type": "end"}),
+        ],
+    );
+    let Err(IrError::Classification(findings)) = JsonIrCodec.parse(&bytes) else {
+        panic!("a classification on the output of a SQL step is refused at publication");
+    };
+    let refused = |code, path: &str| {
+        findings
+            .iter()
+            .any(|finding| finding.code == code && format!("{:?}", finding.path).contains(path))
+    };
+    assert!(
+        refused(
+            ClassificationFindingCode::NotApplicable,
+            "/nodes/0/outputSchema/properties/password_hash/x-sagat-classification"
+        ),
+        "{findings:?}"
+    );
+    assert!(
+        refused(
+            ClassificationFindingCode::NotApplicable,
+            "/nodes/0/outputSchema/x-sagat-classification"
+        ),
+        "{findings:?}"
     );
 }
 
