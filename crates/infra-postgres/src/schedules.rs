@@ -130,7 +130,9 @@ pub(crate) async fn check_fence(
     Ok(())
 }
 
-/// The first half of admitting the run of a schedule's action: see [`lock_schedule`].
+/// The first half of admitting the run of a schedule's action: see [`lock_schedule`]. The step of a backfill locks the row of its
+/// backfill next, in the same slot (plan row 8: schedule row, then backfill row, then the admission), so that the row is not taken
+/// after the run's locks, where the counters are written (`advance_backfill`, which finds it locked already).
 pub(crate) async fn lock_for_admission(
     conn: &mut PgConnection,
     tenant: TenantId,
@@ -145,7 +147,21 @@ pub(crate) async fn lock_for_admission(
         // trigger-now and a backfill work while the schedule is paused
         admission.kind != ActionKind::Scheduled,
     )
-    .await
+    .await?;
+    if let Some(progress) = &admission.backfill {
+        // a backfill that is not there is `advance_backfill`'s answer, where it reads the row again
+        sqlx::query(
+            "SELECT id FROM schedule_backfills \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND id = $3 FOR UPDATE",
+        )
+        .bind(tenant.as_uuid())
+        .bind(admission.schedule.as_uuid())
+        .bind(progress.id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    }
+    Ok(())
 }
 
 /// Locks the membership of the subject an action acts for (`FOR SHARE`, through the function the
