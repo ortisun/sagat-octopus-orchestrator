@@ -80,7 +80,8 @@ database result kept as a blob as the source of records), so do not rely on it t
 records (one object a row, keyed by the column, each value as the cell holds it; a binary cell stays the typed cell) when it leases the write, so the runner sees inline
 records and nothing else. The lease is audited as a read of the result (`database.result_read`, for the run, naming the node and no value). A statement that selects no
 column, or two columns of one name, fails the write for good (`DATABASE_CONFIGURATION_INVALID`); a node that produced no result, `DATABASE_RESULT_UNAVAILABLE`; a result kept as
-a blob (above 256 KiB) is refused by name (`DATABASE_CAPABILITY_UNAVAILABLE`, G035-067). Owners: the initiator is asked for no `database:result:read` (O035-008).
+a blob (above 256 KiB) is refused by name (`DATABASE_CAPABILITY_UNAVAILABLE`, G035-067). The connection the rows came from is asked again when they are written: paused, or with its
+secret taken from the actors since the statement ran, it makes the write wait (the refusal is audited) until it is resumed. Owners: the initiator is asked for no `database:result:read` (O035-008).
 
 **Record blobs** (D035-144). A step whose records are blobs is leased only when every blob is a committed output of a step of the same run and
 the descriptor in the run's data is the catalog's; the lease pins them to the attempt it grants, and the runner's `ReadBlob` reads exactly those, while

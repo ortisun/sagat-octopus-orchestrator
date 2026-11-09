@@ -7,7 +7,7 @@ use crate::{
 };
 use sagat_application::{error::StoreError, execution::RunInfo};
 use sagat_domain::{
-    database::{ConnectionId, OperationKind},
+    database::{ConnectionId, OperationKind, RecordSource},
     execution::RunId,
     identity::{NamespaceId, Permission, Role, Subject, TenantId},
     workflow::{NodeId, WorkflowDefinition},
@@ -136,6 +136,17 @@ pub(crate) async fn admit_node(
     lake_enabled: bool,
 ) -> Result<(), StoreError> {
     let actors = run_actors(conn, info).await?;
+    // The nodes whose connections are asked: the node, and the SQL step whose retained result a lake write takes (G035-083). The rows
+    // are already in the run, but where they came from is still asked when they are written: a connection paused, or a secret taken
+    // from the actors, since the statement ran stops the write, as a revocation that has returned stops every later admission.
+    let mut asked = vec![node.clone()];
+    if let Some(RecordSource::DatabaseResult(source)) = definition
+        .node(node)
+        .and_then(sagat_domain::workflow::Node::iceberg_write)
+        .map(sagat_domain::database::IcebergWrite::records)
+    {
+        asked.push(source.clone());
+    }
     check_definition(
         conn,
         info.tenant_id,
@@ -144,7 +155,7 @@ pub(crate) async fn admit_node(
         definition,
         Some(info.run_id),
         Some(info),
-        Some(node),
+        Some(&asked),
         lake_enabled,
     )
     .await?;
@@ -160,17 +171,17 @@ async fn check_definition(
     definition: &WorkflowDefinition,
     pinned: Option<RunId>,
     run_info: Option<&RunInfo>,
-    selected: Option<&NodeId>,
+    selected: Option<&[NodeId]>,
     lake_enabled: bool,
 ) -> Result<Vec<(NodeId, ConnectionId, u32)>, StoreError> {
     let operations: Vec<_> = definition
         .nodes()
-        .filter(|n| selected.is_none_or(|id| n.id() == id))
+        .filter(|n| selected.is_none_or(|ids| ids.contains(n.id())))
         .filter_map(|n| n.database_operation().map(|op| (n.id(), op)))
         .collect();
     let lake_writes: Vec<_> = definition
         .nodes()
-        .filter(|n| selected.is_none_or(|id| n.id() == id))
+        .filter(|n| selected.is_none_or(|ids| ids.contains(n.id())))
         .filter_map(|n| n.iceberg_write().map(|write| (n.id(), write)))
         .collect();
     if operations.is_empty() && lake_writes.is_empty() {

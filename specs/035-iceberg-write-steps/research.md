@@ -3420,7 +3420,7 @@ The other fixes were wording:
     (`runners/lake/tests/test_result_records.py`, 47 cases). Writing it, two of my own expectations were wrong and the host was right (a trailing zero is not a digit rounded away; a `fixed` of the wrong
     length is `TYPE`). What the host does for each cell is in `docs/guides/iceberg-type-mapping.md` now. (7) a test that skipped a kind the validator dropped asserts every kind is kept. 9 hand mutations
     of these, all killed (one redone: a first pattern removed the label and not the name). **Decided, not done:** a `json` object does not go into a `string` column, a SQL integer does not go
-    into a `float`, and a result cannot fill a column of type `timestamp` (G035-082); the SQL step's own connection is not re-admitted at the lease (G035-083); the audit of a retried attempt is not asserted
+    into a `float`, and a result cannot fill a column of type `timestamp` (G035-082); the SQL step's own connection was not re-admitted at the lease (G035-083, closed afterwards); the audit of a retried attempt is not asserted
     by a test (the code writes one row for each lease).
   - *Not done.* A result above the inline bound (a blob of JSON up to 4 MiB), which stays refused by name: G035-067. The container end to end (T035-062).
 - **G035-082 — What a SQL result cannot be written to.** The SQL step keeps a `timestamp` only as `timestamptz` (with its offset), an integer as the string of its digits and a JSON value as itself, and the
@@ -3431,6 +3431,10 @@ The other fixes were wording:
   access list and its status are not asked again: pausing that connection, or taking the actors' access to its secret, after the statement succeeded does not stop a write of the rows already retained.
   The lake connection is asked again, and the rows were legitimately in the run's data. *Exit condition:* the source node among the nodes admitted at the lease, with the invariant of
   `admission.rs` ("a revocation that has returned stops every subsequent admission") written for it.
+  **Closed (2026-11-09).** The claim of a lake write admits the write and the SQL step whose result it takes, and only those (`admit_node`; the helper that checked a whole definition at publication is
+  unchanged). The wire scenario of the result source pauses the connection the rows came from after the statement succeeded and sees the write wait, the refusal audited for the run, and the write leased
+  once the connection is resumed (the secret that is taken from the actors goes through the same check, `resolve_connection`, and only the pause is tested); it pauses an unrelated connection of the same workflow and sees the write leased. Two hand mutations, both killed (the source not asked; every node asked, which the
+  first version of the test did not catch because its workflow had only the two nodes, so a third was added).
 - **O035-008** — Must the initiator (or the publisher) of a run also hold `database:result:read` for a lake write to take a SQL result? *Recommendation: no.* The result is read by the
   platform, for the run, inside the authority the workflow was admitted with: the SQL step was admitted for the connection it queried, the lake connection admits the publisher and the
   initiator, every field of a result is `pii` for the egress check so the connection's ceiling is `pii` (which took the reveal grant of the namespace to set), and the read is audited.
