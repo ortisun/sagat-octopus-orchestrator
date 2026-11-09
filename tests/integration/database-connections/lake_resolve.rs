@@ -876,7 +876,8 @@ pub async fn run(
                 allow_empty: false,
             },
         )
-        .expect("the receipt of the step");
+        .expect("the receipt of the step")
+        .canonical;
     assert_ne!(
         canonical,
         sent.as_bytes(),

@@ -2,7 +2,9 @@
 //! into typed fields that accept only what the contract names, checked against the step, and written again from those fields.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use sagat_application::database::{ExpectedReceipt, InvalidLakeReceipt, LakeReceiptCodec};
+use sagat_application::database::{
+    CommittedWrite, ExpectedReceipt, InvalidLakeReceipt, LakeReceiptCodec, RebuiltReceipt,
+};
 use sagat_domain::database::WriteMode;
 use sagat_infra_ir::JsonLakeReceiptCodec;
 use serde_json::{Value, json};
@@ -25,8 +27,13 @@ fn expected() -> ExpectedReceipt<'static> {
     }
 }
 
-fn rebuild(receipt: &Value) -> Result<Vec<u8>, InvalidLakeReceipt> {
+fn rebuilt(receipt: &Value) -> Result<RebuiltReceipt, InvalidLakeReceipt> {
     JsonLakeReceiptCodec.rebuild(&serde_json::to_vec(receipt).unwrap(), &expected())
+}
+
+/// The canonical bytes of the receipt, which is what most of these cases are about.
+fn rebuild(receipt: &Value) -> Result<Vec<u8>, InvalidLakeReceipt> {
+    rebuilt(receipt).map(|receipt| receipt.canonical)
 }
 
 #[test]
@@ -38,7 +45,9 @@ fn the_receipt_of_a_commit_is_stored_as_the_typed_fields_it_holds() {
     // Whitespace and the order of the members are the runner's, not the platform's: the bytes stored are the same for both.
     let spaced = serde_json::to_vec_pretty(&committed).unwrap();
     assert_eq!(
-        JsonLakeReceiptCodec.rebuild(&spaced, &expected()),
+        JsonLakeReceiptCodec
+            .rebuild(&spaced, &expected())
+            .map(|receipt| receipt.canonical),
         Ok(rebuilt.clone())
     );
     let mut reordered = String::from("{");
@@ -51,7 +60,9 @@ fn the_receipt_of_a_commit_is_stored_as_the_typed_fields_it_holds() {
     }
     reordered.push('}');
     assert_eq!(
-        JsonLakeReceiptCodec.rebuild(reordered.as_bytes(), &expected()),
+        JsonLakeReceiptCodec
+            .rebuild(reordered.as_bytes(), &expected())
+            .map(|receipt| receipt.canonical),
         Ok(rebuilt)
     );
 }
@@ -62,6 +73,42 @@ fn empty() -> Value {
         "kind": "iceberg", "outcome": "EMPTY_NO_COMMIT", "effectKey": KEY, "foundByLookup": false,
         "mode": "append", "ref": "main", "rowsAdded": "0"
     })
+}
+
+/// What a write that committed is audited with is read from the typed fields of the receipt, so the application reads no wire shape and only
+/// numbers can reach a record (D035-146, D035-147).
+#[test]
+fn a_commit_says_which_snapshot_it_made_and_how_many_rows_it_added() {
+    let receipt = rebuilt(&sample("iceberg-committed.json")).expect("a receipt of this step");
+    assert_eq!(
+        receipt.commit,
+        Some(CommittedWrite {
+            snapshot_id: 8_744_736_658_442_914_487,
+            rows_added: Some(1000)
+        })
+    );
+    // the rows are not part of every receipt of a commit
+    let mut without = sample("iceberg-committed.json");
+    without.as_object_mut().unwrap().remove("rowsAdded");
+    assert_eq!(
+        rebuilt(&without).expect("a receipt").commit,
+        Some(CommittedWrite {
+            snapshot_id: 8_744_736_658_442_914_487,
+            rows_added: None
+        })
+    );
+}
+
+#[test]
+fn a_write_of_no_record_commits_nothing_and_says_so() {
+    let allowing = ExpectedReceipt {
+        allow_empty: true,
+        ..expected()
+    };
+    let receipt = JsonLakeReceiptCodec
+        .rebuild(&serde_json::to_vec(&empty()).unwrap(), &allowing)
+        .expect("a write of no record, where the step allows one");
+    assert_eq!(receipt.commit, None);
 }
 
 #[test]
