@@ -40,6 +40,7 @@ if __name__ == "__main__" and not __package__:
 from sagat_lake.failures import LAKE_HOST_PROTOCOL, WORKER_ERROR, Failure
 from sagat_lake.write import operations_for
 
+# (experiment, not for merge: a change to a source of runners/lake selects the four lake suites on CI)
 PROTOCOL = "sagat.lake.v1"
 PREFACE = b"SAGAT-RELAY/1 "
 CONTROL = b"CONTROL\n"
