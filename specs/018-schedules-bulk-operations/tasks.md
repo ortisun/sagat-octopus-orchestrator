@@ -178,6 +178,23 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   from a run back to a schedule row is refused by name; the monitor sees a transaction that holds two run locks. A first
   version of the barrier hung when a plan was queued behind the other (found by running it), and sampling on the
   connection that holds the locks hung it too; it samples from another connection now.
+  *More done 2026-11-09 (task stays open: the cases of 019 (not approved) and 022 (its slot does not exist), of the batch item, of the reset
+  `REQUIRE_TERMINAL` and of with-start and update-with-start, G2029).* `against_at(start)` (`support/lock_order.rs`) runs a real path against a reference
+  transaction that holds the lock `start` of a list taken in the order of the slots, waits until the path is blocked by it (`pg_blocking_pids`, not a time), takes the
+  locks after it and commits; a path that held, while it waited, a lock the reference takes later would hold what the reference asks for and PostgreSQL would break the
+  cycle with `40P01`, read on both sides. `slot_order::` runs each case once for **every start** (state of its own each time), so every pair of locks of a list is ordered
+  and not only the first against the rest (D2089; the first version ordered only the first: moving the authority check after the quota locks stayed green).
+  Self-tests: a path in the order completes, one against it is a deadlock with exactly one victim, the start 0 does not see a swapped pair the start 1 does, a path that never
+  meets the reference fails by name. Cases (`fault_schedules_bulk_operations` `slot_order::`, 12 passed): the scheduled action, the release of a buffered time and a
+  backfill step (the schedule row, [the backfill row,] the authority `FOR UPDATE` on the memberships, which conflicts with the admission's `FOR SHARE`, the two active-run quota
+  scopes, the usage of the tenant), trigger-now, the payment of a `CANCEL_OTHER` debt (run, debts, usage), the release of a delayed start (run, usage), the claim of a business
+  identifier (binding, quotas, usage: a person's start has no authority lock), and the request (source, pending-resets quota, usage) and the completion (entry, source, authority,
+  quotas, usage) of a pending reset. What it does not prove: a lock no reference names, a path it does not run, an interleaving of more than two transactions; and it is a
+  **release gate** (a pull request runs the fault suite only when its files change). The lease row of a shard is in no reference: it is a **leaf lock** (D2083), guarded by
+  `scripts/check-architecture.py` (the rule, its unit tests, and two hand mutants on the tree, `holds_shard` `FOR UPDATE` and an acquire without `SKIP LOCKED`, each red); the
+  deadlock the first case met was the harness's own (its reference took the lease `FOR UPDATE` and then a run row), and `Slot::RunPassFence` is gone. The per-start run found a real
+  order that differed from plan row 8: the step of a backfill took the backfill row after the admission; it takes it in slot 3 now (D2088, red first). Two hand mutants in
+  `RunStore::create`, the quota before the authority and the memberships before the schedule row: 4 of the 9 cases red each, restored.
 
 ## Phase 3: US01 — Run a workflow on a schedule (P1, MVP)
 
@@ -580,6 +597,15 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   one run at the earliest missed time under the key `cron-<epoch of that time>` and one `COALESCED` summary of the rest, and the legacy pass makes the same run
   with the same key of the same outage; an outage of 400 days records `MISSED_CATCHUP_WINDOW` (34 times) for what is older than 366 days, fires the earliest time inside the
   window and summarizes the rest. The task stays unticked: the reviews of T018-060 and T018-061 are pending.
+  *More done 2026-11-09:* the edge of the window and the legacy pass over an outage longer than it, `catchup::trigger_owned` 5 passed. An outage that began
+  365 days ago is one run at the earliest time and one summary (`STARTED`, `COALESCED` of at least 364), no time missed; one that began 366 days ago
+  (the midnight of that day is older than the window by the hours of today that have passed) records one `MISSED_CATCHUP_WINDOW` of count 1 and acts on
+  the next time; and the legacy pass over an outage of 400 days makes one run at the oldest tick, a year late, with the key `cron-<that tick>` (D2040),
+  as the schedule pass makes one run, so the handover never makes a catch-up bigger than the legacy one. The spec's 366 days is the code's
+  (`MAX_CATCHUP_WINDOW_MS` = 31,622,400,000 ms, `trigger_policies`): no finding. A trigger-owned schedule has the policy `ONE` only (its policies cannot be
+  edited, `SCHEDULE_TRIGGER_OWNED`), so `ALL` has no trigger-owned case. The tests read the clock once (`midnight_from(now, days)`, whole seconds; the key `cron-<epoch>` is compared as a number, never the text of an
+  instant that went through the database with one that did not: microseconds on PostgreSQL and macOS, nanoseconds on Linux), and the 400-day case asserts the time acted on (the midnight of 365 days ago), not only that
+  there is one run. One hand mutant, the window of `trigger_policies` one day shorter: 4 of the 5 red, restored. The task stays unticked for the reason above (the reviews of T018-060 and T018-061 are pending).
 - [x] T018-030 [US2] `CANCEL_OTHER` obligations via the ordinary cancel use case; races with self
   completion and with failed compensation — `tests/fault/schedules-bulk-operations/cancel_other.rs` —
   first commit wins — FR-018-006, FR-018-007.
@@ -1482,6 +1508,34 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   rules (the CI image, run here), `contract_observability_operations` 9 passed (every metric a rule evaluates is one the
   code emits, every rule has a runbook section that exists). The separate `SagatSchedulesLate` of the plan is not added:
   the generic rule already covers the pass.
+  *Rest done 2026-11-09 (decisions D2084, D2085, D2087; gaps G2027, G2028, G2031, G2032).* (a) The export canary, `observability::customer_text_…` in
+  `integration_schedules_bulk_operations`: the real exporter sends to a collector that keeps the bodies it receives (opt-in, `Collector::keep_bodies`), and the whole OTLP/HTTP
+  JSON (the live spans of `sagat_*` targets and the spans the telemetry projector makes of the runs), every log line at every level and the Prometheus page are searched for eight
+  canaries (schedule name, note, input, pause note, business id, batch reason, batch selector, reset reason) put in a schedule, an identifier, a batch job and a reset: none is found.
+  **The search is shown to be able to find:** a control puts a canary into a span, a log line and a metric label the way the pipeline would export it and the search finds it on the
+  wire, in the log and on the page, and `assert_absent` refuses it; the flow runs inside a root span with a trace id (the exporter takes a span only with a trace of its own or its
+  parent's), spans of the scheduler, the application and the PostgreSQL adapter (not only probes) are required to have reached the collector, each class of canary is shown to have
+  been carried (stored where the platform keeps it; the batch selector is refused, G2027) and the run each concerns (the schedule's, the identifier's, the batch target, the reset's
+  source and its new run) is shown to have been told. One hand mutant, a span a service creates (`target: "sagat_application"`) carrying the schedule's name: red naming the class,
+  restored. The REST test installs the exporter too: `http.request` spans of every call (the lookup `GET …/business-ids/{id}` among them, the identifier being in the URL) were
+  exported and none carries the text (a mutant that puts the path on the span: red, restored). The canaries are `[a-z0-9-]`, so JSON writes them as they are (G2028). It found **D2084**
+  (a run the schedule pass starts had no trace id and was never told to the collector; red first) and **D2087** (the same for the run a pending reset's completion makes and for a batch
+  rerun's: `traces::`, red first, then `RequestContext::traced()` in `start_run`, `ResetCompleter` and the batch executor), and **G2027**: a batch selector by `businessIdPrefix` is still
+  refused with a stale remediation. A trace the context has is kept (trigger-now), a generated id is 32 lowercase hex and not zero (`request_context.rs`, `traces::`; a mutant that
+  replaces a kept trace: red). Only the runs the engine creates begin a trace; the operations it makes on a run that has one do not (G2032). (b) The audit rollback,
+  `fault_schedules_bulk_operations` `audit_rollback::` 8 passed: the connection is killed after each writing statement (schedule created 12, updated 12, paused 7, resumed 7, deleted 5,
+  batch created 8, batch cancelled 3), each time no table (`schedules` and `audit_records` included; `support/digests.rs`) changes and no audit record is left, sent again leaves exactly one,
+  and a third send of the creation of a batch job answers the first and leaves no second record (a mutant that never replays a key: red); a stale revision (`RevisionConflict`), a name in use
+  (`Conflict`), a missing schedule (`NotFound`) and a batch job over a limit of zero (`QuotaExceeded`) are refused by kind and leave no row anywhere. **Not covered** (G2031): the firing, the
+  backfill create and cancel, trigger-now, `revoke_authority`, the item audit of the batch executor. A mutant that writes the audit of a pause outside its transaction: red. (c)
+  `contract_observability_operations` 11 passed (2 new): the ten rules of the schedules, batch, handover and registry slices exist, name emitted metrics and point to the section their runbook
+  has; and every label **name** of every rule is one the code puts on that metric, with its literal values held to "a word the code has somewhere" (a typo guard, not a tie to the emission), and the
+  matchers that are patterns are listed and not looked at (`PATTERNS_NOT_LOOKED_AT`, one; a new one fails the test); two mutants (a wrong label name, a new pattern): red. The monitor's alert kinds are
+  unchanged by this feature (five, all with a section). (d) `observability::every_ceiling_…`: for `schedules`, `schedule_backfills`, `batch_jobs`, `tenant_batch_jobs` and `pending_resets`, over
+  HTTP, a limit of zero is a `429 QUOTA_EXCEEDED` with the reason and the limit of `contracts/errors.md`, counted once in `quota_exceeded_total{limit}` (one series per resource, no other label), with
+  **no table changed** (the digest of every table before and after, the audit trail and the counters of the schedules included; the rate limiter's bucket is the one table a request changes) and no canary in
+  the body, the audit trail, the log, the page or the wire. A refusal is not audited (D2085). A hand mutant, the wrong reason for the batch ceiling: red, restored. Every item of the task has evidence now;
+  it is left unticked for the maintainer to tick if D2085 and the limits of G2028 and G2031 are accepted. Gates on the tree with these changes (private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`): `integration_schedules_bulk_operations` 623 and `fault_schedules_bulk_operations` 99, `integration_platform_foundation` 104 and `integration_security_multitenancy` 126 (each also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`), `contract_observability_operations` 11, `fault_platform_foundation` 38, `e2e_platform_foundation` 42, the workspace without `sagat-tests` 2937; fmt, clippy `-D warnings`, `check-architecture.py` and its unit tests, the other checkers: clean.
 - [ ] T018-072 Benchmark on a declared environment (firing lag at 1k/10k schedules, batch rate per job
   and 16 jobs, 32-way business-id claim, reset at 1k/20k events); adjust ceilings only from data —
   `tests/performance/schedules-bulk-operations/`, `tests/performance/reports/schedules-bulk-operations.md`
@@ -1508,7 +1562,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   ids is corrected.
 - [ ] T018-074 Real-browser e2e of schedule, batch and reset flows, keyboard only, WCAG AA, failure states
   — `tests/e2e/schedules-bulk-operations/` — SC-018-015 — FR-018-047.
-- [ ] T018-076 Barrier test: every run-driven transition (completion, failure, timer, wait timeout,
+- [x] T018-076 Barrier test: every run-driven transition (completion, failure, timer, wait timeout,
   deadline, terminal, handoff) against each aggregate path; `pg_locks` never shows a run-driven
   transaction on schedule, business-id, job, item, obligation or pending-reset rows —
   `tests/fault/schedules-bulk-operations/run_driven_locks.rs` — SC-018-016 — FR-018-007, FR-018-021,
@@ -1528,6 +1582,17 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   tracks the run fails it with "stage `a worker completes` did not finish within 60s", naming the transition that waited.
   Not covered: the wait timeout and the handoff transitions, and the rows of business ids and pending resets, which
   exist when US03 and US06 do.
+  *Rest done 2026-11-09 (D2086).* **Method:** an `ACCESS EXCLUSIVE` lock on every table of every aggregate (found by name, so that one added later is locked too; each is shown to refuse a
+  statement with `lock_not_available` after 300 ms), and every transition has to finish within 60 s (`within`, naming the stage): a transition that read or wrote one of those rows would wait and fail.
+  It is not a `pg_locks` observation of a run-driven transaction; `pg_locks` is used by the controls, to see a path wait for its own table. The two transitions of the wait timeout and the handoff were
+  in the suite already, with `business_ids` locked. The register of pending resets is now in the list: `a_source_that_a_pending_reset_waits_for_ends_without_touching_the_register` ends three sources, each with an
+  entry in `PENDING_SOURCE` (a worker completes the attempt, a worker fails it, its lease runs out and the source goes to review); the completion of an entry and the request of another do wait for
+  `run_resets`, and the claim of an identifier waits for `business_ids` (the controls). **The runs the aggregates name** (the first version drove runs that belong to no aggregate, so a read of
+  an aggregate table conditioned on the run's kind would not have run): `the_runs_a_schedule_started_…`, `the_target_of_an_item_of_a_batch_job_…` (six items, one for each run, selected and not applied) and
+  `the_run_a_cancel_other_schedule_owes_a_cancellation_…` (six debts) drive, under the locks, a completion, a failure, a lease that runs out, a deadline, a cancellation and a timer of runs of each kind.
+  Hand mutants: a read of `run_resets` and a read of `business_ids` in the transaction that persists every run transition turned all three first tests red naming the stage; a **conditional** read,
+  `schedules` when the run has a `schedule_id`, left the first test and the batch-item test green and turned the schedule and the debt tests red ("stage `Schedule: a worker completes` did not
+  finish within 60s"), restored. A conditional read for a batch item cannot be made without reading the batch table first, which every run would wait for. Gates on the tree with these changes (private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`): `integration_schedules_bulk_operations` 623 and `fault_schedules_bulk_operations` 99, `integration_platform_foundation` 104 and `integration_security_multitenancy` 126 (each also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`), `contract_observability_operations` 11, `fault_platform_foundation` 38, `e2e_platform_foundation` 42, the workspace without `sagat-tests` 2937; fmt, clippy `-D warnings`, `check-architecture.py` and its unit tests, the other checkers: clean.
 - [ ] T018-077 Feature 020/022 integration once they merge: every run creator through 022's T10 (schedule
   action, starts, with-start, batch rerun, rerun, reset), reset `CONCURRENCY_PERMIT_UNAVAILABLE`,
   test-tree refusals, restored rows skipped by 020 analytics, attribute fold on reset, `RUN_PURGED`
