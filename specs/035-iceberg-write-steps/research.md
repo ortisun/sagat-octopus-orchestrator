@@ -3497,3 +3497,15 @@ The other fixes were wording:
   lifecycle scenario `durable_provider_intents` (the pins of the old run go, a run with nothing but blob pins is found, a run that ended a moment ago keeps its pin and the release of
   another run does not touch it), the privilege audit (`DELETE` granted, `UPDATE` not), the roll-back of the grant (`the_release_of_the_lake_blob_pins_is_a_grant_and_rolls_back_as_one`) and
   four hand mutations (see the pull request).
+- **D035-149 — The canary test of the server's half of a lake write searches every table, the REST views, the refused answers and the log (T035-061; NFR-035-SEC).** **Decided by: delegate.**
+  `lake_canaries.rs` plants five canaries (the catalog's secret, the storage's secret, a value of the records, the location of a file, the text of a host error) and makes the calls a hostile
+  or careless runner can make with text in them: eleven receipts (a field the receipt does not have, three of them; text where the effect key, the branch, the mode, the outcome, the kind,
+  the row-level mode, a count or the snapshot belongs), a failure whose code is a secret, and a failure with a closed code and a message made of all of them. Then it searches **every base
+  table of the schema** (listed from the catalog of the database, so that a table a later feature adds is searched without anyone remembering it; each row as text and as the hex of its
+  bytes), the five REST views of both runs (`/runs/{id}` and its events, attempts, graph and telemetry), the answers to the refused calls and the log of the whole scenario at TRACE. The
+  other four classes are in no table, view, answer or log; the value of the records is where the run keeps its own input, and not in `audit_records`, `run_events` or
+  `event_outbox` (a search that finds it nowhere would be a search that cannot see, so finding it is asserted). A failed assertion names the surface and the class, never the text.
+  *Evidence that it can fail:* three leaks injected by hand and caught by this scenario alone (the other lake scenarios skipped for the run): the message of a failure logged, the output of a
+  completion logged at TRACE, and a receipt that tolerates a field it does not have. *Found:* nothing; the server's half was clean. *Not covered:* the host and the sandbox runner (other
+  processes, tested in `runners/lake/tests/`), the spans (they do not exist yet), and a leak into a table through a column the search reads as something other than its text (an encrypted
+  column holds no canary by design).
