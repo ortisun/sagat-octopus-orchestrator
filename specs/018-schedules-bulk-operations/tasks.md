@@ -1540,6 +1540,24 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   and 16 jobs, 32-way business-id claim, reset at 1k/20k events); adjust ceilings only from data —
   `tests/performance/schedules-bulk-operations/`, `tests/performance/reports/schedules-bulk-operations.md`
   — report with failures — NFR-018-005.
+  *Done 2026-11-09 (decisions D2106 to D2113, gaps G2043 to G2050); left unticked for the maintainer to tick after reading the report: the benchmark
+  files are not committed and its findings ask for decisions that this task does not take (D2112).* The target `perf_schedules_bulk_operations`
+  (`tests/performance/schedules-bulk-operations/`: `measure.rs`, `harness.rs`, `firing.rs`, `batch.rs`, `claim.rs`, `reset.rs`, `triggers.rs`,
+  `run.sh`, `summarize.py`) measures the engine's own passes over a real PostgreSQL as the runtime role, in a release build, with a database of
+  its own pinned by digest (`fsync` on): every scenario states its bounds, writes its numbers and fails when a bound does not hold; three
+  repetitions of each (51 in all, 30 of which broke a bound, on purpose). **Findings** (the report has the tables): one replica starts about 61
+  runs a second, so 10,000 schedules due together are late by 157 s at p95 (70 s with two replicas), and the round ceilings do not change it
+  (G2044); a lone batch job applies one item a second, not 20, because the loop rests its 1,000 ms poll when no job is due (13.4 a second with a
+  poll of 50 ms), one replica applies about 75 items a second in all and shares them fairly (G2043); the claim at 32-way costs 7% over a plain
+  start and gives exactly one run in 150 rounds; a reset of 5,000 events keeps its source row locked for 4.65 s, and replaying a long
+  journal is more than linear in it (G2046, G2047); the refusal at 20,000 events takes 46 ms and creates no run; replay equals projection in all
+  45 runs the resets made; 100,000 triggers take 21 to 27 minutes to reconcile (G2048) and the check the handover makes under its lock took
+  2.85 s at 10,000 triggers because of the plan it got (G2049); the default quota of 10,000 active runs stops a burst of 10,000 schedules
+  (G2045). **Evidence:** `run.sh` (the exact commands are in the report), `cargo test -p sagat-tests --test perf_schedules_bulk_operations --locked`:
+  4 passed, 13 ignored in 0.00 s (what a pull request runs); `scripts/select-test-targets.py` picks only that target for these files; `cargo fmt
+  --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `check-architecture.py`, `check-agent-config.py`,
+  `check-design-docs.py`: clean. No production file and no ceiling was changed. **Not done:** the selection of 100,000 runs, other tenants,
+  a second batch replica, the HTTP API, workers, a reset above 5,000 events (none is accepted), a quiet machine (G2050).
 - [ ] T018-073 Runbooks/docs (`docs/runbooks/{schedules,batch-operations,run-reset}.md`, cron section of
   `docs/runbooks/events.md`, entry-wait pattern, business-id privacy warning) — review + link check —
   FR-018-049.
