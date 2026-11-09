@@ -190,5 +190,110 @@ class ArchitectureRules(unittest.TestCase):
         self.assertIn("dependency cycle", out)
 
 
+# The lease row of a scheduler shard is a leaf lock (ADR-0050 decision 7, ADR-0020): a fence takes it FOR SHARE, the keeper FOR UPDATE
+# SKIP LOCKED and nothing else, and the keeper reads no run.
+KEEPER = """
+    async fn acquire() {
+        sqlx::query(
+            "WITH free AS ( \\
+                 SELECT shard FROM scheduler_shards \\
+                  WHERE expires_at <= clock_timestamp() ORDER BY shard FOR UPDATE SKIP LOCKED) \\
+             UPDATE scheduler_shards s SET owner = $1 FROM free WHERE s.shard = free.shard",
+        );
+        sqlx::query("SELECT shard FROM scheduler_shards");
+    }
+"""
+FENCE = """
+    pub async fn locked_scheduler_time_sql() {
+        sqlx::query("SELECT shard FROM scheduler_shards WHERE shard=$1 FOR SHARE");
+        sqlx::query("SELECT s.expires_at FROM scheduler_shards s");
+    }
+"""
+CHECK_FENCE = """
+    pub async fn check_fence() {
+        sqlx::query("SELECT shard FROM scheduler_shards WHERE shard = $1 FOR SHARE");
+    }
+"""
+
+
+def run_lease_check(files):
+    """The checker over a small PostgreSQL adapter tree made of `files` ({name: source}), with a valid dependency graph."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = pathlib.Path(tmp) / "src"
+        src.mkdir()
+        for name, source in files.items():
+            (src / name).write_text(source)
+        metadata = {
+            "workspace_root": "/r",
+            "workspace_members": ["d"],
+            "packages": [pkg("d", "crates/domain", [])],
+        }
+        meta = pathlib.Path(tmp) / "metadata.json"
+        meta.write_text(json.dumps(metadata))
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--metadata", str(meta), "--postgres-src", str(src)],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode, result.stdout
+
+
+def tree(keeper=KEEPER, execution=FENCE, schedules=CHECK_FENCE, **more):
+    return {"partitioning.rs": keeper, "execution.rs": execution, "schedules.rs": schedules, **more}
+
+
+class LeaseRowIsALeafLock(unittest.TestCase):
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("the lease row is a leaf lock", result.stdout)
+
+    def test_fences_shared_and_a_keeper_that_never_waits_pass(self):
+        code, out = run_lease_check(tree())
+        self.assertEqual(code, 0, out)
+
+    def test_a_fence_that_takes_the_row_for_update_is_refused(self):
+        # holds_shard turned into FOR UPDATE: it would wait for every other fence and for the keeper
+        code, out = run_lease_check(tree(execution=FENCE.replace("FOR SHARE", "FOR UPDATE")))
+        self.assertEqual(code, 1, out)
+        self.assertIn("belongs to partitioning.rs only", out)
+        self.assertIn("`locked_scheduler_time_sql` (execution.rs) has no `FOR SHARE` statement", out)
+
+    def test_check_fence_that_takes_the_row_for_no_key_update_is_refused(self):
+        code, out = run_lease_check(tree(schedules=CHECK_FENCE.replace("FOR SHARE", "FOR NO KEY UPDATE")))
+        self.assertEqual(code, 1, out)
+        self.assertIn("belongs to partitioning.rs only", out)
+
+    def test_a_keeper_statement_without_skip_locked_is_refused(self):
+        code, out = run_lease_check(tree(keeper=KEEPER.replace(" SKIP LOCKED", "")))
+        self.assertEqual(code, 1, out)
+        self.assertIn("without SKIP LOCKED", out)
+
+    def test_an_update_of_the_row_outside_the_keeper_is_refused(self):
+        other = 'fn renew() { sqlx::query("UPDATE scheduler_shards SET expires_at = now() WHERE shard = $1"); }'
+        code, out = run_lease_check(tree(**{"somewhere.rs": other}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("somewhere.rs:1", out)
+        self.assertIn("belongs to partitioning.rs only", out)
+
+    def test_a_keeper_that_reads_a_run_is_refused(self):
+        code, out = run_lease_check(tree(keeper=KEEPER + ' fn x() { sqlx::query("SELECT 1 FROM runs WHERE id = $1"); }'))
+        self.assertEqual(code, 1, out)
+        self.assertIn("names `runs`", out)
+
+    def test_comments_and_text_that_are_not_sql_do_not_trip_the_rule(self):
+        commented = KEEPER + "\n// a takeover waits: UPDATE scheduler_shards ... FOR UPDATE, the runs it fences\n/* FOR UPDATE scheduler_shards runs */\n"
+        code, out = run_lease_check(tree(keeper=commented, **{"other.rs": 'const A: &str = "a run, runs";'}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_names_a_function_that_is_gone_is_an_error_and_not_a_pass(self):
+        code, out = run_lease_check(tree(execution="pub async fn something_else() {}"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("`locked_scheduler_time_sql` (execution.rs) is named by the lease-row rule and is not there", out)
+        code, out = run_lease_check({"execution.rs": FENCE, "schedules.rs": CHECK_FENCE})
+        self.assertEqual(code, 1, out)
+        self.assertIn("partitioning.rs is named by the lease-row rule", out)
+
+
 if __name__ == "__main__":
     unittest.main()

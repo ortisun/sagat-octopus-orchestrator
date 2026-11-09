@@ -153,6 +153,8 @@ tenants left out per search, a limit that is stated (research G264) and is what 
   meanwhile: a timer is a row and fires late.
 - The fence adds one indexed read with a shared row lock to every scheduler action, and a shard held by an action in
   flight is taken at a later round. Both are measured in the report.
+- The lease row is a leaf lock (ADR-0050 decision 7): a fence takes it `FOR SHARE` and only the keeper takes it more strongly, `FOR UPDATE SKIP LOCKED`, so it can be in no lock cycle and where a fence is taken among
+  the other locks of a transaction is immaterial; `scripts/check-architecture.py` keeps it so.
 - Fairness changes the order in which a pass takes work and nothing else: every candidate is still applied under the
   run's lock and re-checked by the domain. A tenant that has the whole batch to itself still gets it.
 - The shard indexes are in addition to the old ones, so a database carries both until the old ones are dropped.
