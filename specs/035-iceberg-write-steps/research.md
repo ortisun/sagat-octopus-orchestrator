@@ -3377,8 +3377,11 @@ The other fixes were wording:
     ignored tests; CI selects a suite for the files it contains. Run the suites of the files you edit, and the whole of a suite that undoes migrations when you add one.
   - *Not done in this slice.* A SQL result as a source (G035-067); the container end to end (T035-062); the limits of G035-080 and G035-081.
 - **G035-080 — Pins of lake blobs are never deleted.** `step_lease_blobs` rows go with their run, and nothing purges a run, so up to 32 rows per lake attempt that names blobs stay for
-  ever (the credential pins of a lake or SQL attempt do the same), and the rollback of the migration that makes the table stays closed until an operator deletes them. *Exit condition:*
-  the retention of runs (or of their pins) when it exists; the `down` guard can then let the pins of finished runs through.
+  ever, and the rollback of the migration that makes the table stays closed until an operator deletes them. *Exit condition:* the retention of runs (or of their pins) when it exists; the
+  `down` guard can then let the pins of finished runs through. **Corrected (2026-11-09, architecture review):** the claim that "the credential pins of a lake or SQL attempt do the same" was wrong:
+  `secret_cleanup.rs` deletes the rows of `step_database_credentials` 24 hours after their run is terminal, so the blob pins can be released by the same job, and no retention of runs is needed.
+  What stops it is the grant (`SELECT` and `INSERT` only, by my own review fix) and the job not knowing the table; the fix is a migration that grants `DELETE`, a release step in the job, and the
+  `down` guard needing only the pins of runs that are not yet released.
 - **G035-081 — The reads of a lake attempt are not limited, and a stream outlives its lease.** A compromised lake runner with a live lease can call `ReadBlob` as often as it likes: each
   call takes the run's lock and the namespace's secrets lock (the one every heartbeat of a managed attempt already takes) and a refused one writes an audit transaction (one record,
   collapsed). And the lease is checked when a read starts, so a download in flight goes on after a cancel or a lapse, for up to the transfer timeout; that is the ordinary `ReadBlob`
@@ -3454,3 +3457,32 @@ The other fixes were wording:
   reading of the receipt. 6 hand mutations killed; a seventh, a write of no record audited as a commit, survives by construction (such a receipt has no snapshot and a snapshot is required).
   (5) **Not done here:** the audit of an unknown outcome as such (the operator's decision is the audited event, D035-069, and waits for O035-007), of a revert (T035-105), and the spans,
   the server-side metrics and the canaries of T035-061.
+- **D035-147 — What the architecture review of the merged lake stack found, and what was done with it (2026-11-09; T035-127 asks for this review at the end of the feature; this is its first pass).**
+  **Decided by: delegate.** An independent, read-only `architecture-reviewer` read the merged stack against the constitution, `scripts/check-architecture.py`, ADR-0079 and this record. It found no layering
+  violation the checker would catch, no transaction-boundary defect (the resolve, the lease with its pins, the completion with its audit are each one transaction, and the second transaction of the resolve repeats
+  the fence and compares what the first read) and a sound migration set (additive, grants, a guarded `down` with the run lock first, a classification entry, a test). What it found, hardest to change first:
+  (1) **ADR-0079 is still `Proposed` and its fitness function did not exist**, though the sandbox-runner lake server and the client of its `/v1` wire are merged and depended on. Rule 2 (`sagat-database-runner` and
+  `sagat-infra-lake` reach neither `bollard` nor `sagat-infra-sandbox`) is true today and nothing kept it true, against rule 21 of `AGENTS.md`. **Built:** `check-architecture.py` follows the dependencies of the two
+  packages through every workspace crate (normal and build dependencies count, a dev dependency does not) and names the way in; a rule that names a package the workspace no longer has is an error and not a pass.
+  5 tests of the checker, red first. The second half of the ADR's list (the compose files and the Helm templates mount no engine socket) is not built, and the acceptance of the ADR stays the owner's.
+  (2) **The wire contracts have three homes and the application knows another layer's JSON**: the receipt port returns canonical bytes and `committed_facts` (D035-146, mine) reads them again in the application; the lease
+  document is built with `json!` in the application and read by a strict reader in `sagat-infra-lake`, with the schema string and the size bound written twice and tied only by a test. The receipt is fixed by a
+  typed result of the port (the next change); the lease document is **G035-084**. (3) **Two independent `SAGAT_LAKE_ENABLED` switches** (control plane and execution engine), with no authority in PostgreSQL and no
+  check that they agree: **G035-085**. (4) **G035-080 was wrong about the credential pins** (corrected above) and the blob pins can be released by the same job: the next change after the receipt. (5) **The ceilings of a lake attempt
+  are constants in the adapter, and saturation is audited as a denial**: **G035-086**. (6) **`serve` and `serve_lake` are one loop twice**, the protocol minor is a literal in two places and a `>= 6` in SQL, and the attempts
+  metric has no profile label: **G035-087**. (7) **D035-069 says an unknown-outcome retry needs `saga:override` and the code refuses the retry**: already G035-077 and O035-007, and with G035-078 and G035-079 they
+  need one `worker.proto` minor, so they are to be decided together.
+- **G035-084 — The lease document has two homes.** `lake_input.rs` (application) builds it with `json!`; `protocol/attempt_input.rs` (infra-lake) reads it strictly; `MAX_INPUT_BYTES` and the schema string are written in both
+  and `tests/contract/iceberg-writes/attempt_input_builder.rs` is what ties them. A second version of the document is a change in three places. *Exit condition:* the builder behind a port whose adapter lives beside the
+  reader, or the constants and the document type in one crate that both link.
+- **G035-085 — The lake switch is read twice and nothing says they agree.** The control plane (`apps/control-plane/src/lib.rs`) and the execution engine that serves the worker gRPC (`apps/execution-engine/src/lib.rs`) each read
+  `SAGAT_LAKE_ENABLED`. Control plane on and engine off: a run is admitted and every claim is refused (the step waits, READY, and the refusal is audited once for the run, and counted); the reverse is G035-076. The wait
+  is the brake of D035-137, so failing the step would be wrong, but nothing tells an operator that the two disagree. *Exit condition:* the engine states its switch where the control plane can read it (a row, in the claim
+  transaction, or a readiness check), or an alert on lake steps that wait on a refused claim for longer than a threshold.
+- **G035-086 — The ceilings of lake attempts are constants in the adapter, and a full namespace is audited as a denial.** `LAKE_TENANT_CONCURRENCY` (32) and `LAKE_NAMESPACE_CONCURRENCY` (8) are in
+  `infra-postgres/src/execution/database.rs`, where the SQL path reads the policy (G035-072, G035-074). `database_admission` answers `false` for a full namespace as for a refusal, and the claim loop counts it as
+  `database_claims_total{outcome="refused"}` and audits `database.denied`: back-pressure is labelled a security denial. *Exit condition:* the quota rows of T035-055, and a closed reason on the answer so that
+  saturation is counted and not audited as a denial.
+- **G035-087 — The lake runner's loop and its protocol are written twice.** `serve` and `serve_lake` in `apps/database-runner/src/runner.rs` are the same register, poll and spawn loop (the comment says so); `"1.6"` is
+  a literal in both, and `database_owner` in SQL says `accepted_protocol_minor >= 6` instead of reading `DATABASE_PROTOCOL_MINOR`; `database_runner_attempts_total` has no `profile` label, so an operator cannot separate
+  SQL from lake. *Exit condition:* one loop with the profile as a parameter, the constant used where the literal is, and the label (a reviewed change of the metric's vocabulary).
