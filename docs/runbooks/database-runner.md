@@ -134,7 +134,9 @@ A lake runner that has a probe to run (a runner of the version that serves the p
 and its binding covers both: `"activities": ["sagat.database.iceberg.write", "sagat.database.lake.probe"]`. **Roll it out in this order: the
 server, then the binding, then the runner.** A step is handed only to a session that offers its own activity, so a runner that offers the
 write alone is never handed a probe, and a probe waits for a runner that offers it, until the 30 seconds of its run are over (it ends as the run does when none is registered). A probe has a budget
-of its own, one in flight in a namespace and four in a tenant, so it neither waits for a write nor makes one wait.
+of its own, one in flight in a namespace and four in a tenant, so it neither waits for a write nor makes one wait. **The REST start refuses a second probe of the
+same connection and revision with a `409` while one is in flight** (a retry of the key that started it is that run), and a probe that is never leased ends at its
+30 seconds like any run, by the sweep of the scheduler: a connection whose probe stays in flight is a scheduler that is not running.
 
 A binding made without `profile` is `database`, which is what every SQL runner has always been; a replacement that leaves
 `profile` out keeps the one in force, and an identity has **one profile in the whole tenant**: binding it with another profile in a second

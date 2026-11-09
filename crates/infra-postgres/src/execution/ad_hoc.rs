@@ -1,6 +1,7 @@
 //! Retain or reuse one immutable definition inside the run admission transaction.
 use super::*;
 use sagat_application::runs::{ConnectionProbe, RetainedDefinition};
+use sagat_domain::database::ConnectionId;
 
 pub(super) async fn retain(
     conn: &mut PgConnection,
@@ -49,6 +50,60 @@ pub(super) async fn private_definition(
 ) -> Result<Option<Vec<u8>>, StoreError> {
     sqlx::query_scalar("SELECT v.document FROM runs r JOIN private_execution_definitions d ON d.tenant_id=r.tenant_id AND d.namespace_id=r.namespace_id AND d.workflow_id=r.workflow_id AND d.version_id=r.workflow_version_id AND d.actor=r.started_by JOIN workflow_versions v ON v.tenant_id=d.tenant_id AND v.id=d.version_id WHERE r.tenant_id=$1 AND r.id=$2 AND r.started_by=$3 AND r.origin IS NOT NULL")
         .bind(tenant.as_uuid()).bind(run.as_uuid()).bind(actor).fetch_optional(&store.pool).await.map_err(store_error)
+}
+
+/// Whether the active connection `name` of the namespace, at `revision` (the current one when none), is an Apache Iceberg connection. A
+/// plain read: nothing is locked, and every answer but "it is one" is `false`, so that a missing, paused or deleted connection, a revision
+/// that is not there, another tenant's and a SQL one are the same answer.
+pub(super) async fn is_lake_connection(
+    store: &PgRunStore,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    name: &Slug,
+    revision: Option<u32>,
+) -> Result<bool, StoreError> {
+    let Ok(revision) = revision.map(i32::try_from).transpose() else {
+        return Ok(false);
+    };
+    let config: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT r.config FROM database_connections c JOIN database_connection_revisions r ON r.tenant_id=c.tenant_id AND r.namespace_id=c.namespace_id AND r.connection_id=c.id WHERE c.tenant_id=$1 AND c.namespace_id=$2 AND c.name=$3 AND c.status='ACTIVE' AND r.revision=coalesce($4,c.current_revision)")
+        .bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(name.as_str()).bind(revision)
+        .fetch_optional(&store.pool).await.map_err(store_error)?;
+    let Some(config) = config else {
+        return Ok(false);
+    };
+    Ok(crate::database::config_from(&config)?
+        .as_iceberg()
+        .is_some())
+}
+
+/// A probe of an Apache Iceberg connection is the only one in flight for its connection and revision (D035-150): each costs a container,
+/// two secret reads and a call to the customer's catalog. Called inside the transaction that creates the run, **after admission**, which
+/// takes the namespace's lock of secrets for the rest of the transaction (every start of a managed database step in it does), **and after
+/// the active-run quota of the namespace was locked** (every creation in it takes that lock), so two starts of the same probe cannot both
+/// see none. Either lock alone would do, which is why a hand mutation that moved the check above the quota lock was not caught: it is
+/// an equivalent one. The check runs before the run's own pin is written, so only another run can be found. A probe of a SQL connection is
+/// not held to this.
+///
+/// # Errors
+/// `StateConflict` when another probe of the same connection and revision has not ended.
+pub(super) async fn ensure_no_probe_in_flight(
+    conn: &mut PgConnection,
+    info: &RunInfo,
+    pins: &[(NodeId, ConnectionId, u32)],
+) -> Result<(), StoreError> {
+    for (_, connection, revision) in pins {
+        let in_flight: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM runs r JOIN run_database_connections p ON p.tenant_id=r.tenant_id AND p.namespace_id=r.namespace_id AND p.run_id=r.id WHERE r.tenant_id=$1 AND r.namespace_id=$2 AND r.origin='CONNECTION_PROBE' AND r.finished_at IS NULL AND p.connection_id=$3 AND p.revision=$4)")
+            .bind(info.tenant_id.as_uuid()).bind(info.namespace_id.as_uuid()).bind(connection.as_uuid()).bind(i64::from(*revision))
+            .fetch_one(&mut *conn).await.map_err(store_error)?;
+        if in_flight {
+            return Err(StoreError::StateConflict(
+                "a probe of this connection and revision is in flight",
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(super) async fn latest_probe(

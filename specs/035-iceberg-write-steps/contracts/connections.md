@@ -16,6 +16,18 @@ their shape and read `egressCeiling` as `internal`.
 - `ConnectionProbeResult.checks[]`: `{check, outcome, code?}` with checks `CATALOG_AUTH`,
   `WAREHOUSE`, `STORAGE_ACCESS`, `CONDITIONAL_CREATE`, `TABLE_DEDUPLICATION`, `DATABASE_AUTH`; outcome
   `PASSED` | `FAILED` | `SKIPPED`; codes from [errors.md](errors.md).
+- **What `POST …/connections/{name}/probe` does for an Iceberg connection** (D035-150, built in slice S6c): the kind of the connection **at the revision
+  asked for** (the current one when none is) chooses the probe, so one endpoint serves both, and a connection that is missing, paused, deleted,
+  another tenant's or of a kind a probe does not test is answered as it has always been (the fixed `SELECT 1`, refused by admission). The start is
+  authorised and admitted as any ad hoc start, and it is refused as one when `lake.enabled` is off (otherwise the probe would wait its 30 seconds for
+  a runner that is not there). **At most one probe of an Iceberg connection is in flight for a connection and a revision:** another start is a
+  `409` (`STATE_CONFLICT`, "a probe of this connection and revision is in flight") and makes no run, a revision is its own (another revision starts
+  while this one is in flight), and a replay of the `Idempotency-Key` that started the probe is that run and not a conflict. A SQL probe is not held
+  to this, as it never was. The probe waits for a runner that offers `sagat.database.lake.probe`, and has the budget of its own (one in flight in a
+  namespace, four in a tenant) at the claim; the answer is read with `GET …/probe` as above. **The rule is against duplicates and not the bound of
+  the cost:** a revision is its own key, so one probe of each revision of a connection may be in flight, and the cost of probes is bounded by the claim
+  budget and the active-run quota. At the active-run limit the start is refused for the limit before the conflict is looked at, and a probe that
+  ended, in any way, holds nothing.
 - **What a reader of `GET …/connections/{name}/probe` sees for an Iceberg connection** (D035-150, built in slice S4b; `DatabaseConnectionProbe`
   in the OpenAPI): `checks[]` beside the `failureCode` every reader already had. A failed check is the answer and not a fault of the platform, so
   the run of the probe is `SUCCEEDED`; `run.status` says that **the probe ran**, and what it found is `failureCode` and `checks[]`.

@@ -36,7 +36,7 @@ async fn bind(p: &Platform, ns: &str, sub: &str, activities: &[&str], profile: &
     assert_eq!(status, 200, "{sub}: {body}");
 }
 
-/// A probe started, leased to `probing`, resolved and completed with a result of these checks: the run it made.
+/// A probe of `probe-warehouse` started, leased to `probing`, resolved and completed with a result of these checks: the run it made.
 async fn ended(
     runs: &super::lake_probe_start::Runs,
     admin: &sagat_domain::identity::Principal,
@@ -46,14 +46,33 @@ async fn ended(
     key: &str,
     checks: Vec<serde_json::Value>,
 ) -> sagat_domain::execution::RunId {
+    ended_on(
+        runs,
+        admin,
+        ctx,
+        namespace,
+        probing,
+        "probe-warehouse",
+        key,
+        checks,
+    )
+    .await
+}
+
+/// As [`ended`], for the connection `connection`.
+#[allow(clippy::too_many_arguments)]
+async fn ended_on(
+    runs: &super::lake_probe_start::Runs,
+    admin: &sagat_domain::identity::Principal,
+    ctx: &sagat_application::identity::RequestContext,
+    namespace: NamespaceId,
+    probing: &mut Worker<'_>,
+    connection: &str,
+    key: &str,
+    checks: Vec<serde_json::Value>,
+) -> sagat_domain::execution::RunId {
     let started = runs
-        .start_lake_probe(
-            admin,
-            namespace,
-            &reference("probe-warehouse", None),
-            key,
-            ctx,
-        )
+        .start_lake_probe(admin, namespace, &reference(connection, None), key, ctx)
         .await
         .expect("a probe starts");
     let lease = probing.one_task().await;
@@ -68,7 +87,7 @@ async fn ended(
         .latest_connection_probe(
             admin,
             namespace,
-            &sagat_domain::identity::Slug::parse("probe-warehouse").expect("a slug"),
+            &sagat_domain::identity::Slug::parse(connection).expect("a slug"),
             ctx,
         )
         .await
@@ -79,7 +98,7 @@ async fn ended(
         running.failure_code.is_none() && running.result.is_none(),
         "a probe that has not ended says nothing yet"
     );
-    let result = json!({"kind": "probe", "connection": {"name": "probe-warehouse", "revision": 1}, "checks": checks});
+    let result = json!({"kind": "probe", "connection": {"name": connection, "revision": 1}, "checks": checks});
     probing
         .client
         .complete_step(probing.req(super::lake_canaries::completion(&lease, &result, key)))
@@ -203,12 +222,14 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         "each secret of the connection is pinned to the attempt under its role"
     );
 
-    // --- The probe has a budget of its own: with one in flight, a second waits, and a write is not made to wait by it.
+    // --- The probe has a budget of its own: with one in flight, a second waits, and a write is not made to wait by it. The second is of
+    // another connection: a connection and a revision have at most one probe in flight (the start refuses another), and the budget is
+    // about the namespace.
     let second = runs
         .start_lake_probe(
             &admin,
             namespace,
-            &reference("probe-warehouse", None),
+            &reference("probe-second", None),
             "lake-probe-lease-0002",
             &ctx,
         )
@@ -412,7 +433,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
     assert_eq!(next.activity_name, ICEBERG_PROBE_ACTIVITY);
     assert_eq!(next.run_id, second.info.run_id.to_string());
     // A probe that never asked for the credentials of the connection has tested nothing: its result is refused until it has resolved them.
-    let unresolved = json!({"kind": "probe", "connection": {"name": "probe-warehouse", "revision": 1}, "checks": [
+    let unresolved = json!({"kind": "probe", "connection": {"name": "probe-second", "revision": 1}, "checks": [
         {"check": "CATALOG_AUTH", "outcome": "PASSED"},
         {"check": "WAREHOUSE", "outcome": "PASSED"},
         {"check": "STORAGE_ACCESS", "outcome": "PASSED"},
@@ -448,9 +469,9 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
     assert_eq!(p.status(&second.info.run_id.to_string()).await, "FAILED");
 
     // --- What a reader of the latest probe of the connection sees. A probe that the platform failed shows the code of its step and no checks.
-    let name = sagat_domain::identity::Slug::parse("probe-warehouse").expect("a slug");
+    let second_name = sagat_domain::identity::Slug::parse("probe-second").expect("a slug");
     let latest = runs
-        .latest_connection_probe(&admin, namespace, &name, &ctx)
+        .latest_connection_probe(&admin, namespace, &second_name, &ctx)
         .await
         .expect("the latest probe")
         .expect("there is one");
@@ -465,7 +486,30 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         "what the store kept is not passed on"
     );
 
+    // A probe that ended in failure holds nothing: the next probe of its connection and revision starts at once (it would be a conflict if the
+    // failed one still counted as in flight), is leased and completes.
+    let again = ended_on(
+        &runs,
+        &admin,
+        &ctx,
+        namespace,
+        &mut probing,
+        "probe-second",
+        "lake-probe-lease-0005",
+        vec![
+            json!({"check": "CATALOG_AUTH", "outcome": "PASSED"}),
+            json!({"check": "WAREHOUSE", "outcome": "PASSED"}),
+            json!({"check": "STORAGE_ACCESS", "outcome": "PASSED"}),
+        ],
+    )
+    .await;
+    assert_ne!(
+        again, second.info.run_id,
+        "the probe that follows a failed one is a probe of its own"
+    );
+
     // A probe whose checks all passed shows no failure and the three checks.
+    let name = sagat_domain::identity::Slug::parse("probe-warehouse").expect("a slug");
     let ok = |outcome: &str, code: Option<&str>, check: &str| match code {
         Some(code) => json!({"check": check, "outcome": outcome, "code": code}),
         None => json!({"check": check, "outcome": outcome}),

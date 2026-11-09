@@ -928,6 +928,10 @@ test to every catalog and storage type.
   `egressCeiling` is open on both kinds) and the reason `CREDENTIAL_IN_URI` with the other thirteen, each with advice.
   Not done: `GET /database-drivers` listing `iceberg` (with the probe, T035-045) and `UNKNOWN_CONNECTION_KIND`, which
   belongs to the publication that meets a connection of a kind it cannot use.
+
+  *2026-11-09, slice S6c (the start of the probe; this task stays unticked for the listing):* `POST …/connections/{name}/probe` starts the probe of an Iceberg connection (chosen by the kind at the revision asked for), at most one
+  in flight for a connection and a revision (`409`), a retry of the key is the run; `integration_database_connections` 7 (also as the runtime role), 16 hand mutations (13 killed, 3 equivalent), reviewed (research.md, S6c note,
+  G035-093). **Not done:** `GET /database-drivers` listing `iceberg`.
 - [x] T035-044 [US01] Resolve the Iceberg connection. `ResolvedDatabase.iceberg` is built in
   `crates/api-grpc/src/service.rs` and `crates/application/src/worker/database.rs`. `catalogSecret` and
   `storageSecret` are each compared, pinned and audited separately (017 two-phase), and only the lake
