@@ -3289,3 +3289,96 @@ The other fixes were wording:
   blob, for instance `{"databaseResult": {"blob": "<id>"}}`), or the server turns it into an NDJSON blob when it builds the input (then the
   runner never sees the source). *Exit condition:* decided with the conversion (G035-059) and T035-056; the corpus case "a database result is a
   source this runner does not serve" becomes an accepted case and a refused one.
+- **D035-144 — A lake lease reads exactly the blobs its document names: the catalog's word, a pin per attempt, and a `ReadBlob` that asks the pin (slice R of D035-130; T035-056).**
+  **Decided by: delegate**. Designed by an independent read-only pass over the code (2026-11-08), whose findings are the ground of this record; it is a trust boundary,
+  so the steps below each carry their own tests and the last one an independent review before it is merged.
+  - *What was found.* A blob source failed the lease with `DATABASE_CAPABILITY_UNAVAILABLE` (D035-138) and a managed lease is refused `ReadBlob` altogether
+    (`check_blob_access`, `worker.rs`): the refusal covers SQL and lake, read and write. The scope of a read is the tenant and the namespace (`BlobAccess`), and
+    `BlobService::read` checks no run, so the lake gate has to be stricter than the ordinary one: an ordinary read also serves an `Uploaded` step output and a committed run
+    input. The lease transaction holds the tenant's advisory lock and cannot do object I/O or ask the catalog through its own pool (`BlobCatalog::find`), which is why
+    the lookup is a method of the run's transaction. A 017 result is the SQL step's output: inline JSON up to 256 KiB and a blob up to 4 MiB above that, so it stays
+    G035-067 and is not part of this step.
+  - *Decided.* (1) **The descriptor in the workflow value proves nothing.** The `blobs` expression names one to 32 descriptors (a list, or a lone descriptor read as a
+    list of one), each once; the catalog says what the run's own steps committed (`RunTx::lake_record_blobs`: tenant, namespace, this run as the owner of a
+    `STEP_OUTPUT`, `COMMITTED`), and the lease takes the blob only when the descriptor of the data equals the catalog's in size, digest and media type. The media type of
+    the catalog decides the format (`application/x-ndjson`, `application/vnd.apache.parquet`, nothing else), and the sizes together are at most 2 GiB (plan.md,
+    summed without wrapping; the runner holds the same bound while it streams). Every case that is not the run's (another run, another namespace, another tenant, a run
+    input, an upload not committed, a blob being deleted, an id that does not exist) answers the same, nothing, so the answer says nothing about what exists. (2) **The
+    failure codes are the closed ones that exist, no new code:** a blob the catalog does not vouch for is `DATABASE_RESULT_UNAVAILABLE`, a shape the step does not say
+    or a media type that is not a record file is `DATABASE_CONFIGURATION_INVALID`, a set over the bounds is `ICEBERG_LIMIT_EXCEEDED`; all permanent, as the data of a run does
+    not change. (3) **Pin, do not re-derive.** `step_lease_blobs` (migration `20270111000000_lake_blob_pins`) holds one immutable row for each blob the lease named,
+    keyed by the attempt and the generation it granted, written by the lease transaction from the catalog's word and not from the caller's list, all or none; `ReadBlob`
+    will be allowed a blob when a row names it for the exact fence of the request, so the document and the allow-list cannot disagree, a lapsed, retried or replaced
+    attempt finds none, and the check is one indexed read where re-deriving would load the run's data for each of up to 32 reads. The foreign key to the blob is `RESTRICT`
+    (no sweep or retention removes bytes a live attempt may read) and `down` refuses while any pin exists.
+  - *Defaults taken, none of them product decisions.* A lone descriptor is a list of one; a blob of the run's input is not a record source of a lake write (it is not the
+    output of a step, and the contract says "committed by earlier steps of the same run"); the classification of a blob's content is the flat `pii` the egress check
+    already gives every blob field (FR-016-015: the bytes are never inspected, so a finer level cannot be proven, and this record does not pretend it can).
+  - *Done in this slice so far (each its own commit, tests first).* The pure admission (`named_records`, `lake_lease_document`, 16 tests in the file, 12 hand mutations killed; two
+    checks of `named_records` are repeated by the document builder, so they have a test of their own to be killed by) and the catalog's word (`lake_lease_facts` beside
+    it: `lake_record_blobs`, one scenario over every kind of row that is not the run's, 6 mutations killed; the tenant predicate survives by construction, because the
+    foreign key of `blobs` ties a run to its tenant and no row can exist that only that predicate excludes). The pin table and its two methods (`pin_lake_blobs`,
+    `lake_blob_pinned`): the roll-back test was written after the migration (the scenario of the pins was written first and seen failing against a stub that accepted everything);
+    8 hand mutations killed (the attempt, the generation and the node of the check, the all-or-none list, the repeated pin, the `RESTRICT` of the foreign key, the immutability
+    trigger and the guard of `down`). The three upgrade tests that pin the schema boundary moved to the new stamp.
+  - *The gate (done, test first).* `WorkerService::check_blob_read(principal, task, blob, trace)` replaces `check_lease` in the `ReadBlob` handler, so the check names the blob and
+    runs **before** the store is asked about it. For an ordinary step nothing changes. A managed step is still refused everything except one door: a **lake** attempt reading a blob
+    the lease of exactly its attempt and generation pinned; the check that names no blob, the upload and every SQL step stay `NotAllowed`. The lake read is held to the stricter fence
+    of a report (`attempt_authority_fence`: a run told to stop, a cancel requested or a finished run is given nothing more) on top of the lease, the binding and the owner of the
+    session that the ordinary check already makes. A blob the pin does not name is `NotFound`, the same answer as one that does not exist (another run, a run's unnamed blob, an id
+    that was never made), and **the refusal is audited once for the run, without naming the blob** (`database.denied`, one constant reason: an identical event is recorded once, so a
+    runner that tries one blob after another cannot fill the trail; the test sees six refusals of three blobs written as one record). A failure to write the refusal down is logged
+    and the answer is still `NotFound`, as for a denied registration. The scenario (`lake_read.rs`, application level, real store and worker service) covers: the named blob read and
+    audited once however often; the unnamed, another run's and a missing blob; the lease check and the upload; a wrong attempt, generation and token; a sibling lake runner and an
+    ordinary worker (`NotBound`); the attempt that reported, then the retry whose pin is not its own, then its own pin; a lapsed lease; a cancelled run; and a SQL attempt naming any blob
+    (`executor.rs`). 9 hand mutations: 7 killed (the pin check, the fence of the pin, the stricter fence, SQL allowed, the answer, the audit, and a distinct audit per refusal, whose
+    first pattern did not test that and was corrected). **Two survive by construction:** "a lake attempt may upload" (`check_blob_upload` never carries a blob, so the `false` of the arm is a second
+    line and not the first) and "the handler uses the old check" (the scenario calls the service, not the gRPC handler; the wire test of the next step is the one that holds it).
+  - *The lease (done, test first).* `lake_lease_input` takes the names from the source, asks the catalog in the same transaction and builds the document from its word; the poll loop
+    pins the blobs to the fence of the lease it just granted (`task.fence`), after `lease_one` and before the transaction commits, so a lease that is not granted pins nothing and a
+    granted one never lacks its pins. The scenario (`lake_blob_lease.rs`; the blob rows are written between the start of a run and its lease, since a run's input is fixed at the
+    start and a step commits the blob afterwards; the connection has the `pii` ceiling every blob needs, which takes the reveal grant for as long as it is written) leases a run of two
+    blobs (the order, the formats read back by the runner's own reader, the pins of the attempt, a read of each and the refusal of the run's unnamed blob) and fails for good, leasing
+    nothing and pinning nothing, a descriptor of another run's blob, one that lies about the size, a blob that is not a file of records, two gibibytes and a byte, and thirty-three
+    blobs, each with its closed code; a retry is a lease of its own, with pins of its own, and the first attempt's token reads nothing. 6 hand mutations, all killed (the catalog not
+    asked, the pin missing, for the previous attempt, for another generation and of an empty list, and the document made from the run's data: that last one is caught by the pin's own
+    check, a second line, which refuses what the catalog does not vouch for and fails the poll, so a forged descriptor could not be leased even if the document trusted it).
+  - *What two independent reviews found (2026-11-08, security and correctness, read-only, given the diff and the record and not my conclusions) and what was done.* Neither found a
+    way for another run, namespace or tenant, a run input, an upload not committed or a blob being deleted to be read; for a read to outlive the lease at the next request; for the
+    answer or its audit to tell what exists or to fill the trail; or for a pin to be written that the catalog does not vouch for. They verified, by reading, that the pin and the
+    read use the same fence with no off-by-one, that a lease without its pins or a pin without its lease cannot be committed (the pin sits in the transaction of the lease, so a
+    failure of it rolls back the run's batch and no other run's), that no state change of a committed blob exists between the lookup and the pin, that the sums cannot wrap, and that
+    an ordinary step's `ReadBlob` is exactly what it was. What they found, all low, and what was done with each: (1) *the migration's comment was wrong and its `down` can never be
+    satisfied*: pins go with their run and nothing purges a run, so once a lake step that names blobs was leased the rollback is closed. The text now says so and the guard's error
+    carries the operator's way out (delete the pins of attempts that are over, as the owner: they authorize nothing and the reads are in the audit trail); the guard stays strict, as
+    for the credential pins; **G035-080**. (2) *`DELETE` was granted to the runtime role and nothing deletes a pin*: dropped, and a test holds `SELECT` and `INSERT` granted and
+    `UPDATE` and `DELETE` not (two mutations). (3) *the refusals of the pin's constraints were asserted as "an error"*: they are pinned to their SQLSTATE now (`23514`, `23503`). (4)
+    *each lake read took the namespace's secrets lock and the run's lock, and the gate repeated the binding, owner and lease checks it had just made*: the repeat is gone (the read
+    keeps what a report is held to beyond them: a cancel of the step, a stop reason, a finished run); a limit on refused reads per attempt is **G035-081**. (5) *two comments claimed
+    more than their assertions*: the 33-blob case does hold the order (the store would refuse a list of 33 itself and fail the poll, so the poll that must not fail is the proof) and
+    its comment now says so; the assertion about the first attempt's token no longer claims to prove that the pin is keyed by the attempt (`lake_read.rs` does). (6) *a blob the run's
+    child committed is not this run's*: it fails as unavailable; "earlier steps" is enforced by what the run's data holds, since an expression can name only an output that
+    exists. Of the three conditions a read is held to beyond the lease (the cancel of the step, the stop reason of the run, a finished run), **the three mutations that drop one each survive**:
+    a cancel sets both the cancel of the step and the stop reason, so either refuses it alone (dropping both is killed), and a finished run has no live lease for the checks before to
+    accept. They are kept because a report is held to the same three, and the survivors are the price of two conditions that overlap, not a path that no test reaches.
+  - *The wire (done, after #169 gave the harness).* `lake_blob_grpc.rs`: a real control plane, real PostgreSQL, a blob store holding the bytes, the REST API that writes the `pii`
+    connection (the administrator holds the reveal grant for as long as it takes) and publishes and starts the run, and a gRPC client as the lake runner. The lease names the blob; `ReadBlob`
+    returns its header and its bytes as the catalog and the store hold them; a blob of the same run with a row and bytes that the lease did not name, one whose object is gone and an id that
+    was never made are all `NOT_FOUND` with the same words (the object that is gone proves that the decision comes before the store, which would say `INTERNAL`: `BlobReadError::Lost`, read from `blobs.rs` and not run); the upload is shut. The
+    mutation that makes the handler use the old check, which survived the application-level scenario, is killed here. The order of the check and the store is held by the lost object
+    and was not mutation-tested (the handler cannot be reordered without the check's own answer).
+  - *What CI found, and I had not (2026-11-09).* The rollback of the pins dropped a table with a foreign key to `runs` without taking the run lock first, as the other rollbacks of tables
+    that hang from a run do (`leaf_success_certification`, `scoped_finish_binding`): a lease holds its run and then writes the pins, so a rollback that took the pins first and the run after
+    could cross it, and `integration_workflow_primitives::leaf_certification::downgrade_waits_on_actual_own_run_prefix_before_retained_fact_check` (which waits for the first rollback that
+    blocks on a run) timed out. The first fix, the lock after a long comment, was not enough: that test reads the **first 1024 bytes** of the waiting statement from `pg_stat_activity`, so the
+    lock statements are the first lines of the file now. I had not run that suite because I had touched three of its files (the stamp of the schema boundary) and took it for a suite of
+    ignored tests; CI selects a suite for the files it contains. Run the suites of the files you edit, and the whole of a suite that undoes migrations when you add one.
+  - *Not done in this slice.* A SQL result as a source (G035-067); the container end to end (T035-062); the limits of G035-080 and G035-081.
+- **G035-080 — Pins of lake blobs are never deleted.** `step_lease_blobs` rows go with their run, and nothing purges a run, so up to 32 rows per lake attempt that names blobs stay for
+  ever (the credential pins of a lake or SQL attempt do the same), and the rollback of the migration that makes the table stays closed until an operator deletes them. *Exit condition:*
+  the retention of runs (or of their pins) when it exists; the `down` guard can then let the pins of finished runs through.
+- **G035-081 — The reads of a lake attempt are not limited, and a stream outlives its lease.** A compromised lake runner with a live lease can call `ReadBlob` as often as it likes: each
+  call takes the run's lock and the namespace's secrets lock (the one every heartbeat of a managed attempt already takes) and a refused one writes an audit transaction (one record,
+  collapsed). And the lease is checked when a read starts, so a download in flight goes on after a cancel or a lapse, for up to the transfer timeout; that is the ordinary `ReadBlob`
+  too. *Exit condition:* a budget of refused reads per attempt (after N, answer as stale without a write), and cutting the stream when the lease ends, with the transfer limits of
+  the blob service.

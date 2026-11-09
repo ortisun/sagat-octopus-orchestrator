@@ -211,6 +211,108 @@ impl PgRunTx {
         })
     }
 
+    pub(super) async fn lake_blob_descriptors(
+        &mut self,
+        ids: &[sagat_domain::blobs::BlobId],
+    ) -> Result<Vec<sagat_domain::blobs::BlobDescriptor>, StoreError> {
+        // The caller holds the ceiling already; the store does not trust it with an unbounded list.
+        if ids.len() > sagat_domain::database::MAX_RECORD_BLOBS {
+            return Err(StoreError::DatabaseLimit);
+        }
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let wanted: Vec<Uuid> = ids.iter().map(|id| id.as_uuid()).collect();
+        // The scope is the run's: its tenant, its namespace and itself as the owner of a committed step output. A run input, an upload
+        // that was not committed and a blob being deleted are not returned, and nothing tells those apart from an id that is absent.
+        let rows = sqlx::query(
+            "SELECT id, size_bytes, sha256, content_type FROM blobs \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND run_id = $3 \
+             AND purpose = 'STEP_OUTPUT' AND state = 'COMMITTED' AND id = ANY($4)",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(&wanted)
+        .fetch_all(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        rows.iter()
+            .map(|row| {
+                let size: Option<i64> = col(row, "size_bytes")?;
+                let sha: Option<Vec<u8>> = col(row, "sha256")?;
+                let (Some(size), Some(sha)) = (size, sha) else {
+                    return Err(corrupt("committed blob measurement"));
+                };
+                Ok(sagat_domain::blobs::BlobDescriptor::new(
+                    sagat_domain::blobs::BlobId::new(col::<Uuid>(row, "id")?),
+                    u64::try_from(size).map_err(|_| corrupt("blob size"))?,
+                    sagat_domain::workflow::Digest::new(
+                        <[u8; 32]>::try_from(sha).map_err(|_| corrupt("blob digest"))?,
+                    ),
+                    sagat_domain::blobs::ContentType::parse(&col::<String>(row, "content_type")?)
+                        .map_err(|_| corrupt("blob content type"))?,
+                ))
+            })
+            .collect()
+    }
+
+    pub(super) async fn lake_blob_pin(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        ids: &[sagat_domain::blobs::BlobId],
+    ) -> Result<(), StoreError> {
+        let wanted: BTreeSet<Uuid> = ids.iter().map(|id| id.as_uuid()).collect();
+        // All or none: what the catalog does not vouch for for this run (the same word the lease took the document from) is not
+        // pinned, and then the blobs that are vouched for are not either.
+        if self.lake_blob_descriptors(ids).await?.len() != wanted.len() {
+            return Err(StoreError::MissingReference);
+        }
+        let wanted: Vec<Uuid> = wanted.into_iter().collect();
+        sqlx::query(
+            "INSERT INTO step_lease_blobs (tenant_id, namespace_id, run_id, node_id, attempt, generation, blob_id) \
+             SELECT tenant_id, namespace_id, run_id, $4, $5, $6, id FROM blobs \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND run_id = $3 \
+             AND purpose = 'STEP_OUTPUT' AND state = 'COMMITTED' AND id = ANY($7) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(i32::try_from(fence.attempt).map_err(|_| corrupt("step attempt"))?)
+        .bind(i64::try_from(fence.generation).map_err(|_| corrupt("step generation"))?)
+        .bind(&wanted)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(())
+    }
+
+    pub(super) async fn lake_blob_is_pinned(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        id: sagat_domain::blobs::BlobId,
+    ) -> Result<bool, StoreError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM step_lease_blobs \
+             WHERE tenant_id = $1 AND namespace_id = $2 AND run_id = $3 AND node_id = $4 \
+             AND attempt = $5 AND generation = $6 AND blob_id = $7)",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.namespace_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(i32::try_from(fence.attempt).map_err(|_| corrupt("step attempt"))?)
+        .bind(i64::try_from(fence.generation).map_err(|_| corrupt("step generation"))?)
+        .bind(id.as_uuid())
+        .fetch_one(&mut *self.tx)
+        .await
+        .map_err(store_error)
+    }
+
     pub(super) async fn database_report_owner(
         &mut self,
         node: &NodeId,

@@ -25,6 +25,10 @@ pub const MAX_MAPPED_COLUMNS: usize = 1024;
 pub const MAX_MAPPING_DEPTH: usize = 16;
 /// Record blobs one step names. The runner and publication enforce it where the blob descriptors are known.
 pub const MAX_RECORD_BLOBS: usize = 32;
+/// The bytes of the record blobs one step names, together: the platform ceiling for the record input of a step (plan.md, limits table).
+/// The runner holds the same bound while it streams; the server holds it where the descriptors are known, so a step over it is refused
+/// before it is leased.
+pub const MAX_RECORD_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_FIELD_BYTES: usize = 512;
 const MAX_NAME_BYTES: usize = 255;
 const MAX_NAMESPACE_LEVELS: usize = 8;

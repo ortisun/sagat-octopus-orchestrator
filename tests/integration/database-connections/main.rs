@@ -7,8 +7,12 @@ mod consumers;
 mod executor;
 mod key_rotation;
 mod lake;
+mod lake_blob_grpc;
+mod lake_blob_lease;
+mod lake_blobs;
 mod lake_grpc;
 mod lake_lease;
+mod lake_read;
 mod lake_resolve;
 mod output;
 mod output_blobs;
@@ -295,8 +299,15 @@ async fn managed_secret_lifecycle(progress: Progress) {
     // Before the lease scenario: that one leaves the budget of the namespace spent, and this one needs a lease.
     progress.enter("the credentials of a lake step");
     Box::pin(lake_resolve::run(&w, &service, provider.clone())).await;
+    // Before the lease scenario, which counts the lake attempts in flight: this one ends the steps it leased.
+    progress.enter("the read of the blobs of a lake attempt");
+    Box::pin(lake_read::run(&w)).await;
+    progress.enter("the lease of a lake step whose records are blobs");
+    Box::pin(lake_blob_lease::run(&w)).await;
     progress.enter("the lease of a lake step");
     Box::pin(lake_lease::run(&w)).await;
+    progress.enter("the catalog's word on the blobs of a lake lease");
+    Box::pin(lake_blobs::run(&w)).await;
     progress.enter("ad_hoc::run");
     Box::pin(ad_hoc::run(&w)).await;
     progress.enter("admission::run");
@@ -319,6 +330,8 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(executor::grpc(provider.clone())).await;
     progress.enter("the lake step on the wire");
     Box::pin(lake_grpc::run(provider.clone())).await;
+    progress.enter("the blobs of a lake step on the wire");
+    Box::pin(lake_blob_grpc::run(provider.clone())).await;
     progress.enter("output::run");
     Box::pin(output::run(provider.clone())).await;
     progress.enter("output_blobs::run");

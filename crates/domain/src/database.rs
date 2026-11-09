@@ -16,7 +16,7 @@ pub use iceberg_egress::{EgressField, EgressRefusal, LakeRefusal};
 pub use iceberg_write::{
     ColumnMapping, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
     IcebergWriteError, IcebergWriteParts, MAX_MAPPED_COLUMNS, MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS,
-    RecordSource, TableIdentifier, WriteIntent,
+    MAX_RECORD_INPUT_BYTES, RecordSource, TableIdentifier, WriteIntent,
 };
 
 use crate::{

@@ -7,14 +7,18 @@
 
 use sagat_application::{
     execution::{ExpressionEvaluator, RunData},
-    worker::{lake_input::LakeFacts, lake_lease::lake_lease_document},
+    worker::{
+        lake_input::LakeFacts,
+        lake_lease::{lake_lease_document, named_records},
+    },
 };
+use sagat_domain::blobs::{BlobDescriptor, BlobId, ContentType};
 use sagat_domain::database::{
     ColumnMapping, ConnectionRef, DatabaseFailure, IcebergWrite, IcebergWriteParts, LakeLimits,
     RecordSource, TableIdentifier, WriteIntent,
 };
 use sagat_domain::identity::Slug;
-use sagat_domain::workflow::{Expression, NodeId};
+use sagat_domain::workflow::{Digest, Expression, NodeId};
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_lake::protocol::{AttemptInput, Records};
 use serde_json::{Value, json};
@@ -70,13 +74,41 @@ fn lease(
     connection_limits: LakeLimits,
     input: &Value,
 ) -> Result<Vec<u8>, DatabaseFailure> {
-    lake_lease_document(
-        &JsonEvaluator,
-        &write(source, step_limits),
-        &data(input),
-        &facts(),
-        connection_limits,
+    let write = write(source, step_limits);
+    let named = named_records(&JsonEvaluator, &write, &data(input))?;
+    lake_lease_document(&write, &facts(), named, &[], connection_limits)
+}
+
+const NDJSON: &str = "application/x-ndjson";
+const PARQUET: &str = "application/vnd.apache.parquet";
+
+fn blob(size: u64, content_type: &str) -> BlobDescriptor {
+    BlobDescriptor::new(
+        BlobId::generate(),
+        size,
+        Digest::new([7; 32]),
+        ContentType::parse(content_type).expect("a media type"),
     )
+}
+
+/// The descriptor as a workflow value carries it.
+fn value_of(descriptor: &BlobDescriptor) -> Value {
+    json!({"$blob": {
+        "id": descriptor.id().to_string(),
+        "size": descriptor.size(),
+        "sha256": descriptor.digest().to_hex(),
+        "contentType": descriptor.content_type().as_str(),
+    }})
+}
+
+/// The lease of a blob source `input.parts`, given what the run's data holds and what the catalog says about the blobs.
+fn lease_blobs(named: &Value, found: &[BlobDescriptor]) -> Result<Vec<u8>, DatabaseFailure> {
+    let write = write(
+        RecordSource::Blobs(Expression::parse("input.parts").expect("expression")),
+        LakeLimits::default(),
+    );
+    let named = named_records(&JsonEvaluator, &write, &data(&json!({"parts": named})))?;
+    lake_lease_document(&write, &facts(), named, found, LakeLimits::default())
 }
 
 #[test]
@@ -173,20 +205,203 @@ fn what_is_not_a_list_of_objects_is_a_configuration_failure() {
 
 #[test]
 fn a_source_the_lease_cannot_serve_yet_is_refused_by_name_and_not_left_to_hang() {
-    for source in [
-        RecordSource::Blobs(Expression::parse("input.parts").expect("expression")),
+    // The result of a SQL step is G035-067: the runner's reader refuses it by name, so the lease must not make it.
+    let refused = lease(
         RecordSource::DatabaseResult(NodeId::parse("read").expect("node")),
+        LakeLimits::default(),
+        LakeLimits::default(),
+        &json!({}),
+    )
+    .expect_err("not served");
+    assert_eq!(refused, DatabaseFailure::Capability);
+    assert_eq!(refused.code(), "DATABASE_CAPABILITY_UNAVAILABLE");
+}
+
+#[test]
+fn the_blobs_a_step_names_are_the_blobs_of_the_document_in_the_order_it_names_them_with_their_formats()
+ {
+    let (first, second, third) = (blob(10, PARQUET), blob(20, NDJSON), blob(30, PARQUET));
+    // The catalog answers in its own order and may know more than the step named.
+    let extra = blob(5, NDJSON);
+    let built = lease_blobs(
+        &json!([value_of(&second), value_of(&first), value_of(&third)]),
+        &[third.clone(), extra, first.clone(), second.clone()],
+    )
+    .expect("a document");
+    let input = AttemptInput::read(&built).expect("the runner's reader accepts it");
+    let Records::Blobs(blobs) = input.records() else {
+        panic!("blobs expected: {}", String::from_utf8_lossy(&built));
+    };
+    let named: Vec<(String, String)> = blobs
+        .iter()
+        .map(|blob| (blob.id.to_string(), format!("{:?}", blob.format)))
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            (second.id().to_string(), "Ndjson".to_owned()),
+            (first.id().to_string(), "Parquet".to_owned()),
+            (third.id().to_string(), "Parquet".to_owned()),
+        ],
+        "the step's order, the format of each blob's own media type, and nothing the step did not name"
+    );
+}
+
+#[test]
+fn a_lone_descriptor_is_a_list_of_one() {
+    let only = blob(1, NDJSON);
+    let built = lease_blobs(&value_of(&only), std::slice::from_ref(&only)).expect("a document");
+    assert!(matches!(
+        AttemptInput::read(&built).expect("accepted").records(),
+        Records::Blobs(blobs) if blobs.len() == 1 && blobs[0].id == only.id()
+    ));
+}
+
+#[test]
+fn thirty_two_blobs_are_the_most_a_step_may_name() {
+    let many: Vec<BlobDescriptor> = (0..33).map(|_| blob(1, NDJSON)).collect();
+    let values = |count: usize| Value::Array(many[..count].iter().map(value_of).collect());
+    let built = lease_blobs(&values(32), &many).expect("32 is the ceiling");
+    assert!(matches!(
+        AttemptInput::read(&built).expect("accepted").records(),
+        Records::Blobs(blobs) if blobs.len() == 32
+    ));
+    assert_eq!(
+        lease_blobs(&values(33), &many).expect_err("33 is over it"),
+        DatabaseFailure::Configuration
+    );
+}
+
+#[test]
+fn the_catalog_is_never_asked_about_more_than_thirty_two_blobs_none_or_one_twice() {
+    // `named_records` is what the lease hands the catalog: its own refusal is what keeps a query from carrying such a list, and the
+    // document builder's is a second line, not the first.
+    let write = write(
+        RecordSource::Blobs(Expression::parse("input.parts").expect("expression")),
+        LakeLimits::default(),
+    );
+    let many: Vec<BlobDescriptor> = (0..33).map(|_| blob(1, NDJSON)).collect();
+    let named = |parts: Vec<&BlobDescriptor>| {
+        let parts: Vec<Value> = parts.into_iter().map(value_of).collect();
+        named_records(&JsonEvaluator, &write, &data(&json!({"parts": parts})))
+    };
+    assert!(named(many.iter().take(32).collect()).is_ok());
+    for (name, parts) in [
+        ("33", many.iter().collect()),
+        ("none", vec![]),
+        ("one twice", vec![&many[0], &many[0]]),
     ] {
-        let refused = lease(
-            source,
-            LakeLimits::default(),
-            LakeLimits::default(),
-            &json!({"parts": []}),
-        )
-        .expect_err("not served");
-        assert_eq!(refused, DatabaseFailure::Capability);
-        assert_eq!(refused.code(), "DATABASE_CAPABILITY_UNAVAILABLE");
+        assert_eq!(named(parts), Err(DatabaseFailure::Configuration), "{name}");
     }
+}
+
+#[test]
+fn what_does_not_name_a_list_of_blobs_is_a_configuration_failure_before_the_catalog_is_asked() {
+    let one = blob(1, NDJSON);
+    let found = std::slice::from_ref(&one);
+    for (name, named) in [
+        ("none", json!([])),
+        ("a number", json!(7)),
+        ("an object that is not a descriptor", json!({"id": "x"})),
+        ("a scalar in the list", json!([value_of(&one), 1])),
+        ("a bare id", json!([one.id().to_string()])),
+        (
+            "the same blob twice",
+            json!([value_of(&one), value_of(&one)]),
+        ),
+        (
+            "a descriptor with a member more",
+            json!([{"$blob": {
+                "id": one.id().to_string(), "size": 1, "sha256": one.digest().to_hex(),
+                "contentType": NDJSON, "extra": true,
+            }}]),
+        ),
+    ] {
+        assert_eq!(
+            lease_blobs(&named, found).expect_err(name),
+            DatabaseFailure::Configuration,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_blob_that_is_not_a_file_of_records_is_a_configuration_failure() {
+    for content_type in [
+        "application/json",
+        "application/octet-stream",
+        "text/csv",
+        "application/x-ndjson-not",
+    ] {
+        let wrong = blob(1, content_type);
+        assert_eq!(
+            lease_blobs(&json!([value_of(&wrong)]), std::slice::from_ref(&wrong))
+                .expect_err(content_type),
+            DatabaseFailure::Configuration,
+            "{content_type}"
+        );
+    }
+}
+
+#[test]
+fn a_blob_the_catalog_does_not_vouch_for_is_unavailable_and_says_nothing_of_why() {
+    let named = blob(100, NDJSON);
+    let with = |changed: BlobDescriptor| {
+        lease_blobs(&json!([value_of(&named)]), &[changed]).expect_err("not vouched for")
+    };
+    // Not in the catalog for this run (another run's, another tenant's, not committed, deleted): the answer is the same.
+    assert_eq!(
+        lease_blobs(&json!([value_of(&named)]), &[]).expect_err("absent"),
+        DatabaseFailure::ResultUnavailable
+    );
+    assert_eq!(
+        lease_blobs(&json!([value_of(&named)]), &[blob(100, NDJSON)]).expect_err("another blob"),
+        DatabaseFailure::ResultUnavailable
+    );
+    // A descriptor in a JSON value proves nothing: size, digest and media type are the catalog's.
+    let same = |size, digest: [u8; 32], content_type: &str| {
+        BlobDescriptor::new(
+            named.id(),
+            size,
+            Digest::new(digest),
+            ContentType::parse(content_type).expect("media type"),
+        )
+    };
+    for (name, changed) in [
+        ("another size", same(101, [7; 32], NDJSON)),
+        ("another digest", same(100, [8; 32], NDJSON)),
+        ("another media type", same(100, [7; 32], PARQUET)),
+    ] {
+        assert_eq!(with(changed), DatabaseFailure::ResultUnavailable, "{name}");
+    }
+}
+
+#[test]
+fn the_blobs_of_a_step_are_at_most_two_gibibytes_together() {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let (first, second) = (blob(GIB, PARQUET), blob(GIB, PARQUET));
+    let both = [first.clone(), second.clone()];
+    lease_blobs(&json!([value_of(&first), value_of(&second)]), &both)
+        .expect("exactly 2 GiB is the ceiling");
+    let over = blob(1, NDJSON);
+    let refused = lease_blobs(
+        &json!([value_of(&first), value_of(&second), value_of(&over)]),
+        &[first, second, over],
+    )
+    .expect_err("one byte over");
+    assert_eq!(refused, DatabaseFailure::IcebergLimitExceeded);
+}
+
+#[test]
+fn a_sum_that_overflows_is_a_limit_failure_and_not_a_wrap() {
+    // Two halves of the range of a u64 add up to 0 when the sum wraps, which is under every ceiling.
+    let half = |_| blob(1 << 63, NDJSON);
+    let two: Vec<BlobDescriptor> = (0..2).map(half).collect();
+    let named = Value::Array(two.iter().map(value_of).collect());
+    assert_eq!(
+        lease_blobs(&named, &two).expect_err("overflow"),
+        DatabaseFailure::IcebergLimitExceeded
+    );
 }
 
 #[test]

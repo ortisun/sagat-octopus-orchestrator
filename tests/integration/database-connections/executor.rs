@@ -342,6 +342,28 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         w.workers.check_lease(&runner, &reference).await.is_err(),
         "managed leases cannot fetch unrelated run blobs"
     );
+    // The one door a lake attempt has (the blobs its lease named, D035-144) is not a SQL step's: whatever blob it names, even one that
+    // exists, a SQL attempt reads none and the read is not audited as one.
+    let blob = sagat_domain::blobs::BlobId::generate();
+    let read = w
+        .workers
+        .check_blob_read(&runner, &reference, blob, None)
+        .await;
+    assert!(
+        matches!(read, Err(sagat_application::error::AppError::NotAllowed(_))),
+        "a SQL attempt reads no blob: {read:?}"
+    );
+    let audited = w
+        .workers
+        .audit_blob_read(&runner, &reference, blob, None)
+        .await;
+    assert!(
+        matches!(
+            audited,
+            Err(sagat_application::error::AppError::NotAllowed(_))
+        ),
+        "nor is the read of a SQL attempt audited as one: {audited:?}"
+    );
     for version in 1..=6 {
         secrets
             .put(&w.admin, ns, rotate(version), &ctx())

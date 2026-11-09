@@ -3984,6 +3984,28 @@ impl RunTx for PgRunTx {
     ) -> Result<sagat_application::database::LakeLeaseFacts, StoreError> {
         self.lake_facts(node).await
     }
+    async fn lake_record_blobs(
+        &mut self,
+        ids: &[sagat_domain::blobs::BlobId],
+    ) -> Result<Vec<sagat_domain::blobs::BlobDescriptor>, StoreError> {
+        self.lake_blob_descriptors(ids).await
+    }
+    async fn pin_lake_blobs(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        ids: &[sagat_domain::blobs::BlobId],
+    ) -> Result<(), StoreError> {
+        self.lake_blob_pin(node, fence, ids).await
+    }
+    async fn lake_blob_pinned(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        id: sagat_domain::blobs::BlobId,
+    ) -> Result<bool, StoreError> {
+        self.lake_blob_is_pinned(node, fence, id).await
+    }
     async fn lake_attempt_resolved(&mut self, node: &NodeId) -> Result<bool, StoreError> {
         self.lake_resolved(node).await
     }

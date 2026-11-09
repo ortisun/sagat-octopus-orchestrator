@@ -4652,6 +4652,24 @@
       ]
     },
     {
+      "table": "step_lease_blobs",
+      "column": "node_id",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Workflow node identifier bounded to 64 UTF-8 bytes by CHECK; at most 32 immutable pins per lake attempt (the ceiling of record blobs of a step), removed with the run. Writer/source: execution/database.rs."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution/database.rs"
+      ]
+    },
+    {
       "table": "steps",
       "column": "activity",
       "sql_type": "text",

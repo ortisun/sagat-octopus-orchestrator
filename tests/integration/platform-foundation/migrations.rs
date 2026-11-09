@@ -326,3 +326,74 @@ async fn the_binding_profile_rolls_back_only_while_every_binding_is_of_the_datab
         "the surviving binding reads as the default again"
     );
 }
+
+/// The stamp of the migration before the one that records the blobs a lake attempt may read (feature 035, D035-144).
+const BEFORE_LAKE_BLOB_PINS: i64 = 20_270_110_000_000;
+
+#[tokio::test]
+async fn the_lake_blob_pins_roll_back_only_while_no_attempt_holds_one() {
+    let db = migrated_db().await;
+    assert!(table_exists(&db.pool, "step_lease_blobs").await);
+
+    // A pin is written by the lease of a lake step, which needs a run and a blob of its own; the guard reads the table alone, so the
+    // row is written with the foreign keys switched off for this transaction (the owner may) and the guard is what is tested.
+    let mut tx = db.pool.begin().await.expect("a transaction");
+    sqlx::query("SET LOCAL session_replication_role = replica")
+        .execute(&mut *tx)
+        .await
+        .expect("foreign keys off for this transaction");
+    sqlx::query(
+        "INSERT INTO step_lease_blobs (tenant_id, namespace_id, run_id, node_id, attempt, generation, blob_id) \
+         VALUES (gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'load', 1, 1, gen_random_uuid())",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("a pin");
+    tx.commit().await.expect("committed");
+
+    // sqlx takes an advisory lock for a rollback and does not release it when a revert fails: the refused rollback runs on a connection of
+    // its own and lets the lock go (see the binding profile's test).
+    let mut connection = db.pool.acquire().await.expect("a connection");
+    let refused = MIGRATOR
+        .undo(&mut *connection, BEFORE_LAKE_BLOB_PINS)
+        .await
+        .expect_err("a pin blocks the rollback");
+    sqlx::query("SELECT pg_advisory_unlock_all()")
+        .execute(&mut *connection)
+        .await
+        .expect("release the migration lock");
+    drop(connection);
+    let message = refused.to_string();
+    assert!(
+        message.contains("cannot roll back lake blob pins"),
+        "{message}"
+    );
+    assert!(
+        table_exists(&db.pool, "step_lease_blobs").await,
+        "a refused rollback leaves the table, and the pin, in place"
+    );
+    let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM step_lease_blobs")
+        .fetch_one(&db.pool)
+        .await
+        .expect("count");
+    assert_eq!(kept, 1);
+
+    // With no attempt holding one the rollback goes through, and forward brings the table back, empty.
+    sqlx::query("DELETE FROM step_lease_blobs")
+        .execute(&db.pool)
+        .await
+        .expect("the attempt's run was cleaned up");
+    MIGRATOR
+        .undo(&db.pool, BEFORE_LAKE_BLOB_PINS)
+        .await
+        .expect("rollback of the pins alone");
+    assert!(!table_exists(&db.pool, "step_lease_blobs").await);
+    let function: bool =
+        sqlx::query_scalar("SELECT to_regproc('sagat_lake_blob_pin_immutable') IS NOT NULL")
+            .fetch_one(&db.pool)
+            .await
+            .expect("function");
+    assert!(!function, "the guard function goes with the table");
+    migrate(&db.pool).await.expect("forward again");
+    assert!(table_exists(&db.pool, "step_lease_blobs").await);
+}

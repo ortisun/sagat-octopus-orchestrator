@@ -1188,6 +1188,43 @@ pub trait RunTx: Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }
 
+    /// What the catalog says, inside this transaction, about the blobs of a record source (feature 035, R2). Only a blob this run's
+    /// own steps committed as an output is returned, with the descriptor the catalog holds; every other case (another run, another
+    /// namespace, another tenant, a run input, an upload not committed, a deleted blob, an id that does not exist) returns nothing,
+    /// all the same, so a descriptor in a JSON value proves nothing. A plain read: the lease holds the tenant's lock and does no
+    /// object I/O. Unsupported stores fail closed.
+    fn lake_record_blobs(
+        &mut self,
+        _ids: &[sagat_domain::blobs::BlobId],
+    ) -> impl Future<Output = Result<Vec<sagat_domain::blobs::BlobDescriptor>, StoreError>> + Send
+    {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Records, for the attempt the lease just granted (`fence`), the blobs its document names: the allow-list of the `ReadBlob` of
+    /// that attempt. The store takes the rows from the catalog's own word, as [`Self::lake_record_blobs`] does, and not from the
+    /// caller's: a blob that is not a committed output of this run is not pinned, and then none is (a partial list is an error).
+    /// Immutable once written, and written again as a no-op. Unsupported stores fail closed.
+    fn pin_lake_blobs(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _ids: &[sagat_domain::blobs::BlobId],
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Whether the lease of exactly this attempt and generation named the blob. Another attempt, another generation, another node and
+    /// a blob the lease did not name are all `false`, the same. Unsupported stores fail closed.
+    fn lake_blob_pinned(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _id: sagat_domain::blobs::BlobId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
     /// Selected immutable connection and credential metadata; no provider I/O occurs here.
     fn database_input(
         &mut self,
