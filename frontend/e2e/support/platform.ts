@@ -4,14 +4,15 @@ import { env } from './env';
 export type Who = keyof typeof env.tokens;
 
 export class Api {
-  constructor(private readonly who: Who = 'admin') {}
+  /** `namespace` is the slug the calls are made in: the namespace the harness made, or one a journey made for itself. */
+  constructor(private readonly who: Who = 'admin', private readonly namespace: string = env.namespace) {}
 
   async call<T = Record<string, any>>(method: string, path: string, body?: unknown, expect?: number): Promise<{ status: number; body: T }> {
     const response = await fetch(`${env.origin}/v1${path}`, {
       method,
       headers: {
         Authorization: `Bearer ${env.tokens[this.who]}`,
-        'X-Octopus-Namespace': env.namespace,
+        'X-Octopus-Namespace': this.namespace,
         'Idempotency-Key': crypto.randomUUID(),
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       },

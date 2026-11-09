@@ -1,16 +1,31 @@
 import { expect } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+
+/** How the sign-in's three controls are operated: the default fills, clicks and selects; a journey with the keyboard alone passes its own (`support/keyboard.ts`). */
+export interface SignInControls {
+  type(field: Locator, text: string): Promise<void>;
+  press(button: Locator): Promise<void>;
+  choose(select: Locator, option: string): Promise<void>;
+}
+
+const direct: SignInControls = {
+  type: (field, text) => field.fill(text),
+  press: (button) => button.click(),
+  choose: async (select, option) => {
+    await select.selectOption(option);
+  },
+};
 
 /**
  * Signs in with a token, the way a user pastes one, and then chooses the namespace the journey works in: the
  * Studio chooses none for anybody, and the menu of a namespace is there only once one is chosen. `namespace`
  * names it; left out, it is the first the tenant lists; `null` stops after signing in (a first visit).
- * A choice the person already made in this browser is kept.
+ * A choice the person already made in this browser is kept. `controls` says how the three controls are operated.
  */
-export async function signIn(page: Page, token: string, { namespace }: { namespace?: string | null } = {}): Promise<void> {
+export async function signIn(page: Page, token: string, { namespace, controls = direct }: { namespace?: string | null; controls?: SignInControls } = {}): Promise<void> {
   await page.goto('./');
-  await page.getByLabel('Access token').fill(token);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await controls.type(page.getByLabel('Access token'), token);
+  await controls.press(page.getByRole('button', { name: 'Sign in' }));
   await expect(page.getByRole('navigation', { name: 'Main' })).toBeVisible();
   if (namespace === null) return;
   const select = page.getByLabel('Namespace', { exact: true });
@@ -18,7 +33,7 @@ export async function signIn(page: Page, token: string, { namespace }: { namespa
   // A tenant with no namespace has nothing to choose from, and the journey goes on without one.
   if (!(await listed.first().waitFor({ state: 'attached', timeout: 5_000 }).then(() => true, () => false))) return;
   if ((await select.inputValue()) !== '') return;
-  await select.selectOption(namespace ?? (await listed.first().getAttribute('value'))!);
+  await controls.choose(select, namespace ?? (await listed.first().getAttribute('value'))!);
   await expect(page.getByRole('list', { name: /^In / })).toBeVisible();
 }
 
