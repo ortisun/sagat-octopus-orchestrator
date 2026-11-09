@@ -94,10 +94,7 @@ pub(crate) async fn admit_definition(
     run_info: Option<&RunInfo>,
     lake_enabled: bool,
 ) -> Result<Vec<(NodeId, ConnectionId, u32)>, StoreError> {
-    if !definition
-        .nodes()
-        .any(|n| n.database_operation().is_some() || n.iceberg_write().is_some())
-    {
+    if !definition.nodes().any(|n| n.managed_kind().is_some()) {
         return Ok(Vec::new());
     }
     let started = std::time::Instant::now();
