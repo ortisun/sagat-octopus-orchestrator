@@ -8,8 +8,8 @@
 use sagat_application::definitions::{IrError, IrIssue};
 use sagat_domain::{
     database::{
-        ColumnMapping, IcebergWrite, IcebergWriteParts, LakeLimits, RecordSource, TableIdentifier,
-        WriteIntent,
+        ColumnMapping, IcebergWrite, IcebergWriteParts, LakeLimits, LakeProbe, RecordSource,
+        TableIdentifier, WriteIntent,
     },
     workflow::{Expression, NodeId},
 };
@@ -136,6 +136,13 @@ fn limits(node: &Map<String, Value>, at: &str) -> Result<LakeLimits, IrError> {
         max_records: number(limits, "maxRecords", at)?,
         timeout_ms: number(limits, "timeoutMs", at)?,
     })
+}
+
+/// The domain step of an `icebergProbe` node (a private document, ADR-0080): the connection to test.
+pub(crate) fn probe(node: &Map<String, Value>, at: &str) -> Result<LakeProbe, IrError> {
+    let connection = crate::database::connection_ref(object(node, "connectionRef", at)?)
+        .map_err(|error| issue(&format!("{at}/connectionRef"), error.to_string()))?;
+    Ok(LakeProbe::new(connection))
 }
 
 /// The domain step of an `icebergWrite` node.
