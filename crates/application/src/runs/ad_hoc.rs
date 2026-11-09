@@ -100,7 +100,89 @@ impl RetainedDefinition {
 pub struct ConnectionProbe {
     pub run: RunRecord,
     pub revision: u32,
+    /// What went wrong, for a reader that knows no checks: the step's own code, or for an Iceberg probe the code of the first failed check.
     pub failure_code: Option<String>,
+    /// Whether the probe is the probe of an Iceberg connection (its step is on the probe activity), which is the only kind with checks.
+    pub lake: bool,
+    /// What the store kept as the output of an Iceberg probe: the server's own writing of its result. Read by the service and not passed
+    /// on; `None` once it has been.
+    pub output: Option<Vec<u8>>,
+    /// The checks of an Iceberg probe whose result could be read; `None` for any other probe and for one whose result cannot be.
+    pub result: Option<sagat_domain::database::ProbeResult>,
+}
+
+/// What the store gave, for [`probe_view`].
+#[derive(Debug, Clone)]
+pub struct ProbeViewInput<'a> {
+    pub lake: bool,
+    /// Whether the step of the probe succeeded (a failed check is the answer and the step has succeeded).
+    pub succeeded: bool,
+    /// The code the step failed with, already one of the closed codes.
+    pub stored_failure: Option<String>,
+    pub output: Option<&'a [u8]>,
+    /// The connection the probe was admitted with, which its result must be about.
+    pub connection: &'a str,
+    pub revision: u32,
+}
+
+/// What a reader of the latest probe sees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeView {
+    pub result: Option<sagat_domain::database::ProbeResult>,
+    pub failure_code: Option<String>,
+}
+
+/// What a reader of a connection's latest probe sees (D035-150). The probe of an Iceberg connection **succeeds** when a check failed, because a
+/// failed check is the answer and not a fault of the platform, and every reader of the probe that existed reads `failureCode` and nothing of
+/// any check. So: the step's own code is kept and wins; otherwise the code of the first failed check is the failure code; and a connection is
+/// never read as healthy for lack of a result: an Iceberg probe that succeeded and whose result cannot be read (purged, not the probe's, or no
+/// codec to read it with) says `DATABASE_RESULT_UNAVAILABLE`. A probe that has not ended says nothing yet. Any other probe is read as it always was.
+#[must_use]
+pub fn probe_view(
+    input: &ProbeViewInput<'_>,
+    codec: Option<&dyn crate::database::LakeProbeCodec>,
+) -> ProbeView {
+    if !input.lake {
+        return ProbeView {
+            result: None,
+            failure_code: input.stored_failure.clone(),
+        };
+    }
+    let result = input
+        .output
+        .zip(codec)
+        .and_then(|(bytes, codec)| {
+            codec
+                .rebuild(
+                    bytes,
+                    &crate::database::ExpectedProbe {
+                        connection: input.connection,
+                        revision: input.revision,
+                    },
+                )
+                .ok()
+        })
+        .map(|rebuilt| rebuilt.result);
+    let failure_code = input
+        .stored_failure
+        .clone()
+        .or_else(|| {
+            result
+                .as_ref()
+                .and_then(sagat_domain::database::ProbeResult::first_failure)
+                .map(|code| code.code().to_owned())
+        })
+        .or_else(|| {
+            (input.succeeded && result.is_none()).then(|| {
+                sagat_domain::database::DatabaseFailure::ResultUnavailable
+                    .code()
+                    .to_owned()
+            })
+        });
+    ProbeView {
+        result,
+        failure_code,
+    }
 }
 
 impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService<S, C, E> {
@@ -185,10 +267,27 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         principal.authorize(Permission::NamespaceRead)?;
         principal.authorize(Permission::RunRead)?;
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
-        self.store
+        let mut probe = self
+            .store
             .latest_connection_probe(principal.tenant_id(), namespace, name)
-            .await
-            .map_err(Into::into)
+            .await?;
+        if let Some(found) = &mut probe {
+            let output = found.output.take();
+            let view = probe_view(
+                &ProbeViewInput {
+                    lake: found.lake,
+                    succeeded: found.run.status == sagat_domain::execution::RunStatus::Succeeded,
+                    stored_failure: found.failure_code.take(),
+                    output: output.as_deref(),
+                    connection: name.as_str(),
+                    revision: found.revision,
+                },
+                self.lake_probes.as_deref(),
+            );
+            found.result = view.result;
+            found.failure_code = view.failure_code;
+        }
+        Ok(probe)
     }
 
     pub(super) async fn rerun_private(

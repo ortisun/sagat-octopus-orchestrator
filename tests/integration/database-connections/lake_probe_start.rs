@@ -44,6 +44,7 @@ pub(super) fn runs_of(p: &Platform) -> Runs {
         Engine::new(JsonEvaluator),
         DefinitionCache::new(Arc::new(JsonIrCodec), 16),
     )
+    .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec))
 }
 
 pub(super) fn reference(name: &str, revision: Option<u32>) -> ConnectionRef {

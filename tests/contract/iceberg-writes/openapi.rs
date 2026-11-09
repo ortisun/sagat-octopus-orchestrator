@@ -230,3 +230,78 @@ fn subscriptions_carry_a_purpose_and_an_egress_ceiling_when_created_and_read() {
         "an existing client that sends no purpose keeps run events"
     );
 }
+
+/// What a reader of the latest probe of a connection sees (D035-150, slice S4b): the checks of the probe of an Iceberg connection, in the order
+/// they ran, beside the `failureCode` every reader already had. The lists the contract closes are the domain's, so the two cannot drift.
+#[test]
+fn the_latest_probe_names_its_checks_and_their_closed_words_as_the_domain_does() {
+    use sagat_domain::database::{DatabaseFailure, ProbeCheck, ProbeOutcome};
+    let openapi = openapi();
+    let probe = schema(&openapi, "DatabaseConnectionProbe");
+    assert_eq!(
+        probe["additionalProperties"], false,
+        "the response stays closed"
+    );
+    // additive: an older reader that knows no check keeps reading what it read, and `checks` is not required
+    let required: Vec<&str> = probe["required"]
+        .as_array()
+        .expect("required")
+        .iter()
+        .map(|name| name.as_str().expect("a name"))
+        .collect();
+    assert_eq!(required, ["run", "revision", "failureCode"]);
+    assert_eq!(probe["properties"]["checks"]["type"], "array");
+    let check = resolved(&openapi, &probe["properties"]["checks"]["items"]);
+    assert_eq!(check["additionalProperties"], false);
+    let required: Vec<&str> = check["required"]
+        .as_array()
+        .expect("required")
+        .iter()
+        .map(|name| name.as_str().expect("a name"))
+        .collect();
+    assert_eq!(
+        required,
+        ["check", "outcome"],
+        "a code is only there for a failed check"
+    );
+    let names = |value: &Value| -> Vec<String> {
+        value["enum"]
+            .as_array()
+            .expect("an enum")
+            .iter()
+            .map(|name| name.as_str().expect("a word").to_owned())
+            .collect()
+    };
+    // the checks, in the order they run, and the outcomes
+    assert_eq!(
+        names(&check["properties"]["check"]),
+        ProbeCheck::ALL
+            .iter()
+            .map(|c| c.as_str().to_owned())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        names(&check["properties"]["outcome"]),
+        [
+            ProbeOutcome::Passed,
+            ProbeOutcome::Failed,
+            ProbeOutcome::Skipped
+        ]
+        .iter()
+        .map(|o| o.as_str().to_owned())
+        .collect::<Vec<_>>()
+    );
+    // the codes: exactly the union of the codes some check may fail with, and none that is new
+    let mut allowed: Vec<String> = DatabaseFailure::ALL
+        .iter()
+        .filter(|code| ProbeCheck::ALL.iter().any(|c| c.allows(**code)))
+        .map(|code| code.code().to_owned())
+        .collect();
+    let mut declared = names(&check["properties"]["code"]);
+    allowed.sort();
+    declared.sort();
+    assert_eq!(
+        declared, allowed,
+        "the codes of a failed check are the domain's, no more and no fewer"
+    );
+}

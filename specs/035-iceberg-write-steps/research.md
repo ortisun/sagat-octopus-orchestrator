@@ -3609,3 +3609,13 @@ The other fixes were wording:
   the bytes the runner sent, was redone and is killed. *Not asserted by any test:* the metric (the repository has no facility to capture one, and the existing counters of these paths are not asserted either); its call
   is the proof. *Still to do:* the read side of the probe (`latest_connection_probe` with `checks[]` and a `failureCode` derived from the first failed check, the REST shape and the OpenAPI, S4b), the host
   (S5), the runner (S6).
+  *S4b (2026-11-09): what a reader of the latest probe sees.* `latest_connection_probe` returns the retained result of an Iceberg probe (a second query on the step's output, only for a step on the
+  probe activity; a SQL probe's output is rows and is never read) and the service reads it back through the same codec that rebuilt it, against the connection and the revision the probe was
+  admitted with. The rules are one pure function (`probe_view`, tested against the real codec on every branch): a SQL probe is read as it always was; the step's own code wins; otherwise the code of
+  the **first failed check** is the `failureCode`, so that a reader that knows no checks (the Studio as it is, every script and SDK) sees a failure and not a healthy connection; an Iceberg probe that
+  succeeded and whose result cannot be read says `DATABASE_RESULT_UNAVAILABLE` (an existing code), never nothing; a probe that has not ended says nothing yet. REST adds `checks[]`
+  (absent for any other probe) and the OpenAPI adds `DatabaseConnectionProbeCheck` with closed enums that a contract test holds equal to the domain's (`ProbeCheck`, `ProbeOutcome`, the union of
+  the codes a check may fail with); the Studio's generated types follow (23 additive lines). The real REST bodies of the scenario are validated against the OpenAPI document. *Mutations:* eight, all killed
+  (one did not compile the first time and was redone). *For the Studio (S7):* `ConnectionProbe.tsx` prints "A successful probe confirms this revision" when the run is `SUCCEEDED` and `failureCode` is
+  null; with the derived `failureCode` that stays true only for a connection whose checks all passed, but the Studio must read `checks[]` and confirm a connection only when every check is `PASSED`.
+  *Still to do:* `GET /database-drivers` listing `iceberg` (T035-043, with S6), the host (S5), the runner and the REST start (S6), the Studio (S7).

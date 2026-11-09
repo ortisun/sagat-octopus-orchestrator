@@ -62,7 +62,7 @@ pub(super) async fn latest_probe(
     if !existing {
         return Err(StoreError::MissingReference);
     }
-    let row = sqlx::query("SELECT r.*,p.revision,s.failure_code FROM runs r JOIN run_database_connections p ON p.tenant_id=r.tenant_id AND p.namespace_id=r.namespace_id AND p.run_id=r.id JOIN database_connections c ON c.tenant_id=p.tenant_id AND c.namespace_id=p.namespace_id AND c.id=p.connection_id LEFT JOIN steps s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.node=p.node_id AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 WHERE r.tenant_id=$1 AND r.namespace_id=$2 AND c.name=$3 AND c.status <> 'DELETED' AND r.origin='CONNECTION_PROBE' ORDER BY r.id DESC LIMIT 1")
+    let row = sqlx::query("SELECT r.*,p.revision,s.failure_code,s.activity AS probe_activity FROM runs r JOIN run_database_connections p ON p.tenant_id=r.tenant_id AND p.namespace_id=r.namespace_id AND p.run_id=r.id JOIN database_connections c ON c.tenant_id=p.tenant_id AND c.namespace_id=p.namespace_id AND c.id=p.connection_id LEFT JOIN steps s ON s.tenant_id=r.tenant_id AND s.run_id=r.id AND s.node=p.node_id AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 WHERE r.tenant_id=$1 AND r.namespace_id=$2 AND c.name=$3 AND c.status <> 'DELETED' AND r.origin='CONNECTION_PROBE' ORDER BY r.id DESC LIMIT 1")
         .bind(tenant.as_uuid()).bind(namespace.as_uuid()).bind(name.as_str()).fetch_optional(&store.pool).await.map_err(store_error)?;
     let Some(row) = row else {
         return Ok(None);
@@ -75,9 +75,27 @@ pub(super) async fn latest_probe(
     let failure_code = failure.and_then(|value| {
         sagat_domain::database::DatabaseFailure::parse(&value).map(|code| code.code().to_owned())
     });
+    // The probe of an Iceberg connection is on its own activity, and the only one whose output is read: it is the server's own writing of a
+    // result of closed words (D035-150). A SQL probe's output is its rows, which this surface never serves.
+    let activity: Option<String> = col(&row, "probe_activity")?;
+    let lake = activity.as_deref() == Some(sagat_domain::database::ICEBERG_PROBE_ACTIVITY);
+    let output: Option<Vec<u8>> = if lake {
+        sqlx::query_scalar("SELECT p.content FROM steps s JOIN payloads p ON p.tenant_id=s.tenant_id AND p.digest=s.output_digest WHERE s.tenant_id=$1 AND s.run_id=$2 AND s.status='SUCCEEDED' AND s.activity=$3 AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0")
+            .bind(tenant.as_uuid())
+            .bind(run.info.run_id.as_uuid())
+            .bind(sagat_domain::database::ICEBERG_PROBE_ACTIVITY)
+            .fetch_optional(&store.pool)
+            .await
+            .map_err(store_error)?
+    } else {
+        None
+    };
     Ok(Some(ConnectionProbe {
         run,
         revision,
         failure_code,
+        lake,
+        output,
+        result: None,
     }))
 }

@@ -36,6 +36,58 @@ async fn bind(p: &Platform, ns: &str, sub: &str, activities: &[&str], profile: &
     assert_eq!(status, 200, "{sub}: {body}");
 }
 
+/// A probe started, leased to `probing`, resolved and completed with a result of these checks: the run it made.
+async fn ended(
+    runs: &super::lake_probe_start::Runs,
+    admin: &sagat_domain::identity::Principal,
+    ctx: &sagat_application::identity::RequestContext,
+    namespace: NamespaceId,
+    probing: &mut Worker<'_>,
+    key: &str,
+    checks: Vec<serde_json::Value>,
+) -> sagat_domain::execution::RunId {
+    let started = runs
+        .start_lake_probe(
+            admin,
+            namespace,
+            &reference("probe-warehouse", None),
+            key,
+            ctx,
+        )
+        .await
+        .expect("a probe starts");
+    let lease = probing.one_task().await;
+    assert_eq!(lease.run_id, started.info.run_id.to_string());
+    probing
+        .client
+        .resolve_database(probing.req(Worker::resolve_secrets_message(&lease)))
+        .await
+        .expect("the connection is resolved");
+    // while it runs, a probe says nothing yet: not a failure, and not a result
+    let running = runs
+        .latest_connection_probe(
+            admin,
+            namespace,
+            &sagat_domain::identity::Slug::parse("probe-warehouse").expect("a slug"),
+            ctx,
+        )
+        .await
+        .expect("the latest probe")
+        .expect("there is one");
+    assert_eq!(running.run.info.run_id, started.info.run_id);
+    assert!(
+        running.failure_code.is_none() && running.result.is_none(),
+        "a probe that has not ended says nothing yet"
+    );
+    let result = json!({"kind": "probe", "connection": {"name": "probe-warehouse", "revision": 1}, "checks": checks});
+    probing
+        .client
+        .complete_step(probing.req(super::lake_canaries::completion(&lease, &result, key)))
+        .await
+        .expect("the result completes the probe");
+    started.info.run_id
+}
+
 pub async fn run(provider: Arc<dyn SecretProvider>) {
     let (p, ns, runs) = platform(&provider, true).await;
     let namespace: NamespaceId = ns.parse().expect("a namespace id");
@@ -394,4 +446,141 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .await
         .expect("a closed code fails the step");
     assert_eq!(p.status(&second.info.run_id.to_string()).await, "FAILED");
+
+    // --- What a reader of the latest probe of the connection sees. A probe that the platform failed shows the code of its step and no checks.
+    let name = sagat_domain::identity::Slug::parse("probe-warehouse").expect("a slug");
+    let latest = runs
+        .latest_connection_probe(&admin, namespace, &name, &ctx)
+        .await
+        .expect("the latest probe")
+        .expect("there is one");
+    assert_eq!(latest.run.info.run_id, second.info.run_id);
+    assert_eq!(
+        latest.failure_code.as_deref(),
+        Some("DATABASE_CREDENTIAL_UNAVAILABLE")
+    );
+    assert!(latest.result.is_none() && latest.lake);
+    assert!(
+        latest.output.is_none(),
+        "what the store kept is not passed on"
+    );
+
+    // A probe whose checks all passed shows no failure and the three checks.
+    let ok = |outcome: &str, code: Option<&str>, check: &str| match code {
+        Some(code) => json!({"check": check, "outcome": outcome, "code": code}),
+        None => json!({"check": check, "outcome": outcome}),
+    };
+    let healthy = ended(
+        &runs,
+        &admin,
+        &ctx,
+        namespace,
+        &mut probing,
+        "lake-probe-lease-0003",
+        vec![
+            ok("PASSED", None, "CATALOG_AUTH"),
+            ok("PASSED", None, "WAREHOUSE"),
+            ok("PASSED", None, "STORAGE_ACCESS"),
+        ],
+    )
+    .await;
+    let latest = runs
+        .latest_connection_probe(&admin, namespace, &name, &ctx)
+        .await
+        .expect("the latest probe")
+        .expect("there is one");
+    assert_eq!(latest.run.info.run_id, healthy);
+    assert_eq!(latest.failure_code, None, "every check passed");
+    let outcomes: Vec<_> = latest
+        .result
+        .as_ref()
+        .expect("the checks")
+        .checks()
+        .iter()
+        .map(|check| (check.check().as_str(), check.outcome().as_str()))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("CATALOG_AUTH", "PASSED"),
+            ("WAREHOUSE", "PASSED"),
+            ("STORAGE_ACCESS", "PASSED")
+        ]
+    );
+    let (status, body) = p
+        .rest(
+            Method::GET,
+            &format!("/namespaces/{ns}/connections/probe-warehouse/probe"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    crate::support::contract::OpenApi::load()
+        .validate_body(
+            "GET",
+            "/namespaces/{namespaceId}/connections/{connectionName}/probe",
+            200,
+            &body,
+        )
+        .expect("the operation is in the contract")
+        .expect("the body is what the contract says");
+    assert_eq!(body["failureCode"], serde_json::Value::Null);
+    assert_eq!(
+        body["checks"],
+        json!([
+            {"check": "CATALOG_AUTH", "outcome": "PASSED"},
+            {"check": "WAREHOUSE", "outcome": "PASSED"},
+            {"check": "STORAGE_ACCESS", "outcome": "PASSED"},
+        ])
+    );
+
+    // A probe whose storage check failed has SUCCEEDED, because the failure is the answer; a reader that knows no checks still sees it.
+    let broken = ended(
+        &runs,
+        &admin,
+        &ctx,
+        namespace,
+        &mut probing,
+        "lake-probe-lease-0004",
+        vec![
+            ok("PASSED", None, "CATALOG_AUTH"),
+            ok("PASSED", None, "WAREHOUSE"),
+            ok("FAILED", Some("STORAGE_UNAVAILABLE"), "STORAGE_ACCESS"),
+        ],
+    )
+    .await;
+    let (status, body) = p
+        .rest(
+            Method::GET,
+            &format!("/namespaces/{ns}/connections/probe-warehouse/probe"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    crate::support::contract::OpenApi::load()
+        .validate_body(
+            "GET",
+            "/namespaces/{namespaceId}/connections/{connectionName}/probe",
+            200,
+            &body,
+        )
+        .expect("the operation is in the contract")
+        .expect("the body is what the contract says");
+    assert_eq!(body["run"]["runId"], broken.to_string());
+    assert_eq!(
+        body["run"]["status"], "SUCCEEDED",
+        "the status says the probe ran"
+    );
+    assert_eq!(
+        body["failureCode"], "STORAGE_UNAVAILABLE",
+        "and the failure code says what is wrong"
+    );
+    assert_eq!(
+        body["checks"],
+        json!([
+            {"check": "CATALOG_AUTH", "outcome": "PASSED"},
+            {"check": "WAREHOUSE", "outcome": "PASSED"},
+            {"check": "STORAGE_ACCESS", "outcome": "FAILED", "code": "STORAGE_UNAVAILABLE"},
+        ])
+    );
 }
