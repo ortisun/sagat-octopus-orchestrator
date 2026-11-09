@@ -3,8 +3,18 @@
 //! reference page lists it; the private entry points validate against that same schema plus the private node types and nothing else.
 #![allow(clippy::expect_used, clippy::panic)]
 
-use sagat_application::definitions::{IrCodec, IrError};
-use sagat_domain::database::ManagedKind;
+use std::sync::Arc;
+
+use sagat_application::{
+    definitions::{IrCodec, IrError, ParsedDefinition},
+    execution::DefinitionCache,
+    runs::lake_probe_document,
+};
+use sagat_domain::{
+    database::{ConnectionRef, ManagedKind},
+    definition::WorkflowVersionId,
+    identity::Slug,
+};
 use sagat_infra_ir::JsonIrCodec;
 use serde_json::{Value, json};
 
@@ -176,4 +186,141 @@ fn an_author_is_never_told_of_a_private_node_type_by_an_error_about_an_unknown_o
             if issues.iter().any(|issue| issue.path == "/nodes/0/type")),
         "{error:?}"
     );
+}
+
+// ---- The cache and the platform's own document (slice S1c) --------------------------------------------------------------------
+
+/// A codec that has no private grammar: it implements what the trait requires and nothing else, so the private entries are the
+/// trait's defaults. Private documents fail closed.
+struct PublicOnly;
+
+impl IrCodec for PublicOnly {
+    fn check_draft(&self, document: &[u8]) -> Result<(), IrError> {
+        JsonIrCodec.check_draft(document)
+    }
+    fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        JsonIrCodec.parse(document)
+    }
+    fn diff(
+        &self,
+        from: &[u8],
+        to: &[u8],
+    ) -> Result<sagat_application::diff::DocumentDiff, IrError> {
+        JsonIrCodec.diff(from, to)
+    }
+}
+
+fn version() -> WorkflowVersionId {
+    WorkflowVersionId::generate()
+}
+
+#[test]
+fn a_codec_with_no_private_grammar_refuses_a_private_document_at_both_entries() {
+    let document = bytes(&probe_document());
+    assert!(matches!(
+        PublicOnly.parse_private(&document),
+        Err(IrError::Schema(_))
+    ));
+    assert!(matches!(
+        PublicOnly.parse_stored_private(&document),
+        Err(IrError::Schema(_))
+    ));
+    // and an ordinary document is not parsed by it as private either: the private entry is not a second way in
+    assert!(
+        PublicOnly
+            .parse_private(&bytes(&ordinary_document()))
+            .is_err()
+    );
+    assert!(
+        PublicOnly
+            .parse_stored_private(&bytes(&ordinary_document()))
+            .is_err(),
+        "the stored private entry of such a codec is not the ordinary stored one under another name"
+    );
+}
+
+#[test]
+fn the_cache_restores_a_private_version_through_the_private_entry_and_a_public_one_never_does() {
+    let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 8);
+    let document = bytes(&probe_document());
+    let private = version();
+    let restored = cache
+        .get_or_parse_private(private, &document)
+        .expect("a private version restores");
+    assert_eq!(
+        restored.nodes().next().and_then(|node| node.managed_kind()),
+        Some(ManagedKind::LakeProbe)
+    );
+    // the version is cached: the next read, by either entry, is the same definition
+    assert!(Arc::ptr_eq(&restored, &cache.get(private).expect("cached")));
+    // a version that is not private never takes the private entry, whatever its document says
+    let public = version();
+    assert!(
+        cache.get_or_parse(public, &document).is_err(),
+        "the public restore refuses a private node"
+    );
+    assert!(cache.get(public).is_none(), "and keeps nothing of it");
+}
+
+#[test]
+fn a_cache_over_a_codec_without_private_documents_restores_none() {
+    let cache = DefinitionCache::new(Arc::new(PublicOnly), 8);
+    assert!(
+        cache
+            .get_or_parse_private(version(), &bytes(&probe_document()))
+            .is_err()
+    );
+    // an ordinary version still restores through the ordinary entry
+    assert!(
+        cache
+            .get_or_parse(version(), &bytes(&ordinary_document()))
+            .is_ok()
+    );
+}
+
+fn lake_connection(name: &str, revision: Option<u32>) -> ConnectionRef {
+    ConnectionRef::new(Slug::parse(name).expect("slug"), revision).expect("reference")
+}
+
+#[test]
+fn the_fixed_probe_document_of_the_platform_is_a_private_document_of_one_probe_node() {
+    for (name, revision) in [
+        ("lake-main", None),
+        ("lake-main", Some(3)),
+        ("abc", Some(1)),
+    ] {
+        let connection = lake_connection(name, revision);
+        let document = lake_probe_document(&connection);
+        let parsed = JsonIrCodec
+            .parse_private(&document)
+            .unwrap_or_else(|error| panic!("{name} {revision:?}: {error:?}"));
+        let nodes: Vec<_> = parsed.definition.nodes().collect();
+        assert_eq!(nodes.len(), 1, "a probe is one node");
+        let target = nodes[0].lake_probe_target().expect("a probe node");
+        assert_eq!(target.connection(), &connection);
+        assert_eq!(
+            nodes[0].timeout(),
+            Some(std::time::Duration::from_secs(25)),
+            "the attempt's budget is inside the run's 30 s, so a typed answer arrives before the deadline"
+        );
+        // the public entries refuse it: an author cannot pass it off as a published workflow
+        assert!(JsonIrCodec.parse(&document).is_err());
+        assert!(JsonIrCodec.parse_stored(&document).is_err());
+        // it is a fixed document: the same connection gives the same bytes and the same digest
+        let again = JsonIrCodec
+            .parse_private(&lake_probe_document(&connection))
+            .expect("parsed");
+        assert_eq!(
+            (parsed.canonical, parsed.digest),
+            (again.canonical, again.digest)
+        );
+    }
+    // another connection, or another revision, is another document
+    let one = JsonIrCodec
+        .parse_private(&lake_probe_document(&lake_connection("lake-main", None)))
+        .expect("parsed");
+    let other = JsonIrCodec
+        .parse_private(&lake_probe_document(&lake_connection("lake-main", Some(2))))
+        .expect("parsed");
+    assert_ne!(one.digest, other.digest);
 }

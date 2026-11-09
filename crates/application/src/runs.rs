@@ -9,6 +9,7 @@ mod ad_hoc;
 pub(crate) use ad_hoc::audit_denied as audit_database_execution_denied;
 pub use ad_hoc::{
     AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
+    lake_probe_document,
 };
 
 use std::future::Future;
