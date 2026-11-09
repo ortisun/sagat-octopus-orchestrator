@@ -4,6 +4,20 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-08 — A reset that waits for its source expires, and the CI scope pull request was merged
+
+Feature 018. The assistant asked the owner two things that were theirs: to merge pull request 120 (a shared file selects no
+integration suite in a pull request, OD-2026-11-06-2) and what a pending `CANCEL_SOURCE` entry should do when its source never ends
+(an entry never expired and could not be withdrawn: a run in manual review could hold the 16 places of a namespace, and the
+replacement run could start days later on an acknowledgement given long before), with three options: expire after a time, an
+operator withdraws it, or both. The owner answered "Faça isso por mim". The assistant took it as the word to merge pull request 120
+(merged 2026-11-09, `5057de7b`) and as a delegation of the second decision, which it took the conservative way. The owner may
+overrule it; until the owner changes the cell to `owner` it is not an owner gate.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-08-1 | "Faça isso por mim" (the owner's whole answer to: merge pull request 120, and expire or withdraw a pending `CANCEL_SOURCE` entry). Taken: **expiry only, built next.** An entry that is still `PENDING_SOURCE` 24 hours after its request (the deployment may set 1 hour to 7 days) ends `FAILED` with the closed reason `SOURCE_DID_NOT_END`, no run is made and its place in the namespace is freed. No call that withdraws an entry is built: the operator's lever is to end the source (a run in manual review is resolved like any other run) or to let the entry expire; a withdrawal is a later decision. `SAGAT_RESET_CANCEL_SOURCE_ENABLED` stays off by default until the expiry is built and reviewed. | delegate | Decided (not built) | specs/018-schedules-bulk-operations/research.md (D2000, G1991), docs/runbooks/run-reset.md, docs/adr/ADR-0080-cancel-source-is-switched-on-per-process-until-the-capability-registry-exists.md |
+
 ## 2026-11-05 — A merge into `develop` starts no CI
 
 The owner gave the instruction in the Claude session while the assistant was merging a stack of pull requests, each of
