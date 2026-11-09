@@ -488,7 +488,7 @@ fn the_command_line_is_parsed_with_its_flags_and_refuses_what_it_does_not_know()
 async fn the_migration_rolls_back_on_a_schema_that_was_not_handed_over_applies_again_and_refuses_after_the_handover()
  {
     let r = registry().await;
-    let this = 20_270_112_000_000_i64;
+    let this = 20_270_114_000_000_i64;
     let previous: i64 =
         sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE version < $1")
             .bind(this)

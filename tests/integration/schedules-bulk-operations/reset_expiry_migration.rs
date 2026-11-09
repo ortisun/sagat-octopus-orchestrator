@@ -13,7 +13,7 @@ use crate::migration::undo_to;
 use crate::pending_resets_migration::{CHECK_VIOLATION, code, entry};
 
 /// This migration: the one version a renumbering at merge changes in this file.
-const THIS: i64 = 20_270_113_000_000;
+const THIS: i64 = 20_270_115_000_000;
 
 /// The migration before it, read from the list the migrator embeds: where a rollback of this one alone stops.
 fn previous() -> i64 {

@@ -13,7 +13,7 @@ use crate::support::instances::{nothing, registry};
 
 /// The version of this migration and the one before it, from the migrator (a later migration cannot make a rollback of
 /// this one alone stop in the wrong place).
-const THIS: i64 = 20_270_111_000_000;
+const THIS: i64 = 20_270_113_000_000;
 
 fn previous() -> i64 {
     sagat_infra_postgres::MIGRATOR
