@@ -897,6 +897,9 @@ test to every catalog and storage type.
 
   Refs: FR-035-006, SC-035-001.
 
+  *2026-11-09, amended (D035-150):* the Iceberg probe is read-only, so the bullet about a write outside the prefix is not tested here (it belongs to the object-storage probe, US07); the
+  checks are the pair (check, code) of D035-150, and "an unavailable OpenBao" is a failed step (`DATABASE_CREDENTIAL_UNAVAILABLE`), not a check.
+
 ### Implementation for User Story 1
 
 - [x] T035-041 [US01] Add `ConnectionConfig::Iceberg`, with every catalog and storage shape, to
@@ -946,6 +949,8 @@ test to every catalog and storage type.
   - admit it through 017's fixed-probe admission.
 
   T035-039 and T035-040 pass. Refs: FR-035-006, G035-021.
+
+  *2026-11-09, amended (D035-150):* "try one write outside the prefix" is not part of this probe; the order of work is slices S0 to S8 of D035-150, and S0 to S4 come before the host.
 - [ ] T035-046 [P] [US01] Add the Iceberg connection to the Studio, in
   `frontend/apps/studio/src/features/connections/{ConnectionForm.tsx,ConnectionProbe.tsx,api.ts}`:
   - an Iceberg form with REST and S3 sections;

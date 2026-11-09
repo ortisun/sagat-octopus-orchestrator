@@ -512,6 +512,8 @@ same change.
   (path-style S3 hides the bucket, and shared front ends allow domain fronting); it rests on the
   sandboxed host and on credentials scoped to the declared prefixes. The probe tries one write outside
   the prefix and warns if it is allowed, and the runbook requires prefix-scoped credentials.
+  *2026-11-09 (D035-150):* the Iceberg probe is read-only and does not try the write; the warning belongs to the object-storage probe (US07). For an Iceberg connection the runbook's control
+  is the only one against an over-broad credential.
 - **G035-022** — The co-location mechanism of D035-048 is unproven until spike T-isolation passes.
 - **G035-023** — Python supply chain: pip and setuptools are removed from the runtime image,
   `pip-audit` runs on a schedule as well as on bumps, and an SBOM is published with the image.
@@ -3509,3 +3511,56 @@ The other fixes were wording:
   completion logged at TRACE, and a receipt that tolerates a field it does not have. *Found:* nothing; the server's half was clean. *Not covered:* the host and the sandbox runner (other
   processes, tested in `runners/lake/tests/`), the spans (they do not exist yet), and a leak into a table through a column the search reads as something other than its text (an encrypted
   column holds no canary by design).
+- **D035-150 — The probe of an Iceberg connection (T035-040, T035-045; FR-035-006; REVISED 2026-11-09 after an independent architecture review; nothing is built).** **Decided by: delegate.**
+  *History, so that it is not repeated.* The first text of this decision proposed a third optional payload of `Node`, a node type outside the public schema, "claim, admission and pin unchanged", four new
+  failure codes and a failed check as a successful step. The `architecture-reviewer` read it against the code and found four of its premises false: (1) every restore of a stored definition
+  validates against the one embedded public schema (`infra-ir/src/lib.rs`, `validated_stored_document`), so a node type outside it could not be stored; (2) three of the four codes already exist
+  (`DATABASE_AUTHENTICATION_FAILED`, `DATABASE_TLS_FAILED`, `DATABASE_DESTINATION_DENIED`, which `contracts/errors.md` already says are reused); (3) a step that succeeds with a failed check shows
+  as healthy to every reader of the probe that exists (`failureCode` required and null, the Studio's "a successful probe confirms this revision"); (4) six places ask "is it a SQL step or a lake
+  write" with the two payload accessors (`admission.rs:99`, `definitions.rs:217`, `execution.rs:464` and `:1114`, `application/definitions.rs:608`, and the claim), so a probe node would be
+  created with no connection binding and its claim would fail for ever, and the lake completion and the unknown-outcome path treat every lake step as a write. What follows is what holds.
+  *Model (kept).* A private run of origin `ConnectionProbe`, one node, whose definition the platform writes (`probe_document`), compared canonically with what was sent, input `{}`, 30 s, one
+  attempt. *The node.* A distinct managed kind: `Node` keeps **one** optional managed payload, an enum `Sql(DatabaseOperation) | Lake(IcebergWrite) | LakeProbe(ConnectionRef)`, and
+  `ManagedKind` gains `LakeProbe` with `profile() = Lake`; every match over them is exhaustive (`crates/domain/AGENTS.md`), so a new kind is decided at every site. *Before that, slice S0:* the six
+  sites above ask `managed_kind().is_some()` (behaviour-preserving today, since the two kinds cover exactly the two payloads), and `managed_kind_sites.rs` is widened to every non-test source of
+  `application`, `infra-postgres` and `infra-ir` and to the `iceberg_write()` question, so that the class of defect cannot come back. *The stored shape.* Not in the public
+  `workflow.schema.json`: a reserved node type there would be permanent public surface that no author may use, and SDK generators and the reference docs would carry it. The IR codec gets a second
+  restore method for **private definitions**, chosen by the loader from what it already knows (`private_execution_definitions`), and the publication path never reaches it. S1 starts with a
+  spike of that signal and, if the loader cannot tell the two apart without a migration, falls back to a reserved type in the public schema (refused at publication with a stated reason), recorded
+  as an amendment of this decision. Either way an N-1 server cannot restore a probe document and answers `UNSUPPORTED_NODE` as D035-059 already accepts for writes; probe documents are private and
+  short-lived. This is hard to reverse, so S1 carries **ADR-0080** (*a platform-reserved node type is a private document*) with the alternatives and its fitness function: a test that a stored probe
+  document restores through the private entry and is refused by the public one. *The start.* `probe_connection` reads the connection's kind before it builds the document (the same answer for a
+  missing connection, another tenant's and a connection of another kind), refuses when `lake.enabled` is off (otherwise the probe waits its 30 s and times out), builds the lake document for an
+  Iceberg connection, and keeps at most one probe in flight per connection and revision (each probe costs a container, two secret reads and a call to the customer's catalog). `rerun_private`
+  re-enters the same path. *Admission, claim and accounting.* The probe is admitted, pinned and claimed as a lake step (it is one: S0 makes that true by construction). It counts in its own
+  ceiling of one per namespace and not against the writes' or the SQL budget, so that a flood of probes cannot starve writes; it takes a runner slot like any attempt.
+  *The lease and the host.* Not the write's document with members left out: the reader requires every member, and a probe document under `sagat.lake.attempt-input.v1` would contradict that.
+  A **new schema, `sagat.lake.probe-input.v1`**, with the connection's name and revision and the checks to run, read strictly in `infra-lake` beside the write's reader, with its own corpus. The
+  host (`runners/lake/sagat_lake/probe.py`) runs `CATALOG_AUTH` (authenticate and read the catalog's configuration), `WAREHOUSE` (the warehouse named exists and its locations are the
+  connection's) and `STORAGE_ACCESS` (list at most one key under a warehouse location with the storage credentials; `SKIPPED` with vended credentials, which nothing vends without a table). A
+  check that cannot run because an earlier one failed is `SKIPPED`. *The result.* The host reports a typed result, rebuilt by the server through its own port (`LakeProbeCodec`, closed
+  enums in, typed result out, the application reads no wire); the typed result **echoes the connection's name and revision and the codec compares them**, as the receipt does with its effect key.
+  *A check is the answer; the platform's fault is the failure.* A check that fails is a result (`FAILED` with a closed code), and the step completes. A fault of the platform before the host
+  can answer (OpenBao unavailable, `DATABASE_CREDENTIAL_UNAVAILABLE` at the resolve; no result or a malformed one, `LAKE_HOST_PROTOCOL`; the sandbox, `LAKE_SANDBOX_UNAVAILABLE`; the deadline) fails the
+  step with that code. So one fact has one channel, and the probe node never retries. *Reading.* `latest_connection_probe` derives `failureCode` as the code of the first `FAILED` check (so every
+  existing reader sees a failure and not a healthy connection), adds `checks[]` (additive in `ProbeMetadata` and in `DatabaseConnectionProbe`), and says in the contract that `status` means *the
+  probe ran*; `SKIPPED` is *not confirmed*, never *passed*, and a result whose payload was purged reads as *no checks*, never as *passed*. The time of the probe is the journal's instant, not the
+  host's. The read of the retained output joins the payload as `database_results.rs` does, and is tested as the runtime role. *Codes.* **No new code.** The pair (check, code) is the distinction
+  T035-040 asks for: a wrong secret is `DATABASE_AUTHENTICATION_FAILED` on `CATALOG_AUTH` (or on `STORAGE_ACCESS`), an untrusted certificate `DATABASE_TLS_FAILED`, a host the egress policy
+  refuses `DATABASE_DESTINATION_DENIED`, an unreachable catalog or storage `CATALOG_UNAVAILABLE` or `STORAGE_UNAVAILABLE`; a code never has to say which side failed when the check does.
+  *Registration and rollout.* The lake profile accepts the two lake activities (`managed_profile` accepts one name today), and the lake runner offers both in **one** session (today it registers one
+  session for the write); a server that refuses the second activity leaves the runner serving writes only, which is tested. The new lease operation is a wire difference, so it takes the next
+  minor of the worker protocol (1.7), **together with** G035-077/078/079 and O035-007, which already need one. Order: server, then bindings (`docs/runbooks/database-runner.md` covers only the write
+  today), then runners; a runner that is leased something it does not serve fails the lease at once instead of letting it sit to the deadline. *Telemetry.* `lake_probe_checks_total{check,outcome,code}`
+  (closed labels, no connection name); a probe never appears in the write's failure-rate metrics, because its step succeeds. *Audit.* No new action: the run's start (`CONNECTION_PROBE`), the two
+  secret reads and any denial are already recorded, and a test shows that the run reaches the connection through the pin. *The write outside the prefix (G035-021).* **Not in the Iceberg probe.**
+  A probe that writes is a write effect (an object, a name that cannot collide, a delete that can fail), and `contracts/lake-runtime.md` puts it in the object-storage probe. The cost is real and
+  recorded: the Iceberg path has **only the runbook's control** (credentials scoped to the declared prefixes) against an over-broad credential, where round 1 had the probe's warning as well.
+  FR-035-006 is still met (it asks for the storage access *within the declared locations*). T035-040, T035-045, `lake-runtime.md` and G035-021 say so (dated notes, 2026-11-09). A `warning`
+  outcome never existed in the contract (`PASSED | FAILED | SKIPPED`). *Slices (each its own pull request, tests first):* **S0** the six sites and the fitness check (no probe in it); **S1** the managed
+  payload enum, `ManagedKind::LakeProbe`, the private restore, ADR-0080, the fixed document and the origin gate; **S2** the start (kind lookup, `lake.enabled`, one in flight), admission, claim, pin
+  and the probe's ceiling, with one table-driven test that admits, claims and completes every managed node shape and shows the cross-completion refused; **S3** the probe input and its reader, the
+  lease, the registration of two activities and the protocol minor; **S4** the result port, its codec and corpus, the completion, `latest_connection_probe` with `checks[]` and the derived
+  `failureCode`, OpenAPI, Studio types, `GET /database-drivers`, the probe class in `lake_canaries.rs`; **S5** the host (`probe.py`, pytest); **S6** the runner and the sandbox request for the
+  operation, the runbook; **S7** the Studio (T035-046); **S8** metrics, docs and the guide. *Not verified by the review:* the Python host, the parity checks of the six SDK catalogs (no code is added,
+  so none is needed), and ADR-0071 in full.
