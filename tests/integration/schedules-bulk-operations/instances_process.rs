@@ -320,6 +320,11 @@ async fn engine_env_for(r: &Registry, idp: &TestIdp) -> std::collections::HashMa
             ("SAGAT_SCHEDULER_INTERVAL_MS", "40"),
             // the shortest lease, so that the keeper rounds every 600 ms
             ("SAGAT_SHARD_LEASE_SECS", "3"),
+            // The default of the production binary. The shared fixture gives an engine one second, which a loaded runner can
+            // overrun between two ticks of the scheduler loop: `/livez` then said 503 ("the scheduler loop stopped ticking")
+            // in CI while the test asserted that a process whose gate is closed is alive. Every liveness assertion of this
+            // file expects 200; none of them is about a loop that stopped.
+            ("SAGAT_LIVENESS_GRACE_SECS", "30"),
         ],
     )
 }
