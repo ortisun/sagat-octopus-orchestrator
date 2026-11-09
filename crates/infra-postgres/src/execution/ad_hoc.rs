@@ -51,36 +51,6 @@ pub(super) async fn private_definition(
         .bind(tenant.as_uuid()).bind(run.as_uuid()).bind(actor).fetch_optional(&store.pool).await.map_err(store_error)
 }
 
-/// The kind of managed step the current revision of an existing connection serves; `None` when there is no such connection (missing, or
-/// deleted). Read-only, and scoped to the tenant and the namespace: another tenant's connection is not there.
-pub(super) async fn connection_kind(
-    store: &PgRunStore,
-    tenant: TenantId,
-    namespace: NamespaceId,
-    name: &Slug,
-) -> Result<Option<sagat_domain::database::ManagedKind>, StoreError> {
-    let config: Option<serde_json::Value> = sqlx::query_scalar(
-        "SELECT r.config FROM database_connections c JOIN database_connection_revisions r ON r.tenant_id=c.tenant_id AND r.namespace_id=c.namespace_id AND r.connection_id=c.id AND r.revision=c.current_revision WHERE c.tenant_id=$1 AND c.namespace_id=$2 AND c.name=$3 AND c.status <> 'DELETED'",
-    )
-    .bind(tenant.as_uuid())
-    .bind(namespace.as_uuid())
-    .bind(name.as_str())
-    .fetch_optional(&store.pool)
-    .await
-    .map_err(store_error)?;
-    config
-        .map(|value| {
-            crate::database::config_from(&value).map(|config| {
-                if config.as_iceberg().is_some() {
-                    sagat_domain::database::ManagedKind::Lake
-                } else {
-                    sagat_domain::database::ManagedKind::Sql
-                }
-            })
-        })
-        .transpose()
-}
-
 pub(super) async fn latest_probe(
     store: &PgRunStore,
     tenant: TenantId,
