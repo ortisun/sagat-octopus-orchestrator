@@ -6,6 +6,7 @@
 //! step leased here is failed for good before the scenario ends.
 #![allow(clippy::expect_used, clippy::panic)]
 use super::lake::{append, iceberg_in, iceberg_secrets, publish_on_lake, rows_schema, write};
+use super::lake_blobs::{committed_output, pin as pin_blobs};
 use crate::{
     ReadBarrier,
     support::engine::{World, ctx, task_ref},
@@ -416,8 +417,32 @@ pub async fn run(
     );
     release(second).await;
 
-    // The pins of an attempt are released with the retention of the terminal run, every role of every attempt together.
+    // The pins of an attempt are released with the retention of the terminal run, every role of every attempt together. So are the pins of
+    // the blobs its lease named (D035-147, G035-080): the same job, the same day, and nothing that is not terminal.
     assert_eq!(pins(w, first).await.len(), 4);
+    let blob_pins = |run: RunId| async move {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM step_lease_blobs WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(w.admin.tenant_id().as_uuid())
+        .bind(run.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .unwrap()
+    };
+    let named = committed_output(w, first).await.id();
+    pin_blobs(
+        w,
+        first,
+        "save",
+        sagat_domain::execution::Fence {
+            attempt: 1,
+            generation: 1,
+        },
+        &[named],
+    )
+    .await;
+    assert_eq!(blob_pins(first).await, 1);
     sqlx::query(
         "UPDATE runs SET finished_at = clock_timestamp() - interval '25 hours' WHERE tenant_id = $1 AND id = $2 AND finished_at IS NOT NULL",
     )
@@ -448,6 +473,34 @@ pub async fn run(
     .await
     .unwrap();
     assert_eq!(released, 1, "and the release is audited once for the run");
+    assert_eq!(
+        blob_pins(first).await,
+        0,
+        "the pins of the blobs the lease named go with them"
+    );
+    // A run that has only blob pins left (its attempt never resolved its credentials) is found by the job as well.
+    pin_blobs(
+        w,
+        first,
+        "save",
+        sagat_domain::execution::Fence {
+            attempt: 1,
+            generation: 1,
+        },
+        &[named],
+    )
+    .await;
+    assert_eq!(blob_pins(first).await, 1);
+    sagat_application::secret_cleanup::SecretCleanupStore::release_terminal_credential_pins(
+        &w.store, 128,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        blob_pins(first).await,
+        0,
+        "a terminal run that holds nothing but blob pins is released too"
+    );
 
     // A connection whose catalog and storage name one secret: two roles, one secret, two pins.
     let shared = start(one, "lake-resolve-start-00002").await;
@@ -490,6 +543,43 @@ pub async fn run(
         "one secret under two roles is two events, not one that repeats"
     );
     release(task).await;
+    // The job releases the run it selected and no other, and only a run that ended more than a day ago: the run above ended a moment ago,
+    // so its blob pin stays while the pin of the old run (selected again by its own) goes.
+    let fence = sagat_domain::execution::Fence {
+        attempt: 1,
+        generation: 1,
+    };
+    let ended: Option<bool> = sqlx::query_scalar(
+        "SELECT finished_at IS NOT NULL AND finished_at > now() - interval '1 hour' FROM runs WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(shared.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        ended,
+        Some(true),
+        "the run is over, and not long ago: otherwise this proves nothing about the day it waits"
+    );
+    let fresh = committed_output(w, shared).await.id();
+    pin_blobs(w, shared, "save", fence, &[fresh]).await;
+    pin_blobs(w, first, "save", fence, &[named]).await;
+    sagat_application::secret_cleanup::SecretCleanupStore::release_terminal_credential_pins(
+        &w.store, 128,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        blob_pins(first).await,
+        0,
+        "the run that ended long ago is released"
+    );
+    assert_eq!(
+        blob_pins(shared).await,
+        1,
+        "the run that ended a moment ago keeps its pins, and the release of another run does not touch them"
+    );
 
     // Either secret changing between the two reads fails the resolve and pins nothing: the first read is held while the storage
     // secret is rotated, and the second while the catalog's is.

@@ -88,10 +88,11 @@ the descriptor in the run's data is the catalog's; the lease pins them to the at
 the run is live. A step that names a blob that is not the run's, or lies about its size or digest, fails for good (`DATABASE_RESULT_UNAVAILABLE`) and is
 never leased. A runner that asks for any other blob is answered as if it did not exist, and one `database.denied` record names the run (never the blob):
 seeing it means a runner asked for something its lease did not name, which a correct runner never does. The lease is checked when a read starts: a
-download already under way is not cut when the run is cancelled, and a runner is not limited in how often it asks (G035-081). The pins stay as long as
-the run does (G035-080): rolling back the migration that makes them, after a step with blobs has been leased, needs the operator to delete the pins of
-attempts that are over first (`DELETE FROM step_lease_blobs`, as the owner, once no lake attempt is in flight); a pin of an attempt that has ended
-authorizes nothing, and the reads it allowed are in the audit trail (`blob.read`).
+download already under way is not cut when the run is cancelled, and a runner is not limited in how often it asks (G035-081). The pins are released
+with the retention of the terminal run (D035-148): the job that releases the credential pins deletes them a day after the run ended, in the same
+transaction, and a pin of an attempt that has ended authorizes nothing in the meantime. Rolling back the migration that makes them is closed while a
+pin exists, as for the credential pins: wait for the job, or delete the pins of attempts that are over as the owner (`DELETE FROM step_lease_blobs`,
+once no lake attempt is in flight); the reads they allowed are in the audit trail (`blob.read`), and the release itself is not audited.
 
 ```json
 "lake": {

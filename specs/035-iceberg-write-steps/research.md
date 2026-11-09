@@ -3376,7 +3376,7 @@ The other fixes were wording:
     lock statements are the first lines of the file now. I had not run that suite because I had touched three of its files (the stamp of the schema boundary) and took it for a suite of
     ignored tests; CI selects a suite for the files it contains. Run the suites of the files you edit, and the whole of a suite that undoes migrations when you add one.
   - *Not done in this slice.* A SQL result as a source (G035-067); the container end to end (T035-062); the limits of G035-080 and G035-081.
-- **G035-080 — Pins of lake blobs are never deleted.** `step_lease_blobs` rows go with their run, and nothing purges a run, so up to 32 rows per lake attempt that names blobs stay for
+- **G035-080 — Pins of lake blobs are never deleted. CLOSED by D035-148 (2026-11-09).** `step_lease_blobs` rows go with their run, and nothing purges a run, so up to 32 rows per lake attempt that names blobs stay for
   ever, and the rollback of the migration that makes the table stays closed until an operator deletes them. *Exit condition:* the retention of runs (or of their pins) when it exists; the
   `down` guard can then let the pins of finished runs through. **Corrected (2026-11-09, architecture review):** the claim that "the credential pins of a lake or SQL attempt do the same" was wrong:
   `secret_cleanup.rs` deletes the rows of `step_database_credentials` 24 hours after their run is terminal, so the blob pins can be released by the same job, and no retention of runs is needed.
@@ -3468,7 +3468,7 @@ The other fixes were wording:
   (2) **The wire contracts have three homes and the application knows another layer's JSON**: the receipt port returns canonical bytes and `committed_facts` (D035-146, mine) reads them again in the application; the lease
   document is built with `json!` in the application and read by a strict reader in `sagat-infra-lake`, with the schema string and the size bound written twice and tied only by a test. The receipt is fixed by a
   typed result of the port (the next change); the lease document is **G035-084**. (3) **Two independent `SAGAT_LAKE_ENABLED` switches** (control plane and execution engine), with no authority in PostgreSQL and no
-  check that they agree: **G035-085**. (4) **G035-080 was wrong about the credential pins** (corrected above) and the blob pins can be released by the same job: the next change after the receipt. (5) **The ceilings of a lake attempt
+  check that they agree: **G035-085**. (4) **G035-080 was wrong about the credential pins** (corrected above) and the blob pins can be released by the same job (done: D035-148). (5) **The ceilings of a lake attempt
   are constants in the adapter, and saturation is audited as a denial**: **G035-086**. (6) **`serve` and `serve_lake` are one loop twice**, the protocol minor is a literal in two places and a `>= 6` in SQL, and the attempts
   metric has no profile label: **G035-087**. (7) **D035-069 says an unknown-outcome retry needs `saga:override` and the code refuses the retry**: already G035-077 and O035-007, and with G035-078 and G035-079 they
   need one `worker.proto` minor, so they are to be decided together.
@@ -3486,3 +3486,13 @@ The other fixes were wording:
 - **G035-087 — The lake runner's loop and its protocol are written twice.** `serve` and `serve_lake` in `apps/database-runner/src/runner.rs` are the same register, poll and spawn loop (the comment says so); `"1.6"` is
   a literal in both, and `database_owner` in SQL says `accepted_protocol_minor >= 6` instead of reading `DATABASE_PROTOCOL_MINOR`; `database_runner_attempts_total` has no `profile` label, so an operator cannot separate
   SQL from lake. *Exit condition:* one loop with the profile as a parameter, the constant used where the literal is, and the label (a reviewed change of the metric's vocabulary).
+- **D035-148 — The pins of lake blobs are released by the retention job of the credential pins (closes G035-080; D035-147 item 4).** **Decided by: delegate.** `release_terminal_credential_pins`
+  (`infra-postgres/src/secret_cleanup.rs`) selects a run that ended more than 24 hours ago and still holds a credential pin **or a blob pin**, and deletes both kinds in the transaction it
+  already opens for the run, under the namespace's secrets lock. A run whose lake attempt never resolved its credentials holds blob pins and nothing else, which is why the selection is the
+  OR of the two. The delete is scoped to the run it selected (tenant, namespace, run), and a run that ended a moment ago keeps its pins. Migration `20270112000000_lake_blob_pin_release`
+  grants `DELETE` on `step_lease_blobs` to `sagat_app` (a guarded grant; the `down` revokes it, and loses nothing: the rows are untouched). *Not audited:* the release of the credential pins is
+  (`secret.attempt_pins_released`) because it ends a record of what was disclosed; a blob pin discloses nothing, and the reads it allowed are in the trail (`blob.read`). *Rejected:* a second
+  job for the blob pins (two selections of the same runs, and the credential job already holds the run), and a `ON DELETE CASCADE` from the run (nothing purges a run). *Evidence:* the
+  lifecycle scenario `durable_provider_intents` (the pins of the old run go, a run with nothing but blob pins is found, a run that ended a moment ago keeps its pin and the release of
+  another run does not touch it), the privilege audit (`DELETE` granted, `UPDATE` not), the roll-back of the grant (`the_release_of_the_lake_blob_pins_is_a_grant_and_rolls_back_as_one`) and
+  four hand mutations (see the pull request).

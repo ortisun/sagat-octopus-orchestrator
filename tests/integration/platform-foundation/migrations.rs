@@ -397,3 +397,45 @@ async fn the_lake_blob_pins_roll_back_only_while_no_attempt_holds_one() {
     migrate(&db.pool).await.expect("forward again");
     assert!(table_exists(&db.pool, "step_lease_blobs").await);
 }
+
+/// The stamp of the migration before the one that lets the runtime role delete the pins of lake blobs (feature 035, D035-147).
+const BEFORE_LAKE_BLOB_PIN_RELEASE: i64 = 20_270_111_000_000;
+
+#[tokio::test]
+async fn the_release_of_the_lake_blob_pins_is_a_grant_and_rolls_back_as_one() {
+    let db = migrated_db().await;
+    let can_delete = |db: &crate::support::TestDb| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT has_table_privilege('sagat_app', 'step_lease_blobs', 'DELETE')",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("the privilege")
+        }
+    };
+    assert!(
+        can_delete(&db).await,
+        "the retention job runs as the runtime role"
+    );
+    // Nothing is lost by rolling it back: the pins stay, the table stays, and only the grant goes.
+    MIGRATOR
+        .undo(&db.pool, BEFORE_LAKE_BLOB_PIN_RELEASE)
+        .await
+        .expect("the grant alone rolls back");
+    assert!(table_exists(&db.pool, "step_lease_blobs").await);
+    assert!(
+        !can_delete(&db).await,
+        "and the runtime role no longer deletes a pin"
+    );
+    let still: bool = sqlx::query_scalar(
+        "SELECT has_table_privilege('sagat_app', 'step_lease_blobs', 'SELECT') AND has_table_privilege('sagat_app', 'step_lease_blobs', 'INSERT')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("the privileges");
+    assert!(still, "it reads and writes them as before");
+    migrate(&db.pool).await.expect("forward again");
+    assert!(can_delete(&db).await);
+}
