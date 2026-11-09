@@ -1106,7 +1106,7 @@
         "runId": "<uuid:20>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
-        "traceId": null,
+        "traceId": "<trace:17>",
         "updatedAt": "<time>",
         "version": "<n>",
         "versionId": "<uuid:17>",
@@ -1144,7 +1144,7 @@
         "runId": "<uuid:21>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
-        "traceId": "<trace:17>",
+        "traceId": "<trace:18>",
         "updatedAt": "<time>",
         "version": "<n>",
         "versionId": "<uuid:2>",
@@ -1160,7 +1160,7 @@
         "retryAfterMs": null,
         "retryable": false,
         "status": 422,
-        "traceId": "<trace:18>"
+        "traceId": "<trace:19>"
       },
       "id": "unknown-source-policy",
       "ok": false,
@@ -1677,7 +1677,7 @@
         "targetIdempotencyKey": "",
         "targetNode": "",
         "taskKind": "FORWARD",
-        "traceId": "<trace:19>",
+        "traceId": "<trace:20>",
         "traceparentPresent": true
       },
       {
@@ -1698,7 +1698,7 @@
         "targetIdempotencyKey": "",
         "targetNode": "",
         "taskKind": "FORWARD",
-        "traceId": "<trace:17>",
+        "traceId": "<trace:18>",
         "traceparentPresent": true
       }
     ],
@@ -1734,8 +1734,8 @@
         "targetIdempotencyKey": "",
         "targetNode": "",
         "taskKind": "FORWARD",
-        "traceId": "",
-        "traceparentPresent": false
+        "traceId": "<trace:17>",
+        "traceparentPresent": true
       }
     ]
   }
