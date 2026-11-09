@@ -91,7 +91,11 @@ See [managed database SDK examples](../guides/managed-database-sdk.md) for the c
 This deployment has not enabled the lake, so a workflow cannot hold an Apache Iceberg write. Ask the operator to turn on SAGAT_LAKE_ENABLED, or publish the workflow to a deployment that has it.
 
 The lake is off by default. An operator turns it on with `SAGAT_LAKE_ENABLED=true` on the control plane; publishing an
-Apache Iceberg write is still refused until the checks of access, allowed modes and data classification exist.
+Apache Iceberg write is then judged by the checks of access, allowed modes and data classification. A run that carries one is
+admitted, and its step leased, only by a process that has the same setting: set it on every execution-engine replica too
+(`SAGAT_LAKE_ENABLED`), or the run is refused where it is not set; so is the process that serves the worker gRPC, which hands
+the credentials of the step to the lake runner. A lake runner is handed the step and its credentials, but the runner that carries out
+the attempt is not built yet, so a deployment should not turn the lake on to write to a table.
 
 ### INVALID_ICEBERG_NODE
 

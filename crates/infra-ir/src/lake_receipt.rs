@@ -1,11 +1,17 @@
 //! The receipts a lake host can report, as typed fields (`contracts/receipts.schema.json`, D035-062).
 //!
+//! Two readers use them: the lake runner, which reads what its host sent, and the server, which reads what the runner reported
+//! (`JsonLakeReceiptCodec`, D035-142). They are here, and not in the lake runtime, so that the server does not link a runner.
+//!
 //! The runner never forwards what the host sent. It reads each field into a type that accepts only what the contract
 //! names (a count is a canonical decimal string, an outcome is one of a closed set, a hash is 64 lowercase hex digits)
 //! and builds the receipt again from those fields, so a record value, a file location or an object key cannot ride
 //! along in a field the schema does not have. A field outside the contract is refused, and so is a receipt of a kind
 //! the host does not produce (the PostgreSQL, ClickHouse and broker receipts are written by the runner itself).
 
+use sagat_application::database::{
+    CommittedWrite, ExpectedReceipt, InvalidLakeReceipt, LakeReceiptCodec, RebuiltReceipt,
+};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -293,4 +299,75 @@ pub enum Receipt {
     Iceberg(Box<IcebergReceipt>),
     #[serde(rename = "object_storage")]
     ObjectStorage(ObjectStorageReceipt),
+}
+
+/// The longest receipt: the longest line a runner reads from its host (16 KiB).
+pub const MAX_RECEIPT_BYTES: usize = 16 * 1024;
+
+/// The server's reader of the receipt of an Iceberg write (D035-142): the runner's report is read into typed fields, checked against
+/// the step it was reported for, and written again from those fields. What the server stores is that, never what the runner sent.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JsonLakeReceiptCodec;
+
+const fn mode_of(mode: sagat_domain::database::WriteMode) -> WriteMode {
+    match mode {
+        sagat_domain::database::WriteMode::Append => WriteMode::Append,
+        sagat_domain::database::WriteMode::Overwrite => WriteMode::Overwrite,
+        sagat_domain::database::WriteMode::Upsert => WriteMode::Upsert,
+    }
+}
+
+impl LakeReceiptCodec for JsonLakeReceiptCodec {
+    fn rebuild(
+        &self,
+        receipt: &[u8],
+        expected: &ExpectedReceipt<'_>,
+    ) -> Result<RebuiltReceipt, InvalidLakeReceipt> {
+        if receipt.len() > MAX_RECEIPT_BYTES {
+            return Err(InvalidLakeReceipt::TooLarge);
+        }
+        let iceberg =
+            match serde_json::from_slice(receipt).map_err(|_| InvalidLakeReceipt::Malformed)? {
+                Receipt::Iceberg(iceberg) => iceberg,
+                Receipt::ObjectStorage(_) => return Err(InvalidLakeReceipt::Kind),
+            };
+        // The revert of a commit is the receipt of a compensation; an Iceberg write ends in a commit or, when the lease allows it, in nothing
+        // to commit.
+        match iceberg.outcome {
+            IcebergOutcome::Reverted => return Err(InvalidLakeReceipt::Outcome),
+            IcebergOutcome::EmptyNoCommit if !expected.allow_empty => {
+                return Err(InvalidLakeReceipt::Outcome);
+            }
+            _ => {}
+        }
+        // The parts must agree with the outcome, as the host writes them: a commit has a snapshot; nothing committed has neither a snapshot
+        // nor a row added. Later steps read these fields.
+        let adds_rows = iceberg.rows_added.is_some_and(|rows| rows.get() != 0);
+        let consistent = match iceberg.outcome {
+            IcebergOutcome::Committed => iceberg.snapshot_id.is_some(),
+            IcebergOutcome::EmptyNoCommit => iceberg.snapshot_id.is_none() && !adds_rows,
+            IcebergOutcome::Reverted => true,
+        };
+        if !consistent {
+            return Err(InvalidLakeReceipt::Inconsistent);
+        }
+        if iceberg.effect_key.as_str() != expected.effect_key
+            || iceberg.reference.as_str() != expected.reference
+            || iceberg.mode != mode_of(expected.mode)
+        {
+            return Err(InvalidLakeReceipt::Mismatch);
+        }
+        // What the audit of a write that committed needs, from the typed fields and nowhere else (the consistency checks above hold that a
+        // commit has a snapshot).
+        let commit = match iceberg.outcome {
+            IcebergOutcome::Committed => iceberg.snapshot_id.map(|snapshot| CommittedWrite {
+                snapshot_id: snapshot.get(),
+                rows_added: iceberg.rows_added.map(Count::get),
+            }),
+            IcebergOutcome::EmptyNoCommit | IcebergOutcome::Reverted => None,
+        };
+        let canonical = serde_json::to_vec(&Receipt::Iceberg(iceberg))
+            .map_err(|_| InvalidLakeReceipt::Malformed)?;
+        Ok(RebuiltReceipt { canonical, commit })
+    }
 }

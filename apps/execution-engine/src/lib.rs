@@ -107,7 +107,8 @@ pub async fn serve(
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), DEFINITION_CACHE_ENTRIES);
     let store = PgRunStore::new(pool.clone(), cache.clone())
         .with_breaker(engine.breaker)
-        .with_scoped_worker_protocol();
+        .with_scoped_worker_protocol()
+        .with_lake_enabled(engine.lake_enabled);
     let state = AppState::with_rate_limit(
         IdentityService::new(identity, SystemClock),
         verifier,
@@ -126,7 +127,8 @@ pub async fn serve(
     .with_database_content(
         Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
         Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
-    );
+    )
+    .with_lake_receipts(Arc::new(sagat_infra_ir::JsonLakeReceiptCodec));
     let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =
         match &engine.openbao {
             Some(settings) => Some(

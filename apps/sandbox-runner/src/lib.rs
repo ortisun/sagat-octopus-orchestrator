@@ -18,6 +18,7 @@ pub mod api;
 pub mod cli;
 pub mod config;
 pub mod host;
+pub mod lake;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;

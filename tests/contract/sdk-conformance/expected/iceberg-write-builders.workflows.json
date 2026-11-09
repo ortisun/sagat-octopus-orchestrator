@@ -1,0 +1,535 @@
+{
+  "canonical": {
+    "blobs": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"extract\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lake-blobs\"},\"nodes\":[{\"activity\":\"orders.extract\",\"id\":\"extract\",\"next\":\"load\",\"type\":\"activity\"},{\"connectionRef\":{\"name\":\"lake-main\",\"revision\":3},\"id\":\"load\",\"mode\":\"append\",\"next\":\"done\",\"records\":{\"blobs\":\"steps.extract.output.parts\"},\"table\":{\"name\":\"orders\",\"namespace\":[\"sales\"]},\"type\":\"icebergWrite\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "database-result": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"read\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lake-database-result\"},\"nodes\":[{\"connectionRef\":{\"name\":\"orders-db\"},\"id\":\"read\",\"next\":\"load\",\"operation\":\"query\",\"statement\":\"SELECT id, amount FROM orders\",\"type\":\"database\"},{\"connectionRef\":{\"name\":\"lake-main\",\"revision\":3},\"id\":\"load\",\"mode\":\"append\",\"next\":\"done\",\"records\":{\"databaseResult\":\"read\"},\"table\":{\"name\":\"orders\",\"namespace\":[\"sales\"]},\"type\":\"icebergWrite\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "edges": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"extract\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lake-edges\"},\"nodes\":[{\"activity\":\"orders.extract\",\"id\":\"extract\",\"next\":\"load\",\"type\":\"activity\"},{\"connectionRef\":{\"name\":\"abc\"},\"id\":\"load\",\"limits\":{\"maxRecordBytes\":2147483648,\"maxRecords\":1,\"timeoutMs\":1000},\"mapping\":[{\"column\":\"ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"field\":\"/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a\"}],\"mode\":\"append\",\"next\":\"done\",\"records\":{\"inline\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"},\"ref\":\"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\",\"table\":{\"name\":\"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\",\"namespace\":[\"a\",\"b\",\"c\",\"d\",\"e\",\"f\",\"g\",\"h\"]},\"type\":\"icebergWrite\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "every-option": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"extract\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lake-every-option\"},\"nodes\":[{\"activity\":\"orders.extract\",\"id\":\"extract\",\"next\":\"load\",\"type\":\"activity\"},{\"compensation\":\"revert\",\"connectionRef\":{\"name\":\"lake-main\",\"revision\":3},\"id\":\"load\",\"ignoreUnknownFields\":true,\"limits\":{\"maxRecordBytes\":1048576,\"maxRecords\":1000000,\"timeoutMs\":600000},\"mapping\":[{\"column\":\"amount\",\"field\":\"/amount\"},{\"column\":\"customer_name\",\"field\":\"/customer/name\"},{\"column\":\"escaped\",\"field\":\"/a~0b/c~1d\"}],\"mode\":\"append\",\"next\":\"recover\",\"onError\":\"recover\",\"records\":{\"inline\":\"steps.extract.output.rows\"},\"ref\":\"staging\",\"table\":{\"name\":\"orders\",\"namespace\":[\"sales\",\"emea\"]},\"type\":\"icebergWrite\"},{\"activity\":\"orders.recover\",\"id\":\"recover\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "limits-lowest": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"extract\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lake-limits-lowest\"},\"nodes\":[{\"activity\":\"orders.extract\",\"id\":\"extract\",\"next\":\"load\",\"type\":\"activity\"},{\"connectionRef\":{\"name\":\"lake-main\",\"revision\":3},\"id\":\"load\",\"limits\":{\"maxRecordBytes\":1024,\"maxRecords\":100000000,\"timeoutMs\":3600000},\"mode\":\"append\",\"next\":\"done\",\"records\":{\"inline\":\"steps.extract.output.rows\"},\"table\":{\"name\":\"orders\",\"namespace\":[\"sales\"]},\"type\":\"icebergWrite\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "minimal": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"extract\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lake-minimal\"},\"nodes\":[{\"activity\":\"orders.extract\",\"id\":\"extract\",\"next\":\"load\",\"type\":\"activity\"},{\"connectionRef\":{\"name\":\"lake-main\",\"revision\":3},\"id\":\"load\",\"mode\":\"append\",\"next\":\"done\",\"records\":{\"inline\":\"steps.extract.output.rows\"},\"table\":{\"name\":\"orders\",\"namespace\":[\"sales\"]},\"type\":\"icebergWrite\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "no-revision": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"extract\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lake-no-revision\"},\"nodes\":[{\"activity\":\"orders.extract\",\"id\":\"extract\",\"next\":\"load\",\"type\":\"activity\"},{\"connectionRef\":{\"name\":\"lake-main\"},\"id\":\"load\",\"mode\":\"append\",\"next\":\"done\",\"records\":{\"inline\":\"steps.extract.output.rows\"},\"table\":{\"name\":\"orders\",\"namespace\":[\"sales\"]},\"type\":\"icebergWrite\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "unicode": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"extract\",\"kind\":\"Workflow\",\"metadata\":{\"name\":\"lake-unicode\"},\"nodes\":[{\"activity\":\"orders.extract\",\"id\":\"extract\",\"next\":\"load\",\"type\":\"activity\"},{\"connectionRef\":{\"name\":\"lake-main\",\"revision\":3},\"id\":\"load\",\"mapping\":[{\"column\":\"preço\",\"field\":\"/preço\"}],\"mode\":\"append\",\"next\":\"done\",\"records\":{\"inline\":\"steps.extract.output.rows\"},\"table\":{\"name\":\"pedidos_é😀\",\"namespace\":[\"vendas\"]},\"type\":\"icebergWrite\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "errors": {
+    "compensation-unknown": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "connection-double-dash": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "connection-revision-zero": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "connection-with-credentials": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "limits-bytes-too-small": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "limits-records-too-many": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "limits-records-zero": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "limits-timeout-fraction": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "limits-timeout-too-small": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "mapping-bad-escape": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "mapping-column-empty": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "mapping-column-twice": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "mapping-empty-segment": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "mapping-field-not-a-pointer": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "mapping-field-twice": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "mapping-seventeen-segments": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "namespace-empty": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "namespace-nine-levels": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "on-error-empty": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "records-database-result-empty": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "records-inline-empty": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "records-inline-too-long": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "records-inline-too-long-in-bytes": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "records-none": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "records-two-sources": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "ref-empty": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "ref-too-long": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "table-name-dots": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    },
+    "table-name-empty": {
+      "code": "VALIDATION_FAILED",
+      "mentions": true,
+      "raised": true
+    }
+  },
+  "workflows": {
+    "blobs": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "extract",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lake-blobs"
+      },
+      "nodes": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "next": "load",
+          "type": "activity"
+        },
+        {
+          "connectionRef": {
+            "name": "lake-main",
+            "revision": 3
+          },
+          "id": "load",
+          "mode": "append",
+          "next": "done",
+          "records": {
+            "blobs": "steps.extract.output.parts"
+          },
+          "table": {
+            "name": "orders",
+            "namespace": [
+              "sales"
+            ]
+          },
+          "type": "icebergWrite"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "database-result": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "read",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lake-database-result"
+      },
+      "nodes": [
+        {
+          "connectionRef": {
+            "name": "orders-db"
+          },
+          "id": "read",
+          "next": "load",
+          "operation": "query",
+          "statement": "SELECT id, amount FROM orders",
+          "type": "database"
+        },
+        {
+          "connectionRef": {
+            "name": "lake-main",
+            "revision": 3
+          },
+          "id": "load",
+          "mode": "append",
+          "next": "done",
+          "records": {
+            "databaseResult": "read"
+          },
+          "table": {
+            "name": "orders",
+            "namespace": [
+              "sales"
+            ]
+          },
+          "type": "icebergWrite"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "edges": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "extract",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lake-edges"
+      },
+      "nodes": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "next": "load",
+          "type": "activity"
+        },
+        {
+          "connectionRef": {
+            "name": "abc"
+          },
+          "id": "load",
+          "limits": {
+            "maxRecordBytes": 2147483648,
+            "maxRecords": 1,
+            "timeoutMs": 1000
+          },
+          "mapping": [
+            {
+              "column": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "field": "/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a"
+            }
+          ],
+          "mode": "append",
+          "next": "done",
+          "records": {
+            "inline": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          },
+          "ref": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+          "table": {
+            "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+            "namespace": [
+              "a",
+              "b",
+              "c",
+              "d",
+              "e",
+              "f",
+              "g",
+              "h"
+            ]
+          },
+          "type": "icebergWrite"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "every-option": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "extract",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lake-every-option"
+      },
+      "nodes": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "next": "load",
+          "type": "activity"
+        },
+        {
+          "compensation": "revert",
+          "connectionRef": {
+            "name": "lake-main",
+            "revision": 3
+          },
+          "id": "load",
+          "ignoreUnknownFields": true,
+          "limits": {
+            "maxRecordBytes": 1048576,
+            "maxRecords": 1000000,
+            "timeoutMs": 600000
+          },
+          "mapping": [
+            {
+              "column": "amount",
+              "field": "/amount"
+            },
+            {
+              "column": "customer_name",
+              "field": "/customer/name"
+            },
+            {
+              "column": "escaped",
+              "field": "/a~0b/c~1d"
+            }
+          ],
+          "mode": "append",
+          "next": "recover",
+          "onError": "recover",
+          "records": {
+            "inline": "steps.extract.output.rows"
+          },
+          "ref": "staging",
+          "table": {
+            "name": "orders",
+            "namespace": [
+              "sales",
+              "emea"
+            ]
+          },
+          "type": "icebergWrite"
+        },
+        {
+          "activity": "orders.recover",
+          "id": "recover",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "limits-lowest": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "extract",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lake-limits-lowest"
+      },
+      "nodes": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "next": "load",
+          "type": "activity"
+        },
+        {
+          "connectionRef": {
+            "name": "lake-main",
+            "revision": 3
+          },
+          "id": "load",
+          "limits": {
+            "maxRecordBytes": 1024,
+            "maxRecords": 100000000,
+            "timeoutMs": 3600000
+          },
+          "mode": "append",
+          "next": "done",
+          "records": {
+            "inline": "steps.extract.output.rows"
+          },
+          "table": {
+            "name": "orders",
+            "namespace": [
+              "sales"
+            ]
+          },
+          "type": "icebergWrite"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "minimal": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "extract",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lake-minimal"
+      },
+      "nodes": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "next": "load",
+          "type": "activity"
+        },
+        {
+          "connectionRef": {
+            "name": "lake-main",
+            "revision": 3
+          },
+          "id": "load",
+          "mode": "append",
+          "next": "done",
+          "records": {
+            "inline": "steps.extract.output.rows"
+          },
+          "table": {
+            "name": "orders",
+            "namespace": [
+              "sales"
+            ]
+          },
+          "type": "icebergWrite"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "no-revision": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "extract",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lake-no-revision"
+      },
+      "nodes": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "next": "load",
+          "type": "activity"
+        },
+        {
+          "connectionRef": {
+            "name": "lake-main"
+          },
+          "id": "load",
+          "mode": "append",
+          "next": "done",
+          "records": {
+            "inline": "steps.extract.output.rows"
+          },
+          "table": {
+            "name": "orders",
+            "namespace": [
+              "sales"
+            ]
+          },
+          "type": "icebergWrite"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "unicode": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "extract",
+      "kind": "Workflow",
+      "metadata": {
+        "name": "lake-unicode"
+      },
+      "nodes": [
+        {
+          "activity": "orders.extract",
+          "id": "extract",
+          "next": "load",
+          "type": "activity"
+        },
+        {
+          "connectionRef": {
+            "name": "lake-main",
+            "revision": 3
+          },
+          "id": "load",
+          "mapping": [
+            {
+              "column": "preço",
+              "field": "/preço"
+            }
+          ],
+          "mode": "append",
+          "next": "done",
+          "records": {
+            "inline": "steps.extract.output.rows"
+          },
+          "table": {
+            "name": "pedidos_é😀",
+            "namespace": [
+              "vendas"
+            ]
+          },
+          "type": "icebergWrite"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

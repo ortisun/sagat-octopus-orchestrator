@@ -47,11 +47,13 @@ sagat-application.workspace = true
 sagat-cli.workspace = true
 sagat-dev-idp.workspace = true
 sagat-control-plane.workspace = true
+sagat-database-runner.workspace = true
 sagat-domain.workspace = true
 sagat-execution-engine.workspace = true
 sagat-infra-connectors = { workspace = true, features = ["unguarded-for-tests"] }
 sagat-infra-egress.workspace = true
 sagat-infra-ir.workspace = true
+sagat-infra-lake.workspace = true
 sagat-infra-nats.workspace = true
 sagat-infra-postgres.workspace = true
 sagat-infra-sandbox.workspace = true

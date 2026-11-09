@@ -151,6 +151,16 @@ func apply(b *workflow.Builder, ops []any) {
 				panic(sagat.Invalid("invalid managed database operation"))
 			}
 			b.Database(id, database)
+		case "icebergWrite":
+			var iceberg workflow.IcebergWriteOptions
+			raw, err := json.Marshal(options)
+			if err != nil {
+				panic(sagat.Invalid("invalid iceberg write"))
+			}
+			if err = json.Unmarshal(raw, &iceberg); err != nil {
+				panic(sagat.Invalid("invalid iceberg write"))
+			}
+			b.IcebergWrite(id, iceberg)
 		case "step":
 			b.Step(id, asString(op["activity"]), stepOptions(options)...)
 		case "script":

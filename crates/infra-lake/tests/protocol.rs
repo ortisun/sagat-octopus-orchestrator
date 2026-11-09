@@ -176,6 +176,38 @@ fn heartbeats_at_most_once_a_second_are_accepted_for_as_long_as_the_host_runs() 
     }
 }
 
+/// The window starts `HEARTBEAT_WINDOW` before a beat, and before the first second of an attempt that moment does not
+/// exist: a beat at exactly zero must not be treated as already out of the window (the floor saturated to zero and
+/// `beat <= floor` dropped it, so any number of beats at the same first instant passed).
+#[test]
+fn a_flood_in_the_first_second_is_a_flood_even_at_the_very_first_instant() {
+    let beat = br#"{"heartbeat":true}"#;
+    for instant in [ms(0), ms(1), ms(999)] {
+        let mut decoder = Decoder::new();
+        assert_eq!(decoder.line(beat, instant), Ok(Event::Heartbeat));
+        assert_eq!(decoder.line(beat, instant), Ok(Event::Heartbeat));
+        assert_eq!(
+            decoder.line(beat, instant),
+            Err(ProtocolFailure::HeartbeatFlood),
+            "{instant:?}"
+        );
+    }
+}
+
+#[test]
+fn a_beat_leaves_the_window_exactly_one_second_after_it_arrived() {
+    let beat = br#"{"heartbeat":true}"#;
+    let mut decoder = Decoder::new();
+    assert_eq!(decoder.line(beat, ms(0)), Ok(Event::Heartbeat));
+    assert_eq!(decoder.line(beat, ms(500)), Ok(Event::Heartbeat));
+    // the first beat is a second old now and out; the second is still in, so one more fits and the next does not
+    assert_eq!(decoder.line(beat, ms(1000)), Ok(Event::Heartbeat));
+    assert_eq!(
+        decoder.line(beat, ms(1000)),
+        Err(ProtocolFailure::HeartbeatFlood)
+    );
+}
+
 #[test]
 fn one_extra_heartbeat_inside_a_second_is_tolerated_and_a_flood_is_not() {
     let mut decoder = Decoder::new();
@@ -620,6 +652,120 @@ fn an_iceberg_receipt_without_the_optional_fields_is_valid_and_rebuilt_without_t
 }
 
 // -- failures ---------------------------------------------------------------------------------------------------------
+
+/// The codes a host may report: those its operations raise (`runners/lake/sagat_lake`, `contracts/errors.md`). The rest of
+/// the table belongs to the runner (a cancellation, a deadline, a container that did not start, an admission refusal) or
+/// to another feature, and a host that claims one is not the host that was written: it could make a run look cancelled or
+/// timed out. `OUTCOME_UNKNOWN` is on the list because the host reports it when its lookup of the effect key is
+/// inconclusive (D035-030, step 3).
+const HOST_MAY_REPORT: [&str; 18] = [
+    "ICEBERG_TABLE_NOT_FOUND",
+    "ICEBERG_UNSUPPORTED_TABLE",
+    "ICEBERG_LOCATION_NOT_ALLOWED",
+    "ICEBERG_SCHEMA_MISMATCH",
+    "ICEBERG_DUPLICATE_KEY",
+    "ICEBERG_SCOPE_VIOLATION",
+    "ICEBERG_COMMIT_CONFLICT",
+    "ICEBERG_REVERT_BLOCKED",
+    "ICEBERG_LIMIT_EXCEEDED",
+    "CATALOG_UNAVAILABLE",
+    "STORAGE_UNAVAILABLE",
+    "DATABASE_AUTHENTICATION_FAILED",
+    "DATABASE_CREDENTIAL_UNAVAILABLE",
+    "DATABASE_TLS_FAILED",
+    "DATABASE_CONNECTION_FAILED",
+    "OUTCOME_UNKNOWN",
+    "WORKER_ERROR",
+    "LAKE_HOST_PROTOCOL",
+];
+
+#[test]
+fn a_host_can_report_the_codes_of_its_own_operations_and_no_others() {
+    for failure in DatabaseFailure::ALL {
+        let code = failure.code();
+        let mut decoder = Decoder::new();
+        let outcome = decoder.line(
+            &line(&json!({"failure": {"code": code}, "relayDenials": 0})),
+            ms(0),
+        );
+        if HOST_MAY_REPORT.contains(&code) {
+            let Ok(Event::Result(result)) = outcome else {
+                panic!("{code} was refused");
+            };
+            let Outcome::Failure(reported) = result.outcome else {
+                panic!("{code} is not a failure");
+            };
+            assert_eq!(reported.code, *failure);
+        } else {
+            assert_eq!(outcome, Err(ProtocolFailure::InvalidFailure), "{code}");
+        }
+    }
+}
+
+/// Every code the Python host writes as a literal is a code the runner will read. The list above is a copy of what the
+/// host can raise, and a host that starts to raise another (a Hive loader adds a TLS failure, a new operation adds its
+/// own) would otherwise have it turned into `LAKE_HOST_PROTOCOL` with nothing to say why.
+#[test]
+fn every_code_the_python_host_raises_is_one_the_runner_reads() {
+    fn sources(directory: &std::path::Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, found);
+            } else if path.extension().is_some_and(|extension| extension == "py") {
+                found.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    sources(&root().join("runners/lake/sagat_lake"), &mut files);
+    assert!(files.len() > 10, "the host sources were not found");
+
+    let mut raised = std::collections::BTreeSet::new();
+    for file in files {
+        let text = std::fs::read_to_string(file).unwrap();
+        for failure in DatabaseFailure::ALL {
+            if text.contains(&format!("\"{}\"", failure.code())) {
+                raised.insert(failure.code());
+            }
+        }
+    }
+    assert!(raised.contains("ICEBERG_TABLE_NOT_FOUND"), "{raised:?}");
+    for code in raised {
+        assert!(
+            HOST_MAY_REPORT.contains(&code),
+            "the host raises {code} and the runner would refuse it as LAKE_HOST_PROTOCOL"
+        );
+    }
+}
+
+#[test]
+fn every_code_a_host_may_report_is_in_the_table() {
+    for code in HOST_MAY_REPORT {
+        assert!(DatabaseFailure::parse(code).is_some(), "{code}");
+    }
+}
+
+#[test]
+fn a_host_cannot_make_a_run_look_cancelled_timed_out_or_refused_by_the_sandbox() {
+    for code in [
+        "DATABASE_CANCELLED",
+        "DATABASE_TIMEOUT",
+        "LAKE_SANDBOX_UNAVAILABLE",
+        "CLASSIFICATION_EGRESS_REFUSED",
+        "DESTINATION_DENIED",
+    ] {
+        let mut decoder = Decoder::new();
+        assert_eq!(
+            decoder.line(
+                &line(&json!({"failure": {"code": code}, "relayDenials": 0})),
+                ms(0)
+            ),
+            Err(ProtocolFailure::InvalidFailure),
+            "{code}"
+        );
+    }
+}
 
 #[test]
 fn a_failure_names_a_code_of_the_closed_set_and_nothing_free() {

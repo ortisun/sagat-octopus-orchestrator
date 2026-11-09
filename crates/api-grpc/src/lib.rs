@@ -6,7 +6,9 @@
 //! classification, and delegates every rule to `sagat_application::worker::WorkerService`.
 
 mod blobs;
-mod database;
+/// The wire answer to a managed database or lake step (`response`).
+pub mod database;
+pub mod lake_connection;
 mod limits;
 mod request;
 mod server;

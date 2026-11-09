@@ -26,6 +26,12 @@ MAX_LOCATIONS = 16
 _MAX_VALUE = 1024
 _PREFIX = re.compile(r"[A-Za-z0-9._~/-]{1,256}")
 _ENCODED = re.compile(r"%(2e|2f|5c|00)", re.IGNORECASE)
+# The properties of a table the host lets PyIceberg see. PyIceberg builds the file IO of a table from the catalog's
+# properties *overridden by the table's own*, so a table that carries `py-io-impl`, `s3.endpoint`, a proxy, a signer or
+# a credential would beat what the host pinned, and it would do so inside `load_table`, before any fact is read
+# (G035-041). Only the families a write needs are kept; the rest of a table's properties stay in the catalog and are
+# not shown to PyIceberg. The key is matched whole and in exact case, as PyIceberg reads it.
+_TABLE_PROPERTY = re.compile(r"(write|commit|gc|history|read|schema)\.[A-Za-z0-9._-]{1,200}")
 
 
 class StorageType(StrEnum):
@@ -104,7 +110,7 @@ def scrubbed_environment(source: Mapping[str, str]) -> dict[str, str]:
     return {**kept, **_SET_ENVIRONMENT}
 
 
-def _clean_path(path: str) -> bool:
+def clean_path(path: str) -> bool:
     """True when `path` cannot climb out of its prefix: no control character, backslash, query, fragment, encoded dot or
     separator, and no `.` or `..` segment."""
     if any(ord(c) <= 0x20 or ord(c) == 0x7F or c in "\\?#" for c in path) or _ENCODED.search(path):
@@ -115,7 +121,7 @@ def _clean_path(path: str) -> bool:
 def _valid_prefix(storage: StorageType, prefix: str) -> bool:
     scheme, separator, rest = prefix.partition("://")
     authority, _, path = rest.partition("/")
-    if separator != "://" or scheme != _SCHEME[storage] or not authority or not _clean_path(path):
+    if separator != "://" or scheme != _SCHEME[storage] or not authority or not clean_path(path):
         return False
     if any(ord(c) <= 0x20 or c in "\\?#" for c in authority):
         return False
@@ -145,10 +151,12 @@ class Declaration:
 
 @dataclass(frozen=True, slots=True)
 class AcceptedTable:
-    """A `LoadTable` response that passed: the table location and the config that survived the filter."""
+    """A `LoadTable` response that passed: the table location, the config and the table properties that survived."""
 
     location: str
     config: dict[str, str]
+    # The properties of the table PyIceberg may see; the loader hands PyIceberg these and not the document's own.
+    properties: dict[str, str]
 
 
 class Hygiene:
@@ -202,22 +210,56 @@ class Hygiene:
         declares, and the FileIO implementation of the host."""
         return {**catalog, **declared, "py-io-impl": _FILE_IO[self._declaration.storage]}
 
+    @property
+    def access_delegation(self) -> str | None:
+        """The value of ``X-Iceberg-Access-Delegation`` the connection allows, or ``None`` for no header at all.
+
+        PyIceberg asks every catalog for vended credentials by default. The host asks for what the connection declares
+        and nothing else, so a catalog is never invited to hand over credentials the connection does not use.
+        """
+        wanted = []
+        if self._declaration.vended_credentials:
+            wanted.append("vended-credentials")
+        if self._declaration.remote_signing and self._declaration.storage is StorageType.S3:
+            wanted.append("remote-signing")
+        return ",".join(wanted) or None
+
     @staticmethod
     def _plausible(key: str, value: str) -> bool:
         if key == "prefix":
-            return _PREFIX.fullmatch(value) is not None and _clean_path(value)
+            return _PREFIX.fullmatch(value) is not None and clean_path(value)
         return 0 < len(value) <= _MAX_VALUE and all(ord(c) > 0x20 and ord(c) != 0x7F for c in value)
 
     # -- locations -------------------------------------------------------------------------------------------------
 
+    def _inside(self, location: str) -> bool:
+        candidate = location if location.endswith("/") else location + "/"
+        return any(
+            candidate.startswith(prefix) and clean_path(candidate[len(prefix) :])
+            for prefix in self._declaration.warehouse_locations
+        )
+
     def check_location(self, location: str) -> str:
         """`location` itself when it lies under a declared prefix. Otherwise the denial is counted and the attempt
         fails; the error does not say which location."""
-        candidate = location if location.endswith("/") else location + "/"
-        for prefix in self._declaration.warehouse_locations:
-            if candidate.startswith(prefix) and _clean_path(candidate[len(prefix) :]):
-                return location
+        if self._inside(location):
+            return location
         raise self._refusal()
+
+    def storage_credentials(self, entries: Iterable[Mapping[str, object]]) -> list[dict[str, object]]:
+        """The `storage-credentials` of a `LoadTable` response: an entry is kept only for a prefix under the warehouse
+        and only with the keys `table_config` allows. Anything else is dropped and counted, never an error: a catalog
+        may vend more than the connection uses."""
+        accepted: list[dict[str, object]] = []
+        for entry in entries:
+            prefix, config = entry.get("prefix"), entry.get("config")
+            if not isinstance(prefix, str) or not isinstance(config, Mapping):
+                self._deny(Denial.KEY_NOT_ALLOWED)
+            elif not self._inside(prefix):
+                self._deny(Denial.LOCATION_NOT_ALLOWED)
+            elif kept := self.table_config(config):
+                accepted.append({"prefix": prefix, "config": kept})
+        return accepted
 
     def check_locations(self, locations: Iterable[str]) -> list[str]:
         """Every location, in order; the first one outside the declared prefixes stops the batch."""
@@ -252,7 +294,19 @@ class Hygiene:
                 self._check_named(item.get(field), required=False)
         config = document.get("config", {})
         accepted = self.table_config(config if isinstance(config, Mapping) else {})
-        return AcceptedTable(location, accepted)
+        return AcceptedTable(location, accepted, self.table_properties(properties))
+
+    def table_properties(self, properties: Mapping[str, object]) -> dict[str, str]:
+        """The properties of a table the host lets PyIceberg see; every other key, and a value that is not text, is
+        dropped and counted. A normal table carries a few the host does not need (an owner, a comment), so the count is
+        a trend for the audit of a connection and not an alarm by itself."""
+        accepted: dict[str, str] = {}
+        for key, value in properties.items():
+            if isinstance(value, str) and _TABLE_PROPERTY.fullmatch(key):
+                accepted[key] = value
+            else:
+                self._deny(Denial.KEY_NOT_ALLOWED)
+        return accepted
 
     def _items(self, value: object) -> list[Mapping[str, object]]:
         if value is None:

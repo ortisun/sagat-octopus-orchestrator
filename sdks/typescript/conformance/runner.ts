@@ -32,6 +32,7 @@ function apply(target: Flow, ops: Obj[]): void {
     switch (op['op']) {
       case 'step': target.step(op['id'], op['activity'], op['options']); break;
       case 'database': target.database(op['id'], op['options']); break;
+      case 'icebergWrite': target.icebergWrite(op['id'], op['options']); break;
       case 'script': target.script(op['id'], op['artifactDigest'], op['options']); break;
       case 'sleep': target.sleep(op['id'], op['durationMs']); break;
       case 'waitForEvent': target.waitForEvent(op['id'], op['options']); break;

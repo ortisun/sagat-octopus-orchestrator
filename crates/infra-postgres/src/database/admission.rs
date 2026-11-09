@@ -7,7 +7,7 @@ use crate::{
 };
 use sagat_application::{error::StoreError, execution::RunInfo};
 use sagat_domain::{
-    database::{ConnectionId, OperationKind},
+    database::{ConnectionId, OperationKind, RecordSource},
     execution::RunId,
     identity::{NamespaceId, Permission, Role, Subject, TenantId},
     workflow::{NodeId, WorkflowDefinition},
@@ -67,16 +67,23 @@ pub(crate) async fn authority_of(
 /// What the managed database steps of a workflow ask of the subject behind a run: `None` for a
 /// workflow with none, otherwise whether any of them writes.
 pub(crate) fn database_writes(definition: &WorkflowDefinition) -> Option<bool> {
+    // An Iceberg write is a write (it needs `database:write`, as an `execute` does), and a workflow that holds one has
+    // managed steps even when it holds no SQL one: its run takes the same locks and the same authority re-check.
+    let lake = definition.nodes().any(|n| n.iceberg_write().is_some());
     let mut operations = definition.nodes().filter_map(|n| n.database_operation());
-    let first = operations.next()?;
+    let Some(first) = operations.next() else {
+        return lake.then_some(true);
+    };
     Some(
-        first.kind == OperationKind::Execute
+        lake || first.kind == OperationKind::Execute
             || operations.any(|op| op.kind == OperationKind::Execute),
     )
 }
 
-/// Resolved revisions only; connection settings and all credentials stay out of admission receipts.
+/// Resolved revisions only; connection settings and all credentials stay out of admission receipts. `lake_enabled` is the
+/// deployment's `lake.enabled`: without it a run that would carry an Iceberg write is refused (feature 035, D035-137).
 #[tracing::instrument(skip_all, name = "database.admit")]
+#[allow(clippy::too_many_arguments)] // one admission scope, with optional existing run and the deployment's lake switch
 pub(crate) async fn admit_definition(
     conn: &mut PgConnection,
     tenant: TenantId,
@@ -85,16 +92,22 @@ pub(crate) async fn admit_definition(
     definition: &WorkflowDefinition,
     pinned: Option<RunId>,
     run_info: Option<&RunInfo>,
+    lake_enabled: bool,
 ) -> Result<Vec<(NodeId, ConnectionId, u32)>, StoreError> {
-    if !definition
-        .nodes()
-        .any(|n| n.database_operation().is_some() || n.iceberg_write().is_some())
-    {
+    if !definition.nodes().any(|n| n.managed_kind().is_some()) {
         return Ok(Vec::new());
     }
     let started = std::time::Instant::now();
     let result = check_definition(
-        conn, tenant, namespace, actors, definition, pinned, run_info, None,
+        conn,
+        tenant,
+        namespace,
+        actors,
+        definition,
+        pinned,
+        run_info,
+        None,
+        lake_enabled,
     )
     .await;
     let outcome = match &result {
@@ -117,8 +130,20 @@ pub(crate) async fn admit_node(
     info: &RunInfo,
     definition: &WorkflowDefinition,
     node: &NodeId,
+    lake_enabled: bool,
 ) -> Result<(), StoreError> {
     let actors = run_actors(conn, info).await?;
+    // The nodes whose connections are asked: the node, and the SQL step whose retained result a lake write takes (G035-083). The rows
+    // are already in the run, but where they came from is still asked when they are written: a connection paused, or a secret taken
+    // from the actors, since the statement ran stops the write, as a revocation that has returned stops every later admission.
+    let mut asked = vec![node.clone()];
+    if let Some(RecordSource::DatabaseResult(source)) = definition
+        .node(node)
+        .and_then(sagat_domain::workflow::Node::iceberg_write)
+        .map(sagat_domain::database::IcebergWrite::records)
+    {
+        asked.push(source.clone());
+    }
     check_definition(
         conn,
         info.tenant_id,
@@ -127,7 +152,8 @@ pub(crate) async fn admit_node(
         definition,
         Some(info.run_id),
         Some(info),
-        Some(node),
+        Some(&asked),
+        lake_enabled,
     )
     .await?;
     Ok(())
@@ -142,25 +168,29 @@ async fn check_definition(
     definition: &WorkflowDefinition,
     pinned: Option<RunId>,
     run_info: Option<&RunInfo>,
-    selected: Option<&NodeId>,
+    selected: Option<&[NodeId]>,
+    lake_enabled: bool,
 ) -> Result<Vec<(NodeId, ConnectionId, u32)>, StoreError> {
     let operations: Vec<_> = definition
         .nodes()
-        .filter(|n| selected.is_none_or(|id| n.id() == id))
+        .filter(|n| selected.is_none_or(|ids| ids.contains(n.id())))
         .filter_map(|n| n.database_operation().map(|op| (n.id(), op)))
         .collect();
     let lake_writes: Vec<_> = definition
         .nodes()
-        .filter(|n| selected.is_none_or(|id| n.id() == id))
+        .filter(|n| selected.is_none_or(|ids| ids.contains(n.id())))
         .filter_map(|n| n.iceberg_write().map(|write| (n.id(), write)))
         .collect();
     if operations.is_empty() && lake_writes.is_empty() {
         return Ok(Vec::new());
     }
-    // An Iceberg write is admitted for publication and for the author's feedback only. A run of one has no admission yet
-    // (T035-055: connection pins on the direct, child, event, rerun and ad hoc paths, and quota rows), so a run that would
+    // An Iceberg write is admitted for publication and for the author's feedback always, and for a run only when the
+    // deployment has turned the lake on (`lake.enabled`, off by default; D035-059, D035-137). Until then a run that would
     // carry one is refused, as a connection nobody may use is, instead of starting and waiting for a worker that is not there.
-    if !lake_writes.is_empty() && (pinned.is_some() || run_info.is_some() || selected.is_some()) {
+    if !lake_writes.is_empty()
+        && !lake_enabled
+        && (pinned.is_some() || run_info.is_some() || selected.is_some())
+    {
         return Err(StoreError::DatabaseUnavailable);
     }
     // Same order as catalog/secret writes. Membership and existing ACL rows remain locked through
@@ -277,7 +307,20 @@ async fn check_definition(
     }
     for (node, write) in lake_writes {
         let name = write.connection().name.as_str();
-        let pinned_revision = write.connection().revision.map(i64::from);
+        // A run that exists uses the revision it was admitted with, whatever the connection has become since: a floating
+        // write must not re-resolve at claim or replay (D035-130 E).
+        let pin = if pinned.is_some() {
+            Some(
+                *pins
+                    .get(node.as_str())
+                    .ok_or(StoreError::DatabaseUnavailable)?,
+            )
+        } else {
+            None
+        };
+        let pinned_revision = pin
+            .map(|(_, r)| i64::from(r))
+            .or(write.connection().revision.map(i64::from));
         let (id, revision, refusal) = {
             let key = (name, pinned_revision);
             let (id, revision, config) = if let Some(found) = resolved.get(&key) {
@@ -297,12 +340,23 @@ async fn check_definition(
             };
             // A lake write can only use a lake connection; a SQL connection is unusable here, as a lake one is to a SQL node.
             let iceberg = config.as_iceberg().ok_or(StoreError::DatabaseUnavailable)?;
+            // The pin is the connection and the revision the run was admitted with; nothing else stands in for it.
+            if pin.is_some_and(|p| p != (*id, *revision))
+                || write
+                    .connection()
+                    .revision
+                    .is_some_and(|r| i64::from(r) != i64::from(*revision))
+            {
+                return Err(StoreError::DatabaseUnavailable);
+            }
             (*id, *revision, write.refusal_by(iceberg))
         };
-        // A step that pins a revision is judged by the current one too: a mode or a ceiling that was tightened since applies
-        // to it, so pinning an older revision cannot loosen what the connection says now.
+        // A step that names a revision is judged by the current one too: a mode or a ceiling that was tightened since applies
+        // to it, so naming an older revision cannot loosen what the connection says now. A run that already exists is not:
+        // it keeps the revision it was admitted with, as a SQL run does, so the replay of its start and the claim of its step
+        // are judged by that revision, and the way to stop it is to pause the connection, which refuses both.
         let refusal = match (refusal, pinned_revision) {
-            (None, Some(_)) => {
+            (None, Some(_)) if pin.is_none() => {
                 let key = (name, None);
                 let (_, _, current) = if let Some(found) = resolved.get(&key) {
                     found
@@ -389,4 +443,97 @@ async fn resolve_connection(
         }
     }
     Ok((id, revision, config))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+    use super::database_writes;
+    use sagat_domain::{
+        database::{
+            ColumnMapping, ConnectionRef, DatabaseLimits, DatabaseOperation, IcebergWrite,
+            IcebergWriteParts, LakeLimits, OperationKind, RecordSource, TableIdentifier,
+            WriteIntent,
+        },
+        identity::Slug,
+        workflow::{Expression, Node, NodeId, NodeKind, WorkflowDefinition},
+    };
+
+    fn id(text: &str) -> NodeId {
+        NodeId::parse(text).expect("a node id")
+    }
+
+    fn connection(name: &str) -> ConnectionRef {
+        ConnectionRef::new(Slug::parse(name).expect("name"), None).expect("a reference")
+    }
+
+    fn sql(node: &str, kind: OperationKind) -> Node {
+        Node::database(
+            id(node),
+            DatabaseOperation::new(
+                connection("orders-db"),
+                kind,
+                "SELECT 1",
+                vec![],
+                DatabaseLimits::default(),
+            )
+            .expect("an operation"),
+        )
+    }
+
+    fn lake(node: &str) -> Node {
+        let write = IcebergWrite::new(IcebergWriteParts {
+            connection: connection("lake-main"),
+            table: TableIdentifier::new(vec!["sales".to_owned()], "orders").expect("a table"),
+            reference: "main".to_owned(),
+            intent: WriteIntent::Append,
+            records: RecordSource::Inline(Expression::parse("input.orders").expect("expression")),
+            mapping: vec![ColumnMapping::new("/id", "id").expect("a mapping")],
+            ignore_unknown_fields: false,
+            limits: LakeLimits::default(),
+            revert: false,
+        })
+        .expect("a write");
+        Node::iceberg(id(node), write)
+    }
+
+    /// The nodes in a line, then an end.
+    fn line(nodes: Vec<Node>) -> WorkflowDefinition {
+        let entry = nodes
+            .first()
+            .map_or_else(|| id("done"), |node| node.id().clone());
+        let mut linked: Vec<Node> = Vec::new();
+        let mut next = id("done");
+        for node in nodes.into_iter().rev() {
+            let current = node.id().clone();
+            linked.push(node.with_next(next));
+            next = current;
+        }
+        linked.reverse();
+        linked.push(Node::new(id("done"), NodeKind::End { output: None }));
+        WorkflowDefinition::new(Slug::parse("flow").expect("name"), entry, linked)
+            .expect("a definition")
+    }
+
+    #[test]
+    fn what_a_workflow_asks_of_the_subject_behind_a_run_counts_an_iceberg_write_as_a_write() {
+        assert_eq!(database_writes(&line(vec![])), None, "no managed step");
+        assert_eq!(
+            database_writes(&line(vec![sql("read", OperationKind::Query)])),
+            Some(false)
+        );
+        assert_eq!(
+            database_writes(&line(vec![sql("write", OperationKind::Execute)])),
+            Some(true)
+        );
+        assert_eq!(
+            database_writes(&line(vec![lake("save")])),
+            Some(true),
+            "a workflow with an Iceberg write and no SQL step has managed steps, and writes"
+        );
+        assert_eq!(
+            database_writes(&line(vec![sql("read", OperationKind::Query), lake("save")])),
+            Some(true)
+        );
+    }
 }

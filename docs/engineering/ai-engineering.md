@@ -38,7 +38,7 @@ Hooks are code: review them like code, keep them fast and dependency-free (Pytho
 - Reports are claims. Rerun the gates on the merged tree. Read the diff of anything blessed. Count skipped and ignored tests and say so.
 - A flaky test is a defect with a cause (an unexpired membership row, a transient UI state, load, an environment that is not the project's). Find it. Do not retry until green.
 - Sequential CI steps hide later failures; run the whole checklist (`/verify`) before opening a pull request. Our first CI run of a large branch failed twelve distinct ways that local runs had not shown: strict-mode schema validation, generated Studio types, per-SDK lint, protocol-version expectations, CLI help for new codes, the cross-tenant battery, a rollback guard.
-- Mutation testing is paused by the owner; re-enable only when asked.
+- Mutation testing is not run while a feature is built, in a pull request or in the CI: the owner moved it to the closing of a release (OD-2026-11-06-2, [test strategy](../test-strategy.md)). Write the test first and see it fail; leave the weakening of each guard to the release.
 
 ## 5. Parallel agents
 

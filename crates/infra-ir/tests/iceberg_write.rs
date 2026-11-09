@@ -437,6 +437,20 @@ fn a_database_result_must_name_a_database_step_that_runs_before_the_write() {
                 end.clone(),
             ],
         ),
+        (
+            // A statement that executes retains no column: the write could never have a record, and would fail at its lease.
+            "a database step that executes and selects nothing",
+            "insert",
+            vec![
+                with_next(
+                    json!({"id": "insert", "type": "database", "connectionRef": {"name": "orders-db"},
+                        "operation": "execute", "statement": "INSERT INTO orders VALUES (1)"}),
+                    "save",
+                ),
+                with_next(save("insert"), "done"),
+                end.clone(),
+            ],
+        ),
     ];
     for (label, entrypoint, nodes) in cases {
         let doc = json!({

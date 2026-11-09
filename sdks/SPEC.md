@@ -470,6 +470,7 @@ workflow(name).description(text).label(key, value)
   .step(id, activity, {retry, timeoutMs, compensateWith, reconcileWith, idempotencyTemplate, secrets,
                        compensationRetry, compensationTimeoutMs, irreversible, highRisk, onError})
   .database(id, {connectionRef, operation, statement, parameters?, limits?, timeoutMs?, onError?})
+  .icebergWrite(id, {connectionRef, table, records, ref?, mapping?, ignoreUnknownFields?, limits?, compensation?, onError?})
   .sleep(id, durationMs)
   .waitForEvent(id, {eventType, correlationExpr, timeoutMs, onTimeout?, lookbackMs?})
   .invokeChild(id, workflow, {version?, input?, cancelPolicy?})
@@ -530,6 +531,28 @@ auto-expand them, and database expressions cannot read blob contents. Interactiv
 requires the dedicated result permission. See
 [the five-language guide](../docs/guides/managed-database-sdk.md) and the shared
 `database-connections` conformance scenario.
+
+### 7.2 Iceberg append (feature 035)
+
+All six SDKs emit the same canonical `type: icebergWrite` node, always with `mode: append`: overwrite and
+upsert are not built yet, so no SDK accepts a mode. `connectionRef` is the same `{name, revision?}` as
+for a database node and never carries a catalog, bucket, credential or secret. `table` is
+`{namespace, name}` with 1 to 8 namespace levels. `records` holds exactly one of `inline` (an expression
+that evaluates to a list of objects), `blobs` (one that evaluates to 1 to 32 blob descriptors) or
+`databaseResult` (the id of an earlier root-level database step; the lake runner does not read that source
+yet, gap G035-067). `mapping` is a list of `{field, column}` rows whose field is a JSON pointer
+(`/customer/name`, at most 16 segments, escapes `~0` and `~1`); a field or a column used twice is refused.
+`limits` may tighten `maxRecordBytes` (1024 to 2147483648), `maxRecords` (1 to 100000000) and `timeoutMs`
+(1000 to 3600000). `compensation` is `revert` or absent.
+
+The builder snapshots the supplied values when the node is added, validates the shapes and the contract
+bounds, and raises `VALIDATION_FAILED` with the fixed message `invalid iceberg write`, which names no
+value. A supplied empty `mapping` or `limits` is kept as `[]` or `{}`; an option that is absent is omitted.
+Whether the connection exists, the table is writable and the classification allows the write are server
+responsibilities. The shared scenario holds no refusal for an unknown member, because the typed builders cannot
+express one uniformly (the conformance runners of Go, Java and C# ignore it when they read the options; the Rust
+options type refuses it when decoded).
+The shared scenario is `iceberg-write-builders` (build only: it claims neither publication nor execution).
 
 ## 8. Serialization
 

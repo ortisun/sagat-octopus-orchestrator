@@ -183,7 +183,9 @@ block and an alphabetical list.
   and unbounded except by the group's `bigint` revision. Decide a per-group ceiling or a compaction path.
 - **G721 — ADR before any production caller:** the possession protocol, the lock position of the group header
   (chain, run, group `NOWAIT`) and the D714 sweeper. B0/ADR-0037 say the lock graph is not accepted and the order lives
-  only in handoff notes. Take the ADR number when it is written, after grepping every worktree.
+  only in handoff notes. Drafted 2026-11-05 as ADR-0078 (proposed; reviewed in three passes by an
+  architecture and a PostgreSQL reviewer). Accepting it closes this gap as worded here, not the creator,
+  the sweeper's coverage or the worker's complete lock sequence, which it lists as open.
 - **G722 — Which runs are members.** The schema admits `CHILD_ROOT` and `SCOPED_PATH` only. A top-level run parked on
   a child is not a member today; who the holder is, and so whether the O705 scenario can occur, depends on creation (B1e).
 - **G723 — Zombie workers and blocking activities** (D708).

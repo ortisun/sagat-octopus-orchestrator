@@ -3,18 +3,23 @@ mod failure;
 mod iceberg;
 mod iceberg_egress;
 mod iceberg_write;
+mod lake_probe;
 pub use failure::DatabaseFailure;
 pub use iceberg::{
     AccessDelegation, AdlsStorage, GcsStorage, GlueCatalog, HiveCatalog, HiveTls, IcebergCatalog,
     IcebergConfig, JdbcCatalog, JdbcEngine, LakeConfigError, LakeLimits, LakeStorage, RestAuth,
     RestCatalog, S3Storage, StorageCredentials, StorageKind, WriteMode,
 };
+pub use iceberg::{
+    DEFAULT_MAX_RECORD_BYTES, DEFAULT_MAX_RECORDS, DEFAULT_TIMEOUT_MS, EffectiveLakeLimits,
+};
 pub use iceberg_egress::{EgressField, EgressRefusal, LakeRefusal};
 pub use iceberg_write::{
     ColumnMapping, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
     IcebergWriteError, IcebergWriteParts, MAX_MAPPED_COLUMNS, MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS,
-    RecordSource, TableIdentifier, WriteIntent,
+    MAX_RECORD_INPUT_BYTES, RecordSource, TableIdentifier, WriteIntent,
 };
+pub use lake_probe::{ICEBERG_PROBE_ACTIVITY, LakeProbe};
 
 use crate::{
     classification::EgressCeiling, identity::Slug, secrets::SecretName, workflow::Expression,
@@ -297,6 +302,26 @@ impl ConnectionConfig {
                 .collect(),
         }
     }
+    /// The secrets of the connection with the role each plays, in a fixed order: the primary one of a SQL connection; the
+    /// catalog's then the storage's of a lake connection, either of them, both or neither. The same names as
+    /// [`Self::secrets`], in the same order.
+    #[must_use]
+    pub fn secret_slots(&self) -> Vec<(SecretRole, &SecretName)> {
+        match self {
+            Self::Postgres { secret, .. } => vec![(SecretRole::Primary, secret)],
+            Self::Iceberg(config) => config
+                .catalog_secret
+                .iter()
+                .map(|secret| (SecretRole::Catalog, secret))
+                .chain(
+                    config
+                        .storage_secret
+                        .iter()
+                        .map(|secret| (SecretRole::Storage, secret)),
+                )
+                .collect(),
+        }
+    }
     /// The secret of a SQL connection. `None` for a lake connection: the managed executor runs SQL and nothing else, so
     /// a path that needs one refuses the connection instead of guessing.
     #[must_use]
@@ -360,6 +385,64 @@ impl ConnectionRef {
             return Err(DatabaseError::InvalidRevision);
         }
         Ok(Self { name, revision })
+    }
+}
+
+/// The role a secret plays in the connection of a managed step (feature 035, D035-139). The attempt of a step pins each
+/// secret it was handed under its role, so that two secrets of one connection can both be compared, pinned and audited.
+/// A SQL connection has one secret, `primary`; an Iceberg connection has a `catalog` secret and a `storage` secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SecretRole {
+    Primary,
+    Catalog,
+    Storage,
+}
+
+impl SecretRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Catalog => "catalog",
+            Self::Storage => "storage",
+        }
+    }
+
+    /// `None` for anything but the three exact names.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "primary" => Some(Self::Primary),
+            "catalog" => Some(Self::Catalog),
+            "storage" => Some(Self::Storage),
+            _ => None,
+        }
+    }
+}
+
+/// Which isolated runner executes a managed step. A managed step is never offered to an ordinary worker, its lease does
+/// not carry the run's data, and its own runner reports its outcome (feature 035, D035-134). A path that needs to know
+/// whether a step is managed asks [`Node::managed_kind`](crate::workflow::Node::managed_kind), never whether it has a SQL
+/// operation: that names only one of the kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedKind {
+    /// A SQL operation, executed by a database runner.
+    Sql,
+    /// An Iceberg write, executed by a lake runner.
+    Lake,
+    /// The probe of an Iceberg connection, executed by a lake runner (D035-150). It reads and writes nothing of the customer's.
+    LakeProbe,
+}
+
+impl ManagedKind {
+    /// The profile of the runner that executes this kind: a runner of another profile is never handed the step, and never
+    /// handed its credentials.
+    #[must_use]
+    pub const fn profile(self) -> crate::binding::BindingProfile {
+        match self {
+            Self::Sql => crate::binding::BindingProfile::Database,
+            Self::Lake | Self::LakeProbe => crate::binding::BindingProfile::Lake,
+        }
     }
 }
 

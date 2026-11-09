@@ -9,12 +9,16 @@ use sagat_application::{
     database::{ConnectionService, ConnectionWrite},
     definitions::IrError,
     error::AppError,
+    execution::Engine,
     managed_secrets::{ManagedSecretService, ManagedSecretWrite},
     publishing::Promotion,
     reveal_grants::RevealGrantService,
+    runs::{RunService, StartRun},
+    worker::Capabilities,
 };
 use sagat_domain::{
     audit::AuditAction,
+    binding::BindingProfile,
     classification::{EgressCeiling, Level},
     database::{
         AccessDelegation, ConnectionConfig, ConnectionStatus, DatabaseLimits, EgressRefusal,
@@ -25,6 +29,7 @@ use sagat_domain::{
     identity::{Environment, Permission, Principal, Role, Slug},
     secrets::{SecretName, SecretValue},
 };
+use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -38,9 +43,20 @@ fn iceberg(uri: &str, catalog_secret: &str, ceiling: EgressCeiling) -> Connectio
     )
 }
 
-fn iceberg_in(
+pub(crate) fn iceberg_in(
     uri: &str,
     catalog_secret: &str,
+    ceiling: EgressCeiling,
+    modes: Vec<WriteMode>,
+) -> ConnectionConfig {
+    iceberg_secrets(uri, catalog_secret, "db-credentials", ceiling, modes)
+}
+
+/// A REST connection with a static storage credential, whose two secrets are named apart.
+pub(crate) fn iceberg_secrets(
+    uri: &str,
+    catalog_secret: &str,
+    storage_secret: &str,
     ceiling: EgressCeiling,
     modes: Vec<WriteMode>,
 ) -> ConnectionConfig {
@@ -69,14 +85,14 @@ fn iceberg_in(
         warehouse_locations: vec!["s3://lake/warehouse/".to_owned()],
         allowed_modes: modes,
         catalog_secret: Some(SecretName::parse(catalog_secret).unwrap()),
-        storage_secret: Some(SecretName::parse("db-credentials").unwrap()),
+        storage_secret: Some(SecretName::parse(storage_secret).unwrap()),
         egress_ceiling: ceiling,
         limits: LakeLimits::default(),
     })
     .unwrap()
 }
 
-fn write(
+pub(crate) fn write(
     name: &str,
     expected_revision: u32,
     status: ConnectionStatus,
@@ -402,7 +418,7 @@ pub async fn run(w: &World, secrets: &ManagedSecretService<PgRunStore, SystemClo
 
 /// The input of the workflows below: a list of records whose classification the schema states. The root is `public`,
 /// and the unmarked `id` inherits it.
-fn rows_schema() -> Value {
+pub(crate) fn rows_schema() -> Value {
     json!({
         "type": "object", "x-sagat-classification": "public",
         "properties": {"rows": {"type": "array", "items": {"type": "object", "properties": {
@@ -415,7 +431,12 @@ fn rows_schema() -> Value {
 }
 
 /// A workflow with one append step reading `input.rows`, mapping the given fields.
-fn append(name: &str, connection: &str, fields: &[&str], schema: Option<Value>) -> Value {
+pub(crate) fn append(
+    name: &str,
+    connection: &str,
+    fields: &[&str],
+    schema: Option<Value>,
+) -> Value {
     let mapping: Vec<Value> = fields
         .iter()
         .enumerate()
@@ -436,8 +457,15 @@ fn append(name: &str, connection: &str, fields: &[&str], schema: Option<Value>) 
     document
 }
 
+/// A workflow with one append step reading its records from the blobs `input.parts` names.
+pub(crate) fn append_blobs(name: &str, connection: &str, fields: &[&str]) -> Value {
+    let mut document = append(name, connection, fields, None);
+    document["nodes"][0]["records"] = json!({"blobs": "input.parts"});
+    document
+}
+
 /// Creates the draft as the administrator and publishes it as `who`, on a service that has the lake on.
-async fn publish_on_lake(
+pub(crate) async fn publish_on_lake(
     w: &World,
     who: &Principal,
     document: Value,
@@ -600,6 +628,159 @@ async fn publication(
         )
         .await;
     assert!(matches!(run, Err(AppError::NotFound)), "{run:?}");
+
+    // With the lake turned on in the process that admits runs (`lake.enabled`, D035-137), the same run is admitted, and
+    // the revision it was admitted with is the one it keeps: the pin is recorded, and a replay of the start consults it.
+    let lake_runs = RunService::new(
+        w.store.clone().with_lake_enabled(true),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        w.cache.clone(),
+    );
+    let start = || StartRun {
+        namespace: "payments",
+        workflow: published,
+        version: None,
+        input: br#"{"rows":[]}"#,
+        correlation_id: None,
+        deadline: None,
+        key: "lake-run-start-0000002",
+    };
+    let started = lake_runs
+        .start(&w.admin, &start(), &ctx())
+        .await
+        .expect("a run of an Iceberg write is admitted with the lake on")
+        .info
+        .run_id;
+    let pins: Vec<(String, i32)> = sqlx::query_as(
+        "SELECT node_id, revision FROM run_database_connections WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(started.as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        pins,
+        vec![("save".to_owned(), 1)],
+        "the connection and the revision the run was admitted with"
+    );
+    let replayed = lake_runs
+        .start(&w.admin, &start(), &ctx())
+        .await
+        .expect("the same start is answered again")
+        .info
+        .run_id;
+    assert_eq!(replayed, started, "a replay of the start is the same run");
+    // A run whose pin is gone is not re-resolved by name: its admission is refused, as a SQL step's is.
+    sqlx::query("DELETE FROM run_database_connections WHERE tenant_id = $1 AND run_id = $2")
+        .bind(w.admin.tenant_id().as_uuid())
+        .bind(started.as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .unwrap();
+    let unpinned = lake_runs.start(&w.admin, &start(), &ctx()).await;
+    assert!(
+        matches!(unpinned, Err(AppError::NotFound)),
+        "a run admitted with a pin is not admitted again without one, and says what a refused SQL run says: {unpinned:?}"
+    );
+
+    // A connection tightened after a run was admitted: the run keeps the revision it was admitted with, so the replay of its
+    // start is still that run (and a claim is judged by the same revision); a run started afterwards is judged by the
+    // revision in force and refused by name.
+    catalog
+        .put(
+            &w.admin,
+            ns,
+            write(
+                "lake-admitted",
+                0,
+                ConnectionStatus::Active,
+                iceberg_in(
+                    "https://catalog.example/api",
+                    "db-credentials",
+                    EgressCeiling::Internal,
+                    vec![WriteMode::Append],
+                ),
+            ),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let admitted = publish_on_lake(
+        w,
+        &w.admin,
+        append(
+            "lake-admitted-flow",
+            "lake-admitted",
+            &["/id", "/total"],
+            Some(rows_schema()),
+        ),
+    )
+    .await
+    .expect("a workflow on the connection is published");
+    let admitted_start = |key: &'static str| StartRun {
+        namespace: "payments",
+        workflow: admitted,
+        version: None,
+        input: br#"{"rows":[]}"#,
+        correlation_id: None,
+        deadline: None,
+        key,
+    };
+    let first = lake_runs
+        .start(&w.admin, &admitted_start("lake-run-start-0000003"), &ctx())
+        .await
+        .expect("admitted on revision 1")
+        .info
+        .run_id;
+    catalog
+        .put(
+            &w.admin,
+            ns,
+            write(
+                "lake-admitted",
+                1,
+                ConnectionStatus::Active,
+                iceberg_in(
+                    "https://catalog.example/api",
+                    "db-credentials",
+                    EgressCeiling::Internal,
+                    vec![WriteMode::Overwrite],
+                ),
+            ),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let again = lake_runs
+        .start(&w.admin, &admitted_start("lake-run-start-0000003"), &ctx())
+        .await
+        .expect("the replay of an admitted run does not re-judge it by the revision in force")
+        .info
+        .run_id;
+    assert_eq!(again, first, "the replay is the same run");
+    let pinned_revision: i32 = sqlx::query_scalar(
+        "SELECT revision FROM run_database_connections WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(first.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        pinned_revision, 1,
+        "the pin still names the revision the run was admitted with"
+    );
+    assert_eq!(
+        refusal_of(
+            lake_runs
+                .start(&w.admin, &admitted_start("lake-run-start-0000004"), &ctx())
+                .await
+        ),
+        LakeRefusal::ModeNotAllowed(WriteMode::Append),
+        "a run started after the tightening is judged by the revision in force"
+    );
 
     // A `pii` field is refused by an `internal` ceiling, and named by its path and class.
     assert_eq!(
@@ -964,4 +1145,318 @@ async fn promotion(
         matches!(promoted, Ok(Promotion::Published(_))),
         "the promotion is published once the target namespace has what the step needs: {promoted:?}"
     );
+}
+
+/// A dedicated runner registers for the managed activities of **the profile its binding carries**, and only under a
+/// binding that covers them (feature 035, D035-057, D035-135): through the real store, the membership role, the binding
+/// patterns and profile, and the negotiated minor. No lake step can start yet (the admission guard is closed), so this is
+/// the whole of what registering gives a lake runner.
+pub async fn registration(w: &World) {
+    let ns = w.namespace.id();
+    let lake = w.member("lake-machine", Role::DatabaseRunner).await;
+    let caps = |activities: &[&str], version: &str| Capabilities {
+        activities: activities.iter().map(|name| (*name).to_owned()).collect(),
+        languages: vec![],
+        pools: vec![],
+        max_inflight: 4,
+        protocol_version: version.into(),
+    };
+    let write = "sagat.database.iceberg.write";
+    let sql = "sagat.database.postgresql";
+    let refused = |result: Result<_, AppError>| matches!(result, Err(AppError::NotBound));
+    let bind = |patterns: &[&str], profile: Option<BindingProfile>| {
+        let patterns: Vec<String> = patterns.iter().map(|text| (*text).to_owned()).collect();
+        let subject = lake.subject().as_str().to_owned();
+        async move {
+            w.bindings
+                .bind_with_profile(&w.admin, ns, &subject, &patterns, None, profile, &ctx())
+                .await
+                .unwrap()
+        }
+    };
+
+    // Without a binding nothing registers; a binding for the SQL activity does not cover the lake one.
+    assert!(refused(
+        w.workers
+            .register(&lake, "payments", "lake-unbound", &caps(&[write], "1.6"))
+            .await
+    ));
+    let view = bind(&[sql], None).await;
+    assert_eq!(
+        view.profile,
+        BindingProfile::Database,
+        "a new binding is of the database profile"
+    );
+    assert!(refused(
+        w.workers
+            .register(
+                &lake,
+                "payments",
+                "lake-sql-binding",
+                &caps(&[write], "1.6")
+            )
+            .await
+    ));
+
+    // Covering the write activity is not enough: the binding is still of the database profile.
+    bind(&[write], None).await;
+    assert!(
+        refused(
+            w.workers
+                .register(
+                    &lake,
+                    "payments",
+                    "lake-wrong-profile",
+                    &caps(&[write], "1.6")
+                )
+                .await
+        ),
+        "a binding of the database profile does not register the lake activity, even when it names it"
+    );
+
+    // Naming the profile makes the identity a lake runner, for the lake activity and for nothing else.
+    let view = bind(&[write], Some(BindingProfile::Lake)).await;
+    assert_eq!(view.profile, BindingProfile::Lake);
+    assert!(refused(
+        w.workers
+            .register(&lake, "payments", "lake-too-old", &caps(&[write], "1.5"))
+            .await
+    ));
+    assert!(refused(
+        w.workers
+            .register(&lake, "payments", "lake-with-sql", &caps(&[sql], "1.6"))
+            .await
+    ));
+    let registered = w
+        .workers
+        .register(&lake, "payments", "lake-machine", &caps(&[write], "1.6"))
+        .await
+        .unwrap();
+    assert_eq!(registered.accepted_protocol_version, "1.6");
+
+    // A replacement that does not name the profile keeps it, and the session stays.
+    let view = bind(&[write], None).await;
+    assert_eq!(
+        view.profile,
+        BindingProfile::Lake,
+        "an absent profile keeps the one in force"
+    );
+    assert_eq!(view.revoked.sessions, 0);
+
+    // Bound to everything, a lake runner is still a lake runner: the SQL activity is covered by `*` and refused.
+    let view = bind(&["*"], None).await;
+    assert_eq!(view.profile, BindingProfile::Lake);
+    assert_eq!(
+        view.revoked.sessions, 0,
+        "the session offers an activity of its own profile"
+    );
+    assert!(
+        refused(
+            w.workers
+                .register(&lake, "payments", "lake-wildcard-sql", &caps(&[sql], "1.6"))
+                .await
+        ),
+        "a wildcard does not let a lake runner register as a database runner"
+    );
+    for (name, activities) in [
+        ("lake-mixed", vec![write, sql]),
+        ("lake-ordinary", vec![write, "ordinary"]),
+        ("lake-revert", vec!["sagat.database.iceberg.revert"]),
+        ("lake-probe", vec!["sagat.database.lake.probe"]),
+    ] {
+        assert!(
+            refused(
+                w.workers
+                    .register(&lake, "payments", name, &caps(&activities, "1.6"))
+                    .await
+            ),
+            "{name}"
+        );
+    }
+
+    // Changing the profile closes the session of the other one, and the binding reads it back.
+    let view = bind(&["*"], Some(BindingProfile::Database)).await;
+    assert_eq!(view.profile, BindingProfile::Database);
+    assert_eq!(
+        view.revoked.sessions, 1,
+        "the lake session is closed when the identity becomes a database runner"
+    );
+    let listed = w.bindings.list(&w.admin, ns, &ctx()).await.unwrap();
+    let mine = listed
+        .iter()
+        .find(|binding| binding.subject == lake.subject().as_str())
+        .expect("the binding is listed");
+    assert_eq!(mine.profile, BindingProfile::Database);
+    assert!(refused(
+        w.workers
+            .register(&lake, "payments", "lake-now-sql", &caps(&[write], "1.6"))
+            .await
+    ));
+    assert!(
+        w.workers
+            .register(&lake, "payments", "sql-machine", &caps(&[sql], "1.6"))
+            .await
+            .is_ok(),
+        "the same wildcard registers the SQL profile once the identity is of it"
+    );
+    w.bindings
+        .unbind(&w.admin, ns, lake.subject().as_str(), &ctx())
+        .await
+        .unwrap();
+
+    // The reserved prefix stays closed to every other role, whatever it is bound to.
+    for principal in [&w.worker, &w.runner_identity] {
+        w.bind_everything(principal).await;
+        assert!(refused(
+            w.workers
+                .register(principal, "payments", "forged-lake", &caps(&[write], "1.6"))
+                .await
+        ));
+    }
+}
+
+/// An identity is of one profile in the whole tenant, not one per namespace (D035-136, hardened after a security review):
+/// a stolen lake token must not register as a SQL runner in another namespace where the same identity is bound otherwise.
+pub async fn profile_is_the_identitys(w: &World) {
+    let ns = w.namespace.id();
+    let tenant = w.admin.tenant_id();
+    let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM namespaces WHERE id = $1")
+        .bind(ns.as_uuid())
+        .fetch_one(&w.db.pool)
+        .await
+        .unwrap();
+    let other_ns: Uuid = sqlx::query_scalar(
+        "INSERT INTO namespaces (id, tenant_id, workspace_id, slug, environment, created_at) \
+         VALUES (gen_random_uuid(), $1, $2, 'profile-staging', 'dev', now()) RETURNING id",
+    )
+    .bind(tenant.as_uuid())
+    .bind(workspace)
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    let other_ns = sagat_domain::identity::NamespaceId::new(other_ns);
+    let runner = w.member("two-namespace-runner", Role::DatabaseRunner).await;
+    let subject = runner.subject().as_str().to_owned();
+    let write = "sagat.database.iceberg.write".to_owned();
+    let sql = "sagat.database.postgresql".to_owned();
+    let bind = |namespace, patterns: &[String], profile: Option<BindingProfile>| {
+        let patterns = patterns.to_vec();
+        let subject = subject.clone();
+        async move {
+            w.bindings
+                .bind_with_profile(
+                    &w.admin,
+                    namespace,
+                    &subject,
+                    &patterns,
+                    None,
+                    profile,
+                    &ctx(),
+                )
+                .await
+        }
+    };
+    let latest_reason = || async {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT reason FROM audit_records WHERE tenant_id = $1 AND action = $2 ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(tenant.as_uuid())
+        .bind(AuditAction::WorkerBound.as_str())
+        .fetch_one(&w.db.pool)
+        .await
+        .unwrap()
+        .unwrap_or_default()
+    };
+
+    // A lake runner in one namespace cannot be a database runner in another.
+    bind(ns, std::slice::from_ref(&write), Some(BindingProfile::Lake))
+        .await
+        .unwrap();
+    let conflict = bind(
+        other_ns,
+        std::slice::from_ref(&sql),
+        Some(BindingProfile::Database),
+    )
+    .await;
+    assert!(
+        matches!(conflict, Err(AppError::StateConflict(_))),
+        "the identity is of the lake profile in another namespace: {conflict:?}"
+    );
+    let nothing: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM worker_bindings WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+    )
+    .bind(tenant.as_uuid())
+    .bind(other_ns.as_uuid())
+    .bind(&subject)
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(nothing, 0, "a refused binding leaves nothing behind");
+
+    // The same profile is allowed, and an absent profile takes the one the identity already has elsewhere.
+    let view = bind(other_ns, std::slice::from_ref(&write), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        view.profile,
+        BindingProfile::Lake,
+        "an absent profile follows the identity, not the default"
+    );
+    let again = bind(
+        other_ns,
+        std::slice::from_ref(&write),
+        Some(BindingProfile::Lake),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again.profile, BindingProfile::Lake);
+
+    // The audit says which profile is in force, whether or not the caller named it.
+    bind(ns, std::slice::from_ref(&write), None).await.unwrap();
+    assert!(
+        latest_reason().await.contains("profile: lake"),
+        "{}",
+        latest_reason().await
+    );
+
+    // Changing the profile means changing it everywhere: the other namespace's binding has to go first.
+    let change = bind(
+        ns,
+        std::slice::from_ref(&sql),
+        Some(BindingProfile::Database),
+    )
+    .await;
+    assert!(
+        matches!(change, Err(AppError::StateConflict(_))),
+        "{change:?}"
+    );
+    w.bindings
+        .unbind(&w.admin, other_ns, &subject, &ctx())
+        .await
+        .unwrap();
+    let view = bind(
+        ns,
+        std::slice::from_ref(&sql),
+        Some(BindingProfile::Database),
+    )
+    .await
+    .unwrap();
+    assert_eq!(view.profile, BindingProfile::Database);
+    assert!(latest_reason().await.contains("profile: database"));
+
+    // Binding again after an unbind, without naming the profile, falls back to the default; the audit says so.
+    w.bindings
+        .unbind(&w.admin, ns, &subject, &ctx())
+        .await
+        .unwrap();
+    bind(ns, std::slice::from_ref(&write), None).await.unwrap();
+    assert!(
+        latest_reason().await.contains("profile: database"),
+        "an unbind forgets the profile and the audit names the one that came back: {}",
+        latest_reason().await
+    );
+    w.bindings
+        .unbind(&w.admin, ns, &subject, &ctx())
+        .await
+        .unwrap();
 }

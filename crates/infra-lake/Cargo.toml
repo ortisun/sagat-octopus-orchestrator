@@ -12,16 +12,22 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+bytes.workspace = true
 getrandom = "0.4"
+http-body-util = "0.1"
+hyper = { workspace = true, features = ["client"] }
+hyper-util.workspace = true
 ipnet = "2"
 sagat-domain.workspace = true
 sagat-infra-database.workspace = true
+sagat-infra-ir.workspace = true
 sagat-telemetry.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "time", "rt", "sync", "io-util"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 ipnet = "2"

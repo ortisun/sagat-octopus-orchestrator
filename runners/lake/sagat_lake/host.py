@@ -17,7 +17,7 @@ It writes no value of the request. A failure is a code of the closed set. An exc
 line count, and a message could carry a credential. `relayDenials` is the runner's to know, since it owns the relay, so
 the host writes 0 and the runner uses its own count (G035-028).
 
-This is the skeleton (T035-032). It serves no operation yet: each one arrives with the task that tests it, and a request
+It serves `icebergWrite` (`write.py`, T035-057). Each other operation arrives with the task that tests it, and a request
 for one that is not here is answered with `LAKE_HOST_PROTOCOL`, never with a pretence.
 """
 
@@ -38,6 +38,7 @@ if __name__ == "__main__" and not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sagat_lake.failures import LAKE_HOST_PROTOCOL, WORKER_ERROR, Failure
+from sagat_lake.write import operations_for
 
 PROTOCOL = "sagat.lake.v1"
 PREFACE = b"SAGAT-RELAY/1 "
@@ -54,8 +55,8 @@ _PR_SET_DUMPABLE = 4
 
 Operation = Callable[[Mapping[str, object]], Awaitable[dict[str, object]]]
 
-# Each operation (`icebergWrite`, `icebergRevert`, `objectWrite`, `probe`, `browse`) arrives with its task.
-OPERATIONS: dict[str, Operation] = {}
+# Each operation (`icebergWrite`, `icebergRevert`, `objectWrite`, `probe`, `browse`) arrives with its task;
+# `icebergWrite` is served by `write.py`, for the attempt directory it is started with.
 
 
 def harden() -> bool:
@@ -158,7 +159,8 @@ def main(argv: Sequence[str]) -> int:
     harden()
     if len(argv) != 2 or argv[0] != "--attempt-dir":
         return 2
-    return asyncio.run(run(Path(argv[1]), OPERATIONS))
+    attempt_dir = Path(argv[1])
+    return asyncio.run(run(attempt_dir, operations_for(attempt_dir)))
 
 
 if __name__ == "__main__":

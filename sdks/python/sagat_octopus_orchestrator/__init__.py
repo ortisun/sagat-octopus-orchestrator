@@ -45,6 +45,7 @@ from .errors import (
     remediation_of,
     retryable_by_default,
 )
+from .iceberg import IcebergLimits, IcebergMapping, IcebergRecords, IcebergTable
 from .operations import (
     BatchCounts,
     BatchFilter,
@@ -89,6 +90,7 @@ from .operations import (
     UpdateWithStartResult,
     UpdateWithStartUpdate,
 )
+
 from .retry import DEFAULT_RETRY, RetryPolicy, backoff_delay
 from .sync import SyncBatchOperations, SyncBusinessIds, SyncSagatClient, SyncSchedules
 from .traceparent import check_traceparent, is_traceparent, new_traceparent, trace_id_of
@@ -181,6 +183,10 @@ __all__ = [
     "ExecutionInstanceIdentity",
     "ExecutionScope",
     "Flow",
+    "IcebergLimits",
+    "IcebergMapping",
+    "IcebergRecords",
+    "IcebergTable",
     "JournalEvent",
     "JournalPage",
     "OperateAction",

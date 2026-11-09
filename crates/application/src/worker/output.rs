@@ -163,7 +163,31 @@ where
         self.verify(&mut tx, task).await?;
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut database_secret_in_output = None;
-        if Self::managed_database(&mut tx, task) {
+        let managed = Self::managed_kind(&mut tx, task);
+        // A lake step reports a small receipt inline. It is read into typed fields and written again; the run keeps that, and
+        // nothing of the bytes that were sent. (A receipt has no member that can hold text the server did not supply, which is
+        // why it is not scanned for the secrets of the step as a SQL result is: D035-142.)
+        let lake_receipt = if managed == Some(sagat_domain::database::ManagedKind::Lake) {
+            if blob.is_some() {
+                return Err(AppError::NotAllowed(
+                    "a lake step reports its receipt inline",
+                ));
+            }
+            match self.lake_receipt(&mut tx, task, output).await {
+                Ok(receipt) => Some(receipt),
+                Err(error) => {
+                    // the transaction is let go before the audit: it is written off the request path, on a connection of its own
+                    drop(tx);
+                    if matches!(error, AppError::NotAllowed(_)) {
+                        self.audit_lake_refusal(principal, task).await;
+                    }
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+        if managed == Some(sagat_domain::database::ManagedKind::Sql) {
             if blob
                 .as_ref()
                 .is_some_and(|blob| blob.content_type != "application/json")
@@ -200,6 +224,9 @@ where
             }
             database_secret_in_output = contains.then_some(before.0.meta.name);
         }
+        let output = lake_receipt
+            .as_ref()
+            .map_or(output, |receipt| receipt.canonical.as_slice());
         if blob.is_some() {
             if !task.instance.path().is_root() {
                 return Err(AppError::NotAllowed(
@@ -225,6 +252,12 @@ where
         }
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.reported = Some(reported_lease(task));
+        // A write that committed is audited with the completion, in its transaction, once: a replay of the report never gets here.
+        if let Some(receipt) = &lake_receipt {
+            effects.audit = self.committed_write_audit(principal, &mut tx, task, receipt.commit);
+        }
+        // Kept for the case the run has no room for the receipt: the write committed all the same, and the recovery below records it.
+        let write_audit = effects.audit.clone();
         // A secret the step was given must not come back in its output, where it would be stored in
         // the journal and handed to every later step: the step fails for good instead.
         let leaked_secret = if database_secret_in_output.is_some() {
@@ -304,7 +337,13 @@ where
                 }
             };
             return self
-                .recover_success_storage_quota(principal, task, idempotency, None, result)
+                .recover_success_storage_quota(
+                    principal,
+                    task,
+                    idempotency,
+                    write_audit.clone(),
+                    result,
+                )
                 .await;
         }
         effects.blobs = blob.map(|b| b.commit).into_iter().collect();
@@ -318,7 +357,7 @@ where
                 Err(error)
             }
         };
-        self.recover_success_storage_quota(principal, task, idempotency, None, result)
+        self.recover_success_storage_quota(principal, task, idempotency, write_audit, result)
             .await
     }
 

@@ -309,7 +309,10 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .resolve_database(&runner, &reference, None)
         .await
         .unwrap();
-    assert_eq!(first.credential.value.expose(), b"executor-canary-00000000");
+    assert_eq!(
+        crate::sql_grant(&first).1.value.expose(),
+        b"executor-canary-00000000"
+    );
     assert_eq!(first.connection.revision, 1);
     assert!(!format!("{first:?}").contains("executor-canary"));
     assert!(
@@ -339,6 +342,28 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         w.workers.check_lease(&runner, &reference).await.is_err(),
         "managed leases cannot fetch unrelated run blobs"
     );
+    // The one door a lake attempt has (the blobs its lease named, D035-144) is not a SQL step's: whatever blob it names, even one that
+    // exists, a SQL attempt reads none and the read is not audited as one.
+    let blob = sagat_domain::blobs::BlobId::generate();
+    let read = w
+        .workers
+        .check_blob_read(&runner, &reference, blob, None)
+        .await;
+    assert!(
+        matches!(read, Err(sagat_application::error::AppError::NotAllowed(_))),
+        "a SQL attempt reads no blob: {read:?}"
+    );
+    let audited = w
+        .workers
+        .audit_blob_read(&runner, &reference, blob, None)
+        .await;
+    assert!(
+        matches!(
+            audited,
+            Err(sagat_application::error::AppError::NotAllowed(_))
+        ),
+        "nor is the read of a SQL attempt audited as one: {audited:?}"
+    );
     for version in 1..=6 {
         secrets
             .put(&w.admin, ns, rotate(version), &ctx())
@@ -357,10 +382,10 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .resolve_database(&runner, &reference, None)
         .await
         .unwrap();
-    assert_eq!(again.credential.version, 1);
+    assert_eq!(crate::sql_grant(&again).1.version, 1);
     assert_eq!(
-        again.credential.value.expose(),
-        first.credential.value.expose(),
+        crate::sql_grant(&again).1.value.expose(),
+        crate::sql_grant(&first).1.value.expose(),
         "the original attempt pin survives the logical retention window"
     );
     let pins: i64 =
@@ -387,6 +412,173 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
 
     assert!(sqlx::query("UPDATE step_database_credentials SET secret_version=secret_version+1 WHERE tenant_id=$1")
         .bind(runner.tenant_id().as_uuid()).execute(&w.db.pool).await.is_err(),"credential evidence is immutable");
+
+    // The pin is keyed by the role of the secret (feature 035, D035-139): a SQL attempt pinned its one secret as `primary`, and an
+    // Iceberg attempt pins two, `catalog` and `storage`. A role is one of three names and is pinned once per attempt.
+    let role: String =
+        sqlx::query_scalar("SELECT secret_role FROM step_database_credentials WHERE tenant_id=$1")
+            .bind(w.admin.tenant_id().as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        role, "primary",
+        "an attempt that names no role pinned the one secret of a SQL connection"
+    );
+    let pin_as = |role: &'static str| {
+        let pool = w.db.pool.clone();
+        let tenant = w.admin.tenant_id().as_uuid();
+        async move {
+            sqlx::query(
+                "INSERT INTO step_database_credentials(tenant_id,namespace_id,run_id,node_id,attempt,generation,provider_operation,secret_name,secret_version,secret_role)
+                 SELECT tenant_id,namespace_id,run_id,node_id,attempt,generation,provider_operation,secret_name,secret_version+1,$2
+                 FROM step_database_credentials WHERE tenant_id=$1 AND secret_role='primary'",
+            )
+            .bind(tenant)
+            .bind(role)
+            .execute(&pool)
+            .await
+        }
+    };
+    pin_as("catalog")
+        .await
+        .expect("the catalog secret of an attempt");
+    pin_as("storage")
+        .await
+        .expect("the storage secret of an attempt");
+    for refused in ["catalog", "storage", "primary", "sql", ""] {
+        assert!(
+            pin_as(refused).await.is_err(),
+            "a role is pinned once per attempt and is one of three names: {refused:?}"
+        );
+    }
+    let pinned_roles: Vec<String> = sqlx::query_scalar(
+        "SELECT secret_role FROM step_database_credentials WHERE tenant_id=$1 ORDER BY secret_role",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .fetch_all(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(pinned_roles, ["catalog", "primary", "storage"]);
+    assert!(
+        sqlx::query(
+            "UPDATE step_database_credentials SET secret_role='primary' WHERE secret_role='catalog'"
+        )
+        .execute(&w.db.pool)
+        .await
+        .is_err(),
+        "the role of a pin is as immutable as the pin"
+    );
+    // Put the primary pin last in the table, so that a read which ignored the role would meet another one first.
+    let mut reorder = w.db.pool.begin().await.unwrap();
+    sqlx::query(
+        "CREATE TEMP TABLE primary_pin ON COMMIT DROP AS SELECT * FROM step_database_credentials WHERE tenant_id=$1 AND secret_role='primary'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .execute(&mut *reorder)
+    .await
+    .unwrap();
+    sqlx::query(
+        "DELETE FROM step_database_credentials WHERE tenant_id=$1 AND secret_role='primary'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .execute(&mut *reorder)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO step_database_credentials SELECT * FROM primary_pin")
+        .execute(&mut *reorder)
+        .await
+        .unwrap();
+    reorder.commit().await.unwrap();
+    // A SQL attempt still reads exactly its one secret, whatever else is pinned beside it.
+    let resolved = w
+        .workers
+        .resolve_database(&runner, &reference, None)
+        .await
+        .unwrap();
+    assert_eq!(crate::sql_grant(&resolved).1.version, 1);
+    // The fence on the profile (D035-139): the resolve is refused to a runner whose binding is of another profile, or whose session does
+    // not offer the activity of the step, though nothing else changed. Registration cannot produce either state, so the rows are
+    // changed by hand and put back; the refusal is the one a missing grant gives.
+    let tenant = w.admin.tenant_id().as_uuid();
+    let subject = runner.subject().as_str().to_owned();
+    let set_profile = |profile: &'static str| {
+        let (pool, subject) = (w.db.pool.clone(), subject.clone());
+        async move {
+            sqlx::query("UPDATE worker_bindings SET profile=$3 WHERE tenant_id=$1 AND subject=$2")
+                .bind(tenant)
+                .bind(subject)
+                .bind(profile)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    let set_activities = |activities: &'static [&'static str]| {
+        let (pool, subject) = (w.db.pool.clone(), subject.clone());
+        async move {
+            sqlx::query(
+                "UPDATE worker_sessions SET activities=$3 WHERE tenant_id=$1 AND subject=$2",
+            )
+            .bind(tenant)
+            .bind(subject)
+            .bind(activities)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    set_profile("lake").await;
+    let refused = w.workers.resolve_database(&runner, &reference, None).await;
+    assert!(
+        matches!(refused, Err(AppError::NotBound)),
+        "a SQL step is not resolved for a runner whose binding is of the lake profile: {refused:?}"
+    );
+    set_profile("database").await;
+    set_activities(&["sagat.database.iceberg.write"]).await;
+    let refused = w.workers.resolve_database(&runner, &reference, None).await;
+    assert!(
+        matches!(refused, Err(AppError::NotBound)),
+        "nor for a session that offers the lake activity: {refused:?}"
+    );
+    set_activities(&["sagat.database.postgresql"]).await;
+    let resolved = w
+        .workers
+        .resolve_database(&runner, &reference, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        crate::sql_grant(&resolved).1.version,
+        1,
+        "put back, the same runner resolves again"
+    );
+    // The rollback is refused while a role other than `primary` is pinned (on a connection of its own: a refused revert leaves
+    // sqlx's migration lock behind, and the next rollback would wait for it).
+    let mut connection = w.db.pool.acquire().await.unwrap();
+    let refused = sagat_infra_postgres::MIGRATOR
+        .undo(&mut *connection, 20_270_109_000_000)
+        .await
+        .expect_err("a pinned catalog secret blocks the rollback");
+    sqlx::query("SELECT pg_advisory_unlock_all()")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    drop(connection);
+    assert!(
+        refused
+            .to_string()
+            .contains("cannot roll back step credential roles"),
+        "{refused}"
+    );
+    let drained = sqlx::query("DELETE FROM step_database_credentials WHERE secret_role<>'primary'")
+        .execute(&w.db.pool)
+        .await
+        .unwrap()
+        .rows_affected();
+    assert_eq!(
+        drained, 2,
+        "an operator removes the extra pins; the primary one stays"
+    );
 
     // Rotation commits while the provider is paused: no catalog/run lock crosses external I/O.
     let barrier = Arc::new(ReadBarrier {
@@ -619,7 +811,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .resolve_database(&runner, &next_ref, None)
         .await
         .unwrap();
-    assert_eq!(credential.credential.version, 8);
+    assert_eq!(crate::sql_grant(&credential).1.version, 8);
     w.secrets
         .delete(&w.admin, ns, "executor-credentials", &ctx())
         .await

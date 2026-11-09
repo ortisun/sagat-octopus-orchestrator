@@ -555,7 +555,8 @@ pub async fn serve_with_admin(
     // Workflow documents are validated and parsed once per immutable version, then kept.
     let codec: Arc<dyn IrCodec> = Arc::new(JsonIrCodec);
     let cache = DefinitionCache::new(codec, DEFINITION_CACHE_ENTRIES);
-    let executions = PgRunStore::new(pool.clone(), cache.clone());
+    let executions =
+        PgRunStore::new(pool.clone(), cache.clone()).with_lake_enabled(serve.lake_enabled);
     let mut governance = GovState::new(
         state.clone(),
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),

@@ -9,6 +9,10 @@
 //! have happened (hence idempotency keys).
 
 mod database;
+mod lake_complete;
+pub mod lake_input;
+pub mod lake_lease;
+pub mod lake_result;
 mod output;
 mod scoped;
 mod scoped_capabilities;
@@ -25,6 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::binding::BindingProfile;
 use sagat_domain::execution::{
     self, ExecutionInstanceId, FailureCode, Fence, Progress, RunEvent, RunId, RunStatus, StepStatus,
 };
@@ -84,17 +89,55 @@ pub const BLOB_PROTOCOL_MINOR: u32 = 3;
 pub const STREAM_PROTOCOL_MINOR: u32 = 4;
 
 /// Reserved managed activities require the dedicated machine identity and capability protocol.
+///
+/// A dedicated runner is of one **profile**, and the profile is the set of activities it registers (feature 035,
+/// D035-135): the SQL profile is `sagat.database.postgresql`, the lake profile is `sagat.database.iceberg.write`. The two
+/// are never mixed and an ordinary activity is never offered beside them; the patterns of the runner's binding decide
+/// which of the two it may register, as they decide every other registration. An activity the server does not serve yet
+/// (the revert, the destinations, the probe and the browse) is refused here, so that a runner is not left waiting for
+/// work that cannot come.
 #[must_use]
 pub fn managed_capabilities_allowed(role: Role, activities: &[String], minor: u32) -> bool {
-    use sagat_domain::database::{MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX};
+    use sagat_domain::database::MANAGED_DATABASE_PREFIX;
     if role == Role::DatabaseRunner {
-        minor >= DATABASE_PROTOCOL_MINOR
-            && !activities.is_empty()
-            && activities.iter().all(|a| a == MANAGED_DATABASE_ACTIVITY)
+        minor >= DATABASE_PROTOCOL_MINOR && managed_profile(activities).is_some()
     } else {
         activities
             .iter()
             .all(|a| !a.starts_with(MANAGED_DATABASE_PREFIX))
+    }
+}
+
+/// Whether the credentials of a step of `kind` may be handed to a session that offers `offered`, whose binding has the rows of
+/// `bindings` (their profiles, one per row): the session offers the managed activities of the profile of the kind, and the binding
+/// is of that profile alone. A binding with no row, or with rows that disagree, is not a binding of the profile. Registration and
+/// the lease already reach only such a session; this is the check in the transaction that delivers the secret, which does not trust
+/// that the rows it reads are the ones registration saw (D035-139).
+#[must_use]
+pub fn profile_fence(
+    kind: sagat_domain::database::ManagedKind,
+    offered: &[String],
+    bindings: &[BindingProfile],
+) -> bool {
+    managed_profile(offered) == Some(kind.profile())
+        && !bindings.is_empty()
+        && bindings.iter().all(|profile| *profile == kind.profile())
+}
+
+/// The profile a registration is for: `database` when it offers `sagat.database.postgresql` alone, `lake` when it offers
+/// `sagat.database.iceberg.write` alone, and `None` for anything else (an empty list, a mix, an ordinary activity, an
+/// activity the server does not serve yet). The binding of the identity must carry the same profile (D035-057).
+#[must_use]
+pub fn managed_profile(activities: &[String]) -> Option<BindingProfile> {
+    use sagat_domain::database::{ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY};
+    if activities.is_empty() {
+        None
+    } else if activities.iter().all(|a| a == MANAGED_DATABASE_ACTIVITY) {
+        Some(BindingProfile::Database)
+    } else if activities.iter().all(|a| a == ICEBERG_WRITE_ACTIVITY) {
+        Some(BindingProfile::Lake)
+    } else {
+        None
     }
 }
 
@@ -276,6 +319,8 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
 
     /// The same bounded, quota/pool/protocol-aware discovery window as `claimable_runs`, retaining
     /// exact path coordinates so scoped claims never need whole-run restoration to find work.
+    /// `capacity` selects the part of the window a guarded worker asks for.
+    #[allow(clippy::too_many_arguments)] // one bounded discovery window and its judging context
     fn claimable_paths(
         &self,
         tenant: TenantId,
@@ -284,6 +329,7 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         limit: u32,
         accepted_protocol_minor: u32,
         subject: &str,
+        capacity: CapacityWindow,
     ) -> impl Future<
         Output = Result<Vec<(RunId, sagat_domain::execution::InstancePath)>, StoreError>,
     > + Send;
@@ -291,6 +337,7 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
     /// Runs of one namespace that have a `READY` step for one of `activities`, oldest first. Steps
     /// that declare a secret restricted to worker pools the identity `subject` holds none of are
     /// left out of the window, bar a few per activity that the claim refuses and audits (G48).
+    #[allow(clippy::too_many_arguments)] // one bounded discovery window and its judging context
     fn claimable_runs(
         &self,
         tenant: TenantId,
@@ -299,8 +346,29 @@ pub trait WorkerStore: QuotaLookup + Send + Sync {
         limit: u32,
         accepted_protocol_minor: u32,
         subject: &str,
+        capacity: CapacityWindow,
     ) -> impl Future<Output = Result<Vec<RunId>, StoreError>> + Send;
 }
+
+/// Which part of the candidate window a poll asks for when it enforces ChildRoot possession
+/// (ADR-0075, G715). The window is only a hint: it is never wider than the possession
+/// prerequisite in the sense that matters (nothing the prerequisite would grant is left out of
+/// `Eligible`), and the claim transaction stays the authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapacityWindow {
+    /// Every run, as before the prerequisite existed. The only window of a worker without the guard.
+    Any,
+    /// Runs the prerequisite does not certainly refuse.
+    Eligible,
+    /// Runs it certainly refuses: an ACTIVE ChildRoot member that is not the holder of its group.
+    Ineligible,
+}
+
+/// Runs of the `Ineligible` window a guarded poll still reads, behind its eligible candidates.
+/// Possession gates only the grant of a lease (O706), so such a run still needs its claim
+/// transaction for deterministic internal progress, for instance failing a step whose input is
+/// over the limit. The sample is bounded so stuck non-holders cannot crowd the window.
+const INELIGIBLE_SAMPLE: u32 = 4;
 
 /// The result of registering.
 #[derive(Debug, Clone)]
@@ -505,6 +573,8 @@ pub struct WorkerService<S, C, E, R> {
     vault: Option<crate::secrets::SecretReader>,
     database_credentials: Option<Arc<dyn crate::database::DatabaseCredentialsCodec>>,
     database_results: Option<Arc<dyn crate::database::DatabaseResultValidator>>,
+    /// Rebuilds the receipt of a lake step; without it a lake step cannot be completed (feature 035, D035-142).
+    lake_receipts: Option<Arc<dyn crate::database::LakeReceiptCodec>>,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -537,6 +607,7 @@ where
             vault: None,
             database_credentials: None,
             database_results: None,
+            lake_receipts: None,
         }
     }
 
@@ -557,6 +628,17 @@ where
     ) -> Self {
         self.database_credentials = Some(credentials);
         self.database_results = Some(results);
+        self
+    }
+
+    /// The codec that rebuilds the receipt of an Iceberg write. Without it the completion of a lake step is refused: the server
+    /// stores a receipt it built, never the bytes a runner sent.
+    #[must_use]
+    pub fn with_lake_receipts(
+        mut self,
+        receipts: Arc<dyn crate::database::LakeReceiptCodec>,
+    ) -> Self {
+        self.lake_receipts = Some(receipts);
         self
     }
 
@@ -739,7 +821,9 @@ where
                 None,
                 self.clock.now(),
             )
-            .with_reason("the binding changed while the worker was registering");
+            .with_reason(
+                "the registration was refused: the binding, its profile, the role or the protocol did not cover it, or the binding changed while the worker was registering",
+            );
             if let Err(error) = self.store.record_unbound(&record).await {
                 tracing::error!(%error, action = %record.action(), "failed to record audit entry");
             }
@@ -848,7 +932,7 @@ where
         if byte_budget == 0 {
             return Ok(Vec::new());
         }
-        let candidates = self
+        let mut candidates = self
             .store
             .claimable_paths(
                 session.tenant_id,
@@ -857,8 +941,29 @@ where
                 wanted.saturating_mul(4).min(64),
                 session.accepted_protocol_minor,
                 &session.subject,
+                if self.child_root_capacity_guard {
+                    CapacityWindow::Eligible
+                } else {
+                    CapacityWindow::Any
+                },
             )
             .await?;
+        if self.child_root_capacity_guard {
+            // Behind every eligible candidate, never ahead of one (ADR-0075 activation condition d).
+            let refused = self
+                .store
+                .claimable_paths(
+                    session.tenant_id,
+                    session.namespace_id,
+                    &session.activities,
+                    INELIGIBLE_SAMPLE,
+                    session.accepted_protocol_minor,
+                    &session.subject,
+                    CapacityWindow::Ineligible,
+                )
+                .await?;
+            candidates.extend(refused);
+        }
         let mut claimed = Vec::new();
         self.claim(
             principal,
@@ -1003,7 +1108,7 @@ where
                 })
                 .filter_map(|(instance, _)| {
                     let n = def.node_for_instance(instance)?;
-                    if n.database_operation().is_some()
+                    if n.managed_kind().is_some()
                         && (!instance.path().is_root()
                             || session.accepted_protocol_minor < DATABASE_PROTOCOL_MINOR)
                     {
@@ -1070,12 +1175,15 @@ where
             }
             // Measure the actual serialized context before granting any lease. Raw output sizes
             // do not bound it: JSON number normalization can expand a compact stored document.
-            let managed = instance.path().is_root()
-                && tx
-                    .parts()
+            let kind = if instance.path().is_root() {
+                tx.parts()
                     .0
                     .node_for_instance(&instance)
-                    .is_some_and(|n| n.database_operation().is_some());
+                    .and_then(sagat_domain::workflow::Node::managed_kind)
+            } else {
+                None
+            };
+            let managed = kind.is_some();
             let input = if managed {
                 b"{}".to_vec()
             } else {
@@ -1106,7 +1214,11 @@ where
                 let denied = match admitted {
                     Ok(true) => false,
                     Ok(false)
-                    | Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => true,
+                    | Err(
+                        StoreError::DatabaseUnavailable
+                        | StoreError::DatabaseLimit
+                        | StoreError::LakeRefused { .. },
+                    ) => true,
                     Err(error) => return Err(error.into()),
                 };
                 if denied {
@@ -1134,6 +1246,41 @@ where
                     );
                     tx.persist(&[], effects).await?;
                     continue;
+                }
+            }
+            // The attempt input of an Iceberg write is made from the run's own data, after the claim was admitted, so
+            // that a runner which fails the role, pool or concurrency checks cannot cause a permanent failure. What cannot
+            // be made is a permanent failure of the step, with a closed code, and no lease (D035-138).
+            let (input, record_blobs) = if kind == Some(sagat_domain::database::ManagedKind::Lake) {
+                match self.lake_lease_input(&mut tx, &instance).await? {
+                    Ok(leased) => leased,
+                    Err(failure) => {
+                        let code =
+                            FailureCode::parse(failure.code()).map_err(|_| AppError::Internal)?;
+                        match self
+                            .reject_input(&mut tx, session, &instance, code, "lake_input", trace_id)
+                            .await
+                        {
+                            Ok(()) | Err(AppError::StateConflict(_)) => break,
+                            Err(other) => return Err(other),
+                        }
+                    }
+                }
+            } else {
+                (input, Vec::new())
+            };
+            if kind == Some(sagat_domain::database::ManagedKind::Lake) {
+                if input.len() > MAX_TASK_INPUT_BYTES {
+                    match self
+                        .reject_large_input(&mut tx, session, &instance, trace_id)
+                        .await
+                    {
+                        Ok(()) | Err(AppError::StateConflict(_)) => break,
+                        Err(other) => return Err(other),
+                    }
+                }
+                if input.len() > byte_budget - *bytes - run_bytes {
+                    break;
                 }
             }
             // The quota decision and READY -> LEASED transition share this run transaction. Its
@@ -1173,6 +1320,12 @@ where
                 .await
             {
                 Ok(task) => {
+                    // The blobs the document names are pinned to the attempt just granted, in the transaction that grants it: the
+                    // allow-list of its `ReadBlob`, from the catalog's own word (D035-144).
+                    if !record_blobs.is_empty() {
+                        tx.pin_lake_blobs(instance.node(), task.fence, &record_blobs)
+                            .await?;
+                    }
                     run_bytes += task.input.len();
                     leased.push(task);
                 }
@@ -1197,6 +1350,28 @@ where
         instance: &ExecutionInstanceId,
         trace_id: Option<&str>,
     ) -> Result<(), AppError> {
+        self.reject_input(
+            tx,
+            session,
+            instance,
+            FailureCode::run_data_limit(),
+            "run_data_limit",
+            trace_id,
+        )
+        .await
+    }
+
+    /// As [`Self::reject_large_input`] for any input that cannot be made: the step fails permanently with `code`, and
+    /// `reason` is the label of the metric. Nothing is leased and no token exists.
+    async fn reject_input<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        session: &SessionRecord,
+        instance: &ExecutionInstanceId,
+        code: FailureCode,
+        reason: &'static str,
+        trace_id: Option<&str>,
+    ) -> Result<(), AppError> {
         let effects = Effects::by(
             Actor::Worker(session.id.to_string()),
             trace_id.map(str::to_owned),
@@ -1212,7 +1387,7 @@ where
                         node,
                         execution::Failure {
                             fence,
-                            code: FailureCode::run_data_limit(),
+                            code: code.clone(),
                             retryable: false,
                             jitter_sample: 0.0,
                         },
@@ -1234,7 +1409,7 @@ where
                         &instance,
                         execution::Failure {
                             fence,
-                            code: FailureCode::run_data_limit(),
+                            code,
                             retryable: false,
                             jitter_sample: 0.0,
                         },
@@ -1246,9 +1421,78 @@ where
                 .await
                 .map_err(engine_error)?;
         }
-        metrics::counter!("worker_task_input_rejected_total", "reason" => "run_data_limit")
-            .increment(1);
+        metrics::counter!("worker_task_input_rejected_total", "reason" => reason).increment(1);
         Ok(())
+    }
+
+    /// The `input_json` of the lease of an Iceberg write and the blobs it names (to be pinned to the attempt the lease grants), or the
+    /// closed failure that says why it cannot be made. The outer error is the store's (or a bug's); the inner one is the data's, and
+    /// permanent.
+    async fn lake_lease_input<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        instance: &ExecutionInstanceId,
+    ) -> Result<Result<(Vec<u8>, Vec<BlobId>), sagat_domain::database::DatabaseFailure>, AppError>
+    {
+        let node = instance.node();
+        let facts = tx.lake_lease_facts(node).await?;
+        let info = tx.info().clone();
+        let write = tx
+            .parts()
+            .0
+            .node(node)
+            .and_then(sagat_domain::workflow::Node::iceberg_write)
+            .cloned()
+            .ok_or(AppError::Internal)?;
+        let workflow = tx.parts().0.name().as_str().to_owned();
+        let attempts = tx
+            .parts()
+            .1
+            .instance(instance)
+            .map_or(0, sagat_domain::execution::StepState::attempt);
+        // An earlier attempt has to be in the journal: without it the instant of the first one is unknown, and a document
+        // that guessed it would let a retry look for what an earlier attempt wrote in the wrong window.
+        if attempts > 0 && facts.first_leased_at.is_none() {
+            return Err(AppError::Internal);
+        }
+        let first_attempt_started_at = facts.first_leased_at.unwrap_or_else(|| tx.now());
+        let template = Self::task_template(tx.parts().0, instance);
+        let data = tx.data().await?;
+        let (_, effect_key, _) = self.task_identity(template, data, &info, instance)?;
+        // What the source names is owned from here on, so that the run's data is not borrowed while the catalog is asked.
+        let records = match lake_lease::named_records(self.engine.evaluator(), &write, data) {
+            Ok(records) => records,
+            Err(failure) => return Ok(Err(failure)),
+        };
+        let step_id = instance_step_id(info.version_id, info.run_id, instance).to_string();
+        let run_id = info.run_id.to_string();
+        let workflow_version = facts.workflow_version.to_string();
+        let lake_facts = lake_input::LakeFacts {
+            effect_key: &effect_key,
+            first_attempt_started_at,
+            run_id: &run_id,
+            step_id: &step_id,
+            workflow: &workflow,
+            workflow_version: &workflow_version,
+            prior_attempt_may_have_left_files: facts.first_leased_at.is_some(),
+            allow_empty: lake_input::APPEND_ALLOWS_EMPTY,
+        };
+        // The catalog's word, in this transaction, on the blobs the source names (none for inline records): the document is made from
+        // what it vouches for and not from the descriptors of the run's data.
+        let ids = records.blob_ids();
+        let found = if ids.is_empty() {
+            Vec::new()
+        } else {
+            tx.lake_record_blobs(&ids).await?
+        };
+        Ok(lake_lease::lake_lease_document(
+            &write,
+            &lake_facts,
+            records,
+            &found,
+            facts.connection_limits,
+        )
+        .map(|document| (document, ids)))
     }
 
     #[allow(clippy::too_many_arguments)] // the already-bounded input belongs to this lease
@@ -1267,7 +1511,7 @@ where
             .parts()
             .0
             .node_for_instance(instance)
-            .is_some_and(|node| instance.path().is_root() && node.database_operation().is_some());
+            .is_some_and(|node| instance.path().is_root() && node.managed_kind().is_some());
         let mut effects = Effects::by(
             Actor::Worker(if managed {
                 session.subject.clone()
@@ -1283,6 +1527,44 @@ where
             ttl: self.settings.lease_ttl,
             attempt_timeout: timeout,
         });
+        // A lake write that takes the result a SQL step retained reads it for the run: audited once with the lease, as reading it through
+        // the API is, naming the node, the write, its connection and who started the run, and no value (D035-145). The lease is the one place
+        // the result is read.
+        let result_read = instance
+            .path()
+            .is_root()
+            .then(|| tx.parts().0.node(instance.node()))
+            .flatten()
+            .and_then(sagat_domain::workflow::Node::iceberg_write)
+            .and_then(|write| match write.records() {
+                sagat_domain::database::RecordSource::DatabaseResult(source) => {
+                    Some((source.clone(), write.connection().name.clone()))
+                }
+                _ => None,
+            });
+        if let Some((source, connection)) = result_read {
+            let actor = Principal::new(
+                session.tenant_id,
+                sagat_domain::identity::Subject::parse(&session.subject)
+                    .map_err(|_| AppError::Internal)?,
+                Role::DatabaseRunner,
+            );
+            effects.audit = Some(
+                AuditRecord::by(
+                    &actor,
+                    AuditAction::DatabaseResultRead,
+                    ResourceType::Run,
+                    tx.info().run_id.to_string(),
+                    trace_id.map(str::to_owned),
+                    self.clock.now(),
+                )
+                .with_reason(format!(
+                    "node:{source} read by the lake write {} on the connection {connection}, for the run started by {}",
+                    instance.node(),
+                    tx.info().started_by
+                )),
+            );
+        }
         let fence = if instance.path().is_root() {
             let node = instance.node();
             self.engine
@@ -1617,6 +1899,32 @@ where
         self.check_blob_access(principal, task, false, None).await
     }
 
+    /// Whether `task` may read `blob` right now, before a byte of the store is touched. For an ordinary step this is
+    /// [`Self::check_lease`]. A managed step reads no blob through it, except a lake attempt, and only a blob the lease of exactly
+    /// this attempt named (feature 035, D035-144).
+    pub async fn check_blob_read(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        blob: BlobId,
+        trace_id: Option<&str>,
+    ) -> Result<BlobScope, AppError>
+    where
+        S: PathExecutionStore,
+    {
+        self.check_blob_access(
+            principal,
+            task,
+            false,
+            Some(BlobUse {
+                blob,
+                trace_id,
+                audit: false,
+            }),
+        )
+        .await
+    }
+
     /// Uploads cannot bypass the inline-output secret guard. Until streaming content scanning is
     /// available, attempts declaring secrets are refused before any bytes reach object storage.
     pub async fn check_blob_upload(
@@ -1642,9 +1950,18 @@ where
     where
         S: PathExecutionStore,
     {
-        self.check_blob_access(principal, task, false, Some((blob, trace_id)))
-            .await
-            .map(|_| ())
+        self.check_blob_access(
+            principal,
+            task,
+            false,
+            Some(BlobUse {
+                blob,
+                trace_id,
+                audit: true,
+            }),
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn check_blob_access(
@@ -1652,12 +1969,15 @@ where
         principal: &Principal,
         task: &TaskRef<'_>,
         writing: bool,
-        audit_read: Option<(BlobId, Option<&str>)>,
+        read: Option<BlobUse<'_>>,
     ) -> Result<BlobScope, AppError>
     where
         S: PathExecutionStore,
     {
         principal.authorize(Permission::WorkerExecute)?;
+        let audit_read = read
+            .filter(|read| read.audit)
+            .map(|read| (read.blob, read.trace_id));
         if !task.instance.path().is_root() {
             return self
                 .check_path_blob_access(principal, task, writing, audit_read)
@@ -1681,12 +2001,31 @@ where
                 return Err(AppError::StaleAttempt);
             }
         }
-        if Self::managed_database(&mut tx, task) {
-            return Err(AppError::NotAllowed(if writing {
-                "managed database results require content scanning"
-            } else {
-                "managed database inputs are resolved through the capability"
-            }));
+        if let Some(kind) = Self::managed_kind(&mut tx, task) {
+            // One door is open to a managed step: a lake attempt reads a blob the lease of exactly this attempt named, and nothing
+            // else (D035-144). The check that names no blob, the upload and every SQL step stay refused.
+            match (kind, writing, read) {
+                (sagat_domain::database::ManagedKind::Lake, false, Some(read)) => {
+                    if !self.lake_blob_allowed(&mut tx, task, read.blob).await? {
+                        // A refusal is the answer whether or not it could be written down; the failure is logged, as for a denied
+                        // registration.
+                        let effects = self.lake_read_denial(principal, task, read.trace_id);
+                        if let Err(error) = tx.persist(&[], effects).await {
+                            tracing::error!(%error, "failed to record a refused lake blob read");
+                        } else if let Err(error) = tx.commit().await {
+                            tracing::error!(%error, "failed to record a refused lake blob read");
+                        }
+                        return Err(AppError::NotFound);
+                    }
+                }
+                _ => {
+                    return Err(AppError::NotAllowed(if writing {
+                        "managed database results require content scanning"
+                    } else {
+                        "managed database inputs are resolved through the capability"
+                    }));
+                }
+            }
         }
         if writing && !Self::declared_secrets(&mut tx, task).is_empty() {
             return Err(AppError::NotAllowed(
@@ -1700,6 +2039,59 @@ where
             tx.commit().await?;
         }
         Ok(scope)
+    }
+
+    /// Whether the lease of a lake attempt allows it to read `blob`. The lease, the binding, the owner of the session and the exact
+    /// attempt and generation were checked by the caller; a read is held, as a report is (`attempt_authority_fence`), to a run that
+    /// is still live: one that was told to stop, whose step has a cancel requested, or that finished is given nothing more. Then the
+    /// lease of exactly this attempt and generation must have named the blob. `false` is answered as `NotFound`, the same as for a
+    /// blob that does not exist, so the answer says nothing about what does (see [`Self::lake_read_denial`]).
+    async fn lake_blob_allowed<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+        blob: BlobId,
+    ) -> Result<bool, AppError> {
+        let live = {
+            let (_, state) = tx.parts();
+            state
+                .instance(task.instance)
+                .is_some_and(|step| !step.cancel_requested())
+                && state.stop_reason().is_none()
+                && !state.is_finished()
+        };
+        if !live {
+            return Err(AppError::StaleAttempt);
+        }
+        Ok(tx
+            .lake_blob_pinned(task.instance.node(), task.fence, blob)
+            .await?)
+    }
+
+    /// The refusal of a lake read, audited once for the run without naming the blob: an identical event is recorded once, so a runner
+    /// that tries one blob after another cannot fill the trail.
+    fn lake_read_denial(
+        &self,
+        principal: &Principal,
+        task: &TaskRef<'_>,
+        trace_id: Option<&str>,
+    ) -> Effects {
+        let mut effects = Effects::by(
+            Actor::Worker(principal.subject().as_str().to_owned()),
+            trace_id.map(str::to_owned),
+        );
+        effects.audit = Some(
+            AuditRecord::by(
+                principal,
+                AuditAction::DatabaseDenied,
+                ResourceType::Run,
+                task.run_id.to_string(),
+                trace_id.map(str::to_owned),
+                self.clock.now(),
+            )
+            .with_reason("a lake attempt asked for a blob its lease did not name"),
+        );
+        effects
     }
 
     /// Resolves the report target. Scoped new reports require their exact live lease before
@@ -2147,23 +2539,36 @@ where
         Ok(Some(parse_ack(&stored, true, task.run_id)))
     }
 
-    fn managed_database<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
-        task.instance.path().is_root()
-            && tx
-                .parts()
-                .0
-                .node_for_instance(task.instance)
-                .is_some_and(|n| n.database_operation().is_some())
+    fn managed_kind<Tx: RunTx>(
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+    ) -> Option<sagat_domain::database::ManagedKind> {
+        if !task.instance.path().is_root() {
+            return None;
+        }
+        tx.parts()
+            .0
+            .node_for_instance(task.instance)
+            .and_then(sagat_domain::workflow::Node::managed_kind)
     }
 
+    fn managed_database<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
+        Self::managed_kind(tx, task).is_some()
+    }
+
+    /// Whether the step is a managed write: a SQL statement that executes, or an Iceberg write (every lake step writes). What a write
+    /// reports as done cannot be treated as undone when its report cannot be kept: its outcome is unknown, not failed.
     fn database_write<Tx: RunTx>(tx: &mut Tx, task: &TaskRef<'_>) -> bool {
-        task.instance.path().is_root()
-            && tx
-                .parts()
-                .0
-                .node(task.instance.node())
-                .and_then(sagat_domain::workflow::Node::database_operation)
-                .is_some_and(|op| op.kind == sagat_domain::database::OperationKind::Execute)
+        if !task.instance.path().is_root() {
+            return false;
+        }
+        let node = tx.parts().0.node(task.instance.node());
+        node.is_some_and(|node| {
+            node.managed_kind() == Some(sagat_domain::database::ManagedKind::Lake)
+                || node
+                    .database_operation()
+                    .is_some_and(|op| op.kind == sagat_domain::database::OperationKind::Execute)
+        })
     }
 
     /// The secrets the step declares, from its definition.
@@ -2404,6 +2809,14 @@ where
             run_status,
         })
     }
+}
+
+/// A read of one blob that a blob check is made for: the blob, the trace of the call, and whether the read is to be audited now.
+#[derive(Clone, Copy)]
+struct BlobUse<'a> {
+    blob: BlobId,
+    trace_id: Option<&'a str>,
+    audit: bool,
 }
 
 fn parse_ack(stored: &str, already_applied: bool, run: RunId) -> StepAck {

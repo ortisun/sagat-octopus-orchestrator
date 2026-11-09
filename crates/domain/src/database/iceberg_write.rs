@@ -25,6 +25,10 @@ pub const MAX_MAPPED_COLUMNS: usize = 1024;
 pub const MAX_MAPPING_DEPTH: usize = 16;
 /// Record blobs one step names. The runner and publication enforce it where the blob descriptors are known.
 pub const MAX_RECORD_BLOBS: usize = 32;
+/// The bytes of the record blobs one step names, together: the platform ceiling for the record input of a step (plan.md, limits table).
+/// The runner holds the same bound while it streams; the server holds it where the descriptors are known, so a step over it is refused
+/// before it is leased.
+pub const MAX_RECORD_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_FIELD_BYTES: usize = 512;
 const MAX_NAME_BYTES: usize = 255;
 const MAX_NAMESPACE_LEVELS: usize = 8;
@@ -60,6 +64,20 @@ fn plain(text: &str) -> bool {
     !text.is_empty() && text.len() <= MAX_NAME_BYTES && !text.chars().any(char::is_control)
 }
 
+/// A namespace level or a table name. `.` and `..` are refused: an HTTP client removes them from the path of a request
+/// (RFC 3986, 5.2.4), so the catalog would be asked something else than the step says. The lake host refuses them too.
+fn identifier_part(text: &str) -> bool {
+    plain(text) && text != "." && text != ".."
+}
+
+/// RFC 6901: a `~` is the start of `~0` (a `~`) or `~1` (a `/`) and nothing else. The lake host refuses any other use, so
+/// the domain refuses it where the step is written and not when it runs.
+fn escapes_are_pointer_escapes(pointer: &str) -> bool {
+    let mut after = pointer.split('~');
+    after.next();
+    after.all(|rest| rest.starts_with(['0', '1']))
+}
+
 /// An Iceberg table: one to eight namespace levels and a name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableIdentifier {
@@ -69,13 +87,13 @@ pub struct TableIdentifier {
 
 impl TableIdentifier {
     /// # Errors
-    /// [`IcebergWriteError::Table`] for no level, more than eight, or a level or name that is empty, longer than 255 bytes or
-    /// carries a control character.
+    /// [`IcebergWriteError::Table`] for no level, more than eight, or a level or name that is empty, longer than 255 bytes,
+    /// carries a control character, or is `.` or `..`.
     pub fn new(namespace: Vec<String>, name: &str) -> Result<Self, IcebergWriteError> {
         if namespace.is_empty()
             || namespace.len() > MAX_NAMESPACE_LEVELS
-            || !namespace.iter().all(|level| plain(level))
-            || !plain(name)
+            || !namespace.iter().all(|level| identifier_part(level))
+            || !identifier_part(name)
         {
             return Err(IcebergWriteError::Table);
         }
@@ -132,6 +150,7 @@ impl ColumnMapping {
         if field.len() > MAX_FIELD_BYTES
             || segments.iter().any(|segment| segment.is_empty())
             || field.chars().any(char::is_control)
+            || !escapes_are_pointer_escapes(field)
         {
             return Err(IcebergWriteError::Field);
         }

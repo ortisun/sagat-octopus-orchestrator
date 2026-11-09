@@ -32,6 +32,8 @@ fn spec() -> LakeSpec {
         },
         limits: limits(),
         owner: "lake-runner-1".to_owned(),
+        class: "small".to_owned(),
+        deadline_epoch_secs: 1_800_000_000,
     }
 }
 
@@ -252,7 +254,60 @@ fn nothing_is_logged_and_the_container_is_labelled_for_the_sweep() {
         labels.get("sagat.lake.attempt").map(String::as_str),
         Some(ATTEMPT)
     );
-    assert_eq!(labels.len(), 3);
+    // what a restarted sandbox runner rebuilds its slots, its reservations and its deadlines from (ADR-0079, rule 7)
+    assert_eq!(labels.get("sagat.lake.slot").map(String::as_str), Some("3"));
+    assert_eq!(
+        labels.get("sagat.lake.class").map(String::as_str),
+        Some("small")
+    );
+    assert_eq!(
+        labels.get("sagat.lake.deadline").map(String::as_str),
+        Some("1800000000")
+    );
+    // what a restarted sandbox runner adds up: the limit the container was made with, not the node's settings of today
+    assert_eq!(
+        labels.get("sagat.lake.memory").map(String::as_str),
+        Some("2147483648")
+    );
+    assert_eq!(labels.len(), 7);
+}
+
+#[test]
+fn a_class_that_is_not_a_plain_name_is_refused_and_a_deadline_of_zero_is_too() {
+    for class in [
+        String::new(),
+        "Small".to_owned(),
+        "has space".to_owned(),
+        "a/b".to_owned(),
+        "x".repeat(33),
+        "tab\t".to_owned(),
+    ] {
+        let mut candidate = spec();
+        candidate.class = class;
+        assert_eq!(
+            container_config(&candidate).err(),
+            Some(LakeProfileError::Name),
+            "{candidate:?}"
+        );
+    }
+    // zero is no time, and one that no clock reaches is a container nothing ends: past the year 2100 is refused, the
+    // last second of the bound is not
+    for deadline in [0, 4_102_444_801, u64::MAX] {
+        let mut candidate = spec();
+        candidate.deadline_epoch_secs = deadline;
+        assert_eq!(
+            container_config(&candidate).err(),
+            Some(LakeProfileError::Deadline),
+            "{deadline}"
+        );
+    }
+    let mut latest = spec();
+    latest.deadline_epoch_secs = 4_102_444_800;
+    assert!(container_config(&latest).is_ok());
+    // the longest class is accepted: the bound is on the length, not a reason to refuse a name
+    let mut longest = spec();
+    longest.class = "x".repeat(32);
+    assert!(container_config(&longest).is_ok());
 }
 
 #[test]
@@ -305,6 +360,11 @@ fn a_volume_or_image_name_that_is_empty_or_has_a_control_character_is_refused() 
         |s| s.mount.volume = "vol/../x".to_owned(),
         |s| s.owner.clear(),
         |s| s.owner = "a\tb".to_owned(),
+        // a label value that goes into a label filter: nothing the filter could read as more than a name
+        |s| s.owner = "a,b".to_owned(),
+        |s| s.owner = "a=b".to_owned(),
+        |s| s.owner = "a/b".to_owned(),
+        |s| s.owner = "x".repeat(129),
     ] {
         let mut candidate = spec();
         change(&mut candidate);
@@ -318,12 +378,23 @@ fn a_volume_or_image_name_that_is_empty_or_has_a_control_character_is_refused() 
 
 #[test]
 fn only_hexadecimal_digits_and_hyphens_make_an_attempt_id() {
-    for ok in ["0", "abcdef-0123456789", &"f".repeat(64)] {
+    // at most 60 characters, and the first a hexadecimal digit: the stricter of the profile's rule and the lake runner's
+    // staging (ADR-0079, rule 10)
+    for ok in ["0", "abcdef-0123456789", &"f".repeat(60)] {
         let mut candidate = spec();
         candidate.attempt_id = ok.to_owned();
         assert!(container_config(&candidate).is_ok(), "{ok:?}");
     }
-    for bad in ["g", "xyz", "abcdeg", "0198f2c4-7b1e-z"] {
+    for bad in [
+        "g",
+        "xyz",
+        "abcdeg",
+        "0198f2c4-7b1e-z",
+        "",
+        "-abc",
+        "-",
+        &"f".repeat(61),
+    ] {
         let mut candidate = spec();
         candidate.attempt_id = bad.to_owned();
         assert_eq!(

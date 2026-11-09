@@ -30,9 +30,11 @@ merges a pull request would prove again what the pull request proved):
   changed. A changed package does not select a suite because the suite uses it, or uses what depends on it: the suites are
   expensive and the release runs all of them. The browser
   suites when `frontend/e2e` or `examples/` changes; the SDK suites when `sdks/<language>/conformance` changes; the lake
-  suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes; and every
-  suite when `tests/support`, `tests/fixtures`, any other `runners/` directory, a contract file under `specs/` or a
-  dependency of `tests/Cargo.toml` changes.
+  suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes.
+  What is shared selects no suite: `tests/support`, `tests/fixtures`, any other `runners/` directory, a contract file
+  under `specs/`, a dependency of `tests/Cargo.toml` and `Cargo.lock` (which does select the unit tests of every package)
+  are used by suites nobody changed, and the release runs those (OD-2026-11-06-2). The log of the selector says
+  `select no suite: <file> is shared by the suites` so that nobody wonders why a suite did not run.
 
 Nothing else runs: no formatting, no `clippy`, no architecture, agent-configuration or design-doc check, no contract
 validation, no advisory audit, no upgrade, Compose smoke-test, scale or native-runner job. A change that touches only
@@ -44,6 +46,14 @@ release is a push to `main`, `release/**` or `hotfix/**`, a tag `v*`, a pull req
 run (`workflow_dispatch`), a change of `.github/workflows`, or any run with no usable base commit. For the lake runtime
 that adds the types and lint, the image build, the smoke test of the image and its SBOM; its lock is also audited every
 week by `.github/workflows/lake-audit.yml`.
+
+**Mutation testing** is not part of a pull request, of a merge or of the CI (OD-2026-11-06-2). It runs when a release is
+closed, by whoever closes it, over the guards that the release added or changed: each is weakened once, in a throw-away
+copy of the tree, and a named test must fail. A survivor gets a test, or the code it guards is removed as unneeded, and an
+equivalent mutant is said to be one. The repository has no mutation tooling, and the scripts are written for the occasion;
+run each mutant with bytecode off (`PYTHONDONTWRITEBYTECODE=1`), because two mutants of the same size written within a second
+share a bytecode cache entry and the second is then judged by the first one's code. The result goes in the release's
+validation report. Until then the tests of a change are written first and seen failing, and nothing more is claimed for them.
 
 What this costs, so it is not forgotten: a violation of a lint or of an architecture rule reaches `develop` and is found when
 a release is closed, and a suite that reaches the code only over HTTP, without naming its package, is not selected for a

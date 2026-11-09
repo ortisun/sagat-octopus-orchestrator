@@ -221,7 +221,7 @@ def test_a_failure_cannot_carry_free_text() -> None:
 
 
 def test_an_operation_the_host_does_not_serve_is_a_protocol_failure() -> None:
-    conversation = serve_attempt(encoded(request("icebergWrite")), {})
+    conversation = serve_attempt(encoded(request("objectWrite")), {})
 
     assert conversation.results == [{"failure": {"code": LAKE_HOST_PROTOCOL}, "relayDenials": 0}]
 
@@ -364,7 +364,7 @@ def test_the_entry_point_refuses_arguments_it_does_not_know() -> None:
 
 def test_the_real_entry_point_runs_isolated_and_answers_an_operation_it_does_not_serve() -> None:
     """`python3 -I` ignores PYTHONPATH and the script's directory, so the entry puts its package on the path."""
-    conversation = Conversation(encoded(request("icebergWrite")))
+    conversation = Conversation(encoded(request("objectWrite")))
     relay = FakeRelay(TOKEN, control=conversation)
 
     async def main() -> tuple[int, str, str]:
@@ -406,3 +406,25 @@ def test_every_code_the_skeleton_raises_is_in_the_one_table_of_the_domain() -> N
     table = (ROOT / "crates/domain/src/database/failure.rs").read_text()
     for code in (LAKE_HOST_PROTOCOL, WORKER_ERROR):
         assert re.search(rf'"{code}"', table), code
+
+
+def test_every_code_the_host_raises_is_one_the_runner_reads() -> None:
+    """The runner reads only the codes a host may report (``HOST_MAY_REPORT`` in ``protocol.rs``) and turns any other
+    into ``LAKE_HOST_PROTOCOL``. A host that starts to raise a code that is not on that list would have it lost without
+    a word, so the code literals of the host's sources must all be on it. (The same is checked from the Rust side; this
+    runs when only the host changes.)"""
+    table = (ROOT / "crates/domain/src/database/failure.rs").read_text()
+    code_of = dict(re.findall(r'^\s*(\w+) => "([A-Z0-9_]+)", (?:true|false);', table, re.MULTILINE))
+    protocol = (ROOT / "crates/infra-lake/src/protocol.rs").read_text()
+    listed = re.search(r"const HOST_MAY_REPORT: \[DatabaseFailure; \d+\] = \[(.*?)\];", protocol, re.DOTALL)
+    assert listed is not None
+    assert code_of
+    allowed = {code_of[name] for name in re.findall(r"DatabaseFailure::(\w+)", listed.group(1))}
+    assert len(allowed) >= 15
+
+    raised: set[str] = set()
+    for source in (RUNTIME / "sagat_lake").rglob("*.py"):
+        text = source.read_text(encoding="utf-8")
+        raised |= {code for code in code_of.values() if f'"{code}"' in text}
+    assert "ICEBERG_TABLE_NOT_FOUND" in raised
+    assert raised <= allowed, sorted(raised - allowed)

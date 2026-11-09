@@ -213,6 +213,75 @@ def test_the_table_properties_that_move_the_data_files_are_checked_too() -> None
     assert "attacker-bucket" not in str(refused.value)
 
 
+def test_the_file_io_keys_a_table_carries_in_its_own_properties_are_dropped_and_counted() -> None:
+    # PyIceberg builds the file IO of a table from the catalog's properties overridden by the table's own, so a table
+    # could name the class to import (`py-io-impl`) or move the endpoint, the proxy, the signer and the region
+    with hostile.serve() as url:
+        document = hostile.fetch(url, "/v1/namespaces/hostile/tables/io-in-properties")
+    hygiene = s3(vended=True)
+
+    accepted = hygiene.accept_table(document)
+
+    assert accepted.properties == hostile.HONEST_PROPERTIES
+    assert hygiene.denied[Denial.KEY_NOT_ALLOWED] == len(hostile.HOSTILE_KEYS)
+    assert hygiene.denials == len(hostile.HOSTILE_KEYS)
+
+
+def test_a_table_with_no_properties_keeps_none() -> None:
+    document = hostile.table_response("s3://lake/warehouse/sales/orders", config={}, properties={})
+    hygiene = s3()
+    assert hygiene.accept_table(document).properties == {}
+    assert hygiene.denials == 0
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "write",  # a family without a key
+        "write.",  # an empty key
+        "writer.format",  # a longer family name
+        "x.write.format.default",  # the family is not at the start
+        "Write.format.default",  # case is not folded: PyIceberg reads the exact key
+        "py-io-impl",
+        "s3.endpoint",
+        "client.region",
+        "uri",
+        "warehouse",
+        "token",
+        "credential",
+        "rest.signing-name",
+        "write.format.default\n",  # nothing after the key
+    ],
+)
+def test_only_the_families_of_properties_the_host_needs_are_kept(key: str) -> None:
+    document = hostile.table_response("s3://lake/warehouse/sales/orders", config={}, properties={key: "x"})
+    hygiene = s3()
+    assert hygiene.accept_table(document).properties == {}
+    assert hygiene.denied[Denial.KEY_NOT_ALLOWED] == 1
+
+
+@pytest.mark.parametrize("family", ["write", "commit", "gc", "history", "read", "schema"])
+def test_every_family_the_host_needs_is_kept(family: str) -> None:
+    properties = {f"{family}.a-b_c": "x"}
+    document = hostile.table_response("s3://lake/warehouse/sales/orders", config={}, properties=properties)
+    assert s3().accept_table(document).properties == properties
+
+
+def test_a_property_that_is_not_text_is_dropped_and_counted() -> None:
+    document = hostile.table_response("s3://lake/warehouse/sales/orders", config={})
+    as_dict(document["metadata"])["properties"] = {"write.format.default": 5, "commit.retry.min-wait-ms": None}
+    hygiene = s3()
+    assert hygiene.accept_table(document).properties == {}
+    assert hygiene.denied[Denial.KEY_NOT_ALLOWED] == 2
+
+
+def test_the_location_provider_a_table_names_is_kept_so_the_compatibility_check_can_refuse_it() -> None:
+    # dropping it would hand the table a default placement without anyone having said no; D035-092 refuses it
+    properties = {"write.py-location-provider.impl": "evil.module.Provider"}
+    document = hostile.table_response("s3://lake/warehouse/sales/orders", config={}, properties=properties)
+    assert s3().accept_table(document).properties == properties
+
+
 @pytest.mark.parametrize(
     "field",
     ["snapshots", "metadata-log", "statistics", "partition-statistics"],
@@ -484,3 +553,89 @@ def _prefix(storage: StorageType) -> str:
         StorageType.GCS: "gs://lake/w/",
         StorageType.ADLS: "abfss://c@acct.dfs.core.windows.net/w/",
     }[storage]
+
+
+# -- storage credentials of a table --------------------------------------------------------------------------------
+def entry(prefix: object, config: object) -> dict[str, object]:
+    return {"prefix": prefix, "config": config}
+
+
+VENDED = {"s3.access-key-id": "k", "s3.secret-access-key": "s", "s3.session-token": "t"}
+
+
+def test_the_storage_credentials_of_the_warehouse_keep_only_the_keys_of_the_declared_storage() -> None:
+    hygiene = s3(vended=True)
+    kept = hygiene.storage_credentials(
+        [entry("s3://lake/warehouse/sales", {**VENDED, "s3.endpoint": "http://attacker", "py-io-impl": "evil.IO"})]
+    )
+    assert kept == [entry("s3://lake/warehouse/sales", VENDED)]
+    assert hygiene.denied[Denial.KEY_NOT_ALLOWED] == 2
+
+
+def test_a_credential_for_a_prefix_outside_the_warehouse_is_dropped_and_counted() -> None:
+    hygiene = s3(vended=True)
+    kept = hygiene.storage_credentials(
+        [
+            entry("s3://attacker-bucket/", VENDED),
+            entry("s3://lake/warehouse-evil/", VENDED),
+            entry("s3://lake/warehouse/../secret/", VENDED),
+            entry("s3://lake/warehouse/ok/", VENDED),
+        ]
+    )
+    assert kept == [entry("s3://lake/warehouse/ok/", VENDED)]
+    assert hygiene.denied[Denial.LOCATION_NOT_ALLOWED] == 3
+
+
+def test_the_warehouse_itself_and_a_prefix_without_a_trailing_slash_are_inside() -> None:
+    hygiene = s3(vended=True)
+    kept = hygiene.storage_credentials([entry("s3://lake/warehouse/", VENDED), entry("s3://lake/warehouse", VENDED)])
+    assert len(kept) == 2
+
+
+def test_without_vended_credentials_declared_no_credential_is_kept() -> None:
+    hygiene = s3(vended=False)
+    assert hygiene.storage_credentials([entry("s3://lake/warehouse/", VENDED)]) == []
+    assert hygiene.denied[Denial.KEY_NOT_ALLOWED] == 3
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        entry(5, VENDED),
+        entry(None, VENDED),
+        entry("s3://lake/warehouse/", "not a map"),
+        entry("s3://lake/warehouse/", None),
+        {"config": VENDED},
+        {"prefix": "s3://lake/warehouse/"},
+        {},
+    ],
+)
+def test_an_entry_that_is_not_a_prefix_with_a_config_is_dropped_and_counted(bad: dict[str, object]) -> None:
+    hygiene = s3(vended=True)
+    assert hygiene.storage_credentials([bad]) == []
+    assert hygiene.denials == 1
+
+
+def test_no_credentials_is_no_credentials() -> None:
+    assert s3(vended=True).storage_credentials([]) == []
+
+
+# -- what the connection lets the catalog delegate ------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("vended", "signing", "expected"),
+    [
+        (False, False, None),
+        (True, False, "vended-credentials"),
+        (False, True, "remote-signing"),
+        (True, True, "vended-credentials,remote-signing"),
+    ],
+)
+def test_the_connection_asks_the_catalog_for_only_what_it_declares(
+    vended: bool, signing: bool, expected: str | None
+) -> None:
+    assert s3(vended=vended, signing=signing).access_delegation == expected
+
+
+def test_remote_signing_is_not_asked_for_on_a_storage_that_does_not_sign() -> None:
+    hygiene = Hygiene(Declaration(StorageType.GCS, ("gs://lake/warehouse/",), remote_signing=True))
+    assert hygiene.access_delegation is None

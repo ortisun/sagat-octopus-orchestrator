@@ -32,6 +32,13 @@ fn apply(builder: &Builder, program: &Value) -> Result<(), SagatError> {
                     })?,
                 );
             }
+            "icebergWrite" => {
+                builder.iceberg_write(
+                    id,
+                    decode(options(op))
+                        .map_err(|_| SagatError::validation("invalid iceberg write"))?,
+                );
+            }
             "sleep" => {
                 builder.sleep(id, number(op, "durationMs"));
             }

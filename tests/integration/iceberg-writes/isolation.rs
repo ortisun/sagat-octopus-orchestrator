@@ -36,8 +36,16 @@ const GROUP: u32 = 10_001;
 const OTHER_GROUP: u32 = 20_000;
 const PROBE_WAIT: Duration = Duration::from_secs(60);
 
-fn image() -> String {
+pub(crate) fn image() -> String {
     std::env::var("SAGAT_LAKE_ISOLATION_IMAGE").unwrap_or_else(|_| "python:3.13-alpine".to_owned())
+}
+
+/// A deadline label far enough away that no sweep of these cases acts on it.
+fn far_deadline() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+        + 24 * 3600
 }
 
 fn limits() -> LakeLimits {
@@ -48,6 +56,50 @@ fn limits() -> LakeLimits {
         work_bytes: 32 * MIB,
         tmp_bytes: 8 * MIB,
     }
+}
+
+/// A work volume of the lake profile (memory-backed) and a container that holds it: it stands for the lake runner, mounts
+/// the whole volume at `/w` as root with its capabilities, and stays up so that what is made in the volume stays. `owner` is
+/// the label of the holder, which must not be the label of the containers a case makes: their sweep must not take it.
+/// The caller stops the holder and removes the volume when it is done.
+pub(crate) async fn work_volume_with_holder(
+    engine: &LakeEngine,
+    owner: &str,
+) -> (String, LakeContainer) {
+    let volume = format!("sagat-lake-it-{}", uuid::Uuid::now_v7());
+    engine
+        .create_work_volume(&volume, 64 * MIB, 0)
+        .await
+        .expect("a work volume");
+    let mut body = container_config(&LakeSpec {
+        image: image(),
+        attempt_id: "0".to_owned(),
+        slot: 0,
+        group: GROUP,
+        mount: AttemptMount {
+            volume: volume.clone(),
+        },
+        limits: limits(),
+        owner: owner.to_owned(),
+        class: "small".to_owned(),
+        deadline_epoch_secs: far_deadline(),
+    })
+    .expect("a valid profile");
+    body.user = Some("0:0".to_owned());
+    body.cmd = Some(vec!["sleep".to_owned(), "3600".to_owned()]);
+    let host = body.host_config.as_mut().expect("host configuration");
+    host.cap_drop = None; // the holder stands for the lake runner, which must be able to give a file away
+    let mount = &mut host.mounts.as_mut().expect("mounts")[0];
+    mount.target = Some("/w".to_owned());
+    mount
+        .volume_options
+        .as_mut()
+        .expect("volume options")
+        .subpath = None;
+    let holder = within("start the holder", START_LIMIT, engine.start(body))
+        .await
+        .expect("the holder starts");
+    (volume, holder)
 }
 
 /// Two attempts of two slots in one work volume, prepared as the lake runner would leave them: a directory and a
@@ -78,38 +130,9 @@ impl Work {
         )
         .await
         .expect("the isolation image is on the engine or can be pulled");
-        let volume = format!("sagat-lake-it-{}", uuid::Uuid::now_v7());
         let owner = format!("isolation-{}", uuid::Uuid::now_v7());
-        engine
-            .create_work_volume(&volume, 64 * MIB, 0)
-            .await
-            .expect("a work volume");
-        let mut body = container_config(&LakeSpec {
-            image: image(),
-            attempt_id: "0".to_owned(),
-            slot: 0,
-            group: GROUP,
-            mount: AttemptMount {
-                volume: volume.clone(),
-            },
-            limits: limits(),
-            owner: format!("{owner}-holder"), // not the probes' label: their sweep must not take the holder
-        })
-        .expect("a valid profile");
-        body.user = Some("0:0".to_owned());
-        body.cmd = Some(vec!["sleep".to_owned(), "3600".to_owned()]);
-        let host = body.host_config.as_mut().expect("host configuration");
-        host.cap_drop = None; // the holder stands for the lake runner, which must be able to give a file away
-        let mount = &mut host.mounts.as_mut().expect("mounts")[0];
-        mount.target = Some("/w".to_owned());
-        mount
-            .volume_options
-            .as_mut()
-            .expect("volume options")
-            .subpath = None;
-        let holder = within("start the holder", START_LIMIT, engine.start(body))
-            .await
-            .expect("the holder starts");
+        // not the probes' label: their sweep must not take the holder
+        let (volume, holder) = work_volume_with_holder(&engine, &format!("{owner}-holder")).await;
         let work = Self {
             engine,
             holder,
@@ -133,6 +156,8 @@ impl Work {
             },
             limits,
             owner: self.owner.clone(),
+            class: "small".to_owned(),
+            deadline_epoch_secs: far_deadline(),
         }
     }
 

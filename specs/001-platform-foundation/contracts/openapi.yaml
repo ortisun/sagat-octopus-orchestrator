@@ -5793,10 +5793,11 @@ components:
         leasesReleased: {type: integer, minimum: 0}
     WorkerBinding:
       type: object
-      required: [subject, activities]
+      required: [subject, activities, profile]
       properties:
         subject: {type: string}
         activities: {type: array, items: {type: string}, description: 'Activity names, `<prefix>.*` or `*`.'}
+        profile: {type: string, enum: [database, lake], description: 'What kind of managed work a dedicated runner (`database-runner`) may register for: `database` serves SQL steps, `lake` serves Iceberg writes. A runner registers only for the managed activities of its profile, whatever its patterns cover. It means nothing to an ordinary worker. Bindings made before profiles existed read as `database`.'}
         pools: {type: array, items: {type: string}, description: 'The worker pools the identity was granted in this namespace; a secret that lists pools is delivered only to identities that hold one of them.'}
         revoked: {$ref: '#/components/schemas/RevokedWorkers'}
     WorkerBindingList:
@@ -5811,6 +5812,7 @@ components:
       properties:
         activities: {type: array, minItems: 1, maxItems: 64, items: {type: string, minLength: 1, maxLength: 130}}
         pools: {type: array, maxItems: 16, items: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9._:+-]+$'}, description: 'Replaces the pools the identity is granted. Absent leaves them as they are; an empty list takes them all away. Removing the binding removes them too.'}
+        profile: {type: string, enum: [database, lake], description: 'Sets the profile of a dedicated runner. Absent keeps the one it has (`database` for a new binding). A runner whose session offers the managed activities of another profile is closed when the profile changes.'}
     Secret:
       type: object
       required: [name, version, keyId, createdBy, updatedAt]

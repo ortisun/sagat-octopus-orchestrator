@@ -1192,9 +1192,16 @@ where
                 .parse::<BlobId>()
                 .map_err(|_| invalid("blob_id is not a blob id"))?;
             let principal = &auth.session.principal;
+            // The check names the blob: an ordinary step is held to its lease, a lake attempt to the blobs its lease named, and the
+            // store is not asked about a blob the check did not allow (D035-144).
             let scope = self
                 .workers
-                .check_lease(principal, &attempt.task_ref())
+                .check_blob_read(
+                    principal,
+                    &attempt.task_ref(),
+                    id,
+                    Some(&trace.trace_id().to_string()),
+                )
                 .await
                 .map_err(app)?;
             let (descriptor, body) = blobs

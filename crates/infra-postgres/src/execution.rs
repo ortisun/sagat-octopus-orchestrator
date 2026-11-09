@@ -140,6 +140,8 @@ pub struct PgRunStore {
     pub(crate) definitions: PgDefinitionStore,
     breaker: BreakerPolicy,
     pub(crate) scoped_worker_protocol: bool,
+    /// The deployment's `lake.enabled` (feature 035): whether a run may carry an Iceberg write. Off unless set.
+    pub(crate) lake_enabled: bool,
 }
 
 impl PgRunStore {
@@ -152,7 +154,16 @@ impl PgRunStore {
             cache,
             breaker: BreakerPolicy::default(),
             scoped_worker_protocol: false,
+            lake_enabled: false,
         }
+    }
+
+    /// Lets a run carry an Apache Iceberg write: the deployment's `lake.enabled`, off by default (D035-059, D035-137).
+    /// Publication has its own switch; a process that admits runs sets this one from the same setting.
+    #[must_use]
+    pub const fn with_lake_enabled(mut self, enabled: bool) -> Self {
+        self.lake_enabled = enabled;
+        self
     }
 
     /// When the compensations of a provider operation stop being leased (FR-003-003).
@@ -382,6 +393,7 @@ impl PgRunStore {
             timer_read_states,
             event_wait_read_states,
             breaker: self.breaker,
+            lake_enabled: self.lake_enabled,
             script_retention: BTreeMap::new(),
             signals: Vec::new(),
             chain_lock,
@@ -459,10 +471,7 @@ impl PgRunStore {
             .ok_or(StoreError::MissingReference)?;
         let info = run_record(&row)?.info;
         let definition = self.definition(conn, tenant, info.version_id).await?;
-        if definition
-            .nodes()
-            .any(|n| n.database_operation().is_some() || n.iceberg_write().is_some())
-        {
+        if definition.nodes().any(|n| n.managed_kind().is_some()) {
             let mut actors = crate::database::run_actors(conn, &info).await?;
             // a schedule that replays the key of a time stands on the member that authorized it
             let subject = crate::database::authority_of(conn, tenant, subject).await?;
@@ -479,6 +488,7 @@ impl PgRunStore {
                 &definition,
                 Some(run),
                 Some(&info),
+                self.lake_enabled,
             )
             .await?;
         }
@@ -1164,11 +1174,7 @@ impl RunStore for PgRunStore {
             if let Some(pending) = &new.pending_reset {
                 resets::recheck_requester(&mut tx, tenant, pending).await?;
             }
-            let bindings = if new
-                .definition
-                .nodes()
-                .any(|n| n.database_operation().is_some() || n.iceberg_write().is_some())
-            {
+            let bindings = if new.definition.nodes().any(|n| n.managed_kind().is_some()) {
                 let actors = crate::database::run_actors(&mut tx, &new.info).await?;
                 crate::database::admit_definition(
                     &mut tx,
@@ -1178,6 +1184,7 @@ impl RunStore for PgRunStore {
                     &new.definition,
                     None,
                     Some(info),
+                    self.lake_enabled,
                 )
                 .await?
             } else {
@@ -1369,6 +1376,7 @@ impl RunStore for PgRunStore {
                     input_digest,
                     stored: BTreeSet::new(),
                     breaker: self.breaker,
+                    lake_enabled: self.lake_enabled,
                     script_retention: BTreeMap::new(),
                     signals: Vec::new(),
                     chain_lock: None,
@@ -3516,6 +3524,8 @@ pub struct PgRunTx {
     timer_read_states: BTreeMap<ExecutionInstanceId, TimerReadState>,
     event_wait_read_states: BTreeMap<ExecutionInstanceId, EventWaitReadState>,
     breaker: BreakerPolicy,
+    /// The store's `lake.enabled`, for the admission of a claim.
+    lake_enabled: bool,
     /// Pins selected under the retention-policy fence before a lease is granted. `persist` adds
     /// them to the matching immutable `step.leased` detail in this transaction.
     script_retention: BTreeMap<NodeId, ScriptRetentionPins>,
@@ -4262,12 +4272,43 @@ impl RunTx for PgRunTx {
     ) -> Result<sagat_application::database::DatabaseInput, StoreError> {
         self.database_snapshot(node, subject).await
     }
-    async fn pin_database_credential(
+    async fn pin_database_credentials(
         &mut self,
         node: &NodeId,
-        secret: &sagat_application::secrets::StoredSecret,
+        secrets: &[sagat_application::database::SelectedSecret],
     ) -> Result<(), StoreError> {
-        self.database_pin(node, secret).await
+        self.database_pin(node, secrets).await
+    }
+    async fn lake_lease_facts(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<sagat_application::database::LakeLeaseFacts, StoreError> {
+        self.lake_facts(node).await
+    }
+    async fn lake_record_blobs(
+        &mut self,
+        ids: &[sagat_domain::blobs::BlobId],
+    ) -> Result<Vec<sagat_domain::blobs::BlobDescriptor>, StoreError> {
+        self.lake_blob_descriptors(ids).await
+    }
+    async fn pin_lake_blobs(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        ids: &[sagat_domain::blobs::BlobId],
+    ) -> Result<(), StoreError> {
+        self.lake_blob_pin(node, fence, ids).await
+    }
+    async fn lake_blob_pinned(
+        &mut self,
+        node: &NodeId,
+        fence: sagat_domain::execution::Fence,
+        id: sagat_domain::blobs::BlobId,
+    ) -> Result<bool, StoreError> {
+        self.lake_blob_is_pinned(node, fence, id).await
+    }
+    async fn lake_attempt_resolved(&mut self, node: &NodeId) -> Result<bool, StoreError> {
+        self.lake_resolved(node).await
     }
     async fn database_result_limits(
         &mut self,
@@ -4279,7 +4320,8 @@ impl RunTx for PgRunTx {
         &mut self,
         node: &NodeId,
     ) -> Result<Option<sagat_application::secrets::StoredSecret>, StoreError> {
-        self.database_pinned_secret(node).await
+        self.database_pinned_secret(node, sagat_domain::database::SecretRole::Primary)
+            .await
     }
 
     async fn current_worker_authorized(&mut self, subject: &str) -> Result<bool, StoreError> {
@@ -5025,6 +5067,9 @@ impl RunTx for PgRunTx {
 
         // 5. Audit and idempotency commit with everything above.
         if let Some(audit) = &effects.audit {
+            insert_audit(&mut self.tx, audit).await?;
+        }
+        for audit in &effects.further_audits {
             insert_audit(&mut self.tx, audit).await?;
         }
         if let Some((idempotency, result)) = &effects.idempotency
@@ -5778,6 +5823,9 @@ impl PgRunTx {
         }
         self.persisted = version;
         if let Some(audit) = &effects.audit {
+            insert_audit(&mut self.tx, audit).await?;
+        }
+        for audit in &effects.further_audits {
             insert_audit(&mut self.tx, audit).await?;
         }
         if let Some((idempotency, result)) = &effects.idempotency

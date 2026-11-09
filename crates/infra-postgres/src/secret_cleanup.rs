@@ -21,7 +21,8 @@ impl SecretCleanupStore for PgRunStore {
         let rows:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT r.tenant_id,r.id FROM runs r
             WHERE r.finished_at<now()-interval '24 hours'
               AND r.status IN ('SUCCEEDED','FAILED','CANCELLED','TIMED_OUT','COMPENSATED','PARTIAL','COMPENSATION_FAILED')
-              AND EXISTS(SELECT 1 FROM step_database_credentials p WHERE p.tenant_id=r.tenant_id AND p.run_id=r.id)
+              AND (EXISTS(SELECT 1 FROM step_database_credentials p WHERE p.tenant_id=r.tenant_id AND p.run_id=r.id)
+                OR EXISTS(SELECT 1 FROM step_lease_blobs b WHERE b.tenant_id=r.tenant_id AND b.run_id=r.id))
             ORDER BY r.finished_at,r.id LIMIT $1").bind(i64::from(limit.min(128))).fetch_all(&self.pool).await.map_err(store_error)?;
         let mut released = 0;
         for (tenant, run) in rows {
@@ -37,6 +38,18 @@ impl SecretCleanupStore for PgRunStore {
             lock_secrets(&mut tx, TenantId::new(tenant), NamespaceId::new(namespace)).await?;
             let count=sqlx::query("DELETE FROM step_database_credentials WHERE tenant_id=$1 AND namespace_id=$2 AND run_id=$3")
                 .bind(tenant).bind(namespace).bind(run).execute(&mut *tx).await.map_err(store_error)?.rows_affected();
+            // The pins of the blobs a lake attempt may read go with them (D035-147): a run that never resolved its credentials has these
+            // and no others, which is why the run is selected for either. Not audited: nothing was disclosed by them, and the reads they
+            // allowed are in the trail (`blob.read`).
+            sqlx::query(
+                "DELETE FROM step_lease_blobs WHERE tenant_id=$1 AND namespace_id=$2 AND run_id=$3",
+            )
+            .bind(tenant)
+            .bind(namespace)
+            .bind(run)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
             if count > 0 {
                 let now = sqlx::query_scalar("SELECT clock_timestamp()")
                     .fetch_one(&mut *tx)

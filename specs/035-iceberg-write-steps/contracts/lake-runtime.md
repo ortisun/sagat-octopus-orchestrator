@@ -148,5 +148,6 @@ next attempt's lookup resolves whatever it already sent (D035-030).
 - **Probe**: authenticate, load the warehouse configuration and list one namespace page. For object
   storage, run the double-create check and try one write outside the prefix, warning if it is allowed
   (G035-021). Returns per-check results only.
+  For an Iceberg connection the probe is read-only (D035-150): it does not try the write, and its input is its own schema, `sagat.lake.probe-input.v1`.
 - **Browse**: one bounded page of namespaces or tables, or one table's schema, partition spec,
   identifier fields, refs and format version. Never data or file locations.

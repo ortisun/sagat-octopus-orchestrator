@@ -99,6 +99,9 @@ pub enum AuditAction {
     DestinationDecided,
     /// Someone asked for the commit of an Iceberg write to be reverted (feature 035).
     IcebergRevertRequested,
+    /// An Iceberg write committed a snapshot (feature 035, FR-035-030): one record for each committed write, naming the node, the
+    /// connection, the table and the snapshot, and never a value, a partition value or a location.
+    IcebergWriteCommitted,
     SecretDeleted,
     /// Someone was allowed to reference a secret from workflows, or no longer is.
     SecretAccessGranted,
@@ -347,6 +350,7 @@ impl AuditAction {
             Self::DatabaseCatalogBrowsed => "database.catalog_browsed",
             Self::DestinationDecided => "destination.decided",
             Self::IcebergRevertRequested => "iceberg.revert_requested",
+            Self::IcebergWriteCommitted => "iceberg.write_committed",
             Self::DatabaseDenied => "database.denied",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",

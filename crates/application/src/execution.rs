@@ -891,6 +891,9 @@ pub struct Effects {
     pub renewal: Option<LeaseRenewal>,
     /// The audit record of an operator action, committed with the change it describes.
     pub audit: Option<AuditRecord>,
+    /// Further audit records of the same command, committed with it and after `audit`: a command that discloses several
+    /// secrets audits each on its own (feature 035, contracts/worker-protocol.md).
+    pub further_audits: Vec<AuditRecord>,
     /// The idempotency record of the command, with the result a replay should return.
     pub idempotency: Option<(Idempotency, String)>,
     /// `READY` steps to write a fresh wake-up notification for (their notification was lost).
@@ -920,6 +923,7 @@ impl Effects {
             lease: None,
             renewal: None,
             audit: None,
+            further_audits: Vec::new(),
             idempotency: None,
             rehint: Vec::new(),
             rehint_instances: Vec::new(),
@@ -1275,6 +1279,52 @@ pub trait RunTx: Send {
         async { Ok(false) }
     }
 
+    /// What the lease of an Iceberg write needs: the limits of the connection it was admitted with, the number of the
+    /// workflow version, and when its first attempt was leased. Unsupported stores fail closed.
+    fn lake_lease_facts(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<crate::database::LakeLeaseFacts, StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// What the catalog says, inside this transaction, about the blobs of a record source (feature 035, R2). Only a blob this run's
+    /// own steps committed as an output is returned, with the descriptor the catalog holds; every other case (another run, another
+    /// namespace, another tenant, a run input, an upload not committed, a deleted blob, an id that does not exist) returns nothing,
+    /// all the same, so a descriptor in a JSON value proves nothing. A plain read: the lease holds the tenant's lock and does no
+    /// object I/O. Unsupported stores fail closed.
+    fn lake_record_blobs(
+        &mut self,
+        _ids: &[sagat_domain::blobs::BlobId],
+    ) -> impl Future<Output = Result<Vec<sagat_domain::blobs::BlobDescriptor>, StoreError>> + Send
+    {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Records, for the attempt the lease just granted (`fence`), the blobs its document names: the allow-list of the `ReadBlob` of
+    /// that attempt. The store takes the rows from the catalog's own word, as [`Self::lake_record_blobs`] does, and not from the
+    /// caller's: a blob that is not a committed output of this run is not pinned, and then none is (a partial list is an error).
+    /// Immutable once written, and written again as a no-op. Unsupported stores fail closed.
+    fn pin_lake_blobs(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _ids: &[sagat_domain::blobs::BlobId],
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Whether the lease of exactly this attempt and generation named the blob. Another attempt, another generation, another node and
+    /// a blob the lease did not name are all `false`, the same. Unsupported stores fail closed.
+    fn lake_blob_pinned(
+        &mut self,
+        _node: &NodeId,
+        _fence: sagat_domain::execution::Fence,
+        _id: sagat_domain::blobs::BlobId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
     /// Selected immutable connection and credential metadata; no provider I/O occurs here.
     fn database_input(
         &mut self,
@@ -1284,13 +1334,22 @@ pub trait RunTx: Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }
 
-    /// Records the credential before returning its value. The pin is immutable for this attempt.
-    fn pin_database_credential(
+    /// Records the credentials before returning their values, each under its role. Every pin is immutable for this attempt.
+    fn pin_database_credentials(
         &mut self,
         _node: &NodeId,
-        _secret: &StoredSecret,
+        _secrets: &[crate::database::SelectedSecret],
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         async { Err(StoreError::DatabaseUnavailable) }
+    }
+
+    /// Whether the current attempt of a lake step holds a pin for every secret its connection names: whether it resolved
+    /// its credentials. A step that did not cannot have written, and is not completed.
+    fn lake_attempt_resolved(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
     }
 
     /// Frozen connection/operation ceilings for retained output. Pause/revocation blocks new

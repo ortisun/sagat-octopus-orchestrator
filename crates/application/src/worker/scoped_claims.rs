@@ -120,7 +120,7 @@ where
                     let instance =
                         ExecutionInstanceId::in_path(snapshot.state.path().clone(), node.clone());
                     let node = snapshot.definition.node_for_instance(&instance)?;
-                    if node.database_operation().is_some() {
+                    if node.managed_kind().is_some() {
                         return None;
                     }
                     match node.kind() {

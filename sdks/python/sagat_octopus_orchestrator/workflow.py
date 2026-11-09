@@ -17,6 +17,7 @@ from typing import Any, Literal, TypeVar
 from ._json import canonical_json
 from .database import ConnectionRef, DatabaseLimits, DatabaseParameter, database_node
 from .errors import invalid
+from .iceberg import IcebergLimits, IcebergMapping, IcebergRecords, IcebergTable, iceberg_write_node
 
 _NAME = re.compile(r"[a-z][a-z0-9-]{2,63}")
 _OPERATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
@@ -322,6 +323,40 @@ class Flow:
                     parameters=list(parameters) if parameters is not None else None,
                     limits=limits,
                     timeoutMs=timeout_ms,
+                    onError=on_error,
+                ),
+            )
+        )
+        return self
+
+    def iceberg_write(
+        self: _F,
+        node_id: str,
+        *,
+        connection_ref: ConnectionRef,
+        table: IcebergTable,
+        records: IcebergRecords,
+        ref: str | None = None,
+        mapping: Sequence[IcebergMapping] | None = None,
+        ignore_unknown_fields: bool | None = None,
+        limits: IcebergLimits | None = None,
+        compensation: Literal["revert"] | None = None,
+        on_error: str | None = None,
+    ) -> _F:
+        """Appends records to an Iceberg table through the isolated lake runner.
+
+        No catalog or storage credential appears here; the mode is ``append``.
+        """
+        self._push(
+            iceberg_write_node(
+                node_id,
+                _add(
+                    {"connectionRef": connection_ref, "table": table, "records": records},
+                    ref=ref,
+                    mapping=list(mapping) if mapping is not None else None,
+                    ignoreUnknownFields=ignore_unknown_fields,
+                    limits=limits,
+                    compensation=compensation,
                     onError=on_error,
                 ),
             )

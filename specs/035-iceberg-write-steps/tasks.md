@@ -348,7 +348,10 @@ three conditions pass.
   - every new column is classified.
 
   Refs: D035-044, D035-059.
-- [ ] T035-014 [P] Write the failing profile tests in `tests/integration/iceberg-writes/profiles.rs`:
+- [ ] T035-014 [P] Write the failing profile tests in `tests/integration/iceberg-writes/profiles.rs`
+  (*2026-11-07, D035-135: the registration half is written, in `crates/application/tests/managed_registration.rs` and `lake::registration` of
+  `tests/integration/database-connections`, and was seen failing; the lease half and `ResolveDatabase` wait for E and C, so `profiles.rs` is not created
+  yet*):
   - a `database` binding cannot lease a lake activity, and a `lake` binding cannot lease a database
     activity;
   - `ResolveDatabase` refuses a connection kind outside the caller's profile;
@@ -429,6 +432,10 @@ three conditions pass.
   `tests/integration/iceberg-writes/commit_once.rs`: a commit-counting relay in front of the REST
   fixture sees exactly one commit request per search, even when the catalog answers 409, 5xx or times
   out. Refs: FR-035-018, D035-030, G035-020.
+
+  *2026-11-06, the client half measured, left unticked (D035-093):* `runners/lake/tests/test_commit.py` counts the commit requests a
+  REST catalog receives from PyIceberg 0.12.0 for every answer, with and without the override. The Rust test of this task, with the
+  relay in front of the fixture, is not written.
 - [ ] T035-020 [P] Write the failing rollout tests in `tests/integration/iceberg-writes/rollout.rs`:
   with `lake.enabled` off (the default), both publication and admission refuse with
   `VALIDATION_FAILED`, reason `LAKE_DISABLED`. Refs: D035-059.
@@ -527,7 +534,8 @@ three conditions pass.
 
   Update `crates/infra-postgres/storage-classification.json` as data-model.md §6 says. T035-013 passes.
   Refs: D035-044, D035-059.
-- [ ] T035-026 Implement profile binding:
+- [ ] T035-026 Implement profile binding (*2026-11-08, D035-136: the column is in its own migration, `20270109000000_worker_binding_profile`, and not in
+  the `20270115000000` one of T035-025, which keeps the rest of its list*):
   - persist `profile` in the worker-binding store of `crates/infra-postgres/src/`;
   - in `crates/application/src/worker/database.rs`, `managed_capabilities_allowed` accepts only the
     profile's activities, and only under the negotiated minor;
@@ -535,6 +543,14 @@ three conditions pass.
   - `apps/database-runner/src/{profile.rs,config.rs,runner.rs}` offer activities by the agreed minor.
 
   T035-014 passes. Refs: D035-057.
+
+  *2026-11-07, partly done, left unticked (D035-135):* `managed_capabilities_allowed` accepts one profile at a time by the activities offered
+  (`sagat.database.postgresql` alone or `sagat.database.iceberg.write` alone, from minor 1.6; the unserved activities are refused). The task text names
+  `worker/database.rs`; the function is in `worker.rs`.
+
+  *2026-11-08, partly done, left unticked (D035-136):* the profile is persisted on the binding (`worker_bindings.profile`, store, service, REST, Studio
+  types) and a registration must match it, so the first bullet of the task is done. Not done: `ResolveDatabase` refusing a kind outside the profile
+  (slice C) and the runner offering the activity by the agreed minor (slice G).
 - [ ] T035-027 [P] Separate the lake build:
   - a `lake` cargo feature in `apps/database-runner/Cargo.toml`;
   - a new workspace crate `crates/infra-lake/`, the only crate that enables `object_store` 0.14.2
@@ -645,6 +661,10 @@ three conditions pass.
   `assert-ref-snapshot-id(ref, H)`. If T035-019 shows the override has no effect, build the updates and
   call the catalog's commit directly. Record the result in research.md, closing G035-020. Refs:
   D035-030, G035-020.
+
+  *2026-11-06, the override done and proved, left unticked (D035-093):* `commit.pin_commit_once` sets the retry to zero in memory and
+  the request counts show it works, so the fallback of this task is not needed; G035-020 is answered for PyIceberg 0.12.0. The
+  conditional commit around the append comes with the append mode.
 - [ ] T035-035 Implement the lake attempt driver in `apps/database-runner/src/lake.rs`:
   - create `/work/<attempt-id>/`;
   - stream inline records, `ReadBlob` blobs and 017 results into `in/`, checking the effective limit
@@ -658,6 +678,138 @@ three conditions pass.
   - fail `LAKE_SANDBOX_UNAVAILABLE` when the sandbox runner is unreachable.
 
   Refs: FR-035-009, FR-035-023, contracts/lake-runtime.md "One attempt".
+
+  *2026-11-06, first slice, left unticked (D035-109):* "serve the request line" has its typed body: `WriteAppend` in
+  `crates/infra-lake/src/protocol/write_body.rs`, checked against the line the host parses (one fixture and the ceilings of every
+  member, read by a Rust test and a Python test), with `encode_request` refusing an envelope or a line the host would refuse. Not done: the directory, streaming into `in/` with the limit, the relay and the container request, the supervisor and
+  its kill conditions, the receipt rebuild, zeroising and cleanup. They need `apps/sandbox-runner` to start, stop and kill a container of
+  the lake profile, which it does not offer yet (G035-022).
+
+  *2026-11-07, second slice, left unticked (D035-110):* "serve the request line, map heartbeats, parse the result" has its conversation:
+  `crates/infra-lake/src/control.rs` (`converse`, bounded lines, a silence limit, the grace after the result) and the relay hands the
+  host's `CONTROL` connection to the driver once (`Relay::take_control`). The rest is cut into slices (supervisor, staging, a
+  `LakeSandbox` port, the sandbox-runner API, `lake.rs`, Compose/Helm and the canaries) in D035-110; G035-054 and G035-055 are the
+  decisions they wait on.
+
+  *2026-11-07, third slice, left unticked (D035-111):* "kill the container on lease loss, cancellation, deadline, a missing heartbeat
+  or `memory.max`" and "parse the result" have their decision table: `crates/infra-lake/src/supervisor.rs` (`dispose`, `Ended::strongest`),
+  one test per row; G035-054 is closed. Nothing calls it yet.
+
+  *2026-11-07, fourth slice, left unticked (D035-112):* "create `/work/<attempt-id>/`" and "stream inline records, `ReadBlob` blobs and 017
+  results into `in/`, checking the effective limit while streaming; going over fails `ICEBERG_LIMIT_EXCEEDED` before any container
+  starts" have `crates/infra-lake/src/staging.rs` (`AttemptDir`, `StagingLimits`). Not done there: the `ReadBlob` stream itself (a source
+  the driver gives it), the conversion of a 017 result into rows (G035-059), Parquet record counting (G035-058), zeroising. The modes
+  stay 0770 until the owner answers O035-006 (0750 would stop a compromised host from leaving a directory the runner cannot remove).
+
+  *2026-11-07, fifth slice, left unticked (D035-113):* "open the relay and request the container; serve the request line; map heartbeats
+  to lease heartbeats; kill the container on lease loss, cancellation, deadline, a missing heartbeat or `memory.max`; parse the result"
+  have `crates/infra-lake/src/attempt.rs` (`LakeSandbox`, `run_attempt`), tested end to end with a scripted host on the real socket. Not
+  done: the production sandbox client (G035-055), `apps/database-runner/src/lake.rs` (lease, `ResolveDatabase`, `ReadBlob`, the report),
+  the lease heartbeat, zeroising, `peer_uid` (G035-056).
+
+  *2026-11-07, sixth slice, left unticked (D035-114):* "open the relay" has its allowance: `crates/infra-lake/src/policy.rs`
+  (`endpoint_policy`, `Connection::endpoint_policy`) derives what the sandbox may reach from the pinned connection, closed to what the
+  host can open. The server side the driver reads from (T035-044 `ResolveDatabase` for an Iceberg connection, T035-056 the attempt
+  input, T035-055 admission, T035-059 completion) is not built; T035-055 and T035-059 touch `crates/application/src/runs.rs`, which the
+  open 018 branches also change.
+
+  *2026-11-07, seventh slice, left unticked (D035-115):* the runner's half of "resolve the Iceberg connection" (T035-044):
+  `apps/database-runner/src/lake/connection.rs` reads `pb::IcebergConnection` into the documents the host reads (and carries the
+  allowed modes, the limits and the egress ceiling; it refuses what the host cannot open) and zeroises the secret bytes, checked
+  against the wire fixture. Not done: the server filling `iceberg` (T035-044's `service.rs` and
+  `worker/database.rs`), the edge `database-runner` → `infra-lake` and `zeroize` in `infra-lake` (G035-063), which change `Cargo.lock`
+  and so select the whole CI: they come together, with the driver.
+
+  *2026-11-07, eighth step (documentation only), left unticked (D035-116):* "request the container" and "fail `LAKE_SANDBOX_UNAVAILABLE`
+  when the sandbox runner is unreachable" have their decision: ADR-0079 (Proposed), the sandbox-runner API of G035-055 (three calls on a
+  lake-mode sandbox runner over a node-local Unix socket; the request is an attempt id, a slot, a budget class and a deadline). It was
+  rewritten after a security and an architecture review. Nothing is built: the API, the `LakeEngine` additions it depends on, the
+  production `LakeSandbox` client and the checks it lists. A person accepts the ADR; Kubernetes stays open under T035-029.
+
+  *2026-11-07, ninth step, left unticked (D035-117):* "request the container" and "kill the container on lease loss, cancellation,
+  deadline, a missing heartbeat or `memory.max`" have the engine operations the API of ADR-0079 needs: `crates/infra-sandbox/src/lake/engine.rs`
+  (`launch`, `find`, `list`, `wait`, `end`, `sweep_expired`), the lake containers' state read from the labels they carry
+  (`sagat.lake.slot|class|deadline`), `end` reading the out-of-memory flag before it removes the container and never reporting an ending the
+  engine did not confirm; 25 new cases against a real Docker engine and a scripted one. Not done: the API on the sandbox runner, the
+  production `LakeSandbox` client, lake-mode exclusivity, and everything on the server side of the task list.
+
+  *2026-11-07, tenth step, left unticked (D035-118):* "request the container" has the wire of the sandbox API: `crates/infra-lake/src/sandbox_api.rs`
+  (the request, the answers, the strict readers a client reads them with) and one corpus of 76 cases that the server will read too.
+  Nothing has a socket yet: the server, the client behind `LakeSandbox` and the dependency edges that select the whole CI are the next step.
+
+  *2026-11-07, eleventh step, left unticked (D035-119):* "request the container" and "fail `LAKE_SANDBOX_UNAVAILABLE` when the sandbox runner
+  is unreachable" have their server: `sandbox-runner lake` (`apps/sandbox-runner/src/lake/`) serves the API of ADR-0079 on a node-local
+  socket, and `sagat_api_http::serve_unix` serves it with the peer's user checked at accept. Reviewed by a security and a correctness
+  reviewer (a Blocker found and fixed). Not done: the client behind `LakeSandbox`, the run of the two over a real socket and a real engine,
+  and the Compose and Kubernetes shapes.
+
+  *2026-11-07, twelfth step, left unticked (D035-120):* "request the container" has its client: `SocketSandbox`
+  (`crates/infra-lake/src/sandbox_api/client.rs`) reaches the socket of D035-119 with the three calls, believes only an exact answer, and
+  is run against the real router by 19 cases and, with the node and a real Docker engine on a real socket, by 2 (`sandbox_api.rs`). A
+  refusal now reaches the report with its reason. Reviewed by a security reviewer (no Blocker, no Major). Not done: a held-up container
+  through the API against the real engine, the `database-runner` edge and `zeroize` (G035-063), the driver, and the Compose and
+  Kubernetes shapes.
+
+  *2026-11-07, thirteenth step, left unticked (D035-121):* "stream inline records, `ReadBlob` blobs and 017 results into `in/`" and "serve the
+  request line" have their input: `AttemptInput` (`crates/infra-lake/src/protocol/attempt_input.rs`), the document the lease carries (no
+  credential, no relay, no deadline), read strictly and held to one corpus of 101 cases that the server's builder (T035-056) will read too; the
+  request built from it is the fixture the host parses. A 017 result as the source is refused by name (G035-067). Not done: the builder, the
+  driver that reads it, and the contract sentence.
+
+  *2026-11-07, fourteenth step, left unticked (D035-122):* "zeroise the credentials" has what `infra-lake` could not do before
+  (G035-063): the connection's secrets, the relay token, the request body and the request line are `Zeroizing` or scrubbed, with the
+  escape-scratch residual written down. Not done: the `database-runner` → `infra-lake` edge and the driver that uses all of it.
+
+  *2026-11-07, fifteenth step (documentation only), left unticked (D035-123, G035-068):* the rest of this task is planned in four slices
+  (settings, prepare, driver, shell) with the failure mapping, the intersection of limits and the fail-closed relay allowance decided; the
+  per-record size limit turned out to be enforced nowhere (G035-068).
+
+  *2026-11-07, sixteenth step, left unticked (D035-124):* slice A of that plan: the `lake` section of the runner's configuration
+  (`apps/database-runner/src/lake/settings.rs`), validated whole at start, absent meaning off, an empty relay allowance refused outside
+  development. Nothing serves a lake activity yet.
+
+  *2026-11-07, seventeenth step, left unticked (D035-125):* "create `/work/<attempt-id>/`", "stream inline records, `ReadBlob` blobs and 017 results
+  into `in/`, checking the effective limit while streaming; going over fails `ICEBERG_LIMIT_EXCEEDED` before any container starts" and "serve the
+  request line" are joined in `prepare` (`apps/database-runner/src/lake/prepare.rs`), with the closed table of codes and nothing left on disk on any
+  refusal. Not done: the driver that runs it (slice C), the real `ReadBlob` source, and a 017 result as a source (G035-067).
+
+  *2026-11-07, eighteenth step, left unticked (D035-126):* "open the relay and request the container; serve the request line; map heartbeats to
+  lease heartbeats; kill the container on lease loss, cancellation, deadline, a missing heartbeat or `memory.max`; parse the result and rebuild the
+  receipt; zeroise the credentials and remove the directory; fail `LAKE_SANDBOX_UNAVAILABLE`" are joined in `Driver::run`
+  (`apps/database-runner/src/lake/driver.rs`), tested against a scripted host on the real relay socket. Not done: the shell that calls it with a
+  real lease (slice D): the heartbeat and report loop, the registration of the lake activities, the real `ReadBlob`, the sweep of released
+  directories and the metrics.
+
+  *2026-11-07, nineteenth step, left unticked (D035-127):* the stack was reviewed by a security and a correctness reviewer; six Majors were
+  taken, the first of them that the relay had no deny list (`relayDenyCidrs` is required outside development), then staging under the signals
+  and the step's deadline, the lease's end no longer being the attempt's, permanent sandbox refusals not being retryable, and a dropped `run` keeping
+  the directory and holding the slot. Gaps G035-069..071 register what is not fixed. Slice D must build the sandbox client with the settings' user.
+
+  *2026-11-07, twentieth step, left unticked (D035-128):* "remove the directory" has the sweep for what no attempt removed
+  (`apps/database-runner/src/lake/sweep.rs`): by age, real attempt directories only, a link never followed. Not scheduled yet (the shell).
+
+  *2026-11-07, twenty-first step, left unticked (D035-129):* "stream … `ReadBlob` blobs … into `in/`" has its source
+  (`apps/database-runner/src/lake/blobs.rs`): the blob is checked against its header, whole or an error, and a corrupt one leaves no file.
+  Not done: the call itself in an end-to-end run, and the shell that hands it to the driver.
+
+  *2026-11-07, twenty-second step (documentation only), left unticked (D035-130):* the server side of T035-044, -055, -056 and -059 was read before
+  it is built: a lake step is not "managed" anywhere (about ten places key on `database_operation()`), no worker can register for it, one secret
+  is pinned per attempt, and the facts the input needs are partly unstored. The order is A (the managed kind), B (registration), C (resolve and two
+  secrets), D (the input builder), E (admission, after the 018 pull requests), F (completion and `ReadBlob` scoped to the run), G (the runner's shell).
+
+  *2026-11-07, twenty-third step, left unticked (D035-131):* "build the attempt input … `effectKey`, `firstAttemptStartedAt` …" has its pure core: the
+  effective limits (`LakeLimits::effective`) and `lake_attempt_input` (`crates/application/src/worker/lake_input.rs`), which reproduces the runner's
+  corpus and is read back by the runner's reader. Not done: what feeds it (the records evaluated, the workflow version and the first attempt's start
+  read) and the lease path that calls it.
+
+  *2026-11-07, twenty-fourth step, left unticked (D035-132):* "`ResolvedDatabase.iceberg` is built in `crates/api-grpc/src/service.rs`" has its pure
+  half: `iceberg_connection` (`crates/api-grpc/src/lake_connection.rs`), whose message the runner's `convert` reads back as the stored documents of the
+  wire fixture. Not done: the two-secret pin (a migration), the resolve path, the sum type for `ResolvedDatabase` and the profile check.
+
+  *2026-11-07, twenty-fifth step, left unticked (D035-134):* the predicate of the server paths that the lake step needs is one: `Node::managed_kind`
+  (`Sql` or `Lake`) replaces `database_operation().is_some()` in the worker's ready filter, lease input, lease actor, completion authority and the three
+  scoped paths, kept by `crates/application/tests/managed_kind_sites.rs`. Nothing a run can see changes (a lake step still cannot start). Not done:
+  registration (B), the resolve and the two-secret pin (C), admission (E), completion and `ReadBlob` (F), the runner's shell (G).
 - [ ] T035-036 [P] Add the `lake.enabled` setting, off by default, to the control-plane and
   execution-engine configuration. Check it in `crates/application/src/publishing.rs` and at run
   admission in `crates/application/src/runs.rs`. T035-020 passes. Refs: D035-059.
@@ -667,6 +819,9 @@ three conditions pass.
   setting in the execution engine and the check at run admission (`runs.rs`, `worker.rs`), which T035-055 owns because
   admission of an Iceberg run does not exist before it; until then no definition can hold the node past the store's fail-closed
   guard, so no run can meet the gap.
+
+  *2026-11-08 (D035-137):* the engine has the setting (strict boolean, off by default) and both stores carry it; the check at run admission is in the
+  store's `check_definition` and not in `runs.rs`/`worker.rs` (which the 018 pull requests change). Left unticked with T035-055.
 - [x] T035-037 [P] Register the metric families of plan.md "Observability" in
   `crates/telemetry/src/metrics.rs`. T035-021 passes. Refs: FR-035-030.
 
@@ -742,6 +897,9 @@ test to every catalog and storage type.
 
   Refs: FR-035-006, SC-035-001.
 
+  *2026-11-09, amended (D035-150):* the Iceberg probe is read-only, so the bullet about a write outside the prefix is not tested here (it belongs to the object-storage probe, US07); the
+  checks are the pair (check, code) of D035-150, and "an unavailable OpenBao" is a failed step (`DATABASE_CREDENTIAL_UNAVAILABLE`), not a check.
+
 ### Implementation for User Story 1
 
 - [x] T035-041 [US01] Add `ConnectionConfig::Iceberg`, with every catalog and storage shape, to
@@ -770,10 +928,20 @@ test to every catalog and storage type.
   `egressCeiling` is open on both kinds) and the reason `CREDENTIAL_IN_URI` with the other thirteen, each with advice.
   Not done: `GET /database-drivers` listing `iceberg` (with the probe, T035-045) and `UNKNOWN_CONNECTION_KIND`, which
   belongs to the publication that meets a connection of a kind it cannot use.
-- [ ] T035-044 [US01] Resolve the Iceberg connection. `ResolvedDatabase.iceberg` is built in
+- [x] T035-044 [US01] Resolve the Iceberg connection. `ResolvedDatabase.iceberg` is built in
   `crates/api-grpc/src/service.rs` and `crates/application/src/worker/database.rs`. `catalogSecret` and
   `storageSecret` are each compared, pinned and audited separately (017 two-phase), and only the lake
   profile may resolve the kind. Refs: FR-035-003, FR-035-026, D035-057.
+
+  *2026-11-08, first part done, left unticked (D035-139):* the pin of an attempt is keyed by the role of the secret (`primary`, `catalog`, `storage`;
+  migration `20270110000000_step_credential_roles`, `SecretRole`, `secret_slots`), and a SQL attempt reads only its primary pin. Not done: the profile
+  fence of the resolve, the lake snapshot and pins in `worker/database.rs` and `execution/database.rs`, and `ResolvedDatabase.iceberg` in
+  `crates/api-grpc/src/database.rs` (the task text says `service.rs`).
+
+  *2026-11-08, done (D035-139..141):* the fence on the profile (`profile_fence`, `executor.rs`), the sum type (D035-140), the lake snapshot, the sequential
+  reads, the pins and one audit record for each secret (`lake_resolve.rs` in the lifecycle of `integration_database_connections`, 7 and as the runtime role 7),
+  and the wire answer (`connection_wire`, 3 tests through the runner's own `convert`). Evidence, and the hand mutations (every one killed): D035-139, D035-141.
+  Not exercised: the answer through the real gRPC server with a lake step (its first caller is the runner shell, slice G).
 - [ ] T035-045 [US01] Implement the probe activity `sagat.database.lake.probe`:
   - wire it in `apps/database-runner/src/lake.rs`;
   - write the host operation in `runners/lake/sagat_lake/probe.py`, with pytest: authenticate, load
@@ -781,6 +949,8 @@ test to every catalog and storage type.
   - admit it through 017's fixed-probe admission.
 
   T035-039 and T035-040 pass. Refs: FR-035-006, G035-021.
+
+  *2026-11-09, amended (D035-150):* "try one write outside the prefix" is not part of this probe; the order of work is slices S0 to S8 of D035-150, and S0 to S4 come before the host.
 - [ ] T035-046 [P] [US01] Add the Iceberg connection to the Studio, in
   `frontend/apps/studio/src/features/connections/{ConnectionForm.tsx,ConnectionProbe.tsx,api.ts}`:
   - an Iceberg form with REST and S3 sections;
@@ -869,6 +1039,10 @@ one commit carries the key.
     - the decoding bounds hold (D035-063).
 
   Refs: FR-035-010..014, FR-035-018, FR-035-019.
+
+  *2026-11-06, partly done, left unticked (D035-091, G035-039):* `test_mapping.py` (64 tests), `test_lookup.py` (25) and
+  `test_compat.py` (45) are written, were seen failing, and pass. `test_append.py` (streamed batches, an empty batch, the
+  decoding bounds) is not written.
 - [ ] T035-050 [P] [US02] Write the failing tests in `tests/integration/iceberg-writes/append.rs`:
   - a 10,000-record blob append makes one snapshot on the target ref;
   - its summary holds exactly `sagat.effect-key`, `sagat.run-id`, `sagat.step-id`, `sagat.workflow` and
@@ -962,6 +1136,11 @@ one commit carries the key.
     plan's ceilings).
 
   Refs: FR-035-024, FR-035-028.
+
+  *2026-11-08, partly done, left unticked (D035-137):* a run of an Iceberg write is admitted when `lake.enabled` is on (control plane and engine) and its
+  step is pinned to the connection and the revision it was admitted with; a replay or a claim consults the pin. The pins are in the store's
+  `check_definition` (`database/admission.rs`), not in `runs.rs`. Not done: the quota rows, the `LakeRefused` audit at creation (`runs.rs`), and a test of
+  each of the child, event and rerun paths.
 - [ ] T035-056 [US02] Build the attempt input in `crates/application/src/worker/database.rs`:
   - `effectKey`;
   - `firstAttemptStartedAt` from the database clock;
@@ -969,6 +1148,21 @@ one commit carries the key.
   - the record references.
 
   Credentials never travel in the lease. Refs: FR-035-013, FR-035-018, contracts/worker-protocol.md.
+
+  *2026-11-08, partly done, left unticked (D035-138):* a lake runner is handed the step with the document made from the run's data: the effect key (the task's
+  key), the first attempt's instant from the database clock (the journal for a later attempt), the snapshot properties, the inline records, the effective
+  limits of the pinned revision, `priorAttemptMayHaveLeftFiles` from the journal. The code is in `worker/lake_input.rs` and `worker/lake_lease.rs` and the
+  lease path of `worker.rs`, not in `worker/database.rs`. Not done: the record references of a blob source and of a SQL result (refused by name until the
+  `ReadBlob` of the run exists).
+
+  *2026-11-08, second part done, left unticked (D035-144):* the record references of a blob source are built (`named_records`, `lake_lease_document` take what the
+  catalog said about the blobs: the media type decides the format, 32 blobs and 2 GiB at most, the step's order) and the catalog's word is a method of the run's
+  transaction (`lake_record_blobs`) with the pin of the attempt (`step_lease_blobs`); the lease calls them, and a lake attempt reads the blobs its lease named through `ReadBlob`
+  and nothing else; the wire test over gRPC (`lake_blob_grpc.rs`) and two independent reviews of the trust boundary are done (D035-144).
+
+  *2026-11-08, third part done, left unticked (D035-145):* the result a SQL step kept inline is the records of a write that names its node: the server makes them when it leases the write
+  (`worker/lake_result.rs`), audited as a read of the result, with the rows as objects keyed by column and the digits of an integer intact, proved on the wire with a SQL runner and a lake
+  runner (`lake_result_grpc.rs`). Not done: a result kept as a blob (G035-067), the container end to end (T035-062), the limits of G035-080 and G035-081.
 - [ ] T035-057 [US02] Implement the host's append path in
   `runners/lake/sagat_lake/{lookup.py,mapping.py,compat.py,modes/append.py}`:
   - lookup and commit follow D035-030;
@@ -976,9 +1170,30 @@ one commit carries the key.
   - `priorAttemptMayHaveLeftFiles` is set after a crash.
 
   T035-049 passes. Refs: FR-035-010..014, FR-035-018, FR-035-020, D035-031.
+
+  *2026-11-06, first part done, left unticked (D035-091, G035-039):* `mapping.py`, `lookup.py` and `compat.py` are in
+  `runners/lake/sagat_lake/` as pure functions, with the published type table in `docs/guides/iceberg-type-mapping.md`. Not
+  done: `modes/append.py`, the conditional commit (T035-034), the deletion of the attempt's own files when a commit is refused,
+  and `priorAttemptMayHaveLeftFiles`.
+
+  *2026-11-06, second part done, left unticked (D035-092):* `table_facts.py` builds the facts, the refs and the snapshots from a
+  loaded table (21 tests against a real SQLite catalog), and `compat.py` now refuses a table that names its own location provider,
+  because PyIceberg imports and calls the class a table property names. The security review added the metadata locations,
+  branch-only refs, a stricter path rule and a size lookup that stays inside the warehouse (D035-092); what it found about the table's
+  properties reaching the file IO is G035-041 and is not fixed.
+
+  *2026-11-06, third part done, left unticked (D035-095, G035-044):* `attempt.py` pins the directory of an attempt in memory and deletes
+  exactly its files when a commit is refused (for PyIceberg's own file IO; ADLS is G035-044). Still not done: `modes/append.py`, the
+  conditional commit around the append, the readers of NDJSON and Parquet, and `priorAttemptMayHaveLeftFiles`.
 - [ ] T035-058 [US02] Add the activity `sagat.database.iceberg.write` to
   `apps/database-runner/src/lake.rs`: rebuild the receipt, report `CompleteStep` or `FailStep`, and
   audit relay denials. Refs: FR-035-023, FR-035-027.
+
+  *2026-11-08, mostly done, left unticked (D035-143, G035-078):* the runner's shell serves the activity: a lake section makes a lake runner that registers for it and nothing
+  else, polls for the slots it has free, resolves the connection after a slot is taken, runs the attempt through the driver, and reports `CompleteStep` with the receipt or `FailStep` with a
+  closed code and the flag of the contract (or nothing when the lease is gone); a drain gives the leases up as lost; the work root is swept; the attempts are counted. A lake step goes from the
+  poll to `CompleteStep` through the shell in a test with a scripted sandbox (132 tests in the runner, hand mutations killed). Not done: **the audit of the relay's denials** (the protocol has no
+  call for it: G035-078), and the proof of the shell itself against a real control plane and the real sandbox (the server's half is proved on the wire by `lake_grpc.rs`).
 - [ ] T035-059 [US02] Complete the step on the server, in
   `crates/application/src/worker/output.rs` and `crates/application/src/runs.rs`:
   - T6 stores the receipt as output, writes the journal, sets successor readiness and the outbox;
@@ -987,6 +1202,11 @@ one commit carries the key.
   - `RETRY_STEP` and `RESOLVE_STEP` on it need `saga:override`.
 
   T035-050 and T035-051 pass. Refs: FR-035-019, D035-069, constitution III.
+
+  *2026-11-08, first part done, left unticked (D035-142):* the receipt is rebuilt by the server (`LakeReceiptCodec`, `JsonLakeReceiptCodec`) and the step is
+  completed from it (`worker/lake_complete.rs`: the attempt resolved its credentials, the receipt is the step's, the run keeps the rebuilt bytes); the SQL
+  result route does not serve a lake step. Not done: `OUTCOME_UNKNOWN` to `WAITING(OPERATOR)` with evidence, and `RETRY_STEP`/`RESOLVE_STEP` with
+  `saga:override` (the code does not do what D035-069 says: G035-077, O035-007), the completion through the real gRPC server, and T035-050 and T035-051.
 - [ ] T035-060 [US02] Add ad hoc Iceberg writes. Write the failing test
   `tests/integration/iceberg-writes/ad_hoc.rs` first: the same lookup, refusals and unknown outcomes as
   a published step. Then implement `crates/application/src/runs/ad_hoc.rs`
@@ -1001,6 +1221,12 @@ one commit carries the key.
     value, file location, credential or host error text in logs, spans, audit, journal, receipt or API.
 
   Refs: FR-035-030, NFR-035-SEC.
+
+  *2026-11-09, one part done, left unticked (D035-146):* the audit once per committed write (`iceberg.write_committed`, in the transaction of the completion, from the receipt the server built; a commit
+  the run could not keep is audited too). Not done: the spans and the server-side metrics (the runner counts its attempts, D035-143).
+  *2026-11-09, the canary test of the server's half is done (D035-149), still unticked:* `tests/integration/database-connections/lake_canaries.rs` (the task names
+  `tests/integration/iceberg-writes/canaries.rs`, which never existed: that suite has no control plane, and the scenario needs the lifecycle's OpenBao). Not covered: the host and the
+  sandbox runner, which are other processes (their own canaries are in `runners/lake/tests/`), and the spans, which do not exist yet.
 - [ ] T035-062 [US02] Add the example `examples/iceberg/orders-append.workflow.json` and the e2e test
   `tests/e2e/iceberg-writes/append.rs` (happy path and a recovered crash, quickstart scenario 2).
   Refs: FR-035-032, SC-035-003.
@@ -1063,16 +1289,28 @@ journey publish identical definitions and get equal receipts and errors.
   T035-063 passes. Refs: FR-035-007, D035-065.
 - [ ] T035-067 [P] [US03] Add the TypeScript builder in `sdks/typescript/src/database.ts`, with unit
   tests in `sdks/typescript/test/`. Refs: FR-035-008.
+
+  *2026-11-07, partly done, left unticked (D035-133):* TypeScript: 7 new tests, `npm test` 138 pass. The append builder is in all six SDKs and passes the build-only scenario `iceberg-write-builders` (six languages, golden read and rerun without bless). Overwrite, upsert and `recordSchema` come with T035-080, T035-085 and T035-089. The task text names `database.ts`; the builder is in `src/iceberg.ts`, with `validConnectionRef` shared from `database.ts`.
 - [ ] T035-068 [P] [US03] Add the Python builder in `sdks/python/sagat_octopus_orchestrator/database.py`,
   with tests in `sdks/python/tests/`. Refs: FR-035-008.
+
+  *2026-11-07, partly done, left unticked (D035-133):* Python: pytest 319 pass, mypy and ruff clean. The append builder is in all six SDKs and passes the build-only scenario `iceberg-write-builders` (six languages, golden read and rerun without bless). Overwrite, upsert and `recordSchema` come with T035-080, T035-085 and T035-089. The task text names `database.py`; the builder is in `iceberg.py` (`Flow.iceberg_write`), with `valid_connection_ref` shared from `database.py`.
 - [ ] T035-069 [P] [US03] Add the Go builder in `sdks/go/workflow/database.go`, with tests. Refs:
   FR-035-008.
+
+  *2026-11-07, partly done, left unticked (D035-133):* Go: `go test -race ./...`, vet and gofmt clean. The append builder is in all six SDKs and passes the build-only scenario `iceberg-write-builders` (six languages, golden read and rerun without bless). Overwrite, upsert and `recordSchema` come with T035-080, T035-085 and T035-089. The task text names `database.go`; the builder is in `workflow/iceberg.go`, with `validConnectionRef` shared from `database.go`.
 - [ ] T035-070 [P] [US03] Add the Java builder
   `sdks/java/sdk/src/main/java/dev/sagatoctopusorchestrator/sdk/workflow/IcebergWriteOptions.java` and
   its use from `Flow.java` and `WorkflowBuilder.java`, with tests. Refs: FR-035-008.
+
+  *2026-11-07, partly done, left unticked (D035-133):* Java: 7 new tests, `./mvnw -q verify` passes. The append builder is in all six SDKs and passes the build-only scenario `iceberg-write-builders` (six languages, golden read and rerun without bless). Overwrite, upsert and `recordSchema` come with T035-080, T035-085 and T035-089. The task text names `IcebergWriteOptions.java`, `Flow.java` and `WorkflowBuilder.java`; the builder is in those files, with `validConnectionRef` shared from `DatabaseOptions.java`.
 - [ ] T035-071 [P] [US03] Add the C# builder
   `sdks/dotnet/src/SagatOctopusOrchestrator.Sdk/Workflows/IcebergWriteOptions.cs` and its use from
   `FlowDatabase.cs`, with tests. Refs: FR-035-008.
+
+  *2026-11-07, partly done, left unticked (D035-133):* C#: 7 tests and a 31-case theory, `dotnet test` 487 pass, `dotnet format --verify-no-changes` clean. The append builder is in all six SDKs and passes the build-only scenario `iceberg-write-builders` (six languages, golden read and rerun without bless). Overwrite, upsert and `recordSchema` come with T035-080, T035-085 and T035-089. The task text names `IcebergWriteOptions.cs` and `FlowDatabase.cs`; the builder is in `IcebergWriteOptions.cs` and `FlowIceberg.cs`, with `ValidConnectionRef` shared from `DatabaseOptions.cs`.
+  The Rust SDK, which the task text leaves out, has its builder too: `sdks/rust/src/workflow/iceberg.rs` and `Builder::iceberg_write`, with 8
+  tests in `sdks/rust/tests/iceberg_builders.rs`; fmt, clippy `-D warnings` and `cargo test --locked` pass, and `shared_builders` rebuilds the golden.
 - [ ] T035-072 [US03] Wire the conformance runners:
   - `sdks/typescript/conformance/runner.ts`;
   - `sdks/python/conformance/runner.py`;
@@ -1082,6 +1320,10 @@ journey publish identical definitions and get equal receipts and errors.
   - and `tests/contract/sdk-conformance/database.rs`.
 
   Run all five. T035-064 passes. Refs: SC-035-005.
+
+  *2026-11-07, partly done, left unticked (D035-133):* the runners of the six SDKs (the Rust one is `sdks/rust/conformance/src/builders.rs`; no
+  file of the harness changes) build the `icebergWrite` op and the scenario passes in all six. T035-064 does not pass yet: receipts, errors and
+  the unsupported capability need the server's lease path.
 - [ ] T035-073 [US03] Build the Studio editor:
   - `frontend/apps/studio/src/features/workflows/{IcebergWriteFields.tsx,NodeInspector.tsx,AddNode.tsx}`;
   - `frontend/apps/studio/src/features/connections/CatalogPicker.tsx`, which shows the schema,
@@ -1518,6 +1760,10 @@ deployment, documentation, reviews and gates.
     audit, journal or API responses.
 
   Rerun T035-015, T035-018 and T035-031. Refs: NFR-035-SEC, SC-035-006.
+
+  *2026-11-09, one case done, left unticked:* a lake runner of another tenant, holding every id and token of a lease, is answered for a read, the audit of a read and the credentials exactly as
+  for a run that does not exist, and leaves nothing in the lease's tenant's trail (`lake_read.rs`; it pins a property the worker service already had, so it passed when written, and no
+  mutation was run: the property is the one line, `begin(principal.tenant_id(), …)`, that the whole suite depends on). Not done: the battery over the connection, browse and destination routes, and the canaries.
 - [ ] T035-118 [P] Add the classification battery in `tests/integration/iceberg-writes/classification.rs`:
   every `secret` field, every field above the ceiling, and every undeclared field against a ceiling
   below `pii` is refused, for every kind, with zero relay or destination connections. Refs:

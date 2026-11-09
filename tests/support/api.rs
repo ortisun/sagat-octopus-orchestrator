@@ -273,6 +273,9 @@ pub struct Options {
     /// The gate of the instance-capability registry (`FR-018-052`): while it is closed every call but `/v1/health` is
     /// `503 BINARY_CAPABILITY_MISSING`. `None` is a process with no registry, which serves.
     pub serving_gate: Option<Arc<sagat_application::instances::ServingGate>>,
+
+    /// The lake is on: Iceberg writes are published, admitted and leased, and the worker service completes them (feature 035).
+    pub lake: bool,
 }
 
 impl Default for Options {
@@ -308,6 +311,8 @@ impl Default for Options {
             reset_reapply: true,
             reset_cancel_source: true,
             serving_gate: None,
+
+            lake: false,
         }
     }
 }
@@ -384,7 +389,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         options.limits.max_in_flight_per_tenant,
     ));
     let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 64);
-    let executions = PgRunStore::new(api_pool.clone(), cache.clone()).with_scoped_worker_protocol();
+    let executions = PgRunStore::new(api_pool.clone(), cache.clone())
+        .with_scoped_worker_protocol()
+        .with_lake_enabled(options.lake);
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =
         sagat_infra_secrets::SecretsConfig::parse(&format!("k1:{key_k1}")).expect("a key ring");
@@ -542,7 +549,8 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
     let mut exec = ExecState::new(
         state,
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
-        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec),
+        DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
+            .with_lake_enabled(options.lake),
         runs,
     )
     .with_blob_transfer(sagat_api_http::HttpBlobTransfer {
@@ -590,7 +598,8 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
     .with_database_content(
         Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
         Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
-    );
+    )
+    .with_lake_receipts(Arc::new(sagat_infra_ir::JsonLakeReceiptCodec));
     if let Some(provider) = &options.secret_provider {
         workers = workers.with_secret_provider(provider.clone());
     }

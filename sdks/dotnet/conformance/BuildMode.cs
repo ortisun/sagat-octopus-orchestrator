@@ -165,6 +165,9 @@ internal static class BuildMode
                 case "database":
                     target.Database(id, DatabaseOptionsOf(options!));
                     break;
+                case "icebergWrite":
+                    target.IcebergWrite(id, IcebergOptionsOf(options!));
+                    break;
                 case "script":
                     target.Script(id, (string)op["artifactDigest"]!, new ScriptOptions
                     {
@@ -331,6 +334,50 @@ internal static class BuildMode
         Timeout = options["timeoutMs"] is { } timeout ? Ms(timeout) : null,
         OnError = (string?)options["onError"],
     };
+
+    private static IcebergWriteOptions IcebergOptionsOf(JsonObject options)
+    {
+        try { return ParseIcebergOptions(options); }
+        catch (Exception error) when (error is InvalidOperationException or FormatException or OverflowException or NullReferenceException or ArgumentException)
+        {
+            throw new SagatException(SagatErrorCode.ValidationFailed, "invalid iceberg write");
+        }
+    }
+
+    private static IcebergWriteOptions ParseIcebergOptions(JsonObject options)
+    {
+        var records = options["records"]!.AsObject();
+        if (records.Count != 1)
+        {
+            throw new InvalidOperationException();
+        }
+
+        var table = options["table"]!.AsObject();
+        return new IcebergWriteOptions
+        {
+            ConnectionRef = new ConnectionRef((string)options["connectionRef"]!["name"]!, (int?)options["connectionRef"]!["revision"]),
+            Table = new IcebergTable([.. table["namespace"]!.AsArray().Select(level => (string)level!)], (string)table["name"]!),
+            Records = records["inline"] is { } inline ? IcebergRecords.Inline((string)inline!)
+                : records["blobs"] is { } blobs ? IcebergRecords.Blobs((string)blobs!)
+                : records["databaseResult"] is { } source ? IcebergRecords.DatabaseResult((string)source!)
+                : throw new InvalidOperationException(),
+            Ref = (string?)options["ref"],
+            Mapping = options["mapping"]?.AsArray().Select(row => new IcebergMapping((string)row!["field"]!, (string)row["column"]!)).ToArray(),
+            IgnoreUnknownFields = (bool?)options["ignoreUnknownFields"],
+            Limits = options["limits"] is JsonObject limits
+                ? new IcebergLimits
+                {
+                    MaxRecordBytes = (long?)limits["maxRecordBytes"],
+                    MaxRecords = (int?)limits["maxRecords"],
+                    Timeout = limits["timeoutMs"] is { } timeout ? Ms(timeout) : null,
+                }
+                : options["limits"] is null ? null : throw new InvalidOperationException(),
+            Compensation = options["compensation"] is { } compensation
+                ? (string)compensation! == "revert" ? IcebergCompensation.Revert : throw new InvalidOperationException()
+                : null,
+            OnError = (string?)options["onError"],
+        };
+    }
 
     private static DatabaseType DatabaseTypeOf(JsonNode? node) => Enum.TryParse<DatabaseType>((string?)node, true, out var type) ? type : (DatabaseType)(-1);
 

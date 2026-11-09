@@ -18,6 +18,24 @@ overrule it; until the owner changes the cell to `owner` it is not an owner gate
 |---|---|---|---|---|
 | OD-2026-11-08-1 | "Faça isso por mim" (the owner's whole answer to: merge pull request 120, and expire or withdraw a pending `CANCEL_SOURCE` entry). Taken: **expiry only, built next.** An entry that is still `PENDING_SOURCE` 24 hours after its request (the deployment may set 1 hour to 7 days) ends `FAILED` with the closed reason `SOURCE_DID_NOT_END`, no run is made and its place in the namespace is freed. No call that withdraws an entry is built: the operator's lever is to end the source (a run in manual review is resolved like any other run) or to let the entry expire; a withdrawal is a later decision. `SAGAT_RESET_CANCEL_SOURCE_ENABLED` stays off by default until the expiry is built and reviewed. | delegate | Built and reviewed 2026-11-09 (three independent reviews found no blocker; their findings are fixed, D2079 to D2082; the gates were rerun by the coordinator on the final tree; the flag stays off, and lifting it by default waits for the alert of G2026) | specs/018-schedules-bulk-operations/research.md (D2000, G1991, D2059 to D2068, G2014 to G2018), docs/runbooks/run-reset.md, docs/adr/ADR-0081-cancel-source-is-switched-on-per-process-until-the-capability-registry-exists.md |
 
+## 2026-11-06 — Mutation testing runs only when a release is closed
+
+The owner gave the instruction in the Claude session, right after the pull requests that closed the host of feature 035 up to
+its REST catalog, each of which had a mutation pass of its own (a few minutes to half an hour of throw-away runs per pull
+request). It follows the rule on CI: what a pull request and a merge cost is cut to what the change needs, and the expensive
+check waits for the release.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-06-2 | "Desabilite também testes mutantes. Deixe somente ao fechar release igual a regra anterior" | owner | Decided | docs/engineering/ai-engineering.md, docs/test-strategy.md |
+
+Read as the owner wrote it: no mutation run while a feature is built, in a pull request or in the CI; one when a release is
+closed. It replaces the pause of 2026-10-09 ("re-enable only when asked"), which had said only that mutation testing was off.
+The Constitution does not mention mutation testing, so it is not amended: the rule lives in
+[the engineering guide](engineering/ai-engineering.md) and [the test strategy](test-strategy.md). A test is still written
+first and seen failing, and an independent review still reads a slice that crosses a trust boundary; only the weakening of
+each guard to see that a test notices it moves to the release.
+
 ## 2026-11-05 — A merge into `develop` starts no CI
 
 The owner gave the instruction in the Claude session while the assistant was merging a stack of pull requests, each of
@@ -27,6 +45,7 @@ which would have started a run on `develop`. The assistant recorded it; the rule
 |---|---|---|---|---|
 | OD-2026-11-05-1 | "Desativar o ci para merges na develop. Deixar o ci somente para merges de release" | owner | Decided | docs/constitution.md, .github/workflows/ci.yml |
 | OD-2026-11-06-1 | "O que deve ter é execucao de testes do que foi alterado ou modificado e seus dependentes, e integração também só do que foi alterado" | owner | Decided | docs/constitution.md (4.3.0), scripts/select-test-targets.py |
+| OD-2026-11-06-2 | "Sim. Rodar os testes somente dos arquivos alterados e suas dependencias." (the answer to: should a shared input, that is a contract, `tests/support`, `tests/fixtures`, `runners/`, a dependency of `tests/Cargo.toml`, select no suite in a pull request and leave all to the release?) | owner | Decided | scripts/select-test-targets.py, docs/test-strategy.md, tests/AGENTS.md |
 
 Read as the owner wrote it: the CI that a *merge* into `develop` starts (the `push` event) is turned off. The CI of a *pull
 request* is not a merge and keeps the rule of 4.1.0 (the tests of what it changes; the whole stack for a pull request into
@@ -41,6 +60,15 @@ ran for about an hour and three quarters (the assistant cancelled four runs of i
 run the tests of what was changed and of its dependents, and the integration suites only for what was changed. From 4.3.0 the unit tests of a changed package and of every package that depends on it run, and an
 integration suite runs only when it was itself changed (its files, its `[[test]]` entry or a harness it drives). A
 release still runs everything, and a merge into `develop` still starts no run.
+
+Row OD-2026-11-06-2 closes what 4.3.0 left: it still selected every integration suite when a file that all of them share
+(`tests/support`, `tests/fixtures`, a `runners/` directory, a contract under `specs/`, a dependency of `tests/Cargo.toml`)
+changed. Pull request 98 of feature 018 changes the OpenAPI contract and the test support, so it was selected as "every
+target" (about ninety suites, two hours a run, two heads in a row). The assistant put the question to the owner, who said yes.
+From now on those files select no suite; the unit tests of the packages they belong to (and of their dependents) still run,
+`Cargo.lock` and the toolchain files still select the unit tests of every package, and the release runs every suite. The
+price, as the owner was told: an error in the support or in a contract that no changed suite exercises is found by the
+release and not by the pull request.
 
 ## 2026-11-05 — The lake containers share the runner's group
 
@@ -58,6 +86,36 @@ slot stops protecting the files between attempts. What keeps two attempts apart 
 sub-path only, which the isolation tests show) and the token on the relay. If the engine failed to keep a container to its sub-path,
 the files of another attempt would be readable to it. The test `the_user_of_a_slot_is_not_a_boundary_between_attempts` states
 this and fails on the day the user becomes a boundary again.
+
+## 2026-11-05 — A correction to a delegated decision
+
+The row below corrects OD-2026-11-04-3 under the same delegation. It is `Decided by: delegate` and reversible.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-05-1 | The sentence of ADR-0075 telling a membership creator to lock chains in ascending order and then runs is withdrawn. A review of the lock-graph draft found it unreconciled with ADR-0030 §19 and ADR-0037 §6. ADR-0075 was accepted by delegation on 2026-11-04 in a pull request that had not been merged, so `develop` never carried the sentence as an accepted rule and the text was corrected before the acceptance reached it. ADR-0075 keeps the rule that a creator takes the group header `NOWAIT` before the first member insert; the chain and run lock set of the creator is open (ADR-0078). | delegate | Decided | docs/adr/ADR-0075-worker-leases-retain-child-root-possession.md |
+
+## 2026-11-04 — Delegated decisions for release 0.3.0 (capacity ADR, collection and wait ceilings)
+
+The owner delegated the open decisions of the 0.3.0 ledger: "Tome as decisoes por mim. Que os melhores
+especialistas em arquitetura, dados, banco de dados, decidam." The assistant put each question to an
+independent read-only reviewer (architecture, PostgreSQL and transactions, data and performance),
+gave them the question and the files and not its own leaning, and decided from their opinions, in
+[the evidence](../specs/014-workflow-primitives/evidence/delegated-decisions-20261104/README.md).
+Nothing was run. Every row is `Decided by: delegate`: reversible, and the owner confirms one by
+changing that cell to `owner`. `scripts/check-design-docs.py` does not accept a `delegate` row as an
+owner gate. Release scope stays as the owner decided on 2026-10-26: the original acceptance criteria
+of the eight tasks, which no row below lowers.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-04-3 | ADR-0075 is accepted for the ChildRoot worker-lease guard only, with the amendments of the architecture and PostgreSQL reviews. Production activation is not accepted: the guard stays off and no membership may be created until every condition of the ADR's Activation gate holds. | delegate | Decided | docs/adr/ADR-0075-worker-leases-retain-child-root-possession.md |
+| OD-2026-11-04-4 | Gap G721 is not closed by ADR-0075, ADR-0030, ADR-0037 or ADR-0038: a separate lock-graph ADR (total lock order, possession protocol, caller boundaries, creator, SCOPED_PATH, runnable predicate G715, rollout, fitness checks) must be accepted before any production caller. | delegate | Decided, not built | specs/014-workflow-primitives/capacity-vacate-acquire.md |
+| OD-2026-11-04-5 | O460 and O464. Collections publish `maxItems` 10,000 if the T014-042 acceptance run on the release candidate meets its thresholds, otherwise 1,000. Loops publish `maxIterations` 1,000 unless a 10,000-iteration loop completes within 1,800 s on that run. The worker report path (G520) is a documented limitation, not a release blocker. The limit goes in the runbook and the release notes and is bounded by the tenant quota; validation keeps accepting up to 10,000. | delegate | Decided, not built | specs/014-workflow-primitives/research.md |
+| OD-2026-11-04-6 | O463. The accepted ceiling is 20,000 pending waits (approvals, timers, event waits) per scheduler replica at the default 500 ms interval, observed by a new `scheduler_tick_seconds` metric with a slow-tick alert and an alert above 16,000 waits per replica. Index-only discovery (the `node_kind` column) is required before 0.3.0 only if the acceptance run fails the idle-tick thresholds, burst of 5,000 approval starts from a definition of at least 100 KB included. The reviewer made it unconditional; the delegate made it conditional because the cost on large definitions is inferred from the SQL and not measured. | delegate | Decided, not built | specs/014-workflow-primitives/research.md |
+| OD-2026-11-04-7 | T014-042 keeps its original acceptance criteria (10,000 items at widths 1, 16 and 256, 10,000 suspended approvals, the nested 100,000-instance workload). A flat 10,000 items by 10 instances run is extra evidence and not a substitute, and the task stays open while nested scopes are closed. The thresholds and the method (release build, runtime role, separate database host, two repetitions with the worse one counting) are those of the data review. | delegate | Decided | specs/014-workflow-primitives/tasks.md |
+| OD-2026-11-04-8 | Before `release/0.3.0` is cut, the whole stack is dispatched manually on `develop` as a rehearsal (a manual run is a release run, OD-2026-11-04-2). T014-040, T014-042 and T014-043 are recorded from one release-candidate commit that is an ancestor of `develop`. | delegate | Decided | .github/workflows/ci.yml |
+| OD-2026-11-04-9 | `feature/014-bounded-execution`, superseded by develop, is deleted. A verified bundle (tip `4f70bd08`) and the patch of its uncommitted edits are kept in `~/Documents/Projects/sagat-worktree-archive-2026-11-02/`. | delegate | Done | specs/014-workflow-primitives/implementation-ledger.md |
 
 ## 2026-11-04 — The CI runs the tests of the change; the whole stack runs for a release
 
