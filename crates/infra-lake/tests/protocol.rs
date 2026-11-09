@@ -106,14 +106,14 @@ fn every_operation_has_the_name_the_contract_gives_it() {
         (Operation::Browse, "browse"),
     ];
     for (operation, name) in names {
-        let encoded = encode_request(&Request::new(
-            operation,
-            "k",
-            "2026-11-05T10:00:00Z",
-            RelayAccess::new("/work/a/relay.sock", RelayToken::new(TOKEN).unwrap()),
-            Map::new(),
-        ))
-        .unwrap();
+        let relay = RelayAccess::new("/work/a/relay.sock", RelayToken::new(TOKEN).unwrap());
+        // a probe writes nothing: its line has neither an effect key nor an instant, and the host refuses one that has
+        let request = if operation == Operation::Probe {
+            Request::probe(relay, Map::new())
+        } else {
+            Request::new(operation, "k", "2026-11-05T10:00:00Z", relay, Map::new())
+        };
+        let encoded = encode_request(&request).unwrap();
         let parsed: Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(parsed["operation"], name);
     }
@@ -1009,7 +1009,7 @@ fn a_generated_token_is_64_hex_digits_valid_and_never_repeats() {
 
     assert_ne!(first, second);
     let encoded = encode_request(&Request::new(
-        Operation::Probe,
+        Operation::IcebergWrite,
         "k",
         "2026-11-05T10:00:00Z",
         RelayAccess::new("/work/a/relay.sock", first),

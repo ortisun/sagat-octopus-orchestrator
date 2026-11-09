@@ -506,7 +506,7 @@ fn an_envelope_the_host_would_refuse_is_refused_when_the_line_is_encoded() {
     let relay = RelayAccess::new("/x", RelayToken::new(TOKEN).unwrap());
     let outcome = |key: &str, instant: &str| {
         encode_request(&Request::new(
-            Operation::Probe,
+            Operation::IcebergWrite,
             key,
             instant,
             relay.clone(),

@@ -289,7 +289,7 @@ impl Connection {
         crate::policy::endpoint_policy(&self.catalog, &self.storage, &self.warehouse_locations)
     }
 
-    fn to_value(&self) -> Result<Value, BodyError> {
+    pub(super) fn to_value(&self) -> Result<Value, BodyError> {
         let locations_fit = (1..=MAX_LOCATIONS).contains(&self.warehouse_locations.len())
             && self
                 .warehouse_locations
