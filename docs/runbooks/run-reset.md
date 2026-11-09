@@ -59,6 +59,17 @@ Also:
 - **The source must have ended.** A run that is still open is `409 RESET_SOURCE_NOT_TERMINAL`: wait for it, or cancel it
   yourself first. `sourcePolicy: CANCEL_SOURCE` (reset an open run by cancelling it) is not built (section 7).
 
+### 2.1 What a reset costs, and what that means for the person who runs it
+
+**Measurements of one machine on one day, not promises** (NFR-018-005; an Apple M3 Max, PostgreSQL 16 in Docker with `fsync` on, the release build, the runtime role, sources built by a worker one activity after another; the report, its method and its failures: [`tests/performance/reports/schedules-bulk-operations.md`](../../tests/performance/reports/schedules-bulk-operations.md), G2046, G2047).
+
+- **A reset holds the row of its source run locked for the whole re-emission, about 0.93 ms for every event of the prefix.** The source row is taken at the start of the transaction that creates the new run and released at its commit, and the events are written one statement at a time: 0.95 s at 1,000 events and **4.65 s at 5,000**, the most a reset accepts (`RESET_PREFIX_EVENTS`). Every other writer of that run (a cancel, a retention sweep, another reset) waits that long. The reset as a whole took 4.7 s at 5,000 events, **0.15 to 0.24 s inside the 5 s statement timeout of the pool**: a reset near the ceiling on a slower or a busier database can run into it (what the caller then sees was not measured), so prefer an earlier point for a long run. About 19 s would be the lock of a prefix of 20,000 events (the hard ceiling the plan names; a linear extrapolation, because no code path accepts it): **do not raise the ceiling toward it** before the restore writes the events in pages.
+- **The list of points, the preview and the reset read and replay the whole journal of the source, and the replay costs more than linearly in the length of the journal** (the length of the journal, not of the prefix): the list of points took 9 ms at 1,002 events, 89 ms at 5,002 and **1.3 s at 20,002**; the preview of the same 5,000-event prefix took 98 ms on a journal of 5,002 events and 1.4 s on one of 20,002, and the reset of it 6.0 s (the extra 1.3 s is before the transaction, so the lock is no longer). A run with a journal of hundreds of thousands of events would make the list of points a request of many seconds.
+- **A point past the ceiling is refused cheaply**: `RESET_PREFIX_TOO_LONG` in 46 ms at the median (158 ms the slowest) on a journal of 20,002 events, before the replay, creating no run.
+- **What the reset made is exact**: replay equals projection (`verify_run`) held for all 45 runs the benchmark's resets made, up to 5,000 restored events (20 ms to check).
+
+What that means for you: choose the earliest point that serves; do not run resets of long runs in bulk (each holds its source for about a millisecond an event); expect the Studio's point list of a very long run to be slow; and read the lock time before anyone asks for a higher ceiling.
+
 ## 3. What to read before you confirm
 
 `POST /runs/{id}/reset-previews` with `{sequence}` (Studio: choosing the point; CLI: `sagat workflow reset-preview <run> --sequence N`)
@@ -222,8 +233,8 @@ is cancelled**, and nothing makes the replacement until an engine has the flag o
 register, counted against the limit), **but nothing expires it either: the expiry is a step of the same pass, so an engine with the
 flag off neither completes nor expires** (D2080, G2024). Every entry that was accepted keeps its place in its namespace, up to the
 limit, **until an engine with the flag on runs**; then the runs are made for the sources that have ended (G1989) and **every entry
-older than the window expires at once, 100 a second** (the pause after a round that expired entries, so that the writes keep that
-pace). `scheduler_lag_seconds{pass="resets"}` grows once the sources have ended (the alert `SagatSchedulerLate`); for an entry
+older than the window expires at once, at most 100 a second** (the pause after a round that expired entries, so that the writes
+keep to that ceiling: the pause is added to the time of the round, so the pace is lower, and it was not measured for this pass). `scheduler_lag_seconds{pass="resets"}` grows once the sources have ended (the alert `SagatSchedulerLate`); for an entry
 whose source is still open nothing fires, and `workflow_resets_pending` staying high is the sign. An engine with the flag off says
 so in its log when it starts. The registry that would refuse the
 mismatch is not built (ADR-0050 decision 9, T018-080), so do not leave the control plane on while the engines are being
@@ -283,8 +294,9 @@ is counted **from the request**, on the database's clock, so a restart of the en
 of an engine with this version expires, a few at a time, **every entry that is already older than the window** (read the register
 before you turn the flag on with entries in it). A round expires at most `SAGAT_RESET_CANCEL_SOURCE_BATCH` entries and
 `SAGAT_RESET_CANCEL_SOURCE_PER_TENANT` of any one tenant, oldest first, apart from the completions, **and a round that expired entries
-is followed by the pause they cost at a hundred a second** (a full round of 100 rests a second; at least 200 ms for any), so the first
-rounds of an engine with this version expire the old entries at that pace and not as fast as the database allows; a failure of the
+is followed by the pause they cost at a hundred a second, a ceiling on the pace** (a full round of 100 rests a second; at least 200 ms for any;
+the time of the round is added to it, so the pace is lower, and it was not measured for this pass), so the first
+rounds of an engine with this version expire the old entries at that pace at the most and not as fast as the database allows; a failure of the
 platform in one entry leaves it pending, with a warning that names `tenant_id` and `reset_id`, and does not stop the others; an entry
 past its window whose source **another transaction holds at that moment** (the one that may be ending the run) is left for a
 second and tried again, without a warning (a debug line names the ids). The migration

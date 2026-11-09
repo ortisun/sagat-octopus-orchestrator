@@ -1558,6 +1558,14 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `check-architecture.py`, `check-agent-config.py`,
   `check-design-docs.py`: clean. No production file and no ceiling was changed. **Not done:** the selection of 100,000 runs, other tenants,
   a second batch replica, the HTTP API, workers, a reset above 5,000 events (none is accepted), a quiet machine (G2050).
+  *Follow-up 2026-11-09, still unticked (D2116 to D2130, gaps G2051 to G2056; the first design was amended after two reviews, D2123 to D2126):* the two defects the benchmark found are fixed and measured again
+  with the same `run.sh` (the addendum "After the fixes of 2026-11-09" of the report; the original tables are untouched): the batch loop wakes when the
+  next slot of a job comes (G2043: a lone job at the default rate applies 18.4 items a second, 1.0 before) and the drift view looks the schedule up for
+  each trigger (G2049: the check under the handover's lock took 20 ms at 10,000 triggers, 2,853 ms before, and 263 ms at 100,000, 280 ms before); the runbooks
+  say what the data says (G2044 to G2048). The ceilings are unchanged. Production files changed by the follow-up: `crates/scheduler/src/batches.rs`,
+  `crates/application/src/batch.rs`, `crates/infra-postgres/src/batch.rs`, `apps/execution-engine/src/loops.rs` and the migration
+  `20270114000000_trigger_handover` (in place), and the comments of `crates/scheduler/src/{trigger_schedules,resets}.rs` and `crates/infra-postgres/src/trigger_schedules.rs`;
+  new tests: `gap_store.rs`, `trigger_plan.rs` and the new tests of `batch_pass.rs` in `tests/integration/schedules-bulk-operations/`.
 - [ ] T018-073 Runbooks/docs (`docs/runbooks/{schedules,batch-operations,run-reset}.md`, cron section of
   `docs/runbooks/events.md`, entry-wait pattern, business-id privacy warning) — review + link check —
   FR-018-049.

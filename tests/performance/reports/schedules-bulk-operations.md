@@ -448,3 +448,167 @@ the trigger backlog was on its first repetition), then `SAGAT_PERF_ONLY=poll50`,
 `SAGAT_PERF_ONLY==triggers-steady-mid` and `==firing-instant` (16:19 to 16:36; a leading `=` selects one label exactly) and
 `SAGAT_PERF_ONLY==triggers-steady-small` (16:36). The scenarios of the first invocation that the tables use are the firing at spread and
 with two replicas, the six batch scenarios, the claim and the reset; the rest come from the later ones.
+
+
+## After the fixes of 2026-11-09
+
+Everything above is what the code did at commit `345dd70e`, and it is not rewritten: the tables, the bounds and the findings stay as they were measured. This section is what the same benchmark measured after the two defects it found were fixed (G2043 and G2049; decisions D2116 and D2117 in `specs/018-schedules-bulk-operations/research.md`), and it says what each change did and what it did not do. **These are, as above, observations of one machine on one day, not promises** (NFR-018-005).
+
+**What changed in the product.** (1) *The batch loop (G2043).* A round that found nothing due now asks the database for the soonest slot of an active job of the shards the replica holds (one statement of at most 64 index probes, answered by the database's clock), and `run_batches` rests the lesser of its poll and that time (never less than 1 ms, stop-aware) instead of the whole poll; a round that did work is followed at once, as before; the executor, the fairness and the ceilings are untouched. (2) *The drift view (G2049).* `schedule_trigger_drift` looks the schedule of each trigger up by `trigger_id` (a `LATERAL ... LIMIT 1` over `schedules_trigger_uniq`) and reads the singleton `schedule_trigger_handover` by a scalar subquery, so the check the handover makes under its lock has one plan, an index probe for each trigger, whatever the statistics say (in place in `20270114000000_trigger_handover`, which has not been applied outside tests or released).
+
+**Method.** The same `run.sh`, scenarios, image (by digest) and settings as above, release build, runtime role, N = 3, one label of `run.sh` at a time (`SAGAT_PERF_ONLY==batch-one-default`, `=triggers-steady-small`, `=triggers-steady`, `=triggers-steady-mid`, `=batch-big-and-small`, `=batch-one-highest`, `=batch-16-default`, and again `=batch-one-default`), on 2026-11-09 from 20:11 to 20:25 UTC (17:11 to 17:25 local); the commit is `11d4bec1` with the working tree of the follow-up (every fragment says `dirty: true`, and the files of the product that differ from `345dd70e` are `crates/scheduler/src/batches.rs`, `crates/application/src/batch.rs`, `crates/infra-postgres/src/batch.rs`, `apps/execution-engine/src/loops.rs` and the migration; the benchmark's own files are as they were). **The firing, the claim, the reset, the selection and drain scenarios were not rerun**: nothing they read changed. The reconciliation's backlog is in its own subsection below. The tables are the output of `summarize.py` over the fragments of each run, unedited, apart from the "before" columns, which are quoted from the tables above.
+
+**Load of the machine.** The machine ran other agents' work and the Docker VM about thirty containers of other projects, as before. The first run of the lone job (`batch-one-default`) began seconds after the release build's last link and the one-minute load average was **20.6 to 34.1** (the poll50 variant above was at 15 to 24); it was therefore run again on a quieter machine (**4.8 to 5.7**) and both are shown. The other scenarios ran at 5.5 to 26.7 (the sixteen jobs began a repetition at 26.7, a rebuild having run before it; the one-minute figure before and after every repetition is in the table at the end of this section).
+
+### The lone job at the default rate (G2043)
+
+| | before (the run above) | after, first run (load 20.6 to 34.1) | after, second run (load 4.8 to 5.7) |
+| --- | --- | --- | --- |
+| asked, items a second | 20 | 20 | 20 |
+| **achieved, items a second** | **1.0** [1.0 - 1.0] (0.97 to 0.98) | **18.3** [18.3 - 18.3] | **18.4** [18.4 - 18.4] |
+| gap between two items, p50 | 1,036 ms [1,022 - 1,037] | 54.6 ms [54.5 - 54.7] | 54.4 ms [54.3 - 54.4] |
+| gap p95 / largest | 1,205 / 1,229 ms | 56.2 / 57.6 ms | 56.0 / 57.3 ms |
+| wall time of 120 runs | 122 s | 6.6 s | 6.6 s |
+| item duration p50 / p95 | 11.7 / 17.5 ms | 8.7 / 10.9 ms | 8.8 / 12.0 ms |
+| bound "reaches 80% of the rate asked" (16 a second) | broken in 3 of 3 | held in 3 of 3 | held in 3 of 3 |
+| bound "never more than 110%" (22 a second) | held in 3 of 3 | held in 3 of 3 | held in 3 of 3 |
+
+The loop was the whole difference: a job that asks for 20 items a second now gets 92% of that and not 5% (the variant with a poll of 50 ms above gave 13.4 and is obsolete). The 8% that is missing is not the poll: the gap is 54.4 ms for a slot of 50 ms, and the extra 4.4 ms is the round that finds nothing due and asks for the next slot (a clock read, the due scan and the new statement) and the wake-up of the loop, which D2116 and G2051 say a round that knew its own slot could save. Two runs a load of 25 apart gave the same figure within 0.5%.
+
+### What must not change did not (fairness and the replica's capacity)
+
+| Scenario | Metric | before | after |
+| --- | --- | --- | --- |
+| sixteen jobs at the default rate (300 runs each) | aggregate, items a second | 72.5 [71.7 - 72.8] | 73.5 [71.9 - 73.6] |
+| | slowest job, items a second | 4.5 [4.5 - 4.5] | 4.6 [4.5 - 4.6] |
+| | last job's end over the first's | 1.01 [1.00 - 1.01] | 1.00 [1.00 - 1.01] |
+| | the job that waited longest for its first item | 0.4 s | 0.4 s (0.375 to 0.433) |
+| | bound "every job reaches half its rate" (10 a second) | broken in 3 of 3 | broken in 3 of 3 (the replica's capacity, G2044) |
+| | bounds "end together" and "no job waits 10 s" | held in 3 of 3 | held in 3 of 3 |
+| one job of 900 runs beside fifteen of 30 | aggregate, items a second | 73.6 [71.8 - 73.9] | 72.0 [70.2 - 72.5] |
+| | last job's end over the first's | 1.03 [1.03 - 1.03] | 1.04 [1.04 - 1.06] |
+| | end of each job over its allowance (bound <= 1) | 0.464, 0.451, 0.453 | 0.460, 0.457, 0.468 |
+| | the job that waited longest for its first item | 0.337 to 0.363 s | 0.328 to 0.445 s |
+| a lone job at the highest rate (200 a second asked, 1,000 runs) | achieved, items a second | 74.7 [73.5 - 77.2] | 73.1 [72.6 - 75.0] |
+| | bound "reaches 80% of the rate asked" (160 a second) | broken in 3 of 3 | broken in 3 of 3 (13 ms an item is the replica's capacity) |
+
+With several jobs, or one job faster than the replica can apply, the loop is never idle, so the change does not touch them: one replica still applies about 73 items a second to all its jobs, shares them fairly, and the bounds that were broken because of that stay broken. They are the replica's capacity (G2044), not the loop.
+
+### The check under the handover's lock (G2049)
+
+**What the plan analysis found** (`EXPLAIN (ANALYZE, BUFFERS)` on the database of the scenario at 10,000 triggers, the benchmark's image and settings, run by hand after the scenario with the tables as the benchmark leaves them):
+
+- *The statistics of the bulk insert are no part of it.* The three tables were analyzed after the load and again after the stragglers were given a schedule (`last_analyze` a few seconds before; `n_mod_since_analyze` 0 for `workflow_triggers` and 2 for `schedules` and `schedule_revisions`). What had no statistic was the singleton `schedule_trigger_handover` (`reltuples = -1`; it is never analyzed, in a deployment as here: one row inserted by a migration and updated once).
+- *The plan:* `Nested Loop Left Join ... Join Filter: (s.trigger_id = t.id)` over a `Materialize` of a sequential scan of `schedules`, `Rows Removed by Join Filter: 99990000`, 30,497 buffers, 3.5 s under `ANALYZE` (3.15 s in the harness run that made the database). The planner estimated 6,069,500 rows for the join: 10,000 triggers times 610 rows for the unanalyzed singleton (its default for a table of unknown size) times 0.995 (its estimate of `CASE ... IS NOT NULL`). An `EXISTS` is planned for its first row, so with six million estimated rows the cost of a plan is its start-up cost, and the nested loop, which has none (estimated total cost 1.7 million), beat a hash join, which must first read all of `schedules` (a scan costed at 423) before it returns a row.
+- ***`ANALYZE schedule_trigger_handover` alone, nothing else, brought the same statement to 21.5 ms*** with `Index Scan using schedules_trigger_uniq` (60,174 buffers): from 15,000 triggers up the planner reaches the same plan unaided, which is why the cost looked like it followed the size.
+- *The new view, with the singleton still unanalyzed:* `Nested Loop Left Join` over `Seq Scan on workflow_triggers`, a `Limit` over `Index Scan using schedules_trigger_uniq` and `Index Scan using schedule_revisions_pkey` for each trigger (`loops=10000`), the singleton an `InitPlan` that is never executed on a fleet with no paused schedule, 60,173 buffers, **19.6 ms**; no plan that scans `schedules` again is possible in that form.
+
+**The check on a converged fleet, every trigger with a schedule** (`SELECT schedule_trigger_unconverged()` as the runtime role, median of the three repetitions, in brackets the smallest and the largest; five samples a repetition; before = the tables above):
+
+| Triggers | before, p50 | before, slowest sample (median of the repetitions) | after, p50 | after, slowest sample (median of the repetitions) |
+| --- | --- | --- | --- | --- |
+| 5,000 | 1,009 ms [999 - 1,014] | 1,035 ms | **10 ms** [9 - 10.3] | 11.3 ms [10.4 - 11.3] |
+| 10,000 | 2,853 ms [2,851 - 2,856] | 2,880 ms | **19.7 ms** [19.0 - 20.8] | 22.2 ms [20.1 - 22.8] |
+| 15,000 | 28.0 ms [27.3 - 28.0] | 30.2 ms | 28.2 ms [27.5 - 32.2] | 30.1 ms [29.1 - 33.8] |
+| 20,000 | 43.5 ms [38.2 - 48.9] | 46.1 ms | 39.2 ms [38.2 - 46.4] | 46.6 ms [39.4 - 47.8] |
+| 50,000 | 111 ms [108 - 135] | 119 ms | 112 ms [112 - 121] | 122 ms [118 - 138] |
+| 100,000 | 280 ms [269 - 282] | 344 ms | **263 ms** [263 - 271] | **324 ms** [291 - 335] |
+
+Where the old plan was already an index plan (15,000 and above) the new one costs the same, as it should: it is the same lookups. At 5,000 and 10,000 it is 100 and 140 times faster. **The check stays under 300 ms at the median at every size; its slowest single sample at 100,000 triggers was 335 ms**, 12% over the 300 ms that was asked for and 3% under what the old index plan gave there (344 ms): the cost is now linear, about 2.6 microseconds a trigger (G2052), and 4 s would be reached at about 1.5 million triggers by extrapolation, which nobody measured. The statement timeout of 4 s holds with a margin of more than ten at 100,000 and of two orders of magnitude at the sizes the planner used to get wrong; the 2 s lock timeout is the writers' wait for the lock and is not touched. The bound "the handover check on a converged fleet stays within the statement timeout" held in 3 of 3 repetitions at every size, before and after; what changed is the margin (2,890 ms of 4,000 at 10,000 before, 22.8 ms after).
+
+**The other statements that read the view** (median of three repetitions; "count" is `schedule_trigger_convergence`, the gauge's and the dry run's, at the state of the steady scenario; "window" is one window of the reconciliation, 2,000 triggers; "view count" is an unbounded `SELECT count(*)` of the view, which nothing in the product issues):
+
+| Triggers | count, before → after | window p50, before → after | whole sweep, before → after | `count(*)` of the view, before → after |
+| --- | --- | --- | --- | --- |
+| 5,000 | 7 → 11.0 ms | 10.2 → 10.9 ms | 0.0 → 0.0 s | 5 → 10 ms |
+| 10,000 | 10.1 → 19.0 ms | 13.3 → 13.7 ms | 0.1 → 0.1 s | 19.3 → 30.2 ms |
+| 15,000 | 28.1 → 31.0 ms | 20.5 → 15.4 ms | 0.2 → 0.1 s | 24.5 → 41.2 ms |
+| 20,000 | 29.2 → 43.2 ms | 48.5 → 15.3 ms | 0.5 → 0.2 s | 29.9 → 47.7 ms |
+| 50,000 | 195 → 119 ms | 49.3 → 32.3 ms | 1.3 → 0.7 s | 177 → 236 ms |
+| 100,000 | 314 → 288 ms | 86.4 → 48.3 ms | 9.1 → 2.4 s | 238 → 395 ms |
+
+**What it cost, said plainly.** The windows of the reconciliation and a whole sweep are faster from 15,000 triggers up (a sweep of 100,000: 9.1 s to 2.4 s), because a window of 2,000 triggers is now 2,000 index probes and no longer a join of the whole window against `schedules`. The count of the gauge is slower up to 20,000 triggers (11 to 43 ms against 7 to 29 ms: a hash join over a small fleet beats the probes) and faster from 50,000 up (119 ms against 195, 288 against 314); it is a bounded statement of tens of milliseconds at the sizes where it is slower. The unbounded `count(*)` of the view, the statement an operator might type, is 1.3 to 2 times slower at every size (395 ms against 238 ms at 100,000); nothing in the product reads the view unbounded (the gauge and the dry run read it through a `LIMIT`, the reconciliation through a window, the handover through `EXISTS`).
+
+### Bounds, before and after
+
+| Scenario | Bound | before | after |
+| --- | --- | --- | --- |
+| lone job at the default rate | reaches 80% of the rate asked | broken in 3 of 3 | **held in 3 of 3** (twice) |
+| lone job at the default rate | never more than 110%; selection is not the limit | held | held |
+| handover check at 5,000 to 100,000 triggers | within the 4 s statement timeout | held in 3 of 3 at the six sizes (1.0 s at 5,000 and 2.9 s at 10,000 left 75% and 28% of the margin) | held in 3 of 3 at the six sizes (the slowest sample at any size 335 ms) |
+| sixteen jobs; a lone job at the highest rate | every job half its rate; the highest rate reached | broken in 3 of 3 | broken in 3 of 3: the replica's capacity |
+| the rest of the scenarios rerun (fairness, first item, equal jobs end together, small beside big) | | held in 3 of 3 | held in 3 of 3 |
+
+The bounds that fail now fail for the reason the report gave for them above (a replica applies about 73 items and starts about 61 runs a second), not because of the loop or the plan.
+
+### The reconciliation's backlog, once
+
+The windows of the reconciliation read the same view, so the scenario that drains a backlog after an upgrade (`triggers-backlog`: 10,000 and 100,000 triggers with no schedule, two tenants, the engine's own loop for 60 s) was run **once** (N = 1, `SAGAT_PERF_REPS=1`, 6.5 minutes, load 3.1 to 4.8): a point and not a median, so the figures have no brackets and a difference of a few percent between the two runs is not a finding.
+
+| | before (N = 3, median) | after (N = 1) |
+| --- | --- | --- |
+| 100,000: convergence count with every trigger unconverged, p50 / largest | 193 ms / 259 ms | **59.9 ms / 82.5 ms** |
+| 100,000: first window of a sweep, p50 / largest | 46.1 ms / 336 ms | **11.9 ms / 16.9 ms** |
+| 10,000: convergence count p50 / first window p50 | 6 ms / 7 ms | 7 ms / 8 ms |
+| writes a second, 100,000 triggers, the defaults (20 an entry a tenant) | 62.0 [61.9 - 62.6] | 66.7 |
+| writes a second, 100,000 triggers, the per-tenant cap at 100 | 77.3 [74.0 - 77.3] | 77.3 |
+| writes a second, 10,000 triggers, the defaults / the cap at 100 | 30.0 [27.4 - 30.0] / 68.8 [68.2 - 70.2] | 26.7 / 69.0 |
+| the backlog of 100,000 drains in (extrapolated) | 26.9 minutes (defaults), 20.8 (cap at 100) | 25.0 minutes, 20.7 |
+| bounds (the count and a window within the 4 s timeout, a full round keeps half the advertised pace, no write failed) | held in 3 of 3 | held (exit 0) |
+
+Nothing is slower; the count and the first window of a backlog are about three to four times faster at the median at 100,000 (twenty times at the largest first window) because a trigger with no schedule is now one probe of an index that finds nothing. The drain is bounded by the pause after a round that writes, not by the reads, so its pace is what G2048 says (21 to 27 minutes for 100,000 triggers of two tenants; this run: 25 and 21).
+
+### Repetitions and their exit status (0 = every bound held), and the load of the machine
+
+| Scenario (`run.sh` label) | Repetitions: exit status | One-minute load average before / after each repetition (lowest - highest) |
+| --- | --- | --- |
+| batch-one-default, first run | 0, 0, 0 | 23.6 - 34.1 / 20.6 - 29.1 |
+| batch-one-default, second run | 0, 0, 0 | 4.9 - 5.4 / 4.8 - 5.7 |
+| batch-big-and-small | 0, 0, 0 | 6.4 - 7.9 / 6.8 - 7.9 |
+| batch-one-highest | 101, 101, 101 (the highest rate is not reached: the replica's capacity) | 6.0 - 6.8 / 5.9 - 6.6 |
+| batch-16-default | 101, 101, 101 (every job does not reach half its rate: the replica's capacity) | 6.3 - 26.7 / 5.5 - 8.7 |
+| triggers-steady-small (5,000 and 15,000 triggers) | 0, 0, 0 | 14.7 - 19.2 / 13.7 - 17.7 |
+| triggers-steady (10,000 and 100,000) | 0, 0, 0 | 9.0 - 13.4 / 8.6 - 13.4 |
+| triggers-steady-mid (20,000 and 50,000) | 0, 0, 0 | 7.3 - 9.8 / 7.3 - 9.8 |
+| triggers-backlog (N = 1) | 0 | 3.1 - 4.8 |
+
+### Reproducing the addendum
+
+```sh
+export CARGO_TARGET_DIR=<a directory outside the repository> CARGO_BUILD_INCREMENTAL=false
+for label in batch-one-default triggers-steady-small triggers-steady triggers-steady-mid batch-big-and-small batch-one-highest batch-16-default; do
+  SAGAT_PERF_REPS=3 SAGAT_PERF_ONLY="=$label" SAGAT_PERF_OUT=<a directory for $label> tests/performance/schedules-bulk-operations/run.sh
+done
+SAGAT_PERF_REPS=1 SAGAT_PERF_ONLY==triggers-backlog SAGAT_PERF_OUT=<a directory> tests/performance/schedules-bulk-operations/run.sh
+python3 -I tests/performance/schedules-bulk-operations/summarize.py <each directory>   # the tables above
+```
+
+(A leading `=` in `SAGAT_PERF_ONLY` selects one label exactly, so `batch-one-default` does not also run `batch-one-default-poll50`.) The tests of the two changes are in `apps/execution-engine/src/loops.rs` (the loop under paused time) and `tests/integration/schedules-bulk-operations/` (`batch_pass.rs`: the store, the pass and the engine's own loop; `trigger_plan.rs`: the plan of the check in three states of the statistics and the equality of the view with its previous definition), in both roles.
+
+
+## After the review fixes of 2026-11-09
+
+Two independent reviews of the change above found two ways in which the stall of G2043 would have come back at random, by reading the code (neither was reproduced, and the figures above do not show them: G2056). They are fixed (D2123 to D2125 in `research.md`), and the statement that the first addendum describes ("a round that found nothing due asks the database for the soonest slot, one statement of at most 64 index probes") is no longer how it works.
+
+- **A slot could come between the two statements of a round.** The scan of the due jobs found a job's slot a millisecond ahead, the round did nothing, and by the time it asked for the next slot the slot had come, so it answered nothing and the loop slept its whole poll while an item was due; the exposure is highest at 100 to 200 items a second. The slot ahead is now the second half of the scan of the due jobs itself: one statement that reads the database's clock once, at its start; a slot that comes while it runs, or after it, is ahead of that instant and is a zero, which the loop floors to 1 ms. There is no second statement (one round trip less for an idle round, 64 index probes more for every round, in the same statement).
+- **The executor and the scan can disagree about the time.** The scan says a job is due by the database's clock; the executor decides by its own (`DatabaseClock`, behind by up to half a round trip and by what it drifted since). A due job the executor found not due yet made the round idle with nothing to wake for, and the loop slept a whole poll. A round with a due job that a step found nothing to do for now comes back in 10 ms (at most a hundred rounds a second, and only while the clocks disagree).
+
+The scenarios that the change touches were run again with the same `run.sh`, the same release build profile, image and settings, N = 3 each, on 2026-11-09 between 21:56 and 22:05 UTC (18:56 to 19:05 local), the tree of the review fixes (every fragment says `dirty: true`):
+
+| Scenario | Metric | the first design (above) | after the review fixes |
+| --- | --- | --- | --- |
+| lone job at the default rate, run on a machine at load 4.5 to 6.4 | achieved, items a second | 18.4 [18.4 - 18.4] | **18.3** [18.3 - 18.4] |
+| | gap between two items, p50 / p95 | 54.4 / 56.0 ms | 54.6 / 56.0 ms |
+| | bound "reaches 80%" (16 a second) | held in 3 of 3 | held in 3 of 3 |
+| lone job at the default rate, run at load 22.7 to 34.3 (right after the build's last link) | achieved, items a second | 18.3 [18.3 - 18.3] | 18.3 [18.2 - 18.3], gap p50 54.7 ms |
+| sixteen jobs at the default rate | aggregate, items a second | 73.5 [71.9 - 73.6] | 72.2 [71.8 - 72.9] |
+| | slowest job; last job's end over the first's | 4.6; 1.00 | 4.5; 1.01 [1.00 - 1.01] |
+| | the job that waited longest for its first item | 0.4 s | 0.4 s (0.368 to 0.427) |
+| | bounds | the half-rate bound broken 3 of 3 (the replica's capacity), the others held | the same |
+| one job of 900 runs beside fifteen of 30 (load 11 to 21) | aggregate, items a second | 72.0 [70.2 - 72.5] | 72.3 [66.9 - 72.3] |
+| | last job's end over the first's | 1.04 [1.04 - 1.06] | 1.05 [1.04 - 1.06] |
+| | bounds | held in 3 of 3 | held in 3 of 3 |
+| a lone job at the highest rate (load 8 to 10.7) | achieved, items a second | 73.1 [72.6 - 75.0] | 74.5 [73.9 - 76.1] |
+| | bound "reaches 80%" (160 a second) | broken in 3 of 3 (the replica's capacity) | the same |
+
+The lone job stays at 18.3 items a second, as the first design gave (18.3 and 18.4), at both loads: the fold neither helped nor cost it, and the fairness and the capacity of the replica are as they were. The one repetition of one big job beside fifteen small ones that gave 66.9 items a second ran on a machine at a load of 11 to 21 (this scenario gave 71.8 to 73.9 at a load of 6 to 8, above), and no bound depends on the aggregate there; I did not rerun it on a quieter machine. Exit statuses: the lone job 0, 0, 0 in both runs; the small beside the big 0, 0, 0; the highest rate 101, 101, 101 and the sixteen jobs 101, 101, 101 (the replica's capacity, as above). The one-minute load average before and after every repetition: 25.9 to 34.3 and 22.7 to 29.6, then 4.5 to 6.4 and 4.5 to 6.2 (the lone job); 13.0 to 21.0 and 11.2 to 17.4 (small beside big); 9.4 to 10.7 and 8.0 to 10.5 (highest rate); 5.1 to 7.5 and 5.5 to 6.0 (sixteen jobs). The firing, the claim, the reset, the selection and drain, the reconciliation and the handover's check were not rerun: nothing they read changed in the review fixes except the comments of the view's migration.
