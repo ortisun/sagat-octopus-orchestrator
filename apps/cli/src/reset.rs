@@ -272,6 +272,10 @@ fn failure_words(reason: &str) -> String {
             "the workflow's concurrency key had no free place for the new run".to_owned()
         }
         "RUN_PURGED" => "the history of the run is no longer kept".to_owned(),
+        "SOURCE_DID_NOT_END" => {
+            "the run being cancelled had not ended within the time a reset waits for it (once it has ended, reset it again)"
+                .to_owned()
+        }
         other => crate::one_line(other),
     }
 }

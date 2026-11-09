@@ -996,6 +996,10 @@ fn a_retry_that_finds_the_reset_failed_says_why_in_words_and_fails() {
             "had no free place for the new run",
         ),
         ("RUN_PURGED", "the history of the run is no longer kept"),
+        (
+            "SOURCE_DID_NOT_END",
+            "the run being cancelled had not ended within the time a reset waits for it (once it has ended, reset it again)",
+        ),
         // a reason a later version added is said as the platform wrote it
         ("SOMETHING_NEWER", "SOMETHING_NEWER"),
     ] {
@@ -1035,6 +1039,7 @@ fn the_resets_of_a_run_are_listed_in_words_with_how_each_stands() {
             json!({"items": [
                 {"resetId": "r-9", "sequence": 7, "state": "PENDING_SOURCE", "newRunId": null, "failureReason": null},
                 {"resetId": "r-8", "sequence": 5, "state": "FAILED", "newRunId": null, "failureReason": "AUTHORITY_REVOKED"},
+                {"resetId": "r-8b", "sequence": 4, "state": "FAILED", "newRunId": null, "failureReason": "SOURCE_DID_NOT_END"},
                 {"resetId": "r-7", "sequence": 3, "state": "CREATED", "newRunId": NEW, "failureReason": null},
                 {"resetId": "r-6", "sequence": 2, "state": "SOMETHING_NEWER", "newRunId": null, "failureReason": null}
             ]})
@@ -1053,6 +1058,8 @@ fn the_resets_of_a_run_are_listed_in_words_with_how_each_stands() {
             "r-9  from point 7: waits for run {RUN} to end; the new run is made then, if the point is still one"
         ),
         "r-8  from point 5: no run was made: the member who asked no longer may reset runs"
+            .to_owned(),
+        "r-8b  from point 4: no run was made: the run being cancelled had not ended within the time a reset waits for it (once it has ended, reset it again)"
             .to_owned(),
         format!("r-7  from point 3: run {NEW} was made"),
         // a state a later version added is said as the platform wrote it
