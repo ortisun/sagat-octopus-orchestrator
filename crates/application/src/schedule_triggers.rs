@@ -94,13 +94,22 @@ pub fn tick_reason(trigger: Uuid, nominal: OffsetDateTime) -> String {
     )
 }
 
+/// The instant as the database keeps it: whole microseconds. A clock reads nanoseconds on one machine and microseconds on
+/// another, and an instant that went through the database (the nominal time of a manual trigger) must read the same as
+/// one that did not (the instant it was fired), so the document writes both to the microsecond.
+fn to_the_microsecond(instant: OffsetDateTime) -> OffsetDateTime {
+    instant
+        .replace_nanosecond(instant.nanosecond() / 1_000 * 1_000)
+        .unwrap_or(instant)
+}
+
 /// The input document of the run of a tick: the `cron.fired` event of feature 004, built from the nominal time and the
 /// instant it was acted on.
 #[must_use]
 pub fn cron_document(trigger: Uuid, nominal: OffsetDateTime, fired: OffsetDateTime) -> Vec<u8> {
     let epoch = nominal.unix_timestamp();
-    let at = ClaimedEvent::rfc3339(nominal);
-    let fired = ClaimedEvent::rfc3339(fired);
+    let at = ClaimedEvent::rfc3339(to_the_microsecond(nominal));
+    let fired = ClaimedEvent::rfc3339(to_the_microsecond(fired));
     let data = format!(r#"{{"scheduledAt":"{at}","firedAt":"{fired}"}}"#);
     let id = format!("cron:{trigger}:{epoch}");
     event_document(&EventView {
@@ -714,6 +723,27 @@ mod tests {
         assert_eq!(document["data"]["firedAt"], "2026-10-28T12:00:05Z");
         assert_eq!(document["event"]["occurredAt"], "2026-10-28T12:00:00Z");
         assert_eq!(document["event"]["receivedAt"], "2026-10-28T12:00:05Z");
+    }
+
+    #[test]
+    fn the_instants_of_the_document_are_written_to_the_microsecond_the_database_keeps() {
+        // The database keeps microseconds. A clock reads nanoseconds on one machine and microseconds on another, so the
+        // same instant must be written the same way on both: `scheduledAt` went through the database and `firedAt` did not
+        // (CI failed an equality of the two for a manual trigger on Linux, which no macOS run could show).
+        let nominal = at(1_793_188_800) + time::Duration::microseconds(835_955);
+        let fired = nominal + time::Duration::nanoseconds(300);
+        let document: serde_json::Value =
+            serde_json::from_slice(&cron_document(Uuid::from_u128(7), nominal, fired))
+                .expect("json");
+        assert_eq!(
+            document["data"]["scheduledAt"],
+            "2026-10-28T12:00:00.835955Z"
+        );
+        assert_eq!(document["data"]["firedAt"], document["data"]["scheduledAt"]);
+        assert_eq!(document["event"]["receivedAt"], document["data"]["firedAt"]);
+        // and nothing below a microsecond reaches the document from either instant
+        let both = cron_document(Uuid::from_u128(7), fired, fired);
+        assert_eq!(both, cron_document(Uuid::from_u128(7), nominal, nominal));
     }
 
     #[test]

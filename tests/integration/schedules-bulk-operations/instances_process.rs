@@ -519,12 +519,21 @@ async fn an_engine_stops_its_passes_and_fails_readiness_when_a_requirement_it_la
     )
     .await;
     assert_eq!(r.epoch_now().await, 1, "the requirement is recorded");
-    eventually("the engine fails readiness", || async {
-        (engine.status("/readyz").await == Some(503)).then_some(())
-    })
+    // Not ready is not yet "not ready for this reason": while the engine has been silent, a 503 can come from the age of its
+    // last beat (the answer then names no capability), and CI read the body of that first 503 (`details.reason` null). The
+    // test waits for the answer that names the capability it lacks, which is the one the heartbeat that finds the
+    // requirement gives.
+    let answer: Value = eventually(
+        "the engine fails readiness for the capability it lacks",
+        || async {
+            if engine.status("/readyz").await != Some(503) {
+                return None;
+            }
+            let body: Value = serde_json::from_str(&engine.body("/readyz").await).ok()?;
+            (body["details"]["reason"] == "BINARY_CAPABILITY_MISSING").then_some(body)
+        },
+    )
     .await;
-    let answer: Value =
-        serde_json::from_str(&engine.body("/readyz").await).expect("an error envelope");
     assert_eq!(answer["code"], "UNAVAILABLE", "{answer}");
     assert_eq!(
         answer["details"]["reason"], "BINARY_CAPABILITY_MISSING",
