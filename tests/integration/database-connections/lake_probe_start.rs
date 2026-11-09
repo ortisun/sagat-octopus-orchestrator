@@ -223,6 +223,54 @@ async fn probes_of(p: &Platform, name: &str) -> i64 {
     .expect("a count")
 }
 
+/// What the deployment offers a connection to be (D035-082: the Studio and the SDKs never hard-code the list): PostgreSQL always, Apache
+/// Iceberg when the lake is on, and with what the platform serves end to end and not with everything a configuration may say.
+async fn drivers(p: &Platform, ns: &str, lake: bool) {
+    let (status, body) = p
+        .rest(
+            Method::GET,
+            &format!("/namespaces/{ns}/database-drivers"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    crate::support::contract::OpenApi::load()
+        .validate_body(
+            "GET",
+            "/namespaces/{namespaceId}/database-drivers",
+            200,
+            &body,
+        )
+        .expect("the operation is in the contract")
+        .expect("the body is what the contract says");
+    let ids: Vec<&str> = body["items"]
+        .as_array()
+        .expect("the items")
+        .iter()
+        .map(|driver| driver["id"].as_str().expect("an id"))
+        .collect();
+    if !lake {
+        assert_eq!(
+            ids,
+            ["postgresql"],
+            "with the lake off no connection can be an Iceberg one that works, and none is offered"
+        );
+        return;
+    }
+    assert_eq!(ids, ["postgresql", "iceberg"]);
+    assert_eq!(
+        body["items"][1],
+        json!({
+            "id": "iceberg",
+            "catalogTypes": ["rest"],
+            "storageTypes": ["s3"],
+            "modes": ["append"],
+            "formats": ["parquet", "ndjson"]
+        }),
+        "what is served end to end: a REST catalog over S3, append, and the two record formats"
+    );
+}
+
 /// Starts that are made at the same time, held at the lock of the namespace until both have reached it (a held lock and
 /// `pg_stat_activity`, and no sleep that a machine could outlast).
 async fn races(p: &Platform, ns: &str, runs: &Runs) {
@@ -628,12 +676,14 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         "a connection that is not there is not found: {refused}"
     );
 
+    drivers(&p, &ns, true).await;
     races(&p, &ns, &runs).await;
 
     // --- With the lake off a probe is refused at the start, instead of waiting for a runner that is not there.
     let (off, off_ns, off_runs) = platform(&provider, false).await;
     let off_namespace: NamespaceId = off_ns.parse().expect("a namespace id");
     let off_admin = Principal::new(off.tenant, subject(HUMAN), Role::Admin);
+    drivers(&off, &off_ns, false).await;
     let before = count(&off, "runs").await;
     assert!(
         off_runs

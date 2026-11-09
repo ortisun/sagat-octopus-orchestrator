@@ -127,24 +127,28 @@ pub async fn drivers<B: Governance>(
     Path(ns): Path<String>,
 ) -> Result<Json<DatabaseDriverListBody>, ApiError> {
     namespace(&state, &caller, &ns, ApiOperation::NamespaceRead).await?;
-    Ok(Json(DatabaseDriverListBody {
-        items: [DatabaseDriverBody {
-            id: "postgresql",
-            operations: ["query", "execute"],
-            parameter_types: [
-                "null",
-                "boolean",
-                "integer",
-                "decimal",
-                "float",
-                "text",
-                "timestamp",
-                "date",
-                "binary",
-                "json",
-            ],
-            default_limits: sagat_domain::database::DatabaseLimits::default().into(),
-            maximum_limits: sagat_domain::database::DatabaseLimits::MAX.into(),
-        }],
-    }))
+    let mut items = vec![DatabaseDriverItem::Sql(DatabaseDriverBody {
+        id: "postgresql",
+        operations: ["query", "execute"],
+        parameter_types: [
+            "null",
+            "boolean",
+            "integer",
+            "decimal",
+            "float",
+            "text",
+            "timestamp",
+            "date",
+            "binary",
+            "json",
+        ],
+        default_limits: sagat_domain::database::DatabaseLimits::default().into(),
+        maximum_limits: sagat_domain::database::DatabaseLimits::MAX.into(),
+    })];
+    // Apache Iceberg is offered by a deployment that runs it (`lake.enabled`): with the lake off a connection of that kind could be saved and
+    // never used, and the Studio decides what to offer from this list (D035-082).
+    if service(&state)?.lake_enabled() {
+        items.push(DatabaseDriverItem::Lake(LakeDatabaseDriverBody::ICEBERG));
+    }
+    Ok(Json(DatabaseDriverListBody { items }))
 }

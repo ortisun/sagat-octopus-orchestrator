@@ -464,10 +464,10 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
             options.script_ceiling,
         ),
     );
-    governance = governance.with_connections(sagat_application::database::ConnectionService::new(
-        executions.clone(),
-        SystemClock,
-    ));
+    governance = governance.with_connections(
+        sagat_application::database::ConnectionService::new(executions.clone(), SystemClock)
+            .with_lake_enabled(options.lake),
+    );
     if let Some(provider) = &options.secret_provider {
         governance = governance.with_managed_secrets(
             sagat_application::managed_secrets::ManagedSecretService::new(

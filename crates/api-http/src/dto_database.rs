@@ -767,9 +767,39 @@ pub struct DatabaseDriverBody {
     pub default_limits: LimitsBody,
     pub maximum_limits: LimitsBody,
 }
+/// What the platform serves of Apache Iceberg **end to end**: a REST catalog over S3-compatible storage, appending, from the two record
+/// formats. Not what a connection document may say (the domain accepts other catalogs and stores, which no runner opens yet), because the
+/// list is what the Studio and the SDKs offer and so must not advertise a capability that is not built (G035-030). The integration test of the
+/// listing holds the body to the OpenAPI.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LakeDatabaseDriverBody {
+    pub id: &'static str,
+    pub catalog_types: &'static [&'static str],
+    pub storage_types: &'static [&'static str],
+    pub modes: &'static [&'static str],
+    pub formats: &'static [&'static str],
+}
+impl LakeDatabaseDriverBody {
+    /// Apache Iceberg as this build serves it.
+    pub const ICEBERG: Self = Self {
+        id: "iceberg",
+        catalog_types: &["rest"],
+        storage_types: &["s3"],
+        modes: &["append"],
+        formats: &["parquet", "ndjson"],
+    };
+}
+/// A driver of the list: the SQL one with its operations, parameters and limits, or one of the lake deployment.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum DatabaseDriverItem {
+    Sql(DatabaseDriverBody),
+    Lake(LakeDatabaseDriverBody),
+}
 #[derive(Serialize)]
 pub struct DatabaseDriverListBody {
-    pub items: [DatabaseDriverBody; 1],
+    pub items: Vec<DatabaseDriverItem>,
 }
 
 #[cfg(test)]
