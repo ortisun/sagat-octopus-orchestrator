@@ -19,6 +19,7 @@ import copy
 import json
 import re
 import tempfile
+import threading
 import time
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass, field
@@ -92,26 +93,39 @@ class Storage:
 
     error: BaseException | None = None
     delay: float = 0.0
+    # A call that is let go only when the test says so: a listing that is still running when the check runs out.
+    hold: threading.Event | None = None
     calls: list[tuple[str, float]] = field(default_factory=list)
     properties: list[Mapping[str, str]] = field(default_factory=list)
 
     def __call__(self, properties: Mapping[str, str], location: str, seconds: float) -> None:
         self.calls.append((location, seconds))
         self.properties.append(dict(properties))
+        if self.hold is not None:
+            self.hold.wait(timeout=30)
         time.sleep(self.delay)
         if self.error is not None:
             raise self.error
 
 
 def connection(
-    stub: Catalog | None = None, *, vended: bool = False, uri: str | None = None, locations: list[str] | None = None
+    stub: Catalog | None = None,
+    *,
+    vended: bool = False,
+    uri: str | None = None,
+    locations: list[str] | None = None,
+    token_uri: str | None = None,
 ) -> dict[str, Any]:
+    """A connection with a bearer token, or with OAuth2 when there is a token endpoint to ask."""
     rest: dict[str, Any] = {
         "uri": uri or (stub.uri if stub else "https://catalog.example.test"),
         "warehouse": WAREHOUSE,
         "accessDelegation": "vended-credentials" if vended else "none",
-        "auth": {"type": "bearer"},
+        "auth": {"type": "oauth2", "tokenUri": token_uri} if token_uri else {"type": "bearer"},
     }
+    catalog_secret = (
+        {"clientId": "client-1", "clientSecret": CATALOG_CANARY} if token_uri else {"token": CATALOG_CANARY}
+    )
     return {
         "catalog": {"type": "rest", "rest": rest},
         "storage": {
@@ -121,7 +135,7 @@ def connection(
         },
         "warehouseLocations": locations or [WAREHOUSE],
         "credentials": {
-            "catalog": {"token": CATALOG_CANARY},
+            "catalog": catalog_secret,
             **({} if vended else {"storage": {"accessKeyId": "AKIA", "secretAccessKey": STORAGE_CANARY}}),
         },
     }
@@ -172,7 +186,7 @@ def failure_code(conversation: Conversation) -> str:
     return str(answer["failure"]["code"])
 
 
-def well_formed(result: Mapping[str, Any]) -> None:
+def well_formed(result: Mapping[str, Any], *, vended: bool = False) -> None:
     """The rules of the server's `ProbeResult::new`, so that no scenario can pass with a result the server refuses."""
     assert list(result) == ["kind", "connection", "checks"]
     assert result["kind"] == "probe"
@@ -181,25 +195,29 @@ def well_formed(result: Mapping[str, Any]) -> None:
     assert [check["check"] for check in checks] == list(PROBE_CHECKS)
     failed = False
     for check in checks:
+        name, state = check["check"], check["outcome"]
         assert set(check) <= {"check", "outcome", "code"}
-        if check["outcome"] == "FAILED":
+        if state == "FAILED":
             assert not failed, "a check after a failed one did not run"
-            assert check["code"] in CHECK_CODES[check["check"]], check
+            assert check["code"] in CHECK_CODES[name], check
             failed = True
-        else:
-            assert check["outcome"] in ("PASSED", "SKIPPED"), check
-            assert "code" not in check, check
-            assert check["outcome"] == "SKIPPED" or not failed, "a check that ran after one that failed"
-        if failed and check["outcome"] != "FAILED":
-            assert check["outcome"] == "SKIPPED"
+            continue
+        assert state in ("PASSED", "SKIPPED"), check
+        assert "code" not in check, check
+        if failed:
+            assert state == "SKIPPED", "a check that ran after one that failed"
+        elif state == "SKIPPED":
+            # a skip has a cause: an earlier failure, or (the storage check alone) credentials the catalog vends
+            assert name == "STORAGE_ACCESS", check
+            assert vended, "a skip with no cause"
 
 
-def result_of(conversation: Conversation) -> dict[str, Any]:
+def result_of(conversation: Conversation, *, vended: bool = False) -> dict[str, Any]:
     """The result of a probe that ran: the receipt of the line, held to the server's rules."""
     answer = outcome(conversation)
     assert list(answer) == ["receipt"], answer
     result: dict[str, Any] = answer["receipt"]
-    well_formed(result)
+    well_formed(result, vended=vended)
     return result
 
 
@@ -309,7 +327,28 @@ def test_a_catalog_whose_configuration_is_not_one_is_unavailable(stub: Catalog) 
     assert codes(result)[0] == ("CATALOG_AUTH", "FAILED", CATALOG_UNAVAILABLE)
 
 
-def test_a_catalog_that_does_not_answer_in_time_is_a_timeout_and_not_waited_for(stub: Catalog) -> None:
+def test_a_catalog_that_sends_more_than_any_catalog_has_to_say_is_unavailable(stub: Catalog) -> None:
+    stub.config_defaults = {"warehouse": WAREHOUSE, "filler": "x" * (2 * 1024 * 1024)}
+    result = result_of(converse(line(stub)))
+    assert codes(result) == [("CATALOG_AUTH", "FAILED", CATALOG_UNAVAILABLE), *SKIPPED_AFTER_CATALOG]
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_a_token_endpoint_that_never_answers_is_a_timeout_of_the_first_check_and_does_not_hold_the_host(
+    stub: Catalog,
+) -> None:
+    # OAuth2: the client asks the token endpoint (https, always) for a token before it asks the catalog for anything.
+    # Here it takes the connection and says nothing, which for a TLS client is a handshake that never ends.
+    with network_doubles.silent_server(hold=4.0) as port:
+        started = time.monotonic()
+        result = result_of(converse(line(stub, check_timeout_ms=300, token_uri=f"https://127.0.0.1:{port}")))
+        elapsed = time.monotonic() - started
+
+    assert codes(result) == [("CATALOG_AUTH", "FAILED", TIMEOUT), *SKIPPED_AFTER_CATALOG]
+    assert elapsed < 2.0
+
+
+def test_a_catalog_that_does_not_answer_in_time_is_a_timeout(stub: Catalog) -> None:
     stub.delay = 3.0
     started = time.monotonic()
 
@@ -378,6 +417,12 @@ def test_a_catalog_that_answers_the_listing_with_something_else_is_unavailable(s
     assert codes(result)[1] == ("WAREHOUSE", "FAILED", CATALOG_UNAVAILABLE)
 
 
+def test_a_catalog_that_answers_the_listing_with_more_than_any_catalog_sends_is_unavailable(stub: Catalog) -> None:
+    stub.namespaces_raw = ({}, json.dumps({"namespaces": [["n" * 100]] * 20_000}).encode())
+    result = result_of(converse(line(stub)))
+    assert codes(result)[1] == ("WAREHOUSE", "FAILED", CATALOG_UNAVAILABLE)
+
+
 @pytest.mark.parametrize(
     ("raised", "code"),
     [
@@ -410,7 +455,7 @@ def test_what_the_warehouse_check_says_is_always_a_code_it_may_fail_with(
 def test_storage_that_vends_its_credentials_is_skipped_because_nothing_is_vended_without_a_table(stub: Catalog) -> None:
     storage = Storage()
 
-    result = result_of(converse(line(stub, vended=True), storage=storage))
+    result = result_of(converse(line(stub, vended=True), storage=storage), vended=True)
 
     assert result == fixture("storage-skipped-on-vended-credentials")
     assert storage.calls == []
@@ -424,6 +469,48 @@ def test_a_storage_listing_that_takes_too_long_is_a_timeout_of_the_storage_check
     result = result_of(converse(line(stub, check_timeout_ms=200), storage=slow))
     assert codes(result)[2] == ("STORAGE_ACCESS", "FAILED", TIMEOUT)
     assert time.monotonic() - started < 3.5
+
+
+def test_the_storage_check_has_the_time_of_a_check_as_a_whole_and_not_of_each_location(stub: Catalog) -> None:
+    # four locations that each answer in half the time the check has: no one of them is too slow, and together they are
+    locations = [WAREHOUSE, "s3://lake/b/", "s3://lake/c/", "s3://lake/d/"]
+    started = time.monotonic()
+
+    result = result_of(converse(line(stub, check_timeout_ms=400, locations=locations), storage=Storage(delay=0.2)))
+
+    assert codes(result)[2] == ("STORAGE_ACCESS", "FAILED", TIMEOUT)
+    assert time.monotonic() - started < 1.5
+
+
+def test_a_check_that_ran_out_leaves_no_work_behind_it(stub: Catalog) -> None:
+    locations = [WAREHOUSE, "s3://lake/b/", "s3://lake/c/"]
+    hold = threading.Event()
+    storage = Storage(hold=hold)
+    # threads of the checks of other tests may still be asleep: this one is about the threads of this probe
+    before = set(threading.enumerate())
+
+    result = result_of(converse(line(stub, check_timeout_ms=200, locations=locations), storage=storage))
+    assert codes(result)[2] == ("STORAGE_ACCESS", "FAILED", TIMEOUT)
+
+    # the thread of the check is still in its first call, and nobody is waiting for it. It is a daemon: a stuck thread
+    # must not keep the host alive (with the secrets of the request in its memory) after the answer is written
+    left = [thread for thread in threading.enumerate() if thread.name == "probe-check" and thread not in before]
+    assert [thread.daemon for thread in left] == [True]
+    # when it is let go it must not go on to ask the customer's storage about the locations the answer no longer needs
+    hold.set()
+    for thread in left:
+        thread.join(timeout=10)
+    assert [call[0] for call in storage.calls] == locations[:1]
+
+
+def test_a_check_that_ran_out_does_not_keep_the_host_alive(stub: Catalog) -> None:
+    started = time.monotonic()
+
+    result = result_of(converse(line(stub, check_timeout_ms=200), storage=Storage(delay=4.0)))
+
+    assert codes(result)[2] == ("STORAGE_ACCESS", "FAILED", TIMEOUT)
+    # the thread is still asleep for seconds: the host has written its answer and ends, and does not wait to join it
+    assert time.monotonic() - started < 2.0
 
 
 def test_a_storage_that_is_down_is_unavailable(stub: Catalog) -> None:

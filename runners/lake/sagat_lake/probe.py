@@ -7,9 +7,10 @@ and its secrets and writes the request (``request.parse_probe``), and the host r
 * ``WAREHOUSE``: the warehouse the connection names answers, with its first page of namespaces, and the configuration
   the catalog gave places it under the locations the connection declares;
 * ``STORAGE_ACCESS``: the storage credentials reach each declared location: one ``HEAD`` of the location and, when that
-  finds no object, one list of at most one key (``max-keys=1``), through the same S3 client the writes use. With
-  credentials the catalog vends the check is ``SKIPPED``, because nothing is vended without a table, and a skip says
-  *not confirmed*.
+  finds no object, one list of at most one key (``max-keys=1``), through the same S3 client the writes use; and when
+  there is nothing there, one ``HEAD`` of the bucket, because a bucket that does not exist says "nothing there" too.
+  With credentials the catalog vends the check is ``SKIPPED``, because nothing is vended without a table, and a skip
+  says *not confirmed*.
 
 **A check is the answer.** A connection that does not work is a result: the check ``FAILED`` with a code of the closed
 set, every check after it ``SKIPPED``, and the line is a ``receipt``, so the attempt succeeds. What the connection
@@ -32,11 +33,14 @@ a storage that        is the same four, with ``STORAGE_UNAVAILABLE`` for the las
 test: the server refuses a result that names another code. So the ``WAREHOUSE`` check, which is a second call to the
 host the first one reached, never says it was a TLS failure or a refused destination; that host is unavailable.
 
-**Each check has the time the lease gives it** (``checkTimeoutMs``): every request of the catalog client and of the S3
-client is bounded by it, and so is the check as a whole, which the S3 client's own retries would otherwise stretch to a
-few times that. A check that runs out is ``DATABASE_TIMEOUT``. PyIceberg and PyArrow block, so each check runs on a
-thread and the event loop goes on telling the runner the host is alive; a thread left behind by a timeout is bounded by
-the requests' own time limits and the runner kills the container once it has the result.
+**Each check has the time the lease gives it** (``checkTimeoutMs``): every request of the catalog client (the token of
+OAuth2 included) and of the S3 client is bounded by it, and so is the check as a whole, which the S3 client's own
+retries, and every declared location after the first, would otherwise stretch to a few times that. A check that runs
+out is ``DATABASE_TIMEOUT``. PyIceberg and PyArrow block, so each check runs on a thread and the event loop goes on
+telling the runner the host is alive. A check that runs out is abandoned and not stopped, because a blocking client
+cannot be: its thread is a daemon, so it does not hold the host after the answer is written, and the storage check
+stops it at the next location it comes to. The two requests the host makes of the catalog on its own account (the
+configuration and the first page of namespaces) read at most a megabyte, as the client decodes it.
 
 What the providers say is read here and never written: the message of an ``OSError`` of the S3 client is how its
 failures are told apart (its ``curlCode``, its ``ACCESS_DENIED``), and it can carry a bucket, a key or a host, so only
@@ -46,12 +50,16 @@ the code of the closed set leaves.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
+import threading
 from collections.abc import Awaitable, Callable, Mapping
 from functools import partial
-from typing import Any
+from typing import Any, cast
 
 import requests
+from pyarrow import ArrowException  # type: ignore[import-untyped]
+from pyarrow.fs import FileType  # type: ignore[import-untyped]
 from pydantic import ValidationError
 from pyiceberg.exceptions import (
     AuthorizationExpiredError,
@@ -93,8 +101,9 @@ _AUTHENTICATION_STATUSES = frozenset({400, 401, 403})
 # that mean it was not trusted, 51 before 7.62 and 60 after), a client certificate, a cipher, a CA file or an issuer.
 _CURL_TLS = frozenset({35, 51, 58, 59, 60, 64, 77, 83, 90, 91})
 _CURL_TIMEOUT = 28
-_CURL_CODE = re.compile(r"curlCode: (\d+)")
-_HTTP_STATUS = re.compile(r"HTTP status (\d+)")
+# A number is read when it is a code and not the start of a longer one: what a store writes in its own words is data.
+_CURL_CODE = re.compile(r"curlCode: (\d{1,3})(?!\d)")
+_HTTP_STATUS = re.compile(r"HTTP status (\d{1,3})(?!\d)")
 _TUNNEL_REFUSED = "Tunnel connection failed: 403"
 _MAX_CHAIN = 8
 
@@ -116,12 +125,28 @@ def list_one_key(properties: Mapping[str, str], location: str, seconds: float) -
 
     ``get_file_info`` of a path is one ``HEAD`` of the object of that name and, when there is none, one
     ``ListObjectsV2`` with ``max-keys=1`` and the path as the prefix (a bucket alone is a ``HeadBucket``), so it never
-    lists more than a key. Nothing under the location is not a failure: the credentials got there. Every request has
-    ``seconds``.
+    lists more than a key. Every request has ``seconds``.
+
+    Nothing under the location is a pass, since the credentials got there, **but only in a bucket that exists**: the
+    client answers "not found" to the object, to the listing and to the head of a bucket that is not there, so a typo
+    in the name of the bucket would read as a location with nothing in it. When nothing is found the bucket itself is
+    asked about, and a bucket that is not there is a failure. A bucket the credentials may not ask about (they can be
+    scoped to a prefix) is not: the listing under the prefix was allowed, which is what the check is for.
     """
     io = PyArrowFileIO({**properties, "s3.connect-timeout": str(seconds), "s3.request-timeout": str(seconds)})
     scheme, netloc, path = io.parse_location(location, io.properties)
-    io.fs_by_scheme(scheme, netloc).get_file_info(path)
+    files = io.fs_by_scheme(scheme, netloc)
+    if files.get_file_info(path).type != FileType.NotFound:
+        return
+    if path.strip("/") != netloc:
+        try:
+            if files.get_file_info(netloc).type != FileType.NotFound:
+                return
+        except OSError as error:
+            if storage_code(error) == AUTHENTICATION_FAILED:
+                return
+            raise
+    raise FileNotFoundError("the bucket is not there")
 
 
 def probe_operation(*, list_storage: ListStorage = list_one_key) -> Operation:
@@ -168,13 +193,33 @@ async def _run(
     properties = connection.hygiene.properties(
         {name: value for name, value in connection.properties.items() if name.startswith("s3.")}, {}
     )
-    for location in connection.locations:
-        try:
-            await _within(seconds, partial(list_storage, properties, location, seconds), storage_code)
-        except _CheckFailed as failed:
-            done.append((STORAGE_ACCESS, FAILED, failed.code))
-            return
+    # every location, in one thread under one time limit: the time of a check is the check's, and not each location's
+    stop = threading.Event()
+    listing = partial(_list_every_location, list_storage, properties, connection.locations, seconds, stop)
+    try:
+        await _within(seconds, listing, storage_code)
+    except _CheckFailed as failed:
+        done.append((STORAGE_ACCESS, FAILED, failed.code))
+        return
+    finally:
+        # a thread that is still listing when the check runs out is let go on the next location it comes to, and asks
+        # the customer's storage about nothing the answer still needs
+        stop.set()
     done.append((STORAGE_ACCESS, PASSED, None))
+
+
+def _list_every_location(
+    list_storage: ListStorage,
+    properties: Mapping[str, str],
+    locations: tuple[str, ...],
+    seconds: float,
+    stop: threading.Event,
+) -> None:
+    """Each declared location in turn, up to the first that fails, and none once ``stop`` is set."""
+    for location in locations:
+        if stop.is_set():
+            return
+        list_storage(properties, location, seconds)
 
 
 def _authenticate(connection: OpenConnection, seconds: float) -> LakeRestCatalog:
@@ -187,6 +232,40 @@ def _authenticate(connection: OpenConnection, seconds: float) -> LakeRestCatalog
         raise Failure(error.code) from None
 
 
+async def _in_thread[T](work: Callable[[], T]) -> T:
+    """``work`` on a thread of its own, awaited without blocking the loop.
+
+    It is a daemon thread and not one of the loop's executor on purpose. A check that runs out of time is abandoned, not
+    stopped (a blocking client cannot be), and the loop's own executor is joined when ``asyncio.run`` ends: a thread
+    stuck in a slow answer would keep the host alive, with the secrets of the request in its memory, long after the
+    result line was written. A daemon thread does not hold the process; whatever it finishes after that is dropped.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[T] = loop.create_future()
+
+    def deliver(result: T | None, error: BaseException | None) -> None:
+        if future.cancelled():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(cast(T, result))
+
+    def run() -> None:
+        result: T | None = None
+        error: BaseException | None = None
+        try:
+            result = work()
+        except BaseException as caught:
+            error = caught
+        # the loop is closed when the host has answered and ended: nobody is waiting for what is left
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(deliver, result, error)
+
+    threading.Thread(target=run, name="probe-check", daemon=True).start()
+    return await future
+
+
 async def _within[T](seconds: float, work: Callable[[], T], code_of: Callable[[Exception], str | None]) -> T:
     """``work`` on a thread, in at most ``seconds``; a ``_CheckFailed`` with the code ``code_of`` gives its error.
 
@@ -194,7 +273,7 @@ async def _within[T](seconds: float, work: Callable[[], T], code_of: Callable[[E
     """
     try:
         async with asyncio.timeout(seconds):
-            return await asyncio.to_thread(work)
+            return await _in_thread(work)
     except TimeoutError:
         raise _CheckFailed(TIMEOUT) from None
     except (Failure, _WarehouseRefused):
@@ -254,6 +333,9 @@ def storage_code(error: Exception) -> str | None:
     """
     if isinstance(error, TimeoutError):
         return TIMEOUT
+    if isinstance(error, ArrowException) and not isinstance(error, OSError):
+        # a location the client refuses to speak of (an empty path segment), or something it does not do
+        return STORAGE_UNAVAILABLE
     if not isinstance(error, OSError):
         return None
     text = str(error)

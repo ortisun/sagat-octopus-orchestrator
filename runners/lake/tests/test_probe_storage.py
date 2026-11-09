@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from pyarrow import ArrowInvalid, ArrowNotImplementedError  # type: ignore[import-untyped]
 
 import network_doubles
 from sagat_lake.probe import list_one_key, storage_code
@@ -33,22 +34,27 @@ from sagat_lake.probe_codes import (
 LOCATION = "s3://lake/warehouse/"
 
 
-@dataclass
-class ObjectStore:
-    """What the double was asked, and how it answers."""
-
-    endpoint: str = ""
-    status: int = 200
-    # What a missing object says for a `HEAD`; the listing after it is answered with `listing`.
-    listing: bytes = b""
-    delay: float = 0.0
-    requests: list[str] = field(default_factory=list)
-
-
 EMPTY_LISTING = (
     b"<?xml version='1.0'?><ListBucketResult><Name>lake</Name><Prefix>warehouse/</Prefix><KeyCount>0</KeyCount>"
     b"<MaxKeys>1</MaxKeys><IsTruncated>false</IsTruncated></ListBucketResult>"
 )
+NO_SUCH_BUCKET = (
+    b"<?xml version='1.0'?><Error><Code>NoSuchBucket</Code><Message>The bucket does not exist</Message></Error>"
+)
+
+
+@dataclass
+class ObjectStore:
+    """What the double was asked, and how it answers: the `HEAD` of the object at the location (``status``), the
+    listing under it (``listing_status`` and ``listing``) and the `HEAD` of the bucket itself (``bucket_status``)."""
+
+    endpoint: str = ""
+    status: int = 200
+    listing_status: int = 200
+    listing: bytes = EMPTY_LISTING
+    bucket_status: int = 200
+    delay: float = 0.0
+    requests: list[str] = field(default_factory=list)
 
 
 @pytest.fixture
@@ -59,8 +65,13 @@ def store() -> Generator[ObjectStore]:
         def _answer(self) -> None:
             state.requests.append(f"{self.command} {self.path}")
             time.sleep(state.delay)
-            body = state.listing if self.path.startswith("/lake?") and state.status == 200 else b""
-            self.send_response(state.status)
+            if self.path == "/lake":
+                status, body = state.bucket_status, b""
+            elif self.path.startswith("/lake?"):
+                status, body = state.listing_status, state.listing
+            else:
+                status, body = state.status, b""
+            self.send_response(status)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             if self.command != "HEAD":
@@ -114,21 +125,60 @@ def test_an_object_at_the_location_is_one_head_and_no_listing(store: ObjectStore
     assert store.requests == ["HEAD /lake/warehouse"]
 
 
-def test_a_location_with_no_object_is_one_head_and_one_listing_of_at_most_one_key(store: ObjectStore) -> None:
-    store.status = 404
+def test_a_location_with_nothing_under_it_in_a_bucket_that_exists_is_a_pass(store: ObjectStore) -> None:
+    store.status = 404  # no object of that name, and the listing is a real, empty one
 
     assert verdict(properties(store.endpoint)) == (None, None)
 
-    # nothing there is a pass: the credentials got to the location and were let ask. The listing is one key at most.
+    # nothing there is a pass: the credentials got to the location and were let ask. The listing is one key at most,
+    # and the bucket is asked about last, because "nothing there" is what a bucket that does not exist says too.
     assert store.requests == [
         "HEAD /lake/warehouse",
         "GET /lake?delimiter=%2F&list-type=2&max-keys=1&prefix=warehouse%2F",
+        "HEAD /lake",
     ]
+
+
+def test_a_bucket_that_does_not_exist_is_not_a_pass(store: ObjectStore) -> None:
+    # the client says "not found" for the object, for the listing (NoSuchBucket) and for the bucket: that is the client
+    # being told there is no such place, which is not credentials that reach the location
+    store.status = 404
+    store.listing_status = 404
+    store.listing = NO_SUCH_BUCKET
+    store.bucket_status = 404
+
+    code, error = verdict(properties(store.endpoint))
+
+    assert (code, error) == (STORAGE_UNAVAILABLE, "FileNotFoundError")
+
+
+def test_a_bucket_location_that_does_not_exist_is_not_a_pass(store: ObjectStore) -> None:
+    store.bucket_status = 404
+    code, _ = verdict(properties(store.endpoint), location="s3://lake/")
+    assert code == STORAGE_UNAVAILABLE
+
+
+def test_credentials_scoped_to_the_prefix_pass_when_the_bucket_itself_may_not_be_asked_about(
+    store: ObjectStore,
+) -> None:
+    # the listing under the prefix was allowed and found nothing; the bucket answers 403 because the credentials have no
+    # right to it, and that is not a reason to say the location is not there
+    store.status = 404
+    store.bucket_status = 403
+
+    assert verdict(properties(store.endpoint)) == (None, None)
+    assert store.requests[-1] == "HEAD /lake"
 
 
 def test_a_location_that_is_a_bucket_is_a_head_of_the_bucket(store: ObjectStore) -> None:
     assert verdict(properties(store.endpoint), location="s3://lake/") == (None, None)
     assert store.requests == ["HEAD /lake"]
+
+
+def test_a_location_the_client_refuses_is_a_failure_of_the_storage_check_and_not_a_crash() -> None:
+    # nothing in the domain or in the host forbids an empty path segment; the S3 client does
+    code, error = verdict(properties("http://127.0.0.1:9"), location="s3://lake//x/", seconds=1.0)
+    assert (code, error) == (STORAGE_UNAVAILABLE, "ArrowInvalid")
 
 
 # --------------------------------------------------------------------------------------------- what it tells apart
@@ -213,6 +263,14 @@ def test_a_store_the_relay_refuses_is_a_destination_denial() -> None:
             DESTINATION_DENIED,
         ),
         (OSError("something no one has seen"), STORAGE_UNAVAILABLE),
+        # what a store writes in its own words is data: it is read by what it says and never trusted to be small
+        (OSError("curlCode: " + "9" * 5000), STORAGE_UNAVAILABLE),
+        (OSError("AWS Error UNKNOWN (HTTP status " + "4" * 5000 + ") during HeadObject"), STORAGE_UNAVAILABLE),
+        (OSError("AWS Error UNKNOWN (HTTP status 4000) during HeadObject operation"), STORAGE_UNAVAILABLE),
+        (OSError("curlCode: 2800, Timeout was reached"), STORAGE_UNAVAILABLE),
+        (ArrowInvalid("Empty path component in path lake//x"), STORAGE_UNAVAILABLE),
+        (ArrowNotImplementedError("no such thing"), STORAGE_UNAVAILABLE),
+        (FileNotFoundError("the bucket is not there"), STORAGE_UNAVAILABLE),
     ],
 )
 def test_the_messages_of_the_s3_client_come_to_one_code_each(error: Exception, code: str) -> None:

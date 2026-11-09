@@ -66,6 +66,11 @@ class Catalog:
     namespace_requests: list[str] = field(default_factory=list)
     namespaces_status: int | None = None
     namespaces_body: dict[str, Any] | None = None
+    # The status and the bytes /v1/config is answered with, written as they are: a failure with a body of any size.
+    config_raw: tuple[int, bytes] | None = None
+    # The headers and the bytes of a 200 answer written as they are, instead of the page: a body of any size, or one
+    # that is compressed (`Content-Encoding: gzip`) and larger once the client has decoded it.
+    namespaces_raw: tuple[dict[str, str], bytes] | None = None
     # The `endpoints` of /v1/config: the operations the catalog says it has (`None` leaves the client's defaults).
     config_endpoints: list[str] | None = None
     # A page token the first page carries, as a catalog with more namespaces than one page does.
@@ -93,7 +98,14 @@ def _handler(state: Catalog) -> type[BaseHTTPRequestHandler]:
                 self._reply(state.get_status, _error(state.get_status))
                 return
             path = self.path.split("?", 1)[0]
-            if path == "/v1/config":
+            if path == "/v1/config" and state.config_raw is not None:
+                status, payload = state.config_raw
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            elif path == "/v1/config":
                 config: dict[str, Any] = {"defaults": state.config_defaults, "overrides": state.config_overrides}
                 if state.config_endpoints is not None:
                     config["endpoints"] = state.config_endpoints
@@ -102,6 +114,15 @@ def _handler(state: Catalog) -> type[BaseHTTPRequestHandler]:
                 state.namespace_requests.append(self.path)
                 if state.namespaces_status is not None:
                     self._reply(state.namespaces_status, _error(state.namespaces_status))
+                elif state.namespaces_raw is not None:
+                    headers, payload = state.namespaces_raw
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    for name, value in headers.items():
+                        self.send_header(name, value)
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
                 elif state.namespaces_body is not None:
                     self._reply(200, state.namespaces_body)
                 else:

@@ -12,6 +12,7 @@ import datetime
 import socket
 import ssl
 import threading
+import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -59,6 +60,19 @@ def _listening(handle: Callable[[socket.socket], None]) -> Generator[int]:
         for worker in workers:
             worker.join(timeout=5)
         listener.close()
+
+
+@contextmanager
+def silent_server(hold: float) -> Generator[int]:
+    """A server that takes the request, does not answer for ``hold`` seconds and then hangs up: what a token endpoint
+    that never answers looks like, to a client with no time limit (it fails after ``hold``, and not with a timeout)."""
+
+    def stay(connection: socket.socket) -> None:
+        connection.recv(4096)
+        time.sleep(hold)
+
+    with _listening(stay) as port:
+        yield port
 
 
 @contextmanager
