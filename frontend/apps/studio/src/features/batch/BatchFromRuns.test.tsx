@@ -69,7 +69,7 @@ describe('The batch operation of the run list', () => {
     await open(user);
     await user.click(screen.getByRole('button', { name: 'Count the runs' }));
     expect(await inDialog().findByText(/3 runs match/)).toBeVisible();
-    expect(screen.getByRole('link', { name: RUN.slice(0, 8) })).toHaveAttribute('href', `/runs/${RUN}`);
+    expect(screen.getByRole('link', { name: RUN.slice(-8) })).toHaveAttribute('href', `/runs/${RUN}`);
     await user.type(screen.getByLabelText('Reason'), REASON);
     await user.click(screen.getByRole('button', { name: 'Start the batch job' }));
     expect(await screen.findByRole('heading', { name: 'The job page' })).toBeVisible();

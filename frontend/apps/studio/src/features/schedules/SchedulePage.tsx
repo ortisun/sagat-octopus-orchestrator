@@ -12,6 +12,7 @@ import { Decisions } from './Decisions';
 import { ScheduleControls } from './ScheduleControls';
 import { OVERLAP_TEXT, describeSpec, outcomeView, scheduleState } from './model';
 import { Time, useNamespaceId } from './shared';
+import { shortId } from '../runs/display';
 
 const NEXT = 10;
 const REFRESH_MS = 15_000;
@@ -59,7 +60,7 @@ function Summary({ schedule }: { schedule: ScheduleDescription }) {
   const state = scheduleState(schedule);
   return (
     <>
-      <h1 id="schedule-title">
+      <h1 id="schedule-title" tabIndex={-1}>
         {schedule.name} <StatusBadge view={state} />
       </h1>
       {schedule.origin === 'TRIGGER' ? (
@@ -77,7 +78,7 @@ function Summary({ schedule }: { schedule: ScheduleDescription }) {
       <dl className="batch-counts">
         <div>
           <dt>Workflow</dt>
-          <dd>{workflow ? <Link to={`/workflows/${workflow.id}`}>{workflow.name}</Link> : workflowId ? workflowId.slice(0, 8) : '—'}</dd>
+          <dd>{workflow ? <Link to={`/workflows/${workflow.id}`}>{workflow.name}</Link> : workflowId ? shortId(workflowId) : '—'}</dd>
         </div>
         <div>
           <dt>Version</dt>
@@ -153,7 +154,7 @@ function Upcoming({ schedule }: { schedule: ScheduleDescription }) {
         {schedule.openRuns.map((runId, index) => (
           <span key={runId}>
             {index > 0 ? ', ' : ''}
-            <Link to={`/runs/${runId}`}>{runId.slice(0, 8)}</Link>
+            <Link to={`/runs/${runId}`}>{shortId(runId)}</Link>
           </span>
         ))}
         {schedule.bufferedCount > 0 ? ` ${schedule.bufferedCount} time${schedule.bufferedCount === 1 ? ' is' : 's are'} waiting for a run to end.` : ''}

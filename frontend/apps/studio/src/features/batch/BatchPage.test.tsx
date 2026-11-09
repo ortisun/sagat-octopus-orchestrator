@@ -63,10 +63,44 @@ describe('A batch job', () => {
     expect(within(rows[0]!).getByRole('link')).toHaveAttribute('href', '/runs/0194f5e2-7b1c-7000-8000-000000000001');
   });
 
+  it('tells the runs of a job apart: the identifiers are time-ordered, so what a run is called is the end of its identifier, not the start', async () => {
+    await mount({
+      routes: {
+        [`GET ${BASE}/items`]: () => ({
+          items: [item(1, 'SUCCEEDED', { newRunId: '0194f5e2-7b1c-7000-8000-00000000aaa1' }), item(2, 'SUCCEEDED', { newRunId: '0194f5e2-7b1c-7000-8000-00000000aaa2' })],
+          nextCursor: null,
+        }),
+      },
+    });
+    const table = await screen.findByRole('table', { name: /what became of each/ });
+    const names = within(table).getAllByRole('link').map((link) => link.textContent);
+    expect(names).toEqual(['00000001', '0000aaa1', '00000002', '0000aaa2']);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
   it('does not show the payload it carries, nor anything that could confirm a guess of it, only that it has one', async () => {
     await mount({ routes: { [`GET ${BASE}`]: () => job({ action: 'SIGNAL', hasPayload: true }) } });
     expect(await screen.findByText(/carries a payload, which is not shown/)).toBeVisible();
     expect(screen.queryByText(/digest/i)).not.toBeInTheDocument();
+  });
+
+  it('reads the runs of the job again when the job ends, so a job that was still selecting when the page was opened is not left saying it took no run', async () => {
+    let ended = false;
+    const { app, platform } = await mount({
+      routes: {
+        [`GET ${BASE}`]: () => job(ended ? { state: 'COMPLETED', counts: { selected: 1, succeeded: 1, skipped: 0, failed: 0, cancelled: 0, deferred: 0 } } : { state: 'SELECTING', counts: { selected: 0, succeeded: 0, skipped: 0, failed: 0, cancelled: 0, deferred: 0 } }),
+        [`GET ${BASE}/items`]: () => ({ items: ended ? [item(1, 'SUCCEEDED')] : [], nextCursor: null }),
+      },
+    });
+    expect(await screen.findByText('No run has been selected yet.')).toBeVisible();
+    const reads = () => platform.calls.filter((call) => call.method === 'GET' && call.url.includes(`${BASE}/items`)).length;
+    expect(reads()).toBe(1);
+    // the page follows the job every two seconds while it works: this is one of those reads, after the job has ended
+    ended = true;
+    await app.queries.invalidateQueries({ queryKey: ['batch', NS, JOB] });
+    const table = await screen.findByRole('table', { name: /what became of each/ });
+    expect(within(table).getAllByRole('row')).toHaveLength(2);
+    expect(screen.queryByText(/The job took no run|No run has been selected yet/)).not.toBeInTheDocument();
   });
 
   it('asks the platform for the outcome a person filters by', async () => {
@@ -110,6 +144,24 @@ describe('A batch job', () => {
     const [call] = platform.calls.filter((c) => c.method === 'POST');
     expect(JSON.parse(call!.init.body as string)).toEqual({ reason: 'the provider is down' });
     await waitFor(() => expect(screen.queryByRole('dialog', { hidden: false })).not.toBeInTheDocument());
+  });
+
+  it('puts focus on the heading of the job once the cancellation is accepted: the button that opened the dialog is gone, and a keyboard is not sent back to the top of the page', async () => {
+    let state: BatchJob['state'] = 'RUNNING';
+    const { user } = await mount({
+      routes: {
+        [`GET ${BASE}`]: () => job({ state }),
+        [`POST ${BASE}/cancel`]: () => {
+          state = 'CANCELLING';
+          return job({ state });
+        },
+      },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Cancel the job' }));
+    await user.type(within(screen.getByRole('dialog')).getByLabelText('Reason'), 'the provider is down');
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm cancellation' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel the job' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toHaveFocus());
   });
 
   it('says so when the deployment does not serve batch operations', async () => {

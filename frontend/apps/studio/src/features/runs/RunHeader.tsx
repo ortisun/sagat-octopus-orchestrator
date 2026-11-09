@@ -15,6 +15,7 @@ import { clip } from './time';
 import { useApp } from '../../app/context';
 import { originLabel } from './queries';
 import { TraceLink } from './TraceLink';
+import { shortId } from './display';
 
 const FOLLOW_SYMBOL: Record<LiveFollow, string> = { idle: '○', connecting: '◌', live: '●', polling: '↻', reconnecting: '↯', ended: '■', unauthorized: '✕', failed: '✕' };
 const FOLLOW_TONE: Record<LiveFollow, string> = { idle: 'idle', connecting: 'idle', live: 'ok', polling: 'waiting', reconnecting: 'waiting', ended: 'skip', unauthorized: 'bad', failed: 'bad' };
@@ -99,7 +100,7 @@ export function RunHeader({
       <NowProvider intervalMs={1000} enabled={!finished}>
         <dl className="rn-facts rn-grid">
           <Fact label="Workflow">
-            {run.origin ? originLabel(run.origin) : <Link to={path`/workflows/${run.workflowId}`}>{workflowName ? clip(workflowName, 80) : `workflow ${run.workflowId.slice(0, 8)}`}</Link>}, {version}
+            {run.origin ? originLabel(run.origin) : <Link to={path`/workflows/${run.workflowId}`}>{workflowName ? clip(workflowName, 80) : `workflow ${shortId(run.workflowId)}`}</Link>}, {version}
           </Fact>
           <Fact label="Started">
             <Moment at={run.createdAt} />
@@ -123,7 +124,7 @@ export function RunHeader({
           {run.businessId ? <Fact label="Business id">{clip(run.businessId, 200)}</Fact> : null}
           {run.rerunOf ? (
             <Fact label="Started again from">
-              <Link to={path`/runs/${run.rerunOf}`}>run {run.rerunOf.slice(0, 8)}</Link>
+              <Link to={path`/runs/${run.rerunOf}`}>run {shortId(run.rerunOf)}</Link>
             </Fact>
           ) : null}
           {held && run.startDelayedUntil ? (
@@ -160,7 +161,7 @@ export function RunHeader({
             </Fact>
             {run.parent ? (
               <Fact label="Child of">
-                <Link to={path`/runs/${run.parent.runId}`}>run {run.parent.runId.slice(0, 8)}</Link>, step {clip(run.parent.node, 60)}
+                <Link to={path`/runs/${run.parent.runId}`}>run {shortId(run.parent.runId)}</Link>, step {clip(run.parent.node, 60)}
               </Fact>
             ) : null}
           </dl>

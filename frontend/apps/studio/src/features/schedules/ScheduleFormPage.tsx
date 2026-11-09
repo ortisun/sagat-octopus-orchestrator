@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { isApiError } from '../../api/errors';
@@ -15,6 +15,7 @@ import { useWorkflowIndex } from '../runs/queries';
 import { EMPTY_DRAFT, MAX_NOTE, OVERLAPS, OVERLAP_TEXT, UNITS, UNIT_LABEL, draftOf, requestOf } from './model';
 import type { Draft, Unit, When } from './model';
 import { useCommand, useNamespaceId } from './shared';
+import { shortId } from '../runs/display';
 
 /** `/schedules/new` and `/schedules/:scheduleId/edit`: the same form, empty or filled with the schedule. */
 export function ScheduleFormPage() {
@@ -68,7 +69,10 @@ function Edit({ id }: { id: string }) {
   return <Editor initial={editable.draft} existing={{ id, revision: schedule.revision, name: schedule.name }} />;
 }
 
-function Editor({ initial, existing }: { initial: Draft; existing?: { id: string; revision: number; name: string } }) {
+function Editor({ initial, existing: opened }: { initial: Draft; existing?: { id: string; revision: number; name: string } }) {
+  // The revision the person opened the schedule at is the one every save asks at: a copy that were read again under them (by a refresh
+  // of the query it came from) would turn a refusal into an acceptance of somebody else's change.
+  const [existing] = useState(opened);
   const { ep } = useApp();
   const namespace = useNamespaceId();
   const queries = useQueryClient();
@@ -103,13 +107,24 @@ function Editor({ initial, existing }: { initial: Draft; existing?: { id: string
       async (saved) => {
         announce(existing ? 'The schedule was saved.' : 'The schedule was created.');
         await queries.invalidateQueries({ queryKey: ['schedules', namespaceId] });
-        await queries.invalidateQueries({ queryKey: ['schedule', namespaceId, saved.scheduleId] });
+        await queries.invalidateQueries({ queryKey: ['schedule', namespaceId, saved.scheduleId], exact: true });
         void navigate(`/schedules/${saved.scheduleId}`);
       },
     );
   };
 
   const conflict = isApiError(command.error) && command.error.reason === 'REVISION_CONFLICT';
+  // The banner sends the person back to the schedule to see what the other person saved: the page they came from may have read it
+  // moments ago and would still show the old one, so what it holds is marked out of date and read again when it is shown. Only that
+  // key, and only marked (`exact`, `refetchType: 'none'`): the key of this form (`[..., 'form']`, a prefix match would reach it) is a
+  // copy that is never read again under the person, so that saving again is refused again until they have looked.
+  const scheduleId = existing?.id;
+  const namespaceId = namespace.id;
+  useEffect(() => {
+    if (conflict && scheduleId !== undefined && namespaceId !== undefined) {
+      void queries.invalidateQueries({ queryKey: ['schedule', namespaceId, scheduleId], exact: true, refetchType: 'none' });
+    }
+  }, [conflict, scheduleId, namespaceId, queries]);
   return (
     <section aria-labelledby="schedule-form-title">
       <p>
@@ -123,7 +138,7 @@ function Editor({ initial, existing }: { initial: Draft; existing?: { id: string
         <Field label="Workflow" hint={pinned ? 'The schedule is pinned to one version, which this form keeps.' : 'The runs start its active version. Only workflows with a published version are offered.'}>
           <select value={draft.workflowId} onChange={(event) => set('workflowId', event.target.value)}>
             <option value="">Choose a workflow</option>
-            {draft.workflowId !== '' && !known ? <option value={draft.workflowId}>{draft.workflowId.slice(0, 8)}</option> : null}
+            {draft.workflowId !== '' && !known ? <option value={draft.workflowId}>{shortId(draft.workflowId)}</option> : null}
             {choices.map((workflow) => (
               <option key={workflow.id} value={workflow.id}>
                 {workflow.name}

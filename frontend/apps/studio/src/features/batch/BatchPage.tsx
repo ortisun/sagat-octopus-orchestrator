@@ -15,6 +15,7 @@ import { NotAllowed } from '../runs/NotAllowed';
 import { ACTION_TEXT, ITEM_STATES, failureText, isActive, itemState, jobState, progress, reasonProblem, reasonText } from './model';
 import type { BatchActionName } from './model';
 import { notServed, useNamespaceId } from './queries';
+import { shortId } from '../runs/display';
 
 const JOB_REFRESH_MS = 2_000;
 const ITEMS_REFRESH_MS = 3_000;
@@ -60,9 +61,17 @@ function Summary({ job, namespaceId }: { job: BatchJob; namespaceId: string }) {
   const action = ACTION_TEXT[job.action as BatchActionName];
   const state = jobState(job.state);
   const counts = job.counts;
+  // The button that opened the dialog of the cancellation goes when the job is cancelling (it cannot be cancelled twice): the dialog
+  // closes over nothing, and focus would fall to the top of the page for a person at a keyboard. It goes to the heading, which
+  // says what the job is now.
+  const heading = useRef<HTMLHeadingElement>(null);
+  const [cancelled, setCancelled] = useState(0);
+  useEffect(() => {
+    if (cancelled > 0) heading.current?.focus();
+  }, [cancelled]);
   return (
     <>
-      <h1 id="batch-title">
+      <h1 id="batch-title" ref={heading} tabIndex={-1}>
         Batch job: {action?.label ?? job.action} <StatusBadge view={state} />
       </h1>
       <p>
@@ -87,12 +96,12 @@ function Summary({ job, namespaceId }: { job: BatchJob; namespaceId: string }) {
         <div><dt>Cancelled</dt><dd>{counts.cancelled}</dd></div>
         <div><dt>To be tried again</dt><dd>{counts.deferred}</dd></div>
       </dl>
-      {canCancel && (job.state === 'SELECTING' || job.state === 'RUNNING') ? <CancelJob id={job.batchId} namespaceId={namespaceId} /> : null}
+      {canCancel && (job.state === 'SELECTING' || job.state === 'RUNNING') ? <CancelJob id={job.batchId} namespaceId={namespaceId} onCancelled={() => setCancelled((count) => count + 1)} /> : null}
     </>
   );
 }
 
-function CancelJob({ id, namespaceId }: { id: string; namespaceId: string }) {
+function CancelJob({ id, namespaceId, onCancelled }: { id: string; namespaceId: string; onCancelled: () => void }) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -100,13 +109,13 @@ function CancelJob({ id, namespaceId }: { id: string; namespaceId: string }) {
         Cancel the job
       </Button>
       <Dialog open={open} title="Cancel the batch job" onClose={() => setOpen(false)}>
-        {open ? <CancelForm id={id} namespaceId={namespaceId} onClose={() => setOpen(false)} /> : null}
+        {open ? <CancelForm id={id} namespaceId={namespaceId} onCancelled={onCancelled} onClose={() => setOpen(false)} /> : null}
       </Dialog>
     </>
   );
 }
 
-function CancelForm({ id, namespaceId, onClose }: { id: string; namespaceId: string; onClose: () => void }) {
+function CancelForm({ id, namespaceId, onCancelled, onClose }: { id: string; namespaceId: string; onCancelled: () => void; onClose: () => void }) {
   const { ep } = useApp();
   const queries = useQueryClient();
   const announce = useAnnounce();
@@ -140,6 +149,7 @@ function CancelForm({ id, namespaceId, onClose }: { id: string; namespaceId: str
         announce('The batch job is being cancelled.');
         await queries.invalidateQueries({ queryKey: ['batch', namespaceId, id] });
         onClose();
+        onCancelled();
       })
       .catch((cause: unknown) => {
         if (!controller.signal.aborted) setError(cause);
@@ -183,6 +193,16 @@ function Items({ job, namespaceId }: { job: BatchJob; namespaceId: string }) {
     getNextPageParam: (last) => last.nextCursor ?? undefined,
     refetchInterval: isActive(job.state) ? ITEMS_REFRESH_MS : false,
   });
+  // The page stops following the runs when the job ends, and the last read may be up to three seconds older than the job's last
+  // step (the page opened while it was still selecting, say): one more read when it goes from at work to over, so what the page
+  // says of a finished job is what the job did.
+  const { refetch } = items;
+  const active = isActive(job.state);
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (wasActive.current && !active) void refetch();
+    wasActive.current = active;
+  }, [active, refetch]);
   const rows = items.data?.pages.flatMap((page) => page.items) ?? [];
   return (
     <section aria-labelledby="batch-items-title">
@@ -220,14 +240,14 @@ function Items({ job, namespaceId }: { job: BatchJob; namespaceId: string }) {
               <tr key={item.ordinal}>
                 <td>{item.ordinal}</td>
                 <th scope="row">
-                  <Link to={`/runs/${item.runId}`}>{item.runId.slice(0, 8)}</Link>
+                  <Link to={`/runs/${item.runId}`}>{shortId(item.runId)}</Link>
                 </th>
                 <td>
                   <StatusBadge view={itemState(item.state)} />
                 </td>
                 <td>{item.errorCode ? <code>{item.errorCode}</code> : reasonText(item.reason)}</td>
                 <td>{item.attempts ?? 0}</td>
-                <td>{item.newRunId ? <Link to={`/runs/${item.newRunId}`}>{item.newRunId.slice(0, 8)}</Link> : null}</td>
+                <td>{item.newRunId ? <Link to={`/runs/${item.newRunId}`}>{shortId(item.newRunId)}</Link> : null}</td>
               </tr>
             ))}
           </tbody>

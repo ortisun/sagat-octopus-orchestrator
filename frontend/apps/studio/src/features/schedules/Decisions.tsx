@@ -8,6 +8,7 @@ import { Field } from '../../ui/Field';
 import { StatusBadge } from '../../ui/StatusBadge';
 import { OUTCOMES, outcomeView, reasonText } from './model';
 import { Time } from './shared';
+import { shortId } from '../runs/display';
 
 const PAGE = 50;
 
@@ -69,7 +70,7 @@ export function Decisions({ namespaceId, scheduleId }: { namespaceId: string; sc
                   {action.summaryCount && action.summaryCount > 1 ? <span className="hint"> {action.summaryCount} times</span> : null}
                 </td>
                 <td>{reasonText(action.reason)}</td>
-                <td>{action.runId ? <Link to={`/runs/${action.runId}`}>{action.runId.slice(0, 8)}</Link> : null}</td>
+                <td>{action.runId ? <Link to={`/runs/${action.runId}`}>{shortId(action.runId)}</Link> : null}</td>
               </tr>
             ))}
           </tbody>

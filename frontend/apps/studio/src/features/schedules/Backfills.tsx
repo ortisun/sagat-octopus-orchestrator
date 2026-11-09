@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { Overlap, ScheduleBackfill } from '../../api/endpoints';
 import { useApp, useCan } from '../../app/context';
@@ -35,6 +35,19 @@ export function Backfills({ namespaceId, scheduleId }: { namespaceId: string; sc
     refetchInterval: (query) => (query.state.data?.items.some(open) ? REFRESH_MS : false),
   });
   const items = list.data?.items ?? [];
+  // A backfill makes decisions as it goes, and the page reads those once: when what the backfills say changes (one has gone on, ended or
+  // begun), the decisions and the counters of the schedule are read again, so the history is not older than the backfill above it.
+  const queries = useQueryClient();
+  const says = items.map((backfill) => `${backfill.backfillId}:${backfill.state}:${Object.values(backfill.counts).reduce((total, count) => total + count, 0)}`).join('|');
+  const before = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!list.isSuccess) return;
+    const last = before.current;
+    before.current = says;
+    if (last === undefined || last === says) return;
+    void queries.invalidateQueries({ queryKey: ['schedule-actions', namespaceId, scheduleId] });
+    void queries.invalidateQueries({ queryKey: ['schedule', namespaceId, scheduleId], exact: true });
+  }, [says, list.isSuccess, queries, namespaceId, scheduleId]);
   return (
     <section aria-labelledby="backfills-title">
       <h2 id="backfills-title">Backfills</h2>

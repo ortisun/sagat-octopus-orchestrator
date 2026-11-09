@@ -12,6 +12,7 @@ import { useAnnounce } from '../../ui/Announcer';
 import { ACTION_TEXT, BATCH_ACTIONS, EMPTY_DRAFT, describeFilters, maxItemsOf, requestOf, selectorOf } from './model';
 import type { BatchActionName, Draft, RunFilters } from './model';
 import { notServed, useNamespaceId } from './queries';
+import { shortId } from '../runs/display';
 
 const DEFAULT_MAX = 10_000;
 
@@ -194,7 +195,7 @@ function BatchForm({ filters, workflowName, onClose }: { filters: RunFilters; wo
                 {counted.sample.slice(0, 3).map((id, index) => (
                   <span key={id}>
                     {index > 0 ? ', ' : ''}
-                    <Link to={`/runs/${id}`}>{id.slice(0, 8)}</Link>
+                    <Link to={`/runs/${id}`}>{shortId(id)}</Link>
                   </span>
                 ))}
                 .

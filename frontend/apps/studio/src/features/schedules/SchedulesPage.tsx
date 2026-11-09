@@ -10,6 +10,7 @@ import { NotAllowed } from '../runs/NotAllowed';
 import { useWorkflowIndex } from '../runs/queries';
 import { OVERLAP_TEXT, describeSpec, scheduleState } from './model';
 import { Time, useNamespaceId } from './shared';
+import { shortId } from '../runs/display';
 
 const PAGE = 50;
 /** How long the name has to rest before it is asked for, so a word being typed is one request. */
@@ -114,7 +115,7 @@ function Schedules() {
                   <td>
                     <StatusBadge view={scheduleState(schedule)} />
                   </td>
-                  <td>{workflow ? workflow.name : workflowId ? workflowId.slice(0, 8) : '—'}</td>
+                  <td>{workflow ? workflow.name : workflowId ? shortId(workflowId) : '—'}</td>
                   <td>{describeSpec(schedule)}</td>
                   <td>{schedule.state === 'PAUSED' || schedule.exhausted ? '—' : <Time value={schedule.nextActionAt} />}</td>
                   <td>{OVERLAP_TEXT[overlap].label}</td>

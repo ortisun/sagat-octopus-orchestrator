@@ -44,6 +44,13 @@ describe('The batch jobs of the namespace', () => {
     expect(within(rows[1]!).getByRole('link')).toHaveAttribute('href', '/batches/0194f5e2-7b1c-7000-8000-00000000b001');
   });
 
+  it('tells the jobs apart by the end of their identifiers: they are time-ordered, so the start is the same for every job made within a minute', async () => {
+    await mount();
+    const table = await screen.findByRole('table', { name: /newest first/ });
+    const names = within(table).getAllByRole('link').map((link) => link.textContent);
+    expect(names).toEqual(['0000b002', '0000b001']);
+  });
+
   it('asks only for the jobs in the state a person filters by', async () => {
     const { user, platform } = await mount();
     await screen.findByRole('table');

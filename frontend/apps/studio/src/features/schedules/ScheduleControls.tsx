@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router';
 import type { Overlap, Schedule } from '../../api/endpoints';
@@ -25,6 +25,15 @@ export function ScheduleControls({ schedule, namespaceId }: { schedule: Schedule
   // so with `controllable: false`, and refuses the three actions anyway (`SCHEDULE_TRIGGER_HANDOVER_PENDING`).
   const waiting = owned && schedule.controllable === false;
   const reason = 'Not yet: an operator has not handed the cron triggers over to the schedule pass, so the platform refuses this.';
+  // Pause when the schedule acts, Resume when it is paused: one button (`Toggle`), so that a pause closes its dialog over the very button
+  // that opened it. For a person who may pause and not resume (no `run:start`) the button is gone once the schedule is paused, the dialog
+  // with it, and focus would fall to the top of the page: it goes to the heading, which says what the schedule is now.
+  const toggle = !(waiting && operate) && (paused ? operate && start : operate && !schedule.exhausted);
+  const hadToggle = useRef(toggle);
+  useEffect(() => {
+    if (hadToggle.current && !toggle && (document.activeElement === null || document.activeElement === document.body)) document.getElementById('schedule-title')?.focus();
+    hadToggle.current = toggle;
+  }, [toggle]);
   return (
     <div className="toolbar" role="group" aria-label="Actions on the schedule">
       {waiting && operate ? (
@@ -50,8 +59,7 @@ export function ScheduleControls({ schedule, namespaceId }: { schedule: Schedule
         </>
       ) : (
         <>
-          {operate && !paused && !schedule.exhausted ? <Pause schedule={schedule} namespaceId={namespaceId} /> : null}
-          {operate && start && paused ? <Resume schedule={schedule} namespaceId={namespaceId} /> : null}
+          {toggle ? <Toggle schedule={schedule} namespaceId={namespaceId} /> : null}
           {operate && start ? <Trigger schedule={schedule} namespaceId={namespaceId} /> : null}
         </>
       )}
@@ -80,19 +88,22 @@ function Opener({ label, title, variant, children }: { label: string; title: str
   );
 }
 
-function Pause({ schedule, namespaceId }: { schedule: Schedule; namespaceId: string }) {
+/**
+ * Pause when the schedule acts and Resume when it is paused, as one button: the dialog it opens closes over the button that opened it
+ * whatever the schedule has become by then (the page reads it again before the dialog closes), and focus goes back to it (`Dialog`).
+ * What the dialog was opened for is kept until it closes, so that its title does not change under the person.
+ */
+function Toggle({ schedule, namespaceId }: { schedule: Schedule; namespaceId: string }) {
+  const paused = schedule.state === 'PAUSED';
+  const [opened, setOpened] = useState<'pause' | 'resume' | undefined>(undefined);
+  const close = () => setOpened(undefined);
   return (
-    <Opener label="Pause" title="Pause the schedule">
-      {(close) => <NoteForm schedule={schedule} namespaceId={namespaceId} verb="pause" onClose={close} />}
-    </Opener>
-  );
-}
-
-function Resume({ schedule, namespaceId }: { schedule: Schedule; namespaceId: string }) {
-  return (
-    <Opener label="Resume" title="Resume the schedule">
-      {(close) => <NoteForm schedule={schedule} namespaceId={namespaceId} verb="resume" onClose={close} />}
-    </Opener>
+    <>
+      <Button onClick={() => setOpened(paused ? 'resume' : 'pause')}>{paused ? 'Resume' : 'Pause'}</Button>
+      <Dialog open={opened !== undefined} title={opened === 'resume' ? 'Resume the schedule' : 'Pause the schedule'} onClose={close}>
+        {opened !== undefined ? <NoteForm schedule={schedule} namespaceId={namespaceId} verb={opened} onClose={close} /> : null}
+      </Dialog>
+    </>
   );
 }
 
@@ -116,7 +127,7 @@ function NoteForm({ schedule, namespaceId, verb, onClose }: { schedule: Schedule
       (key, signal) => (verb === 'pause' ? ep.pauseSchedule(namespaceId, schedule.scheduleId, text, key, signal) : ep.resumeSchedule(namespaceId, schedule.scheduleId, text, key, signal)),
       async () => {
         announce(verb === 'pause' ? 'The schedule is paused.' : 'The schedule is resumed.');
-        await queries.invalidateQueries({ queryKey: ['schedule', namespaceId, schedule.scheduleId] });
+        await queries.invalidateQueries({ queryKey: ['schedule', namespaceId, schedule.scheduleId], exact: true });
         await queries.invalidateQueries({ queryKey: ['schedules', namespaceId] });
         onClose();
       },
@@ -170,7 +181,7 @@ function TriggerForm({ schedule, namespaceId, onClose }: { schedule: Schedule; n
       async (action) => {
         setResult({ outcome: action.outcome, runId: action.runId });
         announce(`${outcomeView(action.outcome).label}.`);
-        await queries.invalidateQueries({ queryKey: ['schedule', namespaceId, schedule.scheduleId] });
+        await queries.invalidateQueries({ queryKey: ['schedule', namespaceId, schedule.scheduleId], exact: true });
         await queries.invalidateQueries({ queryKey: ['schedule-actions', namespaceId, schedule.scheduleId] });
       },
     );
@@ -223,15 +234,18 @@ function Delete({ schedule, namespaceId }: { schedule: Schedule; namespaceId: st
 }
 
 function DeleteForm({ schedule, namespaceId, onClose }: { schedule: Schedule; namespaceId: string; onClose: () => void }) {
+  // The revision the person opened the dialog at is the one every confirmation asks at, however the page behind it has been read
+  // since: after a refusal the page shows the newer schedule, and a confirmation at that revision would delete what they never saw.
+  const [revision] = useState(schedule.revision);
   const { ep } = useApp();
   const queries = useQueryClient();
   const navigate = useNavigate();
   const announce = useAnnounce();
-  const command = useCommand(`delete:${schedule.revision}`);
+  const command = useCommand(`delete:${revision}`);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     command.send(
-      (key, signal) => ep.deleteSchedule(namespaceId, schedule.scheduleId, schedule.revision, key, signal),
+      (key, signal) => ep.deleteSchedule(namespaceId, schedule.scheduleId, revision, key, signal),
       async () => {
         announce('The schedule was deleted.');
         queries.removeQueries({ queryKey: ['schedule', namespaceId, schedule.scheduleId] });
@@ -241,6 +255,11 @@ function DeleteForm({ schedule, namespaceId, onClose }: { schedule: Schedule; na
     );
   };
   const conflict = isApiError(command.error) && command.error.reason === 'REVISION_CONFLICT';
+  // The banner tells the person to look at the schedule again: the page behind the dialog reads it again at once, instead of
+  // showing the revision the platform just refused until its next round.
+  useEffect(() => {
+    if (conflict) void queries.invalidateQueries({ queryKey: ['schedule', namespaceId, schedule.scheduleId], exact: true });
+  }, [conflict, queries, namespaceId, schedule.scheduleId]);
   return (
     <form onSubmit={submit} noValidate>
       <p>

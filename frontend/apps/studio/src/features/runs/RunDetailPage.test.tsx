@@ -79,7 +79,8 @@ describe('the run page: header', () => {
   it('links a run that was started again, or reset, to the run it came from', async () => {
     await open({ run: runOf({ rerunOf: '019b5d6e-0000-7000-8000-0000000000aa' }) });
     expect(await screen.findByText('Started again from')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /run 019b5d6e/ })).toHaveAttribute('href', '/runs/019b5d6e-0000-7000-8000-0000000000aa');
+    // called by the end of its identifier, as the run list calls it: the start is the same for every run made in a minute
+    expect(screen.getByRole('link', { name: /run 000000aa/ })).toHaveAttribute('href', '/runs/019b5d6e-0000-7000-8000-0000000000aa');
   });
 
   it('has no such link for a run that was not started again', async () => {
@@ -129,7 +130,7 @@ describe('the run page: header', () => {
 
   it('links a child run to the run that started it', async () => {
     await open({ run: runOf({ parent: { runId: '019b5d6e-0000-7000-8000-0000000000ee', node: 'charge', cancelPolicy: 'PROPAGATE' } }) });
-    expect(await screen.findByRole('link', { name: /run 019b5d6e/ })).toHaveAttribute('href', '/runs/019b5d6e-0000-7000-8000-0000000000ee');
+    expect(await screen.findByRole('link', { name: /run 000000ee/ })).toHaveAttribute('href', '/runs/019b5d6e-0000-7000-8000-0000000000ee');
   });
 
   it('tells the person who may not read runs so, and asks the platform for nothing', async () => {

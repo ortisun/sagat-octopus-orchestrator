@@ -15,6 +15,7 @@ import type { Conflict, Reuse } from './businessId';
 import { DELAY_UNITS, describeDelay, startDelayFields, startDelayProblem } from './startDelay';
 import type { DelayUnit } from './startDelay';
 import { clip } from './time';
+import { shortId } from './display';
 
 /** What a person may start: a workflow that has a published version. */
 export interface Startable {
@@ -134,7 +135,7 @@ function StartForm({ choices, initialId, onClose }: { choices: readonly Startabl
       });
       if (!current()) return;
       const waits = delay.startDelayMs === undefined ? '' : ` It waits ${describeDelay(delayAmount, delayUnit)} before it starts.`;
-      announce(existing ? `That identifier already has an open run, ${run.runId.slice(-8)}. Nothing was started.` : `Started run ${run.runId.slice(-8)}.${waits}`);
+      announce(existing ? `That identifier already has an open run, ${shortId(run.runId)}. Nothing was started.` : `Started run ${shortId(run.runId)}.${waits}`);
       onClose();
       void navigate(path`/runs/${run.runId}`);
     } catch (cause) {

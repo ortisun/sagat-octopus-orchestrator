@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { BASE, ID, WORKFLOW, bodyOf, described, failure, json, keyOf, mountSchedules, schedule, writes } from '../../../test/schedules';
+import { BASE, ID, NS, WORKFLOW, bodyOf, described, failure, json, keyOf, mountSchedules, schedule, writes } from '../../../test/schedules';
 import { ScheduleFormPage } from './ScheduleFormPage';
 
 const create = (options: { permissions?: string[]; routes?: Record<string, (init: RequestInit, url: string) => unknown> } = {}) =>
@@ -157,6 +157,43 @@ describe('Editing a schedule', () => {
     await waitFor(() => expect(screen.getByLabelText('Workflow')).toHaveValue(WORKFLOW));
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByText(/changed while you were editing/)).toBeVisible();
+  });
+
+  it('keeps asking at the revision the person opened: a second save after a conflict is refused again, never accepted at the other person\'s revision', async () => {
+    let revision = 3;
+    const { user, platform, app } = await edit({
+      routes: {
+        [`GET ${BASE}/${ID}`]: () => described({ revision }),
+        [`PUT ${BASE}/${ID}`]: () => {
+          // somebody else's save is what the platform answers with, and what a read of the schedule returns from now on
+          revision = 4;
+          return failure(409, 'CONFLICT', 'REVISION_CONFLICT');
+        },
+      },
+    });
+    await screen.findByRole('heading', { name: 'Edit nightly' });
+    await waitFor(() => expect(screen.getByLabelText('Workflow')).toHaveValue(WORKFLOW));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText(/changed while you were editing/)).toBeVisible();
+    // whatever the page reads again after the conflict has been read by now
+    await waitFor(() => expect(app.queries.isFetching()).toBe(0));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(writes(platform)).toHaveLength(2));
+    expect(writes(platform).map((call) => bodyOf(call)['expectedRevision'])).toEqual([3, 3]);
+    // and the copy the form holds is still the one it was opened with, not the one the other person saved
+    expect(app.queries.getQueryData<{ revision: number }>(['schedule', NS, ID, 'form'])?.revision).toBe(3);
+  });
+
+  it('marks the page of the schedule as out of date when the revision is stale, so going back to it shows what the other person saved', async () => {
+    const { user, app } = await edit({ routes: { [`PUT ${BASE}/${ID}`]: () => failure(409, 'CONFLICT', 'REVISION_CONFLICT') } });
+    // what the page of the schedule read when it was opened: fresh for five seconds, and the platform has changed it since
+    app.queries.setQueryData(['schedule', NS, ID], described({ revision: 3 }));
+    await screen.findByRole('heading', { name: 'Edit nightly' });
+    await waitFor(() => expect(screen.getByLabelText('Workflow')).toHaveValue(WORKFLOW));
+    expect(app.queries.getQueryState(['schedule', NS, ID])?.isInvalidated).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText(/changed while you were editing/)).toBeVisible();
+    await waitFor(() => expect(app.queries.getQueryState(['schedule', NS, ID])?.isInvalidated).toBe(true));
   });
 
   it('is a fresh copy each time: what somebody saved meanwhile is what the next edit starts from', async () => {

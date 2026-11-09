@@ -14,7 +14,7 @@ import { ErrorState } from '../../ui/ErrorState';
 import { Field } from '../../ui/Field';
 import { StatusBadge } from '../../ui/StatusBadge';
 import { readBusinessPrefix } from './businessId';
-import { RUN_STATUSES } from './display';
+import { RUN_STATUSES, shortId } from './display';
 import { Elapsed, Moment, NowProvider } from './Now';
 import { NotAllowed } from './NotAllowed';
 import { originLabel, useVersions, useWorkflowIndex, versionLabel } from './queries';
@@ -291,10 +291,10 @@ function RunMasterRow({
     <li ref={measure} data-index={index} data-status={run.status} className="rn-master-row">
       <Link to={{ pathname: path`/runs/${run.runId}`, search }} aria-current={selected ? 'page' : undefined}>
         <span className="rn-master-name" title={workflow?.name}>
-          {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`)}
+          {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${shortId(run.workflowId)}`)}
         </span>
         <StatusBadge view={runStatus(run.status)} />
-        <code title={run.runId}>{run.runId.slice(-8)}</code>
+        <code title={run.runId}>{shortId(run.runId)}</code>
         <span className="rn-master-duration">
           {finished ? (run.finishedAt ? <Elapsed from={run.createdAt} to={run.finishedAt} /> : '—') : <Elapsed from={run.createdAt} />}
         </span>
@@ -337,7 +337,7 @@ function RunRow({ run, index, measure, workflows }: { run: Run; index: number; m
         ) : null}
       </td>
       <td>
-        {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${run.workflowId.slice(0, 8)}`)}
+        {originLabel(run.origin) ?? (workflow ? clip(workflow.name, 80) : `workflow ${shortId(run.workflowId)}`)}
         <div className="hint">{versionLabel(versions.data, run.versionId, workflow?.activeVersion)}</div>
       </td>
       <td>

@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { ScheduleActionRecord } from '../../api/endpoints';
-import { BASE, ID, backfill, bodyOf, decision, described, failure, json, keyOf, mountSchedules, schedule, writes } from '../../../test/schedules';
+import { BASE, ID, NS, backfill, bodyOf, decision, described, failure, json, keyOf, mountSchedules, schedule, writes } from '../../../test/schedules';
 import { SchedulePage } from './SchedulePage';
 
 type Options = { permissions?: string[]; routes?: Record<string, (init: RequestInit, url: string) => unknown> };
@@ -57,7 +57,8 @@ describe('A schedule', () => {
   it('links the runs it has open and counts the times that wait', async () => {
     await mount({ routes: { [`GET ${BASE}/${ID}`]: () => described({ openRuns: ['0194f5e2-7b1c-7000-8000-0000000000d4'], bufferedCount: 2 }) } });
     expect(await screen.findByText(/1 run it started is open/)).toBeVisible();
-    expect(screen.getByRole('link', { name: '0194f5e2' })).toHaveAttribute('href', '/runs/0194f5e2-7b1c-7000-8000-0000000000d4');
+    // the identifiers are time-ordered: the start of one is the same for every run made within a minute, the end is what tells them apart
+    expect(screen.getByRole('link', { name: '000000d4' })).toHaveAttribute('href', '/runs/0194f5e2-7b1c-7000-8000-0000000000d4');
     expect(screen.getByText(/2 times are waiting for a run to end/)).toBeVisible();
   });
 
@@ -185,6 +186,73 @@ describe('Pausing and resuming', () => {
     expect(screen.getByText(/None: it is paused/)).toBeVisible();
   });
 
+  it('puts focus on the control that takes the place of the one that opened the dialog, so a keyboard is not sent back to the top of the page: Resume after a pause, Pause after a resume', async () => {
+    let state: 'ACTIVE' | 'PAUSED' = 'ACTIVE';
+    const { user } = await mount({
+      routes: {
+        [`GET ${BASE}/${ID}`]: () => described({ state }),
+        [`POST ${BASE}/${ID}/pause`]: () => {
+          state = 'PAUSED';
+          return schedule({ state });
+        },
+        [`POST ${BASE}/${ID}/resume`]: () => {
+          state = 'ACTIVE';
+          return schedule({ state });
+        },
+      },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Pause' }));
+    await user.type(inDialog().getByLabelText('Why'), 'holiday');
+    await user.click(inDialog().getByRole('button', { name: 'Confirm pause' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Resume' })).toHaveFocus());
+    await user.click(screen.getByRole('button', { name: 'Resume' }));
+    await user.type(inDialog().getByLabelText('Why'), 'back');
+    await user.click(inDialog().getByRole('button', { name: 'Confirm resume' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pause' })).toHaveFocus());
+  });
+
+  it('moves focus only for the pause or the resume the person made: a pause that is not seen as one, and a change somebody else makes later, leave focus where it is', async () => {
+    let state: 'ACTIVE' | 'PAUSED' = 'ACTIVE';
+    const { user, app } = await mount({
+      routes: {
+        // the schedule is read as it was after the pause (it took its last action meanwhile, say): nothing flips on this read
+        [`GET ${BASE}/${ID}`]: () => described({ state }),
+        [`POST ${BASE}/${ID}/pause`]: () => schedule({ state: 'PAUSED' }),
+      },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Pause' }));
+    await user.type(inDialog().getByLabelText('Why'), 'holiday');
+    await user.click(inDialog().getByRole('button', { name: 'Confirm pause' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    // the person goes on to the link to edit it, and then another operator pauses the schedule, which the page reads on its round
+    const edit = screen.getByRole('link', { name: 'Edit' });
+    edit.focus();
+    state = 'PAUSED';
+    await app.queries.invalidateQueries({ queryKey: ['schedule', NS, ID], exact: true });
+    expect(await screen.findByRole('button', { name: 'Resume' })).toBeVisible();
+    expect(edit).toHaveFocus();
+  });
+
+  it('puts focus on the heading when the control that took the place of the one pressed is not for this person: a pause by somebody who may not start runs leaves no Resume', async () => {
+    let state: 'ACTIVE' | 'PAUSED' = 'ACTIVE';
+    const { user } = await mount({
+      permissions: [...READ, 'schedule:operate'],
+      routes: {
+        [`GET ${BASE}/${ID}`]: () => described({ state }),
+        [`POST ${BASE}/${ID}/pause`]: () => {
+          state = 'PAUSED';
+          return schedule({ state });
+        },
+      },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Pause' }));
+    await user.type(inDialog().getByLabelText('Why'), 'holiday');
+    await user.click(inDialog().getByRole('button', { name: 'Confirm pause' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toHaveFocus());
+  });
+
   it('resumes with a reason, and says no missed time is caught up', async () => {
     const { user, platform } = await mount({
       routes: { [`GET ${BASE}/${ID}`]: () => described({ state: 'PAUSED' }), [`POST ${BASE}/${ID}/resume`]: () => schedule() },
@@ -258,6 +326,28 @@ describe('Running a schedule now', () => {
   });
 });
 
+describe('The backfills of a schedule and its decisions', () => {
+  it('reads the decisions and the counters again when a backfill has made some, so the history under it is not older than the backfill above it', async () => {
+    let state: 'RUNNING' | 'COMPLETED' = 'RUNNING';
+    const { app, platform } = await mount({
+      routes: {
+        [`GET ${BASE}/${ID}/backfills`]: () => ({ items: [backfill({ state, counts: state === 'RUNNING' ? { STARTED: 1 } : { STARTED: 3 } })] }),
+      },
+    });
+    const decisionReads = () => platform.calls.filter((call) => call.method === 'GET' && call.url.startsWith(`/v1${BASE}/${ID}/actions`)).length;
+    const scheduleReads = () => platform.calls.filter((call) => call.method === 'GET' && call.url.startsWith(`/v1${BASE}/${ID}?`)).length;
+    expect(await screen.findByText('1 started a run')).toBeVisible();
+    await waitFor(() => expect(decisionReads()).toBe(1));
+    expect(scheduleReads()).toBe(1);
+    // the page follows an open backfill every three seconds: this is one of those reads, after it has gone on
+    state = 'COMPLETED';
+    await app.queries.invalidateQueries({ queryKey: ['schedule-backfills', NS, ID] });
+    expect(await screen.findByText('3 started a run')).toBeVisible();
+    await waitFor(() => expect(decisionReads()).toBe(2));
+    await waitFor(() => expect(scheduleReads()).toBe(2));
+  });
+});
+
 describe('Deleting a schedule', () => {
   it('says what stays and what goes, and deletes at the revision the person saw', async () => {
     const { user, platform } = await mount({
@@ -278,6 +368,47 @@ describe('Deleting a schedule', () => {
     await user.click(await screen.findByRole('button', { name: 'Delete' }));
     await user.click(inDialog().getByRole('button', { name: 'Confirm deletion' }));
     expect(await inDialog().findByText(/changed since you opened it/)).toBeVisible();
+  });
+
+  it('reads the schedule again when it changed since the person saw it, so what the dialog tells them to look at is the new revision', async () => {
+    let revision = 9;
+    const { user, platform } = await mount({
+      routes: {
+        [`GET ${BASE}/${ID}`]: () => described({ revision }),
+        [`DELETE ${BASE}/${ID}`]: () => {
+          revision = 10;
+          return failure(409, 'CONFLICT', 'REVISION_CONFLICT');
+        },
+      },
+    });
+    const reads = () => platform.calls.filter((call) => call.method === 'GET' && call.url.startsWith(`/v1${BASE}/${ID}?`)).length;
+    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(reads()).toBe(1);
+    await user.click(inDialog().getByRole('button', { name: 'Confirm deletion' }));
+    expect(await inDialog().findByText(/changed since you opened it/)).toBeVisible();
+    await waitFor(() => expect(reads()).toBe(2));
+  });
+
+  it('asks again at the revision the person was refused at, never at the one the page has read since: confirming twice deletes nothing the person did not see', async () => {
+    let revision = 9;
+    const { user, platform, app } = await mount({
+      routes: {
+        [`GET ${BASE}/${ID}`]: () => described({ revision }),
+        [`DELETE ${BASE}/${ID}`]: () => {
+          revision = 10;
+          return failure(409, 'CONFLICT', 'REVISION_CONFLICT');
+        },
+      },
+    });
+    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    await user.click(inDialog().getByRole('button', { name: 'Confirm deletion' }));
+    expect(await inDialog().findByText(/changed since you opened it/)).toBeVisible();
+    // the page behind the dialog has read the new revision by now
+    await waitFor(() => expect(app.queries.isFetching()).toBe(0));
+    await waitFor(() => expect(app.queries.getQueryData<{ revision: number }>(['schedule', NS, ID])?.revision).toBe(10));
+    await user.click(inDialog().getByRole('button', { name: 'Confirm deletion' }));
+    await waitFor(() => expect(writes(platform)).toHaveLength(2));
+    expect(writes(platform).map((call) => new URL(call.url, 'http://studio').searchParams.get('expectedRevision'))).toEqual(['9', '9']);
   });
 });
 

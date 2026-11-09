@@ -230,7 +230,7 @@ describe('the runs page', () => {
   it('shows the ids when the workflows cannot be listed, instead of failing', async () => {
     await open([run(1)], { routes: { 'GET /workflows': () => failure(403, 'FORBIDDEN', 'no') } });
     await screen.findByRole('table', { name: 'Runs, newest first' });
-    expect(within(rows()[0] as HTMLElement).getByText(`workflow ${WORKFLOW_ID.slice(0, 8)}`)).toBeInTheDocument();
+    expect(within(rows()[0] as HTMLElement).getByText(`workflow ${WORKFLOW_ID.slice(-8)}`)).toBeInTheDocument();
     expect(await screen.findByText(/The workflows could not be listed/)).toBeInTheDocument();
   });
 });

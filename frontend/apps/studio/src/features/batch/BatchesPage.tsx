@@ -10,6 +10,7 @@ import { StatusBadge } from '../../ui/StatusBadge';
 import { NotAllowed } from '../runs/NotAllowed';
 import { JOB_STATES, isActive, jobState, progress } from './model';
 import { notServed, useNamespaceId } from './queries';
+import { shortId } from '../runs/display';
 
 const PAGE = 50;
 const REFRESH_MS = 5_000;
@@ -76,7 +77,7 @@ function Jobs() {
               return (
                 <tr key={job.batchId}>
                   <th scope="row">
-                    <Link to={`/batches/${job.batchId}`}>{job.batchId.slice(0, 8)}</Link>
+                    <Link to={`/batches/${job.batchId}`}>{shortId(job.batchId)}</Link>
                   </th>
                   <td>{job.action}</td>
                   <td>
