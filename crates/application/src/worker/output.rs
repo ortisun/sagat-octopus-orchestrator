@@ -224,7 +224,9 @@ where
             }
             database_secret_in_output = contains.then_some(before.0.meta.name);
         }
-        let output = lake_receipt.as_deref().unwrap_or(output);
+        let output = lake_receipt
+            .as_ref()
+            .map_or(output, |receipt| receipt.canonical.as_slice());
         if blob.is_some() {
             if !task.instance.path().is_root() {
                 return Err(AppError::NotAllowed(
@@ -252,7 +254,7 @@ where
         effects.reported = Some(reported_lease(task));
         // A write that committed is audited with the completion, in its transaction, once: a replay of the report never gets here.
         if let Some(receipt) = &lake_receipt {
-            effects.audit = self.committed_write_audit(principal, &mut tx, task, receipt);
+            effects.audit = self.committed_write_audit(principal, &mut tx, task, receipt.commit);
         }
         // Kept for the case the run has no room for the receipt: the write committed all the same, and the recovery below records it.
         let write_audit = effects.audit.clone();
