@@ -3597,3 +3597,15 @@ The other fixes were wording:
   probe's lease rides the existing `input` payload and a runner that offers the probe is by definition one that knows it; the *offer* is the negotiation, an older runner never offers it and so is
   never handed one. The minor that G035-077/078/079 and O035-007 need is still theirs. *Not in S3:* the one-in-flight-per-connection rule at the start (it belongs with the REST start, S6),
   the result (S4), the host (S5), the runner (S6).
+  *S4a (2026-11-09): the result of a probe is accepted as typed fields and kept as the server's own writing.* The domain holds what makes a set of checks a result (`ProbeResult::new`: the three checks
+  in order, a failed one with a code allowed **for that check**, no other with one, everything after a failure skipped, a skip with a cause except the storage check on vended credentials; the table of codes is in
+  `contracts/worker-protocol.md` and is what the host (S5) must produce). The port `LakeProbeCodec` and its adapter `JsonLakeProbeCodec` read what a runner reported into closed types (`deny_unknown_fields`, closed
+  words, numbers, the connection's own name, 4 KiB), compare the echoed connection and revision with the probe's, and write the result again from the typed fields; the completion keeps that and nothing
+  of what was sent, refuses a probe that never resolved its credentials, and audits a refusal as a denial of the run. **A failed check completes the step**; only a fault of the platform fails it.
+  `lake_probe_checks_total{check,outcome,code}` counts each check of a kept result (closed labels, no connection, run or tenant). *Evidence:* a corpus of 9 accepted and 27 refused reports (`probe-results/`),
+  each refused one named for its refusal and carrying a canary that no refusal repeats; a poll-level scenario (eight hostile reports refused with the step as it was and no table holding the canary, a valid
+  result stored as the server's writing byte for byte, a replay that is the same completion, an unresolved probe refused, the refusals audited); domain tests of every rule and of the whole matrix of
+  codes by check. *Mutations:* ten of eleven killed on the first run; the one that survived was badly built (its fallback returned the same error, so it changed nothing), and the skipped one, the run keeping
+  the bytes the runner sent, was redone and is killed. *Not asserted by any test:* the metric (the repository has no facility to capture one, and the existing counters of these paths are not asserted either); its call
+  is the proof. *Still to do:* the read side of the probe (`latest_connection_probe` with `checks[]` and a `failureCode` derived from the first failed check, the REST shape and the OpenAPI, S4b), the host
+  (S5), the runner (S6).

@@ -43,8 +43,25 @@ minor when this feature merges (D035-043; drafts 020, 021, 025 and 026 also clai
   the result echoes), `checks` (`CATALOG_AUTH`, `WAREHOUSE`, `STORAGE_ACCESS`, in the order they run) and `checkTimeoutMs`, and nothing else:
   no secret, address or table. The connection and its two secrets come from `ResolveDatabase`, read and pinned as a write's are. A probe has
   its own budget (one in flight in a namespace, four in a tenant, `LAKE_PROBE_*`), so it neither waits for a write nor makes one wait.
-  **The result of a probe is not accepted yet** (a completion is refused as not allowed, so that no text of a runner's choosing reaches the
-  journal); a probe ends by a failure with a closed code or by its lease lapsing, until the typed result of slice S4.
+  **The result of a probe** (D035-150, slice S4a) is reported inline in `CompleteStep.output_json`, and is **read into typed fields and written
+  again**: the run keeps the server's own writing of it, never the bytes the runner sent (`JsonLakeProbeCodec`, a port of the application like
+  the receipt's). It is `{"kind":"probe","connection":{"name","revision"},"checks":[{"check","outcome","code"?}]}`: the connection is the
+  probe's own, **echoed and compared** (another connection or revision is refused); the checks are `CATALOG_AUTH`, `WAREHOUSE` and
+  `STORAGE_ACCESS`, each once, in that order; an `outcome` is `PASSED`, `FAILED` or `SKIPPED`; a `FAILED` check carries a `code` of the table
+  below and no other check carries one; after a failed check every later one is `SKIPPED`; a skip has a cause, an earlier failure, except
+  `STORAGE_ACCESS` on credentials the catalog vends (nothing is vended without a table). Any member the result does not have, text where a
+  closed word or a number belongs, or a result over 4 KiB is refused whole (`NotAllowed`, audited as a denial of the run, saying nothing of
+  what it held), and the step is as it was. A probe whose attempt never resolved its credentials has tested nothing, and its result is refused.
+  **A failed check is the answer, not a failed step:** the step succeeds. Only a fault of the platform fails it (`DATABASE_CREDENTIAL_UNAVAILABLE`
+  at the resolve, `LAKE_HOST_PROTOCOL`, `LAKE_SANDBOX_UNAVAILABLE`, the deadline), reported as any managed failure with its closed code.
+  The corpus every implementation is held to, the Rust codec now and the Python host next, is
+  `tests/contract/iceberg-writes/fixtures/probe-results/{accepted,refused}` (each refused file is named for the refusal it gets).
+
+  | Check | May fail with (codes that already exist; none is new) |
+  |---|---|
+  | `CATALOG_AUTH` | `DATABASE_AUTHENTICATION_FAILED` (the catalog refused the credentials), `DATABASE_TLS_FAILED` (an untrusted certificate), `DATABASE_DESTINATION_DENIED` (a host the egress policy refuses), `CATALOG_UNAVAILABLE`, `DATABASE_TIMEOUT` |
+  | `WAREHOUSE` | `DATABASE_AUTHENTICATION_FAILED` (the catalog refuses the warehouse to these credentials), `CATALOG_UNAVAILABLE`, `ICEBERG_LOCATION_NOT_ALLOWED` (a location outside the connection's), `DATABASE_TIMEOUT` |
+  | `STORAGE_ACCESS` | `DATABASE_AUTHENTICATION_FAILED` (the storage credentials were denied), `DATABASE_TLS_FAILED`, `DATABASE_DESTINATION_DENIED`, `STORAGE_UNAVAILABLE`, `DATABASE_TIMEOUT` |
 - **`ResolvedDatabase`** gains three fields, `IcebergConnection iceberg`,
   `ObjectStorageConnection object_storage` and `ClickHouseConnection clickhouse`. Their numbers are
   assigned at merge and never reused. Each holds the pinned non-secret settings and a

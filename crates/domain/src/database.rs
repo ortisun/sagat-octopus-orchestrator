@@ -19,7 +19,10 @@ pub use iceberg_write::{
     IcebergWriteError, IcebergWriteParts, MAX_MAPPED_COLUMNS, MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS,
     MAX_RECORD_INPUT_BYTES, RecordSource, TableIdentifier, WriteIntent,
 };
-pub use lake_probe::{ICEBERG_PROBE_ACTIVITY, LakeProbe, ProbeCheck};
+pub use lake_probe::{
+    ICEBERG_PROBE_ACTIVITY, LakeProbe, ProbeCheck, ProbeCheckResult, ProbeOutcome, ProbeResult,
+    ProbeResultError,
+};
 
 use crate::{
     classification::EgressCeiling, identity::Slug, secrets::SecretName, workflow::Expression,

@@ -55,6 +55,68 @@ where
             .map_err(|_| AppError::NotAllowed("invalid lake receipt"))
     }
 
+    /// The canonical result of the probe `task` is the attempt of, or the refusal of what the runner reported (D035-150). Runs in the
+    /// transaction of the completion, so the lease it was checked against is the lease that completes the step.
+    ///
+    /// Refused: no codec to read the report with (`Unavailable`); an attempt that never held the credentials of the connection it says it
+    /// tested, and a report that is not the result of this probe, of this connection at this revision (`NotAllowed`: the runner's mistake,
+    /// which leaves the step as it was for the runner to report the failure it has, and which the caller audits as a denial).
+    pub(super) async fn lake_probe_result<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        task: &TaskRef<'_>,
+        output: &[u8],
+    ) -> Result<crate::database::RebuiltProbe, AppError> {
+        let codec = self.lake_probes.as_ref().ok_or(AppError::Unavailable)?;
+        let node = task.instance.node();
+        // a probe that never asked for the credentials of the connection has tested nothing
+        if !tx.lake_attempt_resolved(node).await? {
+            return Err(AppError::NotAllowed(
+                "the attempt did not resolve its credentials",
+            ));
+        }
+        let facts = tx.lake_probe_facts(node).await?;
+        codec
+            .rebuild(
+                output,
+                &crate::database::ExpectedProbe {
+                    connection: &facts.connection,
+                    revision: facts.revision,
+                },
+            )
+            .map_err(|_| AppError::NotAllowed("invalid lake probe result"))
+    }
+
+    /// What each check of an accepted result said, counted with closed labels: the check, how it ended and the code of a failure (`none`
+    /// otherwise). Never a connection, a run or a tenant.
+    pub(super) fn count_probe_checks(result: &sagat_domain::database::ProbeResult) {
+        for check in result.checks() {
+            metrics::counter!(
+                "lake_probe_checks_total",
+                "check" => check.check().as_str(),
+                "outcome" => check.outcome().as_str(),
+                "code" => check.code().map_or("none", sagat_domain::database::DatabaseFailure::code)
+            )
+            .increment(1);
+        }
+    }
+
+    /// The audit of a refused probe result: a denial for the run, like a refused receipt, off the request path.
+    pub(super) async fn audit_lake_probe_refusal(&self, principal: &Principal, task: &TaskRef<'_>) {
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::DatabaseDenied,
+            ResourceType::Run,
+            task.run_id.to_string(),
+            None,
+            self.clock.now(),
+        )
+        .with_reason("lake probe result refused");
+        if RunStore::record_denial(&self.store, &audit).await.is_err() {
+            tracing::warn!("the denial of a refused lake probe result could not be recorded");
+        }
+    }
+
     /// The audit of a committed write (FR-035-030): one record for the run, made from the typed receipt the server built (`commit`, which
     /// the port gives only for a commit) and from the step, never from what the runner sent, naming the node, the connection, the table and
     /// the snapshot, and never a value, a partition value, a location or the effect key. Only numbers come from the receipt.

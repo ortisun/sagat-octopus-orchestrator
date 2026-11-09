@@ -562,7 +562,8 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
         Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
     )
-    .with_lake_receipts(Arc::new(sagat_infra_ir::JsonLakeReceiptCodec));
+    .with_lake_receipts(Arc::new(sagat_infra_ir::JsonLakeReceiptCodec))
+    .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec));
     if let Some(provider) = &options.secret_provider {
         workers = workers.with_secret_provider(provider.clone());
     }

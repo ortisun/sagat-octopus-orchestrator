@@ -584,6 +584,7 @@ pub struct WorkerService<S, C, E, R> {
     database_results: Option<Arc<dyn crate::database::DatabaseResultValidator>>,
     /// Rebuilds the receipt of a lake step; without it a lake step cannot be completed (feature 035, D035-142).
     lake_receipts: Option<Arc<dyn crate::database::LakeReceiptCodec>>,
+    lake_probes: Option<Arc<dyn crate::database::LakeProbeCodec>>,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -617,6 +618,7 @@ where
             database_credentials: None,
             database_results: None,
             lake_receipts: None,
+            lake_probes: None,
         }
     }
 
@@ -648,6 +650,14 @@ where
         receipts: Arc<dyn crate::database::LakeReceiptCodec>,
     ) -> Self {
         self.lake_receipts = Some(receipts);
+        self
+    }
+
+    /// The codec that rebuilds the result of the probe of an Iceberg connection (D035-150). Without it the completion of a probe is refused:
+    /// the server stores a result it built, never the bytes a runner sent.
+    #[must_use]
+    pub fn with_lake_probes(mut self, probes: Arc<dyn crate::database::LakeProbeCodec>) -> Self {
+        self.lake_probes = Some(probes);
         self
     }
 

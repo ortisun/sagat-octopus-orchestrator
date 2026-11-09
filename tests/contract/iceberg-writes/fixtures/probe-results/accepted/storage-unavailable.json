@@ -1,0 +1,1 @@
+{"kind":"probe","connection":{"name":"lake-main","revision":3},"checks":[{"check":"CATALOG_AUTH","outcome":"PASSED"},{"check":"WAREHOUSE","outcome":"PASSED"},{"check":"STORAGE_ACCESS","outcome":"FAILED","code":"STORAGE_UNAVAILABLE"}]}

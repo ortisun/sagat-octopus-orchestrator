@@ -55,7 +55,7 @@ fn value_of<'a>(all: &'a [Canary], class: &str) -> &'a str {
 
 /// Every base table of the schema: the places the server keeps anything. A table added by a later feature is searched without anyone
 /// remembering to add it here.
-async fn tables(p: &Platform) -> Vec<String> {
+pub(super) async fn tables(p: &Platform) -> Vec<String> {
     sqlx::query_scalar(
         "SELECT table_name::text FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY 1",
     )
@@ -66,7 +66,7 @@ async fn tables(p: &Platform) -> Vec<String> {
 
 /// The tables that hold `needle`, as text or as the hex of bytes (how a row prints a `bytea`). The names come from the catalog of the
 /// database and are quoted; the needle is a bind.
-async fn holders(p: &Platform, tables: &[String], needle: &str) -> Vec<String> {
+pub(super) async fn holders(p: &Platform, tables: &[String], needle: &str) -> Vec<String> {
     let hex = needle
         .bytes()
         .map(|byte| format!("{byte:02x}"))
@@ -116,7 +116,11 @@ fn receipt(effect_key: &str) -> Value {
     })
 }
 
-fn completion(lease: &pb::TaskLease, output: &Value, key: &str) -> pb::CompleteStepRequest {
+pub(super) fn completion(
+    lease: &pb::TaskLease,
+    output: &Value,
+    key: &str,
+) -> pb::CompleteStepRequest {
     let text = serde_json::to_string(output).expect("the output");
     pb::CompleteStepRequest {
         idempotency_key: key.to_owned(),
@@ -127,7 +131,7 @@ fn completion(lease: &pb::TaskLease, output: &Value, key: &str) -> pb::CompleteS
 }
 
 /// What a refused call says back: the message and every piece of metadata, as one text.
-fn said(status: &tonic::Status) -> String {
+pub(super) fn said(status: &tonic::Status) -> String {
     format!("{:?} {:?}", status.message(), status.metadata())
 }
 
