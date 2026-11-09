@@ -89,7 +89,7 @@ ENVIRONMENT (serve):
     SAGAT_BATCHES_ENABLED             run batch jobs from this replica [false]
     SAGAT_BATCHES_BATCH               due batch jobs per round (1-5000) [100]
     SAGAT_BATCHES_ROUND_ACTIONS       steps one round takes over all its jobs (1-1000) [100]
-    SAGAT_BATCHES_POLL_MS             pause when a round found nothing [1000]
+    SAGAT_BATCHES_POLL_MS             pause when a round found nothing, cut short when a job's next slot comes [1000]
     SAGAT_RESET_CANCEL_SOURCE_ENABLED complete resets that wait for their source run to end from this replica (the
                                       control plane accepts them under the same variable) [false]
     SAGAT_RESET_CANCEL_SOURCE_BATCH   pending resets completed per round (1-1000) [100]

@@ -484,18 +484,36 @@ where
     pass.round().await
 }
 
-/// Runs the batch jobs that are due until stopped: the same rhythm as the schedule pass.
+/// The shortest wait before a round that a job's slot calls for: a slot that has come, or comes within a hair, is still a
+/// wait, never a round straight after a round.
+const MIN_SLOT_WAKE: Duration = Duration::from_millis(1);
+
+/// How long the batch loop rests after a round that did nothing: its poll, jittered as every loop's, but not past the moment
+/// the soonest slot of a job comes, when the round says one does (G2043). A job's slot is durable and one job's apart from
+/// every other's, so the wake-up for it is not jittered (the jitter only keeps replicas that started together from polling
+/// together); it is at least [`MIN_SLOT_WAKE`], and the poll still bounds it, so a slot far ahead, or one a wrong clock put
+/// far ahead, leaves the loop looking again at its own pace.
+fn idle_pause(poll: Duration, next_due_in: Option<Duration>, entropy: &impl Entropy) -> Duration {
+    let pause = jittered(poll, entropy);
+    next_due_in.map_or(pause, |slot| pause.min(slot.max(MIN_SLOT_WAKE)))
+}
+
+/// Runs the batch jobs that are due until stopped. A round that did work is followed by the next at once; one that did
+/// none rests its poll, or until the soonest slot of a job comes when that is sooner: a job at the default rate has its next
+/// item due 50 ms after the last, and a loop that slept the whole poll (1 s) applied one item a second instead of twenty
+/// (G2043).
 pub async fn run_batches<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = BatchRound>,
 {
     while !*stop.borrow() {
-        if round().await.did_work() {
+        let done = round().await;
+        if done.did_work() {
             tokio::task::yield_now().await;
             continue;
         }
-        if stop_during(jittered(poll, &SystemEntropy), &stop).await {
+        if stop_during(idle_pause(poll, done.next_due_in, &SystemEntropy), &stop).await {
             break;
         }
     }
@@ -526,8 +544,9 @@ where
 
 /// Completes the pending resets whose source has ended, and expires those whose source did not end in time, until
 /// stopped: the rhythm of the batch pass, except that a round that expired entries is followed by the pause they cost at a
-/// hundred a second (the caps of a round bound the round and not a rate, and the first rounds of an engine with the
-/// expiry expire everything that is older than the window: D2081).
+/// hundred a second, a ceiling on the pace and not the pace (the pause is added to the time of the round, and the pace of
+/// this pass was not measured; the caps of a round bound the round and not a rate, and the first rounds of an engine with
+/// the expiry expire everything that is older than the window: D2081).
 pub async fn run_resets<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
 where
     F: FnMut() -> Fut,
@@ -642,7 +661,7 @@ mod tests {
                 stop_tx.send(true).expect("stop");
             }
             async move {
-                // 20 entries cost 200 ms at a hundred a second; the loop jitters the pause by -20 % at the least
+                // the pause of 20 entries is 200 ms at a hundred a second (a ceiling on the pace); the loop jitters it by -20 % at the least
                 ResetRound {
                     expired: if n == 1 { 20 } else { 0 },
                     ..ResetRound::default()
@@ -975,5 +994,170 @@ mod tests {
         );
         health.ticked();
         assert!(health.scheduler_alive(), "a tick revives it");
+    }
+
+    // --- the batch loop wakes when a slot comes (G2043) --------------------------------------------------------------
+
+    fn idle_round(next_due_in: Option<Duration>) -> BatchRound {
+        BatchRound {
+            next_due_in,
+            ..BatchRound::default()
+        }
+    }
+
+    /// Runs `run_batches` under paused time with a poll of `poll`: the round of index `n` answers `answers[n]`, and the
+    /// round after the last answer stops the loop. Returns the virtual instants at which the rounds began.
+    async fn batch_rounds(poll: Duration, answers: Vec<BatchRound>) -> Vec<tokio::time::Instant> {
+        use std::sync::Mutex;
+
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let began: Arc<Mutex<Vec<tokio::time::Instant>>> = Arc::default();
+        let seen = Arc::clone(&began);
+        let round = move || {
+            let mut began = seen.lock().expect("began");
+            began.push(tokio::time::Instant::now());
+            let n = began.len() - 1;
+            drop(began);
+            let answer = answers.get(n).copied().unwrap_or_else(|| {
+                stop_tx.send(true).expect("stop");
+                BatchRound::default()
+            });
+            async move { answer }
+        };
+        run_batches(round, poll, stop_rx).await;
+        began.lock().expect("began").clone()
+    }
+
+    /// A round that says "the next slot is due in 50 ms" wakes the loop at 50 ms, not after the poll: a lone job at the
+    /// default rate applied one item a second because its next slot, 50 ms ahead, found the loop asleep for the whole poll.
+    #[tokio::test(start_paused = true)]
+    async fn a_round_that_names_the_next_slot_wakes_the_loop_when_it_comes() {
+        let at = batch_rounds(
+            Duration::from_secs(1),
+            vec![idle_round(Some(Duration::from_millis(50)))],
+        )
+        .await;
+        assert_eq!(at.len(), 2);
+        let between = at[1] - at[0];
+        assert!(
+            between >= Duration::from_millis(50),
+            "the loop woke before the slot: {between:?}"
+        );
+        assert!(
+            between < Duration::from_millis(100),
+            "the loop slept toward its poll and not the slot: {between:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_round_that_names_no_slot_sleeps_the_poll_jittered() {
+        // the loop's own entropy is the system's, so this holds the range (80 % to 120 % of the poll); the exact jitter of a
+        // pause, with and without a slot, is held by `the_idle_pause_is_the_poll_or_the_slot_whichever_comes_first`
+        let at = batch_rounds(Duration::from_secs(1), vec![idle_round(None)]).await;
+        let between = at[1] - at[0];
+        assert!(
+            (Duration::from_millis(800)..=Duration::from_millis(1_200)).contains(&between),
+            "the poll jittered by 20 %: {between:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slot_far_ahead_never_makes_the_loop_sleep_longer_than_its_poll() {
+        let at = batch_rounds(
+            Duration::from_secs(1),
+            vec![idle_round(Some(Duration::from_secs(3_600)))],
+        )
+        .await;
+        let between = at[1] - at[0];
+        assert!(
+            (Duration::from_millis(800)..=Duration::from_millis(1_200)).contains(&between),
+            "an hour ahead is still the poll: {between:?}"
+        );
+    }
+
+    /// A round that did work is followed by the next at once, whatever else it said: the hint is for the round that found
+    /// nothing to do.
+    #[tokio::test(start_paused = true)]
+    async fn a_round_that_worked_is_followed_at_once() {
+        let worked = BatchRound {
+            steps: 1,
+            next_due_in: Some(Duration::from_millis(50)),
+            ..BatchRound::default()
+        };
+        let at = batch_rounds(Duration::from_secs(1), vec![worked]).await;
+        assert_eq!(at[1] - at[0], Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_during_the_wait_for_a_slot_ends_the_loop() {
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let rounds = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&rounds);
+        let looping = tokio::spawn(run_batches(
+            move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(idle_round(Some(Duration::from_secs(30))))
+            },
+            Duration::from_secs(60),
+            stop_rx,
+        ));
+        let began = tokio::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        stop_tx.send(true).expect("stop");
+        looping.await.expect("the loop ended");
+        assert_eq!(rounds.load(Ordering::SeqCst), 1);
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "the stop waited for the slot or the poll: {:?}",
+            began.elapsed()
+        );
+    }
+
+    /// A slot that has already come (or comes within a microsecond) is a wait of at least `MIN_SLOT_WAKE`: a round that
+    /// answers "now" every time must not become a loop with no pause. The round after the 2,000th stops the loop, so a
+    /// loop without the floor ends too, with no time passed.
+    #[tokio::test(start_paused = true)]
+    async fn a_slot_that_has_come_is_never_a_loop_with_no_pause() {
+        let answers = vec![idle_round(Some(Duration::ZERO)); 2_000];
+        let at = batch_rounds(Duration::from_secs(1), answers).await;
+        assert_eq!(at.len(), 2_001);
+        let total = at[2_000] - at[0];
+        assert!(
+            total >= MIN_SLOT_WAKE * 1_999,
+            "2,000 rounds took {total:?}: some followed another with no pause"
+        );
+    }
+
+    #[test]
+    fn the_idle_pause_is_the_poll_or_the_slot_whichever_comes_first() {
+        let poll = Duration::from_secs(1);
+        let middle = Fixed(0.5);
+        assert_eq!(idle_pause(poll, None, &middle), poll);
+        assert_eq!(
+            idle_pause(poll, Some(Duration::from_millis(50)), &middle),
+            Duration::from_millis(50)
+        );
+        assert_eq!(
+            idle_pause(poll, Some(Duration::from_secs(5)), &middle),
+            poll,
+            "a slot after the poll does not stretch it"
+        );
+        assert_eq!(
+            idle_pause(poll, Some(Duration::ZERO), &middle),
+            MIN_SLOT_WAKE
+        );
+        // the poll keeps its jitter, 80 % to 120 %, so replicas started together do not poll together
+        assert_eq!(
+            idle_pause(poll, None, &Fixed(0.0)),
+            Duration::from_millis(800)
+        );
+        assert_eq!(
+            idle_pause(poll, Some(Duration::from_millis(900)), &Fixed(0.0)),
+            Duration::from_millis(800)
+        );
+        assert_eq!(
+            idle_pause(poll, Some(Duration::from_millis(700)), &Fixed(0.0)),
+            Duration::from_millis(700)
+        );
     }
 }

@@ -6,9 +6,9 @@
 //! application of the action to each are the executor's statements (`T018-046`).
 
 use sagat_application::batch::{
-    ActiveJobLimits, BatchStore, Counts, Drained, DueJob, ItemOutcome, ItemRecord, JobParams,
-    JobRecord, NewJob, NextItem, Preview, Selected, failure_reason_from, item_state_from,
-    item_state_name, selector_from_json, selector_to_json,
+    ActiveJobLimits, BatchStore, Counts, Drained, DueJob, DueJobs, ItemOutcome, ItemRecord,
+    JobParams, JobRecord, NewJob, NextItem, Preview, Selected, failure_reason_from,
+    item_state_from, item_state_name, selector_from_json, selector_to_json,
 };
 use sagat_application::definitions::Applied;
 use sagat_application::error::StoreError;
@@ -43,6 +43,88 @@ impl PgBatchStore {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// The scan of the due jobs as [`BatchStore::due_jobs`] makes it, with the instant it is decided at given and not read:
+    /// `at` stands for what the database's clock read at the start of the scan. The production call passes none and the
+    /// statement reads the clock itself; a test passes an instant earlier than the slot it moved, which is what a slot that
+    /// comes while the statement runs is, and which the statement is held to count as ahead of the scan (G2043).
+    ///
+    /// # Errors
+    /// [`StoreError`] when the statement fails.
+    pub async fn due_jobs_as_of(
+        &self,
+        shards: &[Shard],
+        limit: u32,
+        at: Option<OffsetDateTime>,
+    ) -> Result<DueJobs, StoreError> {
+        let shards: Vec<i16> = shards.iter().map(|s| i16::from(s.index())).collect();
+        // One statement, and the database's clock read once, at its start (`t0`): a job is due when its slot is not after `t0`,
+        // and the slot that is "ahead" is one after `t0`, so a slot that comes while the statement runs, or between this
+        // statement and the next thing the round does, is ahead of the instant the round was decided at and is never lost
+        // (G2043). The slot ahead is one index probe for each shard the replica owns (64 at the most), each walking
+        // `batch_jobs_due_idx (shard, next_slot_at)` from `t0` to the first running job and stopping there, and only a running
+        // job's slot is ever ahead (an applied item moves it; a job in selection is due from its creation and a cancelled one
+        // is moved back to its request, and a test holds that): the cost does not grow with the jobs. The due scan's bound on
+        // the slot is an index condition on the same index. A slot that had come by `t0` and is not due (a selection that
+        // waits for a transaction, items all deferred) is in neither answer, so such a job never becomes a wake-up that
+        // spins. The time to the slot is measured at the end of the statement, by the same clock, never below zero.
+        let rows: Vec<(Option<Uuid>, Option<Uuid>, Option<f64>)> = sqlx::query_as(
+            "WITH t0 AS MATERIALIZED (SELECT coalesce($3::timestamptz, clock_timestamp()) AS at), \
+                  due AS MATERIALIZED ( \
+                    SELECT j.tenant_id, j.id, j.next_slot_at FROM batch_jobs j \
+                     WHERE j.shard = ANY($1) AND j.state IN ('SELECTING', 'RUNNING', 'CANCELLING') \
+                       AND j.next_slot_at <= (SELECT at FROM t0) \
+                       AND ( \
+                         j.state = 'CANCELLING' \
+                         OR (j.state = 'SELECTING' \
+                             AND pg_snapshot_xmin(pg_current_snapshot()) > j.selection_horizon) \
+                         OR (j.state = 'RUNNING' AND ( \
+                             NOT EXISTS (SELECT 1 FROM batch_items w \
+                                          WHERE w.tenant_id = j.tenant_id AND w.job_id = j.id \
+                                            AND w.state = 'DEFERRED' AND w.next_attempt_at > clock_timestamp()) \
+                             OR EXISTS (SELECT 1 FROM batch_items r \
+                                         WHERE r.tenant_id = j.tenant_id AND r.job_id = j.id \
+                                           AND (r.state = 'PENDING' \
+                                                OR (r.state = 'DEFERRED' AND r.next_attempt_at <= clock_timestamp())))))) \
+                     ORDER BY j.next_slot_at, j.id LIMIT $2) \
+             SELECT u.tenant_id, u.id, u.ahead FROM ( \
+                 SELECT d.tenant_id, d.id, d.next_slot_at AS slot, NULL::float8 AS ahead FROM due d \
+                 UNION ALL \
+                 SELECT NULL::uuid, NULL::uuid, NULL::timestamptz, \
+                        extract(epoch FROM (n.slot - clock_timestamp()))::float8 \
+                   FROM (SELECT min(x.slot) AS slot FROM unnest($1::int2[]) AS s(shard) \
+                          CROSS JOIN LATERAL ( \
+                             SELECT j.next_slot_at AS slot FROM batch_jobs j \
+                              WHERE j.shard = s.shard AND j.state = 'RUNNING' \
+                                AND j.next_slot_at > (SELECT at FROM t0) \
+                              ORDER BY j.next_slot_at LIMIT 1) x) n \
+                  WHERE n.slot IS NOT NULL) u \
+             ORDER BY (u.ahead IS NOT NULL), u.slot, u.id",
+        )
+        .bind(shards)
+        .bind(i64::from(limit))
+        .bind(at)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let mut due = DueJobs::default();
+        for (tenant, id, ahead) in rows {
+            match (tenant, id, ahead) {
+                (Some(tenant), Some(id), _) => due.jobs.push(DueJob {
+                    tenant_id: TenantId::new(tenant),
+                    id,
+                }),
+                // a day is far past the longest interval a job can have (1,000 s) and keeps the conversion total
+                (_, _, Some(seconds)) => {
+                    due.next_slot_in = Some(std::time::Duration::from_secs_f64(
+                        seconds.clamp(0.0, 86_400.0),
+                    ));
+                }
+                (_, _, None) => {}
+            }
+        }
+        Ok(due)
     }
 }
 
@@ -434,38 +516,8 @@ impl BatchStore for PgBatchStore {
         Ok(Some(record))
     }
 
-    async fn due_jobs(&self, shards: &[Shard], limit: u32) -> Result<Vec<DueJob>, StoreError> {
-        let shards: Vec<i16> = shards.iter().map(|s| i16::from(s.index())).collect();
-        let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            "SELECT j.tenant_id, j.id FROM batch_jobs j \
-             WHERE j.shard = ANY($1) AND j.state IN ('SELECTING', 'RUNNING', 'CANCELLING') \
-               AND j.next_slot_at <= clock_timestamp() \
-               AND ( \
-                 j.state = 'CANCELLING' \
-                 OR (j.state = 'SELECTING' \
-                     AND pg_snapshot_xmin(pg_current_snapshot()) > j.selection_horizon) \
-                 OR (j.state = 'RUNNING' AND ( \
-                     NOT EXISTS (SELECT 1 FROM batch_items w \
-                                  WHERE w.tenant_id = j.tenant_id AND w.job_id = j.id \
-                                    AND w.state = 'DEFERRED' AND w.next_attempt_at > clock_timestamp()) \
-                     OR EXISTS (SELECT 1 FROM batch_items r \
-                                 WHERE r.tenant_id = j.tenant_id AND r.job_id = j.id \
-                                   AND (r.state = 'PENDING' \
-                                        OR (r.state = 'DEFERRED' AND r.next_attempt_at <= clock_timestamp())))))) \
-             ORDER BY j.next_slot_at, j.id LIMIT $2",
-        )
-        .bind(shards)
-        .bind(i64::from(limit))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_error)?;
-        Ok(rows
-            .into_iter()
-            .map(|(tenant, id)| DueJob {
-                tenant_id: TenantId::new(tenant),
-                id,
-            })
-            .collect())
+    async fn due_jobs(&self, shards: &[Shard], limit: u32) -> Result<DueJobs, StoreError> {
+        self.due_jobs_as_of(shards, limit, None).await
     }
 
     async fn ensure_live(

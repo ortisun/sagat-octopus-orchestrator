@@ -7,7 +7,7 @@
 //! commits nothing. The effect of an item is keyed (`batch:{job}:{run}`), so the step that was
 //! refused after its effect is repeated by the next owner without changing the run twice.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use sagat_application::batch::BatchStore;
 use sagat_application::batch_executor::{BatchExecutor, ItemActions, Stepped};
@@ -81,6 +81,12 @@ pub struct BatchRound {
     pub refused: u32,
     /// Steps that failed for a reason of the store or the platform.
     pub failed: u32,
+    /// How long until the loop should look again, when that is sooner than its poll (G2043). Only a round that did nothing
+    /// and met no refusal or failure says it: the time to the soonest slot of a running job of the shards (measured against
+    /// the start of the round's own scan, so a slot that came during the round is a zero and not lost), or a few
+    /// milliseconds when a due job found nothing to do (the executor's clock reads before the database's). `None` is
+    /// "nothing is known", and the loop sleeps its poll.
+    pub next_due_in: Option<Duration>,
 }
 
 impl BatchRound {
@@ -146,8 +152,11 @@ where
                 return round;
             }
         };
-        round.due = due.len();
-        for job in due {
+        round.due = due.jobs.len();
+        let ahead = due.next_slot_in;
+        // whether a step found a due job with nothing to do: the executor's clock reads before the slot the scan found come
+        let mut found_idle = false;
+        for job in due.jobs {
             if self.full(&round) {
                 break;
             }
@@ -165,7 +174,10 @@ where
                 }
                 match self.executor.step(&job, Some(fence.clone())).await {
                     Ok(Stepped::Acted) => round.steps += 1,
-                    Ok(Stepped::Idle) => break,
+                    Ok(Stepped::Idle) => {
+                        found_idle = true;
+                        break;
+                    }
                     Ok(Stepped::Refused(reason)) => {
                         tracing::debug!(reason, "a batch step was refused");
                         // an item that another step ended, or a job that was cancelled, is an
@@ -185,13 +197,122 @@ where
                 }
             }
         }
+        round.next_due_in = idle_hint(&round, ahead, found_idle);
         round
     }
 }
 
+/// How soon a round that found a job due, and could not step it, comes back: the scan said the job is due by the database's
+/// clock and the executor decided by its own (`DatabaseClock`, whose reading is behind by up to half a round trip, and by
+/// what it has drifted since its last), so the job is not yet due *for the executor*. The two agree within the next
+/// milliseconds; waiting the whole poll for that brings the stall back whenever they differ by a hair. It cannot spin: the
+/// job leaves the scan as soon as the engine's clock agrees, a round costs several statements, and the loop never rests less
+/// than a millisecond, so this is a hundred rounds a second at the most and only while the clocks disagree.
+const DUE_BUT_NOT_YET: Duration = Duration::from_millis(10);
+
+/// What a round tells the loop about its next wake-up (G2043), given the time to the soonest slot ahead of the start of its
+/// scan (`ahead`) and whether a step found a due job with nothing to do (`found_idle`). Only a round that did nothing, and
+/// met neither a refusal nor a failure, says anything: one that worked is followed at once, and one that was refused or
+/// failed is left to the poll.
+///
+/// * a step found a due job with nothing to do: the clocks disagree by a hair (see [`DUE_BUT_NOT_YET`]), so
+///   [`DUE_BUT_NOT_YET`], or the slot ahead when that is sooner;
+/// * otherwise the slot that is ahead, if any. It was measured against the start of the scan, in the scan's own statement,
+///   so a slot that came while the round ran is a zero and not a lost wake-up. A slot that had already come at the start of
+///   the scan and is not due is not here, so a job with nothing to do yet cannot make the loop spin; and a due job that no
+///   step looked at (its shard's lease lapsed between the scan and the step) is the keeper's to renew, not a reason to
+///   look again in ten milliseconds.
+fn idle_hint(round: &BatchRound, ahead: Option<Duration>, found_idle: bool) -> Option<Duration> {
+    if round.did_work() || round.refused > 0 || round.failed > 0 {
+        return None;
+    }
+    if found_idle {
+        return Some(ahead.map_or(DUE_BUT_NOT_YET, |slot| slot.min(DUE_BUT_NOT_YET)));
+    }
+    ahead
+}
+
 #[cfg(test)]
 mod tests {
-    use super::BatchSettings;
+    use std::time::Duration;
+
+    use super::{BatchRound, BatchSettings, DUE_BUT_NOT_YET, idle_hint};
+
+    fn round(due: usize, steps: u32, refused: u32, failed: u32) -> BatchRound {
+        BatchRound {
+            due,
+            steps,
+            refused,
+            failed,
+            next_due_in: None,
+        }
+    }
+
+    #[test]
+    fn a_round_that_found_no_job_due_and_did_nothing_says_the_slot_that_is_ahead() {
+        let ahead = Some(Duration::from_millis(50));
+        assert_eq!(idle_hint(&round(0, 0, 0, 0), ahead, false), ahead);
+        assert_eq!(
+            idle_hint(&round(0, 0, 0, 0), None, false),
+            None,
+            "no job has a slot ahead: the poll"
+        );
+        assert_eq!(
+            idle_hint(&round(0, 0, 0, 0), Some(Duration::ZERO), false),
+            Some(Duration::ZERO),
+            "a slot that came while the scan ran is a zero, which the loop floors at 1 ms: not a lost wake-up"
+        );
+    }
+
+    /// A due job that the executor did not step is the clocks disagreeing by a hair (the database says due, the engine's own
+    /// clock reads before the slot): it is looked at again in a few milliseconds and not after the poll. It cannot spin: the
+    /// job leaves the scan as soon as the engine's clock agrees, a round costs several statements, and the wait is never
+    /// less than the floor of the loop (1 ms) and at most ten here, so it is a hundred rounds a second at the most, and only
+    /// while the clocks disagree.
+    #[test]
+    fn a_due_job_that_was_not_stepped_comes_back_in_a_few_milliseconds() {
+        assert_eq!(
+            idle_hint(&round(1, 0, 0, 0), None, true),
+            Some(DUE_BUT_NOT_YET),
+            "due, a step found nothing to do, nothing else ahead"
+        );
+        assert_eq!(
+            idle_hint(&round(3, 0, 0, 0), Some(Duration::from_secs(60)), true),
+            Some(DUE_BUT_NOT_YET),
+            "a slot far ahead of another job does not stretch it"
+        );
+        assert_eq!(
+            idle_hint(&round(1, 0, 0, 0), Some(Duration::from_millis(3)), true),
+            Some(Duration::from_millis(3)),
+            "and a slot sooner than that is the sooner one"
+        );
+        assert!(DUE_BUT_NOT_YET <= Duration::from_millis(10));
+        assert_eq!(
+            idle_hint(&round(1, 0, 0, 0), None, false),
+            None,
+            "a due job that no step looked at (its lease lapsed) is the keeper's, not a reason to look again at once"
+        );
+    }
+
+    #[test]
+    fn a_round_that_worked_or_was_refused_or_failed_says_nothing() {
+        let ahead = Some(Duration::from_millis(50));
+        for round in [
+            round(1, 1, 0, 0),
+            round(0, 1, 0, 0),
+            round(1, 0, 1, 0),
+            round(1, 0, 0, 1),
+            round(0, 0, 0, 1),
+        ] {
+            for found_idle in [false, true] {
+                assert_eq!(
+                    idle_hint(&round, ahead, found_idle),
+                    None,
+                    "{round:?}: followed at once, or left to the poll"
+                );
+            }
+        }
+    }
 
     fn with(round_actions: u32, steps_per_job: u32) -> BatchSettings {
         BatchSettings {

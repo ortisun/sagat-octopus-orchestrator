@@ -396,6 +396,18 @@ pub struct DueJob {
     pub id: Uuid,
 }
 
+/// What the scan of one round found, in one statement and at one instant of the database's clock (the start of the scan).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DueJobs {
+    /// The jobs to look at, earliest slot first.
+    pub jobs: Vec<DueJob>,
+    /// How long after the start of the scan the soonest slot that was still ahead of that instant comes, over the running
+    /// jobs of the shards (measured by the database's clock when the scan ends, never negative: a slot that came while the
+    /// scan ran is zero). A slot that had already come at the start of the scan is not here: it is a due job, or a job with
+    /// nothing to do yet, which the next round would find the same. `None` when no running job has a slot ahead.
+    pub next_slot_in: Option<std::time::Duration>,
+}
+
 /// What a selection round did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selected {
@@ -518,11 +530,15 @@ pub trait BatchStore: QuotaLookup + Send + Sync {
     /// The jobs of the shards the replica owns that are due to be looked at, earliest first. A job
     /// that has nothing to do yet is not among them (a selection that waits for a transaction, items
     /// that are all deferred to a later time): it would keep the head of every round.
+    ///
+    /// **One statement, one instant**: the jobs and the time to the soonest slot still ahead (what the loop sleeps for when
+    /// no job is due) are answered by one statement that reads the database's clock once, at its start, so a slot that comes
+    /// between the scan and any later look is still ahead of that instant and is never lost (G2043).
     fn due_jobs(
         &self,
         shards: &[Shard],
         limit: u32,
-    ) -> impl Future<Output = Result<Vec<DueJob>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<DueJobs, StoreError>> + Send;
 
     /// One round of the selection: once every transaction that was open when the job was created
     /// has ended, the next page of the runs the selector matches (those created at or before the

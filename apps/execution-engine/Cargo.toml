@@ -40,3 +40,5 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# paused time: a loop's wake-up is tested with the clock of the runtime, not with sleeps
+tokio = { workspace = true, features = ["test-util"] }
