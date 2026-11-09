@@ -299,10 +299,27 @@ pub enum InvalidLakeReceipt {
     Mismatch,
 }
 
+/// What a write that committed is audited with (FR-035-030): two numbers of the typed receipt, so that nothing but digits can reach a
+/// record and the application reads no wire shape of another layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommittedWrite {
+    pub snapshot_id: i64,
+    pub rows_added: Option<u64>,
+}
+
+/// The receipt as the server stores it, and what it says of the write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebuiltReceipt {
+    /// The canonical bytes, built again from typed fields.
+    pub canonical: Vec<u8>,
+    /// `Some` only for a receipt of a commit: a write of no record commits nothing.
+    pub commit: Option<CommittedWrite>,
+}
+
 /// Receipt syntax belongs to an adapter. The server never stores what the runner sent: it reads it into typed fields that accept
 /// only what the contract names, checks it against the step, and stores the receipt built again from those fields.
 pub trait LakeReceiptCodec: Send + Sync {
-    /// The canonical bytes of the receipt of an Iceberg write, or the reason it is not the one of the step.
+    /// The canonical receipt of an Iceberg write and what it says of the write, or the reason it is not the one of the step.
     ///
     /// # Errors
     /// [`InvalidLakeReceipt`] for a receipt that is too large, does not hold as typed fields, is of another kind or outcome, or
@@ -311,7 +328,7 @@ pub trait LakeReceiptCodec: Send + Sync {
         &self,
         receipt: &[u8],
         expected: &ExpectedReceipt<'_>,
-    ) -> Result<Vec<u8>, InvalidLakeReceipt>;
+    ) -> Result<RebuiltReceipt, InvalidLakeReceipt>;
 }
 
 #[cfg(test)]

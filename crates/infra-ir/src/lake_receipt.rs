@@ -9,7 +9,9 @@
 //! along in a field the schema does not have. A field outside the contract is refused, and so is a receipt of a kind
 //! the host does not produce (the PostgreSQL, ClickHouse and broker receipts are written by the runner itself).
 
-use sagat_application::database::{ExpectedReceipt, InvalidLakeReceipt, LakeReceiptCodec};
+use sagat_application::database::{
+    CommittedWrite, ExpectedReceipt, InvalidLakeReceipt, LakeReceiptCodec, RebuiltReceipt,
+};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -320,7 +322,7 @@ impl LakeReceiptCodec for JsonLakeReceiptCodec {
         &self,
         receipt: &[u8],
         expected: &ExpectedReceipt<'_>,
-    ) -> Result<Vec<u8>, InvalidLakeReceipt> {
+    ) -> Result<RebuiltReceipt, InvalidLakeReceipt> {
         if receipt.len() > MAX_RECEIPT_BYTES {
             return Err(InvalidLakeReceipt::TooLarge);
         }
@@ -355,6 +357,17 @@ impl LakeReceiptCodec for JsonLakeReceiptCodec {
         {
             return Err(InvalidLakeReceipt::Mismatch);
         }
-        serde_json::to_vec(&Receipt::Iceberg(iceberg)).map_err(|_| InvalidLakeReceipt::Malformed)
+        // What the audit of a write that committed needs, from the typed fields and nowhere else (the consistency checks above hold that a
+        // commit has a snapshot).
+        let commit = match iceberg.outcome {
+            IcebergOutcome::Committed => iceberg.snapshot_id.map(|snapshot| CommittedWrite {
+                snapshot_id: snapshot.get(),
+                rows_added: iceberg.rows_added.map(Count::get),
+            }),
+            IcebergOutcome::EmptyNoCommit | IcebergOutcome::Reverted => None,
+        };
+        let canonical = serde_json::to_vec(&Receipt::Iceberg(iceberg))
+            .map_err(|_| InvalidLakeReceipt::Malformed)?;
+        Ok(RebuiltReceipt { canonical, commit })
     }
 }
