@@ -6,7 +6,7 @@
 //! through the private entry **because its workflow is internal and for no other reason**, and a start that is refused creates nothing: a
 //! SQL connection, a connection that is not there, a paused one, a deployment with the lake off, and a caller who may not run it.
 //!
-//! The REST probe still refuses an Iceberg connection (slice S6): this is the service, which nothing public calls yet.
+//! The REST probe starts it as well (slice S6c), chosen by the kind of the connection, with the rules of the service.
 //!
 //! It runs inside the lifecycle scenario of `main.rs`, with the OpenBao of that scenario.
 #![allow(clippy::expect_used, clippy::panic)]
@@ -28,11 +28,12 @@ use sagat_domain::{
     database::{ConnectionRef, ICEBERG_PROBE_ACTIVITY},
     execution::RunId,
     identity::{NamespaceId, Principal, Role, Slug},
+    quota::QuotaResource,
 };
 use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
 use sagat_infra_postgres::PgRunStore;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
 pub(super) type Runs = RunService<PgRunStore, SystemClock, JsonEvaluator>;
@@ -144,7 +145,16 @@ pub(super) async fn platform(
     )
     .await;
     put_connection(&p, &ns, "probe-warehouse", 0, "ACTIVE", &lake_config()).await;
+    // two more of the same kind: a probe in flight holds its own connection and revision, and not these
+    put_connection(&p, &ns, "probe-second", 0, "ACTIVE", &lake_config()).await;
+    put_connection(&p, &ns, "probe-rest", 0, "ACTIVE", &lake_config()).await;
+    // and two for the starts that race
+    put_connection(&p, &ns, "probe-race", 0, "ACTIVE", &lake_config()).await;
+    put_connection(&p, &ns, "probe-race-b", 0, "ACTIVE", &lake_config()).await;
     put_connection(&p, &ns, "probe-sql", 0, "ACTIVE", &sql_config()).await;
+    // a connection whose first revision is an Iceberg one and whose current revision is a SQL one: the kind is read at the revision asked for
+    put_connection(&p, &ns, "probe-switch", 0, "ACTIVE", &lake_config()).await;
+    put_connection(&p, &ns, "probe-switch", 1, "ACTIVE", &sql_config()).await;
     put_connection(&p, &ns, "probe-paused", 0, "ACTIVE", &lake_config()).await;
     put_connection(&p, &ns, "probe-paused", 1, "PAUSED", &lake_config()).await;
     let runs = runs_of(&p);
@@ -158,6 +168,139 @@ async fn count(p: &Platform, table: &str) -> i64 {
         .fetch_one(&p.api.db.pool)
         .await
         .expect("a count")
+}
+
+/// The quota lock of the active runs of the namespace, which every start in it takes, held from a side transaction: the starts that are
+/// made meanwhile have done their replay lookup and wait at it, and are let go together when it is released.
+async fn hold_the_namespace(
+    p: &Platform,
+    namespace: NamespaceId,
+) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    let key = format!(
+        "quota:{}:{}:{namespace}",
+        QuotaResource::ActiveRuns,
+        p.tenant
+    );
+    let mut held = p.api.db.pool.begin().await.expect("a side transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(key)
+        .execute(&mut *held)
+        .await
+        .expect("the lock");
+    held
+}
+
+/// Waits until `n` sessions wait for an advisory lock, read from `pg_stat_activity`: the starts are at the lock, past everything that
+/// comes before it.
+async fn waiting_for_the_lock(p: &Platform, n: i64) {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'",
+            )
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("the sessions");
+            if waiting >= n {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the starts reach the lock");
+}
+
+/// How many probes were ever made of the connection `name`.
+async fn probes_of(p: &Platform, name: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM run_database_connections b JOIN database_connections c ON c.tenant_id = b.tenant_id AND c.namespace_id = b.namespace_id AND c.id = b.connection_id WHERE b.tenant_id = $1 AND c.name = $2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(name)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("a count")
+}
+
+/// Starts that are made at the same time, held at the lock of the namespace until both have reached it (a held lock and
+/// `pg_stat_activity`, and no sleep that a machine could outlast).
+async fn races(p: &Platform, ns: &str, runs: &Runs) {
+    let namespace: NamespaceId = ns.parse().expect("a namespace id");
+    let admin = Principal::new(p.tenant, subject(HUMAN), Role::Admin);
+
+    // --- The retry of a start that has not finished is that start, and not a conflict: a client that times out and sends the same key
+    // again can reach the check while the first start holds the lock, and the first one's run is what the key stands for.
+    let connection = reference("probe-race", None);
+    let held = hold_the_namespace(p, namespace).await;
+    let (first_ctx, retry_ctx) = (ctx(), ctx());
+    let first = runs.start_lake_probe(
+        &admin,
+        namespace,
+        &connection,
+        "lake-probe-race-0001",
+        &first_ctx,
+    );
+    let retry = runs.start_lake_probe(
+        &admin,
+        namespace,
+        &connection,
+        "lake-probe-race-0001",
+        &retry_ctx,
+    );
+    let release = async {
+        waiting_for_the_lock(p, 2).await;
+        held.commit().await.expect("the lock is released");
+    };
+    let (first, retry, ()) = tokio::join!(first, retry, release);
+    let first = first.expect("the first start");
+    let retry = retry.expect("the retry of the same key is the same run, not a conflict");
+    assert_eq!(first.info.run_id, retry.info.run_id);
+    assert_eq!(probes_of(p, "probe-race").await, 1, "and one run was made");
+
+    // --- Two starts of one connection and revision under different keys: one is made and the other is refused, whichever gets the lock
+    // first, and the refused one leaves nothing behind.
+    let connection = reference("probe-race-b", None);
+    let held = hold_the_namespace(p, namespace).await;
+    let (a_ctx, b_ctx) = (ctx(), ctx());
+    let a = runs.start_lake_probe(
+        &admin,
+        namespace,
+        &connection,
+        "lake-probe-race-0002",
+        &a_ctx,
+    );
+    let b = runs.start_lake_probe(
+        &admin,
+        namespace,
+        &connection,
+        "lake-probe-race-0003",
+        &b_ctx,
+    );
+    let release = async {
+        waiting_for_the_lock(p, 2).await;
+        held.commit().await.expect("the lock is released");
+    };
+    let (a, b, ()) = tokio::join!(a, b, release);
+    let (made, refused) = [&a, &b]
+        .iter()
+        .fold((0, 0), |(made, refused), result| match result {
+            Ok(_) => (made + 1, refused),
+            Err(AppError::StateConflict(_)) => (made, refused + 1),
+            Err(_) => (made, refused),
+        });
+    assert_eq!(
+        (made, refused),
+        (1, 1),
+        "one start is made and one is a conflict: {:?} and {:?}",
+        a.as_ref().map(|run| run.info.run_id),
+        b.as_ref().map(|run| run.info.run_id)
+    );
+    assert_eq!(
+        probes_of(p, "probe-race-b").await,
+        1,
+        "and one run was made"
+    );
 }
 
 pub async fn run(provider: Arc<dyn SecretProvider>) {
@@ -232,7 +375,9 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
     );
     drop(tx);
 
-    // --- The same key is the same run; another key is another probe.
+    // --- The same key is the same run, also while it is in flight. Another key is another probe only for another connection: a probe costs a
+    // container, two secret reads and a call to the customer's catalog, so at most one is in flight for a connection and a revision, whether
+    // the revision is named or is the current one.
     let again = runs
         .start_lake_probe(
             &admin,
@@ -244,16 +389,38 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .await
         .expect("a replay");
     assert_eq!(again.info.run_id, run, "an idempotent start");
+    let runs_in_flight = count(&p, "runs").await;
+    for (what, revision) in [("the current revision", None), ("a named one", Some(1))] {
+        let refused = runs
+            .start_lake_probe(
+                &admin,
+                namespace,
+                &reference("probe-warehouse", revision),
+                &key(2),
+                &ctx(),
+            )
+            .await
+            .expect_err(what);
+        assert!(
+            matches!(refused, AppError::StateConflict(_)),
+            "a probe of this connection and revision is in flight, {what}: {refused:?}"
+        );
+    }
+    assert_eq!(
+        count(&p, "runs").await,
+        runs_in_flight,
+        "and the refused starts left no run behind"
+    );
     let second = runs
         .start_lake_probe(
             &admin,
             namespace,
-            &reference("probe-warehouse", Some(1)),
+            &reference("probe-second", None),
             &key(2),
             &ctx(),
         )
         .await
-        .expect("a probe of a named revision");
+        .expect("a probe of another connection");
     assert_ne!(second.info.run_id, run);
 
     // --- A start that is refused creates nothing, and says no more than "not found" about a connection it cannot probe, whatever the reason.
@@ -310,8 +477,8 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
     );
 
     // --- No public path starts a probe. The document of a probe, handed to the ad hoc endpoint as an ordinary execution, is refused as any
-    // unknown node is (the public grammar does not know it), and the REST probe still refuses an Iceberg connection until a runner has a
-    // probe to run: no run of this kind can be made by anyone who is not the platform.
+    // unknown node is (the public grammar does not know it): no run of this kind is made from a document of the caller's, and the
+    // REST probe (below) writes the document itself.
     let probe_json: Value = serde_json::from_slice(&sagat_application::runs::lake_probe_document(
         &reference("probe-warehouse", None),
     ))
@@ -328,22 +495,140 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         (400..500).contains(&status),
         "the probe document is not an ad hoc execution ({status}): {refused}"
     );
+    assert_eq!(count(&p, "runs").await, runs_before, "and it made no run");
+
+    // --- The REST probe starts the probe of an Iceberg connection, chosen by the kind of the connection, with the same rules as the service:
+    // one in flight for a connection and a revision (a conflict, and no run made), and the probe of a SQL connection is what it always was.
+    let probe_path = |name: &str| format!("/namespaces/{ns}/connections/{name}/probe");
     let (status, refused) = p
         .rest(
             Method::POST,
-            &format!("/namespaces/{ns}/connections/probe-warehouse/probe"),
+            &probe_path("probe-warehouse"),
             Some(&json!({})),
         )
         .await;
-    assert!(
-        status != 201,
-        "the REST probe does not start a probe of an Iceberg connection yet ({status}): {refused}"
-    );
     assert_eq!(
-        count(&p, "runs").await,
-        runs_before,
-        "and neither made a run"
+        status, 409,
+        "a probe of this connection is in flight: {refused}"
     );
+    assert_eq!(count(&p, "runs").await, runs_before, "and it made no run");
+    let (status, started) = p
+        .rest(Method::POST, &probe_path("probe-rest"), Some(&json!({})))
+        .await;
+    assert_eq!(status, 201, "the probe of an Iceberg connection: {started}");
+    let rest_run: Uuid = started["runId"]
+        .as_str()
+        .expect("the run")
+        .parse()
+        .expect("a run id");
+    let step: (String, Option<String>) = sqlx::query_as(
+        "SELECT status, activity FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = 'probe'",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(rest_run)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("the step");
+    assert_eq!(
+        step,
+        ("READY".to_owned(), Some(ICEBERG_PROBE_ACTIVITY.to_owned())),
+        "the REST probe of an Iceberg connection waits for a runner that offers the probe"
+    );
+    let (status, refused) = p
+        .rest(Method::POST, &probe_path("probe-rest"), Some(&json!({})))
+        .await;
+    assert_eq!(status, 409, "and holds its connection: {refused}");
+    let (status, refused) = p
+        .rest(
+            Method::POST,
+            &probe_path("probe-rest"),
+            Some(&json!({"revision": 1})),
+        )
+        .await;
+    assert_eq!(status, 409, "also when the revision is named: {refused}");
+    // a revision is its own connection to a probe: another revision starts while this one is in flight, and each holds the one it was
+    // started on, whether the caller named it or took the current one
+    put_connection(&p, &ns, "probe-rest", 1, "ACTIVE", &lake_config()).await;
+    let (status, other) = p
+        .rest(
+            Method::POST,
+            &probe_path("probe-rest"),
+            Some(&json!({"revision": 2})),
+        )
+        .await;
+    assert_eq!(
+        status, 201,
+        "a probe of another revision is not held by this one: {other}"
+    );
+    for (what, body) in [
+        ("the first revision", json!({"revision": 1})),
+        ("the second", json!({"revision": 2})),
+        ("the current one, which is the second", json!({})),
+    ] {
+        let (status, refused) = p
+            .rest(Method::POST, &probe_path("probe-rest"), Some(&body))
+            .await;
+        assert_eq!(status, 409, "a probe of {what} is in flight: {refused}");
+    }
+    let (status, first) = p
+        .rest(
+            Method::POST,
+            &probe_path("probe-switch"),
+            Some(&json!({"revision": 1})),
+        )
+        .await;
+    assert_eq!(
+        status, 201,
+        "the kind is the kind of the revision asked for, an Iceberg one: {first}"
+    );
+    let switched: Uuid = first["runId"]
+        .as_str()
+        .expect("the run")
+        .parse()
+        .expect("a run id");
+    let activity: Option<String> = sqlx::query_scalar(
+        "SELECT activity FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = 'probe'",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(switched)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("the step");
+    assert_eq!(activity.as_deref(), Some(ICEBERG_PROBE_ACTIVITY));
+    let (status, current) = p
+        .rest(Method::POST, &probe_path("probe-switch"), Some(&json!({})))
+        .await;
+    assert_eq!(
+        status, 201,
+        "and the current revision, a SQL one, is the SQL probe: {current}"
+    );
+    let (status, sql) = p
+        .rest(Method::POST, &probe_path("probe-sql"), Some(&json!({})))
+        .await;
+    assert_eq!(status, 201, "the probe of a SQL connection: {sql}");
+    let (status, again) = p
+        .rest(Method::POST, &probe_path("probe-sql"), Some(&json!({})))
+        .await;
+    assert_eq!(
+        status, 201,
+        "a SQL probe is not held to one in flight, as it never was: {again}"
+    );
+    let (status, refused) = p
+        .rest(Method::POST, &probe_path("probe-paused"), Some(&json!({})))
+        .await;
+    assert_eq!(
+        status, 404,
+        "a paused connection is not probed, and is answered as one that is not there: {refused}"
+    );
+    let (status, refused) = p
+        .rest(Method::POST, &probe_path("probe-absent"), Some(&json!({})))
+        .await;
+    assert_eq!(
+        status, 404,
+        "a connection that is not there is not found: {refused}"
+    );
+
+    races(&p, &ns, &runs).await;
 
     // --- With the lake off a probe is refused at the start, instead of waiting for a runner that is not there.
     let (off, off_ns, off_runs) = platform(&provider, false).await;

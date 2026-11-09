@@ -237,6 +237,18 @@ pub trait RunStore:
         name: &sagat_domain::identity::Slug,
     ) -> impl Future<Output = Result<Option<ConnectionProbe>, StoreError>> + Send;
 
+    /// Whether the active connection `name` of the namespace, at `revision` (the current one when none is asked for), is an Apache
+    /// Iceberg connection: what the probe reads to choose its document (D035-150). It is `false` for every other answer, a SQL
+    /// connection, one that is missing, paused or deleted, a revision that is not there and another tenant's, so a caller who is
+    /// refused afterwards by admission learns no more from this than from that.
+    fn is_lake_connection(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &sagat_domain::identity::Slug,
+        revision: Option<u32>,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// Opens a run for a command. `None` when it does not exist (or, with
     /// [`Lock::SkipLocked`], when another transaction holds it).
     fn begin(

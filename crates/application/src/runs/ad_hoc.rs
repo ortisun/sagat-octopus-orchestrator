@@ -198,6 +198,15 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
     }
 
     #[tracing::instrument(skip_all, name = "database.probe.start", fields(tenant_id = %principal.tenant_id(), namespace_id = %namespace, run_id = tracing::field::Empty))]
+    /// The probe of a connection, **chosen by the kind of the connection** (D035-150): the probe of an Iceberg connection is
+    /// [`Self::start_lake_probe`], and anything else, a SQL connection or one that is not there, is the fixed `SELECT 1`, which admission
+    /// refuses for a connection that is not a SQL one with the answer it has always given. The kind is read **before** the permissions are
+    /// looked at, for the tenant of the caller only, and says nothing to the caller: it chooses a document, and the start that follows is
+    /// authorised and admitted as any other.
+    ///
+    /// # Errors
+    /// The refusals of any ad hoc start, and for an Iceberg connection also `StateConflict` while a probe of the same connection and
+    /// revision is in flight.
     pub async fn probe_connection(
         &self,
         principal: &Principal,
@@ -206,6 +215,20 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         key: &str,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
+        if self
+            .store
+            .is_lake_connection(
+                principal.tenant_id(),
+                namespace,
+                &connection.name,
+                connection.revision,
+            )
+            .await?
+        {
+            return self
+                .start_lake_probe(principal, namespace, connection, key, ctx)
+                .await;
+        }
         let document = probe_document(connection);
         self.start_private(
             principal,
@@ -224,12 +247,13 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         .await
     }
 
-    /// The probe of an Iceberg connection (D035-150, ADR-0080): a private run whose one node the platform writes. Nothing public calls it
-    /// yet: the REST probe refuses an Iceberg connection until a runner has a probe to run.
+    /// The probe of an Iceberg connection (D035-150, ADR-0080): a private run whose one node the platform writes. [`Self::probe_connection`]
+    /// calls it for an Iceberg connection, which is how the REST probe reaches it.
     ///
     /// # Errors
     /// `NotFound` for a connection that is not an Iceberg connection of the namespace, whatever the reason (missing, deleted, a SQL one),
-    /// and the refusals of any ad hoc start: permissions, a connection that cannot be admitted, the lake being off.
+    /// `StateConflict` while a probe of the same connection and revision is in flight (a replay of the key that started it is that
+    /// run, not a conflict), and the refusals of any ad hoc start: permissions, a connection that cannot be admitted, the lake being off.
     #[tracing::instrument(skip_all, name = "database.lake_probe.start", fields(tenant_id = %principal.tenant_id(), namespace_id = %namespace, run_id = tracing::field::Empty))]
     pub async fn start_lake_probe(
         &self,

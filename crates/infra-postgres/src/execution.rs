@@ -1142,6 +1142,29 @@ impl RunStore for PgRunStore {
                 let _ = tx.rollback().await;
                 return Err(error);
             }
+            // After admission (which holds the namespace's lock of secrets to the end of the transaction) and the quota lock of the
+            // namespace: see the function.
+            if info.origin == Some(sagat_application::runs::RunOrigin::ConnectionProbe)
+                && new
+                    .definition
+                    .nodes()
+                    .any(|n| n.lake_probe_target().is_some())
+                && let Err(error) =
+                    ad_hoc::ensure_no_probe_in_flight(&mut tx, info, &bindings).await
+            {
+                let _ = tx.rollback().await;
+                // A retry of the key that started the probe can reach this point while the first start still holds the lock (it did its
+                // replay lookup before that start committed): the probe in flight is then its own, and the key stands for that run
+                // and not for a conflict. A fresh transaction sees what the first one committed.
+                if matches!(error, StoreError::StateConflict(_))
+                    && let Some(existing) = self
+                        .replay_start(tenant, &new.info.started_by, &new.idempotency)
+                        .await?
+                {
+                    return Ok(Applied::Replayed(existing));
+                }
+                return Err(error);
+            }
             // Admission locks precede payload uniqueness checks, as in evaluated handoff.
             // A novel input/state can be retained concurrently by either writer.
             sqlx::query(
@@ -1337,6 +1360,15 @@ impl RunStore for PgRunStore {
         name: &Slug,
     ) -> Result<Option<sagat_application::runs::ConnectionProbe>, StoreError> {
         ad_hoc::latest_probe(self, tenant, namespace, name).await
+    }
+    async fn is_lake_connection(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &Slug,
+        revision: Option<u32>,
+    ) -> Result<bool, StoreError> {
+        ad_hoc::is_lake_connection(self, tenant, namespace, name, revision).await
     }
 
     async fn begin(
