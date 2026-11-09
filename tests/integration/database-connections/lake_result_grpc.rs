@@ -38,7 +38,14 @@ fn selecting(name: &str) -> Value {
                 "mapping": [
                     {"field": "/id", "column": "id"},
                     {"field": "/total", "column": "total"}
-                ]
+                ],
+                "next": "elsewhere"
+            }),
+            // A statement of its own, on a connection of its own, after the write: what the write is admitted against is its own
+            // connection and the one its rows came from, and not every connection of the workflow.
+            json!({
+                "id": "elsewhere", "type": "database", "connectionRef": {"name": "other-db"},
+                "operation": "query", "statement": "SELECT 2"
             }),
         ],
     )
@@ -113,17 +120,37 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
             .await;
         assert_eq!(status, 200, "{body}");
     }
+    let source = |status: &str, expected_revision: u32| {
+        json!({
+            "requestId": Uuid::new_v4().to_string(), "expectedRevision": expected_revision, "status": status,
+            "config": {
+                "driver": "postgresql", "host": "db.example.com", "port": 5432, "database": "test",
+                "tls": {"mode": "verify-full"}, "secretName": "source-credential"
+            }
+        })
+    };
     let (status, body) = p
         .rest(
             Method::PUT,
             &format!("/namespaces/{ns}/connections/source-db"),
-            Some(&json!({
-                "requestId": Uuid::new_v4().to_string(), "expectedRevision": 0, "status": "ACTIVE",
-                "config": {
-                    "driver": "postgresql", "host": "db.example.com", "port": 5432, "database": "test",
-                    "tls": {"mode": "verify-full"}, "secretName": "source-credential"
-                }
-            })),
+            Some(&source("ACTIVE", 0)),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let other = |status: &str, expected_revision: u32| {
+        json!({
+            "requestId": Uuid::new_v4().to_string(), "expectedRevision": expected_revision, "status": status,
+            "config": {
+                "driver": "postgresql", "host": "other.example.com", "port": 5432, "database": "test",
+                "tls": {"mode": "verify-full"}, "secretName": "source-credential"
+            }
+        })
+    };
+    let (status, body) = p
+        .rest(
+            Method::PUT,
+            &format!("/namespaces/{ns}/connections/other-db"),
+            Some(&other("ACTIVE", 0)),
         )
         .await;
     assert_eq!(status, 200, "{body}");
@@ -203,6 +230,51 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .await
         .expect("the result of the statement");
 
+    // The rows are already in the run, but the connection they came from is still asked when they are written: paused, it stops the
+    // write, which waits (it is refused and the refusal is audited, as for the claim of any managed step) and is leased when the
+    // connection is resumed. A revocation that has returned stops every subsequent admission.
+    let (status, body) = p
+        .rest(
+            Method::PUT,
+            &format!("/namespaces/{ns}/connections/source-db"),
+            Some(&source("PAUSED", 1)),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        lake.poll(8).await.is_empty(),
+        "the connection the rows came from is paused: the write waits"
+    );
+    let refusals: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id = $1 AND action = 'database.denied' AND resource_id = $2",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(&run)
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("the refusals");
+    assert_eq!(
+        refusals, 1,
+        "the refused claim of the write is audited for the run"
+    );
+    let (status, body) = p
+        .rest(
+            Method::PUT,
+            &format!("/namespaces/{ns}/connections/source-db"),
+            Some(&source("ACTIVE", 2)),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    // A connection of the workflow that the write has nothing to do with, paused, does not stop it.
+    let (status, body) = p
+        .rest(
+            Method::PUT,
+            &format!("/namespaces/{ns}/connections/other-db"),
+            Some(&other("PAUSED", 1)),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+
     // The write is leased with the rows of the result as its records.
     let write = lake.one_task().await;
     assert_eq!(write.activity_name, ICEBERG_WRITE_ACTIVITY);
@@ -237,6 +309,15 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         !format!("{reads:?}").contains("r-1"),
         "the audit record carries no value of the result"
     );
+
+    let (status, body) = p
+        .rest(
+            Method::PUT,
+            &format!("/namespaces/{ns}/connections/other-db"),
+            Some(&other("ACTIVE", 2)),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
 
     // A result that cannot be records fails the write for good, with the code that says why, and leases nothing.
     let second = p.start(&workflow, &json!({})).await;
