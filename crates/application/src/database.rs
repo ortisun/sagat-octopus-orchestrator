@@ -151,6 +151,9 @@ pub struct ConnectionService<S, C> {
     /// `allowUnauthenticatedMetastore`: whether a Hive metastore may be used without TLS. Off unless the deployment says
     /// so, since it has neither transport security nor authentication.
     allow_unauthenticated_metastore: bool,
+    /// `lake.enabled`: whether this deployment runs Apache Iceberg writes, so whether it offers an Iceberg connection (feature 035). Off
+    /// unless the deployment says so.
+    lake_enabled: bool,
 }
 impl<S: ConnectionStore, C: Clock> ConnectionService<S, C> {
     pub fn new(store: S, clock: C) -> Self {
@@ -158,7 +161,19 @@ impl<S: ConnectionStore, C: Clock> ConnectionService<S, C> {
             store,
             clock,
             allow_unauthenticated_metastore: false,
+            lake_enabled: false,
         }
+    }
+    /// The deployment's `lake.enabled`, which decides whether the drivers it lists include Apache Iceberg.
+    #[must_use]
+    pub const fn with_lake_enabled(mut self, enabled: bool) -> Self {
+        self.lake_enabled = enabled;
+        self
+    }
+    /// Whether the deployment offers an Iceberg connection: it runs Iceberg writes.
+    #[must_use]
+    pub const fn lake_enabled(&self) -> bool {
+        self.lake_enabled
     }
     /// Lets a connection use a Hive metastore with `tls: none` (the deployment's `allowUnauthenticatedMetastore`).
     #[must_use]

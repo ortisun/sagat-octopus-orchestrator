@@ -929,7 +929,11 @@ test to every catalog and storage type.
   Not done: `GET /database-drivers` listing `iceberg` (with the probe, T035-045) and `UNKNOWN_CONNECTION_KIND`, which
   belongs to the publication that meets a connection of a kind it cannot use.
 
-  *2026-11-09, slice S6c (the start of the probe; this task stays unticked for the listing):* `POST …/connections/{name}/probe` starts the probe of an Iceberg connection (chosen by the kind at the revision asked for), at most one
+  *2026-11-09, `GET /database-drivers`:* lists `iceberg` when the deployment has `lake.enabled` (catalog `rest`, storage `s3`, mode `append`, formats `parquet` and `ndjson`: what is served end to end), tested in the lifecycle scenario
+  and in the real `serve` (`the_lake_switch_reaches_the_services_that_publish`), 9 hand mutations killed. **Not done, so the task stays unticked:** the reason `UNKNOWN_CONNECTION_KIND`, which belongs to the publication that meets a
+  connection of a kind it cannot use.
+
+  *2026-11-09, slice S6c (the start of the probe; this task stayed unticked for the listing, which is done above):* `POST …/connections/{name}/probe` starts the probe of an Iceberg connection (chosen by the kind at the revision asked for), at most one
   in flight for a connection and a revision (`409`), a retry of the key is the run; `integration_database_connections` 7 (also as the runtime role), 16 hand mutations (13 killed, 3 equivalent), reviewed (research.md, S6c note,
   G035-093). **Not done:** `GET /database-drivers` listing `iceberg`.
 - [x] T035-044 [US01] Resolve the Iceberg connection. `ResolvedDatabase.iceberg` is built in

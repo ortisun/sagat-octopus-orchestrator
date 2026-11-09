@@ -12,7 +12,11 @@ their shape and read `egressCeiling` as `internal`.
   `discriminator.propertyName: driver`. Every config is `additionalProperties: false`; URIs carrying
   user info or query credentials are refused (`VALIDATION_FAILED`, `reason: CREDENTIAL_IN_URI`).
 - `GET /database-drivers` lists `postgresql`, `iceberg`, `object_storage`, `clickhouse`, each with its
-  supported catalog/storage types and modes, so the Studio and SDKs never hard-code the list.
+  supported catalog/storage types and modes, so the Studio and SDKs never hard-code the list. **What it lists today** (built in slice S6c): `postgresql`
+  always, and `iceberg` **when the deployment has `lake.enabled`**, with what the platform serves end to end and not with everything a connection
+  document may say: `catalogTypes: [rest]`, `storageTypes: [s3]`, `modes: [append]`, `formats: [parquet, ndjson]`. A driver is added to the list when it
+  is built (`object_storage` and `clickhouse` with their tasks, and each further catalog, storage or mode with its own), so that the list never
+  advertises a capability that is not there.
 - `ConnectionProbeResult.checks[]`: `{check, outcome, code?}` with checks `CATALOG_AUTH`,
   `WAREHOUSE`, `STORAGE_ACCESS`, `CONDITIONAL_CREATE`, `TABLE_DEDUPLICATION`, `DATABASE_AUTH`; outcome
   `PASSED` | `FAILED` | `SKIPPED`; codes from [errors.md](errors.md).
