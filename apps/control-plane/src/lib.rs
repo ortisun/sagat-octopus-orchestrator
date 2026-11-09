@@ -676,7 +676,8 @@ pub async fn serve_with_admin(
         Engine::new(JsonEvaluator),
         cache,
     )
-    .with_lag_budget(serve.telemetry_lag_budget);
+    .with_lag_budget(serve.telemetry_lag_budget)
+    .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec));
     if let Some(settings) = &serve.blobs {
         let backend = sagat_infra_blobstore::build_backend(&settings.store, settings.part_size)
             .map_err(|_| RunError::Refused("could not set up the object store (SAGAT_BLOB_*)"))?;

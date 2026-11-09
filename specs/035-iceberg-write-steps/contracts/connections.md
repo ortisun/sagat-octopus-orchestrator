@@ -16,6 +16,15 @@ their shape and read `egressCeiling` as `internal`.
 - `ConnectionProbeResult.checks[]`: `{check, outcome, code?}` with checks `CATALOG_AUTH`,
   `WAREHOUSE`, `STORAGE_ACCESS`, `CONDITIONAL_CREATE`, `TABLE_DEDUPLICATION`, `DATABASE_AUTH`; outcome
   `PASSED` | `FAILED` | `SKIPPED`; codes from [errors.md](errors.md).
+- **What a reader of `GET …/connections/{name}/probe` sees for an Iceberg connection** (D035-150, built in slice S4b; `DatabaseConnectionProbe`
+  in the OpenAPI): `checks[]` beside the `failureCode` every reader already had. A failed check is the answer and not a fault of the platform, so
+  the run of the probe is `SUCCEEDED`; `run.status` says that **the probe ran**, and what it found is `failureCode` and `checks[]`.
+  **`failureCode` is the code of the first failed check**, so a reader that knows no checks still sees that something is wrong; a fault of the
+  platform (the step failed) keeps its own code and has no checks. An Iceberg probe that succeeded and whose result can no longer be read (the
+  payload was purged, it is not the probe's, or the server has no codec) says `DATABASE_RESULT_UNAVAILABLE`: **no checks never means a healthy
+  connection**. A `SKIPPED` check is not confirmed and is never `PASSED`; a connection is confirmed only when every check is `PASSED`. A probe
+  that has not ended says nothing yet. The member is absent for any other probe. Every closed list in the schema (the checks, the outcomes, the
+  codes) is held equal to the domain's by a contract test.
 
 ## Catalog browsing (FR-035-007)
 

@@ -8,8 +8,8 @@
 mod ad_hoc;
 pub(crate) use ad_hoc::audit_denied as audit_database_execution_denied;
 pub use ad_hoc::{
-    AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
-    lake_probe_document,
+    AdHocMode, ConnectionProbe, ProbeView, ProbeViewInput, RetainedDefinition, RunOrigin,
+    StartDatabaseExecution, lake_probe_document, probe_view,
 };
 
 use std::future::Future;
@@ -428,6 +428,7 @@ pub struct RunService<S, C, E> {
         crate::blobs::BlobService,
         Arc<dyn crate::blobs::RunInputChecker>,
     )>,
+    lake_probes: Option<Arc<dyn crate::database::LakeProbeCodec>>,
 }
 
 /// The state of a run's telemetry and what it is judged by.
@@ -459,6 +460,7 @@ where
             cache,
             lag_budget: Duration::from_secs(30),
             input_blobs: None,
+            lake_probes: None,
         }
     }
 
@@ -476,6 +478,14 @@ where
         checker: Arc<dyn crate::blobs::RunInputChecker>,
     ) -> Self {
         self.input_blobs = Some((blobs, checker));
+        self
+    }
+
+    /// The codec that reads the result of the probe of an Iceberg connection back from what the store kept (D035-150). Without it the checks
+    /// of a probe are not shown, and an Iceberg probe that succeeded says its result is unavailable, never that the connection is healthy.
+    #[must_use]
+    pub fn with_lake_probes(mut self, probes: Arc<dyn crate::database::LakeProbeCodec>) -> Self {
+        self.lake_probes = Some(probes);
         self
     }
 
