@@ -39,7 +39,9 @@ minor when this feature merges (D035-043; drafts 020, 021, 025 and 026 also clai
   ids or inline records). Credentials never travel in the lease.
 - **`TaskLease` input of the probe** (D035-150): `sagat.lake.probe-input.v1`, pinned by the fixture
   `tests/contract/iceberg-writes/fixtures/probe-input/probe.json`, which the server's builder produces byte for byte and the runner's
-  reader will be held to. It carries `operation: "probe"`, the connection by the name and the revision the probe was admitted with (what
+  reader is held to (slice S6a, `ProbeInput::read` in `crates/infra-lake`: one object of at most 4 KiB, no name twice at any depth, every
+  member of its own type and bounds, a slug for the name, a revision of 1 to 2^32-1, `checkTimeoutMs` of 100 to 60 000, the three checks in order;
+  `fixtures/probe-input/refused.json` lists what it refuses, one document for each reason). It carries `operation: "probe"`, the connection by the name and the revision the probe was admitted with (what
   the result echoes), `checks` (`CATALOG_AUTH`, `WAREHOUSE`, `STORAGE_ACCESS`, in the order they run) and `checkTimeoutMs`, and nothing else:
   no secret, address or table. The connection and its two secrets come from `ResolveDatabase`, read and pinned as a write's are. A probe has
   its own budget (one in flight in a namespace, four in a tenant, `LAKE_PROBE_*`), so it neither waits for a write nor makes one wait.

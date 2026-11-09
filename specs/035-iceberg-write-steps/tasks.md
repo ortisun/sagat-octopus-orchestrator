@@ -956,6 +956,11 @@ test to every catalog and storage type.
   `test_probe_operation.py` 49, `test_probe_storage.py` 38 against the real S3 client, 7 new in `test_rest_catalog.py`; the host suite 1 323 passed, 1 skipped; an independent security and correctness review before the push, whose findings are fixed: research.md, S5), held to the server's corpus and to `ProbeCheck::allows` from both sides. **Not done** — the
   runner wiring in `apps/database-runner/src/lake.rs` (both lake activities in one session, the sandbox request, `ResolveDatabase`, the inline result), the REST start, the listing in `GET /database-drivers` (T035-043),
   and the S3 route inside the sandbox (G035-088, T035-031). T035-040's integration test is not written.
+
+  *2026-11-09, slice S6a (partly done, not ticked):* **done** — the probe on the runner's wire, in `crates/infra-lake` and with no change to `apps/`: `ProbeInput::read` (the strict reader of the lease, 47 refused documents in
+  `fixtures/probe-input/refused.json`), `ProbeBody` and `Request::probe` (the line the host reads, `fixtures/requests/probe.json`, held on both sides), `Outcome::Probe(ProbeReport)` (the result, held to the server's corpus) and
+  `dispose_probe` (how a probe ends); `tests/probe_wire.rs` 29, `runners/lake/tests/test_wire_probe.py` 7, 27 hand mutations killed. **Not done** — S6b, the runner (`prepare_probe`, the driver, `serves()`, both activities in
+  one session with a write-only fallback, the probe's deadline) and S6c, the REST start and `GET /database-drivers`.
 - [ ] T035-046 [P] [US01] Add the Iceberg connection to the Studio, in
   `frontend/apps/studio/src/features/connections/{ConnectionForm.tsx,ConnectionProbe.tsx,api.ts}`:
   - an Iceberg form with REST and S3 sections;
