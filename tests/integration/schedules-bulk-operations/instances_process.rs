@@ -553,16 +553,22 @@ async fn an_engine_stops_its_passes_and_fails_readiness_when_a_requirement_it_la
         (holds_shards().await == 0).then_some(())
     })
     .await;
-    let members: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM scheduler_members WHERE owner = $1")
-            .bind(&owner)
-            .fetch_one(&r.db.pool)
-            .await
-            .expect("members");
-    assert_eq!(
-        members, 0,
-        "and leaves the replicas that count for the shard shares"
-    );
+    // `Keeper::leave` gives the shards back and then, in a second statement, withdraws the announcement: a read of the members the
+    // instant the shards read zero can land between the two (it did, once, in a run of this suite as the runtime role on a
+    // loaded machine: one member left). The shards are given back first on purpose, so the test waits for the second.
+    eventually(
+        "and leaves the replicas that count for the shard shares",
+        || async {
+            let members: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM scheduler_members WHERE owner = $1")
+                    .bind(&owner)
+                    .fetch_one(&r.db.pool)
+                    .await
+                    .expect("members");
+            (members == 0).then_some(())
+        },
+    )
+    .await;
 
     // the operator removes the requirement: it holds shards and is ready again
     r.operator
