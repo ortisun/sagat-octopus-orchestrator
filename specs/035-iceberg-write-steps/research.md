@@ -3367,6 +3367,12 @@ The other fixes were wording:
     was never made are all `NOT_FOUND` with the same words (the object that is gone proves that the decision comes before the store, which would say `INTERNAL`: `BlobReadError::Lost`, read from `blobs.rs` and not run); the upload is shut. The
     mutation that makes the handler use the old check, which survived the application-level scenario, is killed here. The order of the check and the store is held by the lost object
     and was not mutation-tested (the handler cannot be reordered without the check's own answer).
+  - *What CI found, and I had not (2026-11-09).* The rollback of the pins dropped a table with a foreign key to `runs` without taking the run lock first, as the other rollbacks of tables
+    that hang from a run do (`leaf_success_certification`, `scoped_finish_binding`): a lease holds its run and then writes the pins, so a rollback that took the pins first and the run after
+    could cross it, and `integration_workflow_primitives::leaf_certification::downgrade_waits_on_actual_own_run_prefix_before_retained_fact_check` (which waits for the first rollback that
+    blocks on a run) timed out. The first fix, the lock after a long comment, was not enough: that test reads the **first 1024 bytes** of the waiting statement from `pg_stat_activity`, so the
+    lock statements are the first lines of the file now. I had not run that suite because I had touched three of its files (the stamp of the schema boundary) and took it for a suite of
+    ignored tests; CI selects a suite for the files it contains. Run the suites of the files you edit, and the whole of a suite that undoes migrations when you add one.
   - *Not done in this slice.* A SQL result as a source (G035-067); the container end to end (T035-062); the limits of G035-080 and G035-081.
 - **G035-080 — Pins of lake blobs are never deleted.** `step_lease_blobs` rows go with their run, and nothing purges a run, so up to 32 rows per lake attempt that names blobs stay for
   ever (the credential pins of a lake or SQL attempt do the same), and the rollback of the migration that makes the table stays closed until an operator deletes them. *Exit condition:*
