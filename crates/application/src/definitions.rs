@@ -603,10 +603,7 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Sen
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         async move {
             // An Iceberg write has no admission yet (T035-054): an adapter without lake support refuses it too.
-            if definition
-                .nodes()
-                .any(|node| node.database_operation().is_some() || node.iceberg_write().is_some())
-            {
+            if definition.nodes().any(|node| node.managed_kind().is_some()) {
                 Err(StoreError::DatabaseUnavailable)
             } else {
                 Ok(())

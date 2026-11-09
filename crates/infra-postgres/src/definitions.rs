@@ -212,10 +212,7 @@ impl DefinitionStore for PgDefinitionStore {
         namespace: NamespaceId,
         definition: &WorkflowDefinition,
     ) -> Result<(), StoreError> {
-        if !definition
-            .nodes()
-            .any(|n| n.database_operation().is_some() || n.iceberg_write().is_some())
-        {
+        if !definition.nodes().any(|n| n.managed_kind().is_some()) {
             return Ok(());
         }
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;

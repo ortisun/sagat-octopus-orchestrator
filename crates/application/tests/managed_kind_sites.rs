@@ -88,3 +88,100 @@ fn the_check_sees_the_narrow_question_however_it_is_laid_out() {
         "reading the SQL operation for what only SQL has (a write) is not the question"
     );
 }
+
+// ---- The same rule, written out of the worker paths (feature 035, D035-150, slice S0).
+//
+// A managed step is a SQL statement **or** an Iceberg write (and, with D035-150, an Iceberg probe). Six places stated that by hand,
+// `database_operation().is_some() || iceberg_write().is_some()`: a third kind would have been created with no connection binding and
+// claimed for ever, with nothing failing at compile time. They ask `managed_kind()` now, and this check keeps the by-hand form out of
+// the three crates that decide admission, storage and publication. A question about **one** kind (the SQL-only ad hoc path, the
+// write-only egress check) is a different question and is not flagged: only the two joined are.
+
+/// Every `.rs` file under `crates/<name>/src`, in a stable order.
+fn sources_of(name: &str) -> Vec<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(name)
+        .join("src");
+    let mut files = Vec::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).expect("a source directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Whether the SQL question and the write question are asked within a few characters of each other, in either order and
+/// however the source is laid out: the managed predicate stated by hand.
+fn restates_the_managed_predicate(text: &str) -> bool {
+    const SQL: [&str; 2] = [
+        "database_operation().is_some()",
+        "database_operation().is_none()",
+    ];
+    const LAKE: [&str; 2] = ["iceberg_write().is_some()", "iceberg_write().is_none()"];
+    const NEAR: usize = 60;
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let bytes = compact.as_bytes();
+    SQL.iter().any(|sql| {
+        compact.match_indices(sql).any(|(at, _)| {
+            let window = String::from_utf8_lossy(
+                &bytes[at.saturating_sub(NEAR)..(at + sql.len() + NEAR).min(bytes.len())],
+            )
+            .into_owned();
+            LAKE.iter().any(|lake| window.contains(lake))
+        })
+    })
+}
+
+#[test]
+fn no_production_code_states_the_managed_predicate_by_hand() {
+    let mut offenders = Vec::new();
+    for name in ["application", "infra-postgres", "infra-ir"] {
+        for path in sources_of(name) {
+            let text = fs::read_to_string(&path).expect("a source");
+            if restates_the_managed_predicate(production(&text)) {
+                offenders.push(path.display().to_string());
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "ask `managed_kind().is_some()`, not the two payload questions joined: {offenders:#?}"
+    );
+}
+
+#[test]
+fn the_check_for_the_hand_written_predicate_sees_it_however_it_is_laid_out_and_nothing_else() {
+    assert!(restates_the_managed_predicate(
+        "n.database_operation().is_some() || n.iceberg_write().is_some()"
+    ));
+    assert!(restates_the_managed_predicate(
+        "node\n  .iceberg_write()\n  .is_some()\n  || node\n  .database_operation()\n  .is_some()"
+    ));
+    assert!(restates_the_managed_predicate(
+        "a.database_operation().is_none() && a.iceberg_write().is_none()"
+    ));
+    assert!(
+        !restates_the_managed_predicate("definition.nodes().any(|n| n.iceberg_write().is_some())"),
+        "a question about the write alone is the write's question"
+    );
+    assert!(
+        !restates_the_managed_predicate("nodes.iter().any(|n| n.database_operation().is_some())"),
+        "a question about SQL alone is the SQL path's question"
+    );
+    let far = "x".repeat(200);
+    assert!(
+        !restates_the_managed_predicate(&format!(
+            "n.database_operation().is_some(){far}n.iceberg_write().is_some()"
+        )),
+        "two unrelated questions far apart are not the predicate"
+    );
+}
