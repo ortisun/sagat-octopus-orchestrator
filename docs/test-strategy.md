@@ -30,9 +30,11 @@ merges a pull request would prove again what the pull request proved):
   changed. A changed package does not select a suite because the suite uses it, or uses what depends on it: the suites are
   expensive and the release runs all of them. The browser
   suites when `frontend/e2e` or `examples/` changes; the SDK suites when `sdks/<language>/conformance` changes; the lake
-  suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes; and every
-  suite when `tests/support`, `tests/fixtures`, any other `runners/` directory, a contract file under `specs/` or a
-  dependency of `tests/Cargo.toml` changes.
+  suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes.
+  What is shared selects no suite: `tests/support`, `tests/fixtures`, any other `runners/` directory, a contract file
+  under `specs/`, a dependency of `tests/Cargo.toml` and `Cargo.lock` (which does select the unit tests of every package)
+  are used by suites nobody changed, and the release runs those (OD-2026-11-06-2). The log of the selector says
+  `select no suite: <file> is shared by the suites` so that nobody wonders why a suite did not run.
 
 Nothing else runs: no formatting, no `clippy`, no architecture, agent-configuration or design-doc check, no contract
 validation, no advisory audit, no upgrade, Compose smoke-test, scale or native-runner job. A change that touches only
