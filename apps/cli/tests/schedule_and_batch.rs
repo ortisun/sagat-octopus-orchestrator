@@ -438,6 +438,93 @@ fn a_schedule_that_is_refused_says_why_and_fails() {
 }
 
 #[test]
+fn a_schedule_a_cron_trigger_owns_is_refused_in_words_before_the_handover_and_says_whose_it_is() {
+    let trigger = "01a12aca-0d9d-7589-bf01-bc7b7cc0a7c0";
+    for (verb, extra) in [
+        ("pause", vec!["--note", "maintenance"]),
+        ("resume", vec!["--note", "maintenance"]),
+        ("trigger", vec![]),
+    ] {
+        let mut arguments = vec!["schedule", verb, ID];
+        arguments.extend(extra);
+        let (code, out, err, _) = run(
+            &arguments,
+            vec![
+                namespaces(),
+                reply(
+                    409,
+                    &json!({
+                        "code": "CONFLICT",
+                        "message": "A cron trigger owns this schedule.",
+                        "remediation": "The legacy cron pass still runs; the operator completes the handover once every engine is upgraded.",
+                        "retryable": false,
+                        "details": {"reason": "SCHEDULE_TRIGGER_HANDOVER_PENDING"}
+                    }),
+                ),
+            ],
+        );
+        assert_eq!(code, 1, "{verb}: {out}{err}");
+        let all = format!("{out}{err}");
+        assert!(
+            all.contains("SCHEDULE_TRIGGER_HANDOVER_PENDING"),
+            "{verb}: {all}"
+        );
+        assert!(
+            all.contains("the operator completes the handover"),
+            "{verb}: {all}"
+        );
+        assert!(!all.contains(TOKEN));
+    }
+    let (code, out, _, _) = run(
+        &["schedule", "get", ID],
+        vec![
+            namespaces(),
+            Reply::ok(
+                json!({
+                    "scheduleId": ID, "name": "trigger-5d0c", "state": "ACTIVE", "revision": 1,
+                    "origin": "TRIGGER", "triggerId": trigger,
+                    "nextActions": [], "recentActions": [], "openRuns": [], "bufferedCount": 0
+                })
+                .to_string(),
+            ),
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains(&format!("owned by the cron trigger {trigger}")),
+        "{out}"
+    );
+    assert!(
+        out.contains("once an operator has handed the cron triggers over"),
+        "{out}"
+    );
+    for (controllable, words) in [
+        (true, "are open (the cron triggers were handed over)"),
+        (
+            false,
+            "are refused until an operator has handed the cron triggers over",
+        ),
+    ] {
+        let (code, out, _, _) = run(
+            &["schedule", "get", ID],
+            vec![
+                namespaces(),
+                Reply::ok(
+                    json!({
+                        "scheduleId": ID, "name": "trigger-5d0c", "state": "ACTIVE", "revision": 1,
+                        "origin": "TRIGGER", "triggerId": trigger, "controllable": controllable,
+                        "nextActions": [], "recentActions": [], "openRuns": [], "bufferedCount": 0
+                    })
+                    .to_string(),
+                ),
+            ],
+        );
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains(words), "{controllable}: {out}");
+    }
+}
+
+#[test]
 fn a_schedule_is_updated_deleted_paused_resumed_and_triggered_with_the_requests_the_contract_says()
 {
     let file = write_temp(r#"{"name":"nightly"}"#);

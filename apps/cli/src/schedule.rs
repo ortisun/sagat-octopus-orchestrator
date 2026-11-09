@@ -287,6 +287,22 @@ async fn get(client: &Client, base: &str, id: &str, io: &mut Io<'_>) -> Result<u
         schedule["openRuns"].as_array().map_or(0, Vec::len),
         schedule["bufferedCount"].as_u64().unwrap_or(0)
     ));
+    // a schedule a cron trigger owns says whose it is: its rule is the trigger's, changed only by publishing the workflow
+    if schedule["origin"].as_str() == Some("TRIGGER") {
+        let control = match schedule["controllable"].as_bool() {
+            Some(true) => "pause, resume and run now are open (the cron triggers were handed over)",
+            Some(false) => {
+                "pause, resume and run now are refused until an operator has handed the cron triggers over"
+            }
+            None => {
+                "pause, resume and run now work once an operator has handed the cron triggers over"
+            }
+        };
+        io.say(format!(
+            "  owned by the cron trigger {}: its rule changes only when the workflow is published; {control}",
+            text(&schedule, "triggerId")
+        ));
+    }
     Ok(EXIT_DONE)
 }
 
