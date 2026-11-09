@@ -3,6 +3,7 @@ mod failure;
 mod iceberg;
 mod iceberg_egress;
 mod iceberg_write;
+mod lake_probe;
 pub use failure::DatabaseFailure;
 pub use iceberg::{
     AccessDelegation, AdlsStorage, GcsStorage, GlueCatalog, HiveCatalog, HiveTls, IcebergCatalog,
@@ -18,6 +19,7 @@ pub use iceberg_write::{
     IcebergWriteError, IcebergWriteParts, MAX_MAPPED_COLUMNS, MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS,
     MAX_RECORD_INPUT_BYTES, RecordSource, TableIdentifier, WriteIntent,
 };
+pub use lake_probe::{ICEBERG_PROBE_ACTIVITY, LakeProbe};
 
 use crate::{
     classification::EgressCeiling, identity::Slug, secrets::SecretName, workflow::Expression,
@@ -428,6 +430,8 @@ pub enum ManagedKind {
     Sql,
     /// An Iceberg write, executed by a lake runner.
     Lake,
+    /// The probe of an Iceberg connection, executed by a lake runner (D035-150). It reads and writes nothing of the customer's.
+    LakeProbe,
 }
 
 impl ManagedKind {
@@ -437,7 +441,7 @@ impl ManagedKind {
     pub const fn profile(self) -> crate::binding::BindingProfile {
         match self {
             Self::Sql => crate::binding::BindingProfile::Database,
-            Self::Lake => crate::binding::BindingProfile::Lake,
+            Self::Lake | Self::LakeProbe => crate::binding::BindingProfile::Lake,
         }
     }
 }
