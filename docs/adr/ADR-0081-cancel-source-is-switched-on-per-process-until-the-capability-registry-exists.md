@@ -1,4 +1,4 @@
-# ADR-0080: `CANCEL_SOURCE` is switched on per process, engine first, until the instance-capability registry exists
+# ADR-0081: `CANCEL_SOURCE` is switched on per process, engine first, until the instance-capability registry exists
 
 **Status:** Proposed (2026-11-06)
 **Decided by:** agent (task T018-057), after the correctness, security and architecture reviews of 2026-11-06; the owner has not accepted it. Whether the feature may be on by default before the registry exists is the owner's (G1989).
@@ -43,7 +43,7 @@ Bad: the combination of the control plane on and every engine off is possible an
 
 ## Amendments
 
-- **2026-11-08 (T018-080).** The instance-capability registry exists: migration `20270111000000_instance_registry`, the
+- **2026-11-08 (T018-080).** The instance-capability registry exists: migration `20270113000000_instance_registry`, the
   registration of the control plane and of the engine before they serve, the heartbeat, the epoch check and the activation
   functions (`docs/runbooks/instance-registry.md`; decisions D2013 to D2022 of `specs/018-schedules-bulk-operations/research.md`).
   It exists for `schedules-v1` (feature 018, the handover of the cron triggers, T018-061), `access-narrowing-v1` (029) and
@@ -63,5 +63,5 @@ Bad: the combination of the control plane on and every engine off is possible an
   **(b)** the decision-5 order of the request is unchanged and the expiry takes none of its locks: it follows the completion's
   (the fence of the shard, the entry, then the run, which it reads `FOR SHARE ... SKIP LOCKED` and never waits for), so the table of
   lock order has no new cycle. Decisions 1 to 4 stand: the flag stays off by default and decision 4 (no default-on before the
-  registry) is not lifted by the expiry. No withdrawal call is built (G1991, G2018). Migration `20270113000000_reset_expiry` (the list of
+  registry) is not lifted by the expiry. No withdrawal call is built (G1991, G2018). Migration `20270115000000_reset_expiry` (the list of
   reasons the register admits) is to be applied before an engine with the expiry runs.

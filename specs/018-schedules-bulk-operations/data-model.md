@@ -174,7 +174,7 @@ audited operator command, which is an activation of the instance-capability regi
 `schedules-v1` from every live `EXECUTION_ENGINE` instance and records that requirement in the same
 transaction.
 
-*As built (T018-060, T018-061, migration `20270112000000_trigger_handover`; D2033 to D2045).* The row also holds `changed_db_role` (the `session_user` of the
+*As built (T018-060, T018-061, migration `20270114000000_trigger_handover`; D2033 to D2045).* The row also holds `changed_db_role` (the `session_user` of the
 operator's session). It changes only through `schedule_trigger_handover_complete(actor)`, a definer function the runtime role cannot execute, which refuses unless
 `schedules-v1` is recorded for the engines and never moves a handed-over row back (a guard, `ENABLE ALWAYS`); `schedule_trigger_handover_census()` is the owner's read
 of the live engines. There is no tenant audit record (the registry's `platform_requirement_history` row of the same transaction is the evidence, D2042). A
@@ -240,7 +240,7 @@ functions, which the runtime role cannot execute (D2014). The registry ships in 
 that activates through it (029's prerequisite release, T029-003); whichever of 018, 029, 031 is
 implemented first ships it.
 
-**As built (T018-080, migration `20270111000000_instance_registry`; decisions D2013 to D2032, ADR-0081).** The process functions are
+**As built (T018-080, migration `20270113000000_instance_registry`; decisions D2013 to D2032, ADR-0082).** The process functions are
 `instance_register`, `instance_heartbeat` and `instance_deregister` (executable by the runtime role); the operator functions are
 `platform_requirement_lock`, `platform_requirement_activate` and `platform_requirement_remove` (not executable by it, D2014).
 Differences from the text above, each with its reason in `research.md`: a fourth table, `platform_requirement_history` (the
@@ -286,7 +286,7 @@ block item retention; the item keeps the identifier only.
 
 `(tenant_id, id)` PK; `namespace_id`, `source_run_id` (FK runs), `source_sequence bigint`,
 `prefix_digest bytea(32)`, `reapply` (closed), `business_id_policy` (`KEEP`, `DROP`), `source_policy`,
-`state` (`PENDING_SOURCE`, `CREATED`, `FAILED`), `failure_reason` (`BOUNDARY_NO_LONGER_ELIGIBLE`, `ADMISSION_REFUSED`, `BUSINESS_ID_IN_USE`, `CONCURRENCY_PERMIT_UNAVAILABLE`, `RUN_PURGED` and, added by D1998, `AUTHORITY_REVOKED`, `REEXECUTION_NOT_ACKNOWLEDGED`, `REAPPLY_TOO_MANY` and, added by D2059 (migration `20270113000000_reset_expiry`), `SOURCE_DID_NOT_END`: the entry waited a whole window for a source that did not end), `acknowledged_reexecution boolean` (what the request acknowledged, immutable, D1999), `new_run_id uuid null` (FK runs),
+`state` (`PENDING_SOURCE`, `CREATED`, `FAILED`), `failure_reason` (`BOUNDARY_NO_LONGER_ELIGIBLE`, `ADMISSION_REFUSED`, `BUSINESS_ID_IN_USE`, `CONCURRENCY_PERMIT_UNAVAILABLE`, `RUN_PURGED` and, added by D1998, `AUTHORITY_REVOKED`, `REEXECUTION_NOT_ACKNOWLEDGED`, `REAPPLY_TOO_MANY` and, added by D2059 (migration `20270115000000_reset_expiry`), `SOURCE_DID_NOT_END`: the entry waited a whole window for a source that did not end), `acknowledged_reexecution boolean` (what the request acknowledged, immutable, D1999), `new_run_id uuid null` (FK runs),
 `actor`, `reason text` (8..2000, content), `reapply_report jsonb` (closed list ≤ 256 of
 `{sequence, kind: SIGNAL|UPDATE, name|operation, outcome, reason?}`, D1985: a name, never a payload, an argument or a digest;
 protected), `shard` generated, `created_at`, `completed_at`.

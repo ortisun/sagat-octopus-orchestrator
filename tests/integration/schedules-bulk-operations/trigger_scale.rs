@@ -150,7 +150,7 @@ async fn a_round_costs_the_window_it_reads_and_a_sweep_finds_every_drift_over_tw
         after, None,
         "and ended at the last trigger, ready to start over"
     );
-    // what the report and ADR-0082 quote: the machine and the load are the reader's to state
+    // what the report and ADR-0083 quote: the machine and the load are the reader's to state
     println!(
         "{TRIGGERS} triggers: seeding {seeded:?}; the count {counting:?}; {pages} windows of 2,000, the slowest {slowest:?}"
     );

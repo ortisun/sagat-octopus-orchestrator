@@ -50,7 +50,7 @@ use crate::error::StoreError;
 /// How often a process says it is alive (jittered by the caller).
 pub const HEARTBEAT: Duration = Duration::from_secs(10);
 /// A process is live when it was seen within this long, on the database's clock. The value is the database's
-/// (the functions of migration `20270111000000_instance_registry` hold it); a test keeps the two equal.
+/// (the functions of migration `20270113000000_instance_registry` hold it); a test keeps the two equal.
 pub const LIVENESS: Duration = Duration::from_secs(30);
 
 /// The settings of a process's membership. Not read from the environment: the liveness window the activation judges by

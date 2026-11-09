@@ -1,4 +1,4 @@
-//! The migration of the instance-capability registry (`T018-080`, `20270111000000_instance_registry`) against a real
+//! The migration of the instance-capability registry (`T018-080`, `20270113000000_instance_registry`) against a real
 //! PostgreSQL: its `down` refuses while a requirement, the history of an activation or a live process is there, removes
 //! everything it made on a schema that uses none of it, and the `up` applies again. The style of
 //! `pending_resets_migration.rs`.

@@ -1075,7 +1075,7 @@ fn with_the_flag_off_the_engine_runs_no_pass_that_expires_a_reset_either() {
     );
 }
 
-// ------------------------------------------------------------ no shipped manifest turns the switch on (ADR-0080)
+// ------------------------------------------------------------ no shipped manifest turns the switch on (ADR-0081)
 
 /// Every file under `dir`, depth first.
 fn files_under(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
@@ -1108,7 +1108,7 @@ fn value_given(line: &str, name: &str) -> Option<String> {
 
 #[test]
 fn no_shipped_manifest_turns_the_reset_switch_on() {
-    // Until the instance-capability registry exists the switch is an operator's act, engine first (ADR-0080): no
+    // Until the instance-capability registry exists the switch is an operator's act, engine first (ADR-0081): no
     // compose file, chart or example of this repository may set it to anything but off.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../infra");
     let mut files = Vec::new();

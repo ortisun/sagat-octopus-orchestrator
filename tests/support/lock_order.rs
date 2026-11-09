@@ -29,8 +29,8 @@ use tokio::task::JoinHandle;
 pub enum Slot {
     /// The requirement epoch of the instance registry (`FR-018-052`): `FOR SHARE` to register, `FOR UPDATE` to record a
     /// requirement. It is the first slot because the activation holds it while the feature's step runs. The step of the
-    /// handover is the one that **does lock** (it narrows ADR-0081 decision 2, "the step reads the epoch, it does not lock",
-    /// ADR-0082): the two slots below, which no transaction that reads the epoch ever takes, so none of them can wait for the
+    /// handover is the one that **does lock** (it narrows ADR-0082 decision 2, "the step reads the epoch, it does not lock",
+    /// ADR-0083): the two slots below, which no transaction that reads the epoch ever takes, so none of them can wait for the
     /// activation while holding what the activation wants.
     RegistryEpoch,
     /// The table of the cron triggers (`workflow_triggers`), `SHARE ROW EXCLUSIVE`, for at most two seconds (D2070): taken by

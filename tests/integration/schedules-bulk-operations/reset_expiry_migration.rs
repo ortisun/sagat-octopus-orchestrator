@@ -1,4 +1,4 @@
-//! The migration of the expiry of a reset that waits (`T018-057`, `20270113000000_reset_expiry`, D2059) against a real
+//! The migration of the expiry of a reset that waits (`T018-057`, `20270115000000_reset_expiry`, D2059) against a real
 //! PostgreSQL: the list of the reasons a reset can fail with admits `SOURCE_DID_NOT_END` and stays closed; its `down`
 //! refuses while an entry that expired exists (it is evidence of a request that cancelled a run and made no replacement) and,
 //! on a schema without one, restores the list of the migration before, after which the `up` applies again. The style of

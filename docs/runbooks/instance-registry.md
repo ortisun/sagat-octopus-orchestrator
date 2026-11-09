@@ -5,12 +5,12 @@ their processes has to honour. It says what the registry is, what a process does
 when one refuses, how to read the tables, what the registry does not protect against, and what to do when a requirement blocks
 the fleet.
 
-Design: [ADR-0081](../adr/ADR-0081-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md),
+Design: [ADR-0082](../adr/ADR-0082-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md),
 decisions D1034 and D2013 to D2032, gaps G1011, G1607 and G1996 to G2003 in
 [`specs/018-schedules-bulk-operations/research.md`](../../specs/018-schedules-bulk-operations/research.md); the tables are in the
 "Instance-capability registry" section of that feature's
 [`data-model.md`](../../specs/018-schedules-bulk-operations/data-model.md); the rule is ADR-0050 decision 9, and
-[ADR-0080](../adr/ADR-0080-cancel-source-is-switched-on-per-process-until-the-capability-registry-exists.md) says what the
+[ADR-0081](../adr/ADR-0081-cancel-source-is-switched-on-per-process-until-the-capability-registry-exists.md) says what the
 per-process flags of the other features still do until they move to it.
 
 ## 1. What it is
@@ -53,7 +53,7 @@ the liveness probe is `503`; readiness fails; an engine runs no pass, reads no c
 | What you see | Meaning | What to do |
 |---|---|---|
 | Log line `BINARY_CAPABILITY_MISSING: the platform requires <capability> and this process lacks it; ...` (`reason="BINARY_CAPABILITY_MISSING"`), once; control plane: every call but `/v1/health` is `503` with `details.reason` `BINARY_CAPABILITY_MISSING` and `/v1/ready` fails; engine: `/readyz` is `503` with the same reason, `/livez` is `200`. Alert `SagatInstanceGateClosed` after five minutes | A requirement is recorded for this kind and this process does not list it: its build is older than the feature that was activated, **or its configuration does not run the pass that provides it** (an engine restarted without `SAGAT_SCHEDULES_ENABLED` after the handover) | Deploy a build that has the capability, or set the flag that runs the pass, or stop the process. Do **not** remove the requirement to make a process serve unless you mean to roll the feature back (section 5): when the requirement goes, the process serves by itself |
-| Log lines `REGISTRY_UNREACHABLE: ...` (`reason="REGISTRY_UNREACHABLE"`), then `could not say this instance is alive` every second; `/v1/ready` and `/readyz` are `503` with no reason in the answer | The registry could not be asked: the database is down, or the migration `20270111000000_instance_registry` has not been applied | Run `control-plane migrate` with the owner role. Nothing needs restarting: the process registers at its next try. A process never serves without the registry |
+| Log lines `REGISTRY_UNREACHABLE: ...` (`reason="REGISTRY_UNREACHABLE"`), then `could not say this instance is alive` every second; `/v1/ready` and `/readyz` are `503` with no reason in the answer | The registry could not be asked: the database is down, or the migration `20270113000000_instance_registry` has not been applied | Run `control-plane migrate` with the owner role. Nothing needs restarting: the process registers at its next try. A process never serves without the registry |
 | Log line `REGISTRY_FULL: ...` at start (`reason="REGISTRY_FULL"`) while the process **serves** | 1,000 processes were seen in the last 30 seconds. The check of capabilities passed, so the process serves, and an activation cannot see it | Something is starting processes in a loop, or the fleet is far larger than designed, or something wrote rows of its own (section 6). Rows that are no longer live give way to new ones, so this means 1,000 **live** rows: stop the ones that should not run |
 
 A process that is refused leaves **no row**, so a crash loop does not fill the table. (Rows of processes that died without
@@ -140,7 +140,7 @@ writes the history and does the feature's own step. The transaction is bounded (
 3 s): a step that takes longer is rolled back, because every process that registers waits for the epoch meanwhile. **The
 feature's step reads, it does not lock**: it must not take a lock that a transaction reading the epoch may hold. (The one
 step that locks, because a publication in flight is invisible to a count, is the cron-trigger handover: it takes the table of
-the cron triggers for at most two seconds and the handover row, which no transaction that reads the epoch ever takes; ADR-0082
+the cron triggers for at most two seconds and the handover row, which no transaction that reads the epoch ever takes; ADR-0083
 narrows this rule for it and says why.) If a live
 process lacks the capability the command is refused and says how many and which (up to sixteen instance ids): upgrade or stop
 them, wait 30 seconds if you stopped them without a clean stop, and run it again.

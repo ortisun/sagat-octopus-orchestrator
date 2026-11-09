@@ -1,5 +1,5 @@
 //! The instance-capability registry in PostgreSQL (feature 018, `FR-018-052`; migration
-//! `20270111000000_instance_registry`).
+//! `20270113000000_instance_registry`).
 //!
 //! A process calls three `SECURITY DEFINER` functions (register, heartbeat, deregister) with the token it keeps to itself
 //! and reads three tables (the instances without the hash of the token); it writes nothing and locks nothing itself,

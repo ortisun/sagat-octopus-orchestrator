@@ -1,8 +1,8 @@
-# ADR-0081: The instance registry records requirements only for the operator, a refused process stays up with a closed gate, and it learns of a requirement within one heartbeat
+# ADR-0082: The instance registry records requirements only for the operator, a refused process stays up with a closed gate, and it learns of a requirement within one heartbeat
 
 **Status:** Proposed (2026-11-08), awaiting the owner's acceptance
 **Decided by:** agent (task T018-080), after the correctness, security and architecture reviews of 2026-11-08; the owner has not accepted it.
-**Refines / supersedes:** refines ADR-0050 decision 9 (fleet capability activation), which says that a feature needing every control-plane or engine process to honour it is activated through a registry; supersedes none. ADR-0080 still governs the flags of the features that are not on the registry yet.
+**Refines / supersedes:** refines ADR-0050 decision 9 (fleet capability activation), which says that a feature needing every control-plane or engine process to honour it is activated through a registry; supersedes none. ADR-0081 still governs the flags of the features that are not on the registry yet.
 **Enforced by:** `tests/integration/schedules-bulk-operations/instances.rs` (the operator functions are not executable by `sagat_app`: `the_runtime_role_reads_the_registry_and_calls_three_functions_only`; the guards: `requirements_and_the_epoch_change_only_through_the_activation_functions`; the cap and its eviction: `a_table_full_of_silent_rows_makes_room_and_a_crash_loop_cannot_lock_the_fleet_out`, `the_table_holds_a_thousand_live_rows_and_refuses_the_next_one`; the bounds of the operator's transaction: `a_feature_step_that_takes_too_long_is_cut_off_and_nothing_is_recorded`), `instances_hostile.rs` (a row is touched only for its token, both roles), `instances_process.rs` (a refused process stays up and serves nothing, a control plane and an engine; the engine lists what its configuration runs; a closed engine fires no schedule and reads no connector), `instances_rest.rs` (every operation of the contract is refused by a closed gate but liveness; a stream and a task stream stop), `tests/fault/schedules-bulk-operations/instances.rs` (the race between an activation and a registration, in both orders, held by a lock and watched in `pg_stat_activity`), `apps/control-plane/src/registry.rs` and `crates/application/src/instances.rs` (the unit tests of the fail mode and of the pace), `apps/execution-engine/tests/registry.rs` (the capability follows the passes; every loop the engine spawns obeys the gate), the privilege audit of `integration_platform_foundation` (the three operator functions are listed with their reason), and `infra/observability/tests/instance_registry_test.yaml` (the two alerts).
 
 ## Context
@@ -44,10 +44,10 @@ Bad: the operator needs the owner credentials to activate (a runbook step, as fo
 
 ## Evidence
 
-`specs/018-schedules-bulk-operations/research.md` D2013 to D2032 and G1996 to G2003; `docs/runbooks/instance-registry.md`; the mutation results of T018-080 in `specs/018-schedules-bulk-operations/tasks.md`; ADR-0050 decision 9 and ADR-0080.
+`specs/018-schedules-bulk-operations/research.md` D2013 to D2032 and G1996 to G2003; `docs/runbooks/instance-registry.md`; the mutation results of T018-080 in `specs/018-schedules-bulk-operations/tasks.md`; ADR-0050 decision 9 and ADR-0081.
 
 ## Amendments
 
-- **2026-11-08 (ADR-0082).** Decision 2's rule that the feature's step "reads, does not lock" is narrowed for the step of the cron-trigger handover, which takes the table lock of `workflow_triggers` (bounded at two seconds) and the handover row, for the reason and with the safety argument given in ADR-0082. It stands for every other step.
+- **2026-11-08 (ADR-0083).** Decision 2's rule that the feature's step "reads, does not lock" is narrowed for the step of the cron-trigger handover, which takes the table lock of `workflow_triggers` (bounded at two seconds) and the handover row, for the reason and with the safety argument given in ADR-0083. It stands for every other step.
 - **2026-11-08, a gap (G2022 of feature 018).** The alert rule test of this ADR, `infra/observability/tests/instance_registry_test.yaml`, exists and passes locally with `promtool test rules`, but the CI step of `.github/workflows/ci.yml` that runs `promtool test rules` lists only `batch_stalled_test.yaml`, so CI does not run it. The line to add after `/tests/batch_stalled_test.yaml` is ` /tests/instance_registry_test.yaml /tests/trigger_schedules_test.yaml`; the workflow is changed with the next change of it.
 

@@ -216,7 +216,7 @@ Where the control plane has it off, a request for an open source is
 `422 RESET_CANCEL_SOURCE_NOT_AVAILABLE` and nothing is cancelled; **a retry of a request that was accepted is answered from the
 register whatever the setting is now**.
 
-**Order of the rollout (ADR-0080): the engine first, then the control plane; to turn it off, the control plane first.** The
+**Order of the rollout (ADR-0081): the engine first, then the control plane; to turn it off, the control plane first.** The
 dangerous state is the control plane on and every engine off: a request is then accepted and answers `202`, **the customer's run
 is cancelled**, and nothing makes the replacement until an engine has the flag on. No entry is destroyed (it waits in the
 register, counted against the limit), **but nothing expires it either: the expiry is a step of the same pass, so an engine with the
@@ -349,7 +349,7 @@ an Update made through the API (G1986); their events are in the journal, and the
 - **Withdrawing a reset that waits** (G1991, G2018): an entry ends `CREATED` or `FAILED` (by the judgement of the platform, or by expiring) and nothing else. The expiry
   is built (section 4.2); **no alert fires when one expires and nothing says that an entry is about to** (G2016): read `workflow_reset_completions_total{outcome="expired"}`.
   An alert on `increase(workflow_reset_completions_total{outcome="expired"}[1h]) > 0`, **with its `promtool` rule test, is a precondition for turning the feature on by default**
-  (ADR-0080 decision 4, G2026); none is written until it can be tested.
+  (ADR-0081 decision 4, G2026); none is written until it can be tested.
 - **A permit of a concurrency key and the checks of the features that are not approved** (`CONCURRENCY_PERMIT_UNAVAILABLE`,
   `RUN_PURGED` and the reasons of a `REMATERIALIZE` rule exist as names; nothing writes them yet).
 - **Points inside a collection, a parallel branch, a loop iteration or a child scope** (G1980 (1)).

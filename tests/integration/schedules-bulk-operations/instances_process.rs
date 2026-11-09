@@ -2,7 +2,7 @@
 //! (`serve`) and a real engine (`serve`) register before they serve or run a pass, beat while they run, answer
 //! `BINARY_CAPABILITY_MISSING` or stop their passes when the platform requires what their binary lacks, refuse to
 //! start when it does already, and leave when they stop. The tables are the ones of migration
-//! `20270111000000_instance_registry`; the age of a heartbeat is written, never waited for.
+//! `20270113000000_instance_registry`; the age of a heartbeat is written, never waited for.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::time::Duration;
