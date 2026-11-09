@@ -250,6 +250,12 @@ where
         }
         let mut effects = Effects::by(Actor::Worker(principal.subject().as_str().to_owned()), None);
         effects.reported = Some(reported_lease(task));
+        // A write that committed is audited with the completion, in its transaction, once: a replay of the report never gets here.
+        if let Some(receipt) = &lake_receipt {
+            effects.audit = self.committed_write_audit(principal, &mut tx, task, receipt);
+        }
+        // Kept for the case the run has no room for the receipt: the write committed all the same, and the recovery below records it.
+        let write_audit = effects.audit.clone();
         // A secret the step was given must not come back in its output, where it would be stored in
         // the journal and handed to every later step: the step fails for good instead.
         let leaked_secret = if database_secret_in_output.is_some() {
@@ -329,7 +335,13 @@ where
                 }
             };
             return self
-                .recover_success_storage_quota(principal, task, idempotency, None, result)
+                .recover_success_storage_quota(
+                    principal,
+                    task,
+                    idempotency,
+                    write_audit.clone(),
+                    result,
+                )
                 .await;
         }
         effects.blobs = blob.map(|b| b.commit).into_iter().collect();
@@ -343,7 +355,7 @@ where
                 Err(error)
             }
         };
-        self.recover_success_storage_quota(principal, task, idempotency, None, result)
+        self.recover_success_storage_quota(principal, task, idempotency, write_audit, result)
             .await
     }
 

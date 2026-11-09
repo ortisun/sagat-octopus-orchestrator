@@ -927,6 +927,19 @@ pub async fn run(
             .await
             .unwrap();
     assert_eq!(failure.as_deref(), Some("OUTCOME_UNKNOWN"));
+    // The write committed, though the run had no room to keep the receipt: the platform knows it, and the trail says so once.
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE tenant_id = $1 AND action = 'iceberg.write_committed' AND resource_id = $2",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(tight.to_string())
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        audited, 1,
+        "a commit the run could not keep is a committed write, and is audited"
+    );
 
     // The receipt of a lake step is not a SQL result: the route that serves those does not find it (it would otherwise be read
     // through the validator of rows, fail, and answer without a trace).
