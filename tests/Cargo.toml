@@ -411,6 +411,10 @@ name = "e2e_schedules_bulk_operations"
 path = "e2e/schedules-bulk-operations/main.rs"
 
 [[test]]
+name = "perf_schedules_bulk_operations"
+path = "performance/schedules-bulk-operations/main.rs"
+
+[[test]]
 name = "contract_iceberg_writes"
 path = "contract/iceberg-writes/main.rs"
 
