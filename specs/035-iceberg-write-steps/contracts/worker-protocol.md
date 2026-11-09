@@ -26,10 +26,25 @@ minor when this feature merges (D035-043; drafts 020, 021, 025 and 026 also clai
     connection kind outside the profile of the caller's binding (D035-130 C), and the runner offering the activity by the
     agreed minor (G). The minor stays 1.6 for now, because nothing on the wire differs yet; the first wire
     difference takes the next free minor.
+  - **The probe (D035-150, 2026-11-09).** The lake profile is the write, the probe or both: a registration whose activities are a
+    non-empty subset of `sagat.database.iceberg.write` and `sagat.database.lake.probe` is of the lake profile, and mixing either with SQL or
+    with an ordinary activity is refused as before. **A step is handed only to a session that offers its own activity**, and not merely
+    one of its profile (`profile_fence`, `ManagedKind::activity`): a lake runner that offers the write alone is never handed a probe.
+    **No new minor is taken for it:** the probe's lease rides the existing `input` payload, and the *offer* is the negotiation, because
+    an older runner never offers the probe and so is never handed one. Rollout order: server, then the binding of the runner (it must
+    cover the probe activity), then the runner.
 - **`TaskLease` input** (built since D035-138 for the lake activity from the run's data: inline records, and, since D035-144, the blobs of earlier steps of the run; a SQL result kept inline is turned into inline records by the server (D035-145); one kept as a blob fails the step by name, G035-067) for these activities: the existing `input` payload carries the attempt input
   of [lake-runtime.md](lake-runtime.md), minus credentials and the relay. That is `effectKey`,
   `firstAttemptStartedAt`, the table or target, mode, mapping, limits, and record references (blob
   ids or inline records). Credentials never travel in the lease.
+- **`TaskLease` input of the probe** (D035-150): `sagat.lake.probe-input.v1`, pinned by the fixture
+  `tests/contract/iceberg-writes/fixtures/probe-input/probe.json`, which the server's builder produces byte for byte and the runner's
+  reader will be held to. It carries `operation: "probe"`, the connection by the name and the revision the probe was admitted with (what
+  the result echoes), `checks` (`CATALOG_AUTH`, `WAREHOUSE`, `STORAGE_ACCESS`, in the order they run) and `checkTimeoutMs`, and nothing else:
+  no secret, address or table. The connection and its two secrets come from `ResolveDatabase`, read and pinned as a write's are. A probe has
+  its own budget (one in flight in a namespace, four in a tenant, `LAKE_PROBE_*`), so it neither waits for a write nor makes one wait.
+  **The result of a probe is not accepted yet** (a completion is refused as not allowed, so that no text of a runner's choosing reaches the
+  journal); a probe ends by a failure with a closed code or by its lease lapsing, until the typed result of slice S4.
 - **`ResolvedDatabase`** gains three fields, `IcebergConnection iceberg`,
   `ObjectStorageConnection object_storage` and `ClickHouseConnection clickhouse`. Their numbers are
   assigned at merge and never reused. Each holds the pinned non-secret settings and a

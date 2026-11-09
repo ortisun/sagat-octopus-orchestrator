@@ -1,0 +1,1 @@
+{"checkTimeoutMs":7000,"checks":["CATALOG_AUTH","WAREHOUSE","STORAGE_ACCESS"],"connection":{"name":"lake-main","revision":3},"operation":"probe","schema":"sagat.lake.probe-input.v1"}

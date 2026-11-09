@@ -12,6 +12,7 @@ mod database;
 mod lake_complete;
 pub mod lake_input;
 pub mod lake_lease;
+pub mod lake_probe_input;
 pub mod lake_result;
 mod output;
 mod scoped;
@@ -120,21 +121,29 @@ pub fn profile_fence(
     bindings: &[BindingProfile],
 ) -> bool {
     managed_profile(offered) == Some(kind.profile())
+        && offered.iter().any(|activity| activity == kind.activity())
         && !bindings.is_empty()
         && bindings.iter().all(|profile| *profile == kind.profile())
 }
 
-/// The profile a registration is for: `database` when it offers `sagat.database.postgresql` alone, `lake` when it offers
-/// `sagat.database.iceberg.write` alone, and `None` for anything else (an empty list, a mix, an ordinary activity, an
-/// activity the server does not serve yet). The binding of the identity must carry the same profile (D035-057).
+/// The profile a registration is for: `database` when it offers `sagat.database.postgresql` alone, `lake` when it offers the Iceberg
+/// write, the Iceberg probe or both (`sagat.database.iceberg.write`, `sagat.database.lake.probe`; a lake runner that has a probe to run
+/// offers it beside its write, and the offer is what tells the server it may be handed one, D035-150), and `None` for anything else (an
+/// empty list, a mix of profiles, an ordinary activity, an activity the server does not serve yet). The binding of the identity must
+/// carry the same profile (D035-057).
 #[must_use]
 pub fn managed_profile(activities: &[String]) -> Option<BindingProfile> {
-    use sagat_domain::database::{ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY};
+    use sagat_domain::database::{
+        ICEBERG_PROBE_ACTIVITY, ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY,
+    };
     if activities.is_empty() {
         None
     } else if activities.iter().all(|a| a == MANAGED_DATABASE_ACTIVITY) {
         Some(BindingProfile::Database)
-    } else if activities.iter().all(|a| a == ICEBERG_WRITE_ACTIVITY) {
+    } else if activities
+        .iter()
+        .all(|a| a == ICEBERG_WRITE_ACTIVITY || a == ICEBERG_PROBE_ACTIVITY)
+    {
         Some(BindingProfile::Lake)
     } else {
         None
@@ -1251,25 +1260,50 @@ where
             // The attempt input of an Iceberg write is made from the run's own data, after the claim was admitted, so
             // that a runner which fails the role, pool or concurrency checks cannot cause a permanent failure. What cannot
             // be made is a permanent failure of the step, with a closed code, and no lease (D035-138).
-            let (input, record_blobs) = if kind == Some(sagat_domain::database::ManagedKind::Lake) {
-                match self.lake_lease_input(&mut tx, &instance).await? {
-                    Ok(leased) => leased,
-                    Err(failure) => {
-                        let code =
-                            FailureCode::parse(failure.code()).map_err(|_| AppError::Internal)?;
-                        match self
-                            .reject_input(&mut tx, session, &instance, code, "lake_input", trace_id)
-                            .await
-                        {
-                            Ok(()) | Err(AppError::StateConflict(_)) => break,
-                            Err(other) => return Err(other),
+            let (input, record_blobs) = match kind {
+                Some(sagat_domain::database::ManagedKind::Lake) => {
+                    match self.lake_lease_input(&mut tx, &instance).await? {
+                        Ok(leased) => leased,
+                        Err(failure) => {
+                            let code = FailureCode::parse(failure.code())
+                                .map_err(|_| AppError::Internal)?;
+                            match self
+                                .reject_input(
+                                    &mut tx,
+                                    session,
+                                    &instance,
+                                    code,
+                                    "lake_input",
+                                    trace_id,
+                                )
+                                .await
+                            {
+                                Ok(()) | Err(AppError::StateConflict(_)) => break,
+                                Err(other) => return Err(other),
+                            }
                         }
                     }
                 }
-            } else {
-                (input, Vec::new())
+                // A probe's lease says which connection it tests, by the name and the revision it was admitted with, and nothing the run
+                // holds: it reads no record and no blob (D035-150).
+                Some(sagat_domain::database::ManagedKind::LakeProbe) => {
+                    let facts = tx.lake_probe_facts(instance.node()).await?;
+                    let document =
+                        lake_probe_input::lake_probe_input(&lake_probe_input::ProbeFacts {
+                            connection: &facts.connection,
+                            revision: facts.revision,
+                        });
+                    (document, Vec::new())
+                }
+                Some(sagat_domain::database::ManagedKind::Sql) | None => (input, Vec::new()),
             };
-            if kind == Some(sagat_domain::database::ManagedKind::Lake) {
+            if matches!(
+                kind,
+                Some(
+                    sagat_domain::database::ManagedKind::Lake
+                        | sagat_domain::database::ManagedKind::LakeProbe
+                )
+            ) {
                 if input.len() > MAX_TASK_INPUT_BYTES {
                     match self
                         .reject_large_input(&mut tx, session, &instance, trace_id)

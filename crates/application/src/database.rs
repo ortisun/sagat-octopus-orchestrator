@@ -38,6 +38,14 @@ pub struct LakeLeaseFacts {
     pub first_leased_at: Option<OffsetDateTime>,
 }
 
+/// What the lease of an Iceberg probe needs from the store, read in the lease transaction (D035-150): the connection it tests, by the name
+/// and the revision it was admitted with, which are what the result echoes back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeLeaseFacts {
+    pub connection: String,
+    pub revision: u32,
+}
+
 /// One secret a connection names, selected under the current run/ACL locks (feature 035, D035-140).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedSecret {

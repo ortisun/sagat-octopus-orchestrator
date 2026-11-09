@@ -164,6 +164,14 @@ where
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut database_secret_in_output = None;
         let managed = Self::managed_kind(&mut tx, task);
+        // What a runner reports as the result of a probe is not accepted yet: the typed result, rebuilt by the server from closed words, is
+        // the next slice (D035-150). Until then a probe is only ever ended by a failure with a closed code or by its lease lapsing, so
+        // that no text of a runner's choosing reaches the journal through it.
+        if managed == Some(sagat_domain::database::ManagedKind::LakeProbe) {
+            return Err(AppError::NotAllowed(
+                "the result of a lake probe is not accepted yet",
+            ));
+        }
         // A lake step reports a small receipt inline. It is read into typed fields and written again; the run keeps that, and
         // nothing of the bytes that were sent. (A receipt has no member that can hold text the server did not supply, which is
         // why it is not scanned for the secrets of the step as a SQL result is: D035-142.)

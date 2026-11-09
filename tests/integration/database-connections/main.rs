@@ -13,6 +13,7 @@ mod lake_blobs;
 mod lake_canaries;
 mod lake_grpc;
 mod lake_lease;
+mod lake_probe_lease;
 mod lake_probe_start;
 mod lake_read;
 mod lake_resolve;
@@ -341,6 +342,8 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(lake_canaries::run(provider.clone())).await;
     progress.enter("the start of the probe of an Iceberg connection");
     Box::pin(lake_probe_start::run(provider.clone())).await;
+    progress.enter("the lease of the probe of an Iceberg connection");
+    Box::pin(lake_probe_lease::run(provider.clone())).await;
     progress.enter("output::run");
     Box::pin(output::run(provider.clone())).await;
     progress.enter("output_blobs::run");

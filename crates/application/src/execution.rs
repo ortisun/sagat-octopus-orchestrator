@@ -1188,6 +1188,15 @@ pub trait RunTx: Send {
         async { Err(StoreError::DatabaseUnavailable) }
     }
 
+    /// What the lease of an Iceberg probe needs: the connection it was admitted with, by name and revision (D035-150). Unsupported stores
+    /// fail closed.
+    fn lake_probe_facts(
+        &mut self,
+        _node: &NodeId,
+    ) -> impl Future<Output = Result<crate::database::ProbeLeaseFacts, StoreError>> + Send {
+        async { Err(StoreError::DatabaseUnavailable) }
+    }
+
     /// What the catalog says, inside this transaction, about the blobs of a record source (feature 035, R2). Only a blob this run's
     /// own steps committed as an output is returned, with the descriptor the catalog holds; every other case (another run, another
     /// namespace, another tenant, a run input, an upload not committed, a deleted blob, an id that does not exist) returns nothing,

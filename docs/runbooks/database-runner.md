@@ -130,6 +130,12 @@ curl -X PUT "$SAGAT/namespaces/$NAMESPACE_ID/worker-bindings/$RUNNER_SUBJECT" \
   -d '{"activities": ["sagat.database.iceberg.write"], "profile": "lake"}'
 ```
 
+A lake runner that has a probe to run (a runner of the version that serves the probe of an Iceberg connection) offers it beside its write,
+and its binding covers both: `"activities": ["sagat.database.iceberg.write", "sagat.database.lake.probe"]`. **Roll it out in this order: the
+server, then the binding, then the runner.** A step is handed only to a session that offers its own activity, so a runner that offers the
+write alone is never handed a probe, and a probe waits for a runner that offers it, until the 30 seconds of its run are over (it ends as the run does when none is registered). A probe has a budget
+of its own, one in flight in a namespace and four in a tenant, so it neither waits for a write nor makes one wait.
+
 A binding made without `profile` is `database`, which is what every SQL runner has always been; a replacement that leaves
 `profile` out keeps the one in force, and an identity has **one profile in the whole tenant**: binding it with another profile in a second
 namespace is refused (409) until its bindings elsewhere are removed. Removing the last binding of an identity forgets its profile, so bind it again

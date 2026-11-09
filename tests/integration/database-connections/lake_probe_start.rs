@@ -35,9 +35,9 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
-type Runs = RunService<PgRunStore, SystemClock, JsonEvaluator>;
+pub(super) type Runs = RunService<PgRunStore, SystemClock, JsonEvaluator>;
 
-fn runs_of(p: &Platform) -> Runs {
+pub(super) fn runs_of(p: &Platform) -> Runs {
     RunService::new(
         p.api.executions.clone(),
         SystemClock,
@@ -46,7 +46,7 @@ fn runs_of(p: &Platform) -> Runs {
     )
 }
 
-fn reference(name: &str, revision: Option<u32>) -> ConnectionRef {
+pub(super) fn reference(name: &str, revision: Option<u32>) -> ConnectionRef {
     ConnectionRef::new(Slug::parse(name).expect("a slug"), revision).expect("a reference")
 }
 
@@ -110,7 +110,10 @@ fn sql_config() -> Value {
 }
 
 /// A platform with the three kinds of connection a probe can be asked about, and its run service.
-async fn platform(provider: &Arc<dyn SecretProvider>, lake: bool) -> (Platform, String, Runs) {
+pub(super) async fn platform(
+    provider: &Arc<dyn SecretProvider>,
+    lake: bool,
+) -> (Platform, String, Runs) {
     let p = platform_with(Options {
         secret_provider: Some(provider.clone()),
         lake,
