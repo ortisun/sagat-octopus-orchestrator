@@ -337,7 +337,7 @@ describe('Cancel the run and reset it when it ends', () => {
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByRole('heading', { name: 'Cancel the run and reset it when it ends' })).toBeVisible();
     expect(dialog).toHaveTextContent('This run has not ended. Confirming cancels it, in the ordinary way.');
-    expect(dialog).toHaveTextContent('The new run is made once it has ended; if the reset can no longer be made by then, it fails and the list of resets made from this run says why.');
+    expect(dialog).toHaveTextContent('The new run is made once it has ended; if the reset can no longer be made by then, or the run has not ended within the time the platform waits for it, the reset fails and the list of resets made from this run says why.');
     expect(within(dialog).getByRole('button', { name: CONFIRM_CANCEL })).toBeVisible();
     // the run stays as it is only in the plain reset
     expect(dialog).not.toHaveTextContent('This run stays as it is.');
@@ -430,7 +430,7 @@ describe('Cancel the run and reset it when it ends', () => {
     await user.click(confirm());
     const dialog = await screen.findByRole('dialog');
     await waitFor(() => expect(dialog).toHaveTextContent('The run is being cancelled.'));
-    expect(dialog).toHaveTextContent('The new run is made once it has ended; you will find it under Resets made from this run. If the reset can no longer be made by then, that list says why.');
+    expect(dialog).toHaveTextContent('The new run is made once it has ended; you will find it under Resets made from this run. If the reset can no longer be made by then, or the run has not ended within the time the platform waits for it, that list says why.');
     // there is no new run to go to, and the person is not told one was made
     expect(screen.getByTestId('where')).toHaveTextContent('/');
     expect(within(dialog).queryByRole('button', { name: 'Open the new run' })).not.toBeInTheDocument();
@@ -632,6 +632,7 @@ describe('Resets made from a run', () => {
       ['REAPPLY_TOO_MANY', 'there were too many signals and updates to deliver again'],
       ['CONCURRENCY_PERMIT_UNAVAILABLE', 'the limit on runs at once left no room for the new run'],
       ['RUN_PURGED', 'the run was deleted before the new run could be made'],
+      ['SOURCE_DID_NOT_END', 'the run being cancelled had not ended within the time a reset waits for it'],
       ['SOMETHING_NEWER', 'SOMETHING_NEWER'],
       // a name that is also a property of every object is still only a name
       ['constructor', 'constructor'],
@@ -644,6 +645,17 @@ describe('Resets made from a run', () => {
     const items = Array.from(section.querySelectorAll('li')).map((item) => item.querySelector('.hint')?.textContent ?? '');
     expect(items).toHaveLength(reasons.length);
     reasons.forEach(([, words], index) => expect(items[index]).toMatch(new RegExp(`^\\(could not be made: ${words}, `)));
+  });
+
+  it('shows an entry that expired as one that could not be made, with the reason in words, and offers nothing to do with it', async () => {
+    await list({ items: [{ ...FAILED, resetId: 'reset-expired', sequence: 4, failureReason: 'SOURCE_DID_NOT_END' }] });
+    const section = await screen.findByRole('region', { name: 'Resets made from this run' });
+    const item = section.querySelector('li');
+    expect(item).toHaveTextContent('A reset to point 4 (could not be made: the run being cancelled had not ended within the time a reset waits for it');
+    expect(within(item as HTMLElement).queryByRole('link')).not.toBeInTheDocument();
+    expect(within(item as HTMLElement).queryByRole('button')).not.toBeInTheDocument();
+    // the name of the reason is not shown to the person
+    expect(section).not.toHaveTextContent('SOURCE_DID_NOT_END');
   });
 
   it('shows a state it does not know as written, and not as an error', async () => {

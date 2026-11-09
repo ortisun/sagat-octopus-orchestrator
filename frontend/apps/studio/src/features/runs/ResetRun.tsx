@@ -80,6 +80,7 @@ const FAILURES = new Map<string, string>([
   ['REAPPLY_TOO_MANY', 'there were too many signals and updates to deliver again'],
   ['CONCURRENCY_PERMIT_UNAVAILABLE', 'the limit on runs at once left no room for the new run'],
   ['RUN_PURGED', 'the run was deleted before the new run could be made'],
+  ['SOURCE_DID_NOT_END', 'the run being cancelled had not ended within the time a reset waits for it'],
 ]);
 
 function failureWords(reason: string | null | undefined): string {
@@ -303,7 +304,7 @@ function ResetForm({ runId, businessId, cancelSource, onClose }: { runId: string
     <form onSubmit={submit} noValidate className="rn-decision">
       {cancelSource ? (
         <Banner tone="warn" title="This run has not ended.">
-          Confirming cancels it, in the ordinary way. The new run is made once it has ended; if the reset can no longer be made by then, it fails and the list of resets made from this run says why.
+          Confirming cancels it, in the ordinary way. The new run is made once it has ended; if the reset can no longer be made by then, or the run has not ended within the time the platform waits for it, the reset fails and the list of resets made from this run says why.
         </Banner>
       ) : null}
       <p>A reset starts a new run from a point of this run: what the run had done up to the point is kept as it was, and the new run goes on from there.{cancelSource ? '' : ' This run stays as it is.'}</p>
@@ -448,7 +449,7 @@ function ResetNotMade({ made, onClose }: { made: Reset; onClose: () => void }) {
       ) : (
         <>
           <p>The run is being cancelled.</p>
-          <p>The new run is made once it has ended; you will find it under Resets made from this run. If the reset can no longer be made by then, that list says why.</p>
+          <p>The new run is made once it has ended; you will find it under Resets made from this run. If the reset can no longer be made by then, or the run has not ended within the time the platform waits for it, that list says why.</p>
         </>
       )}
       <div className="dialog-actions">
