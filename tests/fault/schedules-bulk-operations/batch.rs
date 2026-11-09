@@ -36,7 +36,7 @@ use crate::tripwire::{Tripwire, table_digests};
 
 /// An action with no effect of its own that remembers the keys it was asked for.
 #[derive(Clone, Default)]
-struct Applies(Arc<Mutex<Vec<String>>>);
+pub(crate) struct Applies(Arc<Mutex<Vec<String>>>);
 
 impl Applies {
     fn keys(&self) -> Vec<String> {
@@ -54,7 +54,7 @@ impl ItemActions for Applies {
 type Executor = BatchExecutor<PgBatchStore, Applies, PgIdentityStore, TestClock>;
 
 /// A process that starts from nothing but the database and the action: what a restarted one has.
-fn executor(f: &Fixture, applies: &Applies) -> Executor {
+pub(crate) fn executor(f: &Fixture, applies: &Applies) -> Executor {
     BatchExecutor::new(
         PgBatchStore::new(f.w.db.pool.clone()),
         applies.clone(),
@@ -64,7 +64,7 @@ fn executor(f: &Fixture, applies: &Applies) -> Executor {
     )
 }
 
-fn service(f: &Fixture) -> BatchService<PgBatchStore, TestClock> {
+pub(crate) fn service(f: &Fixture) -> BatchService<PgBatchStore, TestClock> {
     BatchService::new(PgBatchStore::new(f.w.db.pool.clone()), f.clock.clone())
 }
 
@@ -82,7 +82,7 @@ fn due(job: &JobRecord) -> DueJob {
     }
 }
 
-async fn runs_started(f: &Fixture, n: usize) -> Vec<Uuid> {
+pub(crate) async fn runs_started(f: &Fixture, n: usize) -> Vec<Uuid> {
     let mut ids = Vec::new();
     for _ in 0..n {
         ids.push(f.w.start(f.workflow, &json!({})).await.as_uuid());
@@ -91,24 +91,51 @@ async fn runs_started(f: &Fixture, n: usize) -> Vec<Uuid> {
     ids
 }
 
-async fn create(f: &Fixture, creator: &Principal, runs: &[Uuid], key: &str) -> JobRecord {
+/// The write of a job that cancels `runs`.
+pub(crate) fn write_of(runs: &[Uuid]) -> BatchWrite {
+    BatchWrite {
+        selector: Selector::run_ids(runs.to_vec()).expect("selector"),
+        action: Action::Cancel,
+        step_id: None,
+        instance_path: Vec::new(),
+        signal: None,
+        update: None,
+        drop_business_id: false,
+        repin: false,
+        reason: Justification::new("clean up the runs that are stuck").expect("reason"),
+        max_items: None,
+        rate: None,
+    }
+}
+
+/// The creation as the service answers it, refusal included.
+pub(crate) async fn try_create(
+    f: &Fixture,
+    runs: &[Uuid],
+    key: &str,
+) -> Result<JobRecord, AppError> {
+    service(f)
+        .create(
+            &f.w.admin,
+            f.w.namespace.id(),
+            write_of(runs),
+            key,
+            &RequestContext::default(),
+        )
+        .await
+}
+
+pub(crate) async fn create(
+    f: &Fixture,
+    creator: &Principal,
+    runs: &[Uuid],
+    key: &str,
+) -> JobRecord {
     service(f)
         .create(
             creator,
             f.w.namespace.id(),
-            BatchWrite {
-                selector: Selector::run_ids(runs.to_vec()).expect("selector"),
-                action: Action::Cancel,
-                step_id: None,
-                instance_path: Vec::new(),
-                signal: None,
-                update: None,
-                drop_business_id: false,
-                repin: false,
-                reason: Justification::new("clean up the runs that are stuck").expect("reason"),
-                max_items: None,
-                rate: None,
-            },
+            write_of(runs),
             key,
             &RequestContext::default(),
         )
@@ -148,7 +175,11 @@ async fn endings_of(f: &Fixture, id: Uuid) -> i64 {
 
 /// Steps until the step does something other than wait. The job waits, as it should, for a
 /// transaction of the time of creation that is still open (the world has loops of its own).
-async fn until_it_acts(f: &Fixture, exec: &Executor, job: &JobRecord) -> Result<Stepped, AppError> {
+pub(crate) async fn until_it_acts(
+    f: &Fixture,
+    exec: &Executor,
+    job: &JobRecord,
+) -> Result<Stepped, AppError> {
     for _ in 0..1_000 {
         f.clock.advance(Duration::seconds(1));
         match exec.step(&due(job), None).await {

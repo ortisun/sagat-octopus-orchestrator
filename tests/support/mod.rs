@@ -17,6 +17,7 @@ pub mod bounded;
 pub mod brokers;
 pub mod collector;
 pub mod contract;
+pub mod digests;
 pub mod dx;
 pub mod engine;
 pub mod instances;

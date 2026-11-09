@@ -172,7 +172,7 @@ pub(crate) async fn settle(exec: &Executor, job: &JobRecord) -> u32 {
 }
 
 /// Finishes the only open run, the way a worker does, so that it is `SUCCEEDED`.
-async fn finish_the_only_open_run(w: &World) {
+pub(crate) async fn finish_the_only_open_run(w: &World) {
     let session = w.session(&["act.a", "act.b"]).await;
     let task = w.one_task(&session).await;
     w.complete(&session, &task, &json!({}))

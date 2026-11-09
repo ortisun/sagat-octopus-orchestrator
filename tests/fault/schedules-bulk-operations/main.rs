@@ -8,6 +8,7 @@
 #[path = "../../support/mod.rs"]
 mod support;
 
+mod audit_rollback;
 mod batch;
 mod batch_locks;
 mod business_ids;
@@ -20,6 +21,7 @@ mod firing;
 mod instances;
 mod reset;
 mod run_driven_locks;
+mod slot_order;
 mod tripwire;
 mod update_with_start;
 mod upgrade;

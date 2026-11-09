@@ -397,3 +397,176 @@ fn no_metric_is_labelled_with_something_that_grows_with_the_data() {
         offenders.join("\n")
     );
 }
+// --- the rules feature 018 added (T018-071) ------------------------------------------------------------------------------
+
+/// The rules the schedules, batch, trigger-handover and instance-registry slices of feature 018 added or lean on, with the
+/// runbook each must point to. A rule removed or renamed fails here by name (the generic tests above only read what is there).
+const SCHEDULE_RULES: [(&str, &str); 10] = [
+    (
+        "SagatSchedulerLate",
+        "docs/runbooks/scaling.md#scheduler-late",
+    ),
+    (
+        "SagatBatchJobsStalled",
+        "docs/runbooks/batch-operations.md#5-when-a-job-does-not-move",
+    ),
+    (
+        "SagatTriggerScheduleReconcileFailing",
+        "docs/runbooks/schedules.md#65-watching-the-reconciliation",
+    ),
+    (
+        "SagatTriggerScheduleReconcileStale",
+        "docs/runbooks/schedules.md#65-watching-the-reconciliation",
+    ),
+    (
+        "SagatTriggersUnconverged",
+        "docs/runbooks/schedules.md#65-watching-the-reconciliation",
+    ),
+    (
+        "SagatTriggersUnconvergedAfterHandover",
+        "docs/runbooks/schedules.md#65-watching-the-reconciliation",
+    ),
+    (
+        "SagatCronLegacyFiredAfterHandover",
+        "docs/runbooks/schedules.md#65-watching-the-reconciliation",
+    ),
+    (
+        "SagatCronHandoverUnreadable",
+        "docs/runbooks/schedules.md#65-watching-the-reconciliation",
+    ),
+    (
+        "SagatInstanceGateClosed",
+        "docs/runbooks/instance-registry.md#2-a-process-is-refused",
+    ),
+    (
+        "SagatInstanceRegistrySilent",
+        "docs/runbooks/instance-registry.md#3-while-it-runs",
+    ),
+];
+
+#[test]
+fn the_rules_of_the_schedules_batch_handover_and_registry_slices_exist_name_emitted_metrics_and_real_sections()
+ {
+    let emitted = emitted();
+    let rules = rules();
+    for (name, runbook) in SCHEDULE_RULES {
+        let rule = rules
+            .iter()
+            .find(|rule| rule["alert"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("{name} is not a rule of alerts.yaml"));
+        let expr = rule["expr"].as_str().expect("an expression");
+        let metrics = metrics_in(expr);
+        assert!(!metrics.is_empty(), "{name} evaluates no metric: {expr}");
+        for metric in &metrics {
+            assert!(emitted.contains(metric), "{name}: {metric} is not emitted");
+        }
+        assert_eq!(
+            rule["annotations"]["runbook"].as_str(),
+            Some(runbook),
+            "{name} points to another section than the one its feature's runbook describes"
+        );
+        assert!(runbook_exists(runbook), "{name}: {runbook} does not exist");
+    }
+}
+
+/// The alternatives of a label matcher that is a literal (`"dead"`, `"dropped|lost"`); `None` when it is a pattern.
+fn literal_alternatives(matcher: &str, value: &str) -> Option<Vec<String>> {
+    let plain = |text: &str| {
+        !text.is_empty()
+            && text
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    };
+    let alternatives: Vec<&str> = if matcher == "=~" {
+        value.split('|').collect()
+    } else {
+        vec![value]
+    };
+    alternatives
+        .iter()
+        .all(|alternative| plain(alternative))
+        .then(|| alternatives.iter().map(|a| (*a).to_owned()).collect())
+}
+
+/// What a rule restricts a metric by (`metric{label="value"}`), held to what the code attaches to that metric.
+///
+/// * The label **name** is tied to the metric: it must be one of the labels a macro of the code puts on that very metric. A rule that
+///   matches `{outcom="dead"}` never fires, and nothing else would tell.
+/// * A literal **value** is held only to "a string the code contains somewhere" (any file of `crates` and `apps`): it catches a typo
+///   or a renamed state (`"deadd"`), not a state the metric never takes while another place of the code says the word. It is not
+///   tied to the metric's own emission, because the values come out of `as_str()` of enums in other crates.
+/// * A matcher that is a pattern (`=~"5.."`) and not a plain alternation of words is not looked at: it is listed in
+///   `PATTERNS_NOT_LOOKED_AT`, and a new one fails the test until someone reads it and adds it there.
+const PATTERNS_NOT_LOOKED_AT: [&str; 1] = ["SagatApiErrors: http_requests_total{status=~\"5..\"}"];
+
+#[test]
+fn the_label_names_of_every_rule_are_the_ones_the_code_puts_on_that_metric_and_its_values_are_words_the_code_has()
+ {
+    let by_metric = labels_by_metric();
+    let mut files = Vec::new();
+    for dir in ["crates", "apps"] {
+        sources(&repo().join(dir), &mut files);
+    }
+    let mut code = String::new();
+    for file in files {
+        code.push_str(&std::fs::read_to_string(file).expect("source"));
+    }
+    // labels the scraper adds, and the one of histograms
+    let scraped = ["job", "instance", "le"];
+    let selector = Regex::new(r"([a-zA-Z_:][a-zA-Z0-9_:]*)\{([^}]*)\}").expect("regex");
+    let matcher = Regex::new(r#"([a-z_]+)\s*(=~|!=|=|!~)\s*"([^"]*)""#).expect("regex");
+    let mut checked = 0_u32;
+    let mut problems = Vec::new();
+    let mut not_looked_at: Vec<String> = Vec::new();
+    for rule in rules() {
+        let name = rule["alert"].as_str().unwrap_or("?").to_owned();
+        let expr = rule["expr"].as_str().expect("an expression");
+        for found in selector.captures_iter(expr) {
+            let metric = found[1].to_owned();
+            let base = ["_bucket", "_sum", "_count"]
+                .iter()
+                .find_map(|suffix| metric.strip_suffix(suffix))
+                .unwrap_or(&metric)
+                .to_owned();
+            for m in matcher.captures_iter(&found[2]) {
+                let (label, op, value) = (m[1].to_owned(), m[2].to_owned(), m[3].to_owned());
+                if scraped.contains(&label.as_str()) {
+                    continue;
+                }
+                checked += 1;
+                if !by_metric
+                    .iter()
+                    .any(|(metric, attached, _)| *metric == base && *attached == label)
+                {
+                    problems.push(format!(
+                        "{name}: {metric} is matched on `{label}`, which the code never puts on it"
+                    ));
+                }
+                if let Some(values) = literal_alternatives(&op, &value) {
+                    for value in values {
+                        if !code.contains(&format!("\"{value}\"")) {
+                            problems.push(format!(
+                                "{name}: {metric}{{{label}{op}\"{value}\"}}: no string \"{value}\" in the code"
+                            ));
+                        }
+                    }
+                } else {
+                    not_looked_at.push(format!("{name}: {metric}{{{label}{op}\"{value}\"}}"));
+                }
+            }
+        }
+    }
+    assert!(
+        checked >= 5,
+        "the scan met {checked} label matchers: is the pattern right?"
+    );
+    assert!(
+        problems.is_empty(),
+        "rules that wait for what the code never says:\n{}",
+        problems.join("\n")
+    );
+    assert_eq!(
+        not_looked_at, PATTERNS_NOT_LOOKED_AT,
+        "a matcher that is a pattern is not looked at: read it, and list it in PATTERNS_NOT_LOOKED_AT"
+    );
+}

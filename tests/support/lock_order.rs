@@ -1,6 +1,6 @@
 //! A harness for the lock order of ADR-0050 decision 7 (`T018-012`, `NFR-018-001`).
 //!
-//! Three tools:
+//! Four tools:
 //!
 //! * [`interleave`] runs several lock plans at once, each in a transaction of its own on a
 //!   connection of its own, and makes every plan hold its first lock before any of them asks for the
@@ -11,6 +11,19 @@
 //!   to a lower one.
 //! * [`RowLockMonitor`] samples the row locks of a table with `pgrowlocks` (`pg_locks` does not list
 //!   them) and reports any transaction that holds more than one at the same time.
+//! * [`against_at`] runs a real path (a future of the platform) against a reference transaction that
+//!   takes its locks in the order of the slots: it holds the lock `start`, waits until the path is blocked
+//!   by it (`pg_blocking_pids`, not a time) and then takes the locks after it. A path that holds a lock
+//!   the reference takes later, while it waits for the lock `start`, makes the reference ask for
+//!   something the path holds, which is a deadlock; a path that takes its locks in the order of the
+//!   reference lets it through and completes when it commits. The deadlock is the error `40P01` of
+//!   whoever PostgreSQL chose. One start orders one lock against all the later ones, so a test runs the
+//!   path once for every start (`slot_order.rs`): that orders every pair of the reference. [`against`] is
+//!   the start 0.
+//!
+//! The lease row of a scheduler shard (`scheduler_shards`) is not in any reference: it is a leaf lock
+//! outside the slots (ADR-0050 decision 7), and a reference that took it `FOR UPDATE` and then another
+//! row would model a keeper that does not exist.
 //!
 //! The harness proves nothing by itself about the platform: a test builds the plans from the paths it
 //! means to check, or runs the real paths with the monitor beside them.
@@ -96,6 +109,16 @@ impl Lock {
         Self {
             name,
             sql: format!("SELECT pg_advisory_xact_lock({key})"),
+        }
+    }
+
+    /// Any statement that takes a lock and keeps it to the end of the transaction. The statement is
+    /// built by the test that names it, from values it owns.
+    #[must_use]
+    pub fn statement(name: &'static str, sql: impl Into<String>) -> Self {
+        Self {
+            name,
+            sql: sql.into(),
         }
     }
 
@@ -195,6 +218,143 @@ pub async fn interleave(pool: &PgPool, plans: &[Vec<Lock>]) -> Vec<Outcome> {
         outcomes.push(task.await.expect("a plan"));
     }
     outcomes
+}
+
+/// How a plan that runs alone ended (the path of a self-test, or a lock plan with nobody to wait for).
+pub async fn run_plan(pool: &PgPool, plan: &[Lock]) -> Outcome {
+    let mut tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(error) => return Outcome::Failed(error.to_string()),
+    };
+    for lock in plan {
+        if let Err(error) = sqlx::query(sqlx::AssertSqlSafe(lock.sql.clone()))
+            .execute(&mut *tx)
+            .await
+        {
+            return classify(lock.name, &error);
+        }
+    }
+    match tx.commit().await {
+        Ok(()) => Outcome::Committed,
+        Err(error) => Outcome::Failed(error.to_string()),
+    }
+}
+
+fn classify(name: &str, error: &sqlx::Error) -> Outcome {
+    let deadlock = error
+        .as_database_error()
+        .and_then(|e| e.code())
+        .is_some_and(|code| code == "40P01");
+    if deadlock {
+        Outcome::DeadlockVictim
+    } else {
+        Outcome::Failed(format!("{name}: {error}"))
+    }
+}
+
+/// What [`against`] saw: what the path returned, and how the reference transaction ended.
+#[derive(Debug)]
+pub struct Against<T> {
+    pub path: T,
+    pub reference: Outcome,
+}
+
+/// [`against_at`] from the first lock.
+///
+/// # Panics
+/// As [`against_at`].
+pub async fn against<T>(
+    pool: &PgPool,
+    reference: &[(Slot, Lock)],
+    path: impl std::future::Future<Output = T>,
+) -> Against<T> {
+    against_at(pool, reference, 0, path).await
+}
+
+/// Runs `path` against a reference transaction that holds the lock `start` of `reference`, waits until
+/// the path is blocked by it, takes the locks after it in order, and commits. The reference is in the
+/// order of the slots (refused otherwise), so it cannot be the one that is wrong: if either of the two
+/// ends as a deadlock victim, the path holds a lock the reference takes after `start` while it waits
+/// for the lock `start`. At the start 0 that is the path's first lock against all the others; run for
+/// every start up to the last but one, every pair of locks is ordered. A path that never waits for the
+/// lock `start` fails the test by name, so the check cannot pass by never meeting the reference.
+///
+/// # Panics
+/// When the reference is not in the order of its slots, has no lock after `start`, cannot take the
+/// lock `start`, or the path ends without ever waiting for it.
+pub async fn against_at<T>(
+    pool: &PgPool,
+    reference: &[(Slot, Lock)],
+    start: usize,
+    path: impl std::future::Future<Output = T>,
+) -> Against<T> {
+    assert!(
+        start + 1 < reference.len(),
+        "a reference takes a lock after the one it starts at, or nothing is ordered"
+    );
+    assert_ascending(
+        &reference
+            .iter()
+            .map(|(slot, lock)| (*slot, lock.name))
+            .collect::<Vec<_>>(),
+    );
+    let mut tx = pool.begin().await.expect("the reference transaction");
+    let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("the backend of the reference");
+    let first = &reference[start].1;
+    sqlx::query(sqlx::AssertSqlSafe(first.sql.clone()))
+        .execute(&mut *tx)
+        .await
+        .unwrap_or_else(|error| panic!("the reference takes `{}`: {error}", first.name));
+    let ended = AtomicBool::new(false);
+    // boxed: the future of a path of the platform is large (a reset's completion overflowed the stack of a test thread)
+    let path = Box::pin(async {
+        let result = Box::pin(path).await;
+        ended.store(true, Ordering::SeqCst);
+        result
+    });
+    let partner = async {
+        loop {
+            let blocked: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity \
+                 WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))",
+            )
+            .bind(holder)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+            if blocked > 0 {
+                break;
+            }
+            assert!(
+                !ended.load(Ordering::SeqCst),
+                "the path ended without waiting for `{}`: it never takes that lock, so it was not ordered against it",
+                first.name
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        for (_, lock) in &reference[start + 1..] {
+            if let Err(error) = sqlx::query(sqlx::AssertSqlSafe(lock.sql.clone()))
+                .execute(&mut *tx)
+                .await
+            {
+                return classify(lock.name, &error);
+            }
+        }
+        match tx.commit().await {
+            Ok(()) => Outcome::Committed,
+            Err(error) => Outcome::Failed(error.to_string()),
+        }
+    };
+    let partner = super::bounded::within(
+        "the path waits for the first lock of the reference and the reference goes on",
+        Duration::from_secs(120),
+        partner,
+    );
+    let (path, reference) = tokio::join!(path, partner);
+    Against { path, reference }
 }
 
 /// How many backends of this database wait on a lock another one holds.

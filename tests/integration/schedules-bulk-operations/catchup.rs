@@ -426,10 +426,16 @@ mod trigger_owned {
 
     use crate::support::trigger_schedules::{Triggers, cron_workflow, triggers};
 
+    /// Midnight UTC `days` days before `now`, in whole seconds: an instant that goes through the database (microseconds) and one that does
+    /// not (nanoseconds on Linux, microseconds on macOS) are equal, so that a test never compares the text of one with the text of the other.
+    fn midnight_from(now: OffsetDateTime, days: i64) -> OffsetDateTime {
+        let now = now.unix_timestamp();
+        OffsetDateTime::from_unix_timestamp(now - now % 86_400 - days * 86_400).expect("instant")
+    }
+
     /// Midnight UTC `days` days ago.
     fn midnight(days: i64) -> OffsetDateTime {
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        OffsetDateTime::from_unix_timestamp(now - now % 86_400 - days * 86_400).expect("instant")
+        midnight_from(OffsetDateTime::now_utc(), days)
     }
 
     async fn keys(t: &Triggers, trigger: Uuid) -> Vec<String> {
@@ -555,6 +561,122 @@ mod trigger_owned {
         assert!(
             acted >= cutoff && acted < cutoff + Duration::days(1) + Duration::seconds(1),
             "{acted} {cutoff}"
+        );
+    }
+
+    /// What the schedule pass made of an outage that began `days` days ago (a daily trigger, due since that midnight): the outcomes in
+    /// order of time, with the counts of the summaries, the keys of the runs it started, how many runs there are, and the instant that
+    /// "now" was for the whole of it (read once: a test that crossed midnight UTC would otherwise disagree with its own keys).
+    async fn after_an_outage_of(
+        days: i64,
+    ) -> (
+        Vec<(String, Option<i32>)>,
+        Vec<String>,
+        usize,
+        OffsetDateTime,
+    ) {
+        let now = OffsetDateTime::now_utc();
+        let t = triggers().await;
+        let (workflow, _) = t.publish(cron_workflow("edge", "0 0 * * *", "UTC")).await;
+        let (trigger, ..) = t.trigger_of("edge").await;
+        t.reconcile().await;
+        let schedule = t.schedule_of(trigger).await.expect("schedule");
+        t.due_at(trigger, &schedule, midnight_from(now, days)).await;
+        t.clock.set(now);
+        for _ in 0..30 {
+            if t.fire(&schedule).await != Fired::Acted {
+                break;
+            }
+        }
+        let rows: Vec<(String, Option<i32>)> = sqlx::query_as(
+            "SELECT outcome, summary_count FROM schedule_actions WHERE schedule_id = $1 ORDER BY nominal_at",
+        )
+        .bind(schedule.id.as_uuid())
+        .fetch_all(&t.w.db.pool)
+        .await
+        .expect("actions");
+        (
+            rows,
+            keys(&t, trigger).await,
+            t.runs_of(workflow).await.len(),
+            now,
+        )
+    }
+
+    #[tokio::test]
+    async fn an_outage_of_365_days_is_inside_the_window_whole_one_run_at_the_earliest_time_and_no_time_is_missed()
+     {
+        let (rows, keys, runs, now) = after_an_outage_of(365).await;
+        assert_eq!(runs, 1, "one run for the whole outage: {rows:?}");
+        let outcomes: Vec<&str> = rows.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(
+            outcomes,
+            ["STARTED", "COALESCED"],
+            "nothing is older than the window: {rows:?}"
+        );
+        assert_eq!(
+            keys,
+            [format!("cron-{}", midnight_from(now, 365).unix_timestamp())],
+            "the key of the earliest missed time"
+        );
+        assert!(
+            rows[1].1.expect("count") >= 364,
+            "every later time is in the summary: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_outage_that_began_366_days_ago_misses_the_one_time_older_than_the_window_and_acts_on_the_next()
+     {
+        let (rows, keys, runs, now) = after_an_outage_of(366).await;
+        assert_eq!(runs, 1, "{rows:?}");
+        let outcomes: Vec<&str> = rows.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(
+            outcomes,
+            ["MISSED_CATCHUP_WINDOW", "STARTED", "COALESCED"],
+            "{rows:?}"
+        );
+        assert_eq!(
+            rows[0].1,
+            Some(1),
+            "the midnight of 366 days ago is older than the window by the hours of today that have passed"
+        );
+        assert_eq!(
+            keys,
+            [format!("cron-{}", midnight_from(now, 365).unix_timestamp())],
+            "the earliest time inside the window is the one acted on"
+        );
+    }
+
+    /// The same outage, longer than the window, in a world where the legacy pass runs it: one run, at the oldest missed
+    /// tick whatever its age (D2040). The schedule pass makes one run too, so the handover does not make a catch-up bigger.
+    #[tokio::test]
+    async fn the_legacy_pass_over_an_outage_of_400_days_makes_one_run_at_the_oldest_tick_and_the_schedule_pass_one_too()
+     {
+        let l = triggers().await;
+        let (legacy_workflow, _) = l.publish(cron_workflow("outage", "0 0 * * *", "UTC")).await;
+        let (legacy_trigger, ..) = l.trigger_of("outage").await;
+        let oldest = midnight(400);
+        sqlx::query("UPDATE workflow_triggers SET next_fire_at = $2 WHERE id = $1")
+            .bind(legacy_trigger)
+            .bind(oldest)
+            .execute(&l.w.db.pool)
+            .await
+            .expect("due");
+        assert_eq!(l.w.dispatcher.tick().await.runs_started, 1);
+        assert_eq!(l.runs_of(legacy_workflow).await.len(), 1);
+        assert_eq!(
+            keys(&l, legacy_trigger).await,
+            [format!("cron-{}", oldest.unix_timestamp())],
+            "the legacy pass fires the oldest missed tick, a year and more late"
+        );
+        // and the schedule pass: one run too, at the earliest time inside the window, which is the midnight of 365 days ago
+        let (rows, keys, runs, now) = after_an_outage_of(400).await;
+        assert_eq!(runs, 1, "{rows:?}");
+        assert_eq!(
+            keys,
+            [format!("cron-{}", midnight_from(now, 365).unix_timestamp())],
+            "the earliest time inside the window, not the oldest tick: {rows:?}"
         );
     }
 }

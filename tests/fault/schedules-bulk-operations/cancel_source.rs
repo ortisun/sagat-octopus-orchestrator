@@ -51,9 +51,9 @@ impl ResetCompletions for Completions {
     }
 }
 
-type Completer = ResetCompleter<PgRunStore, Completions, PgIdentityStore, SystemClock>;
+pub(crate) type Completer = ResetCompleter<PgRunStore, Completions, PgIdentityStore, SystemClock>;
 
-fn completer(f: &Fixture) -> Completer {
+pub(crate) fn completer(f: &Fixture) -> Completer {
     ResetCompleter::new(
         f.w.store.clone(),
         Completions(Arc::clone(&f.w)),
@@ -196,7 +196,7 @@ pub(crate) async fn wait_for_backends_on_locks(f: &Fixture, n: i64, stage: &str)
 }
 
 /// Room for `n` resets that wait in the namespace at once: the deployment ceiling first, then the limit.
-async fn room_for_pending(f: &Fixture, n: i64) {
+pub(crate) async fn room_for_pending(f: &Fixture, n: i64) {
     sqlx::query(
         "INSERT INTO quota_ceilings (tenant_id, resource, max_value, granted_by) \
          VALUES ($1, 'pending_resets', $2, 'operator')",

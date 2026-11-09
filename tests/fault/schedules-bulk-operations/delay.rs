@@ -19,7 +19,7 @@ use crate::support::schedules::{Fixture, fixture};
 use crate::tripwire::{Tripwire, table_digests};
 
 /// A delayed run whose instant has already passed by the database's clock.
-async fn due_run(f: &Fixture, key: &str) -> RunId {
+pub(crate) async fn due_run(f: &Fixture, key: &str) -> RunId {
     f.clock
         .set(OffsetDateTime::now_utc() - Duration::seconds(5));
     f.w.runs
