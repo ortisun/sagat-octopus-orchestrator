@@ -1000,7 +1000,7 @@ test to every catalog and storage type.
   *2026-11-09, ticked (slice S7):* the per-check probe results are in `ConnectionProbe.tsx`, and the page offers the probe of an Iceberg connection the deployment lists and a runner opens. A connection is confirmed only when a probe that ended tested the
   current revision and every check passed; a failed or skipped check, a platform failure, a result that cannot be read and an older revision are not. Evidence: `ConnectionsPage.test.tsx` (43 passed; the 13 new are the describe
   "The probe of an Iceberg connection", 11 of 12 seen failing first), 15 hand mutations killed, `npm audit` 0, `lint`, `typecheck`, `npm test` 87 files / 1,230 tests, `build`, `check:api`. The list the form depends on is served (`GET …/database-drivers`,
-  S6c) and the probe is started by the REST probe (S6c). **Not tried in a browser** and the browser journeys (T035-074) are not run: the first real look is S8's canary.
+  S6c) and the probe is started by the REST probe (S6c). **Not tried in a browser** and the browser journey of an Iceberg write (T035-074) is not written; the journeys that exist (`e2e_workflow_studio`, `e2e_database_connections`) pass: the first real look is S8's canary.
 
 **Checkpoint**: US01 on REST + S3 works and is tested on its own.
 

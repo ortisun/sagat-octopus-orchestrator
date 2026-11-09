@@ -130,6 +130,8 @@ curl -X PUT "$SAGAT/namespaces/$NAMESPACE_ID/worker-bindings/$RUNNER_SUBJECT" \
   -d '{"activities": ["sagat.database.iceberg.write"], "profile": "lake"}'
 ```
 
+What a person who connects a catalog does and sees is in [the guide](../guides/iceberg-connections.md).
+
 A lake runner that has a probe to run (a runner of the version that serves the probe of an Iceberg connection) offers it beside its write,
 and its binding covers both: `"activities": ["sagat.database.iceberg.write", "sagat.database.lake.probe"]`. **Roll it out in this order: the
 server, then the binding, then the runner.** A step is handed only to a session that offers its own activity, so a runner that offers the
