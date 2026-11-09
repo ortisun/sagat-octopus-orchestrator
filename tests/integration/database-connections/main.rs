@@ -10,6 +10,7 @@ mod lake;
 mod lake_blob_grpc;
 mod lake_blob_lease;
 mod lake_blobs;
+mod lake_canaries;
 mod lake_grpc;
 mod lake_lease;
 mod lake_read;
@@ -335,6 +336,8 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(lake_blob_grpc::run(provider.clone())).await;
     progress.enter("the result of a SQL step written by a lake step, on the wire");
     Box::pin(lake_result_grpc::run(provider.clone())).await;
+    progress.enter("canaries across the server's half of a lake write");
+    Box::pin(lake_canaries::run(provider.clone())).await;
     progress.enter("output::run");
     Box::pin(output::run(provider.clone())).await;
     progress.enter("output_blobs::run");

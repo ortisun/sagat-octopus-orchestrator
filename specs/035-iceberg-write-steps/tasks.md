@@ -1218,7 +1218,10 @@ one commit carries the key.
   Refs: FR-035-030, NFR-035-SEC.
 
   *2026-11-09, one part done, left unticked (D035-146):* the audit once per committed write (`iceberg.write_committed`, in the transaction of the completion, from the receipt the server built; a commit
-  the run could not keep is audited too). Not done: the spans, the server-side metrics (the runner counts its attempts, D035-143), and the canary test.
+  the run could not keep is audited too). Not done: the spans and the server-side metrics (the runner counts its attempts, D035-143).
+  *2026-11-09, the canary test of the server's half is done (D035-149), still unticked:* `tests/integration/database-connections/lake_canaries.rs` (the task names
+  `tests/integration/iceberg-writes/canaries.rs`, which never existed: that suite has no control plane, and the scenario needs the lifecycle's OpenBao). Not covered: the host and the
+  sandbox runner, which are other processes (their own canaries are in `runners/lake/tests/`), and the spans, which do not exist yet.
 - [ ] T035-062 [US02] Add the example `examples/iceberg/orders-append.workflow.json` and the e2e test
   `tests/e2e/iceberg-writes/append.rs` (happy path and a recovered crash, quickstart scenario 2).
   Refs: FR-035-032, SC-035-003.
