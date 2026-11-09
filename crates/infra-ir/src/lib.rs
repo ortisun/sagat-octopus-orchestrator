@@ -175,6 +175,18 @@ impl IrCodec for JsonIrCodec {
             .transpose()
     }
 
+    fn declared_state_publication_private(
+        &self,
+        document: &[u8],
+    ) -> Result<Option<sagat_application::declared_operations::PublishedDeclaredState>, IrError>
+    {
+        let value = validated_document_in(document, schema::Mode::Private)?;
+        value
+            .get("state")
+            .map(|_| declared_state::parse(&value)?.publication())
+            .transpose()
+    }
+
     fn initial_declared_state(
         &self,
         document: &[u8],

@@ -3571,3 +3571,18 @@ The other fixes were wording:
   before admission and the claim know a probe (the six `== ManagedKind::Lake` sites): its connection would not be bound and its claim would fail for ever. So S2 wires the join together with
   the start, admission, the claim and one table-driven test that creates a probe run, claims it and restores it from the store, and the loader's decision is then proved by that test and by
   mutating the join. The REST probe keeps refusing an Iceberg connection until the slice that gives the runner a probe to run (S6), so the endpoint never returns a run that cannot finish.
+  *S2a (2026-11-09): the start, admission and the loader's join are built, tested against real PostgreSQL (`lake_probe_start.rs`).* `RunService::start_lake_probe` starts the platform's own probe
+  document as a private run of origin `ConnectionProbe`; admission has a third group for it (the connection is bound at the revision it was started on, Iceberg only, the lake switch applies,
+  and `database_writes` says a probe is managed and asks for no write); the loader restores a version through the private entry **because its workflow is internal**, by a join on
+  `workflows.internal` and by nothing in the document. Three things differ from what this decision said. (1) **The pre-read of the connection's kind is dropped** (`RunStore::connection_kind`, its
+  query and its check): admission already refuses a missing, deleted, another tenant's or SQL connection with the one answer, and the pre-read only suppressed the denial record that a SQL probe's
+  refusal leaves (the denial recording of the identity store collapses repeated denials, so no assertion on it was deterministic): untestable surface and a weaker audit, for a lock saved.
+  (2) **Run creation reads the stored document too**, for its declared state, through the public grammar, and the test found it: `declared_state_publication` validates the whole document before it
+  looks for a `state`, so a private version failed there with `Internal`. It has a private twin on the port, the cache and the codec (fail closed by default), chosen by whether the run
+  retains a definition, i.e. by the row. (3) **The REST probe still refuses an Iceberg connection, and the ad hoc endpoint refuses the probe document**: both are asserted. *Mutations:* nine of
+  twelve killed on the first run; of the three that survived, one was the pre-read (removed) and one the admission check of the Iceberg kind, which is killed once admission is the only guard;
+  **one survives**, redundant by construction: the check that a named revision is the one admitted, made after the connection was resolved *at that revision*, as the SQL and the write loops
+  do. The origin gate of `validate_definition` (a probe node for any origin but a connection probe) was not mutated: the public parse refuses the node before it is reached, so it is
+  defence in depth that no public path can exercise. The fitness test for who may mention a
+  private entry is killed by three mutations. *Still to do before a probe can run:* the claim path (the budgets, the profile fence, the secrets and the `== ManagedKind::Lake` sites: S2b),
+  the probe's lease document (S3), its result (S4), the host (S5), the runner (S6).

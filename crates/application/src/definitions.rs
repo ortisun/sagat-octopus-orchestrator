@@ -496,6 +496,19 @@ pub trait IrCodec: Send + Sync {
         Ok(None)
     }
 
+    /// The same for the stored document of a **private** version (ADR-0080), which run creation reads as it reads any version: through the
+    /// private entry, because the workflow is private, and never because of what the document says. A codec with no private grammar
+    /// refuses it.
+    ///
+    /// # Errors
+    /// An [`IrError`]; always, for a codec with no private grammar.
+    fn declared_state_publication_private(
+        &self,
+        _document: &[u8],
+    ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
+        Err(no_private_documents())
+    }
+
     /// Evaluates a schema-checked initial state from the exact input of a new run.
     /// Codecs that do not implement declared state return no state.
     ///

@@ -9,8 +9,11 @@ and feature 017 keep the platform's own runs (ad hoc and probe) as private defin
 **Enforced by:** `crates/infra-ir/tests/private_documents.rs` (no public entry point accepts a private node; the private ones accept it and
 give the domain a probe; a private document still obeys every other rule of the schema; an ordinary document parses to the same bytes
 in both) and two tests in `crates/infra-ir/src/schema.rs` (the private schema is the public one plus the private node types and nothing
-else, byte for byte; no private node type appears in the text of `workflow.schema.json`) and, in the slice that wires the loader, an
-integration test that a probe version restores and that no public path reaches the private entry. The two source-text rules (only
+else, byte for byte; no private node type appears in the text of `workflow.schema.json`), `tests/integration/database-connections/lake_probe_start.rs`
+(a private version restores through the private entry and a public one never does, whatever its document holds, both in the run store's
+loader and in run creation, which reads the stored document for its declared state; the ad hoc endpoint and the REST probe cannot start a
+probe) and `crates/application/tests/private_entry_sites.rs` (only five listed files mention a private entry: a file that is not on the
+list fails the test, and so does a file on the list that no longer mentions one). The two source-text rules (only
 two callers use a private entry) are added to `crates/application/tests/managed_kind_sites.rs` in that slice.
 
 ## Context

@@ -142,6 +142,39 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         .await
     }
 
+    /// The probe of an Iceberg connection (D035-150, ADR-0080): a private run whose one node the platform writes. Nothing public calls it
+    /// yet: the REST probe refuses an Iceberg connection until a runner has a probe to run.
+    ///
+    /// # Errors
+    /// `NotFound` for a connection that is not an Iceberg connection of the namespace, whatever the reason (missing, deleted, a SQL one),
+    /// and the refusals of any ad hoc start: permissions, a connection that cannot be admitted, the lake being off.
+    #[tracing::instrument(skip_all, name = "database.lake_probe.start", fields(tenant_id = %principal.tenant_id(), namespace_id = %namespace, run_id = tracing::field::Empty))]
+    pub async fn start_lake_probe(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        connection: &ConnectionRef,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
+        let document = lake_probe_document(connection);
+        self.start_private(
+            principal,
+            &StartDatabaseExecution {
+                namespace,
+                mode: AdHocMode::Step,
+                document: &document,
+                input: b"{}",
+                timeout_ms: Some(30_000),
+                key,
+            },
+            RunOrigin::ConnectionProbe,
+            None,
+            ctx,
+        )
+        .await
+    }
+
     pub async fn latest_connection_probe(
         &self,
         principal: &Principal,
@@ -239,27 +272,32 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         {
             return Err(AppError::NotAllowed("invalid Idempotency-Key"));
         }
-        let parsed = self
-            .cache
-            .parse_document(request.document)
-            .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
+        // The platform's own probe documents are the only ones that may carry a private node (ADR-0080): they are parsed by the private
+        // entry, whose grammar is the public one plus the private node types. Every other origin is parsed by the public one.
+        let parsed = if origin == RunOrigin::ConnectionProbe {
+            self.cache.parse_private_document(request.document)
+        } else {
+            self.cache.parse_document(request.document)
+        }
+        .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
         validate_definition(&parsed.definition, origin)?;
         if origin == RunOrigin::ConnectionProbe {
-            let reference = &parsed
-                .definition
-                .nodes()
-                .next()
-                .and_then(|n| n.database_operation())
-                .ok_or(AppError::Internal)?
-                .connection;
+            let node = parsed.definition.nodes().next().ok_or(AppError::Internal)?;
+            let fixed_document = match (node.database_operation(), node.lake_probe_target()) {
+                (Some(operation), None) => probe_document(&operation.connection),
+                (None, Some(probe)) => lake_probe_document(probe.connection()),
+                _ => return Err(AppError::Internal),
+            };
             let fixed = self
                 .cache
-                .parse_document(&probe_document(reference))
+                .parse_private_document(&fixed_document)
                 .map_err(|_| AppError::Internal)?;
             if parsed.canonical != fixed.canonical || request.input != b"{}" || timeout_ms != 30_000
             {
                 return Err(AppError::NotAllowed("invalid connection probe"));
             }
+            // What makes the connection not an Iceberg connection of this namespace (missing, deleted, another tenant's, a SQL one) is
+            // refused by admission, which answers all of them alike and records the denial as it does for a SQL probe.
         }
         if parsed
             .definition
@@ -380,14 +418,21 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
 
 fn validate_definition(def: &WorkflowDefinition, origin: RunOrigin) -> Result<(), AppError> {
     let nodes: Vec<_> = def.nodes().collect();
+    // The probe of an Iceberg connection is the platform's own node: only a connection probe is one, and it is one node (ADR-0080).
+    let is_probe = |node: &&sagat_domain::workflow::Node| node.lake_probe_target().is_some();
     if !def.triggers().is_empty()
         || nodes.is_empty()
         || nodes.len() > 64
-        || !nodes.iter().any(|n| n.database_operation().is_some())
+        || (origin != RunOrigin::ConnectionProbe && nodes.iter().any(is_probe))
+        || !nodes
+            .iter()
+            .any(|n| n.database_operation().is_some() || is_probe(n))
         || (origin != RunOrigin::AdHocWorkflow
-            && (nodes.len() != 1 || nodes[0].database_operation().is_none()))
+            && (nodes.len() != 1
+                || (nodes[0].database_operation().is_none() && !is_probe(&nodes[0]))))
         || nodes.iter().any(|n| {
             n.database_operation().is_none()
+                && !is_probe(n)
                 && !matches!(
                     n.kind(),
                     NodeKind::Timer { .. }
