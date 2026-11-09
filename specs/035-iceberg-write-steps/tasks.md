@@ -951,6 +951,11 @@ test to every catalog and storage type.
   T035-039 and T035-040 pass. Refs: FR-035-006, G035-021.
 
   *2026-11-09, amended (D035-150):* "try one write outside the prefix" is not part of this probe; the order of work is slices S0 to S8 of D035-150, and S0 to S4 come before the host.
+
+  *2026-11-09, slice S5 (partly done, not ticked):* **done** — the host operation, `runners/lake/sagat_lake/probe.py` with `probe_codes.py` and `request.py::parse_probe`, with pytest (`test_probe_request.py` 66,
+  `test_probe_operation.py` 43, `test_probe_storage.py` 27 against the real S3 client; the host suite 1 299 passed, 1 skipped), held to the server's corpus and to `ProbeCheck::allows` from both sides. **Not done** — the
+  runner wiring in `apps/database-runner/src/lake.rs` (both lake activities in one session, the sandbox request, `ResolveDatabase`, the inline result), the REST start, the listing in `GET /database-drivers` (T035-043),
+  and the S3 route inside the sandbox (G035-088, T035-031). T035-040's integration test is not written.
 - [ ] T035-046 [P] [US01] Add the Iceberg connection to the Studio, in
   `frontend/apps/studio/src/features/connections/{ConnectionForm.tsx,ConnectionProbe.tsx,api.ts}`:
   - an Iceberg form with REST and S3 sections;

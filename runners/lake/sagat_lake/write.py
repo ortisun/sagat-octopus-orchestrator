@@ -46,6 +46,7 @@ from .config_hygiene import HygieneError
 from .connection import open_connection
 from .failures import Failure
 from .modes.append import append
+from .probe import probe_operation
 from .request import parse_write
 
 Operation = Callable[[Mapping[str, object]], Awaitable[dict[str, object]]]
@@ -93,8 +94,8 @@ def iceberg_write(
 
 
 def operations_for(attempt_dir: Path) -> dict[str, Operation]:
-    """The operations the host serves for an attempt."""
-    return {"icebergWrite": iceberg_write(attempt_dir)}
+    """The operations the host serves for an attempt: the write, and the probe of a connection (``probe.py``)."""
+    return {"icebergWrite": iceberg_write(attempt_dir), "probe": probe_operation()}
 
 
 def _failure(error: Exception) -> Failure | None:

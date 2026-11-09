@@ -15,6 +15,9 @@ used before anyone looked at it:
   the vended credentials keep only the keys of the declared storage;
 * every request of the session has a time limit (``request_timeout``) unless the caller gives its own.
 
+It has one method of its own, ``probe_namespaces``, for the ``WAREHOUSE`` check of a probe (``probe.py``): one request
+for the first page of namespaces, where PyIceberg's own listing follows the pages for as long as the catalog gives one.
+
 ``_fetch_config`` is a copy of PyIceberg 0.12.0's with the filtering, and ``_response_to_table`` and ``_create_session``
 are extended: the version is pinned in ``requirements.lock``, and ``tests/test_rest_catalog.py`` shows the client of
 PyIceberg following a lying catalog, so an upgrade that changes either is noticed.
@@ -34,12 +37,15 @@ from pyiceberg.catalog.rest import (
     VIEW_ENDPOINTS,
     VIEW_ENDPOINTS_SUPPORTED,
     VIEW_ENDPOINTS_SUPPORTED_DEFAULT,
+    Capability,
     ConfigResponse,
     Endpoints,
+    ListNamespaceResponse,
     RestCatalog,
 )
 from pyiceberg.catalog.rest.response import _handle_non_200_response
 from pyiceberg.catalog.rest.scan_planning import StorageCredential
+from pyiceberg.exceptions import NoSuchNamespaceError
 from pyiceberg.utils.properties import property_as_bool
 from requests import HTTPError
 
@@ -108,6 +114,25 @@ class LakeRestCatalog(RestCatalog):
         if not separator_from_properties:
             raise ValueError("Namespace separator cannot be an empty string")
         self._namespace_separator = unquote(separator_from_properties)
+
+    def probe_namespaces(self) -> None:
+        """One request for the first page of namespaces, and nothing after it (D035-150, the ``WAREHOUSE`` check).
+
+        PyIceberg's ``list_namespaces`` follows ``next-page-token`` until the catalog stops giving one, which a catalog
+        that never does would turn into a request that never ends, and the probe asks whether the warehouse answers, not
+        for what is in it. So this is the one request, read for its status and for being a page of namespaces. A
+        catalog that does not say it lists namespaces is not asked to: the configuration it gave is all there is.
+        """
+        try:
+            self._check_endpoint(Capability.V1_LIST_NAMESPACES)
+        except NotImplementedError:
+            return
+        response = self._session.get(self.url(Endpoints.list_namespaces), params={"pageSize": "1"})
+        try:
+            response.raise_for_status()
+        except HTTPError as exc:
+            _handle_non_200_response(exc, {404: NoSuchNamespaceError})
+        ListNamespaceResponse.model_validate_json(response.text)
 
     def _response_to_table(self, identifier_tuple: tuple[str, ...], table_response: TableResponse) -> Table:
         document = table_response.model_dump(mode="json", by_alias=True, exclude_none=True)

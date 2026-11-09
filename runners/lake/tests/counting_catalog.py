@@ -61,6 +61,15 @@ class Catalog:
     get_status: int | None = None
     # A text and its replacement in the table the catalog returns: the same table, said to be somewhere else.
     rewrite: tuple[str, str] | None = None
+    # The first page of namespaces (the probe's WAREHOUSE check): the paths asked for, a status it is answered with
+    # instead of the page, and a body it is answered with instead (a catalog that says something that is not a page).
+    namespace_requests: list[str] = field(default_factory=list)
+    namespaces_status: int | None = None
+    namespaces_body: dict[str, Any] | None = None
+    # The `endpoints` of /v1/config: the operations the catalog says it has (`None` leaves the client's defaults).
+    config_endpoints: list[str] | None = None
+    # A page token the first page carries, as a catalog with more namespaces than one page does.
+    next_page_token: str | None = None
 
 
 def _error(status: int) -> dict[str, object]:
@@ -85,7 +94,21 @@ def _handler(state: Catalog) -> type[BaseHTTPRequestHandler]:
                 return
             path = self.path.split("?", 1)[0]
             if path == "/v1/config":
-                self._reply(200, {"defaults": state.config_defaults, "overrides": state.config_overrides})
+                config: dict[str, Any] = {"defaults": state.config_defaults, "overrides": state.config_overrides}
+                if state.config_endpoints is not None:
+                    config["endpoints"] = state.config_endpoints
+                self._reply(200, config)
+            elif path == "/v1/namespaces":
+                state.namespace_requests.append(self.path)
+                if state.namespaces_status is not None:
+                    self._reply(state.namespaces_status, _error(state.namespaces_status))
+                elif state.namespaces_body is not None:
+                    self._reply(200, state.namespaces_body)
+                else:
+                    page: dict[str, Any] = {"namespaces": [[NAMESPACE]]}
+                    if state.next_page_token is not None:
+                        page["next-page-token"] = state.next_page_token
+                    self._reply(200, page)
             elif path == f"/v1/namespaces/{NAMESPACE}/tables/{TABLE}":
                 table = state.sql.load_table(f"{NAMESPACE}.{TABLE}")
                 metadata = json.loads(table.metadata.model_dump_json(by_alias=True, exclude_none=True))

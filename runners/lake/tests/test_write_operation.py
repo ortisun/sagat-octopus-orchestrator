@@ -306,9 +306,9 @@ def test_a_failure_of_the_closed_set_that_the_opener_raises_is_passed_on(stub: C
 
 
 # ------------------------------------------------------------------------------------------------------- the entry
-def test_the_host_serves_this_operation_and_no_other_yet() -> None:
+def test_the_host_serves_the_write_and_the_probe_and_no_other_yet() -> None:
     operations = operations_for(pathlib.Path("/tmp/nowhere"))
-    assert set(operations) == {"icebergWrite"}
+    assert set(operations) == {"icebergWrite", "probe"}
 
 
 def test_the_entry_point_builds_its_operations_for_the_attempt_directory(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -321,4 +321,4 @@ def test_the_entry_point_builds_its_operations_for_the_attempt_directory(monkeyp
 
     monkeypatch.setattr(host, "run", fake_run)
     assert host.main(["--attempt-dir", "/tmp/somewhere"]) == 0
-    assert seen == {"attempt_dir": pathlib.Path("/tmp/somewhere"), "operations": ["icebergWrite"]}
+    assert seen == {"attempt_dir": pathlib.Path("/tmp/somewhere"), "operations": ["icebergWrite", "probe"]}
