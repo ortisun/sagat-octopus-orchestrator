@@ -43,7 +43,7 @@ pub struct TriggerSettings {
 impl TriggerSettings {
     /// The hard ceilings: the query is bounded whatever the settings say. A batch of `MAX_BATCH` writes is followed by a pause of
     /// `MAX_BATCH / WRITES_PER_SECOND` seconds, which is the poll of the loop at the most (the loop does not shorten it), so the
-    /// rate holds for any setting (D2072).
+    /// rate stays at or under `WRITES_PER_SECOND` for any setting (D2072).
     pub const MAX_BATCH: u32 = 500;
     pub const MAX_PER_TENANT: u32 = 200;
     pub const MAX_SCAN: u32 = 10_000;
@@ -97,8 +97,14 @@ impl TriggerRound {
     /// triggers is about a hundred reads of a range of an index spread over half a minute, not a burst.
     pub const SWEEP_PAUSE: Duration = Duration::from_millis(250);
 
-    /// How many writes a productive round is allowed per second (D2047): an upgrade that leaves a hundred thousand triggers to
-    /// reconcile is worked through at this pace and not as fast as the database lets it.
+    /// The most writes a productive round is allowed per second (D2047): an upgrade that leaves a hundred thousand triggers to
+    /// reconcile is worked through at this pace at the most, and not as fast as the database lets it. It is a ceiling and not the
+    /// pace: the pause that keeps to it is added to the time of the round, so the pace is lower. Measured on one machine
+    /// (G2048, two tenants, the engine's own loop, a window of 60 s): 100,000 triggers drained at 62 writes a second under
+    /// the default settings (27 minutes) and at 77 with the per-tenant cap of a round raised to 100 (21 minutes, not the
+    /// 17 estimated); 10,000 triggers at 30 and at 69 a second (6 and 2 minutes). The smaller backlog is the slower under
+    /// the defaults because its sweep reaches the end of the triggers more often, and a round that finds nothing to write
+    /// is followed by the poll of 5 s (7 or 8 of them in the 60 s): read from the counts of the rounds, not tested alone.
     pub const WRITES_PER_SECOND: u64 = 100;
 
     /// What the round wrote.

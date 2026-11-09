@@ -486,7 +486,8 @@ fn drift_of(row: &sqlx::postgres::PgRow) -> Result<Drift, StoreError> {
 }
 
 /// The five ways the schedules differ from the triggers, in one statement over the shards of the window: every
-/// trigger is looked at once (it is joined to its schedule, not looked up), the entries that are backing off are left
+/// trigger is looked at once, and its schedule is looked up by the view for each trigger, an index probe and not a join of
+/// the window against `schedules` (G2049, D2117), the entries that are backing off are left
 /// out, and each tenant is given at most `$3` of the `$4` the round may take, interleaved by tenant so that one tenant
 /// with a great many does not hold the others back.
 const DRIFT: &str = "\

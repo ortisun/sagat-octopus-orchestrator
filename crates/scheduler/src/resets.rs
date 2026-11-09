@@ -138,7 +138,9 @@ impl ResetRound {
     /// failed entries (a backlog of runs to make drains at full speed, as it always did), and for one that expired entries
     /// the time they cost at [`Self::EXPIRIES_PER_SECOND`], at least 200 ms. The caps of a round bound the round and not a
     /// rate, and the first rounds of an engine with this version expire every entry that is older than the window: this is
-    /// what keeps those writes to a hundred a second, as the other passes keep theirs (D2047, D2072).
+    /// what keeps those writes to a hundred a second **at the most**, as the other passes keep theirs (D2047, D2072): the
+    /// pause is added to the time of the round, so the pace is lower, and it was not measured for this pass (the
+    /// reconciliation of trigger schedules, which has the same structure, drained at 30 to 77 a second: G2048).
     #[must_use]
     pub fn pause_after(&self) -> Duration {
         if self.expired == 0 {

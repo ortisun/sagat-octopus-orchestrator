@@ -39,24 +39,43 @@ ALTER TABLE schedule_trigger_handover ADD CONSTRAINT schedule_trigger_handover_c
 --                 is not exhausted. A cron whose calendar has no occurrence at all (`0 0 31 2 *`, accepted at publication as feature
 --                 004 always accepted it) is planned as exhausted: no next time and no actions left, which is converged (D2069).
 -- Invoker's rights: the runtime role reads it as it reads the tables.
+--
+-- Reading it must not depend on the plan the statistics give it (G2049, D2117). The schedule of a trigger is looked up for
+-- each trigger (LEFT JOIN LATERAL ... LIMIT 1 over the partial unique index `schedules_trigger_uniq`: a trigger has at most one),
+-- and the singleton `schedule_trigger_handover` is read by a scalar subquery, so that it multiplies no estimate. A plain join let
+-- the planner choose, for the `EXISTS` the handover asks under its lock, a nested loop that scanned `schedules` again for every
+-- trigger: an `EXISTS` is planned for its first row, the filter of this view (`kind IS NOT NULL`) is estimated to keep nearly
+-- every trigger, and the singleton, which autovacuum never analyzes, is estimated at hundreds of rows, so a plan with no
+-- start-up cost wins whatever its total. The form gives the planner a probe for each trigger and no join to rescan; it does not
+-- by itself rule out every other plan (PostgreSQL does not take a partial unique index as proof of uniqueness), so the plan is
+-- held by `trigger_plan.rs`, and the measurements are in ADR-0083 and in the benchmark report, not here.
+--
+-- One behaviour differs from the definition this replaced, and cannot be reached: with the singleton row missing (the table
+-- has a primary key on `only_row` and ENABLE ALWAYS triggers that refuse DELETE and TRUNCATE) the old CROSS JOIN listed
+-- nothing at all, and the scalar subquery lists MISSING, REVIVED and RESPEC and never PAUSED.
 CREATE VIEW schedule_trigger_drift WITH (security_invoker = true) AS
 SELECT d.* FROM (
     SELECT t.id AS trigger_id, t.tenant_id, t.namespace_id, t.workflow_id, t.version_id, t.cron, t.timezone, t.next_fire_at,
            CASE WHEN s.id IS NULL THEN 'MISSING'
                 WHEN s.state = 'DELETED' THEN 'REVIVED'
-                WHEN r.spec #>> '{cron,0}' IS DISTINCT FROM t.cron
-                  OR r.spec ->> 'timezone' IS DISTINCT FROM t.timezone THEN 'RESPEC'
-                WHEN s.state = 'PAUSED' THEN CASE WHEN h.state = 'LEGACY' THEN 'PAUSED' END
+                WHEN s.spec #>> '{cron,0}' IS DISTINCT FROM t.cron
+                  OR s.spec ->> 'timezone' IS DISTINCT FROM t.timezone THEN 'RESPEC'
+                WHEN s.state = 'PAUSED' THEN
+                     CASE WHEN (SELECT h.state FROM public.schedule_trigger_handover h) = 'LEGACY' THEN 'PAUSED' END
                 WHEN s.state = 'ACTIVE'
                  AND (s.next_action_at IS NULL OR s.next_actual_at IS NULL)
                  AND s.remaining_actions IS DISTINCT FROM 0 THEN 'NO_NEXT_TIME'
            END AS kind,
            s.id AS schedule_id, s.state_version AS state_version, s.head_revision AS revision
       FROM public.workflow_triggers t
-     CROSS JOIN public.schedule_trigger_handover h
-      LEFT JOIN public.schedules s ON s.trigger_id = t.id
-      LEFT JOIN public.schedule_revisions r
-             ON r.tenant_id = s.tenant_id AND r.schedule_id = s.id AND r.revision = s.head_revision
+      LEFT JOIN LATERAL (
+            SELECT x.id, x.state, x.state_version, x.head_revision, x.next_action_at, x.next_actual_at, x.remaining_actions,
+                   r.spec
+              FROM public.schedules x
+              LEFT JOIN public.schedule_revisions r
+                     ON r.tenant_id = x.tenant_id AND r.schedule_id = x.id AND r.revision = x.head_revision
+             WHERE x.trigger_id = t.id
+             LIMIT 1) s ON true
      WHERE t.kind = 'cron') d
  WHERE d.kind IS NOT NULL;
 
