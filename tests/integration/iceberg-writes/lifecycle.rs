@@ -419,6 +419,7 @@ async fn end_kills_a_running_container_removes_it_and_a_second_end_has_nothing_t
 
 /// The fact the supervisor needs (`ICEBERG_LIMIT_EXCEEDED`) is on the container until it is removed; removing first would
 /// lose it, and a memory kill would be reported as a host that broke.
+// (experiment, not for merge: this comment only makes CI select this suite, to see whether develop passes this test)
 #[tokio::test(flavor = "multi_thread")]
 async fn end_reads_the_memory_flag_before_it_removes_the_container() {
     let fixture = Fixture::new().await;
