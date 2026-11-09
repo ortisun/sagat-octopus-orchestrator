@@ -120,10 +120,12 @@ impl PgRunTx {
             .and_then(Node::managed_kind)
             .ok_or(StoreError::DatabaseUnavailable)?;
         // A SQL step uses the one secret of its connection; an Iceberg write uses the catalog's and the storage's, each of
-        // which has to be deliverable to this runner.
+        // which has to be deliverable to this runner. A probe tests the whole connection, so it uses the same two (D035-150).
         let secrets: Vec<SecretName> = match kind {
             ManagedKind::Sql => vec![sql_secret(&connection)?.clone()],
-            ManagedKind::Lake => connection.config.secrets().into_iter().cloned().collect(),
+            ManagedKind::Lake | ManagedKind::LakeProbe => {
+                connection.config.secrets().into_iter().cloned().collect()
+            }
         };
         if crate::secrets::pool_refusal(
             &mut self.tx,

@@ -28,8 +28,9 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::database::{
-    DatabaseOperation, EgressField, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, IcebergWrite,
-    MANAGED_DATABASE_ACTIVITY, MANAGED_DATABASE_PREFIX, ManagedKind, OperationKind, RecordSource,
+    DatabaseOperation, EgressField, ICEBERG_PROBE_ACTIVITY, ICEBERG_REVERT_ACTIVITY,
+    ICEBERG_WRITE_ACTIVITY, IcebergWrite, LakeProbe, MANAGED_DATABASE_ACTIVITY,
+    MANAGED_DATABASE_PREFIX, ManagedKind, OperationKind, RecordSource,
 };
 use crate::execution::{ApprovalPolicy, ExecutionInstanceId};
 use crate::identity::{Slug, clip};
@@ -769,6 +770,15 @@ impl NodeKind {
     }
 }
 
+/// What makes a node managed: exactly one of three kinds, so a node cannot be two of them and every match over it is exhaustive
+/// (ADR-0080, D035-150). The accessors below answer the question of one kind; [`Node::managed_kind`] answers whether it is managed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Managed {
+    Sql(DatabaseOperation),
+    Lake(IcebergWrite),
+    LakeProbe(LakeProbe),
+}
+
 /// One node of the graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Node {
@@ -779,8 +789,7 @@ pub struct Node {
     timeout: Option<Duration>,
     effect: EffectPolicy,
     origin: NodeOrigin,
-    database: Option<DatabaseOperation>,
-    iceberg: Option<IcebergWrite>,
+    managed: Option<Managed>,
 }
 
 impl Node {
@@ -794,8 +803,7 @@ impl Node {
             timeout: None,
             effect: EffectPolicy::NONE,
             origin: NodeOrigin::Declared,
-            database: None,
-            iceberg: None,
+            managed: None,
         }
     }
 
@@ -823,13 +831,17 @@ impl Node {
             },
         )
         .with_effect(effect);
-        node.database = Some(operation);
+        node.managed = Some(Managed::Sql(operation));
         node
     }
 
     #[must_use]
     pub const fn database_operation(&self) -> Option<&DatabaseOperation> {
-        self.database.as_ref()
+        if let Some(Managed::Sql(operation)) = &self.managed {
+            Some(operation)
+        } else {
+            None
+        }
     }
 
     /// An Iceberg write is a high-risk activity on a reserved name. Its retries are automatic, because recovery looks the
@@ -849,25 +861,57 @@ impl Node {
             },
         )
         .with_effect(iceberg_effect(revert));
-        node.iceberg = Some(write);
+        node.managed = Some(Managed::Lake(write));
         node
     }
 
     #[must_use]
     pub const fn iceberg_write(&self) -> Option<&IcebergWrite> {
-        self.iceberg.as_ref()
+        if let Some(Managed::Lake(write)) = &self.managed {
+            Some(write)
+        } else {
+            None
+        }
+    }
+
+    /// The probe of an Iceberg connection (D035-150): an activity on a reserved name that never retries and has no effect, because
+    /// it changes nothing. Only the platform creates one, in a private definition (ADR-0080).
+    #[must_use]
+    pub fn lake_probe(id: NodeId, probe: LakeProbe) -> Self {
+        let mut node = Self::new(
+            id,
+            NodeKind::Activity {
+                activity: ActivityName(ICEBERG_PROBE_ACTIVITY.to_owned()),
+                retry: RetryPolicy::no_retry(),
+                compensate_with: None,
+                reconcile_with: None,
+                idempotency_template: None,
+                secrets: Vec::new(),
+            },
+        );
+        node.managed = Some(Managed::LakeProbe(probe));
+        node
+    }
+
+    /// The connection a probe node tests, or `None` for any other node.
+    #[must_use]
+    pub const fn lake_probe_target(&self) -> Option<&LakeProbe> {
+        if let Some(Managed::LakeProbe(probe)) = &self.managed {
+            Some(probe)
+        } else {
+            None
+        }
     }
 
     /// The kind of isolated runner that executes this step, or `None` for an ordinary activity or any other node.
     /// Every path that treats a managed step differently from an ordinary one asks this (D035-134).
     #[must_use]
     pub const fn managed_kind(&self) -> Option<ManagedKind> {
-        if self.database.is_some() {
-            Some(ManagedKind::Sql)
-        } else if self.iceberg.is_some() {
-            Some(ManagedKind::Lake)
-        } else {
-            None
+        match &self.managed {
+            None => None,
+            Some(Managed::Sql(_)) => Some(ManagedKind::Sql),
+            Some(Managed::Lake(_)) => Some(ManagedKind::Lake),
+            Some(Managed::LakeProbe(_)) => Some(ManagedKind::LakeProbe),
         }
     }
 
@@ -1302,10 +1346,14 @@ impl WorkflowDefinition {
             return Err(WorkflowError::InvalidDatabaseNode);
         }
         // The same boundary for a lake write (G035-019): its credential pins are root-only too.
-        let iceberg_root = nodes.iter().any(|node| node.iceberg_write().is_some());
-        let iceberg_body = bodies
-            .iter()
-            .any(|body| body.nodes().any(|node| node.iceberg_write().is_some()));
+        let is_lake = |node: &Node| {
+            matches!(
+                node.managed_kind(),
+                Some(ManagedKind::Lake | ManagedKind::LakeProbe)
+            )
+        };
+        let iceberg_root = nodes.iter().any(is_lake);
+        let iceberg_body = bodies.iter().any(|body| body.nodes().any(is_lake));
         if iceberg_body || (iceberg_root && (scoped_root || continuation_policy.is_some())) {
             return Err(WorkflowError::IcebergNodeNotRoot);
         }
@@ -1524,10 +1572,13 @@ impl WorkflowDefinition {
         mut levels: impl FnMut(&NodeId, &IcebergWrite) -> Vec<EgressField>,
     ) -> Self {
         for (id, node) in &mut self.graph.nodes {
-            if let Some(write) = node.iceberg.take() {
-                let fields = levels(id, &write);
-                node.iceberg = Some(write.with_egress(fields));
-            }
+            node.managed = match node.managed.take() {
+                Some(Managed::Lake(write)) => {
+                    let fields = levels(id, &write);
+                    Some(Managed::Lake(write.with_egress(fields)))
+                }
+                other => other,
+            };
         }
         self
     }
@@ -2230,16 +2281,26 @@ fn check_node(node: &Node) -> Result<(), WorkflowError> {
     {
         let reserved = |a: &ActivityName| a.as_str().starts_with(MANAGED_DATABASE_PREFIX);
         // Only a managed node carries a reserved name, and only an Iceberg write names the revert in `compensateWith`.
-        if node.database.is_some() && node.iceberg.is_some() {
-            return Err(WorkflowError::InvalidDatabaseNode);
-        }
-        if (compensate_with.as_ref().is_some_and(reserved) && node.iceberg.is_none())
+        if (compensate_with.as_ref().is_some_and(reserved) && node.iceberg_write().is_none())
             || reconcile_with.as_ref().is_some_and(reserved)
-            || (reserved(activity) && node.database.is_none() && node.iceberg.is_none())
+            || (reserved(activity) && node.managed.is_none())
         {
             return Err(WorkflowError::InvalidDatabaseNode);
         }
-        if let Some(write) = &node.iceberg {
+        if node.lake_probe_target().is_some() {
+            // What a probe is, whatever its author says: it never retries, names nothing and changes nothing.
+            if activity.as_str() != ICEBERG_PROBE_ACTIVITY
+                || *retry != RetryPolicy::no_retry()
+                || !secrets.is_empty()
+                || compensate_with.is_some()
+                || reconcile_with.is_some()
+                || idempotency_template.is_some()
+                || node.effect != EffectPolicy::NONE
+            {
+                return Err(WorkflowError::InvalidIcebergNode);
+            }
+        }
+        if let Some(write) = node.iceberg_write() {
             write
                 .validate()
                 .map_err(|_| WorkflowError::InvalidIcebergNode)?;
@@ -2256,7 +2317,7 @@ fn check_node(node: &Node) -> Result<(), WorkflowError> {
                 return Err(WorkflowError::InvalidIcebergNode);
             }
         }
-        if let Some(operation) = &node.database {
+        if let Some(operation) = node.database_operation() {
             operation
                 .validate()
                 .map_err(|_| WorkflowError::InvalidDatabaseNode)?;
@@ -2280,10 +2341,15 @@ fn check_node(node: &Node) -> Result<(), WorkflowError> {
                 return Err(WorkflowError::InvalidDatabaseNode);
             }
         }
-    } else if node.database.is_some() {
-        return Err(WorkflowError::InvalidDatabaseNode);
-    } else if node.iceberg.is_some() {
-        return Err(WorkflowError::InvalidIcebergNode);
+    } else {
+        // A payload on a node that is not an activity: each kind says which of its two errors it is.
+        match &node.managed {
+            None => {}
+            Some(Managed::Sql(_)) => return Err(WorkflowError::InvalidDatabaseNode),
+            Some(Managed::Lake(_) | Managed::LakeProbe(_)) => {
+                return Err(WorkflowError::InvalidIcebergNode);
+            }
+        }
     }
     if let Some(timeout) = node.timeout {
         duration_in_range(&node.id, "timeout", timeout)?;
