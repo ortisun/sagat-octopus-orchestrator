@@ -226,8 +226,10 @@ impl PgRunStore {
         if let Some(def) = self.cache.get(version) {
             return Ok(def);
         }
-        let document: Vec<u8> = sqlx::query_scalar(
-            "SELECT document FROM workflow_versions WHERE tenant_id = $1 AND id = $2",
+        // Whether the workflow is private is a row of the store (`workflows.internal`, immutable), and it alone decides which entry restores
+        // the document: nothing in the document does (ADR-0080).
+        let (document, internal): (Vec<u8>, bool) = sqlx::query_as(
+            "SELECT v.document, w.internal FROM workflow_versions v JOIN workflows w ON w.tenant_id = v.tenant_id AND w.id = v.workflow_id WHERE v.tenant_id = $1 AND v.id = $2",
         )
         .bind(tenant.as_uuid())
         .bind(version.as_uuid())
@@ -235,12 +237,15 @@ impl PgRunStore {
         .await
         .map_err(store_error)?
         .ok_or_else(|| corrupt("workflow version reference"))?;
-        self.cache
-            .get_or_parse(version, &document)
-            .map_err(|error| {
-                tracing::error!(%error, %version, "a stored workflow version no longer parses");
-                StoreError::UnreadableDefinition
-            })
+        if internal {
+            self.cache.get_or_parse_private(version, &document)
+        } else {
+            self.cache.get_or_parse(version, &document)
+        }
+        .map_err(|error| {
+            tracing::error!(%error, %version, "a stored workflow version no longer parses");
+            StoreError::UnreadableDefinition
+        })
     }
 
     pub(crate) async fn begin_in_transaction(
@@ -1034,10 +1039,14 @@ impl RunStore for PgRunStore {
                 return Err(StoreError::MissingReference);
             }
             let version_document: Vec<u8> = col(&version_row, "document")?;
-            let declared_state = self
-                .cache
-                .declared_state_publication(&version_document)
-                .map_err(|error| {
+            // A retained definition is a private workflow's (`retain` just wrote it), and a private version is read by the private entry
+            // here as everywhere else (ADR-0080): the row decides, not the document.
+            let declared_state = if new.retained.is_some() {
+                self.cache.declared_state_publication_private(&version_document)
+            } else {
+                self.cache.declared_state_publication(&version_document)
+            }
+            .map_err(|error| {
                     tracing::error!(%error, version = %new.info.version_id, "stored declared state no longer validates");
                     StoreError::Internal {
                         detail: "stored declared state no longer validates".to_owned(),

@@ -324,3 +324,44 @@ fn the_fixed_probe_document_of_the_platform_is_a_private_document_of_one_probe_n
         .expect("parsed");
     assert_ne!(one.digest, other.digest);
 }
+
+#[test]
+fn the_declared_state_of_a_private_document_is_read_through_the_private_entry_only() {
+    // Run creation reads the stored document of the version for its declared state, and a private version is read by the private entry
+    // there as everywhere else. A probe declares none: the private entry says so, and the public one cannot read the document at all.
+    let probe = bytes(&probe_document());
+    assert!(matches!(
+        JsonIrCodec.declared_state_publication_private(&probe),
+        Ok(None)
+    ));
+    assert!(JsonIrCodec.declared_state_publication(&probe).is_err());
+    // a codec with no private grammar refuses it, as it does at every private entry
+    assert!(
+        PublicOnly
+            .declared_state_publication_private(&probe)
+            .is_err()
+    );
+    // an ordinary document is read the same through both
+    let ordinary = bytes(&ordinary_document());
+    assert!(matches!(
+        JsonIrCodec.declared_state_publication(&ordinary),
+        Ok(None)
+    ));
+    assert!(matches!(
+        JsonIrCodec.declared_state_publication_private(&ordinary),
+        Ok(None)
+    ));
+    assert!(
+        PublicOnly
+            .declared_state_publication_private(&ordinary)
+            .is_err(),
+        "and not by a codec with no private grammar, for which the private entry is not the public one under another name"
+    );
+    // the cache offers the same two entries
+    let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 8);
+    assert!(matches!(
+        cache.declared_state_publication_private(&probe),
+        Ok(None)
+    ));
+    assert!(cache.declared_state_publication(&probe).is_err());
+}

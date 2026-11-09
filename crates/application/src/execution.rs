@@ -1951,4 +1951,15 @@ impl DefinitionCache {
     ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
         self.codec.declared_state_publication(document)
     }
+
+    /// The same for the stored document of a **private** version (ADR-0080): the caller decides it from the workflow, never from the document.
+    ///
+    /// # Errors
+    /// Returns an IR error when a stored declaration no longer validates, or the codec has no private documents.
+    pub fn declared_state_publication_private(
+        &self,
+        document: &[u8],
+    ) -> Result<Option<crate::declared_operations::PublishedDeclaredState>, IrError> {
+        self.codec.declared_state_publication_private(document)
+    }
 }
