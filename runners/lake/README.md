@@ -76,3 +76,6 @@ uv pip compile requirements-dev.in --generate-hashes --universal --python-versio
 ```
 
 Delete `.venv` and the image archive when you finish; they are large.
+
+<!-- experiment, not for merge: a change under runners/lake selects the four lake suites on CI -->
+

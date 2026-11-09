@@ -4,6 +4,7 @@
 //! to a closed exception class and a line count.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+// (experiment, not for merge: a change in this crate makes CI run the unit tests of the changed packages)
 use std::path::PathBuf;
 use std::time::Duration;
 
