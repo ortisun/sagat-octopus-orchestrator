@@ -11,8 +11,8 @@ use common::{expr, id};
 use sagat_domain::{
     binding::BindingProfile,
     database::{
-        ConnectionRef, ICEBERG_PROBE_ACTIVITY, ICEBERG_WRITE_ACTIVITY, LakeProbe, ManagedKind,
-        ProbeCheck,
+        ConnectionRef, DatabaseFailure, ICEBERG_PROBE_ACTIVITY, ICEBERG_WRITE_ACTIVITY, LakeProbe,
+        ManagedKind, ProbeCheck, ProbeCheckResult, ProbeOutcome, ProbeResult,
     },
     identity::Slug,
     saga::EffectPolicy,
@@ -255,6 +255,262 @@ fn the_checks_of_a_probe_are_a_closed_vocabulary_in_a_fixed_order() {
             ProbeCheck::parse(not_a_check),
             None,
             "{not_a_check:?} is not a check of an Iceberg probe"
+        );
+    }
+}
+
+// ---- The result of a probe (D035-150 slice S4a) ----------------------------------------------------------------------------------
+
+fn passed(check: ProbeCheck) -> ProbeCheckResult {
+    ProbeCheckResult::new(check, ProbeOutcome::Passed, None)
+}
+
+fn skipped(check: ProbeCheck) -> ProbeCheckResult {
+    ProbeCheckResult::new(check, ProbeOutcome::Skipped, None)
+}
+
+fn failed(check: ProbeCheck, code: DatabaseFailure) -> ProbeCheckResult {
+    ProbeCheckResult::new(check, ProbeOutcome::Failed, Some(code))
+}
+
+use ProbeCheck::{CatalogAuth, StorageAccess, Warehouse};
+
+#[test]
+fn a_result_is_the_three_checks_in_order_and_each_ends_as_the_checks_before_it_allow() {
+    // everything passed
+    let all = ProbeResult::new(vec![
+        passed(CatalogAuth),
+        passed(Warehouse),
+        passed(StorageAccess),
+    ])
+    .expect("all passed");
+    assert_eq!(all.first_failure(), None);
+    // a check that failed, and what could not run after it
+    for (failure, first) in [
+        (
+            vec![
+                failed(CatalogAuth, DatabaseFailure::Authentication),
+                skipped(Warehouse),
+                skipped(StorageAccess),
+            ],
+            DatabaseFailure::Authentication,
+        ),
+        (
+            vec![
+                passed(CatalogAuth),
+                failed(Warehouse, DatabaseFailure::IcebergLocationNotAllowed),
+                skipped(StorageAccess),
+            ],
+            DatabaseFailure::IcebergLocationNotAllowed,
+        ),
+        (
+            vec![
+                passed(CatalogAuth),
+                passed(Warehouse),
+                failed(StorageAccess, DatabaseFailure::StorageUnavailable),
+            ],
+            DatabaseFailure::StorageUnavailable,
+        ),
+    ] {
+        let result = ProbeResult::new(failure).expect("a failed check, the rest skipped");
+        assert_eq!(result.first_failure(), Some(first));
+    }
+    // the storage check is skipped without a failure when the connection vends its credentials: nothing is vended without a table
+    let vended = ProbeResult::new(vec![
+        passed(CatalogAuth),
+        passed(Warehouse),
+        skipped(StorageAccess),
+    ])
+    .expect("storage skipped on vended credentials");
+    assert_eq!(vended.first_failure(), None);
+}
+
+#[test]
+fn a_result_that_is_not_the_three_checks_in_order_is_refused() {
+    let bad: Vec<(&str, Vec<ProbeCheckResult>)> = vec![
+        ("none", vec![]),
+        ("one", vec![passed(CatalogAuth)]),
+        ("two", vec![passed(CatalogAuth), passed(Warehouse)]),
+        (
+            "four",
+            vec![
+                passed(CatalogAuth),
+                passed(Warehouse),
+                passed(StorageAccess),
+                passed(StorageAccess),
+            ],
+        ),
+        (
+            "out of order",
+            vec![
+                passed(Warehouse),
+                passed(CatalogAuth),
+                passed(StorageAccess),
+            ],
+        ),
+        (
+            "a check twice",
+            vec![
+                passed(CatalogAuth),
+                passed(CatalogAuth),
+                passed(StorageAccess),
+            ],
+        ),
+    ];
+    for (name, checks) in bad {
+        assert!(ProbeResult::new(checks).is_err(), "{name}");
+    }
+}
+
+#[test]
+fn a_failed_check_has_a_code_that_is_allowed_for_it_and_no_other_has_one() {
+    // a failed check without a code, and a passed or skipped one with a code
+    assert!(
+        ProbeResult::new(vec![
+            ProbeCheckResult::new(CatalogAuth, ProbeOutcome::Failed, None),
+            skipped(Warehouse),
+            skipped(StorageAccess),
+        ])
+        .is_err()
+    );
+    assert!(
+        ProbeResult::new(vec![
+            ProbeCheckResult::new(
+                CatalogAuth,
+                ProbeOutcome::Passed,
+                Some(DatabaseFailure::Tls)
+            ),
+            passed(Warehouse),
+            passed(StorageAccess),
+        ])
+        .is_err()
+    );
+    assert!(
+        ProbeResult::new(vec![
+            failed(CatalogAuth, DatabaseFailure::Authentication),
+            ProbeCheckResult::new(
+                Warehouse,
+                ProbeOutcome::Skipped,
+                Some(DatabaseFailure::Timeout)
+            ),
+            skipped(StorageAccess),
+        ])
+        .is_err()
+    );
+    // the codes each check may fail with are closed, and a code that says which side failed is not allowed on the other
+    for (check, allowed) in [
+        (
+            CatalogAuth,
+            vec![
+                DatabaseFailure::Authentication,
+                DatabaseFailure::Tls,
+                DatabaseFailure::DestinationDenied,
+                DatabaseFailure::CatalogUnavailable,
+                DatabaseFailure::Timeout,
+            ],
+        ),
+        (
+            Warehouse,
+            vec![
+                DatabaseFailure::Authentication,
+                DatabaseFailure::CatalogUnavailable,
+                DatabaseFailure::IcebergLocationNotAllowed,
+                DatabaseFailure::Timeout,
+            ],
+        ),
+        (
+            StorageAccess,
+            vec![
+                DatabaseFailure::Authentication,
+                DatabaseFailure::Tls,
+                DatabaseFailure::DestinationDenied,
+                DatabaseFailure::StorageUnavailable,
+                DatabaseFailure::Timeout,
+            ],
+        ),
+    ] {
+        for code in DatabaseFailure::ALL {
+            assert_eq!(
+                check.allows(*code),
+                allowed.contains(code),
+                "{} may{} fail with {}",
+                check.as_str(),
+                if allowed.contains(code) { "" } else { " not" },
+                code.code()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_check_after_a_failure_is_skipped_and_a_skip_needs_a_cause() {
+    // after a failure, every later check is skipped
+    assert!(
+        ProbeResult::new(vec![
+            failed(CatalogAuth, DatabaseFailure::Authentication),
+            passed(Warehouse),
+            skipped(StorageAccess),
+        ])
+        .is_err()
+    );
+    assert!(
+        ProbeResult::new(vec![
+            failed(CatalogAuth, DatabaseFailure::Authentication),
+            skipped(Warehouse),
+            passed(StorageAccess),
+        ])
+        .is_err()
+    );
+    assert!(
+        ProbeResult::new(vec![
+            passed(CatalogAuth),
+            failed(Warehouse, DatabaseFailure::CatalogUnavailable),
+            passed(StorageAccess),
+        ])
+        .is_err()
+    );
+    // a skip is the consequence of an earlier failure, except the storage check's on vended credentials
+    assert!(
+        ProbeResult::new(vec![
+            skipped(CatalogAuth),
+            passed(Warehouse),
+            passed(StorageAccess)
+        ])
+        .is_err()
+    );
+    assert!(
+        ProbeResult::new(vec![
+            passed(CatalogAuth),
+            skipped(Warehouse),
+            passed(StorageAccess)
+        ])
+        .is_err()
+    );
+    assert!(
+        ProbeResult::new(vec![
+            passed(CatalogAuth),
+            skipped(Warehouse),
+            skipped(StorageAccess)
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn the_outcomes_are_a_closed_vocabulary() {
+    for (outcome, name) in [
+        (ProbeOutcome::Passed, "PASSED"),
+        (ProbeOutcome::Failed, "FAILED"),
+        (ProbeOutcome::Skipped, "SKIPPED"),
+    ] {
+        assert_eq!(outcome.as_str(), name);
+        assert_eq!(ProbeOutcome::parse(name), Some(outcome));
+    }
+    for not_an_outcome in ["", "passed", "WARNING", "OK", "PASSED "] {
+        assert_eq!(
+            ProbeOutcome::parse(not_an_outcome),
+            None,
+            "{not_an_outcome:?}"
         );
     }
 }

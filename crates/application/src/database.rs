@@ -339,6 +339,53 @@ pub trait LakeReceiptCodec: Send + Sync {
     ) -> Result<RebuiltReceipt, InvalidLakeReceipt>;
 }
 
+/// What the server knows of the probe a result must be about (D035-150): the connection it was leased with, by the name and the revision
+/// it was admitted with. Not what the runner says it tested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpectedProbe<'a> {
+    pub connection: &'a str,
+    pub revision: u32,
+}
+
+/// Why a probe result is not the one of the probe. Never carries the result: a member of it is not safe to print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidLakeProbe {
+    #[error("the result is larger than a result can be")]
+    TooLarge,
+    #[error("the result does not hold as typed fields")]
+    Malformed,
+    #[error("the result is of a kind a probe does not produce")]
+    Kind,
+    #[error("the checks of the result contradict each other")]
+    Inconsistent,
+    #[error("the result is not about this probe")]
+    Mismatch,
+}
+
+/// The result as the server stores it, and what it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebuiltProbe {
+    /// The canonical bytes, built again from typed fields.
+    pub canonical: Vec<u8>,
+    pub result: sagat_domain::database::ProbeResult,
+}
+
+/// Result syntax belongs to an adapter, as a receipt's does. The server never stores what the runner sent: it reads it into typed fields that
+/// accept only what the contract names (closed words, numbers, and the connection's own name), checks it against the probe, and stores the
+/// result built again from those fields.
+pub trait LakeProbeCodec: Send + Sync {
+    /// The canonical result of the probe, or the reason what the runner reported is not the result of this one.
+    ///
+    /// # Errors
+    /// [`InvalidLakeProbe`] for a result that is too large, does not hold as typed fields, is of another kind, names another connection or
+    /// revision than `expected`, or whose checks contradict each other.
+    fn rebuild(
+        &self,
+        result: &[u8],
+        expected: &ExpectedProbe<'_>,
+    ) -> Result<RebuiltProbe, InvalidLakeProbe>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

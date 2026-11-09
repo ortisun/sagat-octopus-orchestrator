@@ -151,30 +151,6 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         "each secret of the connection is pinned to the attempt under its role"
     );
 
-    // --- What a runner reports as the result of a probe is not accepted yet: nothing of a runner's choosing reaches the journal.
-    let refused = probing
-        .complete(&lease, &json!({"anything": "a runner chooses"}))
-        .await
-        .expect_err("the result of a probe is not accepted yet");
-    assert!(
-        matches!(
-            refused.code(),
-            tonic::Code::InvalidArgument
-                | tonic::Code::FailedPrecondition
-                | tonic::Code::PermissionDenied
-        ),
-        "{refused:?}"
-    );
-    let completed: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM run_events WHERE tenant_id = $1 AND run_id = $2 AND event_type = 'step.completed'",
-    )
-    .bind(p.tenant.as_uuid())
-    .bind(first.info.run_id.as_uuid())
-    .fetch_one(&p.api.db.pool)
-    .await
-    .expect("the events");
-    assert_eq!(completed, 0, "and the step is not completed");
-
     // --- The probe has a budget of its own: with one in flight, a second waits, and a write is not made to wait by it.
     let second = runs
         .start_lake_probe(
@@ -211,12 +187,211 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         "a probe in flight does not make a write wait"
     );
 
-    // --- When the first probe ends, the second is leased.
-    probing
-        .fail_with(&lease, "DATABASE_CREDENTIAL_UNAVAILABLE", false)
+    // --- What a runner reports is read into typed fields and written again: a report that is not the result of this probe is refused, says
+    // nothing of what it held, and leaves the step as it was; nothing of a runner's choosing reaches a table, the journal or the API.
+    let canary = format!("CANARY-PROBE-{}", uuid::Uuid::now_v7().simple());
+    let connection = json!({"name": "probe-warehouse", "revision": 1});
+    let passed = |check: &str| json!({"check": check, "outcome": "PASSED"});
+    let skipped = |check: &str| json!({"check": check, "outcome": "SKIPPED"});
+    let ok_checks = json!([
+        passed("CATALOG_AUTH"),
+        passed("WAREHOUSE"),
+        passed("STORAGE_ACCESS")
+    ]);
+    let hostile = [
+        (
+            "a member the result does not have",
+            json!({"kind": "probe", "connection": connection, "checks": ok_checks, "error": format!("Traceback: {canary}")}),
+        ),
+        (
+            "text where a code belongs",
+            json!({"kind": "probe", "connection": connection, "checks": [
+                {"check": "CATALOG_AUTH", "outcome": "FAILED", "code": format!("{canary}: refused by 10.0.0.7")},
+                skipped("WAREHOUSE"), skipped("STORAGE_ACCESS")]}),
+        ),
+        (
+            "the result of another connection",
+            json!({"kind": "probe", "connection": {"name": "another-lake", "revision": 1}, "checks": ok_checks}),
+        ),
+        (
+            "the result of another revision",
+            json!({"kind": "probe", "connection": {"name": "probe-warehouse", "revision": 2}, "checks": ok_checks}),
+        ),
+        (
+            "a failed check with no code",
+            json!({"kind": "probe", "connection": connection, "checks": [
+                {"check": "CATALOG_AUTH", "outcome": "FAILED"}, skipped("WAREHOUSE"), skipped("STORAGE_ACCESS")]}),
+        ),
+        (
+            "a check that passed after one that failed",
+            json!({"kind": "probe", "connection": connection, "checks": [
+                {"check": "CATALOG_AUTH", "outcome": "FAILED", "code": "DATABASE_TLS_FAILED"},
+                passed("WAREHOUSE"), skipped("STORAGE_ACCESS")]}),
+        ),
+        (
+            "a receipt of a write",
+            json!({"kind": "iceberg", "outcome": "COMMITTED"}),
+        ),
+        ("anything a runner chooses", json!({"anything": canary})),
+    ];
+    let mut said_back = Vec::new();
+    for (index, (name, body)) in hostile.iter().enumerate() {
+        let refused = probing
+            .client
+            .complete_step(probing.req(super::lake_canaries::completion(
+                &lease,
+                body,
+                &format!("probe-hostile-{index}"),
+            )))
+            .await
+            .expect_err(name);
+        said_back.push((name, super::lake_canaries::said(&refused)));
+        assert!(
+            matches!(
+                refused.code(),
+                tonic::Code::InvalidArgument
+                    | tonic::Code::FailedPrecondition
+                    | tonic::Code::PermissionDenied
+            ),
+            "{name}: {refused:?}"
+        );
+        assert_eq!(
+            p.status(&first.info.run_id.to_string()).await,
+            "RUNNING",
+            "{name}: the step is as it was"
+        );
+    }
+    for (name, text) in &said_back {
+        assert!(
+            !text.contains(&canary),
+            "{name}: a refusal does not repeat what it was handed"
+        );
+    }
+    crate::support::eventually("the refused results are audited as denials of the run", || async {
+        let recorded: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_records WHERE tenant_id = $1 AND action = 'database.denied' AND resource_id = $2 AND reason = 'lake probe result refused'",
+        )
+        .bind(p.tenant.as_uuid())
+        .bind(first.info.run_id.to_string())
+        .fetch_one(&p.api.db.pool)
         .await
-        .expect("a closed code fails the step");
+        .expect("the audit records");
+        (recorded > 0).then_some(recorded)
+    })
+    .await;
+    let tables = super::lake_canaries::tables(&p).await;
+    assert!(
+        super::lake_canaries::holders(&p, &tables, &canary)
+            .await
+            .is_empty(),
+        "no table holds what a refused result said"
+    );
+    let completed = |run: uuid::Uuid| {
+        let (pool, tenant) = (p.api.db.pool.clone(), p.tenant.as_uuid());
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM run_events WHERE tenant_id = $1 AND run_id = $2 AND event_type = 'step.completed'",
+            )
+            .bind(tenant)
+            .bind(run)
+            .fetch_one(&pool)
+            .await
+            .expect("the events")
+        }
+    };
+    assert_eq!(
+        completed(first.info.run_id.as_uuid()).await,
+        0,
+        "and the step is not completed"
+    );
+
+    // --- A result that is the probe's completes it, and what the run keeps is the server's own writing of the typed fields: a failed check
+    // is the answer, and the step has succeeded.
+    let result = json!({"kind": "probe", "connection": {"revision": 1, "name": "probe-warehouse"}, "checks": [
+        {"outcome": "FAILED", "check": "CATALOG_AUTH", "code": "DATABASE_AUTHENTICATION_FAILED"},
+        {"outcome": "SKIPPED", "check": "WAREHOUSE"},
+        {"outcome": "SKIPPED", "check": "STORAGE_ACCESS"},
+    ]});
+    let first_ack = probing
+        .client
+        .complete_step(probing.req(super::lake_canaries::completion(
+            &lease,
+            &result,
+            "probe-result-1",
+        )))
+        .await
+        .expect("the result of the probe completes it")
+        .into_inner();
+    assert!(!first_ack.already_applied);
+    assert_eq!(p.status(&first.info.run_id.to_string()).await, "SUCCEEDED");
+    let stored: Vec<u8> = sqlx::query_scalar(
+        "SELECT p.content FROM steps s JOIN payloads p ON p.tenant_id = s.tenant_id AND p.digest = s.output_digest WHERE s.tenant_id = $1 AND s.run_id = $2 AND s.node = 'probe'",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(first.info.run_id.as_uuid())
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("the retained output of the probe");
+    assert_eq!(
+        String::from_utf8(stored).expect("UTF-8"),
+        r#"{"kind":"probe","connection":{"name":"probe-warehouse","revision":1},"checks":[{"check":"CATALOG_AUTH","outcome":"FAILED","code":"DATABASE_AUTHENTICATION_FAILED"},{"check":"WAREHOUSE","outcome":"SKIPPED"},{"check":"STORAGE_ACCESS","outcome":"SKIPPED"}]}"#,
+        "what the run keeps is the server's writing, not the bytes the runner sent"
+    );
+    // the same report again is the same completion
+    let replay = probing
+        .client
+        .complete_step(probing.req(super::lake_canaries::completion(
+            &lease,
+            &result,
+            "probe-result-1",
+        )))
+        .await
+        .expect("a replay")
+        .into_inner();
+    assert!(replay.already_applied);
+    assert_eq!(
+        completed(first.info.run_id.as_uuid()).await,
+        1,
+        "a replay is not a second completion"
+    );
+
+    // --- When the first probe ends, the second is leased; a failure with a closed code ends a probe as well.
     let next = probing.one_task().await;
     assert_eq!(next.activity_name, ICEBERG_PROBE_ACTIVITY);
     assert_eq!(next.run_id, second.info.run_id.to_string());
+    // A probe that never asked for the credentials of the connection has tested nothing: its result is refused until it has resolved them.
+    let unresolved = json!({"kind": "probe", "connection": {"name": "probe-warehouse", "revision": 1}, "checks": [
+        {"check": "CATALOG_AUTH", "outcome": "PASSED"},
+        {"check": "WAREHOUSE", "outcome": "PASSED"},
+        {"check": "STORAGE_ACCESS", "outcome": "PASSED"},
+    ]});
+    let refused = probing
+        .client
+        .complete_step(probing.req(super::lake_canaries::completion(
+            &next,
+            &unresolved,
+            "probe-unresolved",
+        )))
+        .await
+        .expect_err("a probe that never resolved its credentials");
+    assert!(
+        matches!(
+            refused.code(),
+            tonic::Code::InvalidArgument
+                | tonic::Code::FailedPrecondition
+                | tonic::Code::PermissionDenied
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(p.status(&second.info.run_id.to_string()).await, "RUNNING");
+    probing
+        .client
+        .resolve_database(probing.req(Worker::resolve_secrets_message(&next)))
+        .await
+        .expect("the connection is resolved");
+    probing
+        .fail_with(&next, "DATABASE_CREDENTIAL_UNAVAILABLE", false)
+        .await
+        .expect("a closed code fails the step");
+    assert_eq!(p.status(&second.info.run_id.to_string()).await, "FAILED");
 }
