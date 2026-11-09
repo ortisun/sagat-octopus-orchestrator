@@ -43,6 +43,9 @@ pub(crate) struct Script {
     pub heartbeat: Option<HeartbeatAnswer>,
     /// The first reports are refused with these statuses, in order, before one is accepted.
     pub report_errors: VecDeque<Status>,
+    /// The first registrations are refused with these statuses, in order, before one is accepted (each is recorded in
+    /// `registered` all the same: it is what the runner asked for).
+    pub register_errors: VecDeque<Status>,
 }
 
 /// The service, and the handle a test keeps to read and script it.
@@ -100,8 +103,14 @@ impl WorkerService for Fake {
         &self,
         request: Request<pb::RegisterWorkerRequest>,
     ) -> Result<Response<pb::RegisterWorkerResponse>, Status> {
-        self.with(|script| script.registered.push(request.into_inner()));
+        let refused = self.with(|script| {
+            script.registered.push(request.into_inner());
+            script.register_errors.pop_front()
+        });
         self.touched();
+        if let Some(status) = refused {
+            return Err(status);
+        }
         Ok(Response::new(pb::RegisterWorkerResponse {
             worker_id: uuid::Uuid::from_u128(7).to_string(),
             session_token: "session-token".into(),

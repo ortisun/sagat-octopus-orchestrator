@@ -43,16 +43,22 @@ use std::time::{Duration, SystemTime};
 use sagat_domain::database::DatabaseFailure;
 use sagat_infra_lake::attempt::{AttemptOutcome, LakeSandbox, Plan, Signals, run_attempt};
 use sagat_infra_lake::control::{ControlConfig, ControlFailure};
-use sagat_infra_lake::protocol::{AttemptInput, Receipt, WriteMode};
+use sagat_infra_lake::protocol::{
+    AttemptInput, NodeLimits, ProbeInput, ProbeReport, Receipt, WriteMode,
+};
 use sagat_infra_lake::relay::{Connector, Relay, RelayDenials, Resolver};
 use sagat_infra_lake::sandbox_api::{Class, Reason, uid_for_slot};
 use sagat_infra_lake::staging::AttemptDir;
-use sagat_infra_lake::supervisor::{Disposition, Ended, Failure};
+use sagat_infra_lake::supervisor::{
+    AttemptFacts, Disposition, Ended, Failure, ProbeDisposition, dispose_probe,
+};
 use sagat_telemetry::lake::LakeSandboxExit;
 use tokio::time::Instant;
 
 use super::connection::Converted;
-use super::prepare::{Attempt, Blobs, PrepareError, Prepared, effective, prepare};
+use super::prepare::{
+    Attempt, Blobs, PrepareError, Prepared, effective, prepare, prepare_probe, probe_timeout_ms,
+};
 use super::settings::Settings;
 
 /// After an attempt's deadline, how long a slot whose container may still be running is held back. The container ends by its
@@ -148,6 +154,9 @@ impl Drop for SlotGuard {
 pub enum Report {
     /// `CompleteStep` with this receipt, rebuilt from the host's typed fields.
     Complete(Box<Receipt>),
+    /// `CompleteStep` with the result of a probe (D035-150), the connection and the revision of which are the probe's own. It is
+    /// not a receipt: nothing was written. A connection that does not work is in it, as a check that failed.
+    Probe(Box<ProbeReport>),
     /// `FailStep`.
     Fail(Failure),
     /// Nothing: the lease is gone.
@@ -176,6 +185,8 @@ pub enum Cause {
 #[derive(Debug)]
 pub struct Finished {
     pub report: Report,
+    /// The attempt was a probe, which writes nothing: whatever it did, it is not counted as a write.
+    pub probe: bool,
     /// Why no container was asked for, when none was.
     pub cause: Option<Cause>,
     /// The request line was written to the host. Before that, nothing can have been written to the table.
@@ -197,6 +208,7 @@ impl Finished {
     fn before(report: Report, cause: Cause) -> Self {
         Self {
             report,
+            probe: false,
             cause: Some(cause),
             request_sent: false,
             container_ended: true,
@@ -241,6 +253,21 @@ impl Expected {
             }
             Receipt::ObjectStorage(_) => false,
         }
+    }
+}
+
+/// What an attempt is held to once the host has answered: the request of a write, or the lease of a probe.
+enum Kind {
+    Write(Expected),
+    Probe(ProbeInput),
+}
+
+/// A host that answered with something the request did not ask for does not keep the protocol.
+const fn host_broke_the_protocol() -> Failure {
+    Failure {
+        code: DatabaseFailure::LakeHostProtocol,
+        column: None,
+        reason: None,
     }
 }
 
@@ -305,9 +332,15 @@ impl Drop for Running {
     }
 }
 
+/// What an admitted attempt is to do: a write, or a probe of a connection (D035-150).
+enum Work {
+    Write(AttemptInput),
+    Probe(ProbeInput),
+}
+
 /// An attempt that has a readable input and a slot, and has not asked for its connection yet (D035-143).
 pub struct Admitted {
-    input: AttemptInput,
+    work: Work,
     slot: SlotGuard,
     peer_uid: u32,
 }
@@ -418,6 +451,36 @@ where
                 Cause::Input,
             ));
         };
+        let (slot, peer_uid) = self.take_slot()?;
+        Ok(Admitted {
+            work: Work::Write(input),
+            slot,
+            peer_uid,
+        })
+    }
+
+    /// [`admit`](Self::admit) for the lease of a probe (D035-150): the input is read by the reader of a probe lease, and a probe
+    /// takes a slot like any attempt, because it starts a container.
+    ///
+    /// # Errors
+    /// The [`Finished`] to report: the lease input is not a probe input, every slot is in use, or the slot has no user.
+    pub fn admit_probe(&self, input_json: &[u8]) -> Result<Admitted, Finished> {
+        let Ok(input) = ProbeInput::read(input_json) else {
+            return Err(Finished::failed(
+                DatabaseFailure::Configuration,
+                Cause::Input,
+            ));
+        };
+        let (slot, peer_uid) = self.take_slot()?;
+        Ok(Admitted {
+            work: Work::Probe(input),
+            slot,
+            peer_uid,
+        })
+    }
+
+    /// A free slot and the user of its container, or the failure to report.
+    fn take_slot(&self) -> Result<(SlotGuard, u32), Finished> {
         let Some(slot) = self.slots.take() else {
             return Err(Finished::failed(
                 DatabaseFailure::LakeSandboxUnavailable,
@@ -430,11 +493,7 @@ where
                 Cause::NoUser,
             ));
         };
-        Ok(Admitted {
-            input,
-            slot,
-            peer_uid,
-        })
+        Ok((slot, peer_uid))
     }
 
     /// Runs one attempt (see the module). `input_json` is the lease's input and `connection` its resolved connection, which is
@@ -464,44 +523,121 @@ where
         on_heartbeat: impl FnMut() + Send,
     ) -> Finished {
         let Admitted {
-            input,
+            work,
             slot,
             peer_uid,
         } = admitted;
-        let expected = Expected {
-            effect_key: input.effect_key().to_owned(),
-            reference: input.reference().to_owned(),
-        };
-        let limits = effective(input.limits(), connection.limits, &self.settings);
-
-        // the step's time is the attempt's, staging included
-        let deadline = Instant::now() + limits.timeout;
-        let deadline_at = SystemTime::now() + limits.timeout;
         // opaque and random: it names a directory and a container and says nothing of the run or of when (ADR-0079, rule 10)
         let attempt_id = uuid::Uuid::new_v4().to_string();
 
-        let prepared = tokio::select! {
-            biased;
-            () = signals.lease_lost.cancelled() => return Finished::abandoned(Cause::Over),
-            () = signals.cancelled.cancelled() => {
-                return Finished::failed(DatabaseFailure::Cancelled, Cause::Over);
+        match work {
+            Work::Write(input) => {
+                let expected = Expected {
+                    effect_key: input.effect_key().to_owned(),
+                    reference: input.reference().to_owned(),
+                };
+                let limits = effective(input.limits(), connection.limits, &self.settings);
+
+                // the step's time is the attempt's, staging included
+                let deadline = Instant::now() + limits.timeout;
+                let deadline_at = SystemTime::now() + limits.timeout;
+
+                let prepared = tokio::select! {
+                    biased;
+                    () = signals.lease_lost.cancelled() => return Finished::abandoned(Cause::Over),
+                    () = signals.cancelled.cancelled() => {
+                        return Finished::failed(DatabaseFailure::Cancelled, Cause::Over);
+                    }
+                    () = tokio::time::sleep_until(deadline) => {
+                        return Finished::failed(DatabaseFailure::Timeout, Cause::Over);
+                    }
+                    prepared = prepare(
+                        input,
+                        connection,
+                        &self.blobs,
+                        &self.settings,
+                        Attempt {
+                            id: &attempt_id,
+                            peer_uid,
+                            deadline_at,
+                            development: self.development,
+                        },
+                    ) => prepared,
+                };
+                self.run_prepared(
+                    prepared,
+                    slot,
+                    deadline,
+                    signals,
+                    on_heartbeat,
+                    Kind::Write(expected),
+                )
+                .await
             }
-            () = tokio::time::sleep_until(deadline) => {
-                return Finished::failed(DatabaseFailure::Timeout, Cause::Over);
+            Work::Probe(input) => {
+                // the lease names the time of one check; the attempt has three of them and a margin, and the connection may
+                // lower it (nothing raises it)
+                let limits = effective(
+                    NodeLimits {
+                        max_record_bytes: 1,
+                        max_records: 1,
+                        timeout_ms: probe_timeout_ms(input.check_timeout_ms()),
+                    },
+                    connection.limits,
+                    &self.settings,
+                );
+                let deadline = Instant::now() + limits.timeout;
+                let deadline_at = SystemTime::now() + limits.timeout;
+
+                // a probe stages nothing, so its preparation does not wait; the signals are still looked at first
+                let prepared = tokio::select! {
+                    biased;
+                    () = signals.lease_lost.cancelled() => return Finished::abandoned(Cause::Over),
+                    () = signals.cancelled.cancelled() => {
+                        return Finished::failed(DatabaseFailure::Cancelled, Cause::Over);
+                    }
+                    () = tokio::time::sleep_until(deadline) => {
+                        return Finished::failed(DatabaseFailure::Timeout, Cause::Over);
+                    }
+                    prepared = async {
+                        prepare_probe(
+                            &input,
+                            connection,
+                            &self.settings,
+                            Attempt {
+                                id: &attempt_id,
+                                peer_uid,
+                                deadline_at,
+                                development: self.development,
+                            },
+                        )
+                    } => prepared,
+                };
+                self.run_prepared(
+                    prepared,
+                    slot,
+                    deadline,
+                    signals,
+                    on_heartbeat,
+                    Kind::Probe(input),
+                )
+                .await
             }
-            prepared = prepare(
-                input,
-                connection,
-                &self.blobs,
-                &self.settings,
-                Attempt {
-                    id: &attempt_id,
-                    peer_uid,
-                    deadline_at,
-                    development: self.development,
-                },
-            ) => prepared,
-        };
+        }
+    }
+
+    /// What is the same for what is asked of the host, once it is prepared: the relay, the class, the container, and how the
+    /// attempt ended. What differs is how the host's answer is held to the request: a write's receipt must be for the effect key
+    /// and the ref that were asked, and a probe's result for the connection and the revision that were leased.
+    async fn run_prepared(
+        &self,
+        prepared: Result<Prepared, PrepareError>,
+        slot: SlotGuard,
+        deadline: Instant,
+        signals: &Signals,
+        on_heartbeat: impl FnMut() + Send,
+        kind: Kind,
+    ) -> Finished {
         let Prepared {
             directory,
             request,
@@ -554,22 +690,40 @@ where
         let exit = exit_of(&outcome);
         let left = running.settle(outcome.container_ended);
 
-        let report = match outcome.disposition {
-            Disposition::Complete(receipt) if expected.accepts(&receipt) => {
-                Report::Complete(receipt)
+        let probe = matches!(kind, Kind::Probe(_));
+        let report = match kind {
+            Kind::Write(expected) => match outcome.disposition {
+                Disposition::Complete(receipt) if expected.accepts(&receipt) => {
+                    Report::Complete(receipt)
+                }
+                Disposition::Complete(_) => Report::Fail(host_broke_the_protocol()),
+                Disposition::Fail(failure) => {
+                    Report::Fail(by_refusal(failure, outcome.sandbox_refusal))
+                }
+                Disposition::Abandon => Report::Abandon,
+            },
+            Kind::Probe(input) => {
+                // a probe that was killed ends otherwise than a write does: nothing it did can be unknown, and no write failed to fit
+                let facts = AttemptFacts {
+                    memory_killed: outcome.memory_killed,
+                    request_sent: outcome.request_sent,
+                };
+                match dispose_probe(outcome.ended, facts) {
+                    ProbeDisposition::Complete(result) if result.answers(&input) => {
+                        Report::Probe(result)
+                    }
+                    // the result of another probe is not this one's, and the server would refuse it
+                    ProbeDisposition::Complete(_) => Report::Fail(host_broke_the_protocol()),
+                    ProbeDisposition::Fail(failure) => {
+                        Report::Fail(by_refusal(failure, outcome.sandbox_refusal))
+                    }
+                    ProbeDisposition::Abandon => Report::Abandon,
+                }
             }
-            Disposition::Complete(_) => Report::Fail(Failure {
-                code: DatabaseFailure::LakeHostProtocol,
-                column: None,
-                reason: None,
-            }),
-            Disposition::Fail(failure) => {
-                Report::Fail(by_refusal(failure, outcome.sandbox_refusal))
-            }
-            Disposition::Abandon => Report::Abandon,
         };
         Finished {
             report,
+            probe,
             cause: None,
             request_sent: outcome.request_sent,
             container_ended: outcome.container_ended,
@@ -715,6 +869,7 @@ mod tests {
             Report::Complete(receipt) => assert!(format!("{receipt:?}").contains("Iceberg")),
             other => panic!("not complete: {other:?}"),
         }
+        assert!(!finished.probe, "a write is not a probe");
         assert!(finished.request_sent);
         assert!(finished.container_ended);
         assert_eq!(finished.left, None);
@@ -1383,5 +1538,260 @@ mod tests {
         let id = &driver.sandbox.asked()[0].attempt_id;
         let id = uuid::Uuid::parse_str(id).unwrap();
         assert_eq!(id.get_version_num(), 4, "random, not time-ordered");
+    }
+
+    // -- the probe (D035-150, slice S6b) ---------------------------------------------------------------------------------
+
+    use super::super::fixtures::probe_input_json;
+
+    fn probe_lease() -> Vec<u8> {
+        probe_input_json(|_| {})
+    }
+
+    /// Admits a probe and runs it, as the shell does for a lease.
+    async fn probe(
+        driver: &Driver<Scripted, NoBlobs, NoDns, NoNetwork>,
+        input: &[u8],
+        signals: &Signals,
+    ) -> Finished {
+        match driver.admit_probe(input) {
+            Ok(admitted) => {
+                driver
+                    .run_admitted(admitted, converted(), signals, || {})
+                    .await
+            }
+            Err(finished) => finished,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_probe_the_host_answers_reports_its_result_and_leaves_nothing_behind() {
+        let world = world();
+        let driver = driver(&world, answer(probe_line()));
+
+        let finished = probe(&driver, &probe_lease(), &signals()).await;
+
+        let Report::Probe(report) = &finished.report else {
+            panic!("not a probe report: {:?}", finished.report);
+        };
+        assert!(
+            report.answers(&sagat_infra_lake::protocol::ProbeInput::read(&probe_lease()).unwrap())
+        );
+        assert!(
+            finished.probe,
+            "it says it was a probe, so that it is not counted as a write"
+        );
+        assert!(finished.request_sent);
+        assert!(finished.container_ended);
+        assert_eq!(finished.left, None);
+        assert!(
+            entries(world.work.path()).is_empty(),
+            "the directory is gone"
+        );
+        assert_eq!(driver.slots.in_use(), 0, "the slot is free again");
+        assert_eq!(driver.sandbox.kills.load(Ordering::SeqCst), 1);
+
+        // what the host was sent is the request of a probe: no effect key, the connection and what to run
+        let request: Value =
+            serde_json::from_slice(&driver.sandbox.request.lock().unwrap()).unwrap();
+        assert_eq!(request["operation"], "probe");
+        assert!(request.get("effectKey").is_none());
+        assert_eq!(
+            request["probe"]["connection"],
+            json!({"name": "lake-main", "revision": 3})
+        );
+        assert_eq!(request["probe"]["checkTimeoutMs"], 7000);
+        // a probe stages nothing and needs no budget of a write: the small class, and the slot the sandbox's user is
+        let asked = driver.sandbox.asked();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].slot, 0);
+        assert_eq!(asked[0].class, Class::Small);
+    }
+
+    #[tokio::test]
+    async fn a_result_for_another_connection_or_another_revision_is_not_the_result_of_this_probe() {
+        for edit in [
+            (|receipt: &mut Value| receipt["connection"]["name"] = json!("other-lake"))
+                as fn(&mut Value),
+            |receipt: &mut Value| receipt["connection"]["revision"] = json!(4),
+        ] {
+            let world = world();
+            let driver = driver(&world, answer(probe_line_with(edit)));
+
+            let finished = probe(&driver, &probe_lease(), &signals()).await;
+
+            assert_eq!(failed_with(&finished), DatabaseFailure::LakeHostProtocol);
+            assert!(entries(world.work.path()).is_empty());
+            assert_eq!(driver.slots.in_use(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_probe_the_host_cannot_run_is_reported_with_the_code_it_gave() {
+        let world = world();
+        let driver = driver(
+            &world,
+            answer(plain_failure_line("DATABASE_CREDENTIAL_UNAVAILABLE")),
+        );
+
+        let finished = probe(&driver, &probe_lease(), &signals()).await;
+
+        assert_eq!(failed_with(&finished), DatabaseFailure::Credential);
+    }
+
+    #[tokio::test]
+    async fn the_receipt_of_a_write_is_not_an_answer_to_a_probe() {
+        let world = world();
+        let driver = driver(&world, answer(receipt_line()));
+
+        let finished = probe(&driver, &probe_lease(), &signals()).await;
+
+        assert_eq!(failed_with(&finished), DatabaseFailure::LakeHostProtocol);
+    }
+
+    #[tokio::test]
+    async fn a_host_killed_by_the_memory_limit_is_a_worker_error_and_not_a_write_that_does_not_fit()
+    {
+        let world = world();
+        // the host reads the request and closes without a result, and the sandbox says the memory limit killed it
+        let mut driver = driver(&world, answer(Vec::new()));
+        driver.sandbox.memory_killed = true;
+
+        let finished = probe(&driver, &probe_lease(), &signals()).await;
+
+        assert_eq!(failed_with(&finished), DatabaseFailure::WorkerError);
+        assert_eq!(finished.exit, Some(LakeSandboxExit::MemoryKilled));
+    }
+
+    #[tokio::test]
+    async fn a_lease_that_is_not_a_probe_lease_is_refused_before_anything_is_taken_or_made() {
+        let world = world();
+        let driver = driver(&world, answer(probe_line()));
+
+        // the lease of a write, and one of the lease of a probe with a member it does not name
+        for input in [
+            input_json(|_| {}),
+            probe_input_json(|d| d["table"] = json!("orders")),
+            b"not json".to_vec(),
+        ] {
+            let finished = probe(&driver, &input, &signals()).await;
+            assert_eq!(failed_with(&finished), DatabaseFailure::Configuration);
+            assert_eq!(finished.cause, Some(Cause::Input));
+        }
+        assert_eq!(driver.slots.in_use(), 0);
+        assert!(
+            driver.sandbox.asked().is_empty(),
+            "the sandbox was not asked"
+        );
+        assert!(entries(world.work.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_probe_lease_is_refused_by_the_reader_of_a_write() {
+        let world = world();
+        let driver = driver(&world, answer(probe_line()));
+
+        let finished = run(&driver, &probe_lease(), &signals()).await;
+
+        assert_eq!(failed_with(&finished), DatabaseFailure::Configuration);
+        assert_eq!(finished.cause, Some(Cause::Input));
+    }
+
+    #[tokio::test]
+    async fn with_no_free_slot_a_probe_fails_retryably_and_the_sandbox_is_not_asked() {
+        let world = world();
+        let driver = driver(&world, answer(probe_line()));
+        let held: Vec<_> = (0..4).map(|_| driver.slots.take().unwrap()).collect();
+
+        let finished = probe(&driver, &probe_lease(), &signals()).await;
+
+        assert_eq!(
+            failed_with(&finished),
+            DatabaseFailure::LakeSandboxUnavailable
+        );
+        assert_eq!(finished.cause, Some(Cause::NoSlot));
+        assert!(driver.sandbox.asked().is_empty());
+        drop(held);
+    }
+
+    #[test]
+    fn a_probe_holds_a_slot_from_its_admission_until_it_is_dropped() {
+        let world = world();
+        let driver = driver(&world, answer(probe_line()));
+
+        let admitted = driver.admit_probe(&probe_lease()).unwrap();
+        assert_eq!(driver.slots.in_use(), 1);
+        assert_eq!(admitted.slot(), 0);
+        drop(admitted);
+
+        assert_eq!(driver.slots.in_use(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_probe_cancelled_before_it_starts_is_cancelled_and_one_whose_lease_is_lost_reports_nothing()
+     {
+        let world = world();
+        let driver = driver(&world, answer(probe_line()));
+        let cancelled = signals();
+        cancelled.cancelled.cancel();
+        let lost = signals();
+        lost.lease_lost.cancel();
+
+        let finished = probe(&driver, &probe_lease(), &cancelled).await;
+        assert_eq!(failed_with(&finished), DatabaseFailure::Cancelled);
+        let finished = probe(&driver, &probe_lease(), &lost).await;
+        assert_eq!(finished.report, Report::Abandon);
+
+        assert!(
+            driver.sandbox.asked().is_empty(),
+            "no container was started"
+        );
+        assert!(entries(world.work.path()).is_empty());
+        assert_eq!(driver.slots.in_use(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_container_of_a_probe_gets_the_time_of_its_checks_and_the_connection_may_lower_it()
+    {
+        let world = world();
+        // three checks of 7 s and the margin: 24 s, which is within the 25 s of the step
+        let driver_a = driver(&world, answer(probe_line()));
+        probe(&driver_a, &probe_lease(), &signals()).await;
+        let asked = driver_a.sandbox.asked();
+        assert!(
+            asked[0].deadline <= Duration::from_secs(24),
+            "{:?}",
+            asked[0].deadline
+        );
+        assert!(
+            asked[0].deadline > Duration::from_secs(20),
+            "{:?}",
+            asked[0].deadline
+        );
+
+        // a connection that allows a second and a half is stricter
+        let driver_b = driver(&world, answer(probe_line()));
+        let mut message = message();
+        message.limits = Some(sagat_api_grpc::pb::LakeLimits {
+            max_record_bytes: 0,
+            max_records: 0,
+            timeout_ms: 1500,
+        });
+        let connection = super::super::connection::convert(&mut message).unwrap();
+        let admitted = driver_b.admit_probe(&probe_lease()).unwrap();
+        driver_b
+            .run_admitted(admitted, connection, &signals(), || {})
+            .await;
+        let asked = driver_b.sandbox.asked();
+        assert!(
+            asked[0].deadline <= Duration::from_millis(1500),
+            "{:?}",
+            asked[0].deadline
+        );
+        assert!(
+            asked[0].deadline > Duration::from_millis(500),
+            "{:?}",
+            asked[0].deadline
+        );
     }
 }

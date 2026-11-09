@@ -24,8 +24,8 @@ use std::time::{Duration, SystemTime};
 use sagat_domain::blobs::BlobId;
 use sagat_domain::database::DatabaseFailure;
 use sagat_infra_lake::protocol::{
-    AttemptInput, Connection, Limits, NodeLimits, Operation, Records, RelayAccess, RelayToken,
-    Request, encode_request,
+    AttemptInput, Connection, Limits, NodeLimits, Operation, ProbeBody, ProbeInput, Records,
+    RelayAccess, RelayToken, Request, encode_request,
 };
 use sagat_infra_lake::relay::RelayConfig;
 use sagat_infra_lake::staging::{AttemptDir, StagingError, StagingLimits};
@@ -199,6 +199,95 @@ pub struct Attempt<'a> {
     pub deadline_at: SystemTime,
     /// Development opens the loopback interface in the relay (the fixtures of the tests run on it).
     pub development: bool,
+}
+
+/// How many checks a probe runs, one after the other, each with the time the lease gives it.
+const PROBE_CHECKS: u32 = 3;
+/// What a probe may take besides its checks: the container to start, the host to connect, and the relay's first connections.
+const PROBE_MARGIN_MS: u32 = 3_000;
+/// The most a probe may take, whatever its checks are given: the `timeoutMs` of the fixed probe document (25 s), inside the 30 s
+/// the step has.
+const PROBE_CEILING_MS: u32 = 25_000;
+
+/// The time an attempt that probes a connection may take, in milliseconds: its three checks and a margin, never more than the
+/// step is allowed. The lease names the time of **one check** and the runner never sees the step's own limit, so this is where the
+/// two meet. A connection may lower it further ([`effective`]); nothing raises it.
+#[must_use]
+pub const fn probe_timeout_ms(check_timeout_ms: u32) -> u32 {
+    let wanted = PROBE_CHECKS
+        .saturating_mul(check_timeout_ms)
+        .saturating_add(PROBE_MARGIN_MS);
+    if wanted < PROBE_CEILING_MS {
+        wanted
+    } else {
+        PROBE_CEILING_MS
+    }
+}
+
+/// [`probe_timeout_ms`] as a duration.
+#[must_use]
+pub const fn probe_timeout(check_timeout_ms: u32) -> Duration {
+    Duration::from_millis(probe_timeout_ms(check_timeout_ms) as u64)
+}
+
+/// Prepares one attempt that probes a connection (D035-150): the directory the host finds its token in, the relay for the
+/// user of the slot, and the request line of a probe. A probe stages nothing, has no mode to check (the connection's modes are
+/// the writes') and no effect key, so there is nothing here that waits: the function does not await.
+///
+/// # Errors
+/// [`PrepareError`], with nothing left on disk.
+pub fn prepare_probe(
+    input: &ProbeInput,
+    connection: Converted,
+    settings: &Settings,
+    attempt: Attempt<'_>,
+) -> Result<Prepared, PrepareError> {
+    let Converted {
+        catalog,
+        storage,
+        warehouse_locations,
+        catalog_secret,
+        storage_secret,
+        ..
+    } = connection;
+    let connection = Connection::new(
+        catalog,
+        storage,
+        warehouse_locations,
+        secrets(&catalog_secret),
+        secrets(&storage_secret),
+    );
+    let endpoints = connection
+        .endpoint_policy()
+        .map_err(|_| PrepareError::Connection)?;
+
+    let token = RelayToken::generate().map_err(|_| PrepareError::Request)?;
+    // the directory needs a budget to exist; a probe stages nothing in it
+    let staging_limits = StagingLimits::new(1, 1).map_err(staging)?;
+    let directory = AttemptDir::create(&settings.work_root, attempt.id, &token, staging_limits)
+        .map_err(staging)?;
+
+    let body = ProbeBody::new(connection, input)
+        .into_body()
+        .map_err(|_| PrepareError::Request)?;
+    // the host reaches the relay where the container sees the attempt's directory
+    let relay_access = RelayAccess::new(
+        format!("/work/{}/relay.sock", directory.id()),
+        token.clone(),
+    );
+    let request =
+        encode_request(&Request::probe(relay_access, body)).map_err(|_| PrepareError::Request)?;
+
+    let relay = RelayConfig::new(token, endpoints, settings.relay_allow.iter().copied())
+        .with_deny(settings.relay_deny.iter().copied())
+        .development(attempt.development)
+        .with_peer_uid(attempt.peer_uid);
+    Ok(Prepared {
+        directory,
+        request,
+        relay,
+        staged_bytes: 0,
+    })
 }
 
 /// Prepares one attempt (see the module).
@@ -857,5 +946,163 @@ mod tests {
         let prepared = relay_prepared(work.path(), |_| {}, my_uid().wrapping_add(1), false).await;
         let (answer, _) = ask_the_relay(prepared, public).await;
         assert_eq!(answer, "", "another user is not served");
+    }
+
+    /// A probe prepared on a work root short enough for the relay's socket, for the user of the slot `peer_uid`.
+    fn probe_relay_prepared(
+        work: &std::path::Path,
+        configure: impl FnOnce(&mut Settings),
+        peer_uid: u32,
+    ) -> Prepared {
+        let mut settings = settings(work);
+        configure(&mut settings);
+        prepare_probe(
+            &ProbeInput::read(&super::super::fixtures::probe_input_json(|_| {})).unwrap(),
+            converted(),
+            &settings,
+            Attempt {
+                peer_uid,
+                ..attempt(0)
+            },
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_relay_of_a_probe_serves_the_user_of_its_slot_and_nobody_else() {
+        let public: std::net::IpAddr = "93.184.216.34".parse().unwrap();
+        let work = short_work();
+        let prepared = probe_relay_prepared(work.path(), |_| {}, my_uid());
+        let (answer, _) = ask_the_relay(prepared, public).await;
+        assert!(
+            answer.starts_with("HTTP/1.1"),
+            "the user of the slot is served: {answer:?}"
+        );
+
+        // the same host, as another user than the one the relay was built for: closed before a byte is read
+        let work = short_work();
+        let prepared = probe_relay_prepared(work.path(), |_| {}, my_uid().wrapping_add(1));
+        let (answer, _) = ask_the_relay(prepared, public).await;
+        assert_eq!(answer, "", "another user is not served");
+    }
+
+    #[tokio::test]
+    async fn the_relay_of_a_probe_refuses_an_address_the_operator_denied_and_the_loopback() {
+        let private: std::net::IpAddr = "10.0.0.5".parse().unwrap();
+        let work = short_work();
+        let prepared = probe_relay_prepared(work.path(), |_| {}, my_uid());
+        let (answer, denials) = ask_the_relay(prepared, private).await;
+        assert!(answer.starts_with("HTTP/1.1 403"), "{answer:?}");
+        assert_eq!(denials.address_forbidden, 1);
+
+        // a probe is the first thing a tenant can aim at an address of its own choosing: the loopback is closed to it too
+        let loopback: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let work = short_work();
+        let prepared = probe_relay_prepared(work.path(), |_| {}, my_uid());
+        let (answer, denials) = ask_the_relay(prepared, loopback).await;
+        assert!(answer.starts_with("HTTP/1.1 403"), "{answer:?}");
+        assert_eq!(denials.address_forbidden, 1);
+    }
+
+    // -- the probe (D035-150, slice S6b) -----------------------------------------------------------------------------------
+
+    fn probe() -> ProbeInput {
+        ProbeInput::read(&super::super::fixtures::probe_input_json(|_| {})).unwrap()
+    }
+
+    #[test]
+    fn a_probe_is_prepared_with_the_request_the_host_reads_and_nothing_staged() {
+        let work = tempfile::tempdir().unwrap();
+
+        let prepared =
+            prepare_probe(&probe(), converted(), &settings(work.path()), attempt(3)).unwrap();
+
+        let request = line(&prepared);
+        assert_eq!(request["protocol"], "sagat.lake.v1");
+        assert_eq!(request["operation"], "probe");
+        // a probe writes nothing that a later attempt would look for: the host refuses a line that names these
+        for member in [
+            "effectKey",
+            "firstAttemptStartedAt",
+            "table",
+            "inputs",
+            "limits",
+        ] {
+            assert!(request.get(member).is_none(), "{member}");
+        }
+        assert_eq!(
+            request["probe"],
+            json!({
+                "connection": {"name": "lake-main", "revision": 3},
+                "checks": ["CATALOG_AUTH", "WAREHOUSE", "STORAGE_ACCESS"],
+                "checkTimeoutMs": 7000
+            })
+        );
+        assert_eq!(
+            request["connection"]["credentials"]["catalog"]["clientSecret"],
+            SECRET
+        );
+        assert_eq!(
+            request["relay"]["socket"],
+            format!("/work/{ATTEMPT}/relay.sock")
+        );
+        // the token the host is given is the one in the file the relay checks
+        let token = std::fs::read_to_string(work.path().join(ATTEMPT).join("relay.token")).unwrap();
+        assert_eq!(request["relay"]["token"], token.trim_end());
+        assert_eq!(prepared.staged_bytes, 0);
+        assert!(
+            entries(&work.path().join(ATTEMPT).join("in")).is_empty(),
+            "nothing is staged for a probe"
+        );
+    }
+
+    #[test]
+    fn a_probe_does_not_need_the_connection_to_allow_a_write_mode() {
+        // the modes a connection allows are the writes'; a probe of a connection that allows none is still a probe
+        let work = tempfile::tempdir().unwrap();
+        let mut connection = converted();
+        connection.allowed_modes.clear();
+
+        let prepared = prepare_probe(&probe(), connection, &settings(work.path()), attempt(0));
+
+        assert!(prepared.is_ok(), "{prepared:?}");
+    }
+
+    #[test]
+    fn a_probe_of_a_connection_the_relay_cannot_allow_is_refused_before_the_directory_is_made() {
+        let work = tempfile::tempdir().unwrap();
+        let mut connection = converted();
+        connection.storage =
+            json!({"type": "gcs", "gcs": {"project": "p"}, "credentials": "static"});
+
+        let error =
+            prepare_probe(&probe(), connection, &settings(work.path()), attempt(0)).unwrap_err();
+
+        assert_eq!(error, PrepareError::Connection);
+        assert_eq!(error.code(), DatabaseFailure::Configuration);
+        assert!(entries(work.path()).is_empty());
+    }
+
+    #[test]
+    fn a_probe_whose_directory_exists_is_not_prepared_and_the_existing_one_is_left_alone() {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::create_dir(work.path().join(ATTEMPT)).unwrap();
+
+        let error =
+            prepare_probe(&probe(), converted(), &settings(work.path()), attempt(0)).unwrap_err();
+
+        assert_eq!(error, PrepareError::Source);
+        assert_eq!(entries(work.path()), [ATTEMPT]);
+    }
+
+    #[test]
+    fn the_time_a_probe_may_take_is_three_checks_and_a_margin_up_to_the_step() {
+        let seconds = |milliseconds| probe_timeout(milliseconds).as_secs_f64();
+        // the lease gives 7 s to a check: three of them and the margin for the container and the relay fit the 25 s of the step
+        assert!((seconds(7000) - 24.0).abs() < f64::EPSILON);
+        assert!((seconds(100) - 3.3).abs() < 1e-9);
+        // never more than the step is allowed (`timeoutMs` of the fixed probe document)
+        assert!((seconds(60_000) - 25.0).abs() < f64::EPSILON);
+        assert!((seconds(8000) - 25.0).abs() < f64::EPSILON);
     }
 }

@@ -102,6 +102,16 @@ pub fn input_json(edit: impl FnOnce(&mut Value)) -> Vec<u8> {
     serde_json::to_vec(&document).unwrap()
 }
 
+/// The lease of a probe as the server writes it (`fixtures/probe-input/probe.json`) after `edit`.
+pub fn probe_input_json(edit: impl FnOnce(&mut Value)) -> Vec<u8> {
+    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/contract/iceberg-writes/fixtures/probe-input/probe.json");
+    let mut document: Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    edit(&mut document);
+    serde_json::to_vec(&document).unwrap()
+}
+
 /// The user this test runs as: a scripted host in the test's own process is reported by the kernel as that peer.
 pub fn my_uid() -> u32 {
     use std::os::unix::fs::MetadataExt as _;

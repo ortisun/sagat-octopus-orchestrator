@@ -160,6 +160,21 @@ runner for the SQL activity, of both, or of an ordinary activity beside either, 
   code and whether the step may be tried again; a cancel the control plane asked for is `DATABASE_CANCELLED` before the host has the
   request and `OUTCOME_UNKNOWN` after; a lease that is lost is reported as nothing at all. A completion the control plane
   refuses as not the step's is failed as `LAKE_HOST_PROTOCOL`.
+- *It probes a connection* (D035-150, slice S6b). It offers the write and the probe **in one session**, and a probe is run as an
+  attempt like a write, in a container with a slot of its own and the same relay, but it stages nothing, has no effect key and writes
+  nothing, so it is never counted as a write and its end is never unknown. The lease names the time of one check; the attempt gets
+  three of them and a margin of three seconds, **at most 25 seconds** (the `timeoutMs` of the fixed probe document), and a connection
+  whose own `timeoutMs` is lower lowers it further. It reports the host's result inline as typed fields, and only when it is the result of
+  the connection and the revision that were leased; anything else is `LAKE_HOST_PROTOCOL`. A cancel is `DATABASE_CANCELLED` and the
+  deadline `DATABASE_TIMEOUT` **whether or not the host had the request**; a host killed by its memory limit is `WORKER_ERROR`, not
+  `ICEBERG_LIMIT_EXCEEDED` (no write failed to fit). **A connection that does not work is not a failure of the step**: the host
+  answers with the checks that failed, and that is the result.
+- *A binding that does not cover the probe leaves a runner that serves the writes.* If the service refuses the offer of both
+  activities with `PERMISSION_DENIED` (`NOT_BOUND`: the binding is older than the runner), the runner offers the write alone, at once
+  and in the same session, and counts it: `database_runner_lake_probe_offer_total{outcome="write_only"}` (`offered` when it got both).
+  **A runner that is write-only is silent about it otherwise**, so alert on that counter after a rollout: a probe is then handed to no
+  one and waits for the 30 seconds of its run. Any other refusal (an outage, a rate limit) is not a binding and the same offer is
+  made again. A binding that covers neither activity is refused for both, and the runner tries again as it always has.
 - *Stopping it is not cancelling it.* On `SIGTERM` it stops polling, lets the attempts that are running finish for 30 seconds,
   and then gives their leases up as lost (the containers are killed and nothing is reported); the control plane's lease expiry
   decides what happens to the step, and the next attempt finds a commit that was made by its key. **Set the pod's
