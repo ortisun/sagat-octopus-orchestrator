@@ -1262,7 +1262,12 @@ pub async fn registration(w: &World) {
         ("lake-mixed", vec![write, sql]),
         ("lake-ordinary", vec![write, "ordinary"]),
         ("lake-revert", vec!["sagat.database.iceberg.revert"]),
-        ("lake-probe", vec!["sagat.database.lake.probe"]),
+        // the probe is a lake activity (D035-150), so it is the mixes that are refused: with SQL, or with an ordinary activity
+        ("lake-probe-sql", vec!["sagat.database.lake.probe", sql]),
+        (
+            "lake-probe-ordinary",
+            vec!["sagat.database.lake.probe", "ordinary"],
+        ),
     ] {
         assert!(
             refused(

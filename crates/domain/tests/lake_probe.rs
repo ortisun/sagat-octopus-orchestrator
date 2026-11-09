@@ -12,6 +12,7 @@ use sagat_domain::{
     binding::BindingProfile,
     database::{
         ConnectionRef, ICEBERG_PROBE_ACTIVITY, ICEBERG_WRITE_ACTIVITY, LakeProbe, ManagedKind,
+        ProbeCheck,
     },
     identity::Slug,
     saga::EffectPolicy,
@@ -229,6 +230,31 @@ fn a_probe_that_claims_an_effect_is_refused_because_a_probe_changes_nothing() {
             definition(probe_node().with_effect(effect)).err(),
             Some(WorkflowError::InvalidIcebergNode),
             "{effect:?}"
+        );
+    }
+}
+
+#[test]
+fn the_checks_of_a_probe_are_a_closed_vocabulary_in_a_fixed_order() {
+    // The names are the contract's (`contracts/connections.md`, `ConnectionProbeResult.checks[]`), and the order is the order they run:
+    // a check that cannot run because an earlier one failed is skipped, so the order is part of what a result means.
+    let names: Vec<&str> = ProbeCheck::ALL.iter().map(|check| check.as_str()).collect();
+    assert_eq!(names, ["CATALOG_AUTH", "WAREHOUSE", "STORAGE_ACCESS"]);
+    for check in ProbeCheck::ALL {
+        assert_eq!(ProbeCheck::parse(check.as_str()), Some(check));
+    }
+    for not_a_check in [
+        "",
+        "catalog_auth",
+        "CATALOG_AUTH ",
+        "DATABASE_AUTH",
+        "CONDITIONAL_CREATE",
+        "TABLE_DEDUPLICATION",
+    ] {
+        assert_eq!(
+            ProbeCheck::parse(not_a_check),
+            None,
+            "{not_a_check:?} is not a check of an Iceberg probe"
         );
     }
 }

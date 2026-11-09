@@ -6,7 +6,10 @@
 
 use sagat_application::worker::{DATABASE_PROTOCOL_MINOR, managed_capabilities_allowed};
 use sagat_domain::{
-    database::{ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY},
+    database::{
+        ICEBERG_PROBE_ACTIVITY, ICEBERG_REVERT_ACTIVITY, ICEBERG_WRITE_ACTIVITY,
+        MANAGED_DATABASE_ACTIVITY,
+    },
     identity::Role,
 };
 
@@ -43,6 +46,14 @@ fn a_runner_is_of_one_profile_and_offers_nothing_ordinary_beside_it() {
         vec![ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY],
         vec![MANAGED_DATABASE_ACTIVITY, "ordinary"],
         vec![ICEBERG_WRITE_ACTIVITY, "ordinary"],
+        vec![ICEBERG_PROBE_ACTIVITY, MANAGED_DATABASE_ACTIVITY],
+        vec![MANAGED_DATABASE_ACTIVITY, ICEBERG_PROBE_ACTIVITY],
+        vec![ICEBERG_PROBE_ACTIVITY, "ordinary"],
+        vec![
+            ICEBERG_WRITE_ACTIVITY,
+            ICEBERG_PROBE_ACTIVITY,
+            MANAGED_DATABASE_ACTIVITY,
+        ],
         vec!["ordinary"],
     ];
     for activities in mixed {
@@ -70,7 +81,6 @@ fn only_what_the_server_serves_is_accepted_and_nothing_below_the_managed_minor()
         ICEBERG_REVERT_ACTIVITY,
         "sagat.database.destination.iceberg",
         "sagat.database.destination.object_storage",
-        "sagat.database.lake.probe",
         "sagat.database.lake.browse",
         "sagat.database.postgresql.other",
         "sagat.database.",
@@ -129,9 +139,34 @@ fn the_profile_of_a_registration_is_the_profile_of_the_activities_it_offers() {
         managed_profile(&names(&[ICEBERG_WRITE_ACTIVITY, ICEBERG_WRITE_ACTIVITY])),
         Some(BindingProfile::Lake)
     );
+    // the lake profile is the write, the probe, or both: a lake runner that has a probe to run offers it beside its write
+    for lake in [
+        vec![ICEBERG_PROBE_ACTIVITY],
+        vec![ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY],
+        vec![
+            ICEBERG_PROBE_ACTIVITY,
+            ICEBERG_WRITE_ACTIVITY,
+            ICEBERG_PROBE_ACTIVITY,
+        ],
+    ] {
+        assert_eq!(
+            managed_profile(&names(&lake)),
+            Some(BindingProfile::Lake),
+            "{lake:?}"
+        );
+        assert!(
+            managed_capabilities_allowed(
+                Role::DatabaseRunner,
+                &names(&lake),
+                DATABASE_PROTOCOL_MINOR
+            ),
+            "{lake:?}"
+        );
+    }
     for neither in [
         vec![],
         vec![MANAGED_DATABASE_ACTIVITY, ICEBERG_WRITE_ACTIVITY],
+        vec![MANAGED_DATABASE_ACTIVITY, ICEBERG_PROBE_ACTIVITY],
         vec![ICEBERG_WRITE_ACTIVITY, "ordinary"],
         vec!["ordinary"],
         vec![ICEBERG_REVERT_ACTIVITY],
@@ -179,4 +214,56 @@ fn credentials_are_handed_only_to_a_session_and_a_binding_of_the_profile_of_the_
         &names(&[ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY]),
         &[lake_profile]
     ));
+}
+
+#[test]
+fn a_step_is_handed_only_to_a_session_that_offers_its_own_activity_and_not_merely_its_profile() {
+    use sagat_application::worker::profile_fence;
+    use sagat_domain::{binding::BindingProfile, database::ManagedKind};
+    let lake_profile = BindingProfile::Lake;
+    let write_only = names(&[ICEBERG_WRITE_ACTIVITY]);
+    let probe_only = names(&[ICEBERG_PROBE_ACTIVITY]);
+    let both = names(&[ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY]);
+    // a probe goes to a session that offers the probe, a write to one that offers the write
+    assert!(profile_fence(
+        ManagedKind::LakeProbe,
+        &probe_only,
+        &[lake_profile]
+    ));
+    assert!(profile_fence(
+        ManagedKind::LakeProbe,
+        &both,
+        &[lake_profile]
+    ));
+    assert!(profile_fence(ManagedKind::Lake, &both, &[lake_profile]));
+    // the same profile is not enough: a runner that has no probe to run is never handed a probe, nor one that has only the probe a write
+    assert!(!profile_fence(
+        ManagedKind::LakeProbe,
+        &write_only,
+        &[lake_profile]
+    ));
+    assert!(!profile_fence(
+        ManagedKind::Lake,
+        &probe_only,
+        &[lake_profile]
+    ));
+    // and the binding rules are the lake's as for a write
+    assert!(!profile_fence(
+        ManagedKind::LakeProbe,
+        &both,
+        &[BindingProfile::Database]
+    ));
+    assert!(!profile_fence(ManagedKind::LakeProbe, &both, &[]));
+}
+
+#[test]
+fn every_managed_kind_names_the_activity_a_runner_offers_for_it() {
+    use sagat_domain::database::ManagedKind;
+    for (kind, activity) in [
+        (ManagedKind::Sql, MANAGED_DATABASE_ACTIVITY),
+        (ManagedKind::Lake, ICEBERG_WRITE_ACTIVITY),
+        (ManagedKind::LakeProbe, ICEBERG_PROBE_ACTIVITY),
+    ] {
+        assert_eq!(kind.activity(), activity, "{kind:?}");
+    }
 }

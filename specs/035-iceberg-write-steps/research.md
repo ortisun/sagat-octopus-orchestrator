@@ -3586,3 +3586,14 @@ The other fixes were wording:
   defence in depth that no public path can exercise. The fitness test for who may mention a
   private entry is killed by three mutations. *Still to do before a probe can run:* the claim path (the budgets, the profile fence, the secrets and the `== ManagedKind::Lake` sites: S2b),
   the probe's lease document (S3), its result (S4), the host (S5), the runner (S6).
+  *S2b is dissolved into S3 (2026-11-09): the claim and the lease of a probe are one slice, and what it holds.* The budgets, the profile fence and the snapshot of a probe are reachable only once a
+  probe can be **leased**, which needs its lease document; tested apart they would be tested by nothing. So the slice that builds the claim sites also builds the lease: (1) `managed_profile`
+  accepts the write, the probe or both for the lake profile, and `profile_fence` requires the step's **own activity** to be offered (`ManagedKind::activity`), not only its profile; (2) the
+  claim counts a probe in a **budget of its own** by the activity of the steps in flight (three categories, the probe's ceilings being one in a namespace and four in a tenant, which makes a
+  probe neither wait for a write nor make one wait); (3) a probe is resolved as a lake step (the connection and its two secrets, read and pinned as a write's are); (4) its lease is
+  `sagat.lake.probe-input.v1`, from the connection and the revision it was admitted with, built by `lake_probe_input` and pinned by a fixture and a contract test (the strict reader in
+  `infra-lake` is the runner's, S6); (5) **a probe's completion is refused** until its typed result exists (S4): without it a leased probe fell through both the receipt branch and the SQL
+  branch and completed as an ordinary step, with whatever a runner sent. **No protocol minor is taken** (this narrows the review's finding 5 and the minor planned here as 1.7): the
+  probe's lease rides the existing `input` payload and a runner that offers the probe is by definition one that knows it; the *offer* is the negotiation, an older runner never offers it and so is
+  never handed one. The minor that G035-077/078/079 and O035-007 need is still theirs. *Not in S3:* the one-in-flight-per-connection rule at the start (it belongs with the REST start, S6),
+  the result (S4), the host (S5), the runner (S6).

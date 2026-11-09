@@ -25,3 +25,36 @@ impl LakeProbe {
         &self.connection
     }
 }
+
+/// What a probe checks, a closed vocabulary shared by its lease document and its result (`contracts/connections.md`,
+/// `ConnectionProbeResult.checks[]`). The order of [`Self::ALL`] is the order the checks run, and it is part of what a result means: a
+/// check that cannot run because an earlier one failed is skipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ProbeCheck {
+    /// The catalog accepts the credentials and answers its configuration.
+    CatalogAuth,
+    /// The warehouse the connection names is there and its locations are the connection's.
+    Warehouse,
+    /// The storage credentials can list under a warehouse location.
+    StorageAccess,
+}
+
+impl ProbeCheck {
+    /// Every check of an Iceberg probe, in the order they run.
+    pub const ALL: [Self; 3] = [Self::CatalogAuth, Self::Warehouse, Self::StorageAccess];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CatalogAuth => "CATALOG_AUTH",
+            Self::Warehouse => "WAREHOUSE",
+            Self::StorageAccess => "STORAGE_ACCESS",
+        }
+    }
+
+    /// `None` for anything but the exact name of a check of an Iceberg probe.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|check| check.as_str() == text)
+    }
+}

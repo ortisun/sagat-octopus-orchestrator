@@ -19,7 +19,7 @@ pub use iceberg_write::{
     IcebergWriteError, IcebergWriteParts, MAX_MAPPED_COLUMNS, MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS,
     MAX_RECORD_INPUT_BYTES, RecordSource, TableIdentifier, WriteIntent,
 };
-pub use lake_probe::{ICEBERG_PROBE_ACTIVITY, LakeProbe};
+pub use lake_probe::{ICEBERG_PROBE_ACTIVITY, LakeProbe, ProbeCheck};
 
 use crate::{
     classification::EgressCeiling, identity::Slug, secrets::SecretName, workflow::Expression,
@@ -435,6 +435,18 @@ pub enum ManagedKind {
 }
 
 impl ManagedKind {
+    /// The reserved activity a runner offers for this kind, and the one its steps carry. A runner is handed a step of a kind only when it
+    /// offers that activity, and not merely when it is of the kind's profile (D035-150): a lake runner that has no probe to run offers the
+    /// write alone and is never handed a probe.
+    #[must_use]
+    pub const fn activity(self) -> &'static str {
+        match self {
+            Self::Sql => MANAGED_DATABASE_ACTIVITY,
+            Self::Lake => ICEBERG_WRITE_ACTIVITY,
+            Self::LakeProbe => ICEBERG_PROBE_ACTIVITY,
+        }
+    }
+
     /// The profile of the runner that executes this kind: a runner of another profile is never handed the step, and never
     /// handed its credentials.
     #[must_use]
