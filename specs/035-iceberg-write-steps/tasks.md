@@ -1749,6 +1749,10 @@ deployment, documentation, reviews and gates.
     audit, journal or API responses.
 
   Rerun T035-015, T035-018 and T035-031. Refs: NFR-035-SEC, SC-035-006.
+
+  *2026-11-09, one case done, left unticked:* a lake runner of another tenant, holding every id and token of a lease, is answered for a read, the audit of a read and the credentials exactly as
+  for a run that does not exist, and leaves nothing in the lease's tenant's trail (`lake_read.rs`; it pins a property the worker service already had, so it passed when written, and no
+  mutation was run: the property is the one line, `begin(principal.tenant_id(), …)`, that the whole suite depends on). Not done: the battery over the connection, browse and destination routes, and the canaries.
 - [ ] T035-118 [P] Add the classification battery in `tests/integration/iceberg-writes/classification.rs`:
   every `secret` field, every field above the ceiling, and every undeclared field against a ceiling
   below `pii` is refused, for every kind, with zero relay or destination connections. Refs:

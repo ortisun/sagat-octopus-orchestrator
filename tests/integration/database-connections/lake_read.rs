@@ -10,6 +10,7 @@
 use super::lake::{append, iceberg_in, publish_on_lake, rows_schema, write};
 use super::lake_blobs::{committed_output, pin};
 use crate::support::engine::{World, ctx, task_ref};
+use crate::support::{now, subject};
 use sagat_application::{
     blobs::BlobScope,
     clock::SystemClock,
@@ -18,7 +19,7 @@ use sagat_application::{
     error::AppError,
     execution::Engine,
     runs::{RunOperation, RunService, StartRun},
-    worker::{Capabilities, ClaimedTask, WorkerService, WorkerSettings},
+    worker::{Capabilities, ClaimedTask, TaskRef, WorkerService, WorkerSettings},
 };
 use sagat_domain::{
     audit::AuditAction,
@@ -27,7 +28,7 @@ use sagat_domain::{
     classification::EgressCeiling,
     database::{ConnectionStatus, WriteMode},
     execution::{Fence, RunId},
-    identity::{Principal, Role},
+    identity::{Membership, Principal, Role},
 };
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_postgres::PgRunStore;
@@ -71,6 +72,39 @@ impl Gate<'_> {
             )
             .await;
     }
+}
+
+/// What a runner asks of a lease that is not its tenant's, as the words of the refusals (a refusal that differs from another is a way to tell
+/// a run from a run that does not exist): a read, the audit of a read, and the credentials.
+async fn foreign_answers(
+    workers: &Workers,
+    stranger: &Principal,
+    reference: TaskRef<'_>,
+    blob: BlobId,
+) -> (String, String, String) {
+    (
+        format!(
+            "{:?}",
+            workers
+                .check_blob_read(stranger, &reference, blob, Some(TRACE))
+                .await
+                .err()
+        ),
+        format!(
+            "{:?}",
+            workers
+                .audit_blob_read(stranger, &reference, blob, Some(TRACE))
+                .await
+                .err()
+        ),
+        format!(
+            "{:?}",
+            workers
+                .resolve_database(stranger, &reference, None)
+                .await
+                .err()
+        ),
+    )
 }
 
 pub async fn run(w: &World) {
@@ -349,6 +383,56 @@ pub async fn run(w: &World) {
             "{name}: {refused:?}"
         );
     }
+
+    // ----- another tenant: a lake runner of a tenant that is not this run's, holding every id and token of the lease, is answered as it is for a
+    // run that does not exist, whatever it asks (a read, the audit of a read, the credentials), and leaves nothing in this tenant's trail
+    let stranger = Principal::new(
+        w.other_admin.tenant_id(),
+        subject("lake-read-stranger"),
+        Role::DatabaseRunner,
+    );
+    sagat_infra_postgres::PgIdentityStore::new(w.db.pool.clone())
+        .insert_membership(&Membership::restore(
+            stranger.tenant_id(),
+            stranger.subject().clone(),
+            Role::DatabaseRunner,
+            now(),
+        ))
+        .await
+        .expect("a lake runner of the other tenant");
+    let trail = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_records WHERE tenant_id = $1 AND resource_id LIKE $2",
+        )
+        .bind(tenant)
+        .bind(format!("%{run}%"))
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("audit count")
+    };
+    let before = trail().await;
+    let real = task_ref(&task);
+    let mut ghost = task_ref(&task);
+    ghost.run_id = RunId::generate();
+    let (foreign, absent) = (
+        foreign_answers(&workers, &stranger, real, named).await,
+        foreign_answers(&workers, &stranger, ghost, named).await,
+    );
+    for refused in [&foreign.0, &foreign.1, &foreign.2] {
+        assert_ne!(
+            refused, "None",
+            "a runner of another tenant is refused: {foreign:?}"
+        );
+    }
+    assert_eq!(
+        foreign, absent,
+        "the answer for this tenant's lease is the answer for a run that does not exist"
+    );
+    assert_eq!(
+        trail().await,
+        before,
+        "another tenant's asking leaves nothing in this tenant's trail"
+    );
 
     // ----- a lease that is over reads nothing: given up, cancelled, lapsed, or replaced by a retry
     // Replaced: the step fails retryably, the next attempt is leased with a fence of its own, and the first attempt's token reads
