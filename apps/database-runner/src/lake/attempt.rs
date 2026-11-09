@@ -3,22 +3,24 @@
 //! The driver ([`Driver`]) knows how to run an attempt once it has its input, a slot and a connection. This is the part that talks
 //! to the control plane around it:
 //!
-//! - *the lease is checked* before anything is asked for: a root forward task of the lake activity, with an expiry;
+//! - *the lease is checked* before anything is asked for: a root forward task of either lake activity (the write, or the probe of
+//!   a connection, D035-150), with an expiry;
 //! - *the heartbeats* renew it, and what their end means is decided here: a cancel the control plane asked for is `cancelled`
 //!   (a write that was started is then `OUTCOME_UNKNOWN`), a lease that is lost is `lease_lost` (there is no one to report to);
 //! - *the attempt is admitted* (an input it can read, a free slot) **before the connection is asked for**, because asking for it
 //!   discloses and audits the secrets;
 //! - *the connection is resolved* under the same signals, and read by [`decode`](super::resolve::decode), which zeroises what it
-//!   was given on every path;
-//! - *the report* is the driver's, sent with the flag the contract gives its code: `CompleteStep` with the receipt, `FailStep`
-//!   with a closed code, or nothing at all when the lease is gone. A completion the control plane refuses as not the step's
-//!   becomes `LAKE_HOST_PROTOCOL`: the host did not keep the protocol.
+//!   was given on every path; for a probe, by [`decode_for_probe`], which also holds the answer to the connection and the
+//!   revision the lease names;
+//! - *the report* is the driver's, sent with the flag the contract gives its code: `CompleteStep` with the receipt (or, for a
+//!   probe, with its result inline), `FailStep` with a closed code, or nothing at all when the lease is gone. A completion the
+//!   control plane refuses as not the step's becomes `LAKE_HOST_PROTOCOL`: the host did not keep the protocol.
 use std::future::Future;
 use std::sync::Arc;
 
 use sagat_api_grpc::pb;
 use sagat_domain::{
-    database::{DatabaseFailure, ICEBERG_WRITE_ACTIVITY},
+    database::{DatabaseFailure, ICEBERG_PROBE_ACTIVITY, ICEBERG_WRITE_ACTIVITY},
     identity::NamespaceId,
 };
 use sagat_infra_lake::attempt::{LakeSandbox, Signals};
@@ -32,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::driver::{Admitted, Driver, Finished, Report as Finish};
 use super::prepare::Blobs;
-use super::resolve::decode;
+use super::resolve::{decode, decode_for_probe};
 use crate::{
     RunnerError, capability,
     lease::{Heartbeat, LeaseEnd, Policy, Report, Unreported, report_until_ack},
@@ -76,14 +78,24 @@ fn outcome_of(finished: Finished) -> Outcome {
             // a receipt that cannot be written out is a host that did not keep the protocol
             Err(_) => failed(DatabaseFailure::LakeHostProtocol),
         },
+        // the result of a probe, written again from its typed fields: the bytes the server reads and stores
+        Finish::Probe(result) => Outcome::Report(Report::Complete {
+            bytes: result.output_json(),
+            blob: None,
+        }),
         Finish::Fail(failure) => failed(failure.code),
         Finish::Abandon => Outcome::Nothing,
     }
 }
 
-/// The lease is one this profile serves: a root, forward task of the lake activity.
+/// The lease is for a probe of a connection and not a write (D035-150).
+fn is_probe(lease: &pb::TaskLease) -> bool {
+    lease.activity_name == ICEBERG_PROBE_ACTIVITY
+}
+
+/// The lease is one this profile serves: a root, forward task of a lake activity (a write, or a probe of a connection).
 fn serves(lease: &pb::TaskLease) -> bool {
-    lease.activity_name == ICEBERG_WRITE_ACTIVITY
+    (lease.activity_name == ICEBERG_WRITE_ACTIVITY || is_probe(lease))
         && lease
             .instance
             .as_ref()
@@ -107,7 +119,14 @@ where
     R: Resolver + Clone,
     C: Connector + Clone,
 {
-    let admission = serves(&task.lease).then(|| driver.admit(task.lease.input_json.as_bytes()));
+    let admission = serves(&task.lease).then(|| {
+        let input = task.lease.input_json.as_bytes();
+        if is_probe(&task.lease) {
+            driver.admit_probe(input)
+        } else {
+            driver.admit(input)
+        }
+    });
     run(rpc, task, driver, admission, drain)
 }
 
@@ -161,8 +180,19 @@ where
         }
     };
     record_written(written, sent);
+    record_probe_report(is_probe(lease), sent);
     heartbeat.finish().await;
     result
+}
+
+/// A completion of a probe that the control plane refused as not the step's is failed as a protocol failure, which a write counts
+/// as a failed write ([`record_written`]); a probe has no write to count it as, so it is counted on its own, and a runner whose
+/// results are refused does not look like one whose probes all work.
+fn record_probe_report(probe: bool, sent: Sent) {
+    if probe && sent == Sent::Downgraded {
+        metrics::counter!("database_runner_lake_probe_reports_total", "outcome" => "refused")
+            .increment(1);
+    }
 }
 
 /// What an attempt that reached a container says to the metrics about its write, once the report is settled.
@@ -199,11 +229,13 @@ where
         Ok(admitted) => admitted,
         Err(finished) => return (outcome_of(finished), None),
     };
+    // what a probe was leased for: the connection that is resolved for it has to be that one
+    let leased = admitted.leased_probe();
     let connection = tokio::select! {
         biased;
         () = signals.lease_lost.cancelled() => return (Outcome::Nothing, None),
         () = signals.cancelled.cancelled() => return (failed(DatabaseFailure::Cancelled), None),
-        connection = resolve(rpc, task) => connection,
+        connection = resolve(rpc, task, leased.as_ref().map(|(name, revision)| (name.as_str(), *revision))) => connection,
     };
     let connection = match connection {
         Ok(connection) => connection,
@@ -211,6 +243,8 @@ where
         Err(Unresolved::Failed(code)) => return (failed(code), None),
         Err(Unresolved::Transient) => return (Outcome::Nothing, None),
     };
+    // the labels of a write come from its connection; whether the attempt was a write is for `write_outcome` to say, and a
+    // probe, whatever its end, is not
     let labels = Labels::of(&connection);
     let finished = driver
         .run_admitted(admitted, connection, signals, || {})
@@ -278,7 +312,8 @@ fn record_container(finished: &Finished) {
 /// How the write ended, as the metrics say it: `None` for an attempt that never reached a container, which is not a write, and for a
 /// lease that is gone, which has no outcome.
 fn write_outcome(finished: &Finished) -> Option<LakeWriteOutcome> {
-    if finished.cause.is_some() {
+    // a probe changes no table: it is not a write, however it ended
+    if finished.cause.is_some() || finished.probe {
         return None;
     }
     Some(match &finished.report {
@@ -294,7 +329,8 @@ fn write_outcome(finished: &Finished) -> Option<LakeWriteOutcome> {
             LakeWriteOutcome::Unknown
         }
         Finish::Fail(_) => LakeWriteOutcome::Failed,
-        Finish::Abandon => return None,
+        // (a probe was left above)
+        Finish::Probe(_) | Finish::Abandon => return None,
     })
 }
 
@@ -308,8 +344,13 @@ enum Unresolved {
     Transient,
 }
 
-/// Asks the control plane for the connection of the lease, and reads it.
-async fn resolve(rpc: &Rpc, task: &Task) -> Result<super::connection::Converted, Unresolved> {
+/// Asks the control plane for the connection of the lease, and reads it. A probe says which connection and which revision it was
+/// leased for (`probe`), and the answer has to be that one.
+async fn resolve(
+    rpc: &Rpc,
+    task: &Task,
+    probe: Option<(&str, u32)>,
+) -> Result<super::connection::Converted, Unresolved> {
     let request = rpc
         .request(crate::rpc::task(&task.lease))
         .await
@@ -335,7 +376,11 @@ async fn resolve(rpc: &Rpc, task: &Task) -> Result<super::connection::Converted,
     {
         tracing::Span::current().record("tenant_id", tracing::field::display(tenant));
     }
-    decode(response, task.namespace).map_err(Unresolved::Failed)
+    match probe {
+        Some((name, revision)) => decode_for_probe(response, task.namespace, name, revision),
+        None => decode(response, task.namespace),
+    }
+    .map_err(Unresolved::Failed)
 }
 
 /// What became of the report, for the metrics of the write.
@@ -350,7 +395,8 @@ enum Sent {
 }
 
 /// Sends the report. A completion the control plane refuses as invalid is the host's breach of the protocol: the step is failed
-/// with that code instead, which is retryable (the next attempt looks the effect up by its key).
+/// with that code instead, which is retryable (the next attempt of a write looks the effect up by its key; a probe has no effect,
+/// and is simply run again).
 async fn send(
     rpc: &Rpc,
     lease: &pb::TaskLease,
@@ -854,6 +900,7 @@ mod tests {
     fn finished(report: Finish, exit: Option<LakeSandboxExit>) -> Finished {
         Finished {
             report,
+            probe: false,
             cause: None,
             request_sent: true,
             container_ended: true,
@@ -1014,6 +1061,290 @@ mod tests {
         let mut before = finished(failure(DatabaseFailure::LakeSandboxUnavailable), None);
         before.cause = Some(super::super::driver::Cause::NoSlot);
         assert!(seen(crate::testing::counted(|| settle(&before, Sent::AsIs))).is_empty());
+    }
+
+    // -- the probe (D035-150, slice S6b) ---------------------------------------------------------------------------------
+
+    use super::super::doubles::{probe_line, probe_line_with};
+    use super::super::fixtures::probe_input_json;
+
+    fn probe_lease(lasts: Duration) -> pb::TaskLease {
+        pb::TaskLease {
+            activity_name: ICEBERG_PROBE_ACTIVITY.into(),
+            input_json: String::from_utf8(probe_input_json(|_| {})).unwrap(),
+            ..lease(lasts)
+        }
+    }
+
+    /// The text of the result in the corpus, which is the canonical form the server stores.
+    fn probe_result() -> String {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests/contract/iceberg-writes/fixtures/probe-results/accepted/all-passed.json",
+        );
+        std::fs::read_to_string(path).unwrap().trim_end().to_owned()
+    }
+
+    #[tokio::test]
+    async fn a_probe_lease_the_host_answers_is_completed_with_the_result_as_the_server_stores_it() {
+        let setup = setup().await;
+        let driver = setup.driver(answer(probe_line()));
+
+        let disposition = setup
+            .run(probe_lease(Duration::from_secs(60)), driver)
+            .await
+            .expect("reported");
+
+        assert_eq!(disposition, Disposition::Reported);
+        setup.fake.with(|script| {
+            assert_eq!(
+                script.resolved.len(),
+                1,
+                "the connection was asked for once"
+            );
+            assert_eq!(script.completed.len(), 1);
+            assert!(script.failed.is_empty());
+            let sent = &script.completed[0];
+            assert_eq!(sent.idempotency_key, "lake-complete-task-1-3");
+            // inline, typed fields written again: the bytes the server's codec reads and stores
+            assert_eq!(sent.output_json, probe_result());
+            assert!(sent.output_blob_ref.is_empty());
+            let seen = format!(
+                "{:?}{:?}{:?}{:?}",
+                script.registered, script.resolved, script.completed, script.heartbeats
+            );
+            assert!(!seen.contains("canary"), "{seen}");
+        });
+    }
+
+    #[tokio::test]
+    async fn a_probe_lease_whose_host_cannot_run_it_is_failed_with_the_code_the_host_gave() {
+        let setup = setup().await;
+        let driver = setup.driver(answer(plain_failure_line(
+            "DATABASE_CREDENTIAL_UNAVAILABLE",
+        )));
+
+        setup
+            .run(probe_lease(Duration::from_secs(60)), driver)
+            .await
+            .expect("reported");
+
+        setup.fake.with(|script| {
+            assert!(script.completed.is_empty());
+            let sent = &script.failed[0];
+            assert_eq!(sent.error_code, "DATABASE_CREDENTIAL_UNAVAILABLE");
+            assert_eq!(sent.retryable, DatabaseFailure::Credential.retryable());
+            assert_eq!(sent.idempotency_key, "lake-fail-task-1-3");
+        });
+    }
+
+    #[tokio::test]
+    async fn a_probe_lease_answered_for_another_connection_is_failed_and_not_completed() {
+        let setup = setup().await;
+        let driver = setup.driver(answer(probe_line_with(|receipt| {
+            receipt["connection"]["revision"] = serde_json::json!(4);
+        })));
+
+        setup
+            .run(probe_lease(Duration::from_secs(60)), driver)
+            .await
+            .expect("reported");
+
+        setup.fake.with(|script| {
+            assert!(
+                script.completed.is_empty(),
+                "the server would refuse it: it is not this probe's"
+            );
+            assert_eq!(script.failed[0].error_code, "LAKE_HOST_PROTOCOL");
+        });
+    }
+
+    #[tokio::test]
+    async fn a_probe_lease_that_is_not_a_probe_input_is_failed_without_asking_for_the_connection() {
+        let setup = setup().await;
+        let driver = setup.driver(answer(probe_line()));
+        let mut malformed = probe_lease(Duration::from_secs(60));
+        malformed.input_json =
+            String::from_utf8(probe_input_json(|d| d["table"] = serde_json::json!("x"))).unwrap();
+
+        setup.run(malformed, driver).await.expect("reported");
+
+        setup.fake.with(|script| {
+            assert!(
+                script.resolved.is_empty(),
+                "asking for the connection discloses the secrets: not for a probe that cannot run"
+            );
+            assert_eq!(
+                script.failed[0].error_code,
+                "DATABASE_CONFIGURATION_INVALID"
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn a_probe_lease_is_served_only_as_a_root_forward_task_like_a_write() {
+        for edit in [
+            (|lease: &mut pb::TaskLease| lease.task_kind = "COMPENSATION".into())
+                as fn(&mut pb::TaskLease),
+            |lease| {
+                lease.instance = Some(pb::ExecutionInstanceIdentity {
+                    instance_path: vec![pb::ScopePathSegment::default()],
+                    ..Default::default()
+                });
+            },
+            |lease| lease.expires_at_epoch_ms = 0,
+        ] {
+            let setup = setup().await;
+            let mut other = probe_lease(Duration::from_secs(60));
+            edit(&mut other);
+            let driver = setup.driver(answer(probe_line()));
+            assert_eq!(setup.run(other, driver).await, Err(RunnerError::Capability));
+            setup.fake.with(|script| {
+                assert!(script.resolved.is_empty() && script.completed.is_empty());
+                assert!(script.failed.is_empty());
+            });
+        }
+    }
+
+    /// What `execute` decides for a lease, as the shell calls it: the report, and what is counted for the write.
+    async fn executed<S: LakeSandbox>(
+        setup: &Setup,
+        driver: &Driver<S, NoBlobs, NoDns, NoNetwork>,
+        lease: pb::TaskLease,
+        probe: bool,
+    ) -> (Outcome, Written) {
+        let input = lease.input_json.clone();
+        let admission = if probe {
+            driver.admit_probe(input.as_bytes())
+        } else {
+            driver.admit(input.as_bytes())
+        };
+        let task = Task {
+            lease,
+            namespace: NAMESPACE_ID.parse().unwrap(),
+            worker_id: uuid::Uuid::from_u128(7).to_string(),
+        };
+        let signals = super::super::doubles::signals();
+        execute(&setup.rpc, &task, driver, admission, &signals).await
+    }
+
+    #[tokio::test]
+    async fn a_probe_counts_no_write_whether_it_works_or_not_and_a_write_still_does() {
+        let setup = setup().await;
+        for script in [
+            answer(probe_line()),
+            answer(plain_failure_line("DATABASE_CREDENTIAL_UNAVAILABLE")),
+        ] {
+            let driver = setup.driver(script);
+            let (_, written) =
+                executed(&setup, &driver, probe_lease(Duration::from_secs(60)), true).await;
+            assert!(written.is_none(), "a probe changes no table");
+        }
+        // and the same path counts a write that committed
+        let driver = setup.driver(answer(receipt_line()));
+        let (_, written) = executed(&setup, &driver, lease(Duration::from_secs(60)), false).await;
+        assert!(written.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_probe_whose_connection_was_resolved_at_another_revision_is_failed_and_starts_nothing()
+     {
+        // the control plane answers for revision 4 a probe that was leased for revision 3: what would be tried is not what
+        // was leased, and the report would say that revision 3 works
+        let setup = setup().await;
+        setup
+            .fake
+            .with(|script| script.database.as_mut().unwrap().connection_revision = 4);
+        // the sandbox is shared, so that what it was asked can be read after the lease
+        let sandbox = Arc::new(Scripted::new(setup.world.work.path(), answer(probe_line())));
+        let driver = Driver::new(
+            SharedSandbox(Arc::clone(&sandbox)),
+            NoBlobs,
+            NoDns,
+            NoNetwork,
+            settings(setup.world.work.path()),
+            false,
+        )
+        .for_tests(|_| Some(my_uid()));
+
+        let (outcome, written) =
+            executed(&setup, &driver, probe_lease(Duration::from_secs(60)), true).await;
+
+        let Outcome::Report(Report::Fail { code, .. }) = outcome else {
+            panic!("not a failure");
+        };
+        assert_eq!(code, DatabaseFailure::Capability.code());
+        assert!(written.is_none());
+        assert!(sandbox.asked().is_empty(), "no container was started");
+        assert_eq!(driver.slots().in_use(), 0, "and the slot is back");
+    }
+
+    #[test]
+    fn a_probe_completion_that_the_control_plane_refuses_is_counted_apart_from_the_writes() {
+        // the downgrade of a refused completion is counted as a failed write for a write; a probe has no write to count it
+        // as, and a runner whose results the server refuses must not look like one whose probes are all fine
+        let counted =
+            |probe, sent| seen(crate::testing::counted(|| record_probe_report(probe, sent)));
+
+        assert_eq!(
+            counted(true, Sent::Downgraded),
+            [(
+                "database_runner_lake_probe_reports_total{outcome=refused}".to_owned(),
+                1
+            )]
+        );
+        assert!(counted(true, Sent::AsIs).is_empty());
+        assert!(counted(true, Sent::Nothing).is_empty());
+        assert!(
+            counted(false, Sent::Downgraded).is_empty(),
+            "a write is counted as a write"
+        );
+    }
+
+    /// What the host's line says, read by the decoder the conversation uses.
+    fn probe_report() -> sagat_infra_lake::protocol::ProbeReport {
+        use sagat_infra_lake::protocol::{Decoder, Event, Outcome};
+        let line = probe_line();
+        let event = Decoder::new()
+            .line(&line[..line.len() - 1], Duration::ZERO)
+            .unwrap();
+        match event {
+            Event::Result(result) => match result.outcome {
+                Outcome::Probe(report) => report,
+                other => panic!("not a probe report: {other:?}"),
+            },
+            Event::Heartbeat => panic!("a heartbeat"),
+        }
+    }
+
+    fn probed(report: Finish, exit: Option<LakeSandboxExit>) -> Finished {
+        Finished {
+            probe: true,
+            ..finished(report, exit)
+        }
+    }
+
+    #[test]
+    fn a_probe_is_counted_for_its_container_and_never_as_a_write() {
+        // whatever the probe did, and whether it failed: a write is what changes a table, and a probe changes none
+        let reports = [
+            Finish::Probe(Box::new(probe_report())),
+            failure(DatabaseFailure::Credential),
+            failure(DatabaseFailure::Timeout),
+            failure(DatabaseFailure::LakeHostProtocol),
+        ];
+        for report in reports {
+            let counted = seen(crate::testing::counted(|| {
+                settle(
+                    &probed(report.clone(), Some(LakeSandboxExit::Completed)),
+                    Sent::AsIs,
+                );
+            }));
+            assert_eq!(
+                counted,
+                [("lake_sandbox_exits_total{reason=completed}".to_owned(), 1)],
+                "{report:?}"
+            );
+        }
     }
 
     #[test]

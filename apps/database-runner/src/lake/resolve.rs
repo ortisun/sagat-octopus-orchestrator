@@ -23,6 +23,38 @@ pub(crate) fn decode(
     decode_in_place(&mut response, namespace)
 }
 
+/// As [`decode`], for the answer to the `ResolveDatabase` of a probe, which must be for **the connection and the revision the
+/// probe was leased for**. The result of a probe says whose it is from the lease, so an answer for another connection or revision
+/// would have the runner try one and report another: it is refused, and its secrets are gone like any refused answer's.
+///
+/// # Errors
+/// As [`decode`], and `DATABASE_CAPABILITY_UNAVAILABLE` for an answer that is not for `name` and `revision`.
+pub(crate) fn decode_for_probe(
+    mut response: pb::ResolvedDatabase,
+    namespace: NamespaceId,
+    name: &str,
+    revision: u32,
+) -> Result<Converted, DatabaseFailure> {
+    decode_probe_in_place(&mut response, namespace, name, revision)
+}
+
+/// As [`decode_for_probe`], on an answer the caller keeps (to look at what is left of it).
+pub(crate) fn decode_probe_in_place(
+    response: &mut pb::ResolvedDatabase,
+    namespace: NamespaceId,
+    name: &str,
+    revision: u32,
+) -> Result<Converted, DatabaseFailure> {
+    let leased = response.connection_name == name && response.connection_revision == revision;
+    let converted = if leased {
+        read(response, namespace)
+    } else {
+        Err(DatabaseFailure::Capability)
+    };
+    scrub(response);
+    converted
+}
+
 /// As [`decode`], on an answer the caller keeps (to look at what is left of it).
 pub(crate) fn decode_in_place(
     response: &mut pb::ResolvedDatabase,
@@ -145,6 +177,55 @@ mod tests {
         );
         assert!(!holds_a_secret(&response), "the message holds none");
         assert!(decode(answer(), namespace()).is_ok());
+    }
+
+    #[test]
+    fn the_answer_for_a_probe_is_read_when_it_is_the_connection_and_the_revision_that_were_leased()
+    {
+        let mut response = answer();
+        let converted = decode_probe_in_place(&mut response, namespace(), "lake-main", 3)
+            .expect("the connection of the lease");
+
+        assert_eq!(converted.warehouse_locations, ["s3://lake/warehouse/"]);
+        assert!(!holds_a_secret(&response), "the message holds none");
+        assert!(decode_for_probe(answer(), namespace(), "lake-main", 3).is_ok());
+    }
+
+    #[test]
+    fn an_answer_for_another_connection_or_revision_than_the_probe_leased_is_refused_and_its_secrets_are_gone()
+     {
+        // the result of a probe says whose it is from the lease: what was probed has to be that, or the report would say a
+        // connection works that was never tried
+        for (name, revision) in [
+            ("other-lake", 3),
+            ("lake-main", 4),
+            ("lake-main", 2),
+            ("", 3),
+        ] {
+            let mut response = answer();
+
+            let result = decode_probe_in_place(&mut response, namespace(), name, revision);
+
+            match result {
+                Err(failure) => {
+                    assert_eq!(failure, DatabaseFailure::Capability, "{name} {revision}")
+                }
+                Ok(_) => panic!("{name} {revision}: the answer was read"),
+            }
+            assert!(
+                !holds_a_secret(&response),
+                "{name} {revision}: the secrets of a refused answer are gone too"
+            );
+        }
+    }
+
+    #[test]
+    fn the_answer_for_a_write_does_not_name_a_connection_to_hold_it_to() {
+        // a write's lease carries no connection name: the same answer is read whatever name and revision it says
+        let mut other = answer();
+        other.connection_name = "another-name".into();
+        other.connection_revision = 9;
+        assert!(decode(other, namespace()).is_ok());
     }
 
     #[test]

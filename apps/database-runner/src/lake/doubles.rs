@@ -213,6 +213,23 @@ pub(crate) fn receipt_line_with(edit: impl FnOnce(&mut Value)) -> Vec<u8> {
     line
 }
 
+/// The result a host sends for a probe whose three checks passed (`fixtures/probe-results/accepted/all-passed.json`), after
+/// `edit`, as the line.
+pub(crate) fn probe_line_with(edit: impl FnOnce(&mut Value)) -> Vec<u8> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../tests/contract/iceberg-writes/fixtures/probe-results/accepted/all-passed.json",
+    );
+    let mut receipt: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    edit(&mut receipt);
+    let mut line = serde_json::to_vec(&json!({"receipt": receipt, "relayDenials": 0})).unwrap();
+    line.push(b'\n');
+    line
+}
+
+pub(crate) fn probe_line() -> Vec<u8> {
+    probe_line_with(|_| {})
+}
+
 pub(crate) fn failure_line(code: &str, column: &str) -> Vec<u8> {
     let mut line = serde_json::to_vec(
         &json!({"failure": {"code": code, "column": column}, "relayDenials": 0}),

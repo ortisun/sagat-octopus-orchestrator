@@ -95,8 +95,8 @@ pub const STREAM_PROTOCOL_MINOR: u32 = 4;
 /// D035-135): the SQL profile is `sagat.database.postgresql`, the lake profile is `sagat.database.iceberg.write`. The two
 /// are never mixed and an ordinary activity is never offered beside them; the patterns of the runner's binding decide
 /// which of the two it may register, as they decide every other registration. An activity the server does not serve yet
-/// (the revert, the destinations, the probe and the browse) is refused here, so that a runner is not left waiting for
-/// work that cannot come.
+/// (the revert, the destinations and the browse) is refused here, so that a runner is not left waiting for work that cannot
+/// come; the probe of an Iceberg connection is served, and a lake runner offers it beside its write (D035-150).
 #[must_use]
 pub fn managed_capabilities_allowed(role: Role, activities: &[String], minor: u32) -> bool {
     use sagat_domain::database::MANAGED_DATABASE_PREFIX;

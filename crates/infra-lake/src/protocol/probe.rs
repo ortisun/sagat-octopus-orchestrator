@@ -141,11 +141,25 @@ impl ProbeBody {
         }
     }
 
+    /// Asks the host for less time per check than the lease names. The attempt may have less time than three of the lease's
+    /// checks (a connection that allows less, or a connection that took long to resolve), and a host that is given a time
+    /// that does not fit answers with the attempt's end and not with a typed timeout of the check. Nothing raises the time.
+    #[must_use]
+    pub const fn with_check_timeout_ms(mut self, milliseconds: u32) -> Self {
+        self.check_timeout_ms = milliseconds;
+        self
+    }
+
     /// The members of the request that are not the envelope.
     ///
     /// # Errors
-    /// [`BodyError::Connection`] for a location or a secret the host would refuse.
+    /// [`BodyError::Connection`] for a location or a secret the host would refuse, and [`BodyError::Limits`] for a time of a
+    /// check outside what the host reads (100 to 60 000 milliseconds).
     pub fn into_body(self) -> Result<Body, BodyError> {
+        let (low, high) = CHECK_TIMEOUT_MS;
+        if !(low..=high).contains(&u64::from(self.check_timeout_ms)) {
+            return Err(BodyError::Limits);
+        }
         let connection = self.connection.to_value()?;
         let probe = json!({
             "connection": {"name": self.name, "revision": self.revision},

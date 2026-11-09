@@ -539,6 +539,71 @@ fn the_deadline_and_a_cancellation_are_what_they_are_whether_or_not_the_request_
     }
 }
 
+/// What a host that probes may report as a failure of the attempt: what the probe host raises (`probe.py`, `request.py`,
+/// `connection.py`) and nothing else. A failed check is a result and never one of these.
+const A_PROBE_MAY_FAIL_WITH: [DatabaseFailure; 4] = [
+    DatabaseFailure::Credential,
+    DatabaseFailure::IcebergLocationNotAllowed,
+    DatabaseFailure::LakeHostProtocol,
+    DatabaseFailure::WorkerError,
+];
+
+#[test]
+fn a_probe_is_failed_only_with_a_code_a_probe_can_raise_and_any_other_is_a_protocol_failure() {
+    // the host holds the secrets and reads a hostile catalog's answers: a code of a write (a commit conflict, an unknown
+    // outcome, a schema mismatch) is not one a probe has, and is not repeated as if it were
+    let mut passed_through = Vec::new();
+    for code in DatabaseFailure::ALL {
+        let line = format!(
+            r#"{{"failure":{{"code":"{}"}},"relayDenials":0}}"#,
+            code.code()
+        );
+        // the runner reads only the codes a host may report; the others never reach the table
+        let Ok(Event::Result(result)) = Decoder::new().line(line.as_bytes(), Duration::ZERO) else {
+            continue;
+        };
+        let disposition = dispose_probe(Ended::Conversation(Ok(result)), SENT);
+        let reported = failed_with(disposition);
+        if A_PROBE_MAY_FAIL_WITH.contains(code) {
+            assert_eq!(reported, *code, "{code:?}");
+            passed_through.push(*code);
+        } else {
+            assert_eq!(reported, DatabaseFailure::LakeHostProtocol, "{code:?}");
+        }
+    }
+    assert_eq!(passed_through.len(), A_PROBE_MAY_FAIL_WITH.len());
+}
+
+#[test]
+fn the_host_may_be_given_less_time_for_a_check_than_the_lease_names() {
+    // the attempt may have less time than three checks of the lease (a connection that allows less, or a resolve that was
+    // slow): the host is told the time that fits, so that its answer is a typed timeout and not an attempt that ends first
+    let body = ProbeBody::new(connection(), &input())
+        .with_check_timeout_ms(2500)
+        .into_body()
+        .unwrap();
+    let line = encode_request(&Request::probe(relay(), body)).unwrap();
+    let sent: Value = serde_json::from_slice(&line[..line.len() - 1]).unwrap();
+
+    assert_eq!(sent["probe"]["checkTimeoutMs"], 2500);
+    assert_eq!(
+        sent["probe"]["connection"],
+        json!({"name": "lake-main", "revision": 3})
+    );
+}
+
+#[test]
+fn a_time_for_a_check_that_the_host_would_refuse_is_refused_here() {
+    for milliseconds in [0, 99, 60_001, u32::MAX] {
+        let body = ProbeBody::new(connection(), &input()).with_check_timeout_ms(milliseconds);
+        assert!(body.into_body().is_err(), "{milliseconds}");
+    }
+    for milliseconds in [100, 60_000] {
+        let body = ProbeBody::new(connection(), &input()).with_check_timeout_ms(milliseconds);
+        assert!(body.into_body().is_ok(), "{milliseconds}");
+    }
+}
+
 #[test]
 fn a_lost_lease_reports_nothing() {
     assert!(matches!(

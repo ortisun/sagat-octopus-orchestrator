@@ -178,6 +178,17 @@ pub fn dispose(ended: Ended, facts: AttemptFacts) -> Disposition {
     }
 }
 
+/// What a host that probes may report as a failure of the attempt: what the probe host raises (a secret that is missing, a
+/// warehouse outside the declared locations, a request that is not a probe, anything nobody expected). A failed check is a
+/// *result*, and never one of these. The host holds the secrets and reads what a hostile catalog sends, so a code of a write
+/// (a commit conflict, an unknown outcome, a schema mismatch) is not repeated for a probe as if the host could have meant it.
+const PROBE_HOST_MAY_FAIL_WITH: [DatabaseFailure; 4] = [
+    DatabaseFailure::Credential,
+    DatabaseFailure::IcebergLocationNotAllowed,
+    DatabaseFailure::LakeHostProtocol,
+    DatabaseFailure::WorkerError,
+];
+
 /// What the runner does about a probe that ended (D035-150): the same facts, a different table, because a probe is not a
 /// write.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,7 +206,8 @@ pub enum ProbeDisposition {
 /// | The probe ended with | Reported |
 /// |---|---|
 /// | the host's result | `CompleteStep` with it (a connection that does not work is the answer, not a failure) |
-/// | the host's failure | `FailStep` with its code |
+/// | the host's failure, with a code a probe can raise | `FailStep` with its code |
+/// | the host's failure, with any other code | `LAKE_HOST_PROTOCOL` |
 /// | a write's receipt | `LAKE_HOST_PROTOCOL` |
 /// | no result or silence, and the memory limit killed the container | `WORKER_ERROR` |
 /// | any other break, a host that never connected | `LAKE_HOST_PROTOCOL` |
@@ -213,6 +225,10 @@ pub fn dispose_probe(ended: Ended, facts: AttemptFacts) -> ProbeDisposition {
     match ended {
         Ended::Conversation(Ok(result)) => match result.outcome {
             Outcome::Probe(report) => ProbeDisposition::Complete(Box::new(report)),
+            // a code a probe cannot raise is a host that does not keep the protocol, and its column and reason go with it
+            Outcome::Failure(failure) if !PROBE_HOST_MAY_FAIL_WITH.contains(&failure.code) => {
+                fail(DatabaseFailure::LakeHostProtocol)
+            }
             Outcome::Failure(failure) => ProbeDisposition::Fail(reported(failure)),
             // a probe that is answered with what a write says: the host does not speak this protocol
             Outcome::Receipt(_) => fail(DatabaseFailure::LakeHostProtocol),
