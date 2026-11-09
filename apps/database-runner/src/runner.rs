@@ -303,19 +303,28 @@ impl Runner {
             Ok(session) => {
                 metrics::counter!("database_runner_lake_probe_offer_total","outcome"=>"offered")
                     .increment(1);
+                // a gauge too: a counter that went up once, at registration, cannot say for days that a runner still serves
+                // the writes alone, and it is a state that stays until the runner registers again
+                metrics::gauge!("database_runner_lake_probe_offered").set(1.0);
                 Ok(session)
             }
             Err(Refused {
                 status: Some(tonic::Code::PermissionDenied),
                 ..
             }) => {
+                // seen whether or not the fallback works: a binding that covers neither is refused twice, and the second refusal
+                // says only that a registration was refused
+                metrics::counter!("database_runner_lake_probe_offer_total","outcome"=>"not_bound")
+                    .increment(1);
                 let session = self
                     .register_activities(index, &[ICEBERG_WRITE_ACTIVITY], max_inflight)
                     .await
                     .map_err(|refused| refused.error)?;
-                // the runner serves the writes and not the probes: that is worth seeing, because it is silent otherwise
+                // the runner serves the writes and not the probes: that is worth seeing, because it is silent otherwise, and
+                // it stays so until the runner registers again (a widened binding does not close a session that is in force)
                 metrics::counter!("database_runner_lake_probe_offer_total","outcome"=>"write_only")
                     .increment(1);
+                metrics::gauge!("database_runner_lake_probe_offered").set(0.0);
                 Ok(session)
             }
             Err(refused) => Err(refused.error),
@@ -634,8 +643,11 @@ mod tests {
         });
     }
 
-    /// A lake runner whose service refuses the first registrations with `statuses`, until it has polled.
-    async fn lake_registrations_refused_with(statuses: Vec<tonic::Status>) -> Vec<Vec<String>> {
+    /// A lake runner whose service refuses the first registrations with `statuses`, until it has polled: what it offered each
+    /// time, and the worker the first poll was made as (each registration the service accepts is the next worker, from 7).
+    async fn lake_registrations_refused_with(
+        statuses: Vec<tonic::Status>,
+    ) -> (Vec<Vec<String>>, String) {
         let fake = Fake::default();
         fake.with(|script| script.register_errors = statuses.into());
         let server = serve_fake(fake.clone()).await;
@@ -654,7 +666,7 @@ mod tests {
         stop.cancel();
         ended(serving).await;
         fake.with(|script| {
-            script
+            let offered = script
                 .registered
                 .iter()
                 .map(|registration| {
@@ -665,8 +677,13 @@ mod tests {
                         .activities
                         .clone()
                 })
-                .collect()
+                .collect();
+            (offered, script.polled[0].worker_id.clone())
         })
+    }
+
+    fn worker(number: u128) -> String {
+        uuid::Uuid::from_u128(number).to_string()
     }
 
     #[tokio::test]
@@ -674,7 +691,7 @@ mod tests {
         // the server refuses an activity the worker is not bound to with `PERMISSION_DENIED` (`NOT_BOUND`): the binding of the
         // runner may be older than the runner (the rollout order is the server, the binding, then the runners), and the
         // writes must not stop for it
-        let offered =
+        let (offered, polled_as) =
             lake_registrations_refused_with(vec![tonic::Status::permission_denied("NOT_BOUND")])
                 .await;
 
@@ -685,12 +702,14 @@ mod tests {
                 vec![ICEBERG_WRITE_ACTIVITY],
             ]
         );
+        // the session that polls is the one of the registration that was accepted: the second, and not the refused first
+        assert_eq!(polled_as, worker(8));
     }
 
     #[tokio::test]
     async fn a_service_that_cannot_answer_is_not_a_reason_to_stop_offering_the_probe() {
         // an outage is not a binding: the same offer is made again, and the runner does not fall back to the writes alone
-        let offered =
+        let (offered, polled_as) =
             lake_registrations_refused_with(vec![tonic::Status::unavailable("down")]).await;
 
         assert_eq!(
@@ -700,13 +719,14 @@ mod tests {
                 vec![ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY],
             ]
         );
+        assert_eq!(polled_as, worker(8));
     }
 
     #[tokio::test]
     async fn a_binding_that_covers_neither_activity_is_refused_for_both_and_is_not_a_session() {
         // the fallback is one more try with the writes alone, and a refusal of that too is a refusal, not a session: the runner
         // goes on as it always did after one (it tries again, with the offer it has), and does not stay on the writes alone
-        let offered = lake_registrations_refused_with(vec![
+        let (offered, polled_as) = lake_registrations_refused_with(vec![
             tonic::Status::permission_denied("NOT_BOUND"),
             tonic::Status::permission_denied("NOT_BOUND"),
         ])
@@ -720,6 +740,97 @@ mod tests {
                 vec![ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY],
             ]
         );
+        assert_eq!(polled_as, worker(9));
+    }
+
+    /// What the metrics saw while a lake runner registered and polled, its service refusing the first registrations with
+    /// `statuses`. The registration is async and the reader of the metrics is a thread-local one: the runtime is a current-thread
+    /// runtime run inside it, so that every task of the runner is polled on the thread the reader is on.
+    fn metrics_of_lake_registrations_refused_with(
+        statuses: Vec<tonic::Status>,
+    ) -> crate::testing::Recorded {
+        crate::testing::recorded(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(lake_registrations_refused_with(statuses));
+        })
+    }
+
+    /// How many times the offer of the probe ended as `outcome` (`offered`, `not_bound` or `write_only`).
+    fn offers(recorded: &crate::testing::Recorded, outcome: &str) -> u64 {
+        recorded
+            .counters
+            .iter()
+            .filter(|(name, labels, _)| {
+                name == "database_runner_lake_probe_offer_total"
+                    && labels.contains(&("outcome".to_owned(), outcome.to_owned()))
+            })
+            .map(|(_, _, amount)| amount)
+            .sum()
+    }
+
+    /// Every value the gauge of the probe was set to, in order.
+    fn offered_gauge(recorded: &crate::testing::Recorded) -> Vec<f64> {
+        recorded
+            .gauges
+            .iter()
+            .filter(|(name, _)| name == "database_runner_lake_probe_offered")
+            .map(|(_, value)| *value)
+            .collect()
+    }
+
+    #[test]
+    fn a_runner_that_is_offering_the_probe_says_so_in_a_counter_and_a_gauge() {
+        let recorded = metrics_of_lake_registrations_refused_with(vec![]);
+
+        assert_eq!(offers(&recorded, "offered"), 1);
+        assert_eq!(offers(&recorded, "not_bound"), 0);
+        assert_eq!(offers(&recorded, "write_only"), 0);
+        assert_eq!(offered_gauge(&recorded), [1.0]);
+    }
+
+    #[test]
+    fn a_runner_left_with_the_writes_alone_says_so_in_the_counters_and_the_gauge_stays_down() {
+        // the gauge is what an alert reads for days after the one registration that counted: it is down while the runner serves
+        // the writes alone, and it is not set up by the offer that was refused
+        let recorded =
+            metrics_of_lake_registrations_refused_with(vec![tonic::Status::permission_denied(
+                "NOT_BOUND",
+            )]);
+
+        assert_eq!(offers(&recorded, "not_bound"), 1);
+        assert_eq!(offers(&recorded, "write_only"), 1);
+        assert_eq!(offers(&recorded, "offered"), 0);
+        assert_eq!(offered_gauge(&recorded), [0.0]);
+    }
+
+    #[test]
+    fn a_refusal_that_is_not_a_binding_is_not_counted_as_one_and_the_gauge_is_not_set_down() {
+        let recorded =
+            metrics_of_lake_registrations_refused_with(vec![tonic::Status::unavailable("down")]);
+
+        assert_eq!(offers(&recorded, "not_bound"), 0);
+        assert_eq!(offers(&recorded, "write_only"), 0);
+        assert_eq!(offers(&recorded, "offered"), 1);
+        assert_eq!(offered_gauge(&recorded), [1.0]);
+    }
+
+    #[test]
+    fn a_binding_that_covers_neither_activity_counts_the_refusal_and_is_not_a_runner_that_serves_the_writes()
+     {
+        // the writes alone were refused too: nothing was left standing, so it is not `write_only`, and the gauge is not set down
+        // for a session that does not exist; the offer that the runner makes again is the one that is accepted
+        let recorded = metrics_of_lake_registrations_refused_with(vec![
+            tonic::Status::permission_denied("NOT_BOUND"),
+            tonic::Status::permission_denied("NOT_BOUND"),
+        ]);
+
+        assert_eq!(offers(&recorded, "not_bound"), 1);
+        assert_eq!(offers(&recorded, "write_only"), 0);
+        assert_eq!(offers(&recorded, "offered"), 1);
+        assert_eq!(offered_gauge(&recorded), [1.0]);
     }
 
     #[tokio::test]

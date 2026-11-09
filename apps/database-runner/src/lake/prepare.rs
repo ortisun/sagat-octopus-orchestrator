@@ -205,12 +205,15 @@ pub struct Attempt<'a> {
 const PROBE_CHECKS: u32 = 3;
 /// What a probe may take besides its checks: the container to start, the host to connect, and the relay's first connections.
 const PROBE_MARGIN_MS: u32 = 3_000;
-/// The most a probe may take, whatever its checks are given: the `timeoutMs` of the fixed probe document (25 s), inside the 30 s
-/// the step has.
-const PROBE_CEILING_MS: u32 = 25_000;
+/// The most a probe may take, whatever its checks are given. The step has 25 s (the `timeoutMs` of the fixed probe document)
+/// **from the moment it is leased**, and the attempt is counted from the moment the runner admits it, a moment later: the
+/// ceiling leaves the report the room to arrive before the step's own time has run out.
+const PROBE_CEILING_MS: u32 = 22_000;
+/// The least a check can be given: what the host reads.
+const PROBE_MIN_CHECK_MS: u32 = 100;
 
 /// The time an attempt that probes a connection may take, in milliseconds: its three checks and a margin, never more than the
-/// step is allowed. The lease names the time of **one check** and the runner never sees the step's own limit, so this is where the
+/// ceiling. The lease names the time of **one check** and the runner never sees the step's own limit, so this is where the
 /// two meet. A connection may lower it further ([`effective`]); nothing raises it.
 #[must_use]
 pub const fn probe_timeout_ms(check_timeout_ms: u32) -> u32 {
@@ -224,20 +227,35 @@ pub const fn probe_timeout_ms(check_timeout_ms: u32) -> u32 {
     }
 }
 
-/// [`probe_timeout_ms`] as a duration.
+/// The time the host is given for **one check**, in milliseconds, when the attempt has `attempt` left: the third of what is
+/// left after the margin, never more than the lease names and never less than the host reads. The host runs its three checks
+/// one after the other, each with the time it is given, so a time that does not fit three times in the attempt would end the
+/// attempt before the host could say which check ran out; this one makes the answer a typed timeout of a check. It is smaller
+/// than the lease's when the connection allows less, when the ceiling is under three checks, or when the connection took
+/// long to resolve.
 #[must_use]
-pub const fn probe_timeout(check_timeout_ms: u32) -> Duration {
-    Duration::from_millis(probe_timeout_ms(check_timeout_ms) as u64)
+pub fn host_check_timeout_ms(lease_check_timeout_ms: u32, attempt: Duration) -> u32 {
+    let fit = attempt
+        .as_millis()
+        .saturating_sub(u128::from(PROBE_MARGIN_MS))
+        / u128::from(PROBE_CHECKS);
+    u32::try_from(fit)
+        .unwrap_or(u32::MAX)
+        .min(lease_check_timeout_ms)
+        .max(PROBE_MIN_CHECK_MS)
 }
 
 /// Prepares one attempt that probes a connection (D035-150): the directory the host finds its token in, the relay for the
 /// user of the slot, and the request line of a probe. A probe stages nothing, has no mode to check (the connection's modes are
 /// the writes') and no effect key, so there is nothing here that waits: the function does not await.
 ///
+/// `check_timeout_ms` is the time the host is given for each check ([`host_check_timeout_ms`]).
+///
 /// # Errors
 /// [`PrepareError`], with nothing left on disk.
 pub fn prepare_probe(
     input: &ProbeInput,
+    check_timeout_ms: u32,
     connection: Converted,
     settings: &Settings,
     attempt: Attempt<'_>,
@@ -268,6 +286,7 @@ pub fn prepare_probe(
         .map_err(staging)?;
 
     let body = ProbeBody::new(connection, input)
+        .with_check_timeout_ms(check_timeout_ms)
         .into_body()
         .map_err(|_| PrepareError::Request)?;
     // the host reaches the relay where the container sees the attempt's directory
@@ -958,6 +977,7 @@ mod tests {
         configure(&mut settings);
         prepare_probe(
             &ProbeInput::read(&super::super::fixtures::probe_input_json(|_| {})).unwrap(),
+            7000,
             converted(),
             &settings,
             Attempt {
@@ -1014,8 +1034,15 @@ mod tests {
     fn a_probe_is_prepared_with_the_request_the_host_reads_and_nothing_staged() {
         let work = tempfile::tempdir().unwrap();
 
-        let prepared =
-            prepare_probe(&probe(), converted(), &settings(work.path()), attempt(3)).unwrap();
+        // the host is told the time that fits the attempt, which is not always the time the lease names
+        let prepared = prepare_probe(
+            &probe(),
+            2500,
+            converted(),
+            &settings(work.path()),
+            attempt(3),
+        )
+        .unwrap();
 
         let request = line(&prepared);
         assert_eq!(request["protocol"], "sagat.lake.v1");
@@ -1035,7 +1062,7 @@ mod tests {
             json!({
                 "connection": {"name": "lake-main", "revision": 3},
                 "checks": ["CATALOG_AUTH", "WAREHOUSE", "STORAGE_ACCESS"],
-                "checkTimeoutMs": 7000
+                "checkTimeoutMs": 2500
             })
         );
         assert_eq!(
@@ -1063,7 +1090,13 @@ mod tests {
         let mut connection = converted();
         connection.allowed_modes.clear();
 
-        let prepared = prepare_probe(&probe(), connection, &settings(work.path()), attempt(0));
+        let prepared = prepare_probe(
+            &probe(),
+            7000,
+            connection,
+            &settings(work.path()),
+            attempt(0),
+        );
 
         assert!(prepared.is_ok(), "{prepared:?}");
     }
@@ -1075,8 +1108,14 @@ mod tests {
         connection.storage =
             json!({"type": "gcs", "gcs": {"project": "p"}, "credentials": "static"});
 
-        let error =
-            prepare_probe(&probe(), connection, &settings(work.path()), attempt(0)).unwrap_err();
+        let error = prepare_probe(
+            &probe(),
+            7000,
+            connection,
+            &settings(work.path()),
+            attempt(0),
+        )
+        .unwrap_err();
 
         assert_eq!(error, PrepareError::Connection);
         assert_eq!(error.code(), DatabaseFailure::Configuration);
@@ -1088,21 +1127,46 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
         std::fs::create_dir(work.path().join(ATTEMPT)).unwrap();
 
-        let error =
-            prepare_probe(&probe(), converted(), &settings(work.path()), attempt(0)).unwrap_err();
+        let error = prepare_probe(
+            &probe(),
+            7000,
+            converted(),
+            &settings(work.path()),
+            attempt(0),
+        )
+        .unwrap_err();
 
         assert_eq!(error, PrepareError::Source);
         assert_eq!(entries(work.path()), [ATTEMPT]);
     }
 
     #[test]
-    fn the_time_a_probe_may_take_is_three_checks_and_a_margin_up_to_the_step() {
-        let seconds = |milliseconds| probe_timeout(milliseconds).as_secs_f64();
-        // the lease gives 7 s to a check: three of them and the margin for the container and the relay fit the 25 s of the step
-        assert!((seconds(7000) - 24.0).abs() < f64::EPSILON);
-        assert!((seconds(100) - 3.3).abs() < 1e-9);
-        // never more than the step is allowed (`timeoutMs` of the fixed probe document)
-        assert!((seconds(60_000) - 25.0).abs() < f64::EPSILON);
-        assert!((seconds(8000) - 25.0).abs() < f64::EPSILON);
+    fn the_time_a_probe_may_take_is_three_checks_and_a_margin_up_to_a_ceiling_inside_the_step() {
+        // the lease gives 7 s to a check: three of them and the margin do not fit under the ceiling, which is what the
+        // step may take less the time it takes to be told (the step has its time from the moment it is leased)
+        assert_eq!(probe_timeout_ms(7000), 22_000);
+        assert_eq!(probe_timeout_ms(100), 3_300);
+        assert_eq!(probe_timeout_ms(6000), 21_000);
+        assert_eq!(probe_timeout_ms(60_000), 22_000);
+        assert_eq!(probe_timeout_ms(u32::MAX), 22_000);
+    }
+
+    #[test]
+    fn the_host_is_given_the_time_for_a_check_that_fits_the_time_the_attempt_has() {
+        let ms =
+            |lease, attempt_ms| host_check_timeout_ms(lease, Duration::from_millis(attempt_ms));
+        // the attempt has 22 s: the margin goes first and the rest is shared by the three checks
+        assert_eq!(ms(7000, 22_000), 6_333);
+        // never more than the lease names
+        assert_eq!(ms(2000, 22_000), 2_000);
+        assert_eq!(ms(7000, 60_000), 7_000);
+        // a connection that allows five seconds: what is left after the margin, in three
+        assert_eq!(ms(7000, 5_000), 666);
+        // never less than the host reads: with no time left the host still answers, with a timeout of its own
+        assert_eq!(ms(7000, 3_000), 100);
+        assert_eq!(ms(7000, 0), 100);
+        assert_eq!(ms(7000, 100), 100);
+        // and the lease's own minimum is kept when the lease asks for it
+        assert_eq!(ms(100, 22_000), 100);
     }
 }

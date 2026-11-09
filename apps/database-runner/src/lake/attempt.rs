@@ -3,16 +3,18 @@
 //! The driver ([`Driver`]) knows how to run an attempt once it has its input, a slot and a connection. This is the part that talks
 //! to the control plane around it:
 //!
-//! - *the lease is checked* before anything is asked for: a root forward task of the lake activity, with an expiry;
+//! - *the lease is checked* before anything is asked for: a root forward task of either lake activity (the write, or the probe of
+//!   a connection, D035-150), with an expiry;
 //! - *the heartbeats* renew it, and what their end means is decided here: a cancel the control plane asked for is `cancelled`
 //!   (a write that was started is then `OUTCOME_UNKNOWN`), a lease that is lost is `lease_lost` (there is no one to report to);
 //! - *the attempt is admitted* (an input it can read, a free slot) **before the connection is asked for**, because asking for it
 //!   discloses and audits the secrets;
 //! - *the connection is resolved* under the same signals, and read by [`decode`](super::resolve::decode), which zeroises what it
-//!   was given on every path;
-//! - *the report* is the driver's, sent with the flag the contract gives its code: `CompleteStep` with the receipt, `FailStep`
-//!   with a closed code, or nothing at all when the lease is gone. A completion the control plane refuses as not the step's
-//!   becomes `LAKE_HOST_PROTOCOL`: the host did not keep the protocol.
+//!   was given on every path; for a probe, by [`decode_for_probe`], which also holds the answer to the connection and the
+//!   revision the lease names;
+//! - *the report* is the driver's, sent with the flag the contract gives its code: `CompleteStep` with the receipt (or, for a
+//!   probe, with its result inline), `FailStep` with a closed code, or nothing at all when the lease is gone. A completion the
+//!   control plane refuses as not the step's becomes `LAKE_HOST_PROTOCOL`: the host did not keep the protocol.
 use std::future::Future;
 use std::sync::Arc;
 
@@ -32,7 +34,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::driver::{Admitted, Driver, Finished, Report as Finish};
 use super::prepare::Blobs;
-use super::resolve::decode;
+use super::resolve::{decode, decode_for_probe};
 use crate::{
     RunnerError, capability,
     lease::{Heartbeat, LeaseEnd, Policy, Report, Unreported, report_until_ack},
@@ -178,8 +180,19 @@ where
         }
     };
     record_written(written, sent);
+    record_probe_report(is_probe(lease), sent);
     heartbeat.finish().await;
     result
+}
+
+/// A completion of a probe that the control plane refused as not the step's is failed as a protocol failure, which a write counts
+/// as a failed write ([`record_written`]); a probe has no write to count it as, so it is counted on its own, and a runner whose
+/// results are refused does not look like one whose probes all work.
+fn record_probe_report(probe: bool, sent: Sent) {
+    if probe && sent == Sent::Downgraded {
+        metrics::counter!("database_runner_lake_probe_reports_total", "outcome" => "refused")
+            .increment(1);
+    }
 }
 
 /// What an attempt that reached a container says to the metrics about its write, once the report is settled.
@@ -216,11 +229,13 @@ where
         Ok(admitted) => admitted,
         Err(finished) => return (outcome_of(finished), None),
     };
+    // what a probe was leased for: the connection that is resolved for it has to be that one
+    let leased = admitted.leased_probe();
     let connection = tokio::select! {
         biased;
         () = signals.lease_lost.cancelled() => return (Outcome::Nothing, None),
         () = signals.cancelled.cancelled() => return (failed(DatabaseFailure::Cancelled), None),
-        connection = resolve(rpc, task) => connection,
+        connection = resolve(rpc, task, leased.as_ref().map(|(name, revision)| (name.as_str(), *revision))) => connection,
     };
     let connection = match connection {
         Ok(connection) => connection,
@@ -228,6 +243,8 @@ where
         Err(Unresolved::Failed(code)) => return (failed(code), None),
         Err(Unresolved::Transient) => return (Outcome::Nothing, None),
     };
+    // the labels of a write come from its connection; whether the attempt was a write is for `write_outcome` to say, and a
+    // probe, whatever its end, is not
     let labels = Labels::of(&connection);
     let finished = driver
         .run_admitted(admitted, connection, signals, || {})
@@ -327,8 +344,13 @@ enum Unresolved {
     Transient,
 }
 
-/// Asks the control plane for the connection of the lease, and reads it.
-async fn resolve(rpc: &Rpc, task: &Task) -> Result<super::connection::Converted, Unresolved> {
+/// Asks the control plane for the connection of the lease, and reads it. A probe says which connection and which revision it was
+/// leased for (`probe`), and the answer has to be that one.
+async fn resolve(
+    rpc: &Rpc,
+    task: &Task,
+    probe: Option<(&str, u32)>,
+) -> Result<super::connection::Converted, Unresolved> {
     let request = rpc
         .request(crate::rpc::task(&task.lease))
         .await
@@ -354,7 +376,11 @@ async fn resolve(rpc: &Rpc, task: &Task) -> Result<super::connection::Converted,
     {
         tracing::Span::current().record("tenant_id", tracing::field::display(tenant));
     }
-    decode(response, task.namespace).map_err(Unresolved::Failed)
+    match probe {
+        Some((name, revision)) => decode_for_probe(response, task.namespace, name, revision),
+        None => decode(response, task.namespace),
+    }
+    .map_err(Unresolved::Failed)
 }
 
 /// What became of the report, for the metrics of the write.
@@ -369,7 +395,8 @@ enum Sent {
 }
 
 /// Sends the report. A completion the control plane refuses as invalid is the host's breach of the protocol: the step is failed
-/// with that code instead, which is retryable (the next attempt looks the effect up by its key).
+/// with that code instead, which is retryable (the next attempt of a write looks the effect up by its key; a probe has no effect,
+/// and is simply run again).
 async fn send(
     rpc: &Rpc,
     lease: &pb::TaskLease,
@@ -1176,6 +1203,101 @@ mod tests {
                 assert!(script.failed.is_empty());
             });
         }
+    }
+
+    /// What `execute` decides for a lease, as the shell calls it: the report, and what is counted for the write.
+    async fn executed<S: LakeSandbox>(
+        setup: &Setup,
+        driver: &Driver<S, NoBlobs, NoDns, NoNetwork>,
+        lease: pb::TaskLease,
+        probe: bool,
+    ) -> (Outcome, Written) {
+        let input = lease.input_json.clone();
+        let admission = if probe {
+            driver.admit_probe(input.as_bytes())
+        } else {
+            driver.admit(input.as_bytes())
+        };
+        let task = Task {
+            lease,
+            namespace: NAMESPACE_ID.parse().unwrap(),
+            worker_id: uuid::Uuid::from_u128(7).to_string(),
+        };
+        let signals = super::super::doubles::signals();
+        execute(&setup.rpc, &task, driver, admission, &signals).await
+    }
+
+    #[tokio::test]
+    async fn a_probe_counts_no_write_whether_it_works_or_not_and_a_write_still_does() {
+        let setup = setup().await;
+        for script in [
+            answer(probe_line()),
+            answer(plain_failure_line("DATABASE_CREDENTIAL_UNAVAILABLE")),
+        ] {
+            let driver = setup.driver(script);
+            let (_, written) =
+                executed(&setup, &driver, probe_lease(Duration::from_secs(60)), true).await;
+            assert!(written.is_none(), "a probe changes no table");
+        }
+        // and the same path counts a write that committed
+        let driver = setup.driver(answer(receipt_line()));
+        let (_, written) = executed(&setup, &driver, lease(Duration::from_secs(60)), false).await;
+        assert!(written.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_probe_whose_connection_was_resolved_at_another_revision_is_failed_and_starts_nothing()
+     {
+        // the control plane answers for revision 4 a probe that was leased for revision 3: what would be tried is not what
+        // was leased, and the report would say that revision 3 works
+        let setup = setup().await;
+        setup
+            .fake
+            .with(|script| script.database.as_mut().unwrap().connection_revision = 4);
+        // the sandbox is shared, so that what it was asked can be read after the lease
+        let sandbox = Arc::new(Scripted::new(setup.world.work.path(), answer(probe_line())));
+        let driver = Driver::new(
+            SharedSandbox(Arc::clone(&sandbox)),
+            NoBlobs,
+            NoDns,
+            NoNetwork,
+            settings(setup.world.work.path()),
+            false,
+        )
+        .for_tests(|_| Some(my_uid()));
+
+        let (outcome, written) =
+            executed(&setup, &driver, probe_lease(Duration::from_secs(60)), true).await;
+
+        let Outcome::Report(Report::Fail { code, .. }) = outcome else {
+            panic!("not a failure");
+        };
+        assert_eq!(code, DatabaseFailure::Capability.code());
+        assert!(written.is_none());
+        assert!(sandbox.asked().is_empty(), "no container was started");
+        assert_eq!(driver.slots().in_use(), 0, "and the slot is back");
+    }
+
+    #[test]
+    fn a_probe_completion_that_the_control_plane_refuses_is_counted_apart_from_the_writes() {
+        // the downgrade of a refused completion is counted as a failed write for a write; a probe has no write to count it
+        // as, and a runner whose results the server refuses must not look like one whose probes are all fine
+        let counted =
+            |probe, sent| seen(crate::testing::counted(|| record_probe_report(probe, sent)));
+
+        assert_eq!(
+            counted(true, Sent::Downgraded),
+            [(
+                "database_runner_lake_probe_reports_total{outcome=refused}".to_owned(),
+                1
+            )]
+        );
+        assert!(counted(true, Sent::AsIs).is_empty());
+        assert!(counted(true, Sent::Nothing).is_empty());
+        assert!(
+            counted(false, Sent::Downgraded).is_empty(),
+            "a write is counted as a write"
+        );
     }
 
     /// What the host's line says, read by the decoder the conversation uses.

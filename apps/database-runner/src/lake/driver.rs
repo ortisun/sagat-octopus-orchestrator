@@ -57,7 +57,8 @@ use tokio::time::Instant;
 
 use super::connection::Converted;
 use super::prepare::{
-    Attempt, Blobs, PrepareError, Prepared, effective, prepare, prepare_probe, probe_timeout_ms,
+    Attempt, Blobs, PrepareError, Prepared, effective, host_check_timeout_ms, prepare,
+    prepare_probe, probe_timeout_ms,
 };
 use super::settings::Settings;
 
@@ -79,6 +80,8 @@ pub struct SlotPool {
 struct State {
     taken: BTreeSet<u32>,
     next: u32,
+    /// How many of the taken slots are a probe's (D035-150).
+    probes: usize,
 }
 
 impl SlotPool {
@@ -93,16 +96,43 @@ impl SlotPool {
     /// The next free slot, or `None` when every one is in use.
     #[must_use]
     pub fn take(self: &Arc<Self>) -> Option<SlotGuard> {
+        self.take_slot(None)
+    }
+
+    /// The next free slot for a probe, or `None` when every one is in use **or probes already hold `cap` of them**. A probe is
+    /// an attempt that starts a container for a connection a tenant chose, and the server limits how many are in flight for a
+    /// tenant and for a namespace, not how many a node holds: the cap is what keeps slots for the writes.
+    #[must_use]
+    pub fn take_probe(self: &Arc<Self>, cap: usize) -> Option<SlotGuard> {
+        self.take_slot(Some(cap))
+    }
+
+    fn take_slot(self: &Arc<Self>, probe_cap: Option<usize>) -> Option<SlotGuard> {
         let mut state = self.state.lock().ok()?;
+        if probe_cap.is_some_and(|cap| state.probes >= cap) {
+            return None;
+        }
         let slot = (0..self.count)
             .map(|offset| (state.next + offset) % self.count)
             .find(|slot| !state.taken.contains(slot))?;
         state.taken.insert(slot);
         state.next = (slot + 1) % self.count;
+        let probe = probe_cap.is_some();
+        if probe {
+            state.probes += 1;
+        }
         Some(SlotGuard {
             pool: Arc::clone(self),
             slot,
+            probe,
         })
+    }
+
+    /// How many slots probes may hold at once: half of them, and one when there is only one. A write always finds a slot that
+    /// probes could not take.
+    #[must_use]
+    pub fn probe_cap(&self) -> usize {
+        (self.count as usize / 2).max(1)
     }
 
     /// How many are in use.
@@ -117,6 +147,8 @@ impl SlotPool {
 pub struct SlotGuard {
     pool: Arc<SlotPool>,
     slot: u32,
+    /// The slot was taken for a probe, and counts as one until it is given back.
+    probe: bool,
 }
 
 impl SlotGuard {
@@ -145,6 +177,9 @@ impl Drop for SlotGuard {
     fn drop(&mut self) {
         if let Ok(mut state) = self.pool.state.lock() {
             state.taken.remove(&self.slot);
+            if self.probe {
+                state.probes = state.probes.saturating_sub(1);
+            }
         }
     }
 }
@@ -185,7 +220,9 @@ pub enum Cause {
 #[derive(Debug)]
 pub struct Finished {
     pub report: Report,
-    /// The attempt was a probe, which writes nothing: whatever it did, it is not counted as a write.
+    /// The attempt was a probe **that was run**, which writes nothing: whatever it did, it is not counted as a write. It is
+    /// `false` for an attempt that ended before a container was asked for, whatever the attempt was: [`cause`](Self::cause) says
+    /// that one ended early, and it is what keeps such an attempt out of the metrics of the writes too.
     pub probe: bool,
     /// Why no container was asked for, when none was.
     pub cause: Option<Cause>,
@@ -343,6 +380,8 @@ pub struct Admitted {
     work: Work,
     slot: SlotGuard,
     peer_uid: u32,
+    /// When it was admitted: the time of a probe is counted from here, and not from when its connection arrived.
+    at: Instant,
 }
 
 impl Admitted {
@@ -350,6 +389,15 @@ impl Admitted {
     #[must_use]
     pub const fn slot(&self) -> u32 {
         self.slot.number()
+    }
+
+    /// The connection and the revision a probe was leased for, which the connection it is given must be; `None` for a write.
+    #[must_use]
+    pub fn leased_probe(&self) -> Option<(String, u32)> {
+        match &self.work {
+            Work::Probe(input) => Some((input.connection().to_owned(), input.revision())),
+            Work::Write(_) => None,
+        }
     }
 }
 
@@ -451,19 +499,22 @@ where
                 Cause::Input,
             ));
         };
-        let (slot, peer_uid) = self.take_slot()?;
+        let (slot, peer_uid) = self.take_slot(false)?;
         Ok(Admitted {
             work: Work::Write(input),
             slot,
             peer_uid,
+            at: Instant::now(),
         })
     }
 
     /// [`admit`](Self::admit) for the lease of a probe (D035-150): the input is read by the reader of a probe lease, and a probe
-    /// takes a slot like any attempt, because it starts a container.
+    /// takes a slot like any attempt, because it starts a container, **but not one of the half that the writes keep**
+    /// ([`SlotPool::probe_cap`]).
     ///
     /// # Errors
-    /// The [`Finished`] to report: the lease input is not a probe input, every slot is in use, or the slot has no user.
+    /// The [`Finished`] to report: the lease input is not a probe input, every slot is in use or probes hold their share of
+    /// them, or the slot has no user.
     pub fn admit_probe(&self, input_json: &[u8]) -> Result<Admitted, Finished> {
         let Ok(input) = ProbeInput::read(input_json) else {
             return Err(Finished::failed(
@@ -471,17 +522,23 @@ where
                 Cause::Input,
             ));
         };
-        let (slot, peer_uid) = self.take_slot()?;
+        let (slot, peer_uid) = self.take_slot(true)?;
         Ok(Admitted {
             work: Work::Probe(input),
             slot,
             peer_uid,
+            at: Instant::now(),
         })
     }
 
     /// A free slot and the user of its container, or the failure to report.
-    fn take_slot(&self) -> Result<(SlotGuard, u32), Finished> {
-        let Some(slot) = self.slots.take() else {
+    fn take_slot(&self, probe: bool) -> Result<(SlotGuard, u32), Finished> {
+        let taken = if probe {
+            self.slots.take_probe(self.slots.probe_cap())
+        } else {
+            self.slots.take()
+        };
+        let Some(slot) = taken else {
             return Err(Finished::failed(
                 DatabaseFailure::LakeSandboxUnavailable,
                 Cause::NoSlot,
@@ -526,6 +583,7 @@ where
             work,
             slot,
             peer_uid,
+            at,
         } = admitted;
         // opaque and random: it names a directory and a container and says nothing of the run or of when (ADR-0079, rule 10)
         let attempt_id = uuid::Uuid::new_v4().to_string();
@@ -586,8 +644,12 @@ where
                     connection.limits,
                     &self.settings,
                 );
-                let deadline = Instant::now() + limits.timeout;
-                let deadline_at = SystemTime::now() + limits.timeout;
+                // counted from the admission: the step has its time from the moment it was leased, and a connection that took
+                // long to resolve has used some of it. What is left is what the host is told it has, a third for each check.
+                let deadline = at + limits.timeout;
+                let left = deadline.saturating_duration_since(Instant::now());
+                let deadline_at = SystemTime::now() + left;
+                let check_timeout_ms = host_check_timeout_ms(input.check_timeout_ms(), left);
 
                 // a probe stages nothing, so its preparation does not wait; the signals are still looked at first
                 let prepared = tokio::select! {
@@ -602,6 +664,7 @@ where
                     prepared = async {
                         prepare_probe(
                             &input,
+                            check_timeout_ms,
                             connection,
                             &self.settings,
                             Attempt {
@@ -1600,7 +1663,9 @@ mod tests {
             request["probe"]["connection"],
             json!({"name": "lake-main", "revision": 3})
         );
-        assert_eq!(request["probe"]["checkTimeoutMs"], 7000);
+        // the host is told the time that fits the attempt (the lease names 7 s a check, and three of them do not fit)
+        let check = request["probe"]["checkTimeoutMs"].as_u64().unwrap();
+        assert!((6_300..=6_333).contains(&check), "{check}");
         // a probe stages nothing and needs no budget of a write: the small class, and the slot the sandbox's user is
         let asked = driver.sandbox.asked();
         assert_eq!(asked.len(), 1);
@@ -1621,6 +1686,7 @@ mod tests {
             let finished = probe(&driver, &probe_lease(), &signals()).await;
 
             assert_eq!(failed_with(&finished), DatabaseFailure::LakeHostProtocol);
+            assert!(finished.probe, "a probe that failed is still not a write");
             assert!(entries(world.work.path()).is_empty());
             assert_eq!(driver.slots.in_use(), 0);
         }
@@ -1637,6 +1703,29 @@ mod tests {
         let finished = probe(&driver, &probe_lease(), &signals()).await;
 
         assert_eq!(failed_with(&finished), DatabaseFailure::Credential);
+        assert!(finished.probe, "a probe that failed is still not a write");
+    }
+
+    #[tokio::test]
+    async fn a_code_of_a_write_from_the_host_of_a_probe_is_a_protocol_failure() {
+        // the host holds the secrets and reads what a hostile catalog says: it cannot make a probe fail as a commit
+        // conflict or as an unknown outcome, which the control plane would retry or take as a write that may have landed
+        for code in [
+            "ICEBERG_COMMIT_CONFLICT",
+            "OUTCOME_UNKNOWN",
+            "ICEBERG_SCHEMA_MISMATCH",
+        ] {
+            let world = world();
+            let driver = driver(&world, answer(plain_failure_line(code)));
+
+            let finished = probe(&driver, &probe_lease(), &signals()).await;
+
+            assert_eq!(
+                failed_with(&finished),
+                DatabaseFailure::LakeHostProtocol,
+                "{code}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1661,6 +1750,32 @@ mod tests {
 
         assert_eq!(failed_with(&finished), DatabaseFailure::WorkerError);
         assert_eq!(finished.exit, Some(LakeSandboxExit::MemoryKilled));
+        assert!(
+            finished.probe,
+            "a probe that was killed is still not a write"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probe_cancelled_after_the_host_has_the_request_is_cancelled_and_not_an_unknown_outcome()
+     {
+        let world = world();
+        // the host reads the request and never answers
+        let driver = driver(&world, Script::Silent);
+        let signals = signals();
+        let requested = std::sync::Arc::clone(&driver.sandbox.requested);
+        let lease = probe_lease();
+
+        let (finished, ()) = tokio::join!(probe(&driver, &lease, &signals), async {
+            requested.notified().await;
+            signals.cancelled.cancel();
+        });
+
+        // a write that was sent may have committed and is unknown; a probe changes nothing, so nothing of it is unknown
+        assert!(finished.request_sent);
+        assert_eq!(failed_with(&finished), DatabaseFailure::Cancelled);
+        assert!(finished.probe);
+        assert_eq!(driver.slots.in_use(), 0);
     }
 
     #[tokio::test]
@@ -1750,27 +1865,49 @@ mod tests {
         assert_eq!(driver.slots.in_use(), 0);
     }
 
+    /// The time the container was given, and the time one check was given in the request the host read.
+    fn times_of(driver: &Driver<Scripted, NoBlobs, NoDns, NoNetwork>) -> (Duration, u64) {
+        let request: Value =
+            serde_json::from_slice(&driver.sandbox.request.lock().unwrap()).unwrap();
+        (
+            driver.sandbox.asked()[0].deadline,
+            request["probe"]["checkTimeoutMs"].as_u64().unwrap(),
+        )
+    }
+
     #[tokio::test]
-    async fn the_container_of_a_probe_gets_the_time_of_its_checks_and_the_connection_may_lower_it()
+    async fn the_container_of_a_probe_gets_the_time_of_its_checks_and_the_host_the_time_that_fits()
     {
+        // the lease names 7 s for a check: three of them and the margin are more than the ceiling of 22 s, so the container
+        // has 22 s and each check the third of what is left after the margin, which is what fits (and not 7 s)
         let world = world();
-        // three checks of 7 s and the margin: 24 s, which is within the 25 s of the step
         let driver_a = driver(&world, answer(probe_line()));
         probe(&driver_a, &probe_lease(), &signals()).await;
-        let asked = driver_a.sandbox.asked();
+        let (deadline, check) = times_of(&driver_a);
         assert!(
-            asked[0].deadline <= Duration::from_secs(24),
-            "{:?}",
-            asked[0].deadline
+            deadline <= Duration::from_secs(22) && deadline > Duration::from_secs(21),
+            "{deadline:?}"
         );
-        assert!(
-            asked[0].deadline > Duration::from_secs(20),
-            "{:?}",
-            asked[0].deadline
-        );
+        assert!((6_300..=6_333).contains(&check), "{check}");
 
-        // a connection that allows a second and a half is stricter
+        // a lease that names less (2 s a check) is given what it names: three of them and the margin are 9 s
         let driver_b = driver(&world, answer(probe_line()));
+        let lease = probe_input_json(|d| d["checkTimeoutMs"] = json!(2000));
+        probe(&driver_b, &lease, &signals()).await;
+        let (deadline, check) = times_of(&driver_b);
+        assert!(
+            deadline <= Duration::from_secs(9) && deadline > Duration::from_secs(8),
+            "{deadline:?}"
+        );
+        assert!((1_990..=2_000).contains(&check), "{check}");
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_allows_less_lowers_the_container_and_the_checks_with_it() {
+        // a connection that allows a second and a half is stricter than anything the lease says; the host is still told a
+        // time it reads, so that its answer is the typed timeout of a check and not the end of the attempt
+        let world = world();
+        let driver = driver(&world, answer(probe_line()));
         let mut message = message();
         message.limits = Some(sagat_api_grpc::pb::LakeLimits {
             max_record_bytes: 0,
@@ -1778,20 +1915,123 @@ mod tests {
             timeout_ms: 1500,
         });
         let connection = super::super::connection::convert(&mut message).unwrap();
-        let admitted = driver_b.admit_probe(&probe_lease()).unwrap();
-        driver_b
+        let admitted = driver.admit_probe(&probe_lease()).unwrap();
+
+        driver
             .run_admitted(admitted, connection, &signals(), || {})
             .await;
-        let asked = driver_b.sandbox.asked();
+
+        let (deadline, check) = times_of(&driver);
         assert!(
-            asked[0].deadline <= Duration::from_millis(1500),
-            "{:?}",
-            asked[0].deadline
+            deadline <= Duration::from_millis(1500) && deadline > Duration::from_millis(500),
+            "{deadline:?}"
         );
+        assert_eq!(check, 100);
+    }
+
+    #[tokio::test]
+    async fn the_time_of_a_probe_is_counted_from_its_admission_and_not_from_when_its_connection_arrived()
+     {
+        let world = world();
+        let driver = driver(&world, answer(probe_line()));
+        // a connection that allows 50 ms, and one that took longer than that to resolve: the step has its time from the moment
+        // it was leased, and a connection that arrives late has used some of it
+        let mut message = message();
+        message.limits = Some(sagat_api_grpc::pb::LakeLimits {
+            max_record_bytes: 0,
+            max_records: 0,
+            timeout_ms: 50,
+        });
+        let connection = super::super::connection::convert(&mut message).unwrap();
+        let admitted = driver.admit_probe(&probe_lease()).unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let finished = driver
+            .run_admitted(admitted, connection, &signals(), || {})
+            .await;
+
+        assert_eq!(failed_with(&finished), DatabaseFailure::Timeout);
+        assert_eq!(finished.cause, Some(Cause::Over));
         assert!(
-            asked[0].deadline > Duration::from_millis(500),
-            "{:?}",
-            asked[0].deadline
+            driver.sandbox.asked().is_empty(),
+            "no container was started"
         );
+        assert!(entries(world.work.path()).is_empty());
+        assert_eq!(driver.slots.in_use(), 0);
+    }
+
+    #[test]
+    fn probes_may_hold_half_of_the_slots_and_a_write_always_finds_one() {
+        // a tenant can keep probes going against a catalog that answers slowly: the server limits how many are in flight for
+        // a tenant, not how many a node holds, so the node keeps slots for the writes
+        let world = world();
+        let driver = driver(&world, answer(probe_line()));
+        let first = driver.admit_probe(&probe_lease()).unwrap();
+        let second = driver.admit_probe(&probe_lease()).unwrap();
+
+        let refused = driver.admit_probe(&probe_lease()).err().unwrap();
+
+        assert_eq!(
+            failed_with(&refused),
+            DatabaseFailure::LakeSandboxUnavailable
+        );
+        assert_eq!(refused.cause, Some(Cause::NoSlot));
+        assert_eq!(
+            driver.slots.in_use(),
+            2,
+            "two slots were free and were not taken"
+        );
+        // a write is not refused for it
+        let write = driver.admit(&input_json(|_| {})).unwrap();
+        let another_write = driver.admit(&input_json(|_| {})).unwrap();
+        assert_eq!(driver.slots.in_use(), 4);
+        // and a probe is admitted again once one of the two is over
+        drop((write, another_write));
+        drop(first);
+        let third = driver.admit_probe(&probe_lease()).unwrap();
+        // the two that hold probes now are the second and the third, and a fourth is refused again
+        assert!(driver.admit_probe(&probe_lease()).is_err());
+        drop(second);
+        assert_eq!(
+            driver.slots.in_use(),
+            1,
+            "only the probe admitted last is held"
+        );
+        drop(third);
+        assert_eq!(driver.slots.in_use(), 0);
+    }
+
+    #[test]
+    fn a_node_of_one_slot_still_runs_a_probe() {
+        let world = world();
+        let mut driver = driver(&world, answer(probe_line()));
+        driver.slots = SlotPool::new(1);
+
+        let admitted = driver.admit_probe(&probe_lease());
+
+        assert!(
+            admitted.is_ok(),
+            "half of one slot is not none: a probe may use it"
+        );
+        assert_eq!(driver.slots.in_use(), 1);
+    }
+
+    #[test]
+    fn the_slot_of_a_probe_is_counted_as_a_probes_until_it_is_given_back() {
+        let pool = SlotPool::new(4);
+        let a = pool.take_probe(2).unwrap();
+        let b = pool.take_probe(2).unwrap();
+        assert!(pool.take_probe(2).is_none(), "two are held by probes");
+        let write = pool.take().unwrap();
+        drop(a);
+        let c = pool.take_probe(2).unwrap();
+        assert!(pool.take_probe(2).is_none(), "b and c hold the two");
+        drop((b, c, write));
+        assert_eq!(pool.in_use(), 0);
+        // a pool of three slots lets probes have one, and of one slot has them use it
+        assert_eq!(SlotPool::new(3).probe_cap(), 1);
+        assert_eq!(SlotPool::new(4).probe_cap(), 2);
+        assert_eq!(SlotPool::new(1).probe_cap(), 1);
+        assert_eq!(SlotPool::new(8).probe_cap(), 4);
     }
 }

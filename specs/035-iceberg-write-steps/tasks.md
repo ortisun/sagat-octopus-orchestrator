@@ -962,10 +962,12 @@ test to every catalog and storage type.
   `dispose_probe` (how a probe ends); `tests/probe_wire.rs` 29, `runners/lake/tests/test_wire_probe.py` 7, 27 hand mutations killed. **Not done** — S6b, the runner (`prepare_probe`, the driver, `serves()`, both activities in
   one session with a write-only fallback, the probe's deadline) and S6c, the REST start and `GET /database-drivers`.
 
-  *2026-11-09, slice S6b (partly done, not ticked):* **done** — the runner serves the probe (`apps/database-runner`): `prepare_probe` and the time of a probe (three checks and a margin, at most 25 s), `admit_probe` and the
-  driver's probe path with its answer held to the connection and the revision leased, the lease-to-report path with the result inline and a probe never counted as a write, and one session offering the write and the probe
-  with a write-only fallback on `PERMISSION_DENIED`; 27 new tests (the library suite is 168, from 141), 21 hand mutations killed, the runbook updated. **Not done** — S6c, the REST start of an Iceberg probe and
-  `GET /database-drivers` (T035-043); a real container's run of a probe (S8's canary); an assertion of `database_runner_lake_probe_offer_total`.
+  *2026-11-09, slice S6b (partly done, not ticked):* **done** — the runner serves the probe (`apps/database-runner`): `prepare_probe` and the time of a probe (three checks and a margin, at most 22 s, counted from the admission,
+  and the host told the time that fits what is left), `admit_probe` (probes hold at most half of the slots) and the driver's probe path with its answer held to the connection and the revision leased, the lease-to-report path
+  with the result inline and a probe never counted as a write, and one session offering the write and the probe with a write-only fallback on `PERMISSION_DENIED`, seen in a counter and a gauge; reviewed by the security and the
+  correctness reviewer, whose findings are in research.md (S6b note) and fixed except G035-092 (O035-009); the runner's library suite is 186 (141 before the slice), `probe_wire` 32, 33 hand mutations of the review batch
+  (31 killed, 1 survived, 1 equivalent), the runbook updated. **Not done** — S6c, the REST start of an Iceberg probe and `GET /database-drivers` (T035-043); a real container's run of a probe (S8's canary); a test of the relay's
+  deadline of a probe (the survivor); a re-offer of the probe when a binding is widened (the runner is restarted).
 - [ ] T035-046 [P] [US01] Add the Iceberg connection to the Studio, in
   `frontend/apps/studio/src/features/connections/{ConnectionForm.tsx,ConnectionProbe.tsx,api.ts}`:
   - an Iceberg form with REST and S3 sections;
