@@ -426,6 +426,13 @@ pub struct ParsedDefinition {
     pub warnings: Vec<DefinitionWarning>,
 }
 
+fn no_private_documents() -> IrError {
+    IrError::Schema(vec![IrIssue {
+        path: String::new(),
+        message: "this codec has no private documents".to_owned(),
+    }])
+}
+
 /// Parses, validates and canonicalises a workflow document (implemented by `sagat-infra-ir`).
 pub trait IrCodec: Send + Sync {
     /// Cheap check that a draft is storable: well-formed JSON, an object, within
@@ -448,6 +455,25 @@ pub trait IrCodec: Send + Sync {
     /// An [`IrError`] for an unreadable/unsupported execution definition.
     fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
         self.parse(document)
+    }
+
+    /// The authoring parse of a **private** document (ADR-0080): a definition the platform writes for itself, with node types no author may
+    /// write. Only the entry that builds such a document calls it. A codec with no private grammar refuses every document here, so a
+    /// private document fails closed.
+    ///
+    /// # Errors
+    /// An [`IrError`]; always, for a codec with no private grammar.
+    fn parse_private(&self, _document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        Err(no_private_documents())
+    }
+
+    /// The restore of a stored **private** definition (ADR-0080), chosen by the loader from the workflow's `internal` flag and never from
+    /// the document. A codec with no private grammar refuses it.
+    ///
+    /// # Errors
+    /// An [`IrError`]; always, for a codec with no private grammar.
+    fn parse_stored_private(&self, _document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        Err(no_private_documents())
     }
 
     /// Bounded authoring report, independent of tenant data and persistence.

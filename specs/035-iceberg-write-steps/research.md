@@ -3564,3 +3564,10 @@ The other fixes were wording:
   `failureCode`, OpenAPI, Studio types, `GET /database-drivers`, the probe class in `lake_canaries.rs`; **S5** the host (`probe.py`, pytest); **S6** the runner and the sandbox request for the
   operation, the runbook; **S7** the Studio (T035-046); **S8** metrics, docs and the guide. *Not verified by the review:* the Python host, the parity checks of the six SDK catalogs (no code is added,
   so none is needed), and ADR-0071 in full.
+  *Progress and one change of plan (2026-11-09).* S0 is #180, S1a (the managed payload enum, `LakeProbe`, `ManagedKind::LakeProbe`, ADR-0080) #181, S1b (the private twin of the IR parse entry
+  points, the private schema derived from the public one, the `icebergProbe` node) #182, and S1c (the `IrCodec` private entries that fail closed, `DefinitionCache::{parse_private_document,
+  get_or_parse_private}` and the platform's fixed `lake_probe_document`) its own pull request. **The loader's join on `workflows.internal` moves from S1c to S2.** Without a probe document in a
+  stored version the join cannot be told from its absence (an ordinary document parses the same under both grammars, so every mutation of the join survives), and a probe run cannot be created
+  before admission and the claim know a probe (the six `== ManagedKind::Lake` sites): its connection would not be bound and its claim would fail for ever. So S2 wires the join together with
+  the start, admission, the claim and one table-driven test that creates a probe run, claims it and restores it from the store, and the loader's decision is then proved by that test and by
+  mutating the join. The REST probe keeps refusing an Iceberg connection until the slice that gives the runner a probe to run (S6), so the endpoint never returns a run that cannot finish.

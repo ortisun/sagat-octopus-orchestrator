@@ -411,6 +411,19 @@ fn probe_document(connection: &ConnectionRef) -> Vec<u8> {
     format!(r#"{{"apiVersion":"sagat-octopus-orchestrator.io/v1","kind":"Workflow","metadata":{{"name":"database-probe"}},"entrypoint":"probe","nodes":[{{"id":"probe","type":"database","connectionRef":{{"name":"{}"{revision}}},"operation":"query","statement":"SELECT 1::bigint","limits":{{"maxRows":1,"maxResultBytes":4096,"timeoutMs":5000,"connectTimeoutMs":5000}},"timeoutMs":10000}}]}}"#, connection.name.as_str()).into_bytes()
 }
 
+/// The platform's own definition of the probe of an Iceberg connection (D035-150, ADR-0080): one private node that tests the connection
+/// and nothing else. A caller never supplies it, and the start path compares what it is handed with it, as it does for the SQL probe.
+/// The attempt's own budget is 25 s inside the run's 30 s, so that a typed answer arrives before the deadline.
+///
+/// The only interpolation is a validated slug and a nonzero revision; neither can introduce JSON syntax.
+#[must_use]
+pub fn lake_probe_document(connection: &ConnectionRef) -> Vec<u8> {
+    let revision = connection
+        .revision
+        .map_or_else(String::new, |r| format!(",\"revision\":{r}"));
+    format!(r#"{{"apiVersion":"sagat-octopus-orchestrator.io/v1","kind":"Workflow","metadata":{{"name":"lake-probe"}},"entrypoint":"probe","nodes":[{{"id":"probe","type":"icebergProbe","connectionRef":{{"name":"{}"{revision}}},"timeoutMs":25000}}]}}"#, connection.name.as_str()).into_bytes()
+}
+
 /// A bounded namespace denial record, without definition/input/connection/provider content.
 pub(crate) async fn audit_denied<D: crate::authz::NamespaceDirectory, C: Clock>(
     store: &D,

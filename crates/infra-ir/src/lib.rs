@@ -62,28 +62,6 @@ impl JsonIrCodec {
         parse_document(document, convert::structured_definition)
     }
 
-    /// The authoring parse of a **private** document (ADR-0080): the platform's own definition of something no author may write (today the
-    /// probe of an Iceberg connection). It validates against the public grammar plus the private node types and is otherwise
-    /// [`IrCodec::parse`]. Only the entry that builds such a document calls it; no publication path does.
-    ///
-    /// # Errors
-    /// The same bounded errors as [`IrCodec::parse`].
-    pub fn parse_private(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
-        published_definition(validated_document_in(document, schema::Mode::Private)?)
-    }
-
-    /// The restore of a stored **private** definition (ADR-0080), chosen by the loader from the workflow's `internal` flag and never from
-    /// the document. Otherwise [`IrCodec::parse_stored`].
-    ///
-    /// # Errors
-    /// The same bounded errors as [`IrCodec::parse_stored`].
-    pub fn parse_stored_private(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
-        published_definition(validated_stored_document_in(
-            document,
-            schema::Mode::Private,
-        )?)
-    }
-
     /// Validates and preserves an additive-v1 state declaration for internal operation evaluation.
     ///
     /// The returned artifact retains the canonical workflow bytes and typed state/operation
@@ -167,6 +145,22 @@ impl IrCodec for JsonIrCodec {
 
     fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
         published_definition(validated_stored_document(document)?)
+    }
+
+    /// The authoring parse of a **private** document (ADR-0080): the platform's own definition of something no author may write (today the
+    /// probe of an Iceberg connection). It validates against the public grammar plus the private node types and is otherwise
+    /// [`IrCodec::parse`]. Only the entry that builds such a document calls it; no publication path does.
+    fn parse_private(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        published_definition(validated_document_in(document, schema::Mode::Private)?)
+    }
+
+    /// The restore of a stored **private** definition (ADR-0080), chosen by the loader from the workflow's `internal` flag and never from
+    /// the document. Otherwise [`IrCodec::parse_stored`].
+    fn parse_stored_private(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        published_definition(validated_stored_document_in(
+            document,
+            schema::Mode::Private,
+        )?)
     }
 
     fn declared_state_publication(

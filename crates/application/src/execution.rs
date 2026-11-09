@@ -1819,6 +1819,14 @@ impl DefinitionCache {
         self.codec.parse(document)
     }
 
+    /// The same for a **private** document (ADR-0080), which only the platform writes. Only the entry that builds one calls it.
+    pub fn parse_private_document(
+        &self,
+        document: &[u8],
+    ) -> Result<crate::definitions::ParsedDefinition, IrError> {
+        self.codec.parse_private(document)
+    }
+
     /// The parsed definition of `version` if it is cached.
     #[must_use]
     pub fn get(&self, version: WorkflowVersionId) -> Option<Arc<WorkflowDefinition>> {
@@ -1843,6 +1851,36 @@ impl DefinitionCache {
         version: WorkflowVersionId,
         document: &[u8],
     ) -> Result<Arc<WorkflowDefinition>, IrError> {
+        self.restore(version, || {
+            self.codec
+                .parse_stored(document)
+                .map(|parsed| parsed.definition)
+        })
+    }
+
+    /// The same for a version of a **private** workflow (ADR-0080). The caller decides it from the workflow's `internal` flag, which is a
+    /// row of the store, and never from the document: a version that is not private never reaches this entry. A version is private or
+    /// public for its whole life, so the cache cannot hold one under the other's rules.
+    ///
+    /// # Errors
+    /// [`IrError`] when the stored document no longer parses, or the codec has no private documents.
+    pub fn get_or_parse_private(
+        &self,
+        version: WorkflowVersionId,
+        document: &[u8],
+    ) -> Result<Arc<WorkflowDefinition>, IrError> {
+        self.restore(version, || {
+            self.codec
+                .parse_stored_private(document)
+                .map(|parsed| parsed.definition)
+        })
+    }
+
+    fn restore(
+        &self,
+        version: WorkflowVersionId,
+        parse: impl FnOnce() -> Result<WorkflowDefinition, IrError>,
+    ) -> Result<Arc<WorkflowDefinition>, IrError> {
         {
             let mut guard = self
                 .entries
@@ -1856,7 +1894,7 @@ impl DefinitionCache {
             }
         }
         // Parse outside the lock: it can take milliseconds and other versions must not wait.
-        let parsed = Arc::new(self.codec.parse_stored(document)?.definition);
+        let parsed = Arc::new(parse()?);
         let mut guard = self
             .entries
             .lock()
