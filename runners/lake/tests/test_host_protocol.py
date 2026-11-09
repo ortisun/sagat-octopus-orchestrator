@@ -424,6 +424,10 @@ def test_every_code_the_host_raises_is_one_the_runner_reads() -> None:
 
     raised: set[str] = set()
     for source in (RUNTIME / "sagat_lake").rglob("*.py"):
+        if source.name == "probe_codes.py":
+            # the codes a check of a probe may fail with are a result, not a failure line: the server's codec holds
+            # them to ``ProbeCheck::allows`` and ``test_probe_operation.py`` holds this file to that table, both ways
+            continue
         text = source.read_text(encoding="utf-8")
         raised |= {code for code in code_of.values() if f'"{code}"' in text}
     assert "ICEBERG_TABLE_NOT_FOUND" in raised

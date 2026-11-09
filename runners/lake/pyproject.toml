@@ -29,4 +29,4 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "ASYNC", "PT"]
 
 [tool.ruff.lint.isort]
 # `lockfile` and `dockerfile` are the helper modules of tests/.
-known-first-party = ["sagat_lake", "lockfile", "dockerfile", "hostile_catalog", "relay_double", "counting_catalog", "recording_io", "tools"]
+known-first-party = ["sagat_lake", "lockfile", "dockerfile", "hostile_catalog", "relay_double", "counting_catalog", "recording_io", "network_doubles", "tools"]

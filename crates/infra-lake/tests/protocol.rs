@@ -723,6 +723,14 @@ fn every_code_the_python_host_raises_is_one_the_runner_reads() {
 
     let mut raised = std::collections::BTreeSet::new();
     for file in files {
+        // The codes a check of a probe may fail with are a result and not a failure line, so the one file that holds
+        // them is not read here; the test below holds it to the domain's table instead.
+        if file
+            .file_name()
+            .is_some_and(|name| name == "probe_codes.py")
+        {
+            continue;
+        }
         let text = std::fs::read_to_string(file).unwrap();
         for failure in DatabaseFailure::ALL {
             if text.contains(&format!("\"{}\"", failure.code())) {
@@ -736,6 +744,61 @@ fn every_code_the_python_host_raises_is_one_the_runner_reads() {
             HOST_MAY_REPORT.contains(&code),
             "the host raises {code} and the runner would refuse it as LAKE_HOST_PROTOCOL"
         );
+    }
+}
+
+/// What each check of a probe may fail with, as the Python host writes it (`probe_codes.py`), is what the domain says
+/// (`ProbeCheck::allows`), in both directions: a code the host could report that the server would refuse as a result,
+/// and a code the domain allows that the host can never say. That file is the only one the scan above skips, and no
+/// code is written anywhere else in the probe (`test_probe_operation.py`).
+#[test]
+fn the_codes_a_probe_check_may_fail_with_in_the_host_are_the_domains() {
+    let sources = root().join("runners/lake/sagat_lake");
+    let table = std::fs::read_to_string(sources.join("probe_codes.py")).unwrap();
+    let hygiene = std::fs::read_to_string(sources.join("config_hygiene.py")).unwrap();
+
+    // `NAME = "CODE"` lines of the table, and the one code it imports from the hygiene
+    let mut constants = std::collections::BTreeMap::new();
+    for source in [&table, &hygiene] {
+        for line in source.lines() {
+            if let Some((name, code)) = line.split_once(" = ")
+                && name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+                && let Some(code) = code.strip_prefix('"').and_then(|c| c.strip_suffix('"'))
+            {
+                constants.insert(name.to_owned(), code.to_owned());
+            }
+        }
+    }
+    assert!(
+        constants.contains_key("LOCATION_NOT_ALLOWED"),
+        "{constants:?}"
+    );
+
+    for check in sagat_domain::database::ProbeCheck::ALL {
+        let name = check.as_str();
+        let row = table
+            .split(&format!("    {name}: frozenset({{"))
+            .nth(1)
+            .and_then(|rest| rest.split("})").next())
+            .unwrap_or_else(|| panic!("the host has no row for {name}"));
+        let host: std::collections::BTreeSet<&str> = row
+            .split(',')
+            .map(str::trim)
+            .filter(|constant| !constant.is_empty())
+            .map(|constant| {
+                constants
+                    .get(constant)
+                    .unwrap_or_else(|| panic!("{constant} is not a code of the table"))
+                    .as_str()
+            })
+            .collect();
+        let domain: std::collections::BTreeSet<&str> = DatabaseFailure::ALL
+            .iter()
+            .copied()
+            .filter(|failure| check.allows(*failure))
+            .map(DatabaseFailure::code)
+            .collect();
+        assert_eq!(host, domain, "the codes of {name}");
     }
 }
 

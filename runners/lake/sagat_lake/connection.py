@@ -47,6 +47,10 @@ class OpenConnection:
 
     hygiene: Hygiene = field(repr=False)
     properties: Mapping[str, str] = field(repr=False)
+    # The warehouse locations the connection declares, and whether the catalog vends the storage credentials (so the
+    # storage is reached with none of its own): what a probe of the storage needs to know and nothing it could leak.
+    locations: tuple[str, ...] = ()
+    vended: bool = False
 
     def catalog(self, *, request_timeout: float) -> LakeRestCatalog:
         """The catalog, which believes nothing its server says and gives every request a time limit."""
@@ -119,7 +123,7 @@ def _open(connection: object) -> OpenConnection:
         hygiene.check_location(properties["warehouse"])
     if not vended:
         hygiene.require_explicit_credentials(properties)
-    return OpenConnection(hygiene=hygiene, properties=properties)
+    return OpenConnection(hygiene=hygiene, properties=properties, locations=tuple(locations), vended=vended)
 
 
 def _auth(auth: object, secrets: object) -> dict[str, str]:

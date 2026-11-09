@@ -8,7 +8,8 @@ per-attempt sandbox container (`specs/035-iceberg-write-steps/contracts/lake-run
 
 This directory holds the image, its lock and its checks (T035-006), the filter of what a catalog sends
 (`config_hygiene.py`), the loopback ports that reach the relay (`forwarder.py`) and the host's side of `sagat.lake.v1`
-(`host.py`). The host serves `icebergWrite`; the other operations arrive with the tasks that test them.
+(`host.py`). The host serves `icebergWrite` and `probe` (`probe.py`, with the table of codes of its checks in `probe_codes.py`,
+D035-150); the other operations arrive with the tasks that test them.
 Three decisions of the write are already pure functions with their own tests: `mapping.py` (a record against the schema of
 the table, lossless or refused; the table is published in `docs/guides/iceberg-type-mapping.md`), `lookup.py` (the search for
 the effect key, D035-030) and `compat.py` (whether the table can be written, FR-035-011). `table_facts.py` reads their
@@ -18,7 +19,7 @@ commit requests it receives. `attempt.py` puts the data files of an attempt in a
 exactly those when a commit is refused (D035-095). `records.py` reads the NDJSON of a step a bounded line at a time (D035-097). `batches.py` gives the mapped rows to PyIceberg as Arrow record batches, bounded in rows and bytes (D035-098). `modes/append.py` is the append of D035-030 around them: one commit per search, a directory per try, and nothing
 deleted that a landed commit may reference (D035-100). `request.py` checks the request line field by field, against the limits of the domain (D035-101). `rest_catalog.py` is PyIceberg's REST client that believes nothing the catalog says and bounds every request in time
 (D035-102). `connection.py` turns the pinned connection into the hygiene, the client properties and that catalog, and asks the
-catalog to delegate only what the connection declares (D035-105). `write.py` is the `icebergWrite` operation that joins them, and `host.py` serves it (D035-106). `parquet_input.py` reads a Parquet blob as records in the JSON form of the mapping table, bounded by the footer and the budget (D035-107).
+catalog to delegate only what the connection declares (D035-105). `write.py` is the `icebergWrite` operation that joins them, and `host.py` serves it (D035-106). `probe.py` is the `probe` operation: three checks of a connection (the catalog, the warehouse, the storage), each with the time the lease gives it, whose failure is a typed result and not a failure of the attempt (D035-150). `parquet_input.py` reads a Parquet blob as records in the JSON form of the mapping table, bounded by the footer and the budget (D035-107).
 
 ## Interface
 
