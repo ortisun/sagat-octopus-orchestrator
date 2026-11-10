@@ -19,7 +19,7 @@ from ._http import HttpRequest, HttpTransport
 from ._json import format_instant, parse_instant
 from ._wire import MAX_I64 as _MAX_I64
 from ._wire import UUID as _UUID
-from ._wire import id_of, idempotency_key_of
+from ._wire import id_of, idempotency_key_of, instant_of
 from ._wire import int_of as _int
 from ._wire import namespace_id_of as _namespace_id
 from ._wire import object_of as _object
@@ -118,6 +118,29 @@ class RunChainSegment:
 
 
 @dataclass(frozen=True)
+class RunSchedule:
+    """Which schedule started a run, for which nominal time, by which kind of action and under which revision."""
+
+    schedule_id: str
+    nominal_time: datetime
+    """The nominal time of the action: the time the schedule calculated, or for ``trigger`` the instant of the action.
+    An aware UTC ``datetime`` to the microsecond; ``Run.raw["schedule"]["nominalTime"]`` holds the exact text."""
+    kind: str
+    """``SCHEDULED``, ``TRIGGERED`` or ``BACKFILL``, or another string: the set only grows, and one this SDK does not
+    know is kept as the server sent it."""
+    revision: int
+    """The revision of the schedule the action ran under (1 or more)."""
+
+
+@dataclass(frozen=True)
+class RunResetFrom:
+    """The run a reset made a run from, and the journal sequence of it (1 or more) the new run keeps as its own."""
+
+    run_id: str
+    sequence: int
+
+
+@dataclass(frozen=True)
 class Run:
     """A run as the server reports it. ``raw`` keeps the answer as sent, so a field of a newer server is reachable."""
 
@@ -146,6 +169,11 @@ class Run:
     """The business identifier the run was started under, as it was given; ``None`` if it has none."""
     start_delayed_until: datetime | None = None
     """The instant the entry of a run started with a delay is held until; ``None`` once released or if never held."""
+    schedule: RunSchedule | None = None
+    """The schedule action that started the run; ``None`` for a run no schedule started."""
+    reset_from: RunResetFrom | None = None
+    """The run a reset made this one from and the journal sequence of it this run keeps; ``None`` for a run no reset
+    made (a rerun has ``rerun_of`` and not this)."""
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -364,9 +392,30 @@ def _run_fields(value: Any) -> dict[str, Any]:
         "rerun_of": _opt_str(raw, "rerunOf"),
         "business_id": _opt_str(raw, "businessId"),
         "start_delayed_until": parse_instant(raw.get("startDelayedUntil")),
+        "schedule": _to_run_schedule(raw.get("schedule")),
+        "reset_from": _to_run_reset_from(raw.get("resetFrom")),
         "raw": raw,
     }
     return fields
+
+
+def _to_run_schedule(value: Any) -> RunSchedule | None:
+    if value is None:
+        return None
+    schedule = _object(value, "a run schedule")
+    return RunSchedule(
+        _str(schedule, "scheduleId"),
+        instant_of(schedule, "nominalTime"),
+        _str(schedule, "kind"),
+        _revision(schedule, "revision", 1),
+    )
+
+
+def _to_run_reset_from(value: Any) -> RunResetFrom | None:
+    if value is None:
+        return None
+    reset = _object(value, "a run reset")
+    return RunResetFrom(_str(reset, "runId"), _revision(reset, "sequence", 1))
 
 
 def _completion_kind(value: Any) -> SegmentCompletionKind | None:

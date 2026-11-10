@@ -65,6 +65,15 @@ func runJSON(run *client.Run) object {
 	if !run.StartDelayedUntil.IsZero() {
 		observed["startDelayedUntil"] = iso(run.StartDelayedUntil)
 	}
+	// Present only for a run a schedule started, or a reset made.
+	if run.Schedule != nil {
+		observed["schedule"] = object{
+			"scheduleId": run.Schedule.ScheduleID, "nominalTime": iso(run.Schedule.NominalTime), "kind": run.Schedule.Kind, "revision": run.Schedule.Revision,
+		}
+	}
+	if run.ResetFrom != nil {
+		observed["resetFrom"] = object{"runId": run.ResetFrom.RunID, "sequence": run.ResetFrom.Sequence}
+	}
 	return observed
 }
 

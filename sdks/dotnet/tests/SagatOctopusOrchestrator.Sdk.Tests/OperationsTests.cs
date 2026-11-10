@@ -152,6 +152,90 @@ public sealed class OperationsTests : IAsyncLifetime
         Assert.Null(plain.StartDelayedUntil);
     }
 
+    // ---------------------------------------------------------------------------------------------- where a run came from
+
+    [Fact]
+    public async Task ARunSaysWhichScheduleStartedItByWhichKindOfActionForWhichNominalTimeAndUnderWhichRevisionAndARunNoScheduleStartedHasNone()
+    {
+        server.Handler = _ => Reply(200, Run(r =>
+        {
+            r["startedBy"] = $"system:schedule:{ScheduleId}";
+            r["schedule"] = new JsonObject { ["scheduleId"] = ScheduleId, ["nominalTime"] = "2026-11-04T02:00:00.123456Z", ["kind"] = "BACKFILL", ["revision"] = 3 };
+        }));
+        var scheduled = await NewClient().GetAsync(RunId);
+        var schedule = Assert.IsType<RunSchedule>(scheduled.Schedule);
+        Assert.Equal(ScheduleId, schedule.ScheduleId);
+        Assert.Equal("BACKFILL", schedule.Kind);
+        Assert.Equal(3, schedule.Revision);
+        // the instant is parsed, not carried: a DateTimeOffset holds the microseconds of the wire (ticks are 100 ns)
+        Assert.Equal(new DateTimeOffset(2026, 11, 4, 2, 0, 0, TimeSpan.Zero).AddTicks(1_234_560), schedule.NominalTime);
+        Assert.Equal(TimeSpan.Zero, schedule.NominalTime.Offset);
+        Assert.Equal("2026-11-04T02:00:00.123456Z", scheduled.Raw.GetProperty("schedule").GetProperty("nominalTime").GetString());
+        Assert.Null(scheduled.ResetFrom);
+
+        // an offset other than Z is the same instant in UTC
+        server.Handler = _ => Reply(200, Run(r => r["schedule"] = new JsonObject { ["scheduleId"] = ScheduleId, ["nominalTime"] = "2026-11-04T04:00:00+02:00", ["kind"] = "SCHEDULED", ["revision"] = 1 }));
+        Assert.Equal(new DateTimeOffset(2026, 11, 4, 2, 0, 0, TimeSpan.Zero), (await NewClient().GetAsync(RunId)).Schedule!.NominalTime);
+
+        // a kind this SDK does not know is kept as the server sent it, and a plain run has neither field
+        server.Handler = _ => Reply(200, Run(r => r["schedule"] = new JsonObject { ["scheduleId"] = ScheduleId, ["nominalTime"] = "2026-11-04T02:00:00Z", ["kind"] = "SOMETHING_NEW", ["revision"] = 1 }));
+        Assert.Equal("SOMETHING_NEW", (await NewClient().GetAsync(RunId)).Schedule!.Kind);
+        server.Handler = _ => Reply(200, Run());
+        var plain = await NewClient().GetAsync(RunId);
+        Assert.Null(plain.Schedule);
+        Assert.Null(plain.ResetFrom);
+        // a JSON null is an absent field
+        server.Handler = _ => Reply(200, Run(r => { r["schedule"] = null; r["resetFrom"] = null; }));
+        var nulls = await NewClient().GetAsync(RunId);
+        Assert.Null(nulls.Schedule);
+        Assert.Null(nulls.ResetFrom);
+    }
+
+    [Fact]
+    public async Task ARunAResetMadeSaysTheRunItCameFromAndTheJournalSequenceItKeeps()
+    {
+        const string Source = "0190aaaa-0000-7000-8000-0000000000aa";
+        server.Handler = _ => Reply(200, Run(r =>
+        {
+            r["rerunOf"] = Source;
+            r["resetFrom"] = new JsonObject { ["runId"] = Source, ["sequence"] = 4 };
+        }));
+        var reset = await NewClient().GetAsync(RunId);
+        Assert.Equal(new RunResetFrom(Source, 4), reset.ResetFrom);
+        Assert.Equal(Source, reset.RerunOf);
+        Assert.Null(reset.Schedule);
+
+        // started again, not reset: RerunOf and nothing else
+        server.Handler = _ => Reply(200, Run(r => r["rerunOf"] = Source));
+        var again = await NewClient().GetAsync(RunId);
+        Assert.Equal(Source, again.RerunOf);
+        Assert.Null(again.ResetFrom);
+    }
+
+    [Fact]
+    public async Task AnAnswerWhoseScheduleOrResetIsNotWhatTheContractSaysIsAProtocolErrorNotARunWithHalfOfIt()
+    {
+        var broken = new Action<JsonObject>[]
+        {
+            r => r["schedule"] = new JsonObject { ["scheduleId"] = ScheduleId, ["nominalTime"] = "yesterday", ["kind"] = "SCHEDULED", ["revision"] = 1 },
+            r => r["schedule"] = new JsonObject { ["scheduleId"] = ScheduleId, ["kind"] = "SCHEDULED", ["revision"] = 1 },
+            r => r["schedule"] = new JsonObject { ["scheduleId"] = ScheduleId, ["nominalTime"] = "2026-11-04T02:00:00Z", ["kind"] = "SCHEDULED", ["revision"] = 0 },
+            r => r["schedule"] = new JsonObject { ["scheduleId"] = ScheduleId, ["nominalTime"] = "2026-11-04T02:00:00Z", ["kind"] = "SCHEDULED" },
+            r => r["schedule"] = new JsonObject { ["nominalTime"] = "2026-11-04T02:00:00Z", ["kind"] = "SCHEDULED", ["revision"] = 1 },
+            r => r["schedule"] = new JsonObject { ["scheduleId"] = ScheduleId, ["nominalTime"] = "2026-11-04T02:00:00Z", ["revision"] = 1 },
+            r => r["schedule"] = "nightly",
+            r => r["resetFrom"] = new JsonObject { ["runId"] = RunId },
+            r => r["resetFrom"] = new JsonObject { ["runId"] = RunId, ["sequence"] = 0 },
+            r => r["resetFrom"] = new JsonObject { ["sequence"] = 4 },
+            r => r["resetFrom"] = "the-run",
+        };
+        foreach (var change in broken)
+        {
+            server.Handler = _ => Reply(200, Run(change));
+            await RefusedAsync(() => NewClient().GetAsync(RunId), SagatErrorCode.Protocol);
+        }
+    }
+
     [Fact]
     public async Task TheTwoHundredOfUseExistingIsARunThatWasNotStartedHereAndAStartWithoutTheNewOptionsSendsNoneOfThem()
     {

@@ -1239,7 +1239,25 @@ public final class SagatClient implements AutoCloseable {
                 optStr(raw, "rerunOf"),
                 optStr(raw, "businessId"),
                 optInstant(raw, "startDelayedUntil"),
+                toRunSchedule(raw.path("schedule")),
+                toRunResetFrom(raw.path("resetFrom")),
                 raw);
+    }
+
+    private static Run.ScheduleOfRun toRunSchedule(JsonNode node) {
+        if (node.isMissingNode() || node.isNull()) return null;
+        JsonNode schedule = object(node, "a run schedule");
+        Instant nominalTime = optInstant(schedule, "nominalTime");
+        if (nominalTime == null) {
+            throw SagatException.of(ErrorCode.PROTOCOL, "nominalTime is missing or invalid in the answer");
+        }
+        return new Run.ScheduleOfRun(str(schedule, "scheduleId"), nominalTime, str(schedule, "kind"), revision(schedule, "revision", 1));
+    }
+
+    private static Run.ResetFromOfRun toRunResetFrom(JsonNode node) {
+        if (node.isMissingNode() || node.isNull()) return null;
+        JsonNode reset = object(node, "a run reset");
+        return new Run.ResetFromOfRun(str(reset, "runId"), revision(reset, "sequence", 1));
     }
 
     private static String completionKind(JsonNode node) {

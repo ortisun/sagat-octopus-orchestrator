@@ -995,8 +995,33 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             RerunOf = OptStr(raw, "rerunOf"),
             BusinessId = OptStr(raw, "businessId"),
             StartDelayedUntil = OptDate(raw, "startDelayedUntil"),
+            Schedule = ToRunSchedule(raw),
+            ResetFrom = ToRunResetFrom(raw),
             Raw = raw,
         };
+    }
+
+    private static RunSchedule? ToRunSchedule(JsonElement run)
+    {
+        if (!run.TryGetProperty("schedule", out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        var schedule = ObjectOf(value, "a run schedule");
+        var nominalTime = OptDate(schedule, "nominalTime") ?? throw new SagatException(SagatErrorCode.Protocol, "nominalTime is missing or invalid in the answer");
+        return new RunSchedule(Str(schedule, "scheduleId"), nominalTime, Str(schedule, "kind"), Revision(schedule, "revision", 1));
+    }
+
+    private static RunResetFrom? ToRunResetFrom(JsonElement run)
+    {
+        if (!run.TryGetProperty("resetFrom", out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        var reset = ObjectOf(value, "a run reset");
+        return new RunResetFrom(Str(reset, "runId"), Revision(reset, "sequence", 1));
     }
 
     private static string? CompletionKind(JsonElement element)

@@ -71,7 +71,9 @@ idempotency, correlation, deadline and trace behavior.
 (`BusinessIdConflictPolicies.Fail`, the default, or `UseExisting`), a `BusinessIdReusePolicy` and a `StartDelay`
 (a `TimeSpan`, turned once, before the first attempt, into whole milliseconds, truncated toward zero; the range is the server's to judge).
 `StartAsync` answers a `StartedRun`: `Started` is false when an open run already held the identifier and `UseExisting` was asked (HTTP 200).
-`Run.BusinessId` and `Run.StartDelayedUntil` are `null` when there is none.
+`Run.BusinessId` and `Run.StartDelayedUntil` are `null` when there is none. So are `Run.Schedule` (a `RunSchedule`: the schedule, the nominal time as a
+`DateTimeOffset`, the kind of action, `SCHEDULED`, `TRIGGERED`, `BACKFILL` or any string a newer server sends, and the schedule's revision) and `Run.ResetFrom`
+(a `RunResetFrom`: the run a reset made this one from and the journal sequence it keeps); a malformed one is `Protocol`, never half a run.
 
 ```csharp
 var run = await sagat.StartAsync("order-flow", new { orderId = "o-1" },

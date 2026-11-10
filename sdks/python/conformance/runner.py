@@ -336,6 +336,16 @@ def run_json(run: Run) -> Obj:
         observed["businessId"] = run.business_id
     if run.start_delayed_until is not None:
         observed["startDelayedUntil"] = instant(run.start_delayed_until)
+    # Present only for a run a schedule started, or a reset made.
+    if run.schedule is not None:
+        observed["schedule"] = {
+            "scheduleId": run.schedule.schedule_id,
+            "nominalTime": instant(run.schedule.nominal_time),
+            "kind": run.schedule.kind,
+            "revision": run.schedule.revision,
+        }
+    if run.reset_from is not None:
+        observed["resetFrom"] = {"runId": run.reset_from.run_id, "sequence": run.reset_from.sequence}
     return observed
 
 

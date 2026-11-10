@@ -52,8 +52,28 @@ export interface Run {
   businessId: string | null;
   /** The instant the entry of a run started with a delay is held until, or null once it is released (or if it never was held). */
   startDelayedUntil: Date | null;
+  /** The schedule action that started the run, or null for a run no schedule started. */
+  schedule: RunSchedule | null;
+  /** The run a reset made this one from and the journal sequence of it that this run keeps, or null for a run no reset made (a rerun has `rerunOf` and not this). */
+  resetFrom: RunResetFrom | null;
   /** The answer as the server sent it, so a field of a newer server is reachable. */
   raw: Record<string, unknown>;
+}
+
+/** Which schedule started a run, for which nominal time, by which kind of action and under which revision of the schedule. */
+export interface RunSchedule {
+  scheduleId: string;
+  /** The nominal time of the action: the time the schedule calculated, or for `trigger` the instant of the action. A `Date`, so to the millisecond; `raw.schedule.nominalTime` holds the exact text. */
+  nominalTime: Date;
+  /** `SCHEDULED`, `TRIGGERED` or `BACKFILL`, or another string: the set only grows. */
+  kind: string;
+  revision: number;
+}
+
+/** The run a reset made a run from, and the journal sequence of that run (1 or more) the new run keeps as its own. */
+export interface RunResetFrom {
+  runId: string;
+  sequence: number;
 }
 
 export type SegmentCompletionKind = 'CONTINUED' | 'FINAL';
@@ -348,8 +368,24 @@ export function toRun(value: unknown): Run {
     rerunOf: optStr(raw, 'rerunOf'),
     businessId: optStr(raw, 'businessId'),
     startDelayedUntil: optDate(raw, 'startDelayedUntil'),
+    schedule: toRunSchedule(raw['schedule']),
+    resetFrom: toRunResetFrom(raw['resetFrom']),
     raw,
   };
+}
+
+function toRunSchedule(value: unknown): RunSchedule | null {
+  if (value === null || value === undefined) return null;
+  const schedule = object(value, 'a run schedule');
+  const nominalTime = optDate(schedule, 'nominalTime');
+  if (!nominalTime) throw new SagatError({ code: 'PROTOCOL', message: 'nominalTime is missing or invalid in the answer' });
+  return { scheduleId: str(schedule, 'scheduleId'), nominalTime, kind: str(schedule, 'kind'), revision: revision(schedule, 'revision', 1) };
+}
+
+function toRunResetFrom(value: unknown): RunResetFrom | null {
+  if (value === null || value === undefined) return null;
+  const reset = object(value, 'a run reset');
+  return { runId: str(reset, 'runId'), sequence: revision(reset, 'sequence', 1) };
 }
 
 function completionKind(value: unknown): SegmentCompletionKind | null {

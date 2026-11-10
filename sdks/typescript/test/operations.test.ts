@@ -96,6 +96,59 @@ test('a start sends the business identifier, its policies and the delay once, an
   assert.equal(plain.startDelayedUntil, null);
 });
 
+// ---------------------------------------------------------------------------------------------- where a run came from
+
+test('a run says which schedule started it, by which kind of action, for which nominal time and under which revision, and a run no schedule started has none', async () => {
+  const body = run({
+    startedBy: `system:schedule:${SCHEDULE}`,
+    schedule: { scheduleId: SCHEDULE, nominalTime: '2026-11-04T02:00:00.123456Z', kind: 'BACKFILL', revision: 3 },
+  });
+  prepare((_req, res) => reply(res, 200, body));
+  const scheduled = await client().get(RUN);
+  assert.deepEqual(scheduled.schedule, {
+    scheduleId: SCHEDULE, nominalTime: new Date('2026-11-04T02:00:00.123Z'), kind: 'BACKFILL', revision: 3,
+  });
+  assert.equal(scheduled.schedule?.nominalTime.toISOString(), '2026-11-04T02:00:00.123Z', 'an instant is a Date, to the millisecond');
+  assert.deepEqual((scheduled.raw['schedule'] as Record<string, unknown>)['nominalTime'], '2026-11-04T02:00:00.123456Z', 'the exact text stays in `raw`');
+  assert.equal(scheduled.resetFrom, null);
+
+  // a kind this SDK does not know is kept as the server sent it, and a plain run has neither field
+  prepare((_req, res) => reply(res, 200, run({ schedule: { scheduleId: SCHEDULE, nominalTime: '2026-11-04T02:00:00Z', kind: 'SOMETHING_NEW', revision: 1 } })));
+  assert.equal((await client().get(RUN)).schedule?.kind, 'SOMETHING_NEW');
+  prepare((_req, res) => reply(res, 200, run()));
+  const plain = await client().get(RUN);
+  assert.equal(plain.schedule, null);
+  assert.equal(plain.resetFrom, null);
+});
+
+test('a run a reset made says the run it came from and the journal sequence it keeps', async () => {
+  const source = '0190aaaa-0000-7000-8000-0000000000aa';
+  prepare((_req, res) => reply(res, 200, run({ rerunOf: source, resetFrom: { runId: source, sequence: 4 } })));
+  const reset = await client().get(RUN);
+  assert.deepEqual(reset.resetFrom, { runId: source, sequence: 4 });
+  assert.equal(reset.rerunOf, source);
+  assert.equal(reset.schedule, null);
+  // started again, not reset: `rerunOf` and nothing else
+  prepare((_req, res) => reply(res, 200, run({ rerunOf: source })));
+  const again = await client().get(RUN);
+  assert.equal(again.rerunOf, source);
+  assert.equal(again.resetFrom, null);
+});
+
+test('an answer whose schedule or reset is not what the contract says is a PROTOCOL error, not a run with half of it', async () => {
+  for (const broken of [
+    { schedule: { scheduleId: SCHEDULE, nominalTime: 'yesterday', kind: 'SCHEDULED', revision: 1 } },
+    { schedule: { scheduleId: SCHEDULE, nominalTime: '2026-11-04T02:00:00Z', kind: 'SCHEDULED', revision: 0 } },
+    { schedule: { nominalTime: '2026-11-04T02:00:00Z', kind: 'SCHEDULED', revision: 1 } },
+    { schedule: 'nightly' },
+    { resetFrom: { runId: RUN } },
+    { resetFrom: { runId: RUN, sequence: 0 } },
+  ]) {
+    prepare((_req, res) => reply(res, 200, run(broken)));
+    await assert.rejects(client().get(RUN), (error: unknown) => error instanceof SagatError && error.code === 'PROTOCOL', JSON.stringify(broken));
+  }
+});
+
 test('the 200 of USE_EXISTING is a run that was not started here, and a start without the new options sends none of them', async () => {
   prepare((_req, res) => reply(res, 200, run()));
   const existing = await client().start(WF, {}, { idempotencyKey: 'key-12345678', businessId: 'o-1', businessIdConflictPolicy: 'USE_EXISTING' });

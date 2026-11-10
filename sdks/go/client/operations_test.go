@@ -136,6 +136,133 @@ func TestAStartSendsTheBusinessIDItsPoliciesAndTheDelayOnceAndSaysWhetherItCreat
 	}
 }
 
+// ---- where a run came from
+
+func TestARunSaysWhichScheduleStartedItByWhichKindOfActionForWhichNominalTimeAndUnderWhichRevisionAndARunNoScheduleStartedHasNone(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{
+			"startedBy": "system:schedule:" + scheduleID,
+			"schedule":  map[string]any{"scheduleId": scheduleID, "nominalTime": "2026-11-04T02:00:00.123456Z", "kind": "BACKFILL", "revision": 3},
+		}))
+	})
+	c := newClient(t, f)
+	scheduled, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scheduled.Schedule == nil {
+		t.Fatalf("the run has a schedule: %+v", scheduled)
+	}
+	// A fixed literal, so that an instant that was carried and not parsed shows: the microseconds are kept (a time.Time
+	// holds nanoseconds) and the instant is in UTC.
+	wantTime := time.Date(2026, 11, 4, 2, 0, 0, 123456000, time.UTC)
+	if *scheduled.Schedule != (client.RunSchedule{ScheduleID: scheduleID, NominalTime: wantTime, Kind: "BACKFILL", Revision: 3}) {
+		t.Errorf("%+v", *scheduled.Schedule)
+	}
+	if got := scheduled.Schedule.NominalTime; !got.Equal(wantTime) || got.Nanosecond() != 123456000 || got.Location() != time.UTC || got.Unix() != 1793757600 {
+		t.Errorf("the nominal time is a parsed instant in UTC, to the microsecond: %v (unix %d)", got, got.Unix())
+	}
+	var text struct {
+		NominalTime string `json:"nominalTime"`
+	}
+	if err := json.Unmarshal(scheduled.Raw["schedule"], &text); err != nil || text.NominalTime != "2026-11-04T02:00:00.123456Z" {
+		t.Errorf("the exact text stays in Raw: %q (%v)", text.NominalTime, err)
+	}
+	if scheduled.ResetFrom != nil {
+		t.Errorf("a run a schedule started was not made by a reset: %+v", *scheduled.ResetFrom)
+	}
+
+	// An offset is an instant too, and a kind this SDK does not know is kept as the server sent it.
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"schedule": map[string]any{"scheduleId": scheduleID, "nominalTime": "2026-11-04T04:00:00+02:00", "kind": "SOMETHING_NEW", "revision": 1}}))
+	})
+	unknown, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.Schedule == nil || unknown.Schedule.Kind != "SOMETHING_NEW" || !unknown.Schedule.NominalTime.Equal(time.Date(2026, 11, 4, 2, 0, 0, 0, time.UTC)) {
+		t.Errorf("%+v", unknown.Schedule)
+	}
+
+	// A plain run, and a run whose members are null, have neither.
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
+	plain, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Schedule != nil || plain.ResetFrom != nil {
+		t.Errorf("a run that no schedule started and no reset made has neither: %+v %+v", plain.Schedule, plain.ResetFrom)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"schedule": nil, "resetFrom": nil}))
+	})
+	nulls, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nulls.Schedule != nil || nulls.ResetFrom != nil {
+		t.Errorf("a null is absent: %+v %+v", nulls.Schedule, nulls.ResetFrom)
+	}
+}
+
+func TestARunAResetMadeSaysTheRunItCameFromAndTheJournalSequenceItKeeps(t *testing.T) {
+	const source = "0190aaaa-0000-7000-8000-0000000000aa"
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"rerunOf": source, "resetFrom": map[string]any{"runId": source, "sequence": 4}}))
+	})
+	c := newClient(t, f)
+	reset, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.ResetFrom == nil || *reset.ResetFrom != (client.RunResetFrom{RunID: source, Sequence: 4}) {
+		t.Errorf("%+v", reset.ResetFrom)
+	}
+	if reset.RerunOf != source || reset.Schedule != nil {
+		t.Errorf("%+v", reset)
+	}
+	// started again, not reset: RerunOf and nothing else
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(map[string]any{"rerunOf": source})) })
+	again, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.RerunOf != source || again.ResetFrom != nil {
+		t.Errorf("a rerun is not a reset: %+v", again.ResetFrom)
+	}
+}
+
+func TestAnAnswerWhoseScheduleOrResetIsNotWhatTheContractSaysIsAProtocolErrorNotARunWithHalfOfIt(t *testing.T) {
+	f := newFake(t)
+	c := newClient(t, f)
+	for _, broken := range []map[string]any{
+		{"schedule": map[string]any{"scheduleId": scheduleID, "nominalTime": "yesterday", "kind": "SCHEDULED", "revision": 1}},
+		{"schedule": map[string]any{"scheduleId": scheduleID, "kind": "SCHEDULED", "revision": 1}},
+		{"schedule": map[string]any{"scheduleId": scheduleID, "nominalTime": "2026-11-04T02:00:00Z", "kind": "SCHEDULED", "revision": 0}},
+		{"schedule": map[string]any{"scheduleId": scheduleID, "nominalTime": "2026-11-04T02:00:00Z", "kind": "SCHEDULED"}},
+		{"schedule": map[string]any{"nominalTime": "2026-11-04T02:00:00Z", "kind": "SCHEDULED", "revision": 1}},
+		{"schedule": map[string]any{"scheduleId": scheduleID, "nominalTime": "2026-11-04T02:00:00Z", "revision": 1}},
+		{"schedule": "nightly"},
+		{"schedule": []any{}},
+		{"resetFrom": map[string]any{"runId": runUUID}},
+		{"resetFrom": map[string]any{"runId": runUUID, "sequence": 0}},
+		{"resetFrom": map[string]any{"sequence": 4}},
+		{"resetFrom": "0190aaaa-0000-7000-8000-0000000000aa"},
+	} {
+		f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(broken)) })
+		got, err := c.Get(context.Background(), runUUID)
+		if err == nil {
+			t.Errorf("%v: a run with half of it: %+v", broken, got)
+			continue
+		}
+		if se := asSagat(t, err); se.Code != sagat.CodeProtocol {
+			t.Errorf("%v: code %s, want %s", broken, se.Code, sagat.CodeProtocol)
+		}
+	}
+}
+
 func TestThe200OfUseExistingIsARunThatWasNotStartedHereAndAStartWithoutTheNewOptionsSendsNoneOfThem(t *testing.T) {
 	f := newFake(t)
 	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })

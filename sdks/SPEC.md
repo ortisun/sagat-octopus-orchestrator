@@ -206,6 +206,13 @@ Rules:
   SDK that never sends a conflict policy never sees the `200`. Where the language cannot widen the type `start` already
   returns (Java: `Run` is a final record), `start` keeps answering the `Run` and `startResult` answers the pair. A `Run` carries `businessId` and `startDelayedUntil` when
   the server sent them.
+- A `Run` says where it came from, when the server says so: `schedule` (`{scheduleId, nominalTime, kind, revision}`: the schedule action
+  that started it, `kind` being the kind of the action, `SCHEDULED`, `TRIGGERED` or `BACKFILL`, or another string kept as sent) and
+  `resetFrom` (`{runId, sequence}`: the run a reset made it from and the journal sequence it keeps). Both are absent/null/None/nil for a run
+  that has none, read strictly (a `schedule` that is not an object, lacks `scheduleId` or `kind`, has an unreadable `nominalTime` or a
+  `revision` below 1, and a `resetFrom` without `runId` or with a `sequence` below 1, is the SDK's `PROTOCOL` error, never a run with half of
+  it), and an instant keeps the language's native precision (the server writes microseconds). The conformance observation of a `Run` carries the
+  two objects only when the run has them, so the observations of every other run are what they were.
 - A start delay is a duration in the language's idiom, converted **once**, before the first attempt, to integer
   milliseconds by truncation toward zero and sent as `startDelayMs`. Only a value that is not a finite number is
   refused locally; the range (1 ms to 366 days) is the server's (`START_DELAY_INVALID`).

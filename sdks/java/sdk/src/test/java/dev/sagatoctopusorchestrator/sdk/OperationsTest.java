@@ -208,6 +208,80 @@ class OperationsTest {
         assertTrue(body(only()).contains("\"startDelayMs\":" + Long.MAX_VALUE), body(only()));
     }
 
+    // ---------------------------------------------------------------------------------- where a run came from
+
+    @Test
+    void aRunSaysWhichScheduleStartedItByWhichKindOfActionForWhichNominalTimeAndUnderWhichRevisionAndARunNoScheduleStartedHasNone() {
+        server.prepare((req, reply) -> reply.send(200, run(
+                "startedBy", "'system:schedule:" + SCHEDULE + "'",
+                "schedule", "{'scheduleId':'" + SCHEDULE + "','nominalTime':'2026-11-04T02:00:00.123456Z','kind':'BACKFILL','revision':3}")));
+        Run scheduled = client().get(RUN);
+        assertEquals(new Run.ScheduleOfRun(SCHEDULE, Instant.parse("2026-11-04T02:00:00.123456Z"), "BACKFILL", 3), scheduled.schedule());
+        // the instant is read, not carried: 2026-11-04T02:00:00Z is second 1793757600, and the microseconds are kept
+        assertEquals(Instant.ofEpochSecond(1_793_757_600L, 123_456_000L), scheduled.schedule().nominalTime());
+        assertEquals(123_456_000, scheduled.schedule().nominalTime().getNano(), "the type holds more than a millisecond, so the microseconds stay");
+        assertEquals("2026-11-04T02:00:00.123456Z", scheduled.raw().path("schedule").path("nominalTime").textValue(), "the exact text stays in raw()");
+        assertNull(scheduled.resetFrom());
+
+        // a time with an offset is the same instant
+        server.prepare((req, reply) -> reply.send(200, run(
+                "schedule", "{'scheduleId':'" + SCHEDULE + "','nominalTime':'2026-11-04T03:00:00+01:00','kind':'SCHEDULED','revision':1}")));
+        assertEquals(Instant.ofEpochSecond(1_793_757_600L), client().get(RUN).schedule().nominalTime());
+
+        // a kind this SDK does not know is kept as the server sent it, and a plain run has neither field
+        server.prepare((req, reply) -> reply.send(200, run(
+                "schedule", "{'scheduleId':'" + SCHEDULE + "','nominalTime':'2026-11-04T02:00:00Z','kind':'SOMETHING_NEW','revision':1}")));
+        assertEquals("SOMETHING_NEW", client().get(RUN).schedule().kind());
+        server.prepare((req, reply) -> reply.send(200, run()));
+        Run plain = client().get(RUN);
+        assertNull(plain.schedule());
+        assertNull(plain.resetFrom());
+        // a JSON null is an absent field
+        server.prepare((req, reply) -> reply.send(200, run("schedule", "null", "resetFrom", "null")));
+        Run nulls = client().get(RUN);
+        assertNull(nulls.schedule());
+        assertNull(nulls.resetFrom());
+    }
+
+    @Test
+    void aRunAResetMadeSaysTheRunItCameFromAndTheJournalSequenceItKeeps() {
+        String source = "0190aaaa-0000-7000-8000-0000000000aa";
+        server.prepare((req, reply) -> reply.send(200, run(
+                "rerunOf", "'" + source + "'", "resetFrom", "{'runId':'" + source + "','sequence':4}")));
+        Run reset = client().get(RUN);
+        assertEquals(new Run.ResetFromOfRun(source, 4), reset.resetFrom());
+        assertEquals(source, reset.rerunOf());
+        assertNull(reset.schedule());
+        // started again, not reset: rerunOf and nothing else
+        server.prepare((req, reply) -> reply.send(200, run("rerunOf", "'" + source + "'")));
+        Run again = client().get(RUN);
+        assertEquals(source, again.rerunOf());
+        assertNull(again.resetFrom());
+    }
+
+    @Test
+    void anAnswerWhoseScheduleOrResetIsNotWhatTheContractSaysIsAProtocolErrorNotARunWithHalfOfIt() {
+        String[][] broken = {
+            {"schedule", "{'scheduleId':'" + SCHEDULE + "','nominalTime':'yesterday','kind':'SCHEDULED','revision':1}"},
+            {"schedule", "{'scheduleId':'" + SCHEDULE + "','kind':'SCHEDULED','revision':1}"},
+            {"schedule", "{'scheduleId':'" + SCHEDULE + "','nominalTime':'2026-11-04T02:00:00Z','kind':'SCHEDULED','revision':0}"},
+            {"schedule", "{'scheduleId':'" + SCHEDULE + "','nominalTime':'2026-11-04T02:00:00Z','kind':'SCHEDULED','revision':'1'}"},
+            {"schedule", "{'scheduleId':'" + SCHEDULE + "','nominalTime':'2026-11-04T02:00:00Z','kind':'SCHEDULED'}"},
+            {"schedule", "{'nominalTime':'2026-11-04T02:00:00Z','kind':'SCHEDULED','revision':1}"},
+            {"schedule", "{'scheduleId':'" + SCHEDULE + "','nominalTime':'2026-11-04T02:00:00Z','revision':1}"},
+            {"schedule", "'nightly'"},
+            {"resetFrom", "{'runId':'" + RUN + "'}"},
+            {"resetFrom", "{'runId':'" + RUN + "','sequence':0}"},
+            {"resetFrom", "{'sequence':4}"},
+            {"resetFrom", "'run'"},
+        };
+        for (String[] field : broken) {
+            server.prepare((req, reply) -> reply.send(200, run(field)));
+            SagatException error = assertThrows(SagatException.class, () -> client().get(RUN), field[0] + " " + field[1]);
+            assertEquals(ErrorCode.PROTOCOL, error.code(), field[0] + " " + field[1]);
+        }
+    }
+
     // ----------------------------------------------------------------------------------------- schedules
 
     private static ScheduleWrite nightly() {

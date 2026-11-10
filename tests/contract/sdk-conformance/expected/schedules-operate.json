@@ -572,6 +572,62 @@
       "id": "empty-range",
       "ok": false,
       "op": "scheduleBackfill"
+    },
+    {
+      "id": "triggered-run",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:3>",
+        "schedule": {
+          "kind": "TRIGGERED",
+          "nominalTime": "<time>",
+          "revision": 1,
+          "scheduleId": "<uuid:2>"
+        },
+        "startedBy": "system:schedule:<uuid:2>",
+        "status": "RUNNING",
+        "traceId": "<trace:4>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:9>",
+        "workflowId": "<uuid:1>"
+      }
+    },
+    {
+      "id": "backfilled-run",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:6>",
+        "schedule": {
+          "kind": "BACKFILL",
+          "nominalTime": "<time>",
+          "revision": 1,
+          "scheduleId": "<uuid:4>"
+        },
+        "startedBy": "system:schedule:<uuid:4>",
+        "status": "RUNNING",
+        "traceId": "<trace:5>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:9>",
+        "workflowId": "<uuid:1>"
+      }
     }
   ],
   "serverState": [

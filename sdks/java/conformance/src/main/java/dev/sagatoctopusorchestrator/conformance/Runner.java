@@ -609,6 +609,19 @@ public final class Runner {
         if (run.startDelayedUntil() != null) {
             out.put("startDelayedUntil", Json.instant(run.startDelayedUntil()));
         }
+        // Present only for a run a schedule started, or a reset made.
+        if (run.schedule() != null) {
+            ObjectNode schedule = out.putObject("schedule");
+            schedule.put("scheduleId", run.schedule().scheduleId());
+            schedule.set("nominalTime", instant(run.schedule().nominalTime()));
+            schedule.put("kind", run.schedule().kind());
+            schedule.put("revision", run.schedule().revision());
+        }
+        if (run.resetFrom() != null) {
+            ObjectNode resetFrom = out.putObject("resetFrom");
+            resetFrom.put("runId", run.resetFrom().runId());
+            resetFrom.put("sequence", run.resetFrom().sequence());
+        }
         return out;
     }
 

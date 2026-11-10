@@ -123,6 +123,15 @@ public record Run
     /// </summary>
     public DateTimeOffset? StartDelayedUntil { get; init; }
 
+    /// <summary>The schedule action that started the run; <c>null</c> for a run no schedule started.</summary>
+    public RunSchedule? Schedule { get; init; }
+
+    /// <summary>
+    /// The run a reset made this one from, and the journal sequence of it that this run keeps; <c>null</c> for a run no reset made
+    /// (a rerun has <see cref="RerunOf"/> and not this).
+    /// </summary>
+    public RunResetFrom? ResetFrom { get; init; }
+
     /// <summary>The answer as the server sent it.</summary>
     public JsonElement Raw { get; init; }
 
@@ -155,6 +164,18 @@ public sealed record StartedRun : Run
 /// <param name="CompletionKind"><c>CONTINUED</c> or <c>FINAL</c>; <c>null</c> while the segment is open.</param>
 /// <param name="SuccessorRunId">The next segment when the run was continued.</param>
 public sealed record RunChainSegment(string ChainId, int SegmentIndex, string? CompletionKind, string? SuccessorRunId);
+
+/// <summary>Which schedule started a run, for which nominal time, by which kind of action and under which revision of the schedule.</summary>
+/// <param name="ScheduleId">The schedule.</param>
+/// <param name="NominalTime">The nominal time of the action (UTC): the time the schedule calculated, or for a trigger the instant of the action. <c>Run.Raw</c> holds the exact text.</param>
+/// <param name="Kind"><c>SCHEDULED</c>, <c>TRIGGERED</c> or <c>BACKFILL</c>, or another string a newer server sends: the set only grows, and a value this SDK does not know is kept as it came.</param>
+/// <param name="Revision">The revision of the schedule the action ran under (the first is 1).</param>
+public sealed record RunSchedule(string ScheduleId, DateTimeOffset NominalTime, string Kind, long Revision);
+
+/// <summary>The run a reset made a run from, and the journal sequence of that run the new run keeps as its own.</summary>
+/// <param name="RunId">The run that was reset.</param>
+/// <param name="Sequence">The journal sequence (1 or more) of <paramref name="RunId"/> up to which the new run keeps the history.</param>
+public sealed record RunResetFrom(string RunId, long Sequence);
 
 /// <summary>A page of runs.</summary>
 public sealed record RunPage(IReadOnlyList<Run> Items, string? NextCursor);

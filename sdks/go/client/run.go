@@ -77,9 +77,36 @@ type Run struct {
 	// StartDelayedUntil is the instant the entry of a run started with a delay is held until. It is the
 	// zero time.Time for a run that was never held, and stays set once the run is released.
 	StartDelayedUntil time.Time
+	// Schedule is the schedule action that started the run, or nil for a run no schedule started.
+	Schedule *RunSchedule
+	// ResetFrom is the run a reset made this one from and the journal sequence of it that this run keeps,
+	// or nil for a run no reset made (a rerun has RerunOf and not this).
+	ResetFrom *RunResetFrom
 	// Raw is the answer as the server sent it, member by member, so that a field of a newer server
 	// is reachable.
 	Raw map[string]json.RawMessage
+}
+
+// RunSchedule says which schedule started a run, for which nominal time, by which kind of action and under
+// which revision of the schedule.
+type RunSchedule struct {
+	ScheduleID string
+	// NominalTime is the nominal time of the action: the time the schedule calculated, or for a trigger the
+	// instant of the action. It is in UTC and keeps the precision of the wire (microseconds); Run.Raw holds the
+	// exact text.
+	NominalTime time.Time
+	// Kind is "SCHEDULED", "TRIGGERED" or "BACKFILL", or another string: the set only grows, and a kind this SDK
+	// does not know is kept as the server sent it.
+	Kind string
+	// Revision is the revision of the schedule the action was made under (1 or more).
+	Revision int64
+}
+
+// RunResetFrom is the run a reset made a run from, and the journal sequence of that run (1 or more) the new
+// run keeps as its own.
+type RunResetFrom struct {
+	RunID    string
+	Sequence int64
 }
 
 // StartedRun is the answer to Start: the run, and whether this call created it. Started is false when
@@ -415,7 +442,61 @@ func runOf(m map[string]json.RawMessage) (*Run, error) {
 		}
 		run.Chain = segment
 	}
+	if raw, present := m["schedule"]; present && !jsonx.IsNull(raw) {
+		schedule, err := runScheduleOf(raw)
+		if err != nil {
+			return nil, err
+		}
+		run.Schedule = schedule
+	}
+	if raw, present := m["resetFrom"]; present && !jsonx.IsNull(raw) {
+		reset, err := runResetFromOf(raw)
+		if err != nil {
+			return nil, err
+		}
+		run.ResetFrom = reset
+	}
 	return run, nil
+}
+
+// runScheduleOf reads the schedule of a run strictly: an object that lacks a member, or has one the contract does
+// not allow, is a PROTOCOL error and never a run with half of it.
+func runScheduleOf(raw json.RawMessage) (*RunSchedule, error) {
+	m, err := jsonx.Object(raw)
+	if err != nil {
+		return nil, protocolError("schedule is invalid in the answer")
+	}
+	schedule := &RunSchedule{}
+	if schedule.ScheduleID, err = requiredString(m, "scheduleId"); err != nil {
+		return nil, err
+	}
+	nominal, ok := jsonx.Time(m, "nominalTime")
+	if !ok {
+		return nil, protocolError("nominalTime is missing or invalid in the answer")
+	}
+	schedule.NominalTime = nominal
+	if schedule.Kind, err = requiredString(m, "kind"); err != nil {
+		return nil, err
+	}
+	if schedule.Revision, err = requiredRevision(m, "revision", 1); err != nil {
+		return nil, err
+	}
+	return schedule, nil
+}
+
+func runResetFromOf(raw json.RawMessage) (*RunResetFrom, error) {
+	m, err := jsonx.Object(raw)
+	if err != nil {
+		return nil, protocolError("resetFrom is invalid in the answer")
+	}
+	reset := &RunResetFrom{}
+	if reset.RunID, err = requiredString(m, "runId"); err != nil {
+		return nil, err
+	}
+	if reset.Sequence, err = requiredRevision(m, "sequence", 1); err != nil {
+		return nil, err
+	}
+	return reset, nil
 }
 
 func completionKindOf(m map[string]json.RawMessage) (SegmentCompletionKind, error) {

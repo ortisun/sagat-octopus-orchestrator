@@ -257,6 +257,136 @@ async fn a_start_sends_the_business_identifier_its_policies_and_the_delay_once_a
     assert!(plain.business_id.is_none() && plain.start_delayed_until.is_none());
 }
 
+// ------------------------------------------------------------------------------- where a run came from
+
+#[tokio::test]
+async fn a_run_says_which_schedule_started_it_by_which_kind_of_action_for_which_nominal_time_and_under_which_revision_and_a_run_no_schedule_started_has_none()
+ {
+    let server = Recorder::start().await;
+    server.answer_with(
+        200,
+        run(json!({
+            "startedBy": format!("system:schedule:{SCHEDULE}"),
+            "schedule": {
+                "scheduleId": SCHEDULE, "nominalTime": "2026-11-04T02:00:00.123456Z",
+                "kind": "BACKFILL", "revision": 3,
+            },
+        })),
+    );
+    let scheduled = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get");
+    let schedule = scheduled.schedule.as_ref().expect("a schedule");
+    assert_eq!(schedule.schedule_id.to_string(), SCHEDULE);
+    assert_eq!(schedule.kind, "BACKFILL");
+    assert_eq!(schedule.revision, 3);
+    // 2026-11-04T02:00:00.123456Z, parsed: the epoch second and the microsecond the language holds.
+    assert_eq!(schedule.nominal_time.unix_timestamp(), 1_793_757_600);
+    assert_eq!(
+        schedule.nominal_time.unix_timestamp_nanos(),
+        1_793_757_600_123_456_000
+    );
+    assert_eq!(schedule.nominal_time.offset(), time::UtcOffset::UTC);
+    assert_eq!(
+        scheduled.raw["schedule"]["nominalTime"], "2026-11-04T02:00:00.123456Z",
+        "the exact text stays in `raw`"
+    );
+    assert!(scheduled.reset_from.is_none());
+
+    // A kind this SDK does not know is kept as the server sent it, and a plain run has neither field.
+    server.answer_with(
+        200,
+        run(json!({"schedule": {
+            "scheduleId": SCHEDULE, "nominalTime": "2026-11-04T02:00:00Z",
+            "kind": "SOMETHING_NEW", "revision": 1,
+        }})),
+    );
+    let newer = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get");
+    assert_eq!(newer.schedule.expect("a schedule").kind, "SOMETHING_NEW");
+    server.answer_with(200, run(json!({})));
+    let plain = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get");
+    assert!(plain.schedule.is_none() && plain.reset_from.is_none());
+    // A JSON null is an absent field.
+    server.answer_with(200, run(json!({"schedule": null, "resetFrom": null})));
+    let nulls = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get");
+    assert!(nulls.schedule.is_none() && nulls.reset_from.is_none());
+}
+
+#[tokio::test]
+async fn a_run_a_reset_made_says_the_run_it_came_from_and_the_journal_sequence_it_keeps() {
+    let source = "0190aaaa-0000-7000-8000-0000000000aa";
+    let server = Recorder::start().await;
+    server.answer_with(
+        200,
+        run(json!({"rerunOf": source, "resetFrom": {"runId": source, "sequence": 4}})),
+    );
+    let reset = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get");
+    let from = reset.reset_from.as_ref().expect("a reset");
+    assert_eq!(from.run_id.to_string(), source);
+    assert_eq!(from.sequence, 4);
+    assert_eq!(
+        reset.rerun_of.map(|id| id.to_string()).as_deref(),
+        Some(source)
+    );
+    assert!(reset.schedule.is_none());
+    // Started again, not reset: `rerunOf` and nothing else.
+    server.answer_with(200, run(json!({"rerunOf": source})));
+    let again = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get");
+    assert_eq!(
+        again.rerun_of.map(|id| id.to_string()).as_deref(),
+        Some(source)
+    );
+    assert!(again.reset_from.is_none());
+}
+
+#[tokio::test]
+async fn an_answer_whose_schedule_or_reset_is_not_what_the_contract_says_is_a_protocol_error_not_a_run_with_half_of_it()
+ {
+    let server = Recorder::start().await;
+    for broken in [
+        json!({"schedule": {"scheduleId": SCHEDULE, "nominalTime": "yesterday", "kind": "SCHEDULED", "revision": 1}}),
+        json!({"schedule": {"scheduleId": SCHEDULE, "nominalTime": "2026-11-04T02:00:00Z", "kind": "SCHEDULED", "revision": 0}}),
+        json!({"schedule": {"nominalTime": "2026-11-04T02:00:00Z", "kind": "SCHEDULED", "revision": 1}}),
+        json!({"schedule": {"scheduleId": SCHEDULE, "nominalTime": "2026-11-04T02:00:00Z", "revision": 1}}),
+        json!({"schedule": {"scheduleId": SCHEDULE, "kind": "SCHEDULED", "revision": 1}}),
+        json!({"schedule": "nightly"}),
+        json!({"resetFrom": {"runId": RUN}}),
+        json!({"resetFrom": {"runId": RUN, "sequence": 0}}),
+        json!({"resetFrom": {"sequence": 4}}),
+        json!({"resetFrom": "the other one"}),
+    ] {
+        server.answer_with(200, run(broken.clone()));
+        let error = server
+            .client()
+            .get(RUN, CallOptions::default())
+            .await
+            .expect_err(&broken.to_string());
+        assert_eq!(error.code, "PROTOCOL", "{broken}");
+    }
+}
+
 #[tokio::test]
 async fn the_200_of_use_existing_is_a_run_that_was_not_started_here_and_a_start_without_the_new_options_sends_none_of_them()
  {

@@ -86,7 +86,11 @@ started, err := c.Start(ctx, "order-flow", input,
 ```
 
 Without these options a `Start` sends exactly what it always sent. `Run.BusinessID` and `Run.StartDelayedUntil`
-(the zero time once the run is released) say how a run was started. `c.SignalWithStart` and `c.UpdateWithStart`
+(the zero time once the run is released) say how a run was started, and `Run.Schedule` (a `*client.RunSchedule`:
+`ScheduleID`, `NominalTime`, `Kind`, `Revision`) and `Run.ResetFrom` (a `*client.RunResetFrom`: `RunID`, `Sequence`)
+say where it came from: both are nil for a run no schedule started and no reset made (a rerun has `Run.RerunOf` and
+not `ResetFrom`), a `Kind` this SDK does not know is kept as the server sent it, and a member that is present but
+not what the contract says is a `PROTOCOL` error. `c.SignalWithStart` and `c.UpdateWithStart`
 signal, or apply a declared Update to, the open run of a business identifier and start it first when none is open;
 a rejection of the Update's validator is an answer (`Update.Outcome == "REJECTED"`), not an error. The Update's
 `UpdateKey` is the caller's and is checked before anything is sent. `c.BusinessIDs.Get(ctx, namespaceID, id)`

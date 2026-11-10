@@ -153,8 +153,37 @@ pub struct Run {
     /// released (or if it never was held).
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub start_delayed_until: Option<OffsetDateTime>,
+    /// The schedule action that started the run, or `None` for a run no schedule started.
+    pub schedule: Option<RunSchedule>,
+    /// The run a reset made this one from and the journal sequence of it that this run keeps, or
+    /// `None` for a run no reset made (a rerun has `rerun_of` and not this).
+    pub reset_from: Option<RunResetFrom>,
     #[serde(skip)]
     pub raw: Value,
+}
+/// Which schedule started a run, for which nominal time, by which kind of action and under which
+/// revision of the schedule.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSchedule {
+    pub schedule_id: Uuid,
+    /// The nominal time of the action: the time the schedule calculated, or for a trigger the instant
+    /// of the action. In UTC, to the nanosecond the language holds (the wire carries microseconds);
+    /// `Run::raw["schedule"]["nominalTime"]` holds the exact text.
+    #[serde(with = "time::serde::rfc3339")]
+    pub nominal_time: OffsetDateTime,
+    /// `SCHEDULED`, `TRIGGERED` or `BACKFILL`, or another string: the set only grows.
+    pub kind: String,
+    /// The revision of the schedule, 1 or more.
+    pub revision: u64,
+}
+/// The run a reset made a run from, and the journal sequence of that run (1 or more) the new run keeps
+/// as its own.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunResetFrom {
+    pub run_id: Uuid,
+    pub sequence: u64,
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -174,6 +203,14 @@ impl Run {
                 .chain
                 .as_ref()
                 .is_some_and(|chain| chain.segment_index > 9999)
+            || run
+                .schedule
+                .as_ref()
+                .is_some_and(|schedule| !(1..=i64::MAX as u64).contains(&schedule.revision))
+            || run
+                .reset_from
+                .as_ref()
+                .is_some_and(|reset| !(1..=i64::MAX as u64).contains(&reset.sequence))
         {
             return Err(protocol());
         }
@@ -182,6 +219,9 @@ impl Run {
         run.finished_at = run.finished_at.map(|v| v.to_offset(UtcOffset::UTC));
         run.deadline = run.deadline.map(|v| v.to_offset(UtcOffset::UTC));
         run.start_delayed_until = run.start_delayed_until.map(|v| v.to_offset(UtcOffset::UTC));
+        if let Some(schedule) = &mut run.schedule {
+            schedule.nominal_time = schedule.nominal_time.to_offset(UtcOffset::UTC);
+        }
         run.raw = raw;
         Ok(run)
     }

@@ -16,6 +16,8 @@ from sagat_octopus_orchestrator import (
     BatchRequest,
     BatchSelector,
     ClientConfig,
+    RunResetFrom,
+    RunSchedule,
     SagatClient,
     SagatError,
     ScheduleAction,
@@ -126,6 +128,127 @@ async def test_a_start_sends_the_business_identifier_its_policies_and_the_delay_
     plain = await make_client().start(WF, {}, idempotency_key="key-12345678")
     assert plain.business_id is None
     assert plain.start_delayed_until is None
+
+
+# ------------------------------------------------------------------------------------------ where a run came from
+
+
+async def test_a_run_says_which_schedule_started_it_by_which_kind_of_action_for_which_nominal_time_and_under_which_revision_and_a_run_no_schedule_started_has_none(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    http.serve(
+        lambda _seen: reply(
+            200,
+            run_body(
+                startedBy=f"system:schedule:{SCHEDULE}",
+                schedule={
+                    "scheduleId": SCHEDULE,
+                    "nominalTime": "2026-11-04T02:00:00.123456Z",
+                    "kind": "BACKFILL",
+                    "revision": 3,
+                },
+            ),
+        )
+    )
+    scheduled = await make_client().get(RUN)
+    assert scheduled.schedule == RunSchedule(
+        schedule_id=SCHEDULE,
+        nominal_time=datetime(2026, 11, 4, 2, 0, 0, 123456, tzinfo=timezone.utc),
+        kind="BACKFILL",
+        revision=3,
+    )
+    assert scheduled.schedule is not None
+    assert scheduled.schedule.nominal_time.isoformat() == "2026-11-04T02:00:00.123456+00:00", "an instant is parsed"
+    assert scheduled.raw["schedule"]["nominalTime"] == "2026-11-04T02:00:00.123456Z", "the exact text stays in `raw`"
+    assert scheduled.reset_from is None
+
+    # a kind this SDK does not know is kept as the server sent it, and a plain run has neither field
+    http.serve(
+        lambda _seen: reply(
+            200,
+            run_body(
+                schedule={
+                    "scheduleId": SCHEDULE,
+                    "nominalTime": "2026-11-04T02:00:00Z",
+                    "kind": "SOMETHING_NEW",
+                    "revision": 1,
+                }
+            ),
+        )
+    )
+    unknown = await make_client().get(RUN)
+    assert unknown.schedule is not None
+    assert unknown.schedule.kind == "SOMETHING_NEW"
+    http.serve(lambda _seen: reply(200, run_body()))
+    plain = await make_client().get(RUN)
+    assert plain.schedule is None
+    assert plain.reset_from is None
+    # a JSON null is an absent field
+    http.serve(lambda _seen: reply(200, run_body(schedule=None, resetFrom=None)))
+    nulled = await make_client().get(RUN)
+    assert nulled.schedule is None
+    assert nulled.reset_from is None
+
+
+async def test_a_run_a_reset_made_says_the_run_it_came_from_and_the_journal_sequence_it_keeps(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    source = "0190aaaa-0000-7000-8000-0000000000aa"
+    http.serve(lambda _seen: reply(200, run_body(rerunOf=source, resetFrom={"runId": source, "sequence": 4})))
+    reset = await make_client().get(RUN)
+    assert reset.reset_from == RunResetFrom(run_id=source, sequence=4)
+    assert reset.rerun_of == source
+    assert reset.schedule is None
+    # started again, not reset: `rerun_of` and nothing else
+    http.serve(lambda _seen: reply(200, run_body(rerunOf=source)))
+    again = await make_client().get(RUN)
+    assert again.rerun_of == source
+    assert again.reset_from is None
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"schedule": {"scheduleId": SCHEDULE, "nominalTime": "yesterday", "kind": "SCHEDULED", "revision": 1}},
+        {"schedule": {"scheduleId": SCHEDULE, "kind": "SCHEDULED", "revision": 1}},
+        {
+            "schedule": {
+                "scheduleId": SCHEDULE,
+                "nominalTime": "2026-11-04T02:00:00Z",
+                "kind": "SCHEDULED",
+                "revision": 0,
+            }
+        },
+        {"schedule": {"scheduleId": SCHEDULE, "nominalTime": "2026-11-04T02:00:00Z", "kind": "SCHEDULED"}},
+        {"schedule": {"nominalTime": "2026-11-04T02:00:00Z", "kind": "SCHEDULED", "revision": 1}},
+        {"schedule": {"scheduleId": SCHEDULE, "nominalTime": "2026-11-04T02:00:00Z", "revision": 1}},
+        {"schedule": "nightly"},
+        {"resetFrom": {"runId": RUN}},
+        {"resetFrom": {"runId": RUN, "sequence": 0}},
+        {"resetFrom": {"sequence": 4}},
+        {"resetFrom": "0190aaaa-0000-7000-8000-0000000000aa"},
+    ],
+    ids=[
+        "schedule-nominal-time-unreadable",
+        "schedule-nominal-time-missing",
+        "schedule-revision-below-1",
+        "schedule-revision-missing",
+        "schedule-id-missing",
+        "schedule-kind-missing",
+        "schedule-not-an-object",
+        "reset-sequence-missing",
+        "reset-sequence-below-1",
+        "reset-run-id-missing",
+        "reset-not-an-object",
+    ],
+)
+async def test_an_answer_whose_schedule_or_reset_is_not_what_the_contract_says_is_a_protocol_error_not_a_run_with_half_of_it(
+    http: FakeHttpServer, make_client: MakeClient, broken: dict[str, Any]
+) -> None:
+    http.serve(lambda _seen: reply(200, run_body(**broken)))
+    with pytest.raises(SagatError) as caught:
+        await make_client().get(RUN)
+    assert caught.value.code == "PROTOCOL"
 
 
 async def test_the_200_of_use_existing_is_a_run_that_was_not_started_here_and_a_start_without_the_new_options_sends_none_of_them(

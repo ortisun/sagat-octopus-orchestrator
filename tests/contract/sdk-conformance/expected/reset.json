@@ -312,6 +312,10 @@
         "parent": null,
         "paused": false,
         "rerunOf": "<uuid:1>",
+        "resetFrom": {
+          "runId": "<uuid:1>",
+          "sequence": 4
+        },
         "runId": "<uuid:4>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
@@ -735,6 +739,10 @@
         "parent": null,
         "paused": false,
         "rerunOf": "<uuid:9>",
+        "resetFrom": {
+          "runId": "<uuid:9>",
+          "sequence": 4
+        },
         "runId": "<uuid:12>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
@@ -1103,6 +1111,10 @@
         "parent": null,
         "paused": false,
         "rerunOf": "<uuid:16>",
+        "resetFrom": {
+          "runId": "<uuid:16>",
+          "sequence": 1
+        },
         "runId": "<uuid:20>",
         "startedBy": "alice",
         "status": "SUCCEEDED",
@@ -1141,6 +1153,10 @@
         "parent": null,
         "paused": false,
         "rerunOf": "<uuid:1>",
+        "resetFrom": {
+          "runId": "<uuid:1>",
+          "sequence": 4
+        },
         "runId": "<uuid:21>",
         "startedBy": "alice",
         "status": "SUCCEEDED",

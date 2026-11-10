@@ -129,6 +129,11 @@ function runJson(run: Run): Obj {
     // Present only for a run started under a business identifier, or held by a start delay.
     ...(run.businessId !== null ? { businessId: run.businessId } : {}),
     ...(run.startDelayedUntil !== null ? { startDelayedUntil: iso(run.startDelayedUntil) } : {}),
+    // Present only for a run a schedule started, or a reset made.
+    ...(run.schedule !== null
+      ? { schedule: { scheduleId: run.schedule.scheduleId, nominalTime: iso(run.schedule.nominalTime), kind: run.schedule.kind, revision: run.schedule.revision } }
+      : {}),
+    ...(run.resetFrom !== null ? { resetFrom: { runId: run.resetFrom.runId, sequence: run.resetFrom.sequence } } : {}),
   };
 }
 

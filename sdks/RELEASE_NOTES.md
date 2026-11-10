@@ -15,6 +15,13 @@ reset of a run that ended to a point of its journal. Nothing changes for a calle
 without the new options sends what it sent before. `Run` gains the nullable `businessId` and `startDelayedUntil`.
 Nine conformance scenarios (`sdks/SPEC.md` §3.1) hold the six languages to the same results.
 
+A `Run` also says where it came from (G2057, FR-018-016): `schedule` (`scheduleId`, `nominalTime`, `kind` of the action, `revision`) for a run a
+schedule started, and `resetFrom` (`runId`, `sequence`) for a run a reset made. Both are optional and read strictly in every language (null, None
+or nil for a run that has none; a malformed object is a `PROTOCOL` error); an unknown `kind` is kept as sent. Nothing changes for a caller that
+does not read them. The platform's `run.finished` webhook and broker body gain the optional `data.scheduleId` and `data.nominalTime` for a run a
+schedule started (`events.asyncapi.yaml`, `info.version` 0.3.0): a receiver that ignores properties it does not know, as the evolution policy asks,
+is not affected.
+
 ## 0.2.0
 
 All five SDK packages use 0.2.0 and remain distributed through GitHub Release assets. Go uses

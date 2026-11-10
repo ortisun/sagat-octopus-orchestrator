@@ -1,6 +1,6 @@
 {
   "name": "schedules-operate",
-  "description": "Feature 018 US01: operating a schedule. Pause and resume carry a note; a trigger acts now, also while the schedule is paused, starts the schedule's run and does not use up a remaining action; the same key replays the same action; a backfill of a past range acts on each nominal time once (the range is two whole UTC hours of an hourly cron, so it holds exactly two times whenever the scenario runs), and a second backfill of the same range finds every time ALREADY_ACTED and starts nothing; a range that ends in the future is refused; the history is filtered by outcome.",
+  "description": "Feature 018 US01: operating a schedule. Pause and resume carry a note; a trigger acts now, also while the schedule is paused, starts the schedule's run and does not use up a remaining action; the same key replays the same action; a backfill of a past range acts on each nominal time once (the range is two whole UTC hours of an hourly cron, so it holds exactly two times whenever the scenario runs), and a second backfill of the same range finds every time ALREADY_ACTED and starts nothing; a range that ends in the future is refused; the history is filtered by outcome; the run a trigger started and the run a backfill started are read back and say which schedule started them, by which kind of action (TRIGGERED, BACKFILL), for which nominal time (an instant) and under which revision (G2057, FR-018-016).",
   "server": {
     "schedules": true
   },
@@ -233,6 +233,17 @@
       "start": "{{hour:-2}}",
       "end": "{{hour:-4}}",
       "idempotencyKey": "op-empty-range-{{unique}}"
+    },
+    {
+      "id": "triggered-run",
+      "op": "get",
+      "run": "trigger-paused"
+    },
+    {
+      "id": "backfilled-run",
+      "op": "get",
+      "page": "backfill-actions",
+      "index": 0
     }
   ]
 }

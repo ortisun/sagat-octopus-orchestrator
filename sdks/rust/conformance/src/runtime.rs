@@ -73,6 +73,18 @@ fn run_json(run: Run) -> Value {
     if run.start_delayed_until.is_some() {
         result["startDelayedUntil"] = operations::instant(run.start_delayed_until);
     }
+    // Present only for a run a schedule started, or a reset made.
+    if let Some(schedule) = &run.schedule {
+        result["schedule"] = json!({
+            "scheduleId": schedule.schedule_id,
+            "nominalTime": operations::instant(Some(schedule.nominal_time)),
+            "kind": schedule.kind,
+            "revision": schedule.revision,
+        });
+    }
+    if let Some(reset) = &run.reset_from {
+        result["resetFrom"] = json!({"runId": reset.run_id, "sequence": reset.sequence});
+    }
     result
 }
 fn log_entry(ctx: &ActivityContext, input: &Value, name: &str, kind: &str, outcome: &str) -> Value {
