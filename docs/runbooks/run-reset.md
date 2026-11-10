@@ -57,7 +57,7 @@ Also:
 - **Not every run can be reset**: a child run, a member of a continuation chain and a run of a database execution are refused
   (`RESET_NOT_SUPPORTED_FOR_SOURCE`).
 - **The source must have ended.** A run that is still open is `409 RESET_SOURCE_NOT_TERMINAL`: wait for it, or cancel it
-  yourself first. `sourcePolicy: CANCEL_SOURCE` (reset an open run by cancelling it) is not built (section 7).
+  yourself first. `sourcePolicy: CANCEL_SOURCE` resets an open run by cancelling it (section 4.2; it is off unless the deployment turns it on).
 
 ### 2.1 What a reset costs, and what that means for the person who runs it
 

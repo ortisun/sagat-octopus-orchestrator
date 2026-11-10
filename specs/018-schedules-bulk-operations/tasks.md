@@ -1724,6 +1724,22 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `scripts/check-architecture.py`, contract checks, runtime-role sweep, Studio build; record results —
   `specs/018-schedules-bulk-operations/verification.md` (created at implementation) — FR-018-046,
   FR-018-049; all SC.
+  *Part done 2026-11-09 (D2131 to D2136, G2057 to G2062; the task stays open, nothing ticked): the quickstart demos were run for real*
+  on the repository's own compose stack (project `sagat018demo`, the images built from this tree, one engine, one worker, the CLI
+  built into a private target directory) and `quickstart.md` was rewritten to what they showed. **53 steps: 32 PASS, 12 DOC FIXED, 2
+  DEFECT FIXED, 1 FAILED, 6 SKIPPED.** Defects found and fixed with a test seen failing first: `sagat batch cancel` sent no body and
+  the platform refused it (`400 content type must be application/json`; now `--reason`, D2132) and the description of a schedule listed
+  the runs it tracks, ended ones included (D2133). **FAILED, not fixed:** the run resource does not expose the schedule's nominal
+  time, kind and revision (FR-018-016; G2057, D2136). Skipped: the copy of `.env.example` (unreadable in the session: G2061), and four
+  rows of the failure table and the kills of two others that only fault injection can show. `compose.yaml` passes the four switches of the
+  feature (off by default, D2131). `verification.md` maps the 17 success criteria (6 VERIFIED, 11 PARTLY), FR-018-046 and FR-018-049
+  (PARTLY) and NFR-018-005 (VERIFIED as measured) to their evidence, lists the open and blocked tasks and what unblocks them, and has
+  a **blank** "Final gates" table. **Not done here, and why:** fmt, clippy, the workspace tests, the runtime-role sweep, the Studio
+  build, the SDK conformance and the per-SDK checks (the maintainer's gates, section (e) of `verification.md`); I ran only
+  `cargo test -p sagat-cli --locked`, `firing:: service:: rest:: schedules:: actions::` of `integration_schedules_bulk_operations`
+  in both roles (145 passed each), the runtime-privilege audit (43), `contract_developer_experience` (8), `cargo fmt --check`,
+  clippy `-D warnings` of `sagat-cli`, `sagat-application` and `sagat-tests`, and the three checkers (design docs, agent
+  configuration, architecture).
 
 ## Dependencies & execution order
 

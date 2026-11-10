@@ -21,7 +21,7 @@ continuation chain of runs that carries the same work; a chain is open until it 
   is open (`409 BUSINESS_ID_REUSE_REJECTED`, with `reusableAfter`); `ALLOW_DUPLICATE_FAILED_ONLY` refuses the same way when the holder
   succeeded.
 - **The identifier is sent and kept as given**: no trimming and no case folding. `Order-1` and `order-1` are two identifiers.
-- **A start delay** (`startDelayMs`, 1 ms to 366 days) holds the entry of the new run: it is created `WAITING` with
+- **A start delay** (`startDelayMs`, 1 ms to 366 days; `sagat workflow run --start-delay` takes seconds) holds the entry of the new run: it is created `WAITING` with
   `startDelayedUntil`, counts toward the active-run quotas, **holds its identifier meanwhile**, and a scheduler pass releases
   it once, at the instant. Cancelled, or past its deadline, while it waits, it ends `CANCELLED` or `TIMED_OUT` with no step run.
   A signal to it is refused (`409`: nothing waits for it yet).
