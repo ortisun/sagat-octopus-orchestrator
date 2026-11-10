@@ -5307,9 +5307,25 @@ components:
         deadline: {type: [string, 'null'], format: date-time}
         traceId: {type: [string, 'null']}
         correlationId: {type: [string, 'null']}
-        rerunOf: {type: string, format: uuid, description: 'The ended run this one was started again from (RERUN_AS_NEW), when it was.'}
+        rerunOf: {type: string, format: uuid, description: 'The ended run this one was started again from (RERUN_AS_NEW), or made from by a reset (then resetFrom says up to which sequence), when it was.'}
         startDelayedUntil: {type: string, format: date-time, description: 'The instant the entry of the run is held until, for a run started with startDelayMs that has not been released. Absent otherwise.'}
         businessId: {type: string, minLength: 1, maxLength: 200, description: 'The business identifier the run was started under, when it was. Read by getRun and listRuns.'}
+        schedule:
+          type: object
+          description: 'Feature 018: the schedule action that started the run, when a schedule did (a scheduled time, trigger now or a backfill); absent for every other run. Fixed when the run is created, and read by getRun and listRuns with the run.'
+          required: [scheduleId, nominalTime, kind, revision]
+          properties:
+            scheduleId: {type: string, format: uuid}
+            nominalTime: {type: string, format: date-time, description: 'The nominal time of the action (UTC, to the microsecond): the time the schedule calculated, or for trigger now the instant of the action. The same value as the nominalTime of the action that started the run.'}
+            kind: {type: string, enum: [SCHEDULED, TRIGGERED, BACKFILL], description: 'The kind of the action: SCHEDULED (a time of the spec, also for a trigger-owned schedule), TRIGGERED (trigger now) or BACKFILL. A client treats a value it does not know as another kind: the set is closed in this version, and a fourth kind is a deliberate compatibility decision (the check of the column first, then this enum, the SDKs and the Studio).'}
+            revision: {type: integer, minimum: 1, description: 'The revision of the schedule the action was taken under.'}
+        resetFrom:
+          type: object
+          description: 'Feature 018: set when a reset made the run: the run it came from and the journal sequence of that run it holds as its own (the sequence of the reset point). Absent for every other run; a run started again by RERUN_AS_NEW has rerunOf and not this.'
+          required: [runId, sequence]
+          properties:
+            runId: {type: string, format: uuid}
+            sequence: {type: integer, format: int64, minimum: 1}
         depth: {type: integer, minimum: 0, maximum: 8, description: 'Nesting of child runs: 0 for a run started through the API.'}
         parent:
           type: [object, 'null']

@@ -349,6 +349,47 @@ pub(crate) async fn fan_out(
     .rows_affected())
 }
 
+/// Adds to the `data` of a `run.finished` event what a subscriber is told about the schedule that
+/// started the run: `scheduleId` and `nominalTime`, two values the platform generated (feature 018,
+/// `FR-018-046`, `RunFinishedWebhook`). Nothing is added for a run no schedule started, so the body of
+/// every other run is what it was, and never the business identifier: that is caller text and no event
+/// carries it (ADR-0027).
+///
+/// One read of the run's own row, in the transaction that finishes the run: the same key the finishing
+/// has just written, so the row is the one the connection already holds.
+///
+/// The two columns are read through a snapshot of the row (`to_jsonb`), as `start_delayed_until` is, so
+/// that a schema that does not have them (a rollback below migration `20261230000200`, or a rollout
+/// whose migration has not run) still finishes the run: every pass of the scheduler goes through here and
+/// none of them may fail for a provenance that no run of that schema can have. The run then says nothing
+/// of a schedule, which is what that schema knows.
+pub(crate) async fn add_schedule_origin(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    run: Uuid,
+    data: &mut serde_json::Value,
+) -> Result<(), StoreError> {
+    let origin: Option<(Option<Uuid>, Option<time::OffsetDateTime>)> = sqlx::query_as(
+        "SELECT (to_jsonb(r.*) ->> 'schedule_id')::uuid, \
+                (to_jsonb(r.*) ->> 'schedule_nominal_at')::timestamptz \
+         FROM runs r WHERE r.tenant_id = $1 AND r.id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    if let Some((Some(schedule), Some(nominal))) = origin {
+        data["scheduleId"] = serde_json::Value::String(schedule.to_string());
+        data["nominalTime"] = serde_json::Value::String(
+            nominal
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|_| corrupt("run schedule nominal time"))?,
+        );
+    }
+    Ok(())
+}
+
 impl OutboundStore for PgRunStore {
     async fn create_subscription(
         &self,

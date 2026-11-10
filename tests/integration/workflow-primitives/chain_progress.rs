@@ -520,6 +520,64 @@ async fn final_head_is_delivered_to_run_finished_subscribers_once() {
     crate::hint_contract::assert_published(&published, &["run.finished", "chain.finished"]);
 }
 
+/// `FR-018-046`, SYNTHETIC: the writer of the chain's finalization carries `add_schedule_origin` like the other three writers of
+/// `run.finished`. The head is **stamped by hand** with `mark_as_scheduled` (the guard trigger of the provenance columns switched
+/// off for one statement): this proves the plumbing of that one writer, on a head that has the columns. It does not show what the
+/// product does, because in the product the final head of a chain has no provenance (the successor copies no schedule column:
+/// D2144, G2063); that is tested on a real chain from a real firing in `chain_handoff.rs`
+/// (`the_final_head_of_a_chain_a_schedule_started_has_no_schedule_and_its_webhook_says_none`).
+#[tokio::test]
+async fn the_finalization_writer_says_the_schedule_a_stamped_head_carries_and_a_head_without_one_says_none()
+ {
+    for scheduled in [true, false] {
+        let fixture = seed_quiescent_chain("chain-final-scheduled", Duration::hours(1)).await;
+        let schedule = Uuid::now_v7();
+        let nominal = OffsetDateTime::from_unix_timestamp(1_793_192_400).expect("an instant");
+        if scheduled {
+            crate::support::schedules::mark_as_scheduled(
+                &fixture.world.db.pool,
+                fixture.chain.as_uuid(),
+                schedule,
+                nominal,
+            )
+            .await;
+        }
+        let subscription = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO webhook_subscriptions \
+             (id,tenant_id,namespace_id,name,destination_kind,destination_settings,url,secret_name, \
+              kinds,rate_per_second,timeout_ms,status,created_by) \
+             VALUES ($1,$2,$3,'chain-scheduled','WEBHOOK','{}','https://example.invalid/chain', \
+                     'chain-key',ARRAY['run.finished'],100,1000,'ACTIVE','test')",
+        )
+        .bind(subscription)
+        .bind(fixture.world.admin.tenant_id().as_uuid())
+        .bind(fixture.world.namespace.id().as_uuid())
+        .execute(&fixture.world.db.pool)
+        .await
+        .expect("run finished subscription");
+        let command = finalization(&fixture, Uuid::now_v7(), Uuid::now_v7());
+        fixture
+            .store
+            .finalize_chain(&command)
+            .await
+            .expect("finalize chain");
+        let body =
+            crate::support::schedules::delivered_body(&fixture.world.db.pool, subscription).await;
+        assert_eq!(body["data"]["runId"], fixture.chain.to_string());
+        if scheduled {
+            assert_eq!(body["data"]["scheduleId"], schedule.to_string(), "{body}");
+            assert_eq!(
+                body["data"]["nominalTime"], "2026-10-28T13:00:00Z",
+                "{body}"
+            );
+        } else {
+            assert!(body["data"].get("scheduleId").is_none(), "{body}");
+            assert!(body["data"].get("nominalTime").is_none(), "{body}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn child_cancellation_latch_blocks_a_new_handoff() {
     let fixture = seed_quiescent_chain("chain-child-cancel", Duration::hours(1)).await;

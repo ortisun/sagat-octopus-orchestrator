@@ -2234,6 +2234,23 @@ impl ChainProgressStore for PgChainProgressStore {
         let definition = self
             .definition(&mut tx, command.scope().tenant_id(), chain.version_id)
             .await?;
+        let mut data = json!({
+            "tenantId": command.scope().tenant_id().to_string(),
+            "namespaceId": command.scope().namespace_id().to_string(),
+            "runId": command.expected_head().to_string(),
+            "workflow": definition.name().as_str(),
+            "status": command.status().as_str(),
+            "traceId": run.trace_id,
+        });
+        // The schedule that started the head of the chain, when one did (`FR-018-046`).
+        crate::outbound::add_schedule_origin(
+            &mut tx,
+            command.scope().tenant_id(),
+            command.expected_head().as_uuid(),
+            &mut data,
+        )
+        .await
+        .map_err(ChainProgressError::Storage)?;
         let body = json!({
             "id": command.run_outbox_id().to_string(),
             "type": "run.finished",
@@ -2241,14 +2258,7 @@ impl ChainProgressStore for PgChainProgressStore {
                 .occurred_at()
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_default(),
-            "data": {
-                "tenantId": command.scope().tenant_id().to_string(),
-                "namespaceId": command.scope().namespace_id().to_string(),
-                "runId": command.expected_head().to_string(),
-                "workflow": definition.name().as_str(),
-                "status": command.status().as_str(),
-                "traceId": run.trace_id,
-            },
+            "data": data,
         });
         crate::outbound::fan_out(
             &mut tx,

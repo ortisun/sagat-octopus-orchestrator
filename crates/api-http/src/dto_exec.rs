@@ -518,12 +518,39 @@ pub struct RunBody {
     /// The business identifier the run was started under, when it was.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub business_id: Option<String>,
+    /// The schedule action that started the run, when a schedule did (feature 018, `FR-018-016`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<RunScheduleBody>,
+    /// The run a reset made this one from and the journal sequence it keeps, when a reset did
+    /// (feature 018, `FR-018-037`). A rerun as new has `rerunOf` and not this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_from: Option<RunResetFromBody>,
     /// How deeply nested the run is: 0 when started through the API.
     pub depth: u8,
     /// The run's segment in its continuation chain; absent for a run outside any chain. A segment
     /// that is `SUCCEEDED` with `completionKind` `CONTINUED` is not the process outcome.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain: Option<RunChainBody>,
+}
+
+/// Which schedule started a run, for which nominal time, by which kind of action and under which
+/// revision (`Run.schedule`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunScheduleBody {
+    pub schedule_id: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub nominal_time: OffsetDateTime,
+    pub kind: &'static str,
+    pub revision: u32,
+}
+
+/// The run a reset made a run from (`Run.resetFrom`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunResetFromBody {
+    pub run_id: String,
+    pub sequence: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -571,6 +598,16 @@ impl From<&RunRecord> for RunBody {
             rerun_of: r.info.rerun_of.map(|r| r.to_string()),
             start_delayed_until: r.start_delayed_until,
             business_id: r.info.business_id.as_ref().map(|id| id.as_str().to_owned()),
+            schedule: r.schedule.map(|schedule| RunScheduleBody {
+                schedule_id: schedule.schedule.to_string(),
+                nominal_time: schedule.nominal_at,
+                kind: schedule.kind.as_str(),
+                revision: schedule.revision,
+            }),
+            reset_from: r.reset_from.map(|reset| RunResetFromBody {
+                run_id: reset.source.to_string(),
+                sequence: reset.sequence,
+            }),
             depth: r.info.depth,
             chain: r.chain.map(|segment| RunChainBody {
                 chain_id: segment.chain_id.to_string(),
@@ -1223,6 +1260,8 @@ mod switch_graph_tests {
                 finished_at: None,
                 start_delayed_until: None,
                 chain: None,
+                schedule: None,
+                reset_from: None,
             },
             definition: std::sync::Arc::new(definition),
             steps: vec![
@@ -1380,5 +1419,114 @@ mod switch_graph_tests {
             })),
             json!({"kind":"EXPIRED","target":"expired"})
         );
+    }
+}
+
+/// `Run.schedule` and `Run.resetFrom` (feature 018, `FR-018-016`, `FR-018-037`): present with exactly the documented properties
+/// when the run has them, ABSENT (not `null`) when it has not.
+#[cfg(test)]
+mod provenance_tests {
+    #![allow(clippy::expect_used)]
+    use super::*;
+    use sagat_application::execution::{ResetProvenance, RunInfo, ScheduleProvenance};
+    use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
+    use sagat_domain::execution::{RunId, RunStatus};
+    use sagat_domain::identity::{NamespaceId, TenantId};
+    use sagat_domain::schedules::{ActionKind, ScheduleId};
+
+    fn record() -> RunRecord {
+        let run_id = RunId::new(uuid::Uuid::from_u128(1));
+        let now = OffsetDateTime::UNIX_EPOCH;
+        RunRecord {
+            info: RunInfo {
+                run_id,
+                tenant_id: TenantId::new(uuid::Uuid::from_u128(2)),
+                namespace_id: NamespaceId::new(uuid::Uuid::from_u128(3)),
+                workflow_id: WorkflowId::new(uuid::Uuid::from_u128(4)),
+                version_id: WorkflowVersionId::new(uuid::Uuid::from_u128(5)),
+                started_by: "test".into(),
+                correlation_id: None,
+                trace_id: None,
+                rerun_of: None,
+                parent_span: None,
+                deadline_at: None,
+                created_at: now,
+                parent: None,
+                depth: 0,
+                root: run_id,
+                business_id: None,
+                origin: None,
+            },
+            status: RunStatus::Running,
+            version: 1,
+            stop_reason: None,
+            paused: false,
+            updated_at: now,
+            finished_at: None,
+            start_delayed_until: None,
+            chain: None,
+            schedule: None,
+            reset_from: None,
+        }
+    }
+
+    #[test]
+    fn a_run_nobody_scheduled_and_no_reset_made_has_neither_field() {
+        let body = serde_json::to_value(RunBody::from(&record())).expect("json");
+        assert!(body.get("schedule").is_none(), "{body}");
+        assert!(body.get("resetFrom").is_none(), "{body}");
+    }
+
+    #[test]
+    fn a_scheduled_run_says_the_schedule_the_time_the_kind_and_the_revision_and_each_kind_is_spelled_as_the_contract_does()
+     {
+        let schedule = ScheduleId::new(uuid::Uuid::from_u128(9));
+        // a whole number of microseconds, as PostgreSQL keeps it
+        let nominal =
+            OffsetDateTime::UNIX_EPOCH + time::Duration::microseconds(1_793_192_400_123_456);
+        for (kind, spelled) in [
+            (ActionKind::Scheduled, "SCHEDULED"),
+            (ActionKind::Triggered, "TRIGGERED"),
+            (ActionKind::Backfill, "BACKFILL"),
+        ] {
+            let mut run = record();
+            run.schedule = Some(ScheduleProvenance {
+                schedule,
+                nominal_at: nominal,
+                kind,
+                revision: 3,
+            });
+            let body = serde_json::to_value(RunBody::from(&run)).expect("json");
+            assert_eq!(
+                body["schedule"],
+                json!({
+                    "scheduleId": schedule.to_string(),
+                    "nominalTime": "2026-10-28T13:00:00.123456Z",
+                    "kind": spelled,
+                    "revision": 3,
+                }),
+                "{body}"
+            );
+            assert!(body.get("resetFrom").is_none(), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_run_a_reset_made_says_the_run_and_the_sequence_and_does_not_say_it_was_scheduled() {
+        let source = RunId::new(uuid::Uuid::from_u128(7));
+        let mut run = record();
+        run.info.rerun_of = Some(source);
+        run.reset_from = Some(ResetProvenance {
+            source,
+            sequence: 12,
+        });
+        let body = serde_json::to_value(RunBody::from(&run)).expect("json");
+        assert_eq!(
+            body["resetFrom"],
+            json!({"runId": source.to_string(), "sequence": 12}),
+            "{body}"
+        );
+        assert_eq!(body["rerunOf"], source.to_string());
+        assert!(body.get("schedule").is_none(), "{body}");
     }
 }

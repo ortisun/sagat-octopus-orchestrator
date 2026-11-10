@@ -10,14 +10,14 @@ use serde_json::{Value, json};
 use crate::support::api::Options;
 use crate::support::worker::{HUMAN, Platform, TENANT, chain_ir, platform, platform_with};
 
-const REASON: &str = "the second step used a wrong price list";
+pub(crate) const REASON: &str = "the second step used a wrong price list";
 
 fn reason(error: &Value) -> &str {
     error["details"]["reason"].as_str().unwrap_or_default()
 }
 
 /// A run of two activities, both completed by a worker.
-async fn ended(p: &Platform) -> String {
+pub(crate) async fn ended(p: &Platform) -> String {
     let workflow = p.publish("orders", &chain_ir("orders")).await;
     ended_from(p, &workflow).await
 }
@@ -44,7 +44,7 @@ async fn complete_both(p: &Platform, run: &str) {
     assert_eq!(p.status(run).await, "SUCCEEDED");
 }
 
-async fn points(p: &Platform, run: &str, query: &str) -> (u16, Value) {
+pub(crate) async fn points(p: &Platform, run: &str, query: &str) -> (u16, Value) {
     p.rest(
         Method::GET,
         &format!("/runs/{run}/reset-points{query}"),
@@ -54,7 +54,7 @@ async fn points(p: &Platform, run: &str, query: &str) -> (u16, Value) {
 }
 
 /// `POST /runs/{run}/resets` with the key given.
-async fn reset_with(p: &Platform, run: &str, key: &str, body: &Value) -> (u16, Value) {
+pub(crate) async fn reset_with(p: &Platform, run: &str, key: &str, body: &Value) -> (u16, Value) {
     let response = p
         .api
         .as_user(Method::POST, &format!("/runs/{run}/resets"), HUMAN, TENANT)
@@ -68,7 +68,7 @@ async fn reset_with(p: &Platform, run: &str, key: &str, body: &Value) -> (u16, V
     (status, serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
-fn sequences(page: &Value) -> Vec<u64> {
+pub(crate) fn sequences(page: &Value) -> Vec<u64> {
     page["items"]
         .as_array()
         .expect("items")

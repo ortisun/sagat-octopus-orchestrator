@@ -1319,3 +1319,144 @@ async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
         .await
         .expect("scheduler successor journal matches projection");
 }
+
+/// `FR-018-046`, `D2144`, `G2063`: what the product does with the provenance of a chain a schedule started, tested as it is and not
+/// as it would be if the successor copied the columns. The first segment is a run the schedule started and has them; the successor
+/// that the scheduler's handoff creates copies none, so the final head, the run that finishes the chain, is told to the
+/// subscribers of `run.finished` without a `scheduleId` and a `nominalTime`. (The chain test of `chain_progress.rs` stamps its head
+/// by hand and proves the plumbing of the finalization; this one runs a real chain from a real firing to its real final webhook.)
+#[tokio::test]
+async fn the_final_head_of_a_chain_a_schedule_started_has_no_schedule_and_its_webhook_says_none() {
+    use crate::support::schedules::{fixture, hourly};
+
+    let f = fixture().await;
+    let world = &f.w;
+    let name = format!("scheduled-chain-final-{}", Uuid::now_v7());
+    let (workflow, _) = world
+        .publish(json!({
+            "apiVersion": "sagat-octopus-orchestrator.io/v1",
+            "kind": "Workflow",
+            "metadata": {"name": name},
+            "entrypoint": "work",
+            "nodes": [
+                {"id": "work", "type": "activity", "activity": "segment.work", "next": "again"},
+                {"id": "again", "type": "condition", "expression": "input.continue", "ifTrue": "rollover", "ifFalse": "done"},
+                {"id": "rollover", "type": "continueAsNew", "input": "input.next"},
+                {"id": "done", "type": "end"}
+            ],
+            "chainPolicy": {"maxSegments": 3, "timeoutMs": 3_600_000}
+        }))
+        .await;
+    let subscription = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO webhook_subscriptions \
+         (id,tenant_id,namespace_id,name,destination_kind,destination_settings,url,secret_name, \
+          kinds,rate_per_second,timeout_ms,status,created_by) \
+         VALUES ($1,$2,$3,'scheduled-chain','WEBHOOK','{}','https://example.invalid/chain', \
+                 'chain-key',ARRAY['run.finished'],100,1000,'ACTIVE','test')",
+    )
+    .bind(subscription)
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(world.namespace.id().as_uuid())
+    .execute(&world.db.pool)
+    .await
+    .expect("run finished subscription");
+
+    // a real firing starts the first segment
+    let mut write = f.write_of(
+        "scheduled-chain",
+        &hourly(),
+        &json!({}),
+        Some(json!({"workflowId": workflow.to_string()})),
+    );
+    write.input = json!({"continue": true, "next": {"continue": false}});
+    let schedule = f.try_create(write).await.expect("create the schedule");
+    f.clock.advance(Duration::hours(1) + Duration::seconds(3));
+    f.drain(&schedule).await;
+    let started = f.runs(&schedule).await;
+    assert_eq!(started.len(), 1, "one firing, one run");
+    let first = started[0];
+
+    // the scheduler hands it to a successor, which then ends the chain
+    let session = world.session(&["segment.work"]).await;
+    let task = world.one_task(&session).await;
+    world
+        .complete(&session, &task, &json!({"processed": true}))
+        .await
+        .expect("complete the first segment");
+    let placement = Placement::new(format!("scheduled-chain-scheduler-{name}"));
+    Keeper::new(
+        world.store.clone(),
+        placement.clone(),
+        KeeperSettings {
+            ttl: StdDuration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire scheduler shards");
+    let scheduler = Scheduler::new(
+        world.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(placement);
+    let handoff = scheduler.tick().await;
+    assert_eq!(handoff.continuations_advanced, 1, "{handoff:?}");
+    assert_eq!(handoff.failed, 0, "{handoff:?}");
+    let last = world.one_task(&session).await;
+    world
+        .complete(&session, &last, &json!({"processed": true}))
+        .await
+        .expect("complete the final segment");
+
+    let head: Uuid = sqlx::query_scalar(
+        "SELECT current_run_id FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 AND final_outcome='SUCCEEDED'",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(first)
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("the chain ended with its final head");
+    assert_ne!(head, first, "the final head is the successor");
+
+    // the data: the first segment says its schedule, the successor says none (the handoff copies no schedule column)
+    let provenance = |run: Uuid| {
+        let pool = world.db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<Uuid>>("SELECT schedule_id FROM runs WHERE id = $1")
+                .bind(run)
+                .fetch_one(&pool)
+                .await
+                .expect("the schedule of the run")
+        }
+    };
+    assert_eq!(provenance(first).await, Some(schedule.id.as_uuid()));
+    assert_eq!(provenance(head).await, None);
+
+    // the webhook of the final head, as it was written
+    let bodies: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT payload FROM webhook_deliveries WHERE subscription_id=$1 ORDER BY id",
+    )
+    .bind(subscription)
+    .fetch_all(&world.db.pool)
+    .await
+    .expect("the deliveries");
+    let of_head: Vec<serde_json::Value> = bodies
+        .iter()
+        .map(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).expect("a JSON body"))
+        .filter(|body| body["data"]["runId"] == head.to_string())
+        .collect();
+    assert_eq!(
+        of_head.len(),
+        1,
+        "one `run.finished` for the final head: {bodies:?}"
+    );
+    assert!(
+        of_head[0]["data"].get("scheduleId").is_none()
+            && of_head[0]["data"].get("nominalTime").is_none(),
+        "G2063: the final head of a chain a schedule started says nothing of the schedule: {}",
+        of_head[0]
+    );
+}

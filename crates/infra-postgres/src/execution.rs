@@ -93,8 +93,9 @@ use sagat_application::definitions::{
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     BreakerPolicy, DefinitionCache, Effects, LeaseDeadlines, MAX_RUN_OUTPUT_BYTES, ParentLink,
-    PathExecutionSnapshot, PathExecutionStore, PathExecutionTx, RunData, RunInfo, RunRecord,
-    RunSegment, RunTx, ScopeInput, compensation_id, instance_compensation_id, instance_step_id,
+    PathExecutionSnapshot, PathExecutionStore, PathExecutionTx, ResetProvenance, RunData, RunInfo,
+    RunRecord, RunSegment, RunTx, ScheduleProvenance, ScopeInput, compensation_id,
+    instance_compensation_id, instance_step_id,
 };
 use sagat_application::primitives::CollectionFinish;
 use sagat_application::runs::{
@@ -1448,7 +1449,9 @@ impl RunStore for PgRunStore {
                     stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
                     cancel_policy, depth, trace_parent_span, rerun_of, origin, business_id, \
-                    start_delayed_until, seg_chain_id, seg_index, seg_completion, seg_successor \
+                    start_delayed_until, schedule_id, schedule_nominal_at, schedule_action_kind, \
+                    schedule_revision, reset_sequence, \
+                    seg_chain_id, seg_index, seg_completion, seg_successor \
              FROM runs LEFT JOIN LATERAL ( \
                SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
                       completion_kind AS seg_completion, successor_run_id AS seg_successor \
@@ -1955,11 +1958,13 @@ async fn claim_reservation(
 
 // `get` and `list` also read the run's chain segment as four extra columns (`run_record` reads them
 // when present): one lateral index probe (`chain_segments_run_unique`) that yields nothing for a run
-// outside any chain.
+// outside any chain. They read as well the columns a run was created with that say where it came from
+// (the schedule action and the reset sequence), from the row they already load: no query per run.
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
      run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
      trace_parent_span, rerun_of, origin, business_id, start_delayed_until, \
+     schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision, reset_sequence, \
      seg_chain_id, seg_index, seg_completion, seg_successor \
      FROM runs LEFT JOIN LATERAL ( \
        SELECT chain_id AS seg_chain_id, segment_index AS seg_index, \
@@ -2078,7 +2083,63 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         .ok()
         .flatten(),
         chain: run_segment(row)?,
+        schedule: run_schedule(row)?,
+        reset_from: run_reset(row)?,
     })
+}
+
+/// A column only some reads select (`RUN_SELECT` and the list query): a row a command transaction read does not
+/// have it, and that is not an error (`None`); one that is there and cannot be read means the row was changed
+/// behind our back. This is **not** tolerance of a schema that lacks the column: `get`, `list`, the graph read and
+/// `check_database_replay` name the columns in their statements and fail on such a schema, as `business_id` and
+/// `start_delayed_until` already do (those are reads of the API, which runs the schema it was built for). What the
+/// engine's passes read tolerates it: `run_columns_sql!` does not select them, and `add_schedule_origin` reads them
+/// through a snapshot of the row.
+fn selected<'r, T>(row: &'r PgRow, name: &'static str) -> Result<Option<T>, StoreError>
+where
+    T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
+{
+    match sqlx::Row::try_get::<Option<T>, _>(row, name) {
+        Ok(value) => Ok(value),
+        Err(sqlx::Error::ColumnNotFound(_)) => Ok(None),
+        Err(_) => Err(corrupt(name)),
+    }
+}
+
+/// The schedule action that started the run. The four columns are all null or all set (a check of the
+/// migration); one set without the others is a row that was changed behind our back.
+fn run_schedule(row: &PgRow) -> Result<Option<ScheduleProvenance>, StoreError> {
+    let Some(schedule) = selected::<Uuid>(row, "schedule_id")? else {
+        return Ok(None);
+    };
+    let nominal_at = selected::<OffsetDateTime>(row, "schedule_nominal_at")?
+        .ok_or_else(|| corrupt("run schedule nominal time"))?;
+    let kind = selected::<String>(row, "schedule_action_kind")?
+        .ok_or_else(|| corrupt("run schedule action kind"))?
+        .parse::<sagat_domain::schedules::ActionKind>()
+        .map_err(|()| corrupt("run schedule action kind"))?;
+    let revision = selected::<i32>(row, "schedule_revision")?
+        .and_then(|revision| u32::try_from(revision).ok())
+        .ok_or_else(|| corrupt("run schedule revision"))?;
+    Ok(Some(ScheduleProvenance {
+        schedule: sagat_domain::schedules::ScheduleId::new(schedule),
+        nominal_at,
+        kind,
+        revision,
+    }))
+}
+
+/// The run a reset made this one from: `rerun_of` names it and `reset_sequence` says how much of it the
+/// new run holds. A run with the first and without the second is a rerun as new, which is not a reset.
+fn run_reset(row: &PgRow) -> Result<Option<ResetProvenance>, StoreError> {
+    let Some(sequence) = selected::<i64>(row, "reset_sequence")? else {
+        return Ok(None);
+    };
+    let source = selected::<Uuid>(row, "rerun_of")?.ok_or_else(|| corrupt("run reset source"))?;
+    Ok(Some(ResetProvenance {
+        source: RunId::new(source),
+        sequence: u64::try_from(sequence).map_err(|_| corrupt("run reset sequence"))?,
+    }))
 }
 
 /// The segment columns of `get` and `list`; a row from a command transaction has none.
@@ -6225,6 +6286,23 @@ impl PgRunTx {
         // What subscribers are told, owed to each of them from this very commit: the event and the
         // obligation to deliver it are written together or not at all. Identifiers and the status,
         // never data of the run.
+        let mut data = serde_json::json!({
+            "tenantId": self.info.tenant_id.to_string(),
+            "namespaceId": self.info.namespace_id.to_string(),
+            "runId": self.info.run_id.to_string(),
+            "workflow": self.def.name().as_str(),
+            "status": status.as_str(),
+            // So a subscriber can put what it does about the run in the run's trace.
+            "traceId": self.info.trace_id,
+        });
+        // The schedule that started the run, when one did (`FR-018-046`).
+        crate::outbound::add_schedule_origin(
+            &mut self.tx,
+            self.info.tenant_id,
+            self.info.run_id.as_uuid(),
+            &mut data,
+        )
+        .await?;
         let body = serde_json::json!({
             "id": message.to_string(),
             "type": "run.finished",
@@ -6232,15 +6310,7 @@ impl PgRunTx {
                 .now
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_default(),
-            "data": {
-                "tenantId": self.info.tenant_id.to_string(),
-                "namespaceId": self.info.namespace_id.to_string(),
-                "runId": self.info.run_id.to_string(),
-                "workflow": self.def.name().as_str(),
-                "status": status.as_str(),
-                // So a subscriber can put what it does about the run in the run's trace.
-                "traceId": self.info.trace_id,
-            },
+            "data": data,
         });
         crate::outbound::fan_out(
             &mut self.tx,

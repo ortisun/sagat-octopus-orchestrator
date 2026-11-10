@@ -268,6 +268,49 @@ async fn every_reset_operation_conforms_to_the_contract_on_its_normal_and_error_
     assert_eq!(made["state"], "CREATED");
     assert_eq!(made["sourceRunId"], id);
     let reset = made["resetId"].as_str().expect("reset id").to_owned();
+    // the run the reset made says where it came from (G2057, FR-018-037): read by id and in the list, both held to the
+    // `Run` schema, which declares `resetFrom`
+    let new_run = made["newRunId"].as_str().expect("the new run").to_owned();
+    let (_, _, _, created) = check(namespaced(scenario(
+        "GET",
+        "/runs/{runId}",
+        &format!("/runs/{new_run}"),
+        alice.clone(),
+        None,
+        200,
+    )))
+    .await;
+    assert_eq!(created["rerunOf"], id.as_str());
+    assert_eq!(
+        created["resetFrom"],
+        json!({"runId": id, "sequence": 1}),
+        "{created}"
+    );
+    let (_, _, _, listed) = check(namespaced(scenario(
+        "GET",
+        "/runs",
+        "/runs",
+        alice.clone(),
+        None,
+        200,
+    )))
+    .await;
+    let from_the_list = listed["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["runId"] == new_run.as_str())
+        .expect("the run is listed");
+    assert_eq!(from_the_list["resetFrom"], created["resetFrom"]);
+    assert!(
+        listed["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter(|item| item["runId"] != new_run.as_str())
+            .all(|item| item.get("resetFrom").is_none()),
+        "absent, not null, for the runs a reset did not make"
+    );
 
     // the key, once used, answers the same; a body that is none is a 422; who may not, may not
     let (_, _, _, again) = check(

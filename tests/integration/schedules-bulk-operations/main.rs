@@ -53,6 +53,7 @@ mod reset_rest;
 mod reset_telemetry;
 mod rest;
 mod retained_arguments;
+mod run_provenance;
 mod schedules;
 mod service;
 mod store;

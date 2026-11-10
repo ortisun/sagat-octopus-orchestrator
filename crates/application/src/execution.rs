@@ -664,6 +664,33 @@ pub struct RunRecord {
     /// Set by the reads that serve the API (`get`, `list`); `None` for a run outside any chain and
     /// for a record loaded inside a command transaction.
     pub chain: Option<RunSegment>,
+    /// The schedule action that started the run (feature 018, `FR-018-016`). Read by `get` and `list`
+    /// from the columns the run was created with; `None` for a run no schedule started and for a record
+    /// loaded inside a command transaction.
+    pub schedule: Option<ScheduleProvenance>,
+    /// The run a reset made this one from, and the journal sequence it keeps (feature 018, `FR-018-037`).
+    /// Read by `get` and `list`; `None` for every run a reset did not make.
+    pub reset_from: Option<ResetProvenance>,
+}
+
+/// Which schedule started a run, for which nominal time, by which kind of action and under which
+/// revision (`FR-018-016`). Fixed when the run is created: the columns refuse a change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleProvenance {
+    pub schedule: sagat_domain::schedules::ScheduleId,
+    /// The nominal time of the action, to the microsecond.
+    pub nominal_at: OffsetDateTime,
+    pub kind: sagat_domain::schedules::ActionKind,
+    /// The revision of the schedule the action was taken under.
+    pub revision: u32,
+}
+
+/// The run a reset made a run from, and the last journal sequence of that run the new one holds as
+/// its own (`runs.rerun_of` and `runs.reset_sequence`). A rerun as new has the first and not the second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResetProvenance {
+    pub source: RunId,
+    pub sequence: u64,
 }
 
 /// One consistent bounded read used to plan progress in an exact scoped path.

@@ -360,6 +360,103 @@ pub(crate) fn outcomes_of(pairs: &[(&str, i64)]) -> Vec<(String, i64)> {
     pairs.iter().map(|(o, n)| ((*o).to_owned(), *n)).collect()
 }
 
+/// Fires, once, a schedule that was created through the REST API of `api`, at the nominal time `nominal` and without waiting for
+/// it: the times the schedule keeps are moved to `nominal` (what the pass finds as due) and the service the pass calls acts over
+/// the stores of the API and under the authority of the member who created the schedule. **The firing decides by a clock fixed
+/// five seconds after `nominal`**, not by the wall clock, so that no other time of the schedule is due while the test runs (a
+/// test that straddled the next time would otherwise find the firing acting on that one too, or only on the latest of the two under
+/// the catch-up mode `ONE`). What it starts is a run like any other, read back through the same API. The nominal time is the one the
+/// caller gives: what this proves is that it is passed through to the run, not how a schedule calculates it (the callers take it
+/// from the schedule's own `nextActionAt` less one period, and check the schedule's calculation of the next one afterwards).
+pub(crate) async fn fire_at(
+    api: &super::api::TestApi,
+    tenant: sagat_domain::identity::TenantId,
+    schedule: &str,
+    nominal: OffsetDateTime,
+) -> Fired {
+    use sagat_application::clock::SystemClock;
+    use sagat_application::execution::{DefinitionCache, Engine};
+    use sagat_application::runs::RunService;
+    use sagat_domain::schedules::ScheduleId;
+    use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
+
+    let id: Uuid = schedule.parse().expect("a schedule id");
+    sqlx::query(
+        "UPDATE schedules SET next_action_at = $2, next_actual_at = $2, state_version = state_version + 1 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(nominal)
+    .execute(&api.db.pool)
+    .await
+    .expect("the schedule is due");
+    let firing = ScheduleFiring::new(
+        PgScheduleStore::new(api.api_pool.clone()),
+        SpecCalendar,
+        TestClock::at(nominal + Duration::seconds(5)),
+        PgIdentityStore::new(api.api_pool.clone()),
+        RunService::new(
+            api.executions.clone(),
+            SystemClock,
+            Engine::new(JsonEvaluator),
+            DefinitionCache::new(Arc::new(JsonIrCodec), 64),
+        ),
+        Ceilings::default(),
+    );
+    firing
+        .fire(
+            &DueSchedule {
+                tenant_id: tenant,
+                id: ScheduleId::new(id),
+            },
+            None,
+        )
+        .await
+        .expect("fire")
+}
+
+/// Marks a run as started by a schedule action, for a test that built the run another way (a seeded chain, a loop, a collection)
+/// and needs to see what the paths that finish a run say about it: the columns the admission writes with the run. The provenance
+/// of a run never changes (a trigger refuses it), so the guard is switched off, by the owner, for this one statement (each of the
+/// three is its own transaction: the table cannot be altered while the update has events pending) and on again after it.
+pub(crate) async fn mark_as_scheduled(
+    pool: &sqlx::PgPool,
+    run: Uuid,
+    schedule: Uuid,
+    nominal: OffsetDateTime,
+) {
+    sqlx::query("ALTER TABLE runs DISABLE TRIGGER runs_schedule_provenance")
+        .execute(pool)
+        .await
+        .expect("switch the guard off");
+    let marked = sqlx::query(
+        "UPDATE runs SET schedule_id = $2, schedule_nominal_at = $3, schedule_action_kind = 'SCHEDULED', \
+         schedule_revision = 1 WHERE id = $1",
+    )
+    .bind(run)
+    .bind(schedule)
+    .bind(nominal)
+    .execute(pool)
+    .await
+    .expect("mark the run")
+    .rows_affected();
+    assert_eq!(marked, 1, "the run exists");
+    sqlx::query("ALTER TABLE runs ENABLE ALWAYS TRIGGER runs_schedule_provenance")
+        .execute(pool)
+        .await
+        .expect("switch the guard on");
+}
+
+/// The body the one delivery of a subscription carries: what the subscriber is sent for a finished run.
+pub(crate) async fn delivered_body(pool: &sqlx::PgPool, subscription: Uuid) -> Value {
+    let bytes: Vec<u8> =
+        sqlx::query_scalar("SELECT payload FROM webhook_deliveries WHERE subscription_id = $1")
+            .bind(subscription)
+            .fetch_one(pool)
+            .await
+            .expect("one delivery");
+    serde_json::from_slice(&bytes).expect("a JSON body")
+}
+
 /// An hour boundary a few hours ago. The pass finds what is due by the database clock and the
 /// firing decides by the clock of the test, so the test clock starts where the first time of an
 /// hourly schedule is already in the past for both.

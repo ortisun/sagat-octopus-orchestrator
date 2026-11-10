@@ -150,3 +150,107 @@ async fn the_outbound_webhook_and_the_event_document_conform_to_the_document() {
     );
     let _ = ctx();
 }
+
+/// `FR-018-046`: the webhook of a run a schedule started carries the two optional properties the document declares for it,
+/// validated as the document says (a UUID, an RFC 3339 instant), and nothing the document does not declare: every property of
+/// `data` the platform wrote is one of the declared ones. The same body is what the broker destinations are given
+/// (`RunFinishedBroker` takes the payload of the webhook by reference).
+#[tokio::test]
+async fn the_webhook_of_a_scheduled_run_conforms_and_says_no_more_than_the_document_declares() {
+    use crate::support::schedules::{fixture, hourly};
+
+    let f = fixture().await;
+    let w = &f.w;
+    w.put_secret("provider-signing", "whsec-0123456789abcdef0123456789abcdef")
+        .await;
+    let receiver = Receiver::start().await;
+    let created = now();
+    let subscription = SubscriptionRecord {
+        id: SubscriptionId::generate(),
+        tenant_id: w.admin.tenant_id(),
+        namespace_id: w.namespace.id(),
+        name: slug("scheduled-conformance"),
+        destination: OutboundDestination::Webhook {
+            url: TargetUrl::parse(&receiver.url).expect("url"),
+            signing_secret: SecretName::parse("provider-signing").expect("secret"),
+        },
+        kinds: vec![OutboundKind::RunFinished],
+        limits: DeliveryLimits::new(100, Duration::from_secs(2)).expect("limits"),
+        status: SubscriptionStatus::Active,
+        health: sagat_application::outbound::Health::default(),
+        created_by: "test".to_owned(),
+        created_at: created,
+        updated_at: created,
+    };
+    w.store
+        .create_subscription(
+            &subscription,
+            10,
+            &sagat_domain::audit::AuditRecord::provisioning(
+                w.admin.tenant_id(),
+                sagat_domain::audit::AuditAction::WebhookSubscriptionCreated,
+                sagat_domain::audit::ResourceType::WebhookSubscription,
+                subscription.id.to_string(),
+                "test",
+                created,
+            ),
+        )
+        .await
+        .expect("subscribe");
+    let (workflow, _) = w
+        .publish(document("scheduled-flow", "work", vec![activity("work")]))
+        .await;
+    let schedule = f
+        .create(
+            "hourly",
+            &hourly(),
+            &json!({}),
+            Some(json!({"workflowId": workflow.to_string()})),
+        )
+        .await;
+    f.clock
+        .advance(time::Duration::hours(1) + time::Duration::seconds(3));
+    f.drain(&schedule).await;
+    let session = w.session(&["act.work"]).await;
+    let task = w.one_task(&session).await;
+    w.complete(&session, &task, &json!({}))
+        .await
+        .expect("complete");
+    w.deliveries.tick().await;
+
+    let document_schema = load();
+    let message = &document_schema["components"]["messages"]["RunFinishedWebhook"];
+    let body: Value = serde_json::from_slice(&receiver.seen()[0].body).expect("json");
+    conforms(
+        &message["payload"],
+        &body,
+        "the webhook body of a scheduled run",
+    );
+    let declared: Vec<&String> = message["payload"]["properties"]["data"]["properties"]
+        .as_object()
+        .expect("the declared properties of data")
+        .keys()
+        .collect();
+    for written in body["data"].as_object().expect("data").keys() {
+        assert!(
+            declared.contains(&written),
+            "`data.{written}` is written and not declared by RunFinishedWebhook: {declared:?}"
+        );
+    }
+    assert!(
+        body["data"]["scheduleId"].is_string() && body["data"]["nominalTime"].is_string(),
+        "{body}"
+    );
+    let required = message["payload"]["properties"]["data"]["required"]
+        .as_array()
+        .expect("required");
+    assert!(
+        !required.contains(&json!("scheduleId")) && !required.contains(&json!("nominalTime")),
+        "the two properties are optional: a run nobody scheduled has neither"
+    );
+    assert_eq!(
+        document_schema["components"]["messages"]["RunFinishedBroker"]["payload"],
+        json!({"$ref": "#/components/messages/RunFinishedWebhook/payload"}),
+        "the broker destinations are given the same payload"
+    );
+}
