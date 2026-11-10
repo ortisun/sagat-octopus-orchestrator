@@ -110,6 +110,57 @@ async fn skip_records_the_time_it_skipped_while_a_run_is_open() {
     );
 }
 
+/// Found by the quickstart demo (T018-075): `sagat schedule get` said "1 open run(s)" for a schedule whose only run had ended
+/// seconds before, and went on saying it for as long as the schedule was paused, because the description handed out the runs the
+/// schedule *tracks*, which the pass forgets only at its next step. The firing already treats an ended run as closed
+/// (`open_run_ids`); the description must say the same.
+#[tokio::test]
+async fn a_description_lists_only_the_runs_that_are_still_open_though_the_pass_has_not_forgotten_the_ended_one()
+ {
+    let f = fixture().await;
+    let schedule = f
+        .create("describes", &hourly(), &json!({"overlap": "SKIP"}), None)
+        .await;
+    f.clock.advance(Duration::hours(1) + Duration::seconds(1));
+    f.drain(&schedule).await; // 13:00 starts
+    let run = f.runs(&schedule).await[0];
+    let open = f
+        .service
+        .describe(&f.w.admin, schedule.id, 1, 1)
+        .await
+        .expect("describe");
+    assert_eq!(open.record.tracked_runs, vec![run], "an open run is listed");
+
+    f.end(run, "SUCCEEDED").await;
+    assert_eq!(
+        f.read(&schedule).await.tracked_runs,
+        vec![run],
+        "the schedule itself forgets the run at its next step, not before"
+    );
+    let ended = f
+        .service
+        .describe(&f.w.admin, schedule.id, 1, 1)
+        .await
+        .expect("describe");
+    assert_eq!(
+        ended.record.tracked_runs,
+        Vec::<uuid::Uuid>::new(),
+        "a run that ended is not an open run, whether or not the pass has forgotten it"
+    );
+    // a paused schedule takes no step, so only the description can tell the truth about its runs
+    sqlx::query("UPDATE schedules SET state = 'PAUSED' WHERE id = $1")
+        .bind(schedule.id.as_uuid())
+        .execute(&f.w.db.pool)
+        .await
+        .expect("pause");
+    let paused = f
+        .service
+        .describe(&f.w.admin, schedule.id, 1, 1)
+        .await
+        .expect("describe");
+    assert!(paused.record.tracked_runs.is_empty());
+}
+
 #[tokio::test]
 async fn buffer_one_keeps_one_waiting_drops_the_next_and_starts_the_waiting_one_when_the_run_ends()
 {

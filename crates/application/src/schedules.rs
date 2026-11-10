@@ -711,6 +711,7 @@ pub struct ScheduleActivity {
 /// A schedule as `describe` shows it: the record, the times it will act on next and what it has done.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduleDescription {
+    /// The schedule as stored, except that `tracked_runs` lists only the runs that are still open when it is read.
     pub record: ScheduleRecord,
     /// `(nominal, actual)` of the next times; empty while the schedule is paused or exhausted.
     pub next: Vec<(OffsetDateTime, OffsetDateTime)>,
@@ -1407,7 +1408,20 @@ where
         recent: u32,
     ) -> Result<ScheduleDescription, AppError> {
         principal.authorize(Permission::ScheduleRead)?;
-        let record = self.load(principal, id).await?;
+        let mut record = self.load(principal, id).await?;
+        // The schedule forgets a run that ended at its next step (a paused one takes none until it is resumed), as the firing
+        // already treats an ended run as closed; a description that listed it would call a finished run open.
+        if !record.tracked_runs.is_empty() {
+            let statuses = self
+                .store
+                .run_statuses(record.tenant_id, &record.tracked_runs)
+                .await?;
+            record.tracked_runs.retain(|run| {
+                statuses
+                    .iter()
+                    .any(|(known, status)| known == run && !status.is_terminal())
+            });
+        }
         let now = self.clock.now();
         let next = if record.state == ScheduleState::Active {
             upcoming(
