@@ -639,13 +639,21 @@ fn collection_journal(finished: bool) -> Vec<AddressedRunEvent> {
 }
 
 #[test]
-fn a_collection_is_a_point_when_it_has_finished_and_never_while_it_is_open() {
+fn a_collection_is_a_candidate_when_it_has_finished_but_its_scope_cannot_be_restored_yet() {
     let run = RunId::generate();
-    // finished: the start and the finish of the collection are the points
+    // finished: the finish of the collection is a candidate, and a prefix that holds the scope (its entry, its
+    // admissions and its checkpoints are rows of the owner, the iteration's own steps are rows below it) restores
+    // none of the rows the scope keeps beside the journal (G1980 (1), D2156), so only the start is a point
     let done = reset_points(run, &collection_journal(true)).expect("a journal that replays");
-    assert_eq!(eligible(&done), [1, 6], "{done:?}");
+    assert_eq!(eligible(&done), [1], "{done:?}");
     assert_eq!(
-        done.eligible[1]
+        blocked(&done, 6),
+        Some(&ResetBlock::ScopedEvents),
+        "{done:?}"
+    );
+    assert_eq!(
+        done.blocked[0]
+            .0
             .completes
             .as_ref()
             .map(|node| node.as_str().to_owned()),
@@ -655,6 +663,36 @@ fn a_collection_is_a_point_when_it_has_finished_and_never_while_it_is_open() {
     let open = reset_points(run, &collection_journal(false)).expect("a journal that replays");
     assert_eq!(eligible(&open), [1], "{open:?}");
     assert!(open.blocked.is_empty());
+}
+
+#[test]
+fn a_collection_with_no_item_holds_its_scope_all_the_same_so_its_finish_is_not_a_point() {
+    // found by the corpus of the reset (SC-018-011): a collection of no item journals its entry and its finish at the
+    // root and nothing below it, and the point at its finish was offered; the run made from it had no scope for the
+    // collection the journal says finished, so its projection was not a replay of its journal
+    let journal: Vec<AddressedRunEvent> = vec![
+        RunEvent::RunStarted {
+            entrypoint: items(),
+        },
+        RunEvent::CollectionEntered {
+            node: items(),
+            item_count: 0,
+            max_items: 8,
+            max_concurrency: 1,
+            snapshot_digest: Digest::new([0x51; 32]),
+        },
+        RunEvent::CollectionFinished {
+            node: items(),
+            outcome: CollectionOutcome::Succeeded,
+            result_digest: Some(Digest::new([0x90; 32])),
+        },
+    ]
+    .into_iter()
+    .map(AddressedRunEvent::root)
+    .collect();
+    let found = reset_points(RunId::generate(), &journal).expect("a journal that replays");
+    assert_eq!(eligible(&found), [1], "{found:?}");
+    assert_eq!(blocked(&found, 3), Some(&ResetBlock::ScopedEvents));
 }
 
 #[test]

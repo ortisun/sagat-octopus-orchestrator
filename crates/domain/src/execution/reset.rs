@@ -161,8 +161,9 @@ pub enum ResetBlock {
     OpenWork(NodeId),
     /// A collection or a loop has not finished successfully.
     ActiveScope,
-    /// The prefix holds an event of an iteration (an instance below the root). This version restores the
-    /// events of the root of a run only: a reset needs the writers of a scope to re-emit one (G1980).
+    /// The prefix holds an event of an iteration (an instance below the root) or the entry of a collection, which
+    /// has none when it holds no item. This version restores the events of the root of a run only: a reset needs
+    /// the writers of a scope to re-emit one (G1980, D2156).
     ScopedEvents,
     /// An instance of the prefix is compensated, skipped, resolved or reconciled later in the source, so a
     /// reset run, which would not have had that happen, cannot inherit it.
@@ -307,8 +308,14 @@ pub fn reset_points(
     let mut candidates: Vec<Candidate> = Vec::new();
     for (index, addressed) in journal.iter().enumerate() {
         state.apply_addressed(addressed)?;
-        scoped |= !addressed.path().is_root();
         let event = addressed.event();
+        // A collection is entered at the root and its owner's rows (entry, admissions, checkpoints, finish) are root
+        // rows too: a collection of no item has no row below the root at all, and its finish is a candidate. What the
+        // scope keeps beside the journal is not restored by this version, so its entry is as much a scoped event as an
+        // iteration's row (D2156). A loop needs no such clause: a loop that succeeds ends at no candidate (G1979 (1))
+        // and one that does not is no quiet state.
+        scoped |=
+            !addressed.path().is_root() || matches!(event, RunEvent::CollectionEntered { .. });
         match rule_of(event) {
             ResetRule::Exclude => {
                 excluded.get_or_insert(event.name());
