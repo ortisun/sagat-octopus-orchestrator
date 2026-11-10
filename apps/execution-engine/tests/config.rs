@@ -1117,25 +1117,28 @@ fn value_given(line: &str, name: &str) -> Option<String> {
     let value = after
         .strip_prefix('=')
         .or_else(|| after.strip_prefix(':'))?;
+    let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+    // `${NAME:-default}` (or `${NAME-default}`) takes the value from the environment of whoever runs the stack and ships the
+    // default it names; `${NAME}` ships none. What a manifest sets is that default.
+    let value = match value.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
+        Some(interpolation) => interpolation
+            .split_once(":-")
+            .or_else(|| interpolation.split_once('-'))
+            .map_or("", |(_, default)| default),
+        None => value,
+    };
     Some(
         value
-            .trim()
             .trim_matches(|c| c == '"' || c == '\'')
             .to_ascii_lowercase(),
     )
 }
 
-#[test]
-fn no_shipped_manifest_turns_the_reset_switch_on() {
-    // Until the instance-capability registry exists the switch is an operator's act, engine first (ADR-0081): no
-    // compose file, chart or example of this repository may set it to anything but off.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../infra");
+/// The lines under `root` that give the reset switch a value other than off, as `path:line: text`, and how many files were read.
+fn lines_that_turn_the_reset_switch_on(root: &std::path::Path) -> (usize, Vec<String>) {
     let mut files = Vec::new();
-    files_under(&root, &mut files);
-    assert!(
-        files.len() > 10,
-        "the manifests were not found under {root:?}"
-    );
+    files_under(root, &mut files);
+    let scanned = files.len();
     let mut on = Vec::new();
     for path in files {
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -1149,7 +1152,54 @@ fn no_shipped_manifest_turns_the_reset_switch_on() {
             }
         }
     }
+    (scanned, on)
+}
+
+#[test]
+fn no_shipped_manifest_turns_the_reset_switch_on() {
+    // Until the instance-capability registry exists the switch is an operator's act, engine first (ADR-0081): no
+    // compose file, chart or example of this repository may set it to anything but off.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../infra");
+    let (scanned, on) = lines_that_turn_the_reset_switch_on(&root);
+    assert!(scanned > 10, "the manifests were not found under {root:?}");
     assert!(on.is_empty(), "a manifest turns the switch on: {on:#?}");
+}
+
+/// The scan itself, over a directory of its own: a manifest that takes the value from the environment and defaults it ON is
+/// found (the text `${X:-true}` is not "off"), one that defaults it off or gives none is not. Without this the guard above could
+/// stop flagging an interpolated default and the shipped manifests would still pass.
+#[test]
+fn the_scan_finds_a_manifest_that_defaults_the_reset_switch_on_and_passes_one_that_defaults_it_off()
+{
+    let dir = std::env::temp_dir().join(format!(
+        "sagat-manifest-scan-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(dir.join("nested")).expect("a scratch directory");
+    let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).expect("a manifest");
+    write(
+        "compose.yaml",
+        "services:\n  engine:\n    environment:\n      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-true}\n",
+    );
+    write(
+        "nested/off.yaml",
+        "      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-false}\n      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED}\n",
+    );
+    write("nested/.env", "SAGAT_RESET_CANCEL_SOURCE_ENABLED=\n");
+    write(
+        "nested/note.md",
+        "the engine does not have SAGAT_RESET_CANCEL_SOURCE_ENABLED on\n",
+    );
+    let (scanned, on) = lines_that_turn_the_reset_switch_on(&dir);
+    std::fs::remove_dir_all(&dir).expect("remove the scratch directory");
+    assert_eq!(scanned, 4);
+    assert_eq!(on.len(), 1, "{on:#?}");
+    assert!(on[0].contains("compose.yaml:4"), "{on:#?}");
+    assert!(on[0].contains(":-true}"), "{on:#?}");
 }
 
 #[test]
@@ -1163,6 +1213,23 @@ fn a_line_that_gives_the_switch_a_value_is_read_as_one() {
         ),
         ("      SAGAT_RESET_CANCEL_SOURCE_ENABLED: 1", Some("1")),
         ("SAGAT_RESET_CANCEL_SOURCE_ENABLED = false", Some("false")),
+        // a compose file that takes the value from the environment ships the default it names: that is what the manifest sets
+        (
+            "      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-false}",
+            Some("false"),
+        ),
+        (
+            "      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-true}",
+            Some("true"),
+        ),
+        (
+            "      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED-True}",
+            Some("true"),
+        ),
+        (
+            "      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED}",
+            Some(""),
+        ),
         (
             "the engine does not have SAGAT_RESET_CANCEL_SOURCE_ENABLED on",
             None,
