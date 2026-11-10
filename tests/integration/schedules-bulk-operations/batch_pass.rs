@@ -633,21 +633,23 @@ async fn move_slot(f: &Fixture, id: Uuid, seconds: i32) {
     .expect("move the slot");
 }
 
+/// How long a job may take to select its runs. A selecting job waits for the oldest open transaction of the WHOLE PostgreSQL
+/// server (the horizon is server-wide), and the tests of a suite share one server, so a test beside this one that holds a
+/// transaction can hold the selection back: CI failed `the_engines_loop_applies_...` here once at 60 s on a loaded Linux runner
+/// (the `counted` tests have the same wait and give it 120 s). The bound is a time, not a number of rounds.
+const SELECTION_BOUND: StdDuration = StdDuration::from_secs(180);
+
 /// Rounds of `replica`, one at a time, until the selection of the job is over and it is running; returns the round that
 /// ended the selection (it goes on to apply the first item, whose slot has come: a step after a step in one round).
 async fn until_running(f: &Fixture, replica: &Replica, id: Uuid) -> BatchRound {
-    within(
-        "the job selects its runs",
-        StdDuration::from_secs(60),
-        async {
-            let mut last = BatchRound::default();
-            while state_of(f, id).await != JobState::Running {
-                last = replica.pass.round().await;
-                tokio::time::sleep(StdDuration::from_millis(10)).await;
-            }
-            last
-        },
-    )
+    within("the job selects its runs", SELECTION_BOUND, async {
+        let mut last = BatchRound::default();
+        while state_of(f, id).await != JobState::Running {
+            last = replica.pass.round().await;
+            tokio::time::sleep(StdDuration::from_millis(10)).await;
+        }
+        last
+    })
     .await
 }
 
@@ -981,16 +983,12 @@ async fn a_due_job_that_the_executor_finds_not_due_yet_is_looked_at_again_in_a_f
     )
     .await;
     // the selection does not look at the slot, so the job gets to running whatever the clock says
-    within(
-        "the job selects its runs",
-        StdDuration::from_secs(60),
-        async {
-            while state_of(&f, created.id).await != JobState::Running {
-                pass.round().await;
-                tokio::time::sleep(StdDuration::from_millis(10)).await;
-            }
-        },
-    )
+    within("the job selects its runs", SELECTION_BOUND, async {
+        while state_of(&f, created.id).await != JobState::Running {
+            pass.round().await;
+            tokio::time::sleep(StdDuration::from_millis(10)).await;
+        }
+    })
     .await;
 
     let round = pass.round().await;
