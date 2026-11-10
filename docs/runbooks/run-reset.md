@@ -14,7 +14,9 @@ A reset **creates a new run** from a prefix of the journal of a run that has end
 that is still open can be reset too, by cancelling it first and waiting for it to end: section 4.2.)
 
 - **The same workflow version and the same input** as the source. The new run is a run like any other: it has its own id, its
-  own deadline and its own trace. It names its origin (`rerunOf` on the run) and the source lists it in its resets.
+  own deadline and its own trace. It names its origin (`rerunOf` on the run, and `resetFrom {runId, sequence}`, which says how much of
+  the source it keeps: a run started again by `RERUN_AS_NEW` has `rerunOf` and no `resetFrom`; the Studio's run page says "Reset from",
+  `sagat workflow inspect` prints it, and the six SDKs read it as `Run.resetFrom`) and the source lists it in its resets.
 - **The prefix is copied, not replayed.** The new run's journal starts with the events `1..N` of the source exactly as the source
   stored them: who did each thing and when are the source's. The first of them says it was restored, and a `run.reset` event
   follows the prefix, carrying the SHA-256 of the prefix, so a reader can see where the copy ends and the new run begins.

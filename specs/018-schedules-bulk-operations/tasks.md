@@ -147,6 +147,29 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   a valid body for each write; `contract_payload_classification` 18, `contract_developer_experience` 8,
   `contract_rest_platform_foundation` 9 and the other REST contract suites pass. Not done: the AsyncAPI additions and the
   baseline regeneration, the operations of US02..US07.
+  *Update 2026-11-10 (G2057, D2141 to D2146; the task stays open, nothing ticked):* the **AsyncAPI additions and the baseline
+  regeneration are done.** `RunFinishedWebhook.payload.data` has the optional `scheduleId` (uuid) and `nominalTime` (date-time)
+  (`RunFinishedBroker` takes the payload by reference); the four code paths that tell subscribers a run finished add them for a run a
+  schedule started, through `add_schedule_origin` (`infra-postgres/src/outbound.rs`), and add nothing for another run; the hint on
+  NATS or Redis and `event_outbox.payload` are unchanged and `businessId` is in no event. `events.baseline.json` was regenerated with
+  `SAGAT_UPDATE_BASELINE=1` and its diff read: **only** `data.scheduleId` and `data.nominalTime` on `RunFinishedWebhook.payload`, no
+  line removed (the shape tool does not follow the `$ref` of the broker message). Also merged into `openapi.yaml`: `Run.schedule` and
+  `Run.resetFrom` (the `RunAdditions` of the draft; `businessId` and `startDelayedUntil` were already there), and the description of
+  `rerunOf`; `docs/reference/api.md` is unchanged (the reference renders operations, and `contract_developer_experience` passes without
+  the bless switch); `schema.d.ts` regenerated, `check:api` clean. Evidence (tests written first and seen failing for the right reason, then
+  green): `integration_schedules_bulk_operations run_provenance::` 4 (a run now, a real firing under a fixed clock whose nominal
+  time is passed through to the run to the microsecond, absent-not-null for a plain run, a reset and a plain rerun),
+  `integration_events_webhooks_messaging run_provenance::` (the webhook body of a run a firing started, of a plain run, and of a run that
+  has both a schedule and a business identifier, exact keys; the canary of each in no body and no hint, hand mutant red),
+  `integration_workflow_primitives` `…schedule_started…` (collection, loop) and `the_finalization_writer_says_the_schedule_a_stamped_head_
+  carries_…` (chain), on runs **stamped by hand**, with and without a schedule, seen failing with `add_schedule_origin` switched off; on
+  a **real chain** from a real firing the final head's webhook has no `scheduleId` (`chain_handoff`, D2144, G2063, open against FR-018-046);
+  `scripts/check-architecture.py` fails when a `run.finished` body is built without `add_schedule_origin` (D2148, nine tests, hand mutant), `contract_asyncapi_events_webhooks_messaging`
+  `the_webhook_of_a_scheduled_run_conforms_and_says_no_more_than_the_document_declares` (the body validates against the document and every
+  property of `data` the platform writes is declared), `contract_schedules_bulk_operations` `run_provenance::` and the reset case of
+  `resets::` (the run and the list validated against the `Run` schema). **Not done:** the sentence "assert `workflow.schema.json` and
+  `worker.baseline.json` unchanged" has no test of its own (G2065: checked with `git diff` against the merge-base with `develop`,
+  the baseline identical and the schema different only by `reapplyOnReset`, T018-078), and the `inputBytes` of G1015.
 - [ ] T018-011 Ports `ScheduleStore`, `ScheduleCalendar`, `BusinessIdStore`, `BatchStore`, `ResetStore`;
   `NewRun` admissions `schedule`, `business_id`, `delay`, `reset` processed by `RunStore::create` in
   ADR-0050 order — `crates/application/src/{schedules.rs,batch.rs,runs.rs,runs/business_id.rs,runs/reset.rs}`
@@ -1727,7 +1750,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   *Part done 2026-11-09 (D2131 to D2136, G2057 to G2062; the task stays open, nothing ticked): the quickstart demos were run for real*
   on the repository's own compose stack (project `sagat018demo`, the images built from this tree, one engine, one worker, the CLI
   built into a private target directory) and `quickstart.md` was rewritten to what they showed. **53 steps: 32 PASS, 12 DOC FIXED, 2
-  DEFECT FIXED, 1 FAILED, 6 SKIPPED.** Defects found and fixed with a test seen failing first: `sagat batch cancel` sent no body and
+  DEFECT FIXED, 1 FAILED, 6 SKIPPED** (as of 2026-11-09: the failure was fixed on 2026-11-10, see the update below, which counts 3 DEFECT FIXED and 0 FAILED). Defects found and fixed with a test seen failing first: `sagat batch cancel` sent no body and
   the platform refused it (`400 content type must be application/json`; now `--reason`, D2132) and the description of a schedule listed
   the runs it tracks, ended ones included (D2133). **FAILED, not fixed:** the run resource does not expose the schedule's nominal
   time, kind and revision (FR-018-016; G2057, D2136). Skipped: the copy of `.env.example` (unreadable in the session: G2061), and four
@@ -1740,6 +1763,61 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   in both roles (145 passed each), the runtime-privilege audit (43), `contract_developer_experience` (8), `cargo fmt --check`,
   clippy `-D warnings` of `sagat-cli`, `sagat-application` and `sagat-tests`, and the three checkers (design docs, agent
   configuration, architecture).
+  *Update 2026-11-10 (G2057 closed, D2141 to D2146, G2063 to G2066; the task stays open, nothing ticked): the run provenance, end
+  to end, with every test written first and seen failing.* **Demo step 2.4 is now a defect fixed, not a failure** (counts: 32 PASS, 12
+  DOC FIXED, 3 DEFECT FIXED, 0 FAILED, 6 SKIPPED), **without a rerun on the compose stack** (G2066). What was built: `Run.schedule
+  {scheduleId, nominalTime, kind, revision}` and `Run.resetFrom {runId, sequence}` in the REST `Run` (absent, not `null`; the list
+  too; read with the run, no query per run), `data.scheduleId` and `data.nominalTime` in the `run.finished` webhook body (T018-010),
+  the Studio header ("Started by schedule *name* (kind), nominal time …", link, "Reset from"), `sagat workflow inspect`, and the
+  six SDK models. **Seen failing first** (the real message): the four `run_provenance::` tests of `integration_schedules_bulk_operations`
+  (`schedule` was `Null`, `an object` expected; `resetFrom` `Null`), the webhook test (`scheduleId` missing from `data`), the
+  conformance test of the document, eight vitest tests (six failed; the two that say a run has no such fact passed already), four CLI tests (three failed, the plain run already passed), the three tests per SDK (a compile error in the five
+  typed ones, `undefined` in TypeScript), and the three producer tests (with `add_schedule_origin` switched off: `left: Null`), then green. **Found by
+  the suites, not by me:** (1) the first version of `add_schedule_origin` named the two columns and failed `workflow-primitives`
+  `iteration_policy_zero::zero_policy_writer_and_downgrade_obey_both_relation_lock_orders` (762 of 763: the engine finishes a run on a
+  schema rolled below `20261230000200`, where the columns do not exist); it now reads them through `to_jsonb(r.*)` like
+  `start_delayed_until` (D2143); (2) the shared `reset` golden of the SDK suite differs, in the six languages alike, by exactly the four `resetFrom`
+  objects, blessed from TypeScript after reading the diff and then equal in the other five without bless; (3) the three browser journeys
+  that said "Started again from" (two) or a path without `/studio` (mine) were updated. **A defect that was not mine, fixed because it
+  blocked the workspace gate:** `sagat-execution-engine --test config no_shipped_manifest_turns_the_reset_switch_on` failed on the
+  committed tree (`731b67ed` gave `compose.yaml` `SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${…:-false}` and the guard read the text of the
+  default as the value); `value_given` now reads `${NAME:-default}` as its default, with the four cases added to
+  `a_line_that_gives_the_switch_a_value_is_read_as_one` (red first), so a manifest that defaults to `true` still fails. **Gates run
+  (macOS, load 6 to 9, `CARGO_TARGET_DIR` private, `RUST_TEST_THREADS=2`):** `cargo fmt --check`; clippy of the whole workspace with
+  `-D warnings`; the three checkers; the workspace tests outside `sagat-tests`; `integration_schedules_bulk_operations` (638 passed, 1
+  ignored) and `fault_schedules_bulk_operations` (99), `integration_platform_foundation` (104), `integration_security_multitenancy` (126), each in
+  **both roles**; `integration_events_webhooks_messaging` (112), `fault_events_webhooks_messaging` (8); the contract suites of the
+  brief (schedules 8, developer experience 8, REST security 21, payload classification 18, observability 11, Iceberg 63, AsyncAPI 5, REST
+  events 2, REST durable execution 2, gRPC durable execution 70 on the rerun, sagas 9, SDK 7, security 10); `fault_platform_foundation` (38) and
+  `e2e_platform_foundation` (42); `integration_workflow_primitives` (762 of 763 on the first version, 763 passed and 22 ignored after the fix); the Studio gates (`lint`, both `typecheck`, 1,462
+  vitest tests, `build`, `check:api`, `npm audit` clean) and the browser journeys (52 passed on the second run); the six SDK checks;
+  the whole `sdk_conformance` (76 scenarios in six languages); `e2e_sdk_multilanguage` (6), `fault_sdk_multilanguage`,
+  `e2e_developer_experience` (4 and 1) and `e2e_database_connections` (the targets the selector names). **Flakes and an
+  environment accident, said plainly:** `contract_grpc_durable_execution protocol::task_stream_lifetime_admission_…` failed once
+  while three suites ran together (a window of 4.1 s against a 5 s watchdog) and passed alone and in a whole run; Docker Desktop restarted
+  during a run (every container of the machine, other projects' too, `Exited (0)` seconds before), which failed 166 tests of
+  `workflow-primitives` and the first whole-suite conformance run with `UnexpectedEof` on a database connection: both were rerun whole.
+  **Not done, and why:** the compose stack was not started again (G2066); no mutation testing (release close only); no benchmark;
+  the released-upgrade profile and the Linux run are CI's; `check-upgrade-boundary.py` passes (migration `20270115000000`, no migration was added).
+  *Review of the slice, 2026-11-10 (D2147 to D2155, G2067 to G2071; three independent reviews, no blocker; fixed in the same tree):*
+  (A) the business-id canary now goes through the branch that adds `scheduleId` (a run with both; hand mutant `businessId` in that
+  branch: red); (B) `scripts/check-architecture.py` fails when a `run.finished` body is built without `add_schedule_origin` in the same
+  function (nine tests, hand mutant: the call removed from the loop writer: red); (C) the chain test that stamps its head is named
+  synthetic and a real chain from a real firing shows what the product does: **the final head's webhook has no `scheduleId`, G2063 stays
+  open against FR-018-046**; (D) the provenance lives on the run record, not in the journal detail of `run.started` (D2147; replay
+  equality is not claimed: G2068); (E) the documents agree (53 steps = 32 + 12 + 3 + 0 + 6 by `grep`; the rows SC-018-013, SC-018-015
+  and FR-018-049 and the quickstart's label of the illustrative answer); (F) the draft contract, the closed `kind` enum (G2067), the Studio
+  (the hooks only for a session that may read schedules; an unknown kind as written; the comment true), the CLI (`1 event`; the unknown
+  kind clipped), the real-firing tests under a fixed clock, the cost of the read stated (G2071), the doc of `selected()` (G2070) and
+  the scan of the manifests tested (hand mutant: the default ignored, red). **Gates rerun on the final tree:** fmt; clippy of the
+  workspace `-D warnings`; `check-architecture.py`, `check-agent-config.py`, `check-design-docs.py`; the 365 Python tests of
+  `scripts/tests` (OK, 2 skipped); the workspace tests outside `sagat-tests` (exit 0; `sagat-cli` and `sagat-execution-engine` 188
+  passed in 23 binaries); `integration_schedules_bulk_operations` 638 (1 ignored), `fault_schedules_bulk_operations` 99 and
+  `integration_platform_foundation` 104 in both roles; `integration_events_webhooks_messaging` 112, `fault_events_webhooks_messaging` 8;
+  `integration_workflow_primitives` 764 (22 ignored; the real-chain test is the new one); the contract suites (schedules 8, developer
+  experience 8, REST security 21, payload classification 18, observability 11, Iceberg 63, AsyncAPI 5, REST events 2, REST durable
+  execution 2); the Studio (lint, both typechecks, 1,464 vitest tests, build, `check:api`, `npm audit` clean) and the browser journeys
+  (52 passed). The SDKs were not touched by the review (the `kind` description of `openapi.yaml` changed: `schema.d.ts` regenerated).
 
 ## Dependencies & execution order
 

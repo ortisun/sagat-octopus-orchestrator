@@ -657,8 +657,12 @@ components:
       properties:
         businessId: {type: [string, 'null']}
         startDelayedUntil: {type: [string, 'null'], format: date-time}
+        # As built (2026-11-10, G2057, D2141): the live `Run` of `openapi.yaml` declares `schedule` and `resetFrom` as objects that are
+        # ABSENT for a run that has none (never `null`), and says `kind` is the kind of the action. `kind` is a closed enum: a fourth
+        # kind later is a compatibility decision of its own (G2067). This draft keeps `null` only for `businessId` and `startDelayedUntil`
+        # as it was written; the built contract is the live document.
         schedule:
-          type: [object, 'null']
+          type: object
           required: [scheduleId, nominalTime, kind, revision]
           properties:
             scheduleId: {type: string, format: uuid}
@@ -666,7 +670,7 @@ components:
             kind: {type: string, enum: [SCHEDULED, TRIGGERED, BACKFILL]}
             revision: {type: integer, minimum: 1}
         resetFrom:
-          type: [object, 'null']
+          type: object
           required: [runId, sequence]
           properties:
             runId: {type: string, format: uuid}

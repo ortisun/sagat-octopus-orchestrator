@@ -135,11 +135,30 @@ curl -sS "$SAGAT_SERVER/runs?scheduleId=$SCHEDULE&limit=2" -H "$AUTH" -H 'X-Octo
 {"runId":"01a1c2a2-0649-757f-80fa-96d3ba3079b3","status":"SUCCEEDED","startedBy":"system:schedule:01a1c29f-8f88-76c1-8728-ddd50c7ffe1d"}
 ```
 
-Each run has `startedBy: system:schedule:<id>`. Its **nominal** time is the exact minute (the first column) and its actual time
-is the start of the run, within the 5 s of jitter after it: `GET /namespaces/$NS/schedules/$SCHEDULE/actions` has both,
-`"nominalTime":"2026-11-09T23:24:00Z","actualTime":"2026-11-09T23:24:04.040211Z"`. **The run resource itself does not carry
-the schedule's nominal time, kind or revision** (FR-018-016 asks that it does; this is the gap G2057 and step 2.4 of
-verification.md): read them from the action, which names the run.
+Each run has `startedBy: system:schedule:<id>` and, since G2057 was closed, the schedule action that made it: `schedule {scheduleId, nominalTime,
+kind, revision}` in `GET /runs/{id}` and in every item of `GET /runs`. Its **nominal** time is the exact minute (the first column above), the time the
+schedule calculated, to the microsecond; its actual time is the start of the run, within the 5 s of jitter after it, and stays on the action
+(`GET /namespaces/$NS/schedules/$SCHEDULE/actions`: `"nominalTime":"2026-11-09T23:24:00Z","actualTime":"2026-11-09T23:24:04.040211Z"`), because the
+contract gives the run no `actualTime`. The field is absent, not `null`, for a run no schedule started.
+
+```sh
+curl -sS "$SAGAT_SERVER/runs?scheduleId=$SCHEDULE&limit=1" -H "$AUTH" -H 'X-Octopus-Namespace: payments' | jq -c '.items[] | {runId, startedBy, schedule}'
+sagat workflow inspect 01a1c2a2-0649-757f-80fa-96d3ba3079b3     # a line after "started …": started by schedule <id> (scheduled), nominal time …, revision 1
+```
+
+**Not run on the stack.** This step failed on the stack on 2026-11-09 and was fixed afterwards; the compose stack was not started again for the fix
+(its images are built from the tree and the demo takes an hour). What shows the fix is the integration test `run_provenance`
+(`tests/integration/schedules-bulk-operations`, a real API over a real PostgreSQL), which asserts the fields of the answer for the run a
+*run now* made, read back by `GET /runs/{id}`, not this line. **The line below shows the shape of the answer; its ids and times are
+illustrative** (it is what that API answered once, copied from a temporary print that is not in the tree):
+
+```json
+{"runId":"01a1c2ee-91c4-73b9-90bc-b989d1e9b9a1","startedBy":"system:schedule:01a1c2ee-9186-7048-8c56-f40500d5d714","status":"RUNNING","schedule":{"kind":"TRIGGERED","nominalTime":"2026-11-10T00:49:37.207274Z","revision":1,"scheduleId":"01a1c2ee-9186-7048-8c56-f40500d5d714"}, ...}
+```
+
+and the run a scheduled time made, fired by the service the schedule pass calls, has `"kind":"SCHEDULED"` and the nominal time that the schedule's own
+calculation gave, to the microsecond (the test compares the instant, never the text). The Studio's run page says "Started by schedule *name*
+(scheduled), nominal time …" with a link to the schedule, and the six SDKs read it as `Run.schedule`.
 
 `sagat schedule get $SCHEDULE` says when it acts next (the jittered times) and how many of the runs it started are still open (a run that has ended is not listed, whether or not the schedule has taken its next step; before T018-075 it was, for as long as the schedule was paused):
 
