@@ -21,7 +21,7 @@ use sagat_application::{
     clock::SystemClock,
     error::AppError,
     execution::{DefinitionCache, Engine, RunTx},
-    runs::{Lock, RunOrigin, RunService, RunStore},
+    runs::{Lock, RunOperation, RunOrigin, RunService, RunStore},
     secret_provider::SecretProvider,
 };
 use sagat_domain::{
@@ -151,6 +151,8 @@ pub(super) async fn platform(
     // and two for the starts that race
     put_connection(&p, &ns, "probe-race", 0, "ACTIVE", &lake_config()).await;
     put_connection(&p, &ns, "probe-race-b", 0, "ACTIVE", &lake_config()).await;
+    // and one whose probe is cancelled
+    put_connection(&p, &ns, "probe-cancel", 0, "ACTIVE", &lake_config()).await;
     put_connection(&p, &ns, "probe-sql", 0, "ACTIVE", &sql_config()).await;
     // a connection whose first revision is an Iceberg one and whose current revision is a SQL one: the kind is read at the revision asked for
     put_connection(&p, &ns, "probe-switch", 0, "ACTIVE", &lake_config()).await;
@@ -269,6 +271,65 @@ async fn drivers(p: &Platform, ns: &str, lake: bool) {
         }),
         "what is served end to end: a REST catalog over S3, append, and the two record formats"
     );
+}
+
+/// A probe that was cancelled holds nothing: the connection and revision it held are probed again at once. (A probe that ended by its
+/// deadline, with no runner to take it, is released by the sweep of the scheduler, which this scenario does not run: G035-093.)
+async fn released_by_a_cancel(p: &Platform, ns: &str, runs: &Runs) {
+    let namespace: NamespaceId = ns.parse().expect("a namespace id");
+    let admin = Principal::new(p.tenant, subject(HUMAN), Role::Admin);
+    let connection = reference("probe-cancel", None);
+    let first = runs
+        .start_lake_probe(
+            &admin,
+            namespace,
+            &connection,
+            "lake-probe-cancel-0001",
+            &ctx(),
+        )
+        .await
+        .expect("the probe starts");
+    assert!(
+        matches!(
+            runs.start_lake_probe(
+                &admin,
+                namespace,
+                &connection,
+                "lake-probe-cancel-0002",
+                &ctx()
+            )
+            .await,
+            Err(AppError::StateConflict(_))
+        ),
+        "while it is in flight no other starts"
+    );
+    runs.operate(
+        &admin,
+        first.info.run_id,
+        RunOperation::Cancel,
+        "the person stopped the probe",
+        None,
+        "lake-probe-cancel-0003",
+        &ctx(),
+    )
+    .await
+    .expect("a probe is cancelled like any run");
+    let status = p.status(&first.info.run_id.to_string()).await;
+    assert_eq!(
+        status, "CANCELLED",
+        "a probe that no runner took ends at once"
+    );
+    let again = runs
+        .start_lake_probe(
+            &admin,
+            namespace,
+            &connection,
+            "lake-probe-cancel-0004",
+            &ctx(),
+        )
+        .await
+        .expect("the cancelled probe holds nothing");
+    assert_ne!(again.info.run_id, first.info.run_id);
 }
 
 /// Starts that are made at the same time, held at the lock of the namespace until both have reached it (a held lock and
@@ -677,6 +738,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
     );
 
     drivers(&p, &ns, true).await;
+    released_by_a_cancel(&p, &ns, &runs).await;
     races(&p, &ns, &runs).await;
 
     // --- With the lake off a probe is refused at the start, instead of waiting for a runner that is not there.
