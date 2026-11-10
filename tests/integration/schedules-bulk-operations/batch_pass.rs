@@ -642,15 +642,48 @@ const SELECTION_BOUND: StdDuration = StdDuration::from_secs(180);
 /// Rounds of `replica`, one at a time, until the selection of the job is over and it is running; returns the round that
 /// ended the selection (it goes on to apply the first item, whose slot has come: a step after a step in one round).
 async fn until_running(f: &Fixture, replica: &Replica, id: Uuid) -> BatchRound {
-    within("the job selects its runs", SELECTION_BOUND, async {
+    let waiting = async {
         let mut last = BatchRound::default();
         while state_of(f, id).await != JobState::Running {
             last = replica.pass.round().await;
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
         last
-    })
+    };
+    match tokio::time::timeout(SELECTION_BOUND, waiting).await {
+        Ok(last) => last,
+        Err(_) => panic!(
+            "stage `the job selects its runs` did not finish within {SELECTION_BOUND:?}\n{}",
+            why_it_is_not_selected(f, id).await
+        ),
+    }
+}
+
+/// What holds a selection back, for the message of a wait that ran out (CI failed this wait twice and its log could not say
+/// why): the job against the horizon of the server, and the transactions the server has open, oldest first, with the database,
+/// the state, how long and what they last ran.
+async fn why_it_is_not_selected(f: &Fixture, id: Uuid) -> String {
+    let job: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT state, selection_horizon::text, pg_snapshot_xmin(pg_current_snapshot())::text \
+         FROM batch_jobs WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&f.w.db.pool)
     .await
+    .ok()
+    .flatten();
+    let open: Vec<(i32, String, String, String, String)> = sqlx::query_as(
+        "SELECT pid, coalesce(datname, ''), coalesce(state, ''), coalesce((now() - xact_start)::text, ''), \
+                left(coalesce(query, ''), 140) \
+           FROM pg_stat_activity WHERE xact_start IS NOT NULL AND pid <> pg_backend_pid() \
+          ORDER BY xact_start LIMIT 12",
+    )
+    .fetch_all(&f.w.db.pool)
+    .await
+    .unwrap_or_default();
+    format!(
+        "the job (state, horizon, oldest open transaction): {job:?}\nopen transactions of the server, oldest first (pid, database, state, age, last statement): {open:#?}"
+    )
 }
 
 #[tokio::test]
