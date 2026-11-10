@@ -3794,7 +3794,7 @@ export interface components {
             correlationId?: string | null;
             /**
              * Format: uuid
-             * @description The ended run this one was started again from (RERUN_AS_NEW), when it was.
+             * @description The ended run this one was started again from (RERUN_AS_NEW), or made from by a reset (then resetFrom says up to which sequence), when it was.
              */
             rerunOf?: string;
             /**
@@ -3804,6 +3804,30 @@ export interface components {
             startDelayedUntil?: string;
             /** @description The business identifier the run was started under, when it was. Read by getRun and listRuns. */
             businessId?: string;
+            /** @description Feature 018: the schedule action that started the run, when a schedule did (a scheduled time, trigger now or a backfill); absent for every other run. Fixed when the run is created, and read by getRun and listRuns with the run. */
+            schedule?: {
+                /** Format: uuid */
+                scheduleId: string;
+                /**
+                 * Format: date-time
+                 * @description The nominal time of the action (UTC, to the microsecond): the time the schedule calculated, or for trigger now the instant of the action. The same value as the nominalTime of the action that started the run.
+                 */
+                nominalTime: string;
+                /**
+                 * @description The kind of the action: SCHEDULED (a time of the spec, also for a trigger-owned schedule), TRIGGERED (trigger now) or BACKFILL. A client treats a value it does not know as another kind: the set is closed in this version, and a fourth kind is a deliberate compatibility decision (the check of the column first, then this enum, the SDKs and the Studio).
+                 * @enum {string}
+                 */
+                kind: "SCHEDULED" | "TRIGGERED" | "BACKFILL";
+                /** @description The revision of the schedule the action was taken under. */
+                revision: number;
+            };
+            /** @description Feature 018: set when a reset made the run: the run it came from and the journal sequence of that run it holds as its own (the sequence of the reset point). Absent for every other run; a run started again by RERUN_AS_NEW has rerunOf and not this. */
+            resetFrom?: {
+                /** Format: uuid */
+                runId: string;
+                /** Format: int64 */
+                sequence: number;
+            };
             /** @description Nesting of child runs: 0 for a run started through the API. */
             depth?: number;
             /** @description Set when this run is the child of a `child` node of another run. */

@@ -631,6 +631,48 @@ async fn inspect_run(client: &Client, run: &str, io: &mut Io<'_>) -> Result<(), 
                 crate::one_line(at)
             ))
     ));
+    // Where the run came from, when it came from a schedule or a reset (feature 018): what the run resource says, in words.
+    if let Some(schedule) = body["schedule"].as_object() {
+        let field =
+            |key: &str| crate::one_line(schedule.get(key).and_then(Value::as_str).unwrap_or("-"));
+        let kind = field("kind");
+        // a kind this tool does not know is shown as the platform wrote it, clipped at forty characters as the Studio clips it
+        let clipped;
+        io.say(format!(
+            "  started by schedule {} ({}), nominal time {}, revision {}",
+            field("scheduleId"),
+            match kind.as_str() {
+                "SCHEDULED" => "scheduled",
+                "TRIGGERED" => "run now",
+                "BACKFILL" => "backfill",
+                other => {
+                    clipped = if other.chars().count() > 40 {
+                        format!("{}…", other.chars().take(40).collect::<String>())
+                    } else {
+                        other.to_owned()
+                    };
+                    clipped.as_str()
+                }
+            },
+            field("nominalTime"),
+            schedule
+                .get("revision")
+                .and_then(Value::as_u64)
+                .map_or_else(|| "-".to_owned(), |revision| revision.to_string()),
+        ));
+    }
+    if let Some(reset) = body["resetFrom"].as_object() {
+        let sequence = reset.get("sequence").and_then(Value::as_u64);
+        io.say(format!(
+            "  reset from run {}: it keeps the first {} of that run",
+            crate::one_line(reset.get("runId").and_then(Value::as_str).unwrap_or("-")),
+            match sequence {
+                Some(1) => "1 event".to_owned(),
+                Some(count) => format!("{count} events"),
+                None => "- events".to_owned(),
+            },
+        ));
+    }
     if let Some(trace) = body["traceId"].as_str() {
         io.say(format!("  trace {}", crate::one_line(trace)));
     }

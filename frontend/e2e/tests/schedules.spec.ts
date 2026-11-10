@@ -138,8 +138,19 @@ test('SCHEDULES a person creates a schedule, finds it, pauses, resumes, runs it 
   await activate(page, history.getByRole('link', { name: started!.slice(-8) }));
   await expect(page.getByRole('heading', { level: 1 })).toContainText(started!);
   await api.until(started!, 'SUCCEEDED');
-  await page.goBack();
+  // The run says which schedule made it, by which kind of action and for which nominal time (FR-018-016, G2057), and the link
+  // back to the schedule is reached with the keyboard: what the platform recorded is what the page says.
+  const run = (await api.call<{ schedule?: { scheduleId: string; nominalTime: string; kind: string; revision: number } }>('GET', `/runs/${started}`, undefined, 200)).body;
+  expect(run.schedule).toMatchObject({ scheduleId, kind: 'TRIGGERED', revision: 1 });
+  const origin = page.locator('dl.rn-facts > div').filter({ hasText: 'Started by schedule' });
+  await expect(origin).toBeVisible();
+  await expect(origin).toContainText('(run now)');
+  await expect(origin).toContainText('nominal time');
+  await expect(origin.locator('time')).toHaveAttribute('datetime', run.schedule!.nominalTime);
+  await expectAccessible(page, 'the run a schedule started');
+  await activate(page, origin.getByRole('link', { name }));
   await expect(page.getByRole('heading', { level: 1, name: new RegExp(`^${name}`) })).toBeVisible();
+  expect(new URL(page.url()).pathname).toMatch(new RegExp(`/schedules/${scheduleId}$`));
 
   // Delete: the dialog says what happens, and the schedule is gone from the platform and from the list.
   const deleteDialog = await openDialog(page, page.getByRole('button', { name: 'Delete', exact: true }), 'Delete the schedule');

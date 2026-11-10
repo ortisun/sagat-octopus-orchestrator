@@ -14,6 +14,7 @@ import type { Operation } from './ops';
 import { clip } from './time';
 import { useApp } from '../../app/context';
 import { originLabel } from './queries';
+import { ScheduleOrigin } from './ScheduleOrigin';
 import { TraceLink } from './TraceLink';
 import { shortId } from './display';
 
@@ -122,7 +123,16 @@ export function RunHeader({
           </Fact>
           <Fact label="Started by">{run.startedBy ? clip(run.startedBy, 80) : 'unknown'}</Fact>
           {run.businessId ? <Fact label="Business id">{clip(run.businessId, 200)}</Fact> : null}
-          {run.rerunOf ? (
+          {run.schedule ? (
+            <Fact label="Started by schedule">
+              <ScheduleOrigin schedule={run.schedule} />
+            </Fact>
+          ) : null}
+          {run.resetFrom ? (
+            <Fact label="Reset from">
+              <Link to={path`/runs/${run.resetFrom.runId}`}>run {shortId(run.resetFrom.runId)}</Link>; this run keeps the first {run.resetFrom.sequence} {run.resetFrom.sequence === 1 ? 'event' : 'events'} of it
+            </Fact>
+          ) : run.rerunOf ? (
             <Fact label="Started again from">
               <Link to={path`/runs/${run.rerunOf}`}>run {shortId(run.rerunOf)}</Link>
             </Fact>

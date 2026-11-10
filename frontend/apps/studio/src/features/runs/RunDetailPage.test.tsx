@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { renderApp } from '../../../test/render';
 import { openRunPage, openStream } from '../../../test/runPage';
 import { installRunsDom } from '../../../test/runsDom';
+import { described, namespaces } from '../../../test/schedules';
 import { ADMIN, OPERATOR, RUN_ID, TRACE, VIEWER, at, changesOf, failure, graphEvent, graphOf, journalEvent, node, runOf, runPlatform, sagaRun, signedInApp } from '../../../test/runs';
 import type { Pipe, RunPlatformInit } from '../../../test/runs';
 import { RunDetailPage } from './RunDetailPage';
@@ -87,6 +88,97 @@ describe('the run page: header', () => {
     await open();
     await screen.findByText('Started by');
     expect(screen.queryByText('Started again from')).not.toBeInTheDocument();
+  });
+
+  describe('where the run came from', () => {
+    const SCHEDULE = '0194f5e2-7b1c-7000-8000-0000000000c3';
+    const NAMESPACE = '0194f5e2-7b1c-7000-8000-0000000000a1';
+    const READER = [...OPERATOR, 'schedule:read'];
+    const SOURCE = '019b5d6e-0000-7000-8000-0000000000aa';
+    const scheduled = (kind: 'SCHEDULED' | 'TRIGGERED' | 'BACKFILL' = 'SCHEDULED') =>
+      runOf({ startedBy: `system:schedule:${SCHEDULE}`, schedule: { scheduleId: SCHEDULE, nominalTime: '2026-11-04T02:00:00Z', kind, revision: 3 } });
+    /** The platform knows the namespace the Studio works in and the schedule, which is called `nightly`. */
+    const known = {
+      'GET /namespaces': () => ({ items: [{ ...namespaces().items[0], id: NAMESPACE, slug: 'dev' }], nextCursor: null }),
+      [`GET /namespaces/${NAMESPACE}/schedules/${SCHEDULE}`]: () => ({ ...described(), name: 'nightly' }),
+    };
+    const fact = async (label: string) => (await screen.findByText(label)).closest('div') as HTMLElement;
+
+    it('says which schedule started the run, by which kind of action and for which nominal time, and links to the schedule by its name', async () => {
+      await open({ run: scheduled(), routes: known }, READER);
+      const started = await fact('Started by schedule');
+      const link = await within(started).findByRole('link', { name: 'nightly' });
+      expect(link).toHaveAttribute('href', `/schedules/${SCHEDULE}`);
+      expect(started).toHaveTextContent('(scheduled)');
+      expect(started).toHaveTextContent('nominal time');
+      expect(started.querySelector('time')).toHaveAttribute('datetime', '2026-11-04T02:00:00Z');
+      // the nominal time is what the schedule calculated, so it is shown with the unambiguous UTC reading too
+      expect(started.querySelector('time')).toHaveAttribute('title', '2026-11-04 02:00:00 UTC');
+    });
+
+    it.each([
+      ['TRIGGERED', 'run now'],
+      ['BACKFILL', 'backfill'],
+    ] as const)('says a %s action in words: "%s"', async (kind, words) => {
+      await open({ run: scheduled(kind), routes: known }, READER);
+      expect(await fact('Started by schedule')).toHaveTextContent(`(${words})`);
+    });
+
+    it('calls the schedule by the end of its identifier when it cannot be read, and the link still leads there', async () => {
+      // the platform answers 404 for it: it was deleted, or is in a namespace this session does not see
+      await open({ run: scheduled() }, READER);
+      const started = await fact('Started by schedule');
+      const link = within(started).getByRole('link', { name: 'schedule 000000c3' });
+      expect(link).toHaveAttribute('href', `/schedules/${SCHEDULE}`);
+      expect(started).toHaveTextContent('nominal time');
+    });
+
+    it('says the same without a link, and asks nothing about the schedule, to someone who may not read schedules', async () => {
+      const { platform } = await open({ run: scheduled(), routes: known });
+      const started = await fact('Started by schedule');
+      expect(within(started).queryByRole('link')).not.toBeInTheDocument();
+      expect(started).toHaveTextContent('schedule 000000c3 (scheduled)');
+      expect(platform.calls.filter((call) => call.url.includes('/schedules/'))).toEqual([]);
+      // not the list of namespaces either: the hooks that ask for the name are not even rendered for this session
+      expect(platform.calls.filter((call) => (call.url.split('?')[0] ?? '').endsWith('/namespaces'))).toEqual([]);
+    });
+
+    it('shows a kind it does not know as the platform wrote it, clipped, and not as "another kind"', async () => {
+      const kind = 'A_KIND_A_NEWER_PLATFORM_ADDS_WITH_A_VERY_LONG_NAME';
+      await open({ run: runOf({ schedule: { scheduleId: SCHEDULE, nominalTime: '2026-11-04T02:00:00Z', kind: kind as 'SCHEDULED', revision: 3 } }), routes: known }, READER);
+      const started = await fact('Started by schedule');
+      expect(started).toHaveTextContent(`(${kind.slice(0, 39)}`);
+      expect(started).not.toHaveTextContent(kind);
+      expect(started).not.toHaveTextContent('another kind');
+    });
+
+    it('keeps the link for a schedule that was deleted, called by the end of its identifier: the page it leads to says it was not found', async () => {
+      // the platform has the namespace and answers 404 for the schedule
+      await open({ run: scheduled(), routes: { 'GET /namespaces': known['GET /namespaces'] } }, READER);
+      const started = await fact('Started by schedule');
+      const link = within(started).getByRole('link', { name: 'schedule 000000c3' });
+      expect(link).toHaveAttribute('href', `/schedules/${SCHEDULE}`);
+    });
+
+    it('has no such fact for a run no schedule started', async () => {
+      await open({ routes: known }, READER);
+      await screen.findByText('Started by');
+      expect(screen.queryByText('Started by schedule')).not.toBeInTheDocument();
+    });
+
+    it('links a run a reset made to the run it was reset from, and says how much of it the run holds, in place of "started again"', async () => {
+      await open({ run: runOf({ rerunOf: SOURCE, resetFrom: { runId: SOURCE, sequence: 4 } }) });
+      const reset = await fact('Reset from');
+      expect(within(reset).getByRole('link', { name: 'run 000000aa' })).toHaveAttribute('href', `/runs/${SOURCE}`);
+      expect(reset).toHaveTextContent('keeps the first 4 events');
+      expect(screen.queryByText('Started again from')).not.toBeInTheDocument();
+    });
+
+    it('still says "started again" for a run that was only started again', async () => {
+      await open({ run: runOf({ rerunOf: SOURCE }) });
+      await fact('Started again from');
+      expect(screen.queryByText('Reset from')).not.toBeInTheDocument();
+    });
   });
 
   it('has no business identifier fact when the run has none', async () => {

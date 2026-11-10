@@ -117,10 +117,15 @@ test('RESET a run that ended is reset to a point: the points and the plan are re
     await expect(dialog).toBeHidden();
     const made = await landedOn(page, source);
     await expect(page.getByRole('heading', { level: 1 })).toContainText(made);
-    await expect(page.getByText('Started again from')).toBeVisible();
+    // a reset says it is one, and how much of the source it keeps (`resetFrom`), in place of "started again" (G2057)
+    await expect(page.getByText('Reset from')).toBeVisible();
+    await expect(page.getByText('Started again from')).toBeHidden();
     await expect(page.getByRole('link', { name: /^run / }).and(page.locator(`a[href$="/runs/${source}"]`))).toBeVisible();
     await api.until(made, 'SUCCEEDED');
-    expect((await api.call<{ rerunOf?: string }>('GET', `/runs/${made}`, undefined, 200)).body.rerunOf).toBe(source);
+    const created = (await api.call<{ rerunOf?: string; resetFrom?: { runId: string; sequence: number } }>('GET', `/runs/${made}`, undefined, 200)).body;
+    expect(created.rerunOf).toBe(source);
+    expect(created.resetFrom).toMatchObject({ runId: source });
+    await expect(page.getByText(new RegExp(`this run keeps the first ${created.resetFrom!.sequence} events? of it`))).toBeVisible();
     await expectAccessible(page, 'the new run, with the link back to its source');
 
     // The source says what was made from it, with a link to it.
@@ -269,7 +274,7 @@ test('RESET a run that has not ended is cancelled and reset when it ends: the en
     await expectAccessible(page, 'the cancelled run, with the reset made from it');
     await activate(page, resets.getByRole('link', { name: /^A run reset to point/ }));
     await expect(page.getByRole('heading', { level: 1 })).toContainText(made);
-    await expect(page.getByText('Started again from')).toBeVisible();
+    await expect(page.getByText('Reset from')).toBeVisible();
     await api.until(made, 'SUCCEEDED');
     expect(problems).toEqual([]);
   } finally {
