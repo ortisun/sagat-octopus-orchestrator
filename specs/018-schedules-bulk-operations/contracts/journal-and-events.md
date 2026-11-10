@@ -95,7 +95,7 @@ instance) applies in addition to these rules.
 | `condition.evaluated`, `switch.evaluated`, `parallel.forked`, `parallel.joined` | `COPY` | recorded choices are history; replay never re-evaluates |
 | `timer.started`, `timer.fired`, `wait.started`, `wait.satisfied`, `wait.timed_out` | `COPY` | an open timer or wait at the point makes it ineligible |
 | `approval.opened`, `approval.decided`, `approval.expired` | `COPY` | a decided approval is restored (preview lists it); an open one makes the point ineligible; 026 side rows below |
-| `collection.*`, `loop.*` (entered, iteration admitted/returned/checkpointed, drain started, iteration drained, finished; loop delay elapsed) | `COPY` | an active scope at the point makes it ineligible; points are only at `collection.finished`/`loop.finished` |
+| `collection.*`, `loop.*` (entered, iteration admitted/returned/checkpointed, drain started, iteration drained, finished; loop delay elapsed) | `COPY` | an active scope at the point makes it ineligible; points are only at `collection.finished`/`loop.finished`. *As built (D2156, G1980 (1)):* the entry of a collection, and every row below the root, make every later point ineligible, so no `COLLECTION_FINISHED` or `LOOP_FINISHED` point is offered until the side tables of a scope are restored |
 | `child.started`, `child.finished` | `COPY` | a child in flight makes the point ineligible; the reset run starts no child again for a restored one |
 | `saga.entered`, `saga.completed` | `COPY` | |
 | `saga.aborting`, `compensation.planned`, `saga.compensated`, `scope.compensation_planned`, `scope.compensated` | `EXCLUDE` | the source was compensating; reset to a point before the failure |

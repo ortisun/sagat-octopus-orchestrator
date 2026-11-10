@@ -232,6 +232,13 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   exclusive, exclusions in UTC, the later of an ambiguous time) were each caught. `infra-ir` + `application` suites 470
   passed, clippy `-D warnings`, fmt and `check-architecture.py` clean. The port is `sagat_application::schedules::
   ScheduleCalendar` (also part of T018-011). G1013: the `dst` policy does not reach cron strings.
+  *Added 2026-11-10 (D2160, G2073), the task is done and stays so:* `calendar_processes::*` (integration, no database): 440 cases
+  (eleven zones, northern and southern, with a half hour and three quarters of offset and with a half hour of daylight saving, by
+  ten specs of every kind with and without jitter, by four dates around the changes of 2026) computed in this process and in two
+  others, started as this test binary with an empty environment and told opposite things (`TZ`, locale, `TZDIR`, directory,
+  thread count), equal as instants (13,200 of them); eleven gaps and folds of the south and the half hour against the instants
+  of Python's `zoneinfo`, an oracle that does not share the database; a hand mutant (the jitter seeded with `$TZ`) is red. Found:
+  nothing; G2073 (two builds with two zone databases) is open.
 - [x] T018-014 [US1] PostgreSQL `ScheduleStore` (revisions, head CAS, due scan by `(shard, next_wake_at)`
   bounded by `now()`, actions, purge) — `crates/infra-postgres/src/schedules.rs` —
   `tests/integration/schedules-bulk-operations/store.rs` — FR-018-001, FR-018-013, FR-018-014.
@@ -448,6 +455,14 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `sagat-application` green; `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
   `check-architecture.py` and `check-agent-config.py` clean. Not run: the whole-workspace test run (CI runs it) and the SDK
   checks (no SDK or contract changed).
+  *Added 2026-11-10 (D2159, G1018 closed), the task is done and stays so:* `firing_decisions::*` (fault, both roles; 12 tests)
+  cuts the connection after each writing statement of the steps that start no run: a time buffered (3 writes), the look again at
+  a waiting time (2), a time dropped with the buffer full (3), a recovery with no action left coalesced (3), times older than the
+  window missed (3), a schedule with no action left (2), an ended run forgotten (2), a failed run forgotten and the schedule
+  paused with its audit record (7), and four steps of a backfill (skipped 4, buffered 4, found acted on 3, the end of the range
+  3). The count of writes is the same on two schedules in one state; each cut leaves every table as it was; the step taken again
+  does what the watched one did; one action row for a time; the runs replay. Found: nothing. A hand mutant (the audit of the
+  auto-pause in a second transaction) is red.
 - [x] T018-021 [US1] Authority and provenance (recheck under membership lock order, auto-pause + audit,
   `system:schedule:<id>`, 017 database authority, key replay) —
   `tests/integration/schedules-bulk-operations/authority.rs` — SC-018-004 — FR-018-015, FR-018-016, FR-018-041.
@@ -1032,6 +1047,16 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   in two pages of selection, 400 items, a restart, 300 items, a cancel: 700 succeeded and 300 cancelled, every key applied
   once, the counters equal the item rows) and by the lock monitor of T018-049; the run whose creating transaction was in
   progress is the part not proven by a test (G1957, G1962).
+  *Added 2026-11-10 (D2158), the task stays as it was:* `fault … batch_thousand` (both roles) is the claim at the size of the
+  criterion with the real run service and two replicas of the engine: 1,000 real runs (the thousandth in a transaction that is
+  open when the job is created, held by a lock), a cancel job at 200 items a second under the default settings, the selection
+  taking nothing while the transaction is open and then 1,000 items with the held run among them; three deaths of the process
+  between the effect on a run and the record of its item (the connection of the record transaction cut inside PostgreSQL), one
+  at a moment nothing chose, a stale process refused, the job cancelled through the API after 700 items: 701 succeeded and 299
+  cancelled, none skipped, failed or deferred, one request to stop each cancelled run and none for the runs the job left alone,
+  the counters equal the items, one record of the end, the monitor of the row locks of `runs` looked 4,290 times and never saw
+  two, no deadlock. Hand mutants: a fresh key at each attempt (four items `SKIPPED`) and no wait for the horizon: red. Found:
+  nothing. The older `a_job_over_a_thousand_runs_applies_each_once_…` of `batch.rs` used an action with no effect of its own.
 - [ ] T018-047 [US5] Item adapters for the eight actions through single-run use cases, skip reasons (incl.
   `TEST_RUN`), failed compensation of cancelled runs — `tests/integration/schedules-bulk-operations/batch_actions.rs`
   — one case per action and reason — FR-018-030, FR-018-031, FR-018-034, FR-018-050.
@@ -1211,6 +1236,19 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   (parallel, saga, collection, loop, child, a wait), approvals, the 022 run-permit holder and the 020 attribute rows
   (not approved), and a prefix at the ceiling (the ceiling is tested at its boundary by sequence, not with a journal
   of 5,000 events).
+  *Added 2026-11-10 (D2156, D2157, G2072), the task stays open (the 022 permit and the 020 attribute rows are not approved):*
+  `reset_corpus::*` (12 tests) resets a parallel fork, a saga that completes, a saga that is compensated, a collection of two
+  items and one of none, a loop that runs and one that does not, a run with a child, a timer, a wait satisfied by a signal and
+  one satisfied by an event, and an approval (over REST) to every point `reset_points` offers, against a rule of D1022 written by
+  hand (the points and why each other candidate is not one), with the replay equal to the projection before and after the run
+  goes on, rows `1..N` verbatim and restored, the outputs of the kept steps as they were, what the next step is given as the
+  source's worker was given it, what is left run again, and every other place of the journal refused. **It found a defect:** the
+  finish of a collection of no item was offered as a point and the run made from it did not replay to its projection (the entry of
+  a collection is a scoped event now, `crates/domain/src/execution/reset.rs`, two domain tests and the corpus seen failing first;
+  D2156). Said of the code: no collection or loop can be reset to anything but its start, and a parallel join, a saga's
+  completion, a timer, a wait and an approval's decision are no points (G2072, with G1979). Not done: the database-execution
+  branch of `RESET_NOT_SUPPORTED_FOR_SOURCE` (no SQL makes one: a trigger ties `origin`), the declared state at every point, a
+  prefix at the ceiling.
 - [ ] T018-056 [US6] Reapply order, first-undeliverable stop, `LEGACY_EVENT`, ceiling, key replay, lost
   hint — `tests/integration/schedules-bulk-operations/reapply.rs` — report equals expectation — FR-018-039.
   *Built 2026-11-06 (D1982..D1995, G1982..G1988); left unticked for the maintainer to tick after reading it. Reworked the same
