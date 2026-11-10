@@ -233,10 +233,21 @@ fn the_batch_commands_take_the_words_and_flags_they_document() {
         }
     );
     assert_eq!(
-        batch(&format!("batch cancel {ID}")),
+        batch(&format!("batch cancel {ID} --reason because")),
         BatchCommand::Cancel {
             id: ID.into(),
+            reason: "because".into(),
             key: None
+        }
+    );
+    assert_eq!(
+        batch(&format!(
+            "batch cancel {ID} --reason stop --key k-0123456789"
+        )),
+        BatchCommand::Cancel {
+            id: ID.into(),
+            reason: "stop".into(),
+            key: Some("k-0123456789".into())
         }
     );
 }
@@ -302,6 +313,7 @@ fn what_the_schedule_and_batch_commands_get_wrong_is_named() {
             "--max-items is a number from 1",
         ),
         ("batch get not-an-id", "the job is given by its id"),
+        (&format!("batch cancel {ID}"), "--reason is required"),
         (
             "batch list --state sleeping",
             "--state is one of selecting, running",
@@ -1075,7 +1087,7 @@ fn a_job_is_read_listed_its_items_shown_and_cancelled() {
     assert!(out.contains("has no items"), "{out}");
 
     let (code, out, err, requests) = run(
-        &["batch", "cancel", ID],
+        &["batch", "cancel", ID, "--reason", "stop now please"],
         vec![
             namespaces(),
             reply(202, &json!({"batchId": ID, "state": "CANCELLING"})),
@@ -1092,9 +1104,18 @@ fn a_job_is_read_listed_its_items_shown_and_cancelled() {
         format!("POST /v1/namespaces/{NS}/batch-operations/{ID}/cancel HTTP/1.1")
     );
     assert!(key_of(&raw[1]).is_some_and(|key| key.len() >= 8));
+    // the contract (`cancelBatchOperation`) requires a JSON body with the reason, and the platform refuses a POST
+    // that says no content type (400 "content type must be application/json"): a request without them never cancelled a job
+    assert_eq!(request_body(&raw[1]), json!({"reason": "stop now please"}));
+    assert!(
+        String::from_utf8_lossy(&raw[1])
+            .to_ascii_lowercase()
+            .contains("content-type: application/json"),
+        "the cancel of a job says its content type"
+    );
     // a job that already ended is refused, and said
     let (code, out, err, _) = run(
-        &["batch", "cancel", ID],
+        &["batch", "cancel", ID, "--reason", "stop now please"],
         vec![
             namespaces(),
             reply(

@@ -182,12 +182,19 @@ pub(crate) async fn run(
         BatchCommand::Items { id, state, limit } => {
             items(client, &base, id, state.as_deref(), *limit, io).await
         }
-        BatchCommand::Cancel { id, key } => {
+        BatchCommand::Cancel { id, reason, key } => {
             let key = key
                 .clone()
-                .unwrap_or_else(|| crate::versions::nonce("batch-cancel", &[id]));
+                .unwrap_or_else(|| crate::versions::nonce("batch-cancel", &[id, reason]));
+            // the contract (`cancelBatchOperation`) asks for the reason in a JSON body; a POST without one is a 400
+            let body = json!({ "reason": reason });
             match client
-                .call("POST", &format!("{base}/{id}/cancel"), None, Some(&key))
+                .call(
+                    "POST",
+                    &format!("{base}/{id}/cancel"),
+                    Some(&body),
+                    Some(&key),
+                )
                 .await
             {
                 Ok((_, job)) => {

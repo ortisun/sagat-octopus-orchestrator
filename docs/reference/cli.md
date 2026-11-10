@@ -87,7 +87,7 @@ SCHEDULES AND BATCH JOBS:
     batch preview --selector <JSON|@FILE> [--max-items <N>]
     batch create --selector <JSON|@FILE> --action <ACTION> --reason <TEXT> [--max-items <N>] [--rate <PER SECOND>]
                  [--signal <NAME> [--payload <JSON|@FILE>]] [--step-id <STEP>] [--drop-business-id] [--key <KEY>]
-    batch get <ID> | batch list [--state <STATE>] [--limit <N>] | batch cancel <ID> [--key <KEY>]
+    batch get <ID> | batch list [--state <STATE>] [--limit <N>] | batch cancel <ID> --reason <TEXT> [--key <KEY>]
     batch items <ID> [--state <STATE>] [--limit <N>]
                           one action (cancel, signal, rerun, retry-step, pause, resume, mark-manual-review) over
                           the runs a selector names, at a rate the platform bounds
