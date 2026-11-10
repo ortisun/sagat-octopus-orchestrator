@@ -216,22 +216,28 @@ docker compose -f infra/docker/compose.yaml --env-file infra/docker/.env.example
 
 | Gate | Result | Run by / date | Notes |
 | --- | --- | --- | --- |
-| `cargo fmt --check` | | | |
-| `cargo clippy --workspace --all-targets --locked -- -D warnings` | | | |
-| `check-design-docs.py`, `check-architecture.py`, `check-agent-config.py`, `check-upgrade-boundary.py` | | | |
-| `cargo test --workspace --locked --no-fail-fast` (`RUST_TEST_THREADS=2`) | | | |
-| `integration_schedules_bulk_operations` (owner and runtime role) | | | |
-| `fault_schedules_bulk_operations` (owner and runtime role) | | | |
-| `contract_schedules_bulk_operations`, `e2e_…`, `perf_…` | | | |
-| `integration_platform_foundation`, `integration_security_multitenancy` (both roles) | | | |
-| `contract_rest_security_multitenancy`, `contract_developer_experience`, `contract_observability_operations` | | | |
-| `sdk_conformance` (all scenarios, six languages) | | | |
-| the six SDKs' own checks | | | |
-| Studio: lint, typecheck, `npm test`, build, `check:api` | | | |
-| browser journeys (`e2e_workflow_studio … journeys`) | | | |
-| `promtool check rules`, `test rules` | | | |
-| `docker compose … config -q` | | | |
-| the quickstart, end to end once more on a clean stack | | | |
+Filled on 2026-11-10 by the maintainer's session (Claude Code, one script, `gates53.sh`, 41 steps, every one with exit 0, the full output of
+each kept) on commit `52c56b01` (head of pull request #98 after the run provenance), private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`, real
+PostgreSQL, a Mac15,9 shared with other work. What was **not** run is said in the row.
+
+| Gate | Result | Run by / date | Notes |
+| --- | --- | --- | --- |
+| `cargo fmt --check` | pass | maintainer's session, 2026-11-10, `52c56b01` | |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | pass | same | |
+| `check-design-docs.py` (pull-request mode, base `develop`), `check-architecture.py`, `check-agent-config.py`, `check-upgrade-boundary.py` | pass | same | `check-architecture.py` also enforces that the shard lease row is a leaf lock and that every `run.finished` body says its schedule; the 365 Python tests of `scripts/tests` pass (2 skipped) |
+| `cargo test --workspace --locked --no-fail-fast` (`RUST_TEST_THREADS=2`) | **partly** | same | the unit and doc tests of every crate except `sagat-tests`: 2,957 passed, 0 failed; the `sagat-tests` targets were run one by one (the rows below), **not** the whole workspace in one command: the targets of other features that this branch does not touch were not run here (CI runs the ones a pull request selects) |
+| `integration_schedules_bulk_operations` (owner and runtime role) | pass | same | 638 passed, 1 ignored, in both roles |
+| `fault_schedules_bulk_operations` (owner and runtime role) | pass | same | 99 passed in both roles |
+| `contract_schedules_bulk_operations`, `e2e_…`, `perf_…` | **partly** | same; `perf_…` 2026-11-10 earlier | `contract_` 8 passed; `perf_schedules_bulk_operations` as CI runs it: 4 passed, 13 ignored (the benchmark itself ran on 2026-11-09, report in `tests/performance/reports/`); `e2e_schedules_bulk_operations` not run |
+| `integration_platform_foundation`, `integration_security_multitenancy` (both roles) | pass | same | 104 and 126 passed in both roles (the runtime-privilege audit is in the first) |
+| `contract_rest_security_multitenancy`, `contract_developer_experience`, `contract_observability_operations` | pass | same | 21, 8 (`docs/reference` unchanged, no bless) and 11; also `contract_payload_classification` 18, `contract_iceberg_writes` 63, `contract_asyncapi_events_webhooks_messaging` 5, `contract_rest_events_webhooks_messaging` 2 |
+| `sdk_conformance` (all scenarios, six languages) | pass | same | `-- --ignored`, one server build, 1,723 s; registry tests 3 passed. It failed twice on 2026-11-09 for reasons that are not the feature (the OpenBao scenario once under load: `database.rs:103`; the `reset` golden once, a real change that was re-blessed from TypeScript and reproduced by the others) |
+| the six SDKs' own checks | **partly** | the provenance task, 2026-11-10; CI | each SDK's checks passed after the typed `schedule`/`resetFrom` were added (TypeScript, Python, Go, C#, Java, Rust, as `sdks/AGENTS.md` lists them); not repeated by the maintainer's session on this commit; the CI `sdks` job passed on `98818160` (before the provenance) and its run on `52c56b01` is the confirmation |
+| Studio: lint, typecheck, `npm test`, build, `check:api` | pass | same | lint, `typecheck` and `typecheck --workspace @sagat/e2e` clean, 99 files and 1,464 tests, build, `check:api` matches the contract, `npm audit --audit-level=moderate` 0 vulnerabilities |
+| browser journeys (`e2e_workflow_studio … journeys`) | pass | same; CI | 52 passed (the 14 journeys of this feature and the others), 3.7 minutes; CI passed it on Linux on `345dd70e` and `98818160` |
+| `promtool check rules`, `test rules` | **not run** | | `promtool` is not installed here; `trigger_schedules_test.yaml` and `instance_registry_test.yaml` exist and were reported passing by the implementing task, the CI step runs only `batch_stalled_test.yaml` (G2022) |
+| `docker compose … config -q` | **partly** | the quickstart task, 2026-11-10 | with none of the four switches set, `docker compose config` resolves all four to `false`; the four lines are not in `infra/docker/.env.example` (G2061: the sessions were denied reading `.env*`), so the command with `--env-file infra/docker/.env.example` was not run on a file that has them |
+| the quickstart, end to end once more on a clean stack | **not run** | | the quickstart was run for real on 2026-11-10 on the commit before the provenance; step 2.4 was not rerun on a stack after it (G2066) |
 
 ## (f) What is not verified, and why
 

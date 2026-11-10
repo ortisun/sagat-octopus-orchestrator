@@ -1818,6 +1818,11 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   experience 8, REST security 21, payload classification 18, observability 11, Iceberg 63, AsyncAPI 5, REST events 2, REST durable
   execution 2); the Studio (lint, both typechecks, 1,464 vitest tests, build, `check:api`, `npm audit` clean) and the browser journeys
   (52 passed). The SDKs were not touched by the review (the `kind` description of `openapi.yaml` changed: `schema.d.ts` regenerated).
+  *Gates, 2026-11-10 (the maintainer's session, commit `52c56b01`):* `verification.md` section (e) is filled: one script of 41 steps, all with exit 0 (unit and doc tests 2,957;
+  the schedules, fault, platform-foundation and security suites in both roles; the contract suites; the whole `sdk_conformance` suite in six languages, 1,723 s; the Studio gates
+  and 52 Playwright tests; the 365 Python tests of `scripts/tests`). **Not run:** `promtool` (not installed), the quickstart once more on a clean stack (G2066), the whole
+  `cargo test --workspace` as one command (the `sagat-tests` targets were run one by one), the released-upgrade profile. T018-075 stays unticked: the success criteria that are only
+  partly verified (section (c)) and the tasks blocked on features not approved (section (d)) are what "all SC" cannot yet say.
 
 ## Dependencies & execution order
 
