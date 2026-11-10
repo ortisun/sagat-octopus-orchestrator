@@ -238,8 +238,30 @@ def run_lease_check(files):
         return result.returncode, result.stdout
 
 
+ORIGIN = """
+    pub(crate) async fn add_schedule_origin(conn: &mut PgConnection, data: &mut Value) {
+        sqlx::query("SELECT 1");
+    }
+"""
+WRITER = """
+    async fn outbox_run_finished(conn: &mut PgConnection) {
+        let mut data = json!({"runId": "r"});
+        add_schedule_origin(&mut *conn, &mut data).await;
+        let body = json!({"id": "x", "type": "run.finished", "data": data});
+    }
+"""
+
+
 def tree(keeper=KEEPER, execution=FENCE, schedules=CHECK_FENCE, **more):
-    return {"partitioning.rs": keeper, "execution.rs": execution, "schedules.rs": schedules, **more}
+    """A valid tree: the lease row as the rule wants it and one `run.finished` writer that says its schedule."""
+    return {
+        "partitioning.rs": keeper,
+        "execution.rs": execution,
+        "schedules.rs": schedules,
+        "outbound.rs": ORIGIN,
+        "writer.rs": WRITER,
+        **more,
+    }
 
 
 class LeaseRowIsALeafLock(unittest.TestCase):
@@ -293,6 +315,74 @@ class LeaseRowIsALeafLock(unittest.TestCase):
         code, out = run_lease_check({"execution.rs": FENCE, "schedules.rs": CHECK_FENCE})
         self.assertEqual(code, 1, out)
         self.assertIn("partitioning.rs is named by the lease-row rule", out)
+
+
+class EveryRunFinishedBodySaysItsSchedule(unittest.TestCase):
+    """FR-018-046, D2143: each place that builds the `run.finished` body calls `add_schedule_origin` on its data first."""
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("every run.finished body says its schedule", result.stdout)
+
+    def test_a_writer_that_calls_it_before_the_body_passes(self):
+        code, out = run_lease_check(tree())
+        self.assertEqual(code, 0, out)
+
+    def test_a_writer_that_leaves_the_call_out_is_refused_and_named(self):
+        bare = WRITER.replace("        add_schedule_origin(&mut *conn, &mut data).await;\n", "")
+        self.assertNotEqual(bare, WRITER)
+        code, out = run_lease_check(tree(**{"writer.rs": bare}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("writer.rs:4", out)
+        self.assertIn("a `run.finished` body is built without `add_schedule_origin`", out)
+
+    def test_a_writer_added_later_without_the_call_is_refused_while_the_first_stays_fine(self):
+        fifth = 'async fn another(conn: &mut PgConnection) { let body = json!({"type": "run.finished"}); }'
+        code, out = run_lease_check(tree(**{"fifth.rs": fifth}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("fifth.rs:1", out)
+        self.assertNotIn("writer.rs", out)
+
+    def test_a_call_after_the_body_does_not_count(self):
+        body = '        let body = json!({"id": "x", "type": "run.finished", "data": data});\n'
+        call = "        add_schedule_origin(&mut *conn, &mut data).await;\n"
+        late = WRITER.replace(call + body, body + call)
+        self.assertNotEqual(late, WRITER)
+        code, out = run_lease_check(tree(**{"writer.rs": late}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("without `add_schedule_origin` before it in the same function", out)
+
+    def test_a_call_in_another_function_does_not_count(self):
+        split = (
+            "async fn origin_of(conn: &mut PgConnection, data: &mut Value) { add_schedule_origin(&mut *conn, data).await; }\n"
+            'async fn body(data: Value) { let body = json!({"type": "run.finished", "data": data}); }\n'
+        )
+        code, out = run_lease_check(tree(**{"writer.rs": split}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("writer.rs:2", out)
+
+    def test_the_words_in_a_comment_or_a_string_are_not_a_writer(self):
+        noise = (
+            '// "type": "run.finished" is what the subscribers are sent\n'
+            '/* json!({"type": "run.finished"}) */\n'
+            'const NOTE: &str = "the body {\\"type\\": \\"run.finished\\"} says its schedule";\n'
+        )
+        code, out = run_lease_check(tree(**{"noise.rs": noise}))
+        self.assertEqual(code, 0, out)
+
+    def test_the_sql_name_of_the_event_is_not_a_body(self):
+        insert = "async fn hint() { sqlx::query(\"INSERT INTO event_outbox (event_type) VALUES ('run.finished')\"); }"
+        code, out = run_lease_check(tree(**{"hint.rs": insert}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_finds_no_writer_or_no_function_is_an_error_and_not_a_pass(self):
+        code, out = run_lease_check(tree(**{"writer.rs": "async fn nothing() {}"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("no `run.finished` body was found", out)
+        code, out = run_lease_check(tree(**{"outbound.rs": "async fn nothing() {}"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("`add_schedule_origin` is named by the `run.finished` rule and is not defined", out)
 
 
 if __name__ == "__main__":

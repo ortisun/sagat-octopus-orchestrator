@@ -10,7 +10,10 @@ Reads `cargo metadata` and fails when:
   * the workspace dependency graph has a cycle;
   * the lease row of a scheduler shard (`scheduler_shards`) is not a leaf lock (ADR-0050 decision 7, ADR-0020): the SQL
     literals of `crates/infra-postgres/src` that name it take it `FOR SHARE` (a fence) or, in `partitioning.rs` only, `FOR UPDATE`
-    with `SKIP LOCKED` (the keeper, which never waits); `partitioning.rs` names no run table; and the two fences stay `FOR SHARE`.
+    with `SKIP LOCKED` (the keeper, which never waits); `partitioning.rs` names no run table; and the two fences stay `FOR SHARE`;
+  * a `run.finished` body written by the PostgreSQL adapter (the message subscribers are sent when a run ends) is built after
+    `add_schedule_origin`, in the same function (FR-018-046, D2143): a writer that forgets it tells the subscribers of a run a
+    schedule started nothing about the schedule, and nothing else would fail.
 
 Usage: python3 scripts/check-architecture.py [--metadata FILE] [--postgres-src DIR]
   --metadata FILE     read a saved `cargo metadata --format-version 1` JSON instead of
@@ -246,6 +249,55 @@ def lease_row_errors(src):
     return errors
 
 
+# --- every `run.finished` body says the schedule that started the run (FR-018-046, D2143) ----------------------------------------
+# The body of the message subscribers are sent when a run ends is written in several places of the adapter (the run transaction, the
+# collection finish, the loop terminal path, the chain's final head). Each adds `scheduleId` and `nominalTime` for a run a schedule
+# started by calling `add_schedule_origin` on its `data` before it builds the body. A writer added later, or an edit that drops the
+# call, would send the subscribers of a scheduled run a body that says nothing of its schedule, and no other test fails for it.
+RUN_FINISHED_BODY = re.compile(r'"type"\s*:\s*"run\.finished"')
+SCHEDULE_ORIGIN = "add_schedule_origin"
+
+
+def enclosing_function(masked, offset):
+    """The `(name, start, end)` of the innermost `fn` of the masked source that contains `offset`; `None` when there is none."""
+    best = None
+    for m in re.finditer(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)", masked[:offset]):
+        span = function_span(masked[m.start():], m.group(1))
+        if span is not None and m.start() + span[0] <= offset < m.start() + span[1]:
+            best = (m.group(1), m.start() + span[0], m.start() + span[1])
+    return best
+
+
+def run_finished_errors(src):
+    """The errors of the `run.finished` rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    defined = False
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        masked, _ = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        if re.search(r"\bfn\s+" + SCHEDULE_ORIGIN + r"\b", masked):
+            defined = True
+        for m in RUN_FINISHED_BODY.finditer(text):
+            if masked[m.start()] != '"':
+                continue  # in a comment
+            found += 1
+            where = f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, m.start()) + 1}"
+            inside = enclosing_function(masked, m.start())
+            if inside is None or SCHEDULE_ORIGIN + "(" not in masked[inside[1]:m.start()]:
+                errors.append(
+                    f"{where}: a `run.finished` body is built without `{SCHEDULE_ORIGIN}` before it in the same function: the "
+                    f"subscribers of a run a schedule started would be told nothing about the schedule (FR-018-046)"
+                )
+    if not defined:
+        errors.append(f"`{SCHEDULE_ORIGIN}` is named by the `run.finished` rule and is not defined in {src}: the rule would check nothing")
+    if found == 0:
+        errors.append(f"no `run.finished` body was found in {src}: the rule would check nothing (is the literal spelled otherwise?)")
+    return errors
+
+
 def main(argv):
     metadata_file = argv[argv.index("--metadata") + 1] if "--metadata" in argv else None
     postgres_src = (
@@ -320,6 +372,7 @@ def main(argv):
                     errors.append(f"layer violation: '{name}' ({layer}) must not depend on '{d}' ({dl})")
 
     errors.extend(lease_row_errors(postgres_src))
+    errors.extend(run_finished_errors(postgres_src))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -349,7 +402,7 @@ def main(argv):
         for e in errors:
             print(f"  - {e}")
         return 1
-    print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock)")
+    print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule)")
     return 0
 
 
