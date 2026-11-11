@@ -394,8 +394,16 @@ async fn the_control_of_a_trigger_owned_schedule_opens_after_the_engines_have_ha
 async fn a_buffered_run_now_of_a_trigger_owned_schedule_starts_when_the_open_run_ends_and_pauses_nothing()
  {
     let t = triggers().await;
+    // The clock moves 31 seconds below and the test counts the runs of the workflow, so the trigger's own next occurrence must
+    // not fall in that stretch: an hourly cron at minute 0 made a third run when the test began within 31 seconds of the hour
+    // (seen once, 3 runs for 2). The minute is half an hour from now, whatever the hour is.
+    let minute = (time::OffsetDateTime::now_utc().minute() + 30) % 60;
     let (workflow, _) = t
-        .publish(cron_workflow("buffered", "0 * * * *", "UTC"))
+        .publish(cron_workflow(
+            "buffered",
+            &format!("{minute} * * * *"),
+            "UTC",
+        ))
         .await;
     let (trigger, ..) = t.trigger_of("buffered").await;
     t.hand_over().await;
