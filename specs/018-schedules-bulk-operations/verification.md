@@ -240,6 +240,28 @@ PostgreSQL, a Mac15,9 shared with other work. What was **not** run is said in th
 | `docker compose … config -q` | **partly** | the quickstart task, 2026-11-10 | with none of the four switches set, `docker compose config` resolves all four to `false`; the four lines are not in `infra/docker/.env.example` (G2061: the sessions were denied reading `.env*`), so the command with `--env-file infra/docker/.env.example` was not run on a file that has them |
 | the quickstart, end to end once more on a clean stack | **not run** | | the quickstart was run for real on 2026-11-10 on the commit before the provenance; step 2.4 was not rerun on a stack after it (G2066) |
 
+**Rerun on the final tree of the business-id prefix, 2026-11-10 and 11** (the maintainer's session; commits `aa9d1565` to `24e9f7ae`, then `0779d706`; private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`, real PostgreSQL in the default Docker Desktop daemon, every suite in **one process**, no `ENOSPC`; scripts `gates56.sh` and `gates57.sh`, the full output of every step kept). Every step exited 0:
+
+| Gate | Result |
+| --- | --- |
+| `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `check-architecture.py`, `check-agent-config.py`, `check-upgrade-boundary.py`, `check-design-docs.py` (pull-request mode) | pass |
+| `python3 -m unittest discover -s scripts/tests` | 365 tests, 2 skipped |
+| `cargo test --workspace --exclude sagat-tests --locked --no-fail-fast` | 2,968 passed, 0 failed |
+| `integration_schedules_bulk_operations`, owner and `sagat_app` | 697 passed, 2 ignored, in each role (about 8 minutes each) |
+| `fault_schedules_bulk_operations`, both roles | 115 passed in each |
+| `integration_platform_foundation` (the runtime-privilege audit), both roles | 104 passed in each |
+| `integration_security_multitenancy`, both roles | 126 passed in each |
+| `integration_events_webhooks_messaging`, `integration_workflow_primitives` | 112 and 764 passed (22 ignored) |
+| `contract_schedules_bulk_operations`, `contract_developer_experience`, `contract_rest_security_multitenancy`, `contract_payload_classification`, `contract_observability_operations`, `contract_iceberg_writes`, `fault_platform_foundation` | pass (`contract_iceberg_writes` 63, `fault_platform_foundation` 38) |
+| `sdk_conformance -- --ignored` (76 scenarios, six languages, no bless) | pass in one process, 1,721 s |
+| `e2e_sdk_multilanguage`, `fault_sdk_multilanguage`, `e2e_developer_experience … onboarding_browser::` | 6, 9 and 1 passed |
+| the six SDKs' own checks (`sdks/AGENTS.md`) | pass (TypeScript 168, Python 391, .NET 523, Go with `-race`, Java `verify`, Rust SDK clippy and tests) |
+| Studio: `npm audit`, lint, typecheck (and of the e2e workspace), `npm test`, build, `check:api` | pass (1,515 tests) |
+| `e2e_workflow_studio … journeys` | pass (254 s) |
+| CI of `0779d706` (scoped to what changed) | all green: `rust`, `sdks` (the whole conformance suite on Linux), `studio` (the browser journeys), `lake`, architecture, package smoke |
+
+On the way: `24e9f7ae` failed one CI test of ours, `batch_pass::the_engines_loop_applies_the_items_of_a_lone_job_…` (696 of 697), whose own diagnostic showed the job already `COMPLETED` with the horizon free: the wait of the test, not the platform (D2196, fixed in `0779d706`). Still not run here: `promtool`, the compose stack's quickstart after the prefix, the released-upgrade profile, the mutation battery.
+
 ## (f) What is not verified, and why
 
 - **Linux.** Every demo step ran on macOS with a Docker Desktop VM. The Linux evidence is one CI run (`42649041664` on `345dd70e`)
