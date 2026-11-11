@@ -47,7 +47,7 @@ pub fn built_binary(name: &str) -> std::path::PathBuf {
         .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
-use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};
 
 use sagat_domain::identity::{Membership, Principal, Slug, Subject, Tenant, TenantId};
 use sagat_infra_postgres::{PgIdentityStore, PgPool, migrate};
@@ -88,7 +88,10 @@ pub fn hold_server() -> HeldServer {
 
 /// Returns the running server, starting one if no test currently holds it.
 fn server() -> Arc<Server> {
-    let mut slot = SERVER.lock().expect("server lock");
+    // A start that panicked while holding the lock poisoned it for every test after it (308 tests failed with `PoisonError`
+    // for the one that met a port Docker had not published yet). The slot is written only after a start succeeded, so what
+    // a poisoned lock holds is still right: the next test starts the server itself and a failure costs one test, not the run.
+    let mut slot = SERVER.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(running) = slot.upgrade() {
         return running;
     }
@@ -137,10 +140,7 @@ async fn start_server() -> Server {
     )
     .await
     .expect("start PostgreSQL (is Docker running? or set SAGAT_TEST_DATABASE_URL)");
-    let port = container
-        .get_host_port_ipv4(5432)
-        .await
-        .expect("mapped port");
+    let port = bounded::mapped_port(&container, 5432).await;
     let admin_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     wait_until_queryable(&admin_url).await;
     ensure_runtime_role(&admin_url).await;
