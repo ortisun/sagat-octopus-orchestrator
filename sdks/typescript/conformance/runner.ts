@@ -5,10 +5,11 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
   ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, body, flow, reconcile, workflow,
-  type ActivityContext, type BatchJob, type Body, type Flow, type Reset, type Run, type Schedule, type ScheduleActionRecord,
-  type ScheduleBackfill, type ScheduleDescription, type StateDefinition, type UpdateWithStartReceipt, type WorkflowBuilder,
+  type ActivityContext, type BatchJob, type Body, type Flow, type Reset, type Run, type Schedule,
+  type ScheduleBackfill, type StateDefinition, type UpdateWithStartReceipt, type WorkflowBuilder,
 } from '../src/index.js';
 import { FaultPlan, type Fault } from './faults.js';
+import { actionJson, descriptionJson, iso, scheduleJson } from './observe.js';
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Obj = Record<string, any>;
@@ -114,8 +115,6 @@ function build(scenario: Obj): Obj {
 
 // ---------------------------------------------------------------------------------------- observations
 
-const iso = (date: Date | null): string | null => (date ? date.toISOString() : null);
-
 function runJson(run: Run): Obj {
   return {
     runId: run.runId, workflowId: run.workflowId, versionId: run.versionId, status: run.status, version: run.version,
@@ -134,35 +133,6 @@ function runJson(run: Run): Obj {
       ? { schedule: { scheduleId: run.schedule.scheduleId, nominalTime: iso(run.schedule.nominalTime), kind: run.schedule.kind, revision: run.schedule.revision } }
       : {}),
     ...(run.resetFrom !== null ? { resetFrom: { runId: run.resetFrom.runId, sequence: run.resetFrom.sequence } } : {}),
-  };
-}
-
-// The feature 018 results. Instants that depend on when the scenario ran are written as instants (the harness
-// compares them as `<time>`); the ones a fixed spec determines are written as epoch milliseconds, so that a wrong
-// parse of an instant shows.
-const epoch = (date: Date | null): number | null => (date ? date.getTime() : null);
-
-function scheduleJson(s: Schedule): Obj {
-  return {
-    scheduleId: s.scheduleId, name: s.name, origin: s.origin, state: s.state, revision: s.revision, exhausted: s.exhausted,
-    action: s.action, note: s.note, noteBy: s.noteBy, remainingActions: s.remainingActions, nextActionEpochMs: epoch(s.nextActionAt),
-    createdAt: iso(s.createdAt), updatedAt: iso(s.updatedAt),
-  };
-}
-
-function actionJson(a: ScheduleActionRecord): Obj {
-  return {
-    kind: a.kind, origin: a.origin, revision: a.revision, outcome: a.outcome, reason: a.reason, runId: a.runId, backfillId: a.backfillId,
-    nominalTime: iso(a.nominalTime), actualTime: iso(a.actualTime), summaryCount: a.summaryCount,
-    summaryLastNominalTime: iso(a.summaryLastNominalTime), decidedAt: iso(a.decidedAt),
-  };
-}
-
-function descriptionJson(d: ScheduleDescription): Obj {
-  return {
-    ...scheduleJson(d),
-    nextActions: d.nextActions.map((n) => ({ nominalTimeEpochMs: n.nominalTime.getTime(), actualTimeEpochMs: n.actualTime.getTime() })),
-    recentActions: d.recentActions.map(actionJson), openRuns: d.openRuns, bufferedCount: d.bufferedCount, counters: d.counters,
   };
 }
 

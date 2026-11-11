@@ -141,6 +141,21 @@ pub struct ScheduleAction {
     pub nominal_time_field: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_timeout_ms: Option<u64>,
+    /// Every run the schedule starts gets the business id `<prefix>-<nominal time>`. Customer text,
+    /// sent as given: no trimming, no case folding and no local pattern or length check (the
+    /// server accepts 1 to 160 visible ASCII characters and refuses the rest with
+    /// `VALIDATION_FAILED`, reason `SCHEDULE_SPEC_INVALID`). It is never part of the `Debug` of the
+    /// action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub business_id_prefix: Option<String>,
+    /// What an action does when an open execution holds its id; only with a prefix (`FAIL` when
+    /// absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub business_id_conflict_policy: Option<BusinessIdConflictPolicy>,
+    /// What an action does when a closed execution still remembers its id; only with a prefix
+    /// (`ALLOW_DUPLICATE` when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub business_id_reuse_policy: Option<BusinessIdReusePolicy>,
 }
 impl std::fmt::Debug for ScheduleAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -158,6 +173,9 @@ impl ScheduleAction {
             input,
             nominal_time_field: None,
             run_timeout_ms: None,
+            business_id_prefix: None,
+            business_id_conflict_policy: None,
+            business_id_reuse_policy: None,
         }
     }
 }
@@ -204,7 +222,7 @@ impl ScheduleWrite {
 }
 
 /// The action as the server keeps it: without the input, with its digest.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ScheduleActionDefinition {
     pub workflow_id: Option<String>,
     pub version_policy: Option<String>,
@@ -212,6 +230,31 @@ pub struct ScheduleActionDefinition {
     pub input_digest: Option<String>,
     pub nominal_time_field: Option<String>,
     pub run_timeout_ms: Option<u64>,
+    /// The business-id prefix of every run the schedule starts, as the server sent it; `None` when
+    /// the action has none. Customer text: it is never part of the `Debug` of the action.
+    pub business_id_prefix: Option<String>,
+    /// `FAIL` or `USE_EXISTING` (or a value of a newer server, kept as sent); present with a prefix.
+    pub business_id_conflict_policy: Option<String>,
+    /// `ALLOW_DUPLICATE`, `ALLOW_DUPLICATE_FAILED_ONLY` or `REJECT_DUPLICATE` (or a value of a
+    /// newer server, kept as sent); present with a prefix.
+    pub business_id_reuse_policy: Option<String>,
+}
+impl std::fmt::Debug for ScheduleActionDefinition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScheduleActionDefinition")
+            .field("workflow_id", &self.workflow_id)
+            .field("version_policy", &self.version_policy)
+            .field("version_id", &self.version_id)
+            .field("input_digest", &self.input_digest)
+            .field("nominal_time_field", &self.nominal_time_field)
+            .field("run_timeout_ms", &self.run_timeout_ms)
+            .field(
+                "business_id_conflict_policy",
+                &self.business_id_conflict_policy,
+            )
+            .field("business_id_reuse_policy", &self.business_id_reuse_policy)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone)]
@@ -259,6 +302,9 @@ impl Schedule {
                 input_digest: part("inputDigest"),
                 nominal_time_field: part("nominalTimeField"),
                 run_timeout_ms: action.as_ref().and_then(|a| a.opt_u64("runTimeoutMs")),
+                business_id_prefix: part("businessIdPrefix"),
+                business_id_conflict_policy: part("businessIdConflictPolicy"),
+                business_id_reuse_policy: part("businessIdReusePolicy"),
             },
             note: f.opt_text("note"),
             note_by: f.opt_text("noteBy"),

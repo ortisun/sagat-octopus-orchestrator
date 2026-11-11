@@ -1,6 +1,6 @@
 {
   "name": "schedules-operate",
-  "description": "Feature 018 US01: operating a schedule. Pause and resume carry a note; a trigger acts now, also while the schedule is paused, starts the schedule's run and does not use up a remaining action; the same key replays the same action; a backfill of a past range acts on each nominal time once (the range is two whole UTC hours of an hourly cron, so it holds exactly two times whenever the scenario runs), and a second backfill of the same range finds every time ALREADY_ACTED and starts nothing; a range that ends in the future is refused; the history is filtered by outcome; the run a trigger started and the run a backfill started are read back and say which schedule started them, by which kind of action (TRIGGERED, BACKFILL), for which nominal time (an instant) and under which revision (G2057, FR-018-016).",
+  "description": "Feature 018 US01: operating a schedule. Pause and resume carry a note; a trigger acts now, also while the schedule is paused, starts the schedule's run and does not use up a remaining action; the same key replays the same action; a backfill of a past range acts on each nominal time once (the range is two whole UTC hours of an hourly cron, so it holds exactly two times whenever the scenario runs), and a second backfill of the same range finds every time ALREADY_ACTED and starts nothing; a range that ends in the future is refused; the history is filtered by outcome; the run a trigger started and the run a backfill started are read back and say which schedule started them, by which kind of action (TRIGGERED, BACKFILL), for which nominal time (an instant) and under which revision (G2057, FR-018-016). A schedule whose action names a business-id prefix (FR-018-016) reads its prefix and its two policies back (the defaults written out when only the prefix is given; none of the three when there is no prefix), refuses a prefix that is not an id and a policy without a prefix with the reason SCHEDULE_SPEC_INVALID, and the run its trigger-now starts is read back under the id <prefix>-<nominal time>.",
   "server": {
     "schedules": true
   },
@@ -244,6 +244,111 @@
       "op": "get",
       "page": "backfill-actions",
       "index": 0
+    },
+    {
+      "id": "prefixed",
+      "op": "scheduleCreate",
+      "idempotencyKey": "op-prefixed-{{unique}}",
+      "write": {
+        "name": "operate-prefixed-{{unique}}",
+        "spec": {
+          "cron": [
+            "0 * * * *"
+          ],
+          "timezone": "UTC"
+        },
+        "policies": {
+          "overlap": "ALLOW_ALL"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {
+            "kind": "prefixed"
+          },
+          "businessIdPrefix": "biz-{{unique}}",
+          "businessIdConflictPolicy": "USE_EXISTING",
+          "businessIdReusePolicy": "ALLOW_DUPLICATE_FAILED_ONLY"
+        },
+        "paused": true
+      }
+    },
+    {
+      "id": "prefixed-defaults",
+      "op": "scheduleCreate",
+      "idempotencyKey": "op-prefixed-defaults-{{unique}}",
+      "write": {
+        "name": "operate-prefixed-defaults-{{unique}}",
+        "spec": {
+          "cron": [
+            "0 * * * *"
+          ],
+          "timezone": "UTC"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {
+            "kind": "defaults"
+          },
+          "businessIdPrefix": "dflt-{{unique}}"
+        },
+        "paused": true
+      }
+    },
+    {
+      "id": "prefixed-invalid",
+      "op": "scheduleCreate",
+      "idempotencyKey": "op-prefixed-invalid-{{unique}}",
+      "write": {
+        "name": "operate-prefixed-invalid-{{unique}}",
+        "spec": {
+          "cron": [
+            "0 * * * *"
+          ],
+          "timezone": "UTC"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {},
+          "businessIdPrefix": "has space"
+        }
+      }
+    },
+    {
+      "id": "prefixed-policy-only",
+      "op": "scheduleCreate",
+      "idempotencyKey": "op-prefixed-policy-{{unique}}",
+      "write": {
+        "name": "operate-prefixed-policy-{{unique}}",
+        "spec": {
+          "cron": [
+            "0 * * * *"
+          ],
+          "timezone": "UTC"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {},
+          "businessIdConflictPolicy": "USE_EXISTING"
+        }
+      }
+    },
+    {
+      "id": "prefixed-trigger",
+      "op": "scheduleTrigger",
+      "schedule": "prefixed",
+      "idempotencyKey": "op-prefixed-trigger-{{unique}}"
+    },
+    {
+      "id": "prefixed-get",
+      "op": "scheduleGet",
+      "schedule": "prefixed",
+      "nextCount": 0,
+      "recentCount": 3
+    },
+    {
+      "id": "prefixed-run",
+      "op": "get",
+      "run": "prefixed-trigger"
     }
   ]
 }

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
@@ -475,6 +476,184 @@ class OperationsTest {
                 + "\"end\":\"2026-10-10T10:00:00Z\",\"state\":\"COMPLETED\",\"overlap\":\"SKIP\",\"counts\":{}}]}"));
         assertEquals(1, client().schedules().listBackfills(NS, SCHEDULE, null).size());
         assertEquals("/v1/namespaces/" + NS + "/schedules/" + SCHEDULE + "/backfills", only().path());
+    }
+
+    // ------------------------------------------------------------- the business-id prefix of a schedule's action
+
+    /** What the server answers for an action that has a prefix: all three members, the policies with their defaults. */
+    private static String prefixed(String prefix, String conflict, String reuse) {
+        return "{'workflowId':'" + WF + "','versionPolicy':'ACTIVE','inputDigest':'" + "a".repeat(64) + "','businessIdPrefix':'" + prefix
+                + "','businessIdConflictPolicy':'" + conflict + "','businessIdReusePolicy':'" + reuse + "'}";
+    }
+
+    private static ScheduleWrite writeOf(ScheduleWrite.Action action) {
+        return ScheduleWrite.of("nightly", ScheduleWrite.Spec.create().cron("0 9 * * *"), action);
+    }
+
+    private static JsonNode sentAction(FakeRestServer.Seen request) {
+        return request.body().path("action");
+    }
+
+    @Test
+    void anActionThatNamesABusinessIdPrefixSendsItAsGivenWithItsTwoPoliciesAndTheScheduleItGetsBackSaysAllThree() {
+        server.prepare((req, reply) -> reply.send(201, schedule("action", prefixed("order", "USE_EXISTING", "REJECT_DUPLICATE"))));
+        Schedule created = client().schedules().create(NS, writeOf(ScheduleWrite.Action.of(WF, Map.of())
+                .businessIdPrefix(" Order/Ab-1 ")
+                .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
+                .businessIdReusePolicy(BusinessIdReusePolicy.REJECT_DUPLICATE)), key("sched-key-1"));
+        assertEquals(j("{'name':'nightly','spec':{'cron':['0 9 * * *']},'action':{'workflowId':'" + WF + "','input':{},"
+                + "'businessIdPrefix':' Order/Ab-1 ','businessIdConflictPolicy':'USE_EXISTING','businessIdReusePolicy':'REJECT_DUPLICATE'}}"),
+                body(only()), "the prefix is customer text: no trimming, no case folding, no check of its pattern or length");
+        assertEquals("order", created.action().businessIdPrefix(), "what is read is what the server sent");
+        assertEquals("USE_EXISTING", created.action().businessIdConflictPolicy());
+        assertEquals("REJECT_DUPLICATE", created.action().businessIdReusePolicy());
+        assertEquals("order", created.raw().path("action").path("businessIdPrefix").textValue(), "and raw() keeps it");
+        assertEquals("a".repeat(64), created.action().inputDigest(), "the other members of the action are what they were");
+    }
+
+    @Test
+    void aPrefixAloneSendsNoPolicyAndTheServerAnswersThePoliciesWithTheirDefaults() {
+        server.prepare((req, reply) -> reply.send(201, schedule("action", prefixed("order", "FAIL", "ALLOW_DUPLICATE"))));
+        Schedule created = client().schedules().create(NS, writeOf(ScheduleWrite.Action.of(WF, Map.of()).businessIdPrefix("order")), null);
+        JsonNode action = sentAction(only());
+        assertEquals("order", action.path("businessIdPrefix").textValue());
+        assertFalse(action.has("businessIdConflictPolicy"), "an unset policy is left out, not sent as null: " + action);
+        assertFalse(action.has("businessIdReusePolicy"), action.toString());
+        assertEquals("FAIL", created.action().businessIdConflictPolicy());
+        assertEquals("ALLOW_DUPLICATE", created.action().businessIdReusePolicy());
+    }
+
+    @Test
+    void anActionThatSetsNoneOfTheThreeSendsNoneOfThemAndAnActionTheServerAnswersWithoutThemHasNone() {
+        server.prepare((req, reply) -> reply.send(201, schedule()));
+        Schedule created = client().schedules().create(NS, nightly(), null);
+        JsonNode action = sentAction(only());
+        for (String key : List.of("businessIdPrefix", "businessIdConflictPolicy", "businessIdReusePolicy")) {
+            assertFalse(action.has(key), key + " is absent, not null and not empty: " + action);
+        }
+        assertNull(created.action().businessIdPrefix());
+        assertNull(created.action().businessIdConflictPolicy());
+        assertNull(created.action().businessIdReusePolicy());
+
+        // an action the server wrote with nulls (or with a member that is not text) has none either
+        server.prepare((req, reply) -> reply.send(200, schedule("action", "{'workflowId':'" + WF + "','businessIdPrefix':null,"
+                + "'businessIdConflictPolicy':null,'businessIdReusePolicy':7}")));
+        Schedule nulls = client().schedules().update(NS, SCHEDULE, nightly(), 2, null);
+        assertNull(nulls.action().businessIdPrefix());
+        assertNull(nulls.action().businessIdConflictPolicy());
+        assertNull(nulls.action().businessIdReusePolicy());
+
+        // the same for a schedule with no action object at all
+        server.prepare((req, reply) -> reply.send(200, schedule("action", "{}")));
+        assertNull(client().schedules().get(NS, SCHEDULE, null).schedule().action().businessIdPrefix());
+    }
+
+    @Test
+    void anEmptyPrefixIsSentAsTheEmptyStringAndTheServerRefusesItWithTheReasonTheSdkReads() {
+        server.prepare((req, reply) -> reply.send(400, j("{'code':'VALIDATION_FAILED','message':'the action is not valid','retryable':false,"
+                + "'traceId':'" + "e".repeat(32) + "','details':{'reason':'SCHEDULE_SPEC_INVALID','field':'/action/businessIdPrefix'}}")));
+        SagatException refusal = assertThrows(SagatException.class, () -> client().schedules().create(NS,
+                writeOf(ScheduleWrite.Action.of(WF, Map.of()).businessIdPrefix("")), null));
+        assertEquals("", sentAction(only()).path("businessIdPrefix").textValue(), "the empty string is sent, the server judges it");
+        assertEquals(1, server.seen.size(), "a validation answer is never retried");
+        assertEquals(ErrorCode.VALIDATION_FAILED, refusal.code());
+        assertEquals("SCHEDULE_SPEC_INVALID", refusal.reason().orElse(null));
+
+        // a prefix the server would refuse for its length or its characters is not judged here either
+        String long161 = "p".repeat(161);
+        server.prepare((req, reply) -> reply.send(201, schedule()));
+        client().schedules().create(NS, writeOf(ScheduleWrite.Action.of(WF, Map.of()).businessIdPrefix(long161 + "\t")), null);
+        assertEquals(long161 + "\t", sentAction(only()).path("businessIdPrefix").textValue());
+    }
+
+    @Test
+    void anUpdateTakesTheSameActionDocumentAndAScheduleUpdatedWithoutAPrefixSendsNone() {
+        server.prepare((req, reply) -> reply.send(200, schedule("revision", "3", "action", prefixed("order", "FAIL", "ALLOW_DUPLICATE"))));
+        Schedule withPrefix = client().schedules().update(NS, SCHEDULE, writeOf(ScheduleWrite.Action.of(WF, Map.of())
+                .businessIdPrefix("order").businessIdReusePolicy(BusinessIdReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY)), 2, null);
+        assertEquals("PUT", only().method());
+        assertEquals(j("{'workflowId':'" + WF + "','input':{},'businessIdPrefix':'order','businessIdReusePolicy':'ALLOW_DUPLICATE_FAILED_ONLY'}"),
+                sentAction(only()).toString());
+        assertEquals("order", withPrefix.action().businessIdPrefix());
+
+        server.prepare((req, reply) -> reply.send(200, schedule("revision", "4")));
+        Schedule without = client().schedules().update(NS, SCHEDULE, writeOf(ScheduleWrite.Action.of(WF, Map.of())), 3, null);
+        assertEquals(j("{'workflowId':'" + WF + "','input':{}}"), sentAction(only()).toString(), "a schedule updated without a prefix has none");
+        assertNull(without.action().businessIdPrefix());
+    }
+
+    @Test
+    void aPolicyThisSdkDoesNotKnowIsSentAsGivenAndReadAsTheStringItCameAsNeverAnError() {
+        server.prepare((req, reply) -> reply.send(200, schedule("action", prefixed("order", "NEWER_CONFLICT", "NEWER_REUSE"))));
+        Schedule read = client().schedules().update(NS, SCHEDULE, writeOf(ScheduleWrite.Action.of(WF, Map.of())
+                .businessIdPrefix("order").businessIdConflictPolicy("NEWER_CONFLICT").businessIdReusePolicy("NEWER_REUSE")), 2, null);
+        assertEquals("NEWER_CONFLICT", sentAction(only()).path("businessIdConflictPolicy").textValue());
+        assertEquals("NEWER_REUSE", sentAction(only()).path("businessIdReusePolicy").textValue());
+        assertEquals("NEWER_CONFLICT", read.action().businessIdConflictPolicy());
+        assertEquals("NEWER_REUSE", read.action().businessIdReusePolicy());
+    }
+
+    @Test
+    void theOutcomesAndReasonsABusinessIdentifierAddsToAScheduleActionAreKeptAsTheStringsTheyCameAs() {
+        server.prepare((req, reply) -> reply.send(200, "{\"items\":["
+                + action("outcome", "'BUSINESS_ID_CONFLICT'", "reason", "'BUSINESS_ID_IN_USE'", "runId", "null") + ","
+                + action("outcome", "'BUSINESS_ID_CONFLICT'", "reason", "'BUSINESS_ID_REUSE_REJECTED'", "runId", "null") + ","
+                + action("outcome", "'ALREADY_ACTED'", "reason", "'BUSINESS_ID_IN_USE'") + "],\"nextCursor\":null}"));
+        Page<ScheduleActionRecord> page = client().schedules().listActions(NS, SCHEDULE,
+                ScheduleActionFilter.create().outcome("BUSINESS_ID_CONFLICT").limit(10));
+        assertEquals("/v1/namespaces/" + NS + "/schedules/" + SCHEDULE + "/actions?limit=10&outcome=BUSINESS_ID_CONFLICT", only().uri());
+        List<ScheduleActionRecord> items = page.items();
+        assertEquals(3, items.size());
+        assertEquals("BUSINESS_ID_CONFLICT", items.get(0).outcome());
+        assertEquals("BUSINESS_ID_IN_USE", items.get(0).reason());
+        assertNull(items.get(0).runId());
+        assertEquals("BUSINESS_ID_CONFLICT", items.get(1).outcome());
+        assertEquals("BUSINESS_ID_REUSE_REJECTED", items.get(1).reason());
+        assertEquals("ALREADY_ACTED", items.get(2).outcome());
+        assertEquals("BUSINESS_ID_IN_USE", items.get(2).reason());
+        assertEquals(RUN, items.get(2).runId(), "an ALREADY_ACTED that names the run that holds the identifier");
+    }
+
+    @Test
+    void theBusinessIdPrefixIsNotInTheDebugTextOfTheWriteOrOfWhatIsReadBack() {
+        String secret = "customer-secret-prefix";
+        ScheduleWrite.Action action = ScheduleWrite.Action.of(WF, Map.of("n", 1)).businessIdPrefix(secret);
+        ScheduleWrite write = writeOf(action);
+        assertFalse(action.toString().contains(secret), action.toString());
+        assertFalse(write.toString().contains(secret), write.toString());
+
+        server.prepare((req, reply) -> reply.send(201, schedule("action", prefixed(secret, "FAIL", "ALLOW_DUPLICATE"))));
+        Schedule created = client().schedules().create(NS, write, null);
+        assertEquals(secret, created.action().businessIdPrefix(), "the typed value is there for the caller");
+        assertEquals(secret, created.raw().path("action").path("businessIdPrefix").textValue(), "so is raw()");
+        assertFalse(created.action().toString().contains(secret), created.action().toString());
+        assertFalse(created.toString().contains(secret), created.toString());
+        assertTrue(created.toString().contains("nightly"), "the rest of the schedule is still printed: " + created);
+
+        server.prepare((req, reply) -> reply.send(200, j(schedule("action", prefixed(secret, "FAIL", "ALLOW_DUPLICATE"))
+                .replaceAll("}$", ",'nextActions':[],'recentActions':[],'openRuns':[],'bufferedCount':0,'counters':{}}"))));
+        ScheduleDescription described = client().schedules().get(NS, SCHEDULE, null);
+        assertEquals(secret, described.schedule().action().businessIdPrefix());
+        assertFalse(described.toString().contains(secret), described.toString());
+
+        server.prepare((req, reply) -> reply.send(200, "{\"items\":[" + schedule("action", prefixed(secret, "FAIL", "ALLOW_DUPLICATE"))
+                + "],\"nextCursor\":null}"));
+        Page<Schedule> page = client().schedules().list(NS, ScheduleListFilter.create());
+        assertEquals(secret, page.items().get(0).action().businessIdPrefix());
+        assertFalse(page.toString().contains(secret), page.toString());
+    }
+
+    @Test
+    void theBusinessIdPrefixNeverReachesAnErrorMessageTheSdkWritesOrItsLog() {
+        String secret = "customer-secret-prefix";
+        CapturingLogger logger = new CapturingLogger();
+        server.prepare((req, reply) -> reply.send(400, j("{'code':'VALIDATION_FAILED','message':'the action is not valid','retryable':false,"
+                + "'traceId':'" + "e".repeat(32) + "','details':{'reason':'SCHEDULE_SPEC_INVALID','field':'/action/businessIdPrefix'}}")));
+        SagatException refusal = assertThrows(SagatException.class, () -> client(b -> b.logger(logger)).schedules().create(NS,
+                writeOf(ScheduleWrite.Action.of(WF, Map.of()).businessIdPrefix(secret)), null));
+        assertFalse(String.valueOf(refusal.getMessage()).contains(secret), refusal.getMessage());
+        assertFalse(refusal.toString().contains(secret), refusal.toString());
+        assertFalse(logger.lines().toString().contains(secret), logger.lines().toString());
     }
 
     // ---------------------------------------------------------------------------------- business ids

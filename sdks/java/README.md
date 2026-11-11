@@ -84,6 +84,15 @@ try (SagatClient client = SagatClient.create(config)) {
     System.out.println(described.counters() + " " + described.nextActions());
     client.schedules().delete(namespaceId, schedule.scheduleId(), schedule.revision(), null);
 
+    // A schedule whose runs get the business identifier "<prefix>-<nominal time>" (RFC 3339 UTC to the second, "Z").
+    Schedule orders = client.schedules().create(namespaceId, ScheduleWrite.of("hourly-orders",
+            ScheduleWrite.Spec.create().cron("0 * * * *").timezone("UTC"),
+            ScheduleWrite.Action.of(workflowId, Map.of("kind", "hourly")).businessIdPrefix("orders")
+                    .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
+                    .businessIdReusePolicy(BusinessIdReusePolicy.REJECT_DUPLICATE)), null);
+    System.out.println(orders.action().businessIdPrefix() + " " + orders.action().businessIdConflictPolicy()
+            + " " + orders.action().businessIdReusePolicy()); // orders USE_EXISTING REJECT_DUPLICATE
+
     // A batch job over many runs; the same key and body answer the first job.
     BatchJob job = client.batch().create(namespaceId, BatchRequest.of(
             BatchSelector.runIds(List.of(order.runId())), "CANCEL", "clean up the held runs"),
@@ -114,6 +123,16 @@ try (SagatClient client = SagatClient.create(config)) {
   (1 to 128 printable ASCII characters), and refuses a missing or invalid one before anything is sent.
 - A start delay is a `java.time.Duration`, turned **once** into whole milliseconds (truncated toward zero) before the first
   attempt and sent as `startDelayMs`; the range (1 ms to 366 days) is the server's to judge (`START_DELAY_INVALID`).
+- The action of a schedule may name a business-id prefix (`ScheduleWrite.Action.businessIdPrefix`, with the optional
+  `businessIdConflictPolicy` and `businessIdReusePolicy`, strings like those of `start`): every run it starts gets the
+  identifier `<prefix>-<nominal time>`. The prefix is customer text, **sent as given** (no trimming, no case folding, no
+  check of its pattern or length, the empty string included): the server judges it (`VALIDATION_FAILED`, reason
+  `SCHEDULE_SPEC_INVALID`). Set none of the three and none of the three keys is sent. `Schedule.action()` holds
+  what the server sent (`businessIdPrefix()`, `businessIdConflictPolicy()`, `businessIdReusePolicy()`, each a string, null
+  for an action that has no prefix; a policy newer than this SDK is kept as is). The prefix is left out of the
+  `toString` of the write and of everything read back (`raw()` keeps it), and the SDK never logs or traces it. An
+  action record may say `BUSINESS_ID_CONFLICT` (reason `BUSINESS_ID_IN_USE` or `BUSINESS_ID_REUSE_REJECTED`) or
+  `ALREADY_ACTED` with the `runId` that holds the identifier: like every outcome, strings.
 - A business identifier is sent **as given** by `start`, `signalWithStart` and `updateWithStart`; the server judges it
   (`BUSINESS_ID_INVALID`). `businessIds().get` percent-encodes it in the path and refuses locally, as
   `VALIDATION_FAILED` with nothing sent, only what cannot be a path segment: a value that is not 1 to 200 visible ASCII

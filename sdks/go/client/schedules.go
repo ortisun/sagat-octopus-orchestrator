@@ -157,6 +157,18 @@ type ScheduleAction struct {
 	Input            any    `json:"input"`
 	NominalTimeField string `json:"nominalTimeField,omitempty"`
 	RunTimeoutMs     int64  `json:"runTimeoutMs,omitempty"`
+	// BusinessIDPrefix makes every run the schedule starts carry the business id "<prefix>-<nominal time>"
+	// (RFC 3339 UTC to the second). Nil sends none of the three business-id fields; a pointer to the empty
+	// string sends the empty string, which the server refuses. It is customer text, sent as given: no trimming,
+	// no case folding and no local check of its pattern or length (the server answers VALIDATION_FAILED with
+	// the reason SCHEDULE_SPEC_INVALID); the SDK never logs it.
+	BusinessIDPrefix *string `json:"businessIdPrefix,omitempty"`
+	// BusinessIDConflictPolicy is FAIL (the server's default) or USE_EXISTING, and only means something with a
+	// BusinessIDPrefix: the server judges any other combination. "" sends none.
+	BusinessIDConflictPolicy BusinessIDConflictPolicy `json:"businessIdConflictPolicy,omitempty"`
+	// BusinessIDReusePolicy is ALLOW_DUPLICATE (the server's default), ALLOW_DUPLICATE_FAILED_ONLY or
+	// REJECT_DUPLICATE, and only means something with a BusinessIDPrefix. "" sends none.
+	BusinessIDReusePolicy BusinessIDReusePolicy `json:"businessIdReusePolicy,omitempty"`
 }
 
 // MarshalJSON sends an empty object for a nil Input.
@@ -191,6 +203,12 @@ type ScheduleActionInfo struct {
 	InputDigest      string
 	NominalTimeField string
 	RunTimeoutMs     *int64
+	// BusinessIDPrefix, BusinessIDConflictPolicy and BusinessIDReusePolicy are all empty when the action names
+	// no prefix; with a prefix the server writes the three, the policies with their defaults. The policies are
+	// the strings the server sent: one this SDK does not know is never an error. The prefix is customer text.
+	BusinessIDPrefix         string
+	BusinessIDConflictPolicy string
+	BusinessIDReusePolicy    string
 }
 
 // Schedule is a schedule as the server answers it. An instant or a string the server did not send, or sent
@@ -695,6 +713,9 @@ func scheduleOf(raw map[string]json.RawMessage) (*Schedule, error) {
 		schedule.Action.InputDigest, _ = jsonx.String(action, "inputDigest")
 		schedule.Action.NominalTimeField, _ = jsonx.String(action, "nominalTimeField")
 		schedule.Action.RunTimeoutMs = optionalInt(action, "runTimeoutMs")
+		schedule.Action.BusinessIDPrefix, _ = jsonx.String(action, "businessIdPrefix")
+		schedule.Action.BusinessIDConflictPolicy, _ = jsonx.String(action, "businessIdConflictPolicy")
+		schedule.Action.BusinessIDReusePolicy, _ = jsonx.String(action, "businessIdReusePolicy")
 	}
 	schedule.Note, _ = jsonx.String(raw, "note")
 	schedule.NoteBy, _ = jsonx.String(raw, "noteBy")

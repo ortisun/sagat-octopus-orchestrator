@@ -919,6 +919,475 @@ async fn a_backfill_sends_its_range_as_utc_instants_a_cancel_names_the_backfill_
     assert_eq!(actions.items[0].outcome, "ALREADY_ACTED");
 }
 
+// ------------------------------------------------ the business-id prefix of a schedule's action
+
+/// Customer text with everything a tidy-up would change: a space, mixed case, a slash.
+const PREFIX: &str = " Order/Nightly-A ";
+
+fn action_with_business_ids(
+    prefix: Option<&str>,
+    conflict: Option<BusinessIdConflictPolicy>,
+    reuse: Option<BusinessIdReusePolicy>,
+) -> ScheduleAction {
+    let mut action = ScheduleAction::new(WF, json!({"n": 1}));
+    action.business_id_prefix = prefix.map(str::to_owned);
+    action.business_id_conflict_policy = conflict;
+    action.business_id_reuse_policy = reuse;
+    action
+}
+
+#[tokio::test]
+async fn a_schedule_action_sends_its_business_id_prefix_and_policies_as_given_on_create_and_on_update_and_sends_none_of_the_three_when_none_is_set()
+ {
+    let server = Recorder::start().await;
+    let client = server.client();
+    let schedules = client.schedules();
+    let spec = ScheduleSpec {
+        cron: vec!["0 9 * * *".into()],
+        ..ScheduleSpec::default()
+    };
+    // The prefix is customer text: no trimming, no case folding, no pattern or length check.
+    server.answer_with(201, schedule(json!({})));
+    let all_three = action_with_business_ids(
+        Some(PREFIX),
+        Some(BusinessIdConflictPolicy::UseExisting),
+        Some(BusinessIdReusePolicy::RejectDuplicate),
+    );
+    schedules
+        .create(
+            NS,
+            &ScheduleWrite::new("nightly", spec.clone(), all_three.clone()),
+            keyed("sched-prefix-01"),
+        )
+        .await
+        .expect("create");
+    assert_eq!(
+        server.only().body()["action"],
+        json!({
+            "workflowId": WF, "input": {"n": 1}, "businessIdPrefix": PREFIX,
+            "businessIdConflictPolicy": "USE_EXISTING", "businessIdReusePolicy": "REJECT_DUPLICATE",
+        })
+    );
+    // A prefix alone: the policies are left to the server's defaults, not sent as null.
+    server.answer_with(201, schedule(json!({})));
+    schedules
+        .create(
+            NS,
+            &ScheduleWrite::new(
+                "nightly",
+                spec.clone(),
+                action_with_business_ids(Some("p"), None, None),
+            ),
+            keyed("sched-prefix-02"),
+        )
+        .await
+        .expect("create");
+    assert_eq!(
+        server.only().body()["action"],
+        json!({"workflowId": WF, "input": {"n": 1}, "businessIdPrefix": "p"})
+    );
+    // An empty prefix is sent as the empty string (the server refuses it), a length is not checked
+    // here, and a policy this SDK does not know goes as it was given.
+    for prefix in [String::new(), "x".repeat(161), "ü é".to_owned()] {
+        server.answer_with(201, schedule(json!({})));
+        schedules
+            .create(
+                NS,
+                &ScheduleWrite::new(
+                    "nightly",
+                    spec.clone(),
+                    action_with_business_ids(
+                        Some(&prefix),
+                        Some(BusinessIdConflictPolicy::from("A_NEWER_ONE")),
+                        None,
+                    ),
+                ),
+                keyed("sched-prefix-03"),
+            )
+            .await
+            .expect("an unchecked prefix is sent");
+        let sent = server.only();
+        assert_eq!(sent.body()["action"]["businessIdPrefix"], json!(prefix));
+        assert_eq!(
+            sent.body()["action"]["businessIdConflictPolicy"],
+            "A_NEWER_ONE"
+        );
+    }
+    // None set: the action has none of the three keys (not null, not empty).
+    server.answer_with(201, schedule(json!({})));
+    schedules
+        .create(
+            NS,
+            &ScheduleWrite::new(
+                "nightly",
+                spec.clone(),
+                action_with_business_ids(None, None, None),
+            ),
+            keyed("sched-prefix-04"),
+        )
+        .await
+        .expect("create");
+    let action = server.only().body()["action"].clone();
+    for key in [
+        "businessIdPrefix",
+        "businessIdConflictPolicy",
+        "businessIdReusePolicy",
+    ] {
+        assert!(
+            action.get(key).is_none(),
+            "{key} is absent, not null: {action}"
+        );
+    }
+    // Update takes the same action document, and a schedule updated without a prefix has none.
+    server.answer_with(200, schedule(json!({"revision": 3})));
+    schedules
+        .update(
+            NS,
+            SCHEDULE,
+            &ScheduleWrite::new("nightly", spec.clone(), all_three),
+            2,
+            keyed("sched-prefix-05"),
+        )
+        .await
+        .expect("update");
+    let sent = server.only();
+    assert_eq!(sent.method, Method::PUT);
+    assert_eq!(sent.body()["action"]["businessIdPrefix"], PREFIX);
+    assert_eq!(
+        sent.body()["action"]["businessIdConflictPolicy"],
+        "USE_EXISTING"
+    );
+    assert_eq!(
+        sent.body()["action"]["businessIdReusePolicy"],
+        "REJECT_DUPLICATE"
+    );
+    assert_eq!(sent.body()["expectedRevision"], 2);
+    server.answer_with(200, schedule(json!({"revision": 4})));
+    schedules
+        .update(
+            NS,
+            SCHEDULE,
+            &ScheduleWrite::new("nightly", spec, action_with_business_ids(None, None, None)),
+            3,
+            keyed("sched-prefix-06"),
+        )
+        .await
+        .expect("update");
+    assert_eq!(
+        server.only().body()["action"],
+        json!({"workflowId": WF, "input": {"n": 1}})
+    );
+}
+
+#[tokio::test]
+async fn a_schedule_reads_the_business_id_prefix_and_policies_of_its_action_as_the_server_sent_them_and_has_none_when_the_server_sent_none()
+ {
+    let server = Recorder::start().await;
+    let client = server.client();
+    let schedules = client.schedules();
+    let with_prefix = |extra: Value| {
+        let mut action = json!({
+            "workflowId": WF, "versionPolicy": "ACTIVE", "inputDigest": "a".repeat(64),
+            "businessIdPrefix": PREFIX, "businessIdConflictPolicy": "FAIL",
+            "businessIdReusePolicy": "ALLOW_DUPLICATE",
+        });
+        merge(&mut action, extra);
+        schedule(json!({"action": action}))
+    };
+    // create, update and the other writes answer a Schedule; get answers a ScheduleDescription.
+    server.answer_with(201, with_prefix(json!({})));
+    let created = schedules
+        .create(
+            NS,
+            &write("nightly", ScheduleSpec::default()),
+            keyed("sched-read-001"),
+        )
+        .await
+        .expect("create");
+    assert_eq!(created.action.business_id_prefix.as_deref(), Some(PREFIX));
+    assert_eq!(
+        created.action.business_id_conflict_policy.as_deref(),
+        Some("FAIL")
+    );
+    assert_eq!(
+        created.action.business_id_reuse_policy.as_deref(),
+        Some("ALLOW_DUPLICATE")
+    );
+    server.answer_with(
+        200,
+        with_prefix(json!({
+            "businessIdConflictPolicy": "USE_EXISTING",
+            "businessIdReusePolicy": "ALLOW_DUPLICATE_FAILED_ONLY",
+        })),
+    );
+    let described = schedules
+        .get(
+            NS,
+            SCHEDULE,
+            ScheduleDescribeOptions::default(),
+            CallOptions::default(),
+        )
+        .await
+        .expect("get");
+    assert_eq!(described.action.business_id_prefix.as_deref(), Some(PREFIX));
+    assert_eq!(
+        described.action.business_id_conflict_policy.as_deref(),
+        Some("USE_EXISTING")
+    );
+    assert_eq!(
+        described.action.business_id_reuse_policy.as_deref(),
+        Some("ALLOW_DUPLICATE_FAILED_ONLY")
+    );
+    // A policy of a newer server is kept as the string it came as, never an error.
+    server.answer_with(
+        200,
+        with_prefix(json!({"businessIdConflictPolicy": "SOMETHING_NEWER", "businessIdReusePolicy": "ALSO_NEWER"})),
+    );
+    let newer = schedules
+        .update(
+            NS,
+            SCHEDULE,
+            &write("nightly", ScheduleSpec::default()),
+            2,
+            keyed("sched-read-002"),
+        )
+        .await
+        .expect("a policy this SDK does not know is not an error");
+    assert_eq!(
+        newer.action.business_id_conflict_policy.as_deref(),
+        Some("SOMETHING_NEWER")
+    );
+    assert_eq!(
+        newer.action.business_id_reuse_policy.as_deref(),
+        Some("ALSO_NEWER")
+    );
+    // The page of a list reads it too.
+    server.answer_with(
+        200,
+        json!({"items": [with_prefix(json!({})), schedule(json!({"name": "plain"}))], "nextCursor": null}),
+    );
+    let page = schedules
+        .list(NS, ScheduleListFilter::default(), CallOptions::default())
+        .await
+        .expect("list");
+    assert_eq!(
+        page.items[0].action.business_id_prefix.as_deref(),
+        Some(PREFIX)
+    );
+    assert_eq!(page.items[1].action.business_id_prefix, None);
+    // Absent => absent, and a null is absent too.
+    for plain in [
+        schedule(json!({})),
+        with_prefix(
+            json!({"businessIdPrefix": null, "businessIdConflictPolicy": null, "businessIdReusePolicy": null}),
+        ),
+    ] {
+        server.answer_with(200, plain);
+        let plain = schedules
+            .get(
+                NS,
+                SCHEDULE,
+                ScheduleDescribeOptions::default(),
+                CallOptions::default(),
+            )
+            .await
+            .expect("get");
+        assert_eq!(plain.action.business_id_prefix, None);
+        assert_eq!(plain.action.business_id_conflict_policy, None);
+        assert_eq!(plain.action.business_id_reuse_policy, None);
+        assert_eq!(plain.action.workflow_id.as_deref(), Some(WF));
+    }
+}
+
+#[tokio::test]
+async fn the_business_id_prefix_of_a_schedule_never_shows_in_a_debug_print_of_what_is_written_or_read_or_of_an_error()
+ {
+    let server = Recorder::start().await;
+    let client = server.client();
+    let schedules = client.schedules();
+    let secret = "customer-secret-prefix";
+    let action = action_with_business_ids(
+        Some(secret),
+        Some(BusinessIdConflictPolicy::UseExisting),
+        None,
+    );
+    let body = ScheduleWrite::new("nightly", ScheduleSpec::default(), action.clone());
+    server.answer_with(
+        201,
+        schedule(json!({"action": {
+            "workflowId": WF, "inputDigest": "a".repeat(64), "businessIdPrefix": secret,
+            "businessIdConflictPolicy": "USE_EXISTING", "businessIdReusePolicy": "ALLOW_DUPLICATE",
+        }})),
+    );
+    let created = schedules
+        .create(NS, &body, keyed("sched-debug-01"))
+        .await
+        .expect("create");
+    assert_eq!(created.action.business_id_prefix.as_deref(), Some(secret));
+    for shown in [
+        format!("{action:?}"),
+        format!("{action:#?}"),
+        format!("{body:?}"),
+        format!("{:?}", created.action),
+        format!("{:#?}", created.action),
+        format!("{created:?}"),
+        format!("{:#?}", created),
+    ] {
+        assert!(
+            !shown.contains(secret),
+            "the prefix is customer text: {shown}"
+        );
+    }
+    // A description that carries the prefix, and the error of a refused write.
+    let mut described = schedule(json!({"action": {"workflowId": WF, "businessIdPrefix": secret}}));
+    merge(
+        &mut described,
+        json!({"recentActions": [], "openRuns": [], "counters": {}}),
+    );
+    server.answer_with(200, described);
+    let described = schedules
+        .get(
+            NS,
+            SCHEDULE,
+            ScheduleDescribeOptions::default(),
+            CallOptions::default(),
+        )
+        .await
+        .expect("get");
+    assert!(!format!("{described:?}").contains(secret));
+    server.answer_with(
+        400,
+        json!({"code":"VALIDATION_FAILED","message":"the schedule is invalid","retryable":false,
+               "traceId":"e".repeat(32),
+               "details":{"reason":"SCHEDULE_SPEC_INVALID","field":"/action/businessIdPrefix"}}),
+    );
+    let error = schedules
+        .create(NS, &body, keyed("sched-debug-02"))
+        .await
+        .expect_err("refused");
+    assert!(!format!("{error:?}").contains(secret));
+    assert!(!error.to_string().contains(secret));
+}
+
+#[tokio::test]
+async fn a_refused_business_id_prefix_is_the_servers_validation_failed_with_its_schedule_spec_invalid_reason_and_nothing_is_checked_before_it_is_sent()
+ {
+    let server = Recorder::start().await;
+    server.answer_with(
+        400,
+        json!({"code":"VALIDATION_FAILED","message":"the schedule is invalid","retryable":false,
+               "traceId":"e".repeat(32),
+               "details":{"reason":"SCHEDULE_SPEC_INVALID","field":"/action/businessIdPrefix"}}),
+    );
+    let error = server
+        .client()
+        .schedules()
+        .create(
+            NS,
+            &ScheduleWrite::new(
+                "nightly",
+                ScheduleSpec::default(),
+                action_with_business_ids(Some(""), None, None),
+            ),
+            keyed("sched-refuse-01"),
+        )
+        .await
+        .expect_err("the server refuses an empty prefix");
+    assert_eq!(error.code, "VALIDATION_FAILED");
+    assert_eq!(error.status, Some(400));
+    assert_eq!(error.reason(), Some("SCHEDULE_SPEC_INVALID"));
+    // The SDK keeps the server's sub-reason only (SPEC section 2): `details.field` is not carried.
+    assert_eq!(
+        error.details,
+        Box::new(json!({"reason": "SCHEDULE_SPEC_INVALID"}))
+    );
+    assert!(!error.to_string().contains("businessIdPrefix"));
+    // The empty prefix reached the server as the empty string: one request, nothing refused here.
+    assert_eq!(server.only().body()["action"]["businessIdPrefix"], "");
+}
+
+#[tokio::test]
+async fn the_outcomes_and_reasons_of_the_business_id_of_an_action_are_kept_as_the_strings_the_server_sent()
+ {
+    let server = Recorder::start().await;
+    let client = server.client();
+    let schedules = client.schedules();
+    let records = [
+        ("BUSINESS_ID_CONFLICT", "BUSINESS_ID_IN_USE", false),
+        ("BUSINESS_ID_CONFLICT", "BUSINESS_ID_REUSE_REJECTED", false),
+        ("ALREADY_ACTED", "BUSINESS_ID_IN_USE", true),
+    ];
+    let items: Vec<Value> = records
+        .iter()
+        .map(|(outcome, reason, with_run)| {
+            action(json!({
+                "outcome": outcome, "reason": reason, "runId": with_run.then_some(RUN),
+            }))
+        })
+        .collect();
+    server.answer_with(200, json!({"items": items, "nextCursor": null}));
+    let page = schedules
+        .list_actions(
+            NS,
+            SCHEDULE,
+            ScheduleActionFilter {
+                outcome: Some("BUSINESS_ID_CONFLICT".into()),
+                ..ScheduleActionFilter::default()
+            },
+            CallOptions::default(),
+        )
+        .await
+        .expect("actions");
+    assert_eq!(
+        server.only().query(),
+        vec![("outcome".to_owned(), "BUSINESS_ID_CONFLICT".to_owned())]
+    );
+    for (record, (outcome, reason, with_run)) in page.items.iter().zip(records) {
+        assert_eq!(record.outcome, outcome);
+        assert_eq!(record.reason.as_deref(), Some(reason));
+        assert_eq!(
+            record.run_id.map(|id| id.to_string()),
+            with_run.then(|| RUN.to_owned())
+        );
+    }
+    // The same in the description of a schedule, and as the answer of a trigger.
+    let mut described = schedule(json!({}));
+    merge(
+        &mut described,
+        json!({"recentActions": items, "counters": {"BUSINESS_ID_CONFLICT": 2}}),
+    );
+    server.answer_with(200, described);
+    let described = schedules
+        .get(
+            NS,
+            SCHEDULE,
+            ScheduleDescribeOptions::default(),
+            CallOptions::default(),
+        )
+        .await
+        .expect("get");
+    assert_eq!(described.recent_actions[1].outcome, "BUSINESS_ID_CONFLICT");
+    assert_eq!(
+        described.recent_actions[1].reason.as_deref(),
+        Some("BUSINESS_ID_REUSE_REJECTED")
+    );
+    assert_eq!(described.counters["BUSINESS_ID_CONFLICT"], 2);
+    server.answer_with(
+        202,
+        action(json!({"outcome": "ALREADY_ACTED", "reason": "BUSINESS_ID_IN_USE"})),
+    );
+    let triggered = schedules
+        .trigger(NS, SCHEDULE, None, CallOptions::default())
+        .await
+        .expect("trigger");
+    assert_eq!(triggered.outcome, "ALREADY_ACTED");
+    assert_eq!(triggered.reason.as_deref(), Some("BUSINESS_ID_IN_USE"));
+    assert_eq!(
+        triggered.run_id.map(|id| id.to_string()).as_deref(),
+        Some(RUN)
+    );
+}
+
 // ------------------------------------------------------------------------------- business ids
 
 #[tokio::test]

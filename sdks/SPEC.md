@@ -213,6 +213,19 @@ Rules:
   `revision` below 1, and a `resetFrom` without `runId` or with a `sequence` below 1, is the SDK's `PROTOCOL` error, never a run with half of
   it), and an instant keeps the language's native precision (the server writes microseconds). The conformance observation of a `Run` carries the
   two objects only when the run has them, so the observations of every other run are what they were.
+- The action of a schedule may name a business-id prefix (FR-018-016): `businessIdPrefix` (a string), `businessIdConflictPolicy` and
+  `businessIdReusePolicy` (the two policies of `start`), optional on the schedule write (create and update) and on the `action` of what is
+  read back. **Absent means absent**: a write that sets none of them sends none of the three keys (not `null`, not empty), and a schedule whose
+  action has none reads back with none (null, None, nil). The prefix is customer text and is sent **as given**, like a business id: no
+  trimming, no case folding, no local pattern or length check (the platform answers `VALIDATION_FAILED`, reason `SCHEDULE_SPEC_INVALID`, for
+  one that is not 1 to 160 visible ASCII characters and for a policy without a prefix), and it never appears in a log line, a span, a metric
+  label or an error text an SDK writes, nor in the debug text of the types that hold it. The values of the two policies on a read are kept as the
+  string the platform sent. The outcomes of a schedule action record that a prefix can make (`BUSINESS_ID_CONFLICT`; `ALREADY_ACTED` with the
+  `runId` of the run that held the id) and their reasons (`BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`) are kept as raw strings like
+  every other. The observation of a schedule's action carries the three keys **only when the value is present**, so the observations of
+  every schedule without a prefix are what they were.
+- The `businessIdPrefix` of a batch selector's filter (a literal prefix of the id the runs carry, 1 to 200 visible ASCII characters) is sent
+  as given in the same way; the platform counts and selects the runs it matches, and a prefix that matches nothing counts zero.
 - A start delay is a duration in the language's idiom, converted **once**, before the first attempt, to integer
   milliseconds by truncation toward zero and sent as `startDelayMs`. Only a value that is not a finite number is
   refused locally; the range (1 ms to 366 days) is the server's (`START_DELAY_INVALID`).

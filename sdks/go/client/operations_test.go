@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -468,6 +469,203 @@ func TestUpdateCarriesTheRevisionItExpectsInTheBodyDeleteInTheQueryAndBothCarryA
 	if r.method != "DELETE" || r.url != "/v1/namespaces/"+nsID+"/schedules/"+scheduleID+"?expectedRevision=3" || r.headers.Get("Idempotency-Key") != "del-key-0001" || len(r.body) != 0 {
 		t.Errorf("%s %s %v %q", r.method, r.url, r.headers, r.body)
 	}
+}
+
+// ---- the business-id prefix of a schedule's action (FR-018-016)
+
+func TestAScheduleActionWithABusinessIDPrefixSendsTheThreeFieldsAsGivenOnCreateAndOnUpdateAndReadsThemBack(t *testing.T) {
+	prefix := " Order/{x}-é+%20 " // customer text: no trimming, no case folding, no local pattern or length check
+	f := newFake(t)
+	answer := scheduleAnswer(map[string]any{"action": map[string]any{
+		"workflowId": workflowID, "versionPolicy": "ACTIVE", "inputDigest": strings.Repeat("a", 64),
+		"businessIdPrefix": prefix, "businessIdConflictPolicy": "USE_EXISTING", "businessIdReusePolicy": "REJECT_DUPLICATE",
+	}})
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 201, answer) })
+	c := newClient(t, f)
+	write := client.ScheduleWrite{
+		Name: "nightly", Spec: client.ScheduleSpec{Cron: []string{"0 9 * * *"}},
+		Action: client.ScheduleAction{
+			WorkflowID: workflowID, BusinessIDPrefix: &prefix,
+			BusinessIDConflictPolicy: client.BusinessIDUseExisting, BusinessIDReusePolicy: client.BusinessIDRejectDuplicate,
+		},
+	}
+	created, err := c.Schedules.Create(context.Background(), nsID, write, client.WithIdempotencyKey("sched-key-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAction := `{"workflowId":"` + workflowID + `","input":{},"businessIdPrefix":` + mustJSON(t, prefix) +
+		`,"businessIdConflictPolicy":"USE_EXISTING","businessIdReusePolicy":"REJECT_DUPLICATE"}`
+	sameBody(t, only(t, f), `{"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":`+wantAction+`}`)
+	if a := created.Action; a.BusinessIDPrefix != prefix || a.BusinessIDConflictPolicy != "USE_EXISTING" || a.BusinessIDReusePolicy != "REJECT_DUPLICATE" {
+		t.Errorf("%+v", a)
+	}
+	// An update takes the same action document.
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, answer) })
+	updated, err := c.Schedules.Update(context.Background(), nsID, scheduleID, write, 2, client.WithIdempotencyKey("upd-key-0002"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameBody(t, only(t, f), `{"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":`+wantAction+`,"expectedRevision":2}`)
+	if updated.Action.BusinessIDPrefix != prefix {
+		t.Errorf("%+v", updated.Action)
+	}
+}
+
+func TestAScheduleActionThatNamesNoPrefixSendsNoneOfTheThreeFieldsAndReadsNoneBack(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 201, scheduleAnswer(nil)) })
+	c := newClient(t, f)
+	write := client.ScheduleWrite{Name: "nightly", Spec: client.ScheduleSpec{Cron: []string{"0 9 * * *"}}, Action: client.ScheduleAction{WorkflowID: workflowID}}
+	created, err := c.Schedules.Create(context.Background(), nsID, write, client.WithIdempotencyKey("sched-key-3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// sameBody compares member by member: a key that is left out must be absent, never null and never empty.
+	sameBody(t, only(t, f), `{"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":{"workflowId":"`+workflowID+`","input":{}}}`)
+	if a := created.Action; a.BusinessIDPrefix != "" || a.BusinessIDConflictPolicy != "" || a.BusinessIDReusePolicy != "" {
+		t.Errorf("an action with no prefix has none of the three: %+v", a)
+	}
+	// The server writes null for what it has not: the same as absent.
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, scheduleAnswer(map[string]any{"action": map[string]any{
+			"workflowId": workflowID, "inputDigest": strings.Repeat("a", 64), "businessIdPrefix": nil, "businessIdConflictPolicy": nil, "businessIdReusePolicy": nil,
+		}}))
+	})
+	updated, err := c.Schedules.Update(context.Background(), nsID, scheduleID, write, 2, client.WithIdempotencyKey("upd-key-0003"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameBody(t, only(t, f), `{"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":{"workflowId":"`+workflowID+`","input":{}},"expectedRevision":2}`)
+	if a := updated.Action; a.BusinessIDPrefix != "" || a.BusinessIDConflictPolicy != "" || a.BusinessIDReusePolicy != "" {
+		t.Errorf("null is absent: %+v", a)
+	}
+}
+
+func TestAnEmptyPrefixIsSentAsTheEmptyStringAndAPolicyWithoutAPrefixIsSentAsGivenForTheServerToJudge(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 400, map[string]any{
+			"code": "VALIDATION_FAILED", "message": "the schedule is not valid", "retryable": false, "traceId": strings.Repeat("e", 32),
+			"details": map[string]any{"reason": "SCHEDULE_SPEC_INVALID", "field": "/action/businessIdPrefix"},
+		})
+	})
+	c := newClient(t, f)
+	empty := ""
+	write := client.ScheduleWrite{
+		Name: "nightly", Spec: client.ScheduleSpec{Cron: []string{"0 9 * * *"}},
+		Action: client.ScheduleAction{WorkflowID: workflowID, BusinessIDPrefix: &empty},
+	}
+	_, err := c.Schedules.Create(context.Background(), nsID, write, client.WithIdempotencyKey("sched-key-4"))
+	if se := wantCode(t, err, sagat.CodeValidationFailed); se.Reason != "SCHEDULE_SPEC_INVALID" || se.HTTPStatus != 400 {
+		t.Errorf("the server's refusal is read as it is: %+v", se)
+	}
+	sameBody(t, only(t, f), `{"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":{"workflowId":"`+workflowID+`","input":{},"businessIdPrefix":""}}`)
+	// A policy with no prefix is the server's to refuse, not the SDK's.
+	write.Action = client.ScheduleAction{WorkflowID: workflowID, BusinessIDReusePolicy: client.BusinessIDAllowDuplicateFailedOnly}
+	_, _ = c.Schedules.Create(context.Background(), nsID, write, client.WithIdempotencyKey("sched-key-5"))
+	sameBody(t, f.requests()[1], `{"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":{"workflowId":"`+workflowID+`","input":{},"businessIdReusePolicy":"ALLOW_DUPLICATE_FAILED_ONLY"}}`)
+}
+
+func TestAPolicyOfTheActionThatThisSDKDoesNotKnowIsKeptAsTheStringTheServerSentNotAnError(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, scheduleAnswer(map[string]any{"action": map[string]any{
+			"workflowId": workflowID, "inputDigest": strings.Repeat("a", 64),
+			"businessIdPrefix": "p", "businessIdConflictPolicy": "REPLACE", "businessIdReusePolicy": "SOMETHING_NEWER",
+		}}))
+	})
+	c := newClient(t, f)
+	described, err := c.Schedules.Get(context.Background(), nsID, scheduleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := described.Action; a.BusinessIDPrefix != "p" || a.BusinessIDConflictPolicy != "REPLACE" || a.BusinessIDReusePolicy != "SOMETHING_NEWER" {
+		t.Errorf("%+v", a)
+	}
+}
+
+func TestTheOutcomesAndReasonsOfABusinessIDConflictAreKeptAsTheStringsTheServerSent(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, scheduleAnswer(map[string]any{"recentActions": []any{
+			actionAnswer(map[string]any{"outcome": "BUSINESS_ID_CONFLICT", "reason": "BUSINESS_ID_IN_USE", "runId": nil}),
+			actionAnswer(map[string]any{"outcome": "BUSINESS_ID_CONFLICT", "reason": "BUSINESS_ID_REUSE_REJECTED", "runId": nil}),
+			actionAnswer(map[string]any{"outcome": "ALREADY_ACTED", "reason": "BUSINESS_ID_IN_USE"}),
+		}}))
+	})
+	c := newClient(t, f)
+	described, err := c.Schedules.Get(context.Background(), nsID, scheduleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type pair struct{ outcome, reason, runID string }
+	var got []pair
+	for _, a := range described.RecentActions {
+		got = append(got, pair{a.Outcome, a.Reason, a.RunID})
+	}
+	want := []pair{{"BUSINESS_ID_CONFLICT", "BUSINESS_ID_IN_USE", ""}, {"BUSINESS_ID_CONFLICT", "BUSINESS_ID_REUSE_REJECTED", ""}, {"ALREADY_ACTED", "BUSINESS_ID_IN_USE", runUUID}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v want %+v", got, want)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, map[string]any{"items": []any{actionAnswer(map[string]any{"outcome": "BUSINESS_ID_CONFLICT", "reason": "BUSINESS_ID_IN_USE", "runId": nil})}, "nextCursor": nil})
+	})
+	page, err := c.Schedules.ListActions(context.Background(), nsID, scheduleID, client.ScheduleActionFilter{Outcome: "BUSINESS_ID_CONFLICT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Outcome != "BUSINESS_ID_CONFLICT" || page.Items[0].Reason != "BUSINESS_ID_IN_USE" {
+		t.Errorf("%+v", page.Items)
+	}
+	if got := queryOf(t, only(t, f)).Get("outcome"); got != "BUSINESS_ID_CONFLICT" {
+		t.Errorf("an outcome the SDK has no constant for is still a filter: %q", got)
+	}
+}
+
+// The prefix is customer text: the SDK's own log lines and its errors never carry it (sdks/SPEC.md section 10).
+func TestThePrefixOfAnActionNeverReachesALogLineOrAnErrorTheSDKWrites(t *testing.T) {
+	const prefix = "SECRET-PREFIX-4711"
+	var logs strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	f := newFake(t)
+	attempts := 0
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		attempts++
+		switch attempts {
+		case 1:
+			reply(w, 503, "down") // makes the client log that it retries
+		case 2:
+			reply(w, 400, map[string]any{"code": "VALIDATION_FAILED", "message": "the schedule is not valid", "retryable": false, "details": map[string]any{"reason": "SCHEDULE_SPEC_INVALID", "field": "/action/businessIdPrefix"}})
+		default:
+			reply(w, 201, scheduleAnswer(nil))
+		}
+	})
+	c := newClient(t, f, client.WithLogger(logger))
+	p := prefix
+	write := client.ScheduleWrite{Name: "nightly", Spec: client.ScheduleSpec{Cron: []string{"0 9 * * *"}}, Action: client.ScheduleAction{WorkflowID: workflowID, BusinessIDPrefix: &p}}
+	_, err := c.Schedules.Create(context.Background(), nsID, write, client.WithIdempotencyKey("sched-key-6"))
+	if se := wantCode(t, err, sagat.CodeValidationFailed); strings.Contains(se.Error(), prefix) || strings.Contains(fmt.Sprintf("%+v", se), prefix) {
+		t.Errorf("the error carries the prefix: %v", se)
+	}
+	if logs.Len() == 0 {
+		t.Error("the retry was not logged, so the test proves nothing")
+	}
+	if strings.Contains(logs.String(), prefix) {
+		t.Errorf("a log line carries the prefix:\n%s", logs.String())
+	}
+	// Printing the write does not show the text of the prefix (a pointer prints as an address).
+	if strings.Contains(fmt.Sprintf("%v %+v", write, write.Action), prefix) {
+		t.Error("printing the action shows the prefix")
+	}
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func TestAStaleRevisionIsAConflictWithItsReasonAndARevisionThatCannotBeOneIsRefusedBeforeItIsSent(t *testing.T) {

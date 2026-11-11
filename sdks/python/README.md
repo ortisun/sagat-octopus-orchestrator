@@ -138,6 +138,17 @@ await client.reset(run.run_id, sequence=points.items[0].sequence, reason="start 
 * A business identifier is sent as given (no trimming, no case folding). `business_ids.get` percent-encodes it and
   refuses locally only a value that is not 1 to 200 visible ASCII characters, and `.` or `..` alone (a whole dot
   segment is a step in the path for every URL resolver, `%2E` too); `...` and `a..b` are valid.
+* A schedule's action can name a business-id prefix, so that every run it starts gets the identifier
+  `<prefix>-<nominal time>` (RFC 3339 in UTC to the second): `ScheduleAction(workflow_id=..., input=...,
+  business_id_prefix="order", business_id_conflict_policy="USE_EXISTING", business_id_reuse_policy="REJECT_DUPLICATE")`.
+  Both policies are optional and only mean something with a prefix (the server's defaults are `FAIL` and
+  `ALLOW_DUPLICATE`). The prefix is customer text, sent as given (no trimming, no case folding, no local check, the empty
+  string included: the server answers `VALIDATION_FAILED` with the reason `SCHEDULE_SPEC_INVALID`) and left out of the
+  `repr` of the write and of what is read back. `schedule.action.business_id_prefix`, `.business_id_conflict_policy` and
+  `.business_id_reuse_policy` are what the server sent as the strings it sent (a policy newer than this SDK is kept
+  as is), and `None` for an action that has no prefix; an action that sets none of the three sends none of the three
+  keys. An action record may now say `BUSINESS_ID_CONFLICT` (reason `BUSINESS_ID_IN_USE` or
+  `BUSINESS_ID_REUSE_REJECTED`) or `ALREADY_ACTED` with the `run_id` of the holder: like every outcome, a string.
 * An instant you send (`start_at`, `end_at`, a backfill range, `created_after`) is an aware `datetime` or RFC 3339 text
   with an offset and goes out in UTC (`Z`); a naive `datetime` or text without an offset is `VALIDATION_FAILED`
   because the SDK never guesses a local offset. An instant you read is an aware `datetime` in UTC.

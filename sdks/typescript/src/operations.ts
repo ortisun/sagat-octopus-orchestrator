@@ -121,6 +121,18 @@ export interface ScheduleAction {
   input: Record<string, unknown>;
   nominalTimeField?: string;
   runTimeoutMs?: number;
+  /**
+   * Every run of the schedule is started under the business id `<prefix>-<nominal time>` (RFC 3339 in UTC to the
+   * second, ending in `Z`). Customer text, sent as given: no trimming, no case folding, no local check of the pattern
+   * (1 to 160 visible ASCII characters) or the length; the server refuses what is not valid with `VALIDATION_FAILED`
+   * (`reason` `SCHEDULE_SPEC_INVALID`). The empty string is sent as the empty string. It is never logged by the SDK.
+   * Absent (or `undefined`) means the schedule has none, and then neither policy below is sent.
+   */
+  businessIdPrefix?: string;
+  /** Only with a prefix. What an action does when an open run holds the id; the server's default is `FAIL`. */
+  businessIdConflictPolicy?: BusinessIdConflictPolicy;
+  /** Only with a prefix. What an action does when a closed run still remembers the id; the server's default is `ALLOW_DUPLICATE`. */
+  businessIdReusePolicy?: BusinessIdReusePolicy;
 }
 
 /** What a schedule is written as (`createSchedule`, `updateSchedule`). */
@@ -142,7 +154,15 @@ export interface Schedule {
   revision: number;
   exhausted: boolean;
   /** The action as the server keeps it: without the input, with its digest. */
-  action: { workflowId: string | null; versionPolicy: string | null; versionId: string | null; inputDigest: string | null; nominalTimeField: string | null; runTimeoutMs: number | null };
+  action: {
+    workflowId: string | null; versionPolicy: string | null; versionId: string | null; inputDigest: string | null; nominalTimeField: string | null; runTimeoutMs: number | null;
+    /** The business-id prefix of the action (customer text), or null when the schedule has none. */
+    businessIdPrefix: string | null;
+    /** As the server sent it (`FAIL` or `USE_EXISTING` today, another string when the server is newer); null without a prefix. */
+    businessIdConflictPolicy: string | null;
+    /** As the server sent it (`ALLOW_DUPLICATE`, `ALLOW_DUPLICATE_FAILED_ONLY` or `REJECT_DUPLICATE` today); null without a prefix. */
+    businessIdReusePolicy: string | null;
+  };
   note: string | null;
   noteBy: string | null;
   remainingActions: number | null;
@@ -220,6 +240,8 @@ function toSchedule(value: unknown): Schedule {
       workflowId: optStr(action, 'workflowId'), versionPolicy: optStr(action, 'versionPolicy'), versionId: optStr(action, 'versionId'),
       inputDigest: optStr(action, 'inputDigest'), nominalTimeField: optStr(action, 'nominalTimeField'),
       runTimeoutMs: typeof action['runTimeoutMs'] === 'number' ? action['runTimeoutMs'] : null,
+      businessIdPrefix: optStr(action, 'businessIdPrefix'), businessIdConflictPolicy: optStr(action, 'businessIdConflictPolicy'),
+      businessIdReusePolicy: optStr(action, 'businessIdReusePolicy'),
     },
     note: optStr(raw, 'note'),
     noteBy: optStr(raw, 'noteBy'),
@@ -283,13 +305,23 @@ function toBackfill(value: unknown): ScheduleBackfill {
   };
 }
 
+/** The three optional keys of an action that name a business id: a key that is set to nothing is not sent. */
+const BUSINESS_ID_KEYS = ['businessIdPrefix', 'businessIdConflictPolicy', 'businessIdReusePolicy'] as const;
+
 /** The write of a schedule on the wire: the instants of the spec are sent as `Z` instants. */
 function scheduleBody(write: ScheduleWrite): Record<string, unknown> {
   if (write === null || typeof write !== 'object') throw invalid('a schedule is an object');
   const spec: Record<string, unknown> = { ...write.spec };
   if (write.spec?.startAt !== undefined) spec['startAt'] = when(write.spec.startAt, 'startAt');
   if (write.spec?.endAt !== undefined) spec['endAt'] = when(write.spec.endAt, 'endAt');
-  return { ...write, spec };
+  const body: Record<string, unknown> = { ...write, spec };
+  if (write.action !== null && typeof write.action === 'object') {
+    // Absent is absent: neither null nor an empty key. The prefix itself (even the empty string) goes as the caller gave it.
+    const action: Record<string, unknown> = { ...write.action };
+    for (const name of BUSINESS_ID_KEYS) if (action[name] === undefined || action[name] === null) delete action[name];
+    body['action'] = action;
+  }
+  return body;
 }
 
 export class Schedules {

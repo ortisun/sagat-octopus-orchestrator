@@ -12,4 +12,13 @@ import java.util.List;
  * @param raw        the answer as sent
  * @param <T>        the type of the items
  */
-public record Page<T>(List<T> items, String nextCursor, JsonNode raw) {}
+public record Page<T>(List<T> items, String nextCursor, JsonNode raw) {
+    /**
+     * The debug text of a page: its items (each prints itself) and the cursor. {@code raw} is left out: it repeats every
+     * item as sent, and an item may carry customer text that its own text hides (the business-id prefix of a schedule).
+     */
+    @Override
+    public String toString() {
+        return "Page[items=" + items + ", nextCursor=" + nextCursor + "]";
+    }
+}

@@ -445,6 +445,9 @@ public final class ScheduleWrite {
         private String versionId;
         private String nominalTimeField;
         private Long runTimeoutMs;
+        private String businessIdPrefix;
+        private String businessIdConflictPolicy;
+        private String businessIdReusePolicy;
 
         private Action(String workflowId, Object input) {
             this.workflowId = workflowId;
@@ -484,6 +487,45 @@ public final class ScheduleWrite {
             return this;
         }
 
+        /**
+         * Gives every run the schedule starts the business identifier {@code <prefix>-<nominal time>} (the nominal time
+         * in RFC 3339, UTC, to the second, with a {@code Z}). The prefix is customer text and is sent as given: no
+         * trimming, no case folding and no check of its pattern or length (the server wants 1 to 160 visible ASCII
+         * characters and answers {@code VALIDATION_FAILED}, reason {@code SCHEDULE_SPEC_INVALID}); the empty string is
+         * sent as the empty string. Unset is left out of the request. The SDK never writes it to a log, a span or a
+         * message, and {@code toString} of this holder does not print it.
+         */
+        public Action businessIdPrefix(String value) {
+            this.businessIdPrefix = value;
+            return this;
+        }
+
+        /**
+         * What to do when an open execution already holds the identifier of a run the schedule would start: one of
+         * {@link BusinessIdConflictPolicy}, sent as given. Only meaningful with a prefix; unset is the server's default
+         * ({@code FAIL}) and is left out of the request.
+         */
+        public Action businessIdConflictPolicy(String value) {
+            this.businessIdConflictPolicy = value;
+            return this;
+        }
+
+        /**
+         * What to do when a closed execution still remembers that identifier: one of {@link BusinessIdReusePolicy},
+         * sent as given. Only meaningful with a prefix; unset is the server's default ({@code ALLOW_DUPLICATE}) and is
+         * left out of the request.
+         */
+        public Action businessIdReusePolicy(String value) {
+            this.businessIdReusePolicy = value;
+            return this;
+        }
+
+        /** The workflow only: the input and the business-id prefix are customer content and are never printed. */
+        @Override
+        public String toString() {
+            return "ScheduleWrite.Action[workflowId=" + workflowId + "]";
+        }
+
         ObjectNode toJson() {
             if (workflowId == null) {
                 throw SagatException.invalid("the action of a schedule names a workflow");
@@ -503,6 +545,15 @@ public final class ScheduleWrite {
             }
             if (runTimeoutMs != null) {
                 out.put("runTimeoutMs", runTimeoutMs.longValue());
+            }
+            if (businessIdPrefix != null) {
+                out.put("businessIdPrefix", businessIdPrefix);
+            }
+            if (businessIdConflictPolicy != null) {
+                out.put("businessIdConflictPolicy", businessIdConflictPolicy);
+            }
+            if (businessIdReusePolicy != null) {
+                out.put("businessIdReusePolicy", businessIdReusePolicy);
             }
             return out;
         }

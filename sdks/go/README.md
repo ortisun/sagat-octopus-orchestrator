@@ -125,6 +125,20 @@ An enumerated value in an answer (`Outcome`, `State`, `Kind`, an item `Reason`..
 this SDK does not know is never an error. Every typed answer keeps the JSON object it was read from in `Raw`. An
 instant or a string the server sent as null is the zero value; a number that can be null is a pointer.
 
+A schedule's action may name a business-id prefix: every run it starts gets the business id `<prefix>-<nominal time>`.
+The prefix is customer text and is sent as given (a `*string`: nil sends none of the three fields, a pointer to the
+empty string sends the empty string, and the server judges it); the two policies are optional and use the types of
+`WithBusinessIDConflictPolicy` and `WithBusinessIDReusePolicy`. On a read the three are strings, empty when the
+action has none.
+
+```go
+prefix := "order"
+s, err := c.Schedules.Create(ctx, nsID, client.ScheduleWrite{Name: "nightly", Spec: spec, Action: client.ScheduleAction{
+	WorkflowID: wf, BusinessIDPrefix: &prefix, BusinessIDConflictPolicy: client.BusinessIDUseExisting,
+}})
+fmt.Println(s.Action.BusinessIDPrefix, s.Action.BusinessIDConflictPolicy, s.Action.BusinessIDReusePolicy) // order USE_EXISTING ALLOW_DUPLICATE
+```
+
 A token is a `sagat.TokenSource`: `sagat.StaticToken(s)`, or `sagat.TokenFunc(func(ctx) (string, error))`,
 asked before every request so a rotated token is used at once. The tenant is never configured: it is the
 token's.

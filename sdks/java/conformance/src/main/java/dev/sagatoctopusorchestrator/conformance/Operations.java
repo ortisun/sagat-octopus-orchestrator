@@ -234,6 +234,10 @@ final class Operations {
         putText(action, "inputDigest", s.action().inputDigest());
         putText(action, "nominalTimeField", s.action().nominalTimeField());
         putNumber(action, "runTimeoutMs", s.action().runTimeoutMs());
+        // Only when the action has them: the observation of every schedule without a prefix is what it was.
+        if (s.action().businessIdPrefix() != null) action.put("businessIdPrefix", s.action().businessIdPrefix());
+        if (s.action().businessIdConflictPolicy() != null) action.put("businessIdConflictPolicy", s.action().businessIdConflictPolicy());
+        if (s.action().businessIdReusePolicy() != null) action.put("businessIdReusePolicy", s.action().businessIdReusePolicy());
         putText(out, "note", s.note());
         putText(out, "noteBy", s.noteBy());
         putNumber(out, "remainingActions", s.remainingActions());
@@ -416,12 +420,17 @@ final class Operations {
         }
 
         JsonNode action = node.path("action");
-        known(action, "action", "workflowId", "versionPolicy", "versionId", "input", "nominalTimeField", "runTimeoutMs");
+        known(action, "action", "workflowId", "versionPolicy", "versionId", "input", "nominalTimeField", "runTimeoutMs",
+                "businessIdPrefix", "businessIdConflictPolicy", "businessIdReusePolicy");
         ScheduleWrite.Action a = ScheduleWrite.Action.of(text(action, "workflowId"), action.get("input"));
         if (action.has("versionPolicy")) a.versionPolicy(action.get("versionPolicy").asText());
         if (action.has("versionId")) a.versionId(action.get("versionId").asText());
         if (action.has("nominalTimeField")) a.nominalTimeField(action.get("nominalTimeField").asText());
         if (action.has("runTimeoutMs")) a.runTimeoutMs(action.get("runTimeoutMs").asLong());
+        // The prefix is customer text, handed over as the scenario holds it (the empty string included): the SDK sends it as given.
+        if (action.has("businessIdPrefix")) a.businessIdPrefix(action.get("businessIdPrefix").asText());
+        if (action.has("businessIdConflictPolicy")) a.businessIdConflictPolicy(action.get("businessIdConflictPolicy").asText());
+        if (action.has("businessIdReusePolicy")) a.businessIdReusePolicy(action.get("businessIdReusePolicy").asText());
 
         ScheduleWrite write = ScheduleWrite.of(text(node, "name"), s, a);
         if (node.has("policies")) {

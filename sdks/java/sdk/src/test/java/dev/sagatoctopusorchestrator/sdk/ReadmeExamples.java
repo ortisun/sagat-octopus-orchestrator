@@ -70,6 +70,15 @@ final class ReadmeExamples {
             System.out.println(described.counters() + " " + described.nextActions());
             client.schedules().delete(namespaceId, schedule.scheduleId(), schedule.revision(), null);
 
+            // A schedule whose runs get the business identifier "<prefix>-<nominal time>" (RFC 3339 UTC to the second, "Z").
+            Schedule orders = client.schedules().create(namespaceId, ScheduleWrite.of("hourly-orders",
+                    ScheduleWrite.Spec.create().cron("0 * * * *").timezone("UTC"),
+                    ScheduleWrite.Action.of(workflowId, Map.of("kind", "hourly")).businessIdPrefix("orders")
+                            .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
+                            .businessIdReusePolicy(BusinessIdReusePolicy.REJECT_DUPLICATE)), null);
+            System.out.println(orders.action().businessIdPrefix() + " " + orders.action().businessIdConflictPolicy()
+                    + " " + orders.action().businessIdReusePolicy()); // orders USE_EXISTING REJECT_DUPLICATE
+
             // A batch job over many runs; the same key and body answer the first job.
             BatchJob job = client.batch().create(namespaceId, BatchRequest.of(
                     BatchSelector.runIds(List.of(order.runId())), "CANCEL", "clean up the held runs"),

@@ -159,7 +159,7 @@ fn cursor(next: &Option<String>) -> Value {
 }
 
 fn schedule_json(s: &Schedule) -> Value {
-    json!({
+    let mut out = json!({
         "scheduleId": s.schedule_id, "name": s.name, "origin": s.origin, "state": s.state,
         "revision": s.revision, "exhausted": s.exhausted,
         "action": {
@@ -170,7 +170,22 @@ fn schedule_json(s: &Schedule) -> Value {
         "note": s.note, "noteBy": s.note_by, "remainingActions": s.remaining_actions,
         "nextActionEpochMs": epoch(s.next_action_at),
         "createdAt": instant(Some(s.created_at)), "updatedAt": instant(s.updated_at),
-    })
+    });
+    // The business-id fields of the action are printed only when the typed value is present, so
+    // the observation of a schedule without them is what it always was.
+    for (key, value) in [
+        ("businessIdPrefix", &s.action.business_id_prefix),
+        (
+            "businessIdConflictPolicy",
+            &s.action.business_id_conflict_policy,
+        ),
+        ("businessIdReusePolicy", &s.action.business_id_reuse_policy),
+    ] {
+        if let Some(value) = value {
+            out["action"][key] = json!(value);
+        }
+    }
+    out
 }
 fn action_json(a: &ScheduleActionRecord) -> Value {
     json!({
@@ -734,3 +749,6 @@ pub(super) async fn play(
         _ => return Err(invalid("a scenario operation is not implemented")),
     }))
 }
+
+#[cfg(test)]
+mod tests;

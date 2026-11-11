@@ -503,6 +503,9 @@ internal sealed partial class RunMode
         Input = action["input"]?.DeepClone() ?? new JsonObject(),
         NominalTimeField = (string?)action["nominalTimeField"],
         RunTimeoutMs = (long?)action["runTimeoutMs"],
+        BusinessIdPrefix = (string?)action["businessIdPrefix"],
+        BusinessIdConflictPolicy = (string?)action["businessIdConflictPolicy"],
+        BusinessIdReusePolicy = (string?)action["businessIdReusePolicy"],
     };
 
     private static BatchSelector SelectorOf(JsonObject selector)
@@ -555,6 +558,36 @@ internal sealed partial class RunMode
     private static JsonNode? Node(JsonElement element) =>
         element.ValueKind == JsonValueKind.Undefined ? null : JsonNode.Parse(element.GetRawText());
 
+    /// <summary>The action of a schedule as the runner prints it. The three business-id keys are there only when the SDK read them, so that what it printed before they existed is unchanged.</summary>
+    private static JsonObject ScheduleActionJson(ScheduleActionSummary action)
+    {
+        var observed = new JsonObject
+        {
+            ["workflowId"] = action.WorkflowId,
+            ["versionPolicy"] = action.VersionPolicy,
+            ["versionId"] = action.VersionId,
+            ["inputDigest"] = action.InputDigest,
+            ["nominalTimeField"] = action.NominalTimeField,
+            ["runTimeoutMs"] = action.RunTimeoutMs,
+        };
+        if (action.BusinessIdPrefix is not null)
+        {
+            observed["businessIdPrefix"] = action.BusinessIdPrefix;
+        }
+
+        if (action.BusinessIdConflictPolicy is not null)
+        {
+            observed["businessIdConflictPolicy"] = action.BusinessIdConflictPolicy;
+        }
+
+        if (action.BusinessIdReusePolicy is not null)
+        {
+            observed["businessIdReusePolicy"] = action.BusinessIdReusePolicy;
+        }
+
+        return observed;
+    }
+
     private static JsonObject ScheduleJson(Schedule schedule) => new()
     {
         ["scheduleId"] = schedule.ScheduleId,
@@ -563,15 +596,7 @@ internal sealed partial class RunMode
         ["state"] = schedule.State,
         ["revision"] = schedule.Revision,
         ["exhausted"] = schedule.Exhausted,
-        ["action"] = new JsonObject
-        {
-            ["workflowId"] = schedule.Action.WorkflowId,
-            ["versionPolicy"] = schedule.Action.VersionPolicy,
-            ["versionId"] = schedule.Action.VersionId,
-            ["inputDigest"] = schedule.Action.InputDigest,
-            ["nominalTimeField"] = schedule.Action.NominalTimeField,
-            ["runTimeoutMs"] = schedule.Action.RunTimeoutMs,
-        },
+        ["action"] = ScheduleActionJson(schedule.Action),
         ["note"] = schedule.Note,
         ["noteBy"] = schedule.NoteBy,
         ["remainingActions"] = schedule.RemainingActions,

@@ -628,9 +628,230 @@
         "versionId": "<uuid:9>",
         "workflowId": "<uuid:1>"
       }
+    },
+    {
+      "id": "prefixed",
+      "ok": true,
+      "op": "scheduleCreate",
+      "result": {
+        "action": {
+          "businessIdConflictPolicy": "USE_EXISTING",
+          "businessIdPrefix": "biz-{{unique}}",
+          "businessIdReusePolicy": "ALLOW_DUPLICATE_FAILED_ONLY",
+          "inputDigest": "783831582efb9f2ecea5d40293f99d71a897fefde355e7dcb6076b74d4f4b7a7",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-prefixed-{{unique}}",
+        "nextActionEpochMs": null,
+        "note": null,
+        "noteBy": null,
+        "origin": "API",
+        "remainingActions": null,
+        "revision": 1,
+        "scheduleId": "<uuid:10>",
+        "state": "PAUSED",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "prefixed-defaults",
+      "ok": true,
+      "op": "scheduleCreate",
+      "result": {
+        "action": {
+          "businessIdConflictPolicy": "FAIL",
+          "businessIdPrefix": "dflt-{{unique}}",
+          "businessIdReusePolicy": "ALLOW_DUPLICATE",
+          "inputDigest": "b2762a4fc7aa43a0a5ba0b599eaa27364d84fe85f09addea918fde5453514fa6",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-prefixed-defaults-{{unique}}",
+        "nextActionEpochMs": null,
+        "note": null,
+        "noteBy": null,
+        "origin": "API",
+        "remainingActions": null,
+        "revision": 1,
+        "scheduleId": "<uuid:11>",
+        "state": "PAUSED",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "SCHEDULE_SPEC_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:6>"
+      },
+      "id": "prefixed-invalid",
+      "ok": false,
+      "op": "scheduleCreate"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "SCHEDULE_SPEC_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:7>"
+      },
+      "id": "prefixed-policy-only",
+      "ok": false,
+      "op": "scheduleCreate"
+    },
+    {
+      "id": "prefixed-trigger",
+      "ok": true,
+      "op": "scheduleTrigger",
+      "result": {
+        "actualTime": "<time>",
+        "backfillId": null,
+        "decidedAt": "<time>",
+        "kind": "TRIGGERED",
+        "nominalTime": "<time>",
+        "origin": "MANUAL",
+        "outcome": "STARTED",
+        "reason": null,
+        "revision": 1,
+        "runId": "<uuid:12>",
+        "summaryCount": null,
+        "summaryLastNominalTime": null
+      }
+    },
+    {
+      "id": "prefixed-get",
+      "ok": true,
+      "op": "scheduleGet",
+      "result": {
+        "action": {
+          "businessIdConflictPolicy": "USE_EXISTING",
+          "businessIdPrefix": "biz-{{unique}}",
+          "businessIdReusePolicy": "ALLOW_DUPLICATE_FAILED_ONLY",
+          "inputDigest": "783831582efb9f2ecea5d40293f99d71a897fefde355e7dcb6076b74d4f4b7a7",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "bufferedCount": 0,
+        "counters": {
+          "STARTED": 1
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "operate-prefixed-{{unique}}",
+        "nextActionEpochMs": null,
+        "nextActions": [],
+        "note": null,
+        "noteBy": null,
+        "openRuns": [
+          "<uuid:12>"
+        ],
+        "origin": "API",
+        "recentActions": [
+          {
+            "actualTime": "<time>",
+            "backfillId": null,
+            "decidedAt": "<time>",
+            "kind": "TRIGGERED",
+            "nominalTime": "<time>",
+            "origin": "MANUAL",
+            "outcome": "STARTED",
+            "reason": null,
+            "revision": 1,
+            "runId": "<uuid:12>",
+            "summaryCount": null,
+            "summaryLastNominalTime": null
+          }
+        ],
+        "remainingActions": null,
+        "revision": 1,
+        "scheduleId": "<uuid:10>",
+        "state": "PAUSED",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "prefixed-run",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "businessId": "biz-{{unique}}-<time>",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:12>",
+        "schedule": {
+          "kind": "TRIGGERED",
+          "nominalTime": "<time>",
+          "revision": 1,
+          "scheduleId": "<uuid:10>"
+        },
+        "startedBy": "system:schedule:<uuid:10>",
+        "status": "RUNNING",
+        "traceId": "<trace:8>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:9>",
+        "workflowId": "<uuid:1>"
+      }
     }
   ],
   "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "work",
+          "kind": "FORWARD",
+          "status": "READY",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:12>",
+      "status": "RUNNING"
+    },
     {
       "nodes": [
         {

@@ -52,7 +52,11 @@ call created it. Every call that changes something carries one `Idempotency-Key`
 `CallOptions` or generated once, that every retry keeps. Instants you send are a date-time or RFC 3339
 text (`Moment`) and are written in UTC; values of an enumeration the SDK does not know stay as the raw
 string (`Other`), never an error. A start with an input blob takes neither a business identifier nor a
-delay.
+delay. The action of a schedule may carry a business-id prefix and its two policies
+(`business_id_prefix`, `business_id_conflict_policy`, `business_id_reuse_policy`): each run the
+schedule starts is under `<prefix>-<nominal time>`, the prefix is customer text that is sent as given
+and never printed by a `Debug`, and a schedule read back has the three as the server sent them, or
+`None`.
 
 ```rust,no_run
 use sagat_octopus_orchestrator_sdk::{
@@ -80,11 +84,16 @@ async fn operations(client: &Client, namespace_id: &str) -> Result<(), Box<dyn s
         timezone: Some("UTC".into()),
         ..ScheduleSpec::default()
     };
-    let action = ScheduleAction::new("019b5d6e-0000-7000-8000-000000000002", json!({}));
+    let mut action = ScheduleAction::new("019b5d6e-0000-7000-8000-000000000002", json!({}));
+    // Every run the schedule starts gets the business id `nightly-<nominal time>`.
+    action.business_id_prefix = Some("nightly".into());
+    action.business_id_conflict_policy = Some(BusinessIdConflictPolicy::UseExisting);
     let schedule = client
         .schedules()
         .create(namespace_id, &ScheduleWrite::new("nightly", spec, action), CallOptions::default())
         .await?;
+    // Read back as the server sent it: `None` for a schedule whose action has no prefix.
+    println!("{:?}", schedule.action.business_id_prefix);
     client
         .schedules()
         .trigger(

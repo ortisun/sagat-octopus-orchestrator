@@ -25,6 +25,14 @@ public record ScheduleDescription(
         Map<String, Long> counters,
         JsonNode raw) {
 
+    /** The debug text of a description: every component, the business-id prefix of the action (customer text) hidden. */
+    @Override
+    public String toString() {
+        return "ScheduleDescription[schedule=" + schedule + ", nextActions=" + nextActions + ", recentActions=" + recentActions
+                + ", openRuns=" + openRuns + ", bufferedCount=" + bufferedCount + ", counters=" + counters
+                + ", raw=" + Schedule.printable(raw) + "]";
+    }
+
     /** A time the schedule will act at. */
     public record NextAction(Instant nominalTime, Instant actualTime) {}
 

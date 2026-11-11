@@ -183,13 +183,26 @@ func cursorJSON(next string) any {
 	return "<cursor>"
 }
 
+// scheduleActionJSON is the action of a schedule as observed. The three business-id members are printed only
+// when the server's action has them, so the observation of every action without a prefix is what it was.
+func scheduleActionJSON(a *client.ScheduleActionInfo) object {
+	out := object{
+		"workflowId": orNull(a.WorkflowID), "versionPolicy": orNull(a.VersionPolicy), "versionId": orNull(a.VersionID),
+		"inputDigest": orNull(a.InputDigest), "nominalTimeField": orNull(a.NominalTimeField), "runTimeoutMs": nullable(a.RunTimeoutMs),
+	}
+	for name, value := range map[string]string{
+		"businessIdPrefix": a.BusinessIDPrefix, "businessIdConflictPolicy": a.BusinessIDConflictPolicy, "businessIdReusePolicy": a.BusinessIDReusePolicy,
+	} {
+		if value != "" {
+			out[name] = value
+		}
+	}
+	return out
+}
+
 func scheduleJSON(s *client.Schedule) object {
 	return object{
-		"scheduleId": s.ScheduleID, "name": s.Name, "origin": s.Origin, "state": s.State, "revision": s.Revision, "exhausted": s.Exhausted,
-		"action": object{
-			"workflowId": orNull(s.Action.WorkflowID), "versionPolicy": orNull(s.Action.VersionPolicy), "versionId": orNull(s.Action.VersionID),
-			"inputDigest": orNull(s.Action.InputDigest), "nominalTimeField": orNull(s.Action.NominalTimeField), "runTimeoutMs": nullable(s.Action.RunTimeoutMs),
-		},
+		"scheduleId": s.ScheduleID, "name": s.Name, "origin": s.Origin, "state": s.State, "revision": s.Revision, "exhausted": s.Exhausted, "action": scheduleActionJSON(&s.Action),
 		"note": orNull(s.Note), "noteBy": orNull(s.NoteBy), "remainingActions": nullable(s.RemainingActions), "nextActionEpochMs": epoch(s.NextActionAt),
 		"createdAt": iso(s.CreatedAt), "updatedAt": iso(s.UpdatedAt),
 	}

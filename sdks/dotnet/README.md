@@ -87,6 +87,15 @@ var binding = await sagat.BusinessIds.GetAsync(namespaceId, "order-o-1");   // 1
   `TriggerAsync`, `BackfillAsync`, `CancelBackfillAsync`, `ListBackfillsAsync`, `ListActionsAsync`), `sagat.Batch` (`PreviewAsync`, `CreateAsync`,
   `GetAsync`, `ListAsync`, `CancelAsync`, `ListItemsAsync`) and `sagat.BusinessIds`. Ids that become path segments (a namespace, a schedule, a batch
   job, a backfill, a reset, a run) must be UUIDs; a revision is at least 1; a note is not empty: anything else is `ValidationFailed` and nothing is sent.
+- A schedule's action can name a business-id prefix, so that every run it starts gets the business id `<prefix>-<nominal time>` (RFC 3339 in UTC,
+  to the second): `new ScheduleAction { WorkflowId = wf, Input = input, BusinessIdPrefix = "order", BusinessIdConflictPolicy = BusinessIdConflictPolicies.UseExisting,
+  BusinessIdReusePolicy = BusinessIdReusePolicies.RejectDuplicate }`. Both policies are optional and mean something only with a prefix (the server's defaults are
+  `FAIL` and `ALLOW_DUPLICATE`). The prefix is customer text, sent as given (no trimming, no case folding, no local check, the empty string included: the
+  server answers `ValidationFailed` with `Reason` `SCHEDULE_SPEC_INVALID`) and left out of the text `ToString` makes of the write and of what is read back
+  (so is `Schedule.Raw`, which holds it). `schedule.Action.BusinessIdPrefix`, `.BusinessIdConflictPolicy` and `.BusinessIdReusePolicy` are the strings the
+  server sent (a policy newer than this SDK is kept as is) and `null` for an action that has no prefix; an action that sets none of the three sends none of the
+  three keys, and an update without a prefix leaves the schedule without one. An action record may say `BUSINESS_ID_CONFLICT` (reason `BUSINESS_ID_IN_USE` or
+  `BUSINESS_ID_REUSE_REJECTED`) or `ALREADY_ACTED` with the `RunId` of the holder: like every outcome, a string.
 - Every call that changes something carries one `Idempotency-Key`: `RequestOptions.IdempotencyKey`, or one generated for the call and kept by every
   retry of it. `UpdateWithStartAsync` also needs the caller's `updateKey` (1 to 128 printable ASCII characters). A refusal of the update's validator
   is an answer (`Update.Outcome` is `REJECTED`), not an exception.

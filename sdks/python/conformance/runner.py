@@ -51,6 +51,7 @@ from sagat_octopus_orchestrator import (
     Schedule,
     ScheduleAction,
     ScheduleActionRecord,
+    ScheduleActionSummary,
     ScheduleBackfill,
     ScheduleCalendarSpec,
     ScheduleDescription,
@@ -368,8 +369,28 @@ def numbers(values: Any) -> Obj:
     return {name: number(count) for name, count in values.items()}
 
 
+def schedule_action_json(action: ScheduleActionSummary) -> Obj:
+    observed: Obj = {
+        "workflowId": action.workflow_id,
+        "versionPolicy": action.version_policy,
+        "versionId": action.version_id,
+        "inputDigest": action.input_digest,
+        "nominalTimeField": action.nominal_time_field,
+        "runTimeoutMs": number(action.run_timeout_ms),
+    }
+    # The business-id prefix and its two policies only when the action has them, so that the observation of every
+    # other schedule is what it was.
+    for key, held in (
+        ("businessIdPrefix", action.business_id_prefix),
+        ("businessIdConflictPolicy", action.business_id_conflict_policy),
+        ("businessIdReusePolicy", action.business_id_reuse_policy),
+    ):
+        if held is not None:
+            observed[key] = held
+    return observed
+
+
 def schedule_json(schedule: Schedule) -> Obj:
-    action = schedule.action
     return {
         "scheduleId": schedule.schedule_id,
         "name": schedule.name,
@@ -377,14 +398,7 @@ def schedule_json(schedule: Schedule) -> Obj:
         "state": schedule.state,
         "revision": schedule.revision,
         "exhausted": schedule.exhausted,
-        "action": {
-            "workflowId": action.workflow_id,
-            "versionPolicy": action.version_policy,
-            "versionId": action.version_id,
-            "inputDigest": action.input_digest,
-            "nominalTimeField": action.nominal_time_field,
-            "runTimeoutMs": number(action.run_timeout_ms),
-        },
+        "action": schedule_action_json(schedule.action),
         "note": schedule.note,
         "noteBy": schedule.note_by,
         "remainingActions": number(schedule.remaining_actions),
@@ -545,6 +559,9 @@ def write_of(raw: Obj) -> ScheduleWrite:
             version_id=action.get("versionId"),
             nominal_time_field=action.get("nominalTimeField"),
             run_timeout_ms=action.get("runTimeoutMs"),
+            business_id_prefix=action.get("businessIdPrefix"),
+            business_id_conflict_policy=action.get("businessIdConflictPolicy"),
+            business_id_reuse_policy=action.get("businessIdReusePolicy"),
         ),
         policies=(
             SchedulePolicies(

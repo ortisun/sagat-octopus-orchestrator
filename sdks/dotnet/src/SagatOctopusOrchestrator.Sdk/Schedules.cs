@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using SagatOctopusOrchestrator.Sdk.Internal;
@@ -139,6 +140,28 @@ public sealed record ScheduleAction
 
     /// <summary>The timeout of every run, in milliseconds.</summary>
     public long? RunTimeoutMs { get; init; }
+
+    /// <summary>
+    /// The business-id prefix of the action: every run the schedule starts gets the business id <c>&lt;prefix&gt;-&lt;nominal time&gt;</c> (RFC 3339 UTC, to the second).
+    /// Customer text, sent as given: not trimmed, not folded, not checked here (the server refuses what it is not with <c>VALIDATION_FAILED</c>, reason
+    /// <c>SCHEDULE_SPEC_INVALID</c>, field <c>/action/businessIdPrefix</c>). It is left out of the text this type prints.
+    /// </summary>
+    public string? BusinessIdPrefix { get; init; }
+
+    /// <summary>What a run does when an open execution holds its business id: see <see cref="BusinessIdConflictPolicies"/> (<c>FAIL</c> by default). Only with a prefix.</summary>
+    public string? BusinessIdConflictPolicy { get; init; }
+
+    /// <summary>What a run does when a closed execution remembers its business id: see <see cref="BusinessIdReusePolicies"/> (<c>ALLOW_DUPLICATE</c> by default). Only with a prefix.</summary>
+    public string? BusinessIdReusePolicy { get; init; }
+
+    // The text a record prints holds every member; the prefix is customer text and never appears in a text the SDK makes (SPEC section 10).
+    private bool PrintMembers(System.Text.StringBuilder builder)
+    {
+        builder.Append(
+            CultureInfo.InvariantCulture,
+            $"WorkflowId = {WorkflowId}, VersionPolicy = {VersionPolicy}, VersionId = {VersionId}, Input = {Input}, NominalTimeField = {NominalTimeField}, RunTimeoutMs = {RunTimeoutMs}, BusinessIdConflictPolicy = {BusinessIdConflictPolicy}, BusinessIdReusePolicy = {BusinessIdReusePolicy}");
+        return true;
+    }
 }
 
 /// <summary>What a schedule is written as (<c>createSchedule</c>, <c>updateSchedule</c>). A field left <c>null</c> is left out of the request, never sent as null.</summary>
@@ -168,7 +191,25 @@ public sealed record ScheduleWrite
 
 /// <summary>The action of a schedule as the server keeps it: without the input, with its digest.</summary>
 public sealed record ScheduleActionSummary(
-    string? WorkflowId, string? VersionPolicy, string? VersionId, string? InputDigest, string? NominalTimeField, long? RunTimeoutMs);
+    string? WorkflowId,
+    string? VersionPolicy,
+    string? VersionId,
+    string? InputDigest,
+    string? NominalTimeField,
+    long? RunTimeoutMs,
+    string? BusinessIdPrefix = null,
+    string? BusinessIdConflictPolicy = null,
+    string? BusinessIdReusePolicy = null)
+{
+    // The prefix is customer text and never appears in a text the SDK makes (SPEC section 10).
+    private bool PrintMembers(System.Text.StringBuilder builder)
+    {
+        builder.Append(
+            CultureInfo.InvariantCulture,
+            $"WorkflowId = {WorkflowId}, VersionPolicy = {VersionPolicy}, VersionId = {VersionId}, InputDigest = {InputDigest}, NominalTimeField = {NominalTimeField}, RunTimeoutMs = {RunTimeoutMs}, BusinessIdConflictPolicy = {BusinessIdConflictPolicy}, BusinessIdReusePolicy = {BusinessIdReusePolicy}");
+        return true;
+    }
+}
 
 /// <summary>A schedule. <see cref="Raw"/> keeps the answer as the server sent it.</summary>
 public record Schedule
@@ -212,8 +253,19 @@ public record Schedule
     /// <summary>When it last changed (UTC).</summary>
     public DateTimeOffset? UpdatedAt { get; init; }
 
-    /// <summary>The answer as the server sent it.</summary>
+    /// <summary>The answer as the server sent it. It holds the business-id prefix of the action, which the text this type prints leaves out.</summary>
     public JsonElement Raw { get; init; }
+
+    // The text a record prints holds every member; the answer as sent (Raw) holds the business-id prefix of the action, which is customer
+    // text and never appears in a text the SDK makes (SPEC section 10), so Raw is left out of it. Everything else is printed as before.
+    /// <summary>Prints the members of the schedule, but not <see cref="Raw"/>.</summary>
+    protected virtual bool PrintMembers(System.Text.StringBuilder builder)
+    {
+        builder.Append(
+            CultureInfo.InvariantCulture,
+            $"ScheduleId = {ScheduleId}, Name = {Name}, Origin = {Origin}, State = {State}, Revision = {Revision}, Exhausted = {Exhausted}, Action = {Action}, Note = {Note}, NoteBy = {NoteBy}, RemainingActions = {RemainingActions}, NextActionAt = {NextActionAt}, CreatedAt = {CreatedAt}, UpdatedAt = {UpdatedAt}");
+        return true;
+    }
 }
 
 /// <summary>A nominal time and the instant the schedule will act on it.</summary>
@@ -684,6 +736,11 @@ public sealed class SchedulesClient
 
         WriteString(writer, "nominalTimeField", action.NominalTimeField);
         WriteNumber(writer, "runTimeoutMs", action.RunTimeoutMs);
+
+        // The business-id fields are sent as given (the prefix is customer text, the empty string included) and only when set.
+        WriteString(writer, "businessIdPrefix", action.BusinessIdPrefix);
+        WriteString(writer, "businessIdConflictPolicy", action.BusinessIdConflictPolicy);
+        WriteString(writer, "businessIdReusePolicy", action.BusinessIdReusePolicy);
         writer.WriteEndObject();
     }
 
@@ -821,7 +878,10 @@ public sealed class SchedulesClient
                 action.ValueKind == JsonValueKind.Object ? OptStr(action, "versionId") : null,
                 action.ValueKind == JsonValueKind.Object ? OptStr(action, "inputDigest") : null,
                 action.ValueKind == JsonValueKind.Object ? OptStr(action, "nominalTimeField") : null,
-                action.ValueKind == JsonValueKind.Object ? OptNum(action, "runTimeoutMs") : null),
+                action.ValueKind == JsonValueKind.Object ? OptNum(action, "runTimeoutMs") : null,
+                action.ValueKind == JsonValueKind.Object ? OptStr(action, "businessIdPrefix") : null,
+                action.ValueKind == JsonValueKind.Object ? OptStr(action, "businessIdConflictPolicy") : null,
+                action.ValueKind == JsonValueKind.Object ? OptStr(action, "businessIdReusePolicy") : null),
             Note = OptStr(raw, "note"),
             NoteBy = OptStr(raw, "noteBy"),
             RemainingActions = OptNum(raw, "remainingActions"),

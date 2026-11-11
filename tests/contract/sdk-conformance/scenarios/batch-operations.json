@@ -1,6 +1,6 @@
 {
   "name": "batch-operations",
-  "description": "Feature 018 US05: a batch job over runs. A selector is previewed (a count and a sample, nothing changed); a CANCEL job over three open runs applies to each run once and ends COMPLETED with counters that equal its items; the same key and body answers the first job; a second job over the now ended runs skips each with ALREADY_TERMINAL; a job that ended cannot be cancelled; an action this build does not offer, a selector that selects nothing and a reason that is too short are refused with their reasons.",
+  "description": "Feature 018 US05: a batch job over runs. A selector is previewed (a count and a sample, nothing changed); a CANCEL job over three open runs applies to each run once and ends COMPLETED with counters that equal its items; the same key and body answers the first job; a second job over the now ended runs skips each with ALREADY_TERMINAL; a job that ended cannot be cancelled; an action this build does not offer, a selector that selects nothing and a reason that is too short are refused with their reasons. A selector by the prefix of the business id (G2027) selects the runs started under it and no other: a preview counts them, a prefix that matches nothing or that is only a wildcard character counts zero, a prefix that is not an id is refused as a malformed selector, and a CANCEL job by the prefix cancels exactly those runs and leaves the run of another id open.",
   "server": {
     "batches": true
   },
@@ -255,13 +255,113 @@
       "idempotencyKey": "batch-reason-{{unique}}"
     },
     {
+      "id": "lot-a",
+      "op": "start",
+      "workflow": "hold",
+      "input": {},
+      "businessId": "lot-{{unique}}-a",
+      "idempotencyKey": "batch-lot-a-{{unique}}"
+    },
+    {
+      "id": "lot-b",
+      "op": "start",
+      "workflow": "hold",
+      "input": {},
+      "businessId": "lot-{{unique}}-b",
+      "idempotencyKey": "batch-lot-b-{{unique}}"
+    },
+    {
+      "id": "other-lot",
+      "op": "start",
+      "workflow": "hold",
+      "input": {},
+      "businessId": "other-{{unique}}",
+      "idempotencyKey": "batch-other-lot-{{unique}}"
+    },
+    {
       "id": "business-prefix",
       "op": "batchPreview",
       "selector": {
         "filter": {
-          "businessIdPrefix": "order-"
+          "businessIdPrefix": "lot-{{unique}}-"
         }
       }
+    },
+    {
+      "id": "business-prefix-none",
+      "op": "batchPreview",
+      "selector": {
+        "filter": {
+          "businessIdPrefix": "no-such-{{unique}}-"
+        }
+      }
+    },
+    {
+      "id": "business-prefix-wildcard",
+      "op": "batchPreview",
+      "selector": {
+        "filter": {
+          "businessIdPrefix": "%"
+        }
+      }
+    },
+    {
+      "id": "business-prefix-invalid",
+      "op": "batchPreview",
+      "selector": {
+        "filter": {
+          "businessIdPrefix": "has space"
+        }
+      }
+    },
+    {
+      "id": "create-by-prefix",
+      "op": "batchCreate",
+      "request": {
+        "selector": {
+          "filter": {
+            "businessIdPrefix": "lot-{{unique}}-"
+          }
+        },
+        "action": "CANCEL",
+        "reason": "cancel the runs of the lot",
+        "itemsPerSecond": 50
+      },
+      "idempotencyKey": "batch-by-prefix-{{unique}}"
+    },
+    {
+      "id": "by-prefix-completed",
+      "op": "awaitBatch",
+      "batch": "create-by-prefix",
+      "state": "COMPLETED",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "by-prefix-job",
+      "op": "batchGet",
+      "batch": "create-by-prefix"
+    },
+    {
+      "id": "by-prefix-items",
+      "op": "batchItems",
+      "batch": "create-by-prefix"
+    },
+    {
+      "id": "lot-a-ended",
+      "op": "waitForCompletion",
+      "run": "lot-a",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "lot-b-ended",
+      "op": "waitForCompletion",
+      "run": "lot-b",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "other-lot-still-open",
+      "op": "get",
+      "run": "other-lot"
     },
     {
       "id": "query-selector",

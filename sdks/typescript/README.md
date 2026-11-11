@@ -55,7 +55,15 @@ const created = await client.schedules.create(namespaceId, {
   action: { workflowId, input: { report: 'daily' } },
 });
 await client.schedules.pause(namespaceId, created.scheduleId, 'maintenance window');
-const action = await client.schedules.trigger(namespaceId, created.scheduleId); // action.outcome: 'STARTED', 'SKIPPED_OVERLAP', ...
+const action = await client.schedules.trigger(namespaceId, created.scheduleId); // action.outcome: 'STARTED', 'SKIPPED_OVERLAP', 'BUSINESS_ID_CONFLICT', ...
+
+// Every run of a schedule can start under the business id `<prefix>-<nominal time>`; the prefix is sent as given.
+const keyed = await client.schedules.create(namespaceId, {
+  name: 'hourly-order-sync',
+  spec: { cron: ['0 * * * *'] },
+  action: { workflowId, input: {}, businessIdPrefix: 'order-sync', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY' },
+});
+console.log(keyed.action.businessIdPrefix, keyed.action.businessIdConflictPolicy); // null when the schedule has no prefix
 
 // One open run per business identifier; a second start answers the run that holds it.
 const order = await client.start('charge-card', { orderId: 'o-1' }, {

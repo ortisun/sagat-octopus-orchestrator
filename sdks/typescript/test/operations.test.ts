@@ -4,7 +4,9 @@ import { strict as assert } from 'node:assert';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, test } from 'node:test';
-import { SagatClient, SagatError } from '../src/index.js';
+import { inspect } from 'node:util';
+import { actionJson, descriptionJson, scheduleJson } from '../conformance/observe.js';
+import { SagatClient, SagatError, type Logger, type Schedule, type ScheduleWrite } from '../src/index.js';
 
 interface Seen {
   method: string;
@@ -292,6 +294,160 @@ test('a backfill sends its range as UTC instants, a cancel names the backfill, a
   const actions = await client().schedules.listActions(NS, SCHEDULE, { outcome: 'ALREADY_ACTED', limit: 10 });
   assert.equal(only().url, `/v1/namespaces/${NS}/schedules/${SCHEDULE}/actions?limit=10&outcome=ALREADY_ACTED`);
   assert.equal(actions.items[0]?.outcome, 'ALREADY_ACTED');
+});
+
+// ----------------------------------------------------------------------- the business-id prefix of a schedule's action (FR-018-016)
+
+// Customer text: spaces and upper case are sent as they are, and the SDK has no opinion on the pattern or the length.
+const PREFIX = ' Order/Mixed-Case ';
+const SERVED = { workflowId: WF, versionPolicy: 'ACTIVE', inputDigest: 'a'.repeat(64) };
+const actionOf = (request: Seen): Record<string, unknown> => (request.body as { action: Record<string, unknown> }).action;
+const writeWith = (extra: Partial<ScheduleWrite['action']> = {}): ScheduleWrite =>
+  ({ name: 'nightly', spec: { cron: ['0 9 * * *'] }, action: { workflowId: WF, input: { n: 1 }, ...extra } });
+
+test('a schedule action sends its business-id prefix and both policies as given, and reads back what the server kept', async () => {
+  const kept = { ...SERVED, businessIdPrefix: PREFIX, businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'REJECT_DUPLICATE' };
+  prepare((_req, res) => reply(res, 201, schedule({ action: kept })));
+  const created = await client().schedules.create(NS, writeWith({
+    businessIdPrefix: PREFIX, businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'REJECT_DUPLICATE',
+  }), { idempotencyKey: 'sched-key-bid' });
+  assert.deepEqual(actionOf(only()), {
+    workflowId: WF, input: { n: 1 }, businessIdPrefix: PREFIX, businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'REJECT_DUPLICATE',
+  });
+  assert.equal(created.action.businessIdPrefix, PREFIX);
+  assert.equal(created.action.businessIdConflictPolicy, 'USE_EXISTING');
+  assert.equal(created.action.businessIdReusePolicy, 'REJECT_DUPLICATE');
+  assert.equal((created.raw['action'] as Record<string, unknown>)['businessIdPrefix'], PREFIX, 'the answer as the server sent it stays in `raw`');
+});
+
+test('a prefix alone is sent alone, the empty prefix is sent as the empty string, and the server writes the defaults back', async () => {
+  prepare((_req, res) => reply(res, 201, schedule({ action: { ...SERVED, businessIdPrefix: 'order', businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' } })));
+  const created = await client().schedules.create(NS, writeWith({ businessIdPrefix: 'order' }));
+  assert.deepEqual(actionOf(only()), { workflowId: WF, input: { n: 1 }, businessIdPrefix: 'order' }, 'no default is invented locally');
+  assert.deepEqual([created.action.businessIdPrefix, created.action.businessIdConflictPolicy, created.action.businessIdReusePolicy], ['order', 'FAIL', 'ALLOW_DUPLICATE']);
+
+  // The server refuses it (VALIDATION_FAILED): the SDK does not judge it.
+  prepare((_req, res) => reply(res, 400, { code: 'VALIDATION_FAILED', message: 'the schedule is not valid', retryable: false, traceId: 'e'.repeat(32), details: { reason: 'SCHEDULE_SPEC_INVALID', field: '/action/businessIdPrefix' } }));
+  await assert.rejects(
+    client().schedules.create(NS, writeWith({ businessIdPrefix: '' })),
+    (error: unknown) => error instanceof SagatError && error.code === 'VALIDATION_FAILED' && error.reason === 'SCHEDULE_SPEC_INVALID',
+  );
+  assert.equal(actionOf(only())['businessIdPrefix'], '', 'an empty prefix is sent as the empty string, not left out');
+});
+
+test('a schedule action without a prefix sends none of the three keys, and a server action without one reads as none', async () => {
+  prepare((_req, res) => reply(res, 201, schedule()));
+  const created = await client().schedules.create(NS, writeWith());
+  assert.deepEqual(Object.keys(actionOf(only())).sort(), ['input', 'workflowId']);
+  assert.deepEqual([created.action.businessIdPrefix, created.action.businessIdConflictPolicy, created.action.businessIdReusePolicy], [null, null, null]);
+
+  // Keys that are set to nothing are not keys: not null, not undefined, not empty.
+  prepare((_req, res) => reply(res, 201, schedule()));
+  await client().schedules.create(NS, writeWith({
+    businessIdPrefix: undefined, businessIdConflictPolicy: null as unknown as undefined, businessIdReusePolicy: undefined,
+  }));
+  assert.deepEqual(Object.keys(actionOf(only())).sort(), ['input', 'workflowId']);
+  assert.ok(!JSON.stringify(only().body).includes('businessId'));
+});
+
+test('an update takes the same action document: a schedule updated without a prefix has none', async () => {
+  prepare((_req, res) => reply(res, 200, schedule({ revision: 3, action: { ...SERVED, businessIdPrefix: 'nightly', businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY' } })));
+  const withPrefix = await client().schedules.update(NS, SCHEDULE, writeWith({ businessIdPrefix: 'nightly', businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY' }), 2, { idempotencyKey: 'upd-key-bid1' });
+  assert.equal(only().method, 'PUT');
+  assert.deepEqual(actionOf(only()), { workflowId: WF, input: { n: 1 }, businessIdPrefix: 'nightly', businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY' });
+  assert.equal((only().body as Record<string, unknown>)['expectedRevision'], 2);
+  assert.deepEqual([withPrefix.action.businessIdPrefix, withPrefix.action.businessIdConflictPolicy, withPrefix.action.businessIdReusePolicy], ['nightly', 'FAIL', 'ALLOW_DUPLICATE_FAILED_ONLY']);
+
+  prepare((_req, res) => reply(res, 200, schedule({ revision: 4 })));
+  const without = await client().schedules.update(NS, SCHEDULE, writeWith(), 3, { idempotencyKey: 'upd-key-bid2' });
+  assert.deepEqual(Object.keys(actionOf(only())).sort(), ['input', 'workflowId']);
+  assert.equal(without.action.businessIdPrefix, null);
+});
+
+test('a policy this SDK does not know is kept as the string the server sent, in a list and in a description', async () => {
+  const newer = { ...SERVED, businessIdPrefix: 'p', businessIdConflictPolicy: 'SOMETHING_NEWER', businessIdReusePolicy: 'SOMETHING_ELSE' };
+  prepare((_req, res) => reply(res, 200, { items: [schedule({ action: newer })], nextCursor: null }));
+  const listed = await client().schedules.list(NS);
+  assert.deepEqual([listed.items[0]?.action.businessIdConflictPolicy, listed.items[0]?.action.businessIdReusePolicy], ['SOMETHING_NEWER', 'SOMETHING_ELSE']);
+  prepare((_req, res) => reply(res, 200, { ...schedule({ action: newer }), nextActions: [], recentActions: [], openRuns: [], bufferedCount: 0, counters: {} }));
+  const described = await client().schedules.get(NS, SCHEDULE);
+  assert.equal(described.action.businessIdPrefix, 'p');
+  assert.equal(described.action.businessIdConflictPolicy, 'SOMETHING_NEWER');
+});
+
+test('the outcomes and reasons of a business-id action are kept as the strings the server sent', async () => {
+  prepare((_req, res) => reply(res, 200, {
+    ...schedule(), nextActions: [], openRuns: [], bufferedCount: 0, counters: { BUSINESS_ID_CONFLICT: 2, ALREADY_ACTED: 1 },
+    recentActions: [
+      action({ outcome: 'BUSINESS_ID_CONFLICT', reason: 'BUSINESS_ID_IN_USE', runId: null }),
+      action({ outcome: 'BUSINESS_ID_CONFLICT', reason: 'BUSINESS_ID_REUSE_REJECTED', runId: null }),
+      action({ outcome: 'ALREADY_ACTED', reason: 'BUSINESS_ID_IN_USE', runId: RUN }),
+    ],
+  }));
+  const described = await client().schedules.get(NS, SCHEDULE);
+  assert.deepEqual(described.recentActions.map((a) => [a.outcome, a.reason, a.runId]), [
+    ['BUSINESS_ID_CONFLICT', 'BUSINESS_ID_IN_USE', null],
+    ['BUSINESS_ID_CONFLICT', 'BUSINESS_ID_REUSE_REJECTED', null],
+    ['ALREADY_ACTED', 'BUSINESS_ID_IN_USE', RUN],
+  ]);
+  assert.deepEqual(described.counters, { BUSINESS_ID_CONFLICT: 2, ALREADY_ACTED: 1 });
+  prepare((_req, res) => reply(res, 200, { items: [action({ outcome: 'BUSINESS_ID_CONFLICT', reason: 'BUSINESS_ID_REUSE_REJECTED', runId: null })], nextCursor: null }));
+  const listed = await client().schedules.listActions(NS, SCHEDULE, { outcome: 'BUSINESS_ID_CONFLICT' });
+  assert.equal(only().url, `/v1/namespaces/${NS}/schedules/${SCHEDULE}/actions?outcome=BUSINESS_ID_CONFLICT`);
+  assert.deepEqual([listed.items[0]?.outcome, listed.items[0]?.reason], ['BUSINESS_ID_CONFLICT', 'BUSINESS_ID_REUSE_REJECTED']);
+});
+
+test('the conformance runner prints the business-id keys of a schedule action only when the schedule has them', async () => {
+  prepare((_req, res) => reply(res, 200, schedule({ action: { ...SERVED, businessIdPrefix: PREFIX, businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' } })));
+  const withPrefix: Schedule = await client().schedules.create(NS, writeWith({ businessIdPrefix: PREFIX }));
+  assert.deepEqual(scheduleJson(withPrefix)['action'], {
+    workflowId: WF, versionPolicy: 'ACTIVE', versionId: null, inputDigest: 'a'.repeat(64), nominalTimeField: null, runTimeoutMs: null,
+    businessIdPrefix: PREFIX, businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE',
+  });
+
+  prepare((_req, res) => reply(res, 200, schedule()));
+  const plain = await client().schedules.create(NS, writeWith());
+  // What every golden has had: these six keys and nothing else, so no existing golden changes.
+  assert.deepEqual(Object.keys(scheduleJson(plain)['action']).sort(), ['inputDigest', 'nominalTimeField', 'runTimeoutMs', 'versionId', 'versionPolicy', 'workflowId']);
+  assert.deepEqual(scheduleJson(plain)['action'], { workflowId: WF, versionPolicy: 'ACTIVE', versionId: null, inputDigest: 'a'.repeat(64), nominalTimeField: null, runTimeoutMs: null });
+
+  // A description prints the same action, and its recent actions print the outcome and reason strings as they came.
+  prepare((_req, res) => reply(res, 200, {
+    ...schedule({ action: { ...SERVED, businessIdPrefix: 'p', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'ALLOW_DUPLICATE' } }),
+    nextActions: [], openRuns: [], bufferedCount: 0, counters: {},
+    recentActions: [action({ outcome: 'ALREADY_ACTED', reason: 'BUSINESS_ID_IN_USE', runId: RUN })],
+  }));
+  const described = await client().schedules.get(NS, SCHEDULE);
+  const printed = descriptionJson(described);
+  assert.equal(printed['action']['businessIdPrefix'], 'p');
+  assert.equal(printed['action']['businessIdConflictPolicy'], 'USE_EXISTING');
+  const record = actionJson(described.recentActions[0] as never);
+  assert.deepEqual([record['outcome'], record['reason'], record['runId']], ['ALREADY_ACTED', 'BUSINESS_ID_IN_USE', RUN]);
+  assert.deepEqual(printed['recentActions'][0], record);
+});
+
+test('the prefix of a schedule action reaches no log line and no error text the SDK writes, on a retry and on a refusal', async () => {
+  const canary = 'CANARY-prefix-8f3a';
+  const lines: string[] = [];
+  const record = (message: string, fields?: Record<string, unknown>): void => void lines.push(`${message} ${JSON.stringify(fields ?? {})}`);
+  const logger: Logger = { debug: record, info: record, warn: record, error: record };
+  const logged = new SagatClient({ apiUrl: base, namespace: 'payments', token: 'tok-1', logger, retry: { initialDelayMs: 5, maxDelayMs: 20 } });
+
+  let attempts = 0;
+  prepare((_req, res) => (++attempts < 2 ? reply(res, 503, { code: 'UNAVAILABLE', message: 'busy', retryable: true, traceId: 'e'.repeat(32) }) : reply(res, 201, schedule({ action: { ...SERVED, businessIdPrefix: canary } }))));
+  await logged.schedules.create(NS, writeWith({ businessIdPrefix: canary }));
+  assert.equal(seen.length, 2, 'the create was retried once, with the prefix in its body');
+  assert.equal(actionOf(seen[1] as Seen)['businessIdPrefix'], canary);
+  assert.ok(lines.length >= 1, 'the retry was logged');
+
+  prepare((_req, res) => reply(res, 400, { code: 'VALIDATION_FAILED', message: 'the schedule is not valid', retryable: false, traceId: 'e'.repeat(32), details: { reason: 'SCHEDULE_SPEC_INVALID', field: '/action/businessIdPrefix' } }));
+  const refused = await logged.schedules.create(NS, writeWith({ businessIdPrefix: canary })).then(() => null, (error: unknown) => error);
+  assert.ok(refused instanceof SagatError);
+  assert.equal(refused.code, 'VALIDATION_FAILED');
+  assert.equal(refused.reason, 'SCHEDULE_SPEC_INVALID');
+  for (const text of [...lines, refused.message, JSON.stringify(refused), inspect(refused, { depth: 6 })]) {
+    assert.ok(!text.includes(canary), 'the prefix is in nothing the SDK writes');
+  }
 });
 
 // ---------------------------------------------------------------------------------------------- business ids

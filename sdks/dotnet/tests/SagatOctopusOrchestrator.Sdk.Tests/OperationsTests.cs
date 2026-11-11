@@ -380,6 +380,242 @@ public sealed class OperationsTests : IAsyncLifetime
         Assert.Equal("del-key-0001", delete.Header("idempotency-key"));
     }
 
+    // ----------------------------------------------------------------------- the business-id prefix of a schedule's action (FR-018-016)
+
+    private const string Prefix = "Nightly-Canary-";
+
+    private static JsonObject ActionAnswer(string? prefix = null, string? conflict = null, string? reuse = null, Action<JsonObject>? change = null)
+    {
+        var action = new JsonObject { ["workflowId"] = Wf, ["versionPolicy"] = "ACTIVE", ["inputDigest"] = new string('a', 64) };
+        if (prefix is not null)
+        {
+            action["businessIdPrefix"] = prefix;
+        }
+
+        if (conflict is not null)
+        {
+            action["businessIdConflictPolicy"] = conflict;
+        }
+
+        if (reuse is not null)
+        {
+            action["businessIdReusePolicy"] = reuse;
+        }
+
+        change?.Invoke(action);
+        return action;
+    }
+
+    [Fact]
+    public async Task AScheduleActionWithABusinessIdPrefixSendsItWithItsTwoPoliciesOnCreateAndUpdateAndReadsThemBackAsTheServerSentThem()
+    {
+        var write = new ScheduleWrite
+        {
+            Name = "nightly",
+            Spec = new ScheduleSpec { Cron = ["0 9 * * *"] },
+            Action = new ScheduleAction
+            {
+                WorkflowId = Wf,
+                Input = new { },
+                BusinessIdPrefix = Prefix,
+                BusinessIdConflictPolicy = BusinessIdConflictPolicies.UseExisting,
+                BusinessIdReusePolicy = BusinessIdReusePolicies.RejectDuplicate,
+            },
+        };
+        server.Handler = _ => Reply(201, Schedule(s => s["action"] = ActionAnswer(Prefix, "USE_EXISTING", "REJECT_DUPLICATE")));
+        var client = NewClient();
+        var created = await client.Schedules.CreateAsync(Ns, write, new RequestOptions { IdempotencyKey = "sched-key-1" });
+        var request = Assert.Single(server.Requests);
+        AssertBody(
+            $$$"""
+            {"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":{"workflowId":"{{{Wf}}}","input":{},
+             "businessIdPrefix":"{{{Prefix}}}","businessIdConflictPolicy":"USE_EXISTING","businessIdReusePolicy":"REJECT_DUPLICATE"}}
+            """,
+            request);
+        Assert.Equal(Prefix, created.Action.BusinessIdPrefix);
+        Assert.Equal(BusinessIdConflictPolicies.UseExisting, created.Action.BusinessIdConflictPolicy);
+        Assert.Equal(BusinessIdReusePolicies.RejectDuplicate, created.Action.BusinessIdReusePolicy);
+
+        // An update takes the same action document.
+        server.Handler = _ => Reply(200, Schedule(s => { s["revision"] = 3; s["action"] = ActionAnswer(Prefix, "USE_EXISTING", "REJECT_DUPLICATE"); }));
+        var updated = await client.Schedules.UpdateAsync(Ns, ScheduleId, write, 2, new RequestOptions { IdempotencyKey = "upd-key-0001" });
+        AssertBody(
+            $$$"""
+            {"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":{"workflowId":"{{{Wf}}}","input":{},
+             "businessIdPrefix":"{{{Prefix}}}","businessIdConflictPolicy":"USE_EXISTING","businessIdReusePolicy":"REJECT_DUPLICATE"},"expectedRevision":2}
+            """,
+            server.Requests[^1]);
+        Assert.Equal(Prefix, updated.Action.BusinessIdPrefix);
+
+        // A schedule updated without a prefix has none: the body carries none of the three, and the answer has none.
+        server.Handler = _ => Reply(200, Schedule(s => s["revision"] = 4));
+        var cleared = await client.Schedules.UpdateAsync(Ns, ScheduleId, NightlyWrite(), 3, new RequestOptions { IdempotencyKey = "upd-key-0002" });
+        AssertBody($$$"""{"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":{"workflowId":"{{{Wf}}}","input":{}},"expectedRevision":3}""", server.Requests[^1]);
+        Assert.Null(cleared.Action.BusinessIdPrefix);
+        Assert.Null(cleared.Action.BusinessIdConflictPolicy);
+        Assert.Null(cleared.Action.BusinessIdReusePolicy);
+
+        // A description reads the same three, and a policy a newer server sends is kept as the string it came as.
+        server.Handler = _ => Reply(200, Schedule(s => s["action"] = ActionAnswer(Prefix, "SOMETHING_NEWER", "ALLOW_DUPLICATE_FAILED_ONLY")));
+        var described = await client.Schedules.GetAsync(Ns, ScheduleId);
+        Assert.Equal(Prefix, described.Action.BusinessIdPrefix);
+        Assert.Equal("SOMETHING_NEWER", described.Action.BusinessIdConflictPolicy);
+        Assert.Equal(BusinessIdReusePolicies.AllowDuplicateFailedOnly, described.Action.BusinessIdReusePolicy);
+    }
+
+    [Fact]
+    public async Task APrefixAloneSendsOnlyThePrefixAndTheServerSaysTheDefaultsItAppliedWhichTheReadTypeKeeps()
+    {
+        server.Handler = _ => Reply(201, Schedule(s => s["action"] = ActionAnswer(Prefix, "FAIL", "ALLOW_DUPLICATE")));
+        var created = await NewClient().Schedules.CreateAsync(
+            Ns,
+            new ScheduleWrite
+            {
+                Name = "nightly",
+                Spec = new ScheduleSpec { Cron = ["0 9 * * *"] },
+                Action = new ScheduleAction { WorkflowId = Wf, Input = new { }, BusinessIdPrefix = Prefix },
+            });
+        AssertBody($$$"""{"name":"nightly","spec":{"cron":["0 9 * * *"]},"action":{"workflowId":"{{{Wf}}}","input":{},"businessIdPrefix":"{{{Prefix}}}"}}""", server.Requests[0]);
+        Assert.Equal("FAIL", created.Action.BusinessIdConflictPolicy);
+        Assert.Equal("ALLOW_DUPLICATE", created.Action.BusinessIdReusePolicy);
+    }
+
+    [Fact]
+    public async Task AScheduleWithNoneOfTheThreeFieldsSendsNoneOfThemAndReadsNoneWhetherTheServerLeavesThemOutOrSendsNull()
+    {
+        server.Handler = _ => Reply(201, Schedule());
+        var client = NewClient();
+        var plain = await client.Schedules.CreateAsync(Ns, NightlyWrite());
+        var body = Assert.IsType<JsonObject>(server.Requests[0].Body!["action"]);
+        Assert.Equal(["workflowId", "input"], body.Select(pair => pair.Key).ToArray());
+        Assert.Null(plain.Action.BusinessIdPrefix);
+        Assert.Null(plain.Action.BusinessIdConflictPolicy);
+        Assert.Null(plain.Action.BusinessIdReusePolicy);
+
+        server.Handler = _ => Reply(200, Schedule(s => s["action"] = ActionAnswer(change: a =>
+        {
+            a["businessIdPrefix"] = null;
+            a["businessIdConflictPolicy"] = null;
+            a["businessIdReusePolicy"] = null;
+        })));
+        var nulls = await client.Schedules.GetAsync(Ns, ScheduleId);
+        Assert.Null(nulls.Action.BusinessIdPrefix);
+        Assert.Null(nulls.Action.BusinessIdConflictPolicy);
+        Assert.Null(nulls.Action.BusinessIdReusePolicy);
+    }
+
+    [Theory]
+    [InlineData("  Mixed-CASE-prefix- ")]
+    [InlineData("")]
+    [InlineData("a")]
+    public async Task ThePrefixIsCustomerTextSentAsGivenWithoutTrimmingFoldingOrALocalCheckAndTheEmptyStringIsSentAsTheEmptyString(string prefix)
+    {
+        server.Handler = _ => Reply(201, Schedule());
+        await NewClient().Schedules.CreateAsync(
+            Ns,
+            new ScheduleWrite
+            {
+                Name = "nightly",
+                Spec = new ScheduleSpec { Cron = ["0 9 * * *"] },
+                Action = new ScheduleAction { WorkflowId = Wf, Input = new { }, BusinessIdPrefix = prefix },
+            });
+        var request = Assert.Single(server.Requests);
+        Assert.Equal(prefix, (string?)request.Body!["action"]!["businessIdPrefix"]);
+        Assert.Null(request.Body["action"]!["businessIdConflictPolicy"]);
+        Assert.Null(request.Body["action"]!["businessIdReusePolicy"]);
+    }
+
+    [Fact]
+    public async Task APrefixTheServerRefusesIsTheServersValidationErrorWithItsReasonAndNothingTheSdkWritesCarriesThePrefix()
+    {
+        const string Canary = "Refused-Prefix-Canary-";
+        server.Handler = _ => Reply(400, new JsonObject
+        {
+            ["code"] = "VALIDATION_FAILED",
+            ["message"] = "the schedule is not valid",
+            ["retryable"] = false,
+            ["traceId"] = new string('e', 32),
+            ["details"] = new JsonObject { ["reason"] = "SCHEDULE_SPEC_INVALID", ["field"] = "/action/businessIdPrefix" },
+        });
+        var client = NewClient();
+        var error = await RefusedAsync(() => client.Schedules.CreateAsync(
+            Ns,
+            new ScheduleWrite
+            {
+                Name = "nightly",
+                Spec = new ScheduleSpec { Cron = ["0 9 * * *"] },
+                Action = new ScheduleAction { WorkflowId = Wf, Input = new { }, BusinessIdPrefix = Canary },
+            }));
+        Assert.Equal(400, error.HttpStatus);
+        Assert.Equal("SCHEDULE_SPEC_INVALID", error.Reason);
+        Assert.False(error.Retryable);
+        Assert.Single(server.Requests);
+        Assert.DoesNotContain(Canary, error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheTextsTheSdkPrintsOfAScheduleDoNotHoldThePrefixWhileTheOtherFieldsStayInThem()
+    {
+        const string Canary = "Print-Prefix-Canary-";
+        var action = new ScheduleAction
+        {
+            WorkflowId = Wf,
+            Input = new { },
+            BusinessIdPrefix = Canary,
+            BusinessIdConflictPolicy = BusinessIdConflictPolicies.UseExisting,
+            BusinessIdReusePolicy = BusinessIdReusePolicies.RejectDuplicate,
+        };
+        var write = new ScheduleWrite { Name = "nightly", Spec = new ScheduleSpec { Cron = ["0 9 * * *"] }, Action = action };
+        Assert.DoesNotContain(Canary, action.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(Canary, write.ToString(), StringComparison.Ordinal);
+        Assert.Contains(Wf, action.ToString(), StringComparison.Ordinal);
+        Assert.Contains("USE_EXISTING", action.ToString(), StringComparison.Ordinal);
+        Assert.Contains("REJECT_DUPLICATE", write.ToString(), StringComparison.Ordinal);
+
+        server.Handler = _ => Reply(200, Schedule(s =>
+        {
+            s["action"] = ActionAnswer(Canary, "USE_EXISTING", "REJECT_DUPLICATE");
+            s["recentActions"] = new JsonArray(Action());
+        }));
+        var client = NewClient();
+        var described = await client.Schedules.GetAsync(Ns, ScheduleId);
+        Assert.Equal(Canary, described.Action.BusinessIdPrefix);
+        Assert.Equal(Canary, described.Raw.GetProperty("action").GetProperty("businessIdPrefix").GetString());
+        Assert.DoesNotContain(Canary, described.Action.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(Canary, ((Schedule)described).ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(Canary, described.ToString(), StringComparison.Ordinal);
+        Assert.Contains("USE_EXISTING", described.Action.ToString(), StringComparison.Ordinal);
+        Assert.Contains("nightly", described.ToString(), StringComparison.Ordinal);
+        Assert.Contains("RecentActions", described.ToString(), StringComparison.Ordinal);
+
+        var created = await client.Schedules.CreateAsync(Ns, write);
+        Assert.DoesNotContain(Canary, created.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheOutcomesAndReasonsOfAScheduleThatActsWithABusinessIdAreKeptAsTheStringsTheServerSent()
+    {
+        server.Handler = _ => Reply(200, Schedule(s => s["recentActions"] = new JsonArray(
+            Action(a => { a["outcome"] = "BUSINESS_ID_CONFLICT"; a["reason"] = "BUSINESS_ID_IN_USE"; a["runId"] = null; }),
+            Action(a => { a["outcome"] = "BUSINESS_ID_CONFLICT"; a["reason"] = "BUSINESS_ID_REUSE_REJECTED"; a["runId"] = null; }),
+            Action(a => { a["outcome"] = "ALREADY_ACTED"; a["reason"] = "BUSINESS_ID_IN_USE"; a["runId"] = RunId; }))));
+        var described = await NewClient().Schedules.GetAsync(Ns, ScheduleId);
+        Assert.Equal(["BUSINESS_ID_CONFLICT", "BUSINESS_ID_CONFLICT", "ALREADY_ACTED"], described.RecentActions.Select(a => a.Outcome).ToArray());
+        Assert.Equal(["BUSINESS_ID_IN_USE", "BUSINESS_ID_REUSE_REJECTED", "BUSINESS_ID_IN_USE"], described.RecentActions.Select(a => a.Reason!).ToArray());
+        Assert.Null(described.RecentActions[0].RunId);
+        Assert.Equal(RunId, described.RecentActions[2].RunId);
+
+        server.Handler = _ => Reply(200, new JsonObject
+        {
+            ["items"] = new JsonArray(Action(a => { a["outcome"] = "ALREADY_ACTED"; a["reason"] = "BUSINESS_ID_IN_USE"; a["runId"] = RunId; })),
+            ["nextCursor"] = null,
+        });
+        var actions = await NewClient().Schedules.ListActionsAsync(Ns, ScheduleId, new ScheduleActionListOptions { Outcome = "ALREADY_ACTED" });
+        Assert.Equal("ALREADY_ACTED", actions.Items[0].Outcome);
+        Assert.Equal("BUSINESS_ID_IN_USE", actions.Items[0].Reason);
+        Assert.Equal(RunId, actions.Items[0].RunId);
+    }
+
     [Fact]
     public async Task AStaleRevisionIsAConflictWithItsReasonAndARevisionThatCannotBeOneIsRefusedBeforeItIsSent()
     {

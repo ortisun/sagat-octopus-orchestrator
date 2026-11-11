@@ -205,6 +205,17 @@ class ScheduleAction:
     version_id: str | None = None
     nominal_time_field: str | None = None
     run_timeout_ms: int | None = None
+    business_id_prefix: str | None = field(default=None, repr=False)
+    """Every run the schedule starts gets the business identifier ``<prefix>-<nominal time>`` (the nominal time in
+    RFC 3339 UTC to the second, ending in ``Z``). Customer text, sent as given (no trimming, no case folding, no
+    local check: the server judges it, ``VALIDATION_FAILED`` with the reason ``SCHEDULE_SPEC_INVALID``) and kept out
+    of ``repr``. ``None`` sends nothing."""
+    business_id_conflict_policy: BusinessIdConflictPolicy | None = None
+    """Only with a prefix: what the action does when an open run holds the identifier (the server's default is
+    ``FAIL``)."""
+    business_id_reuse_policy: BusinessIdReusePolicy | None = None
+    """Only with a prefix: what the action does when a closed run still remembers the identifier (the server's
+    default is ``ALLOW_DUPLICATE``)."""
 
 
 @dataclass(frozen=True)
@@ -230,6 +241,15 @@ class ScheduleActionSummary:
     input_digest: str | None
     nominal_time_field: str | None
     run_timeout_ms: int | float | None
+    business_id_prefix: str | None = field(default=None, repr=False)
+    """The prefix of the business identifiers of the runs the schedule starts, as the server sent it (customer text,
+    kept out of ``repr``); ``None`` when the action has none."""
+    business_id_conflict_policy: str | None = None
+    """The server's word for the conflict policy (``FAIL``, ``USE_EXISTING`` or a value newer than this SDK, kept
+    as sent); ``None`` when the action has no prefix."""
+    business_id_reuse_policy: str | None = None
+    """The server's word for the reuse policy (``ALLOW_DUPLICATE``, ``ALLOW_DUPLICATE_FAILED_ONLY``,
+    ``REJECT_DUPLICATE`` or a value newer than this SDK, kept as sent); ``None`` when the action has no prefix."""
 
 
 @dataclass(frozen=True)
@@ -319,6 +339,9 @@ def to_schedule(value: Any) -> Schedule:
             input_digest=opt_str(action, "inputDigest"),
             nominal_time_field=opt_str(action, "nominalTimeField"),
             run_timeout_ms=opt_number(action, "runTimeoutMs"),
+            business_id_prefix=opt_str(action, "businessIdPrefix"),
+            business_id_conflict_policy=opt_str(action, "businessIdConflictPolicy"),
+            business_id_reuse_policy=opt_str(action, "businessIdReusePolicy"),
         ),
         note=opt_str(raw, "note"),
         note_by=opt_str(raw, "noteBy"),
