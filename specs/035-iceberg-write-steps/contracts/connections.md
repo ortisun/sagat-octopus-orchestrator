@@ -11,6 +11,9 @@ their shape and read `egressCeiling` as `internal`.
   (`driver: const object_storage`), `ClickHouseConnectionConfig` (`driver: const clickhouse`), with
   `discriminator.propertyName: driver`. Every config is `additionalProperties: false`; URIs carrying
   user info or query credentials are refused (`VALIDATION_FAILED`, `reason: CREDENTIAL_IN_URI`).
+- **Plain `http` names the loopback** (O035-010, option b, built 2026-11-10): a catalog address, an OAuth2 token endpoint or an S3 endpoint over `http` is refused at save with `VALIDATION_FAILED`, reason
+  `PLAIN_HTTP_OUTSIDE_LOOPBACK`, unless its host is `localhost`, `127.0.0.1` or `::1`, because the runner and the host read plain `http` on the loopback alone and nothing could run another address. A connection with
+  such an address is also for a development namespace only (as before), and runs only on a development runner (`lake-runtime.md`). `https` is any host, as ever.
 - `GET /database-drivers` lists `postgresql`, `iceberg`, `object_storage`, `clickhouse`, each with its
   supported catalog/storage types and modes, so the Studio and SDKs never hard-code the list. **What it lists today** (built in slice S6c): `postgresql`
   always, and `iceberg` **when the deployment has `lake.enabled`**, with what the platform serves end to end and not with everything a connection

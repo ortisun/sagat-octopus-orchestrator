@@ -1011,6 +1011,34 @@ mod tests {
         assert!(!format!("{refusal} {refusal:?}").contains("hunter2"));
     }
 
+    /// O035-010: plain `http` names the loopback, because the runner and the host read it on the loopback alone.
+    #[test]
+    fn a_plain_http_address_on_another_host_than_the_loopback_is_refused_with_its_reason() {
+        for place in ["uri", "token", "endpoint"] {
+            let mut sent = rest_s3();
+            match place {
+                "uri" => sent["catalog"]["rest"]["uri"] = json!("http://catalog.local:8181/api"),
+                "token" => {
+                    sent["catalog"]["rest"]["auth"] =
+                        json!({"type": "oauth2", "tokenUri": "http://catalog.local:8181/token"});
+                }
+                _ => sent["storage"]["s3"]["endpoint"] = json!("http://minio.internal:9000"),
+            }
+
+            assert_eq!(
+                domain(sent).expect_err("refused"),
+                AppError::InvalidConnection {
+                    reason: "PLAIN_HTTP_OUTSIDE_LOOPBACK"
+                },
+                "{place}"
+            );
+        }
+
+        let mut loopback = rest_s3();
+        loopback["catalog"]["rest"]["uri"] = json!("http://127.0.0.1:8181/api");
+        assert!(domain(loopback).is_ok());
+    }
+
     #[test]
     fn a_rule_of_the_domain_is_refused_with_its_reason() {
         let mut vended = rest_s3();

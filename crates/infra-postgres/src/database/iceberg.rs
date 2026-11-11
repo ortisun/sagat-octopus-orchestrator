@@ -338,7 +338,8 @@ pub(super) fn from_json(value: &Value) -> Result<ConnectionConfig, StoreError> {
             timeout_ms: optional_number(&limits["timeoutMs"])?,
         },
     };
-    ConnectionConfig::iceberg(config).map_err(|_| corrupt(SETTINGS))
+    // what was saved stays readable when the rules of saving tighten (O035-010)
+    ConnectionConfig::iceberg_stored(config).map_err(|_| corrupt(SETTINGS))
 }
 
 #[cfg(test)]
@@ -493,7 +494,7 @@ mod tests {
         let mut s3_compatible = rest_s3();
         s3_compatible.storage.kind = StorageKind::S3(S3Storage {
             region: "us-east-1".to_owned(),
-            endpoint: Some("http://rustfs.local:9000".to_owned()),
+            endpoint: Some("http://localhost:9000".to_owned()),
             path_style: true,
             role_arn: Some("arn:aws:iam::1:role/r".to_owned()),
             external_id: Some("external".to_owned()),
@@ -512,6 +513,19 @@ mod tests {
             let stored = config_json(&config);
             assert_eq!(config_from(&stored).expect("it reads"), config, "{stored}");
         }
+    }
+
+    /// O035-010: a plain `http` address names the loopback **when a connection is saved**. A revision that an earlier build saved with another
+    /// host (a development namespace could) stays readable: it must not turn into a corrupt row that fails a listing, an admission or a
+    /// replay, and it still says that it is for development only.
+    #[test]
+    fn a_revision_stored_before_plain_http_named_the_loopback_stays_readable() {
+        let mut stored = config_json(&connection(rest_s3()));
+        stored["catalog"]["rest"]["uri"] = json!("http://catalog.local:8181/api");
+
+        let read = config_from(&stored).expect("an earlier build saved it, and it stays readable");
+
+        assert!(read.requires_development());
     }
 
     /// The order of the modes is kept: the replay of a write compares the stored document with the new one.

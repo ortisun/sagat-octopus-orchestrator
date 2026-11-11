@@ -11,11 +11,11 @@ trusts, (b) the host and the runner accept an `http` storage or token endpoint o
 
 | ID | Decision | Decided by | Status | Covers |
 |---|---|---|---|---|
-| OD-2026-11-10-1 | "B" | owner | Decided, not built | specs/035-iceberg-write-steps/research.md (G035-095, O035-010), tasks.md T035-062 |
+| OD-2026-11-10-1 | "B" | owner | Decided; the host, the runner and the server's refusal built | specs/035-iceberg-write-steps/research.md (G035-095, O035-010), tasks.md T035-062 |
 
 Read as the assistant recommended it with the option: the host and the runner accept `http` for the S3 endpoint and the OAuth2 token endpoint **on the loopback, and only when the runner says it is a development
 one** (a flag the runner sets and the connection can never set), which makes true what the server already says of a development namespace; **and the server also refuses, at save, an `http` host that is not the
-loopback**, since nothing could run it. The second half is the assistant's reading of "B" together with its recommendation, and is built as a separate change so that the owner can correct it. It unblocks T035-062.
+loopback**, since nothing could run it. The second half is the assistant's reading of "B" together with its recommendation, and is built as a separate change so that the owner can correct it (built 2026-11-10: `PLAIN_HTTP_OUTSIDE_LOOPBACK`). It unblocks T035-062.
 
 ## 2026-11-06 — Mutation testing runs only when a release is closed
 

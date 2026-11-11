@@ -290,9 +290,9 @@ pub async fn run(w: &World, secrets: &ManagedSecretService<PgRunStore, SystemClo
         "unclassified is pii, and `lake-main` accepts internal"
     );
 
-    // Plain `http` is for a development namespace, as a plaintext PostgreSQL connection is.
+    // Plain `http` is for a development namespace, as a plaintext PostgreSQL connection is, and names the loopback (O035-010).
     let plain = iceberg(
-        "http://catalog.local:8181",
+        "http://localhost:8181",
         "db-credentials",
         EgressCeiling::Internal,
     );
