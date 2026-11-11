@@ -237,7 +237,7 @@ impl ErrorCode {
                 "The payload must be a JSON object (a signal) and at most 256 KiB."
             }
             (Self::ValidationFailed, "BATCH_SELECTOR_UNSUPPORTED") => {
-                "Business ids are not bound to runs yet; select by the other filters or by run ids."
+                "This deployment cannot evaluate that selector; select by the other filters or by run ids."
             }
             (Self::ValidationFailed, "BATCH_ACTION_PARAMETERS") => {
                 "The action needs (or refuses) `stepId`, `signal` or `update`; a signal name is 1 to 128 characters of letters, digits and `_ . : -`; a step id is a step of the workflow."

@@ -525,6 +525,7 @@ fn standing(open_runs: u32, buffered: u32) -> Standing {
     Standing {
         open_runs,
         buffered,
+        reserved: buffered,
         remaining: None,
     }
 }
@@ -666,6 +667,7 @@ fn remaining_actions_at_zero_leave_nothing_to_do_for_every_policy() {
         let standing = Standing {
             open_runs: 0,
             buffered: 0,
+            reserved: 0,
             remaining: Some(0),
         };
         assert_eq!(
@@ -685,6 +687,7 @@ fn a_waiting_action_keeps_one_remaining_action_for_itself() {
     let with = |remaining, buffered, open_runs| Standing {
         open_runs,
         buffered,
+        reserved: buffered,
         remaining: Some(remaining),
     };
     let ceilings = Ceilings::default();
@@ -712,6 +715,36 @@ fn a_waiting_action_keeps_one_remaining_action_for_itself() {
 }
 
 #[test]
+fn a_waiting_action_that_uses_no_remaining_action_up_keeps_none_for_itself() {
+    // a waiting trigger-now or backfill step: one waits, none of the waiting ones is a scheduled action (D2190, G1017)
+    let waiting_manual = |remaining, open_runs| Standing {
+        open_runs,
+        buffered: 1,
+        reserved: 0,
+        remaining: Some(remaining),
+    };
+    let ceilings = Ceilings::default();
+    let one = policies(Overlap::BufferOne, 3);
+    assert_eq!(
+        decide(&one, &waiting_manual(1, 1), &ceilings),
+        Decision::DropBufferFull,
+        "the last remaining action is not taken by a manual action that waits: the time is decided, not passed over"
+    );
+    let all = policies(Overlap::BufferAll, 3);
+    assert_eq!(
+        decide(&all, &waiting_manual(1, 1), &ceilings),
+        Decision::Buffer { cancel_open: false },
+        "and a scheduled time may wait as well: it will hold the remaining action itself"
+    );
+    // a scheduled waiting action still keeps its own (D1042)
+    let reserved = Standing {
+        reserved: 1,
+        ..waiting_manual(1, 1)
+    };
+    assert_eq!(decide(&all, &reserved, &ceilings), Decision::Exhausted);
+}
+
+#[test]
 fn a_waiting_action_is_released_when_nothing_is_open() {
     assert_eq!(release(&standing(0, 1)), Release::StartOldest);
     assert_eq!(release(&standing(0, 5)), Release::StartOldest);
@@ -721,6 +754,7 @@ fn a_waiting_action_is_released_when_nothing_is_open() {
     let exhausted = Standing {
         open_runs: 0,
         buffered: 1,
+        reserved: 1,
         remaining: Some(0),
     };
     assert_eq!(
@@ -1151,4 +1185,46 @@ fn nothing_acts_at_or_after_the_end_even_with_jitter() {
         "exclusive: at the end is too late"
     );
     assert_eq!(actual_time(nominal, 5_000, Some(at(1_001))), None);
+}
+
+/// Whoever may read a schedule may read the runs: the description of a schedule names the business-id prefix of its action, and
+/// the lookup that tells who holds an id a decision found taken needs `run:read` (D2183). The review that raised this found it
+/// true only because of the role table as it stands; this keeps it true when a role changes. A role added later must be placed
+/// here (the `match` does not compile without it).
+#[test]
+fn every_role_that_reads_schedules_also_reads_runs() {
+    use sagat_domain::identity::{Permission, Role};
+    let every = [
+        Role::Admin,
+        Role::Developer,
+        Role::Operator,
+        Role::Viewer,
+        Role::Worker,
+        Role::Runner,
+        Role::DatabaseRunner,
+    ];
+    for role in every {
+        // exhaustive on purpose: a new role is a decision about this rule
+        match role {
+            Role::Admin
+            | Role::Developer
+            | Role::Operator
+            | Role::Viewer
+            | Role::Worker
+            | Role::Runner
+            | Role::DatabaseRunner => {}
+        }
+        if role.grants(Permission::ScheduleRead) {
+            assert!(
+                role.grants(Permission::RunRead),
+                "{role} reads schedules but not runs: the id an action found taken could not be looked up (D2183)"
+            );
+        }
+    }
+    assert!(
+        every
+            .iter()
+            .any(|role| role.grants(Permission::ScheduleRead)),
+        "the rule is not vacuous"
+    );
 }

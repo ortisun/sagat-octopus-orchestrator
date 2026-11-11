@@ -756,15 +756,6 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
             // until then a job names root steps only (G1956)
             return Err(invalid("BATCH_ACTION_PARAMETERS", "/instancePath"));
         }
-        if let SelectorKind::Filter(filter) = write.selector.kind()
-            && filter.business_id_prefix.is_some()
-        {
-            // the business-id binding arrives with its own story; until then there is nothing to match
-            return Err(invalid(
-                "BATCH_SELECTOR_UNSUPPORTED",
-                "/selector/filter/businessIdPrefix",
-            ));
-        }
         let limits = Limits::new(
             write.max_items.unwrap_or(Limits::default().max_items),
             write.rate.unwrap_or_default(),
@@ -906,14 +897,6 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
     ) -> Result<Preview, AppError> {
         principal.authorize(Permission::RunBatch)?;
         principal.authorize(Permission::RunRead)?;
-        if let SelectorKind::Filter(filter) = selector.kind()
-            && filter.business_id_prefix.is_some()
-        {
-            return Err(invalid(
-                "BATCH_SELECTOR_UNSUPPORTED",
-                "/selector/filter/businessIdPrefix",
-            ));
-        }
         let limits = Limits::new(
             max_items.unwrap_or(Limits::default().max_items),
             Rate::default(),

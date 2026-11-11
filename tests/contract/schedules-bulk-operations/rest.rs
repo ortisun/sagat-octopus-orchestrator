@@ -88,7 +88,9 @@ async fn every_schedule_operation_conforms_to_the_contract_on_its_normal_and_err
             "name": name,
             "spec": {"intervals": [{"everyMs": 3_600_000}], "timezone": "UTC", "jitterMs": 1000},
             "policies": {"overlap": "BUFFER_ONE", "pauseOnFailure": true},
-            "action": {"workflowId": workflow, "input": {"region": "eu"}, "nominalTimeField": "at"},
+            "action": {"workflowId": workflow, "input": {"region": "eu"}, "nominalTimeField": "at",
+                       "businessIdPrefix": "order", "businessIdConflictPolicy": "USE_EXISTING",
+                       "businessIdReusePolicy": "ALLOW_DUPLICATE_FAILED_ONLY"},
             "note": "created by the contract test",
             "remainingActions": 100
         })

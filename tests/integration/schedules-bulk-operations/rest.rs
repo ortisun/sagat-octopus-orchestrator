@@ -1036,3 +1036,301 @@ async fn the_runs_a_schedule_started_are_listed_by_it() {
     let (status, refused) = listed("scheduleId=not-an-id".to_owned()).await;
     assert_eq!(status, 422, "{refused}");
 }
+// --- the business-id prefix of the action (FR-018-016) and the batch selector by prefix (G2027) ---------------------
+
+fn with_action(workflow: &str, name: &str, action: Value) -> Value {
+    let mut doc = body(workflow, name);
+    let map = doc["action"].as_object_mut().expect("action");
+    for (key, value) in action.as_object().expect("fields") {
+        map.insert(key.clone(), value.clone());
+    }
+    doc
+}
+
+#[tokio::test]
+async fn the_prefix_and_the_policies_of_an_action_are_written_and_read_back_and_absent_when_there_is_none()
+ {
+    let r = rig().await;
+    let doc = with_action(
+        &r.workflow,
+        "orders",
+        json!({
+            "businessIdPrefix": "order",
+            "businessIdConflictPolicy": "USE_EXISTING",
+            "businessIdReusePolicy": "REJECT_DUPLICATE"
+        }),
+    );
+    let (status, created) = r.p.rest(Method::POST, &r.schedules(), Some(&doc)).await;
+    assert_eq!(status, 201, "{created}");
+    for (field, value) in [
+        ("businessIdPrefix", "order"),
+        ("businessIdConflictPolicy", "USE_EXISTING"),
+        ("businessIdReusePolicy", "REJECT_DUPLICATE"),
+    ] {
+        assert_eq!(created["action"][field], value, "{created}");
+    }
+    let id = Rig::id(&created);
+    let (_, described) =
+        r.p.rest(
+            Method::GET,
+            &format!("{}?nextCount=1", r.schedule(&id)),
+            None,
+        )
+        .await;
+    assert_eq!(described["action"]["businessIdPrefix"], "order");
+
+    // the prefix alone writes the defaults out
+    let (status, defaults) =
+        r.p.rest(
+            Method::POST,
+            &r.schedules(),
+            Some(&with_action(
+                &r.workflow,
+                "defaults",
+                json!({"businessIdPrefix": "plain"}),
+            )),
+        )
+        .await;
+    assert_eq!(status, 201, "{defaults}");
+    assert_eq!(defaults["action"]["businessIdConflictPolicy"], "FAIL");
+    assert_eq!(
+        defaults["action"]["businessIdReusePolicy"],
+        "ALLOW_DUPLICATE"
+    );
+
+    // it is in the list, and an update without it takes it away
+    let (_, listed) = r.p.rest(Method::GET, &r.schedules(), None).await;
+    assert!(
+        listed["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .any(|s| s["action"]["businessIdPrefix"] == "order")
+    );
+    let mut replacement = body(&r.workflow, "orders");
+    replacement["expectedRevision"] = json!(1);
+    let (status, updated) =
+        r.p.rest(Method::PUT, &r.schedule(&id), Some(&replacement))
+            .await;
+    assert_eq!(status, 200, "{updated}");
+    for field in [
+        "businessIdPrefix",
+        "businessIdConflictPolicy",
+        "businessIdReusePolicy",
+    ] {
+        assert!(updated["action"].get(field).is_none(), "{field}: {updated}");
+    }
+    // a schedule that never had one has none
+    let plain = r.create("no-prefix").await;
+    assert!(plain["action"].get("businessIdPrefix").is_none(), "{plain}");
+}
+
+#[tokio::test]
+async fn a_prefix_that_is_not_one_is_refused_with_its_place_and_never_echoed() {
+    let r = rig().await;
+    for (action, field) in [
+        (json!({"businessIdPrefix": ""}), "/action/businessIdPrefix"),
+        (
+            json!({"businessIdPrefix": "has space canary-text"}),
+            "/action/businessIdPrefix",
+        ),
+        (
+            json!({"businessIdPrefix": "caf\u{e9}-canary-text"}),
+            "/action/businessIdPrefix",
+        ),
+        (
+            json!({"businessIdPrefix": "o".repeat(161)}),
+            "/action/businessIdPrefix",
+        ),
+        (json!({"businessIdPrefix": 7}), "/action/businessIdPrefix"),
+        // a policy is for a prefix: without one it is refused, not dropped
+        (
+            json!({"businessIdConflictPolicy": "FAIL"}),
+            "/action/businessIdConflictPolicy",
+        ),
+        (
+            json!({"businessIdReusePolicy": "REJECT_DUPLICATE"}),
+            "/action/businessIdReusePolicy",
+        ),
+        (
+            json!({"businessIdPrefix": "order", "businessIdConflictPolicy": "TERMINATE_EXISTING"}),
+            "/action/businessIdConflictPolicy",
+        ),
+        (
+            json!({"businessIdPrefix": "order", "businessIdReusePolicy": "SOMETIMES"}),
+            "/action/businessIdReusePolicy",
+        ),
+    ] {
+        let doc = with_action(&r.workflow, "refused", action.clone());
+        let (status, refused) = r.p.rest(Method::POST, &r.schedules(), Some(&doc)).await;
+        assert_eq!(status, 422, "{action} -> {refused}");
+        assert_eq!(
+            reason(&refused),
+            "SCHEDULE_SPEC_INVALID",
+            "{action} -> {refused}"
+        );
+        assert_eq!(refused["details"]["field"], field, "{action} -> {refused}");
+        assert!(
+            !refused.to_string().contains("canary-text"),
+            "the prefix is not echoed: {refused}"
+        );
+    }
+    let (_, listed) = r.p.rest(Method::GET, &r.schedules(), None).await;
+    assert_eq!(listed["items"], json!([]), "nothing was stored");
+}
+
+#[tokio::test]
+async fn a_batch_preview_and_a_job_select_by_the_prefix_of_the_business_id_over_http() {
+    let r = rig().await;
+    let batches = format!("/namespaces/{}/batch-operations", r.namespace);
+    for id in ["lot-1", "lot-2", "other-1"] {
+        let (status, run) =
+            r.p.rest(
+                Method::POST,
+                "/runs",
+                Some(&json!({"workflowId": r.workflow, "input": {}, "businessId": id})),
+            )
+            .await;
+        assert_eq!(status, 202, "{run}");
+    }
+    let preview_of = |prefix: &'static str| {
+        let (p, url) = (&r.p, format!("{batches}/preview"));
+        async move {
+            p.rest(
+                Method::POST,
+                &url,
+                Some(&json!({"selector": {"filter": {"businessIdPrefix": prefix}}})),
+            )
+            .await
+        }
+    };
+    let (status, preview) = preview_of("lot-").await;
+    assert_eq!(status, 200, "{preview}");
+    assert_eq!(preview["matched"], 2, "{preview}");
+    let (status, none) = preview_of("nothing-").await;
+    assert_eq!(status, 200, "{none}");
+    assert_eq!(none["matched"], 0, "{none}");
+    // the characters of a pattern are not a pattern
+    let (status, wild) = preview_of("%").await;
+    assert_eq!(status, 200, "{wild}");
+    assert_eq!(wild["matched"], 0, "{wild}");
+    // a prefix that is not an identifier is a malformed selector
+    let (status, bad) = preview_of("has space").await;
+    assert_eq!(status, 422, "{bad}");
+    assert_eq!(reason(&bad), "BATCH_SELECTOR_INVALID", "{bad}");
+
+    let (status, job) =
+        r.p.rest(
+            Method::POST,
+            &batches,
+            Some(&json!({
+                "selector": {"filter": {"businessIdPrefix": "lot-"}},
+                "action": "CANCEL",
+                "reason": "cancel the runs of the lot"
+            })),
+        )
+        .await;
+    assert_eq!(status, 202, "{job}");
+    assert!(
+        !job.to_string().contains("lot-"),
+        "a read of a job never returns the selector: {job}"
+    );
+}
+#[tokio::test]
+async fn an_action_under_a_business_id_makes_its_run_under_the_id_and_a_held_id_is_a_decision_over_http()
+ {
+    use sagat_application::schedule_firing::Fired;
+    use time::format_description::well_known::Rfc3339;
+    use time::{Duration, OffsetDateTime};
+
+    use crate::support::schedules::fire_at;
+
+    let r = rig().await;
+    let doc = with_action(
+        &r.workflow,
+        "ordered",
+        json!({"businessIdPrefix": "order", "businessIdConflictPolicy": "FAIL"}),
+    );
+    let (status, created) = r.p.rest(Method::POST, &r.schedules(), Some(&doc)).await;
+    assert_eq!(status, 201, "{created}");
+    eprintln!("created action: {}", created["action"]);
+    let id = Rig::id(&created);
+    let next = OffsetDateTime::parse(created["nextActionAt"].as_str().expect("next"), &Rfc3339)
+        .expect("RFC 3339");
+    // two past times of the schedule: the id of each is the prefix, a dash and the time to the second in UTC, ending in Z
+    let (first, second) = (next - Duration::hours(2), next - Duration::hours(1));
+    let id_of = |nominal: OffsetDateTime| {
+        format!(
+            "order-{}",
+            nominal
+                .to_offset(time::UtcOffset::UTC)
+                .format(&Rfc3339)
+                .expect("a time")
+        )
+    };
+
+    // a person's open run holds the id of the first time
+    let (status, held) =
+        r.p.rest(
+            Method::POST,
+            "/runs",
+            Some(&json!({"workflowId": r.workflow, "input": {}, "businessId": id_of(first)})),
+        )
+        .await;
+    assert_eq!(status, 202, "{held}");
+    let holder = held["runId"].as_str().expect("a run").to_owned();
+
+    // the first time finds its id held: a recorded decision that names no run, and the schedule goes on
+    assert_eq!(
+        fire_at(&r.p.api, r.p.tenant, &id, first).await,
+        Fired::Acted
+    );
+    let (_, page) =
+        r.p.rest(Method::GET, &format!("{}/actions", r.schedule(&id)), None)
+            .await;
+    let conflict = page["items"][0].clone();
+    eprintln!("action that found its id held: {conflict}");
+    assert_eq!(conflict["outcome"], "BUSINESS_ID_CONFLICT", "{page}");
+    assert_eq!(conflict["reason"], "BUSINESS_ID_IN_USE", "{page}");
+    assert!(conflict["runId"].is_null(), "{page}");
+    assert_eq!(conflict["kind"], "SCHEDULED");
+
+    // the second time is free: its run is bound to the id, which the run and the binding say
+    assert_eq!(
+        fire_at(&r.p.api, r.p.tenant, &id, second).await,
+        Fired::Acted
+    );
+    let (_, page) =
+        r.p.rest(Method::GET, &format!("{}/actions", r.schedule(&id)), None)
+            .await;
+    let started = page["items"][0].clone();
+    eprintln!("action that started: {started}");
+    assert_eq!(started["outcome"], "STARTED", "{page}");
+    let run = started["runId"].as_str().expect("a run").to_owned();
+    let read = r.p.run(&run).await;
+    assert_eq!(read["businessId"], id_of(second).as_str(), "{read}");
+    eprintln!(
+        "the run: businessId {}, schedule {}",
+        read["businessId"], read["schedule"]
+    );
+    let binding_path = format!("/namespaces/{}/business-ids/{}", r.namespace, id_of(second));
+    let (status, binding) = r.p.rest(Method::GET, &binding_path, None).await;
+    assert_eq!(status, 200, "{binding}");
+    assert_eq!(binding["executionId"], run.as_str(), "{binding}");
+    assert_eq!(binding["open"], true);
+    // the holder of the first id is untouched
+    let (_, binding) =
+        r.p.rest(
+            Method::GET,
+            &format!("/namespaces/{}/business-ids/{}", r.namespace, id_of(first)),
+            None,
+        )
+        .await;
+    assert_eq!(binding["executionId"], holder.as_str(), "{binding}");
+    let (_, described) = r.p.rest(Method::GET, &r.schedule(&id), None).await;
+    assert_eq!(
+        described["counters"],
+        json!({"BUSINESS_ID_CONFLICT": 1, "STARTED": 1}),
+        "{described}"
+    );
+}

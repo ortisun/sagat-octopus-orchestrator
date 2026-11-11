@@ -973,6 +973,31 @@ async fn current_worker_authorized(
             .contains(&sagat_domain::identity::Permission::WorkerExecute))
 }
 
+/// The subject a schedule acts for, looked at again under the lock of its membership (feature 018, `FR-018-015`): a revocation that
+/// has returned stops the action. A workflow with managed database steps takes the catalog first, as 017 does (ADR-0050 decision
+/// 7). A cron trigger's schedule acts as the engine whatever starts the run (the tick, the release of an action that waited, a
+/// run-now whose waiting action was released): `system:engine` is no member and holds no authority to look at again (database
+/// steps stand on the publisher). A backfill and a run-now of a person keep theirs. Nothing to do for a run no schedule makes.
+async fn recheck_schedule_authority(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    new: &NewRun,
+) -> Result<(), StoreError> {
+    let Some(schedule) = &new.schedule else {
+        return Ok(());
+    };
+    let database = crate::database::database_writes(&new.definition);
+    if database.is_some() {
+        crate::quotas::lock_secrets(conn, tenant, new.info.namespace_id).await?;
+    }
+    let engine = schedule.trigger.is_some()
+        && schedule.authority == sagat_domain::identity::Subject::engine().as_str();
+    if !engine {
+        crate::schedules::recheck_authority(conn, tenant, schedule, database).await?;
+    }
+    Ok(())
+}
+
 impl RunStore for PgRunStore {
     type Tx = PgRunTx;
 
@@ -1048,11 +1073,27 @@ impl RunStore for PgRunStore {
                 .await
                 {
                     Ok(crate::business_ids::Claimed::Bound) => {}
+                    // What follows is a decision of the schedule (the action is recorded as the holder's, or as a conflict): the subject
+                    // it acts for is looked at again first, under the lock of its membership, as for a run, so that a revocation that
+                    // has returned is what is recorded, not a decision about the id. The order is the one of the admission: the binding,
+                    // the catalog, the membership.
                     Ok(crate::business_ids::Claimed::Existing(holder)) => {
+                        if let Err(revoked) =
+                            recheck_schedule_authority(&mut tx, tenant, &new).await
+                        {
+                            let _ = tx.rollback().await;
+                            return Err(revoked);
+                        }
                         let _ = tx.rollback().await;
                         return Ok(Admitted::Existing(holder.to_string()));
                     }
                     Err(error) => {
+                        if let Err(revoked) =
+                            recheck_schedule_authority(&mut tx, tenant, &new).await
+                        {
+                            let _ = tx.rollback().await;
+                            return Err(revoked);
+                        }
                         let _ = tx.rollback().await;
                         return Err(error);
                     }
@@ -1155,21 +1196,7 @@ impl RunStore for PgRunStore {
             // The subject a schedule acts for is looked at again where the run is admitted, under
             // the lock of its membership: a revocation that has returned stops the run. A workflow
             // with managed database steps takes the catalog first, as 017 does (ADR-0050 decision 7).
-            if let Some(schedule) = &new.schedule {
-                let database = crate::database::database_writes(&new.definition);
-                if database.is_some() {
-                    crate::quotas::lock_secrets(&mut tx, tenant, new.info.namespace_id).await?;
-                }
-                // a cron trigger's schedule acts as the engine whatever starts the run (the tick, the release of an action that
-                // waited, a run-now whose waiting action was released): `system:engine` is no member and holds no authority to
-                // look at again (database steps stand on the publisher). A backfill and a run-now of a person keep theirs.
-                let engine = schedule.trigger.is_some()
-                    && schedule.authority == sagat_domain::identity::Subject::engine().as_str();
-                if !engine {
-                    crate::schedules::recheck_authority(&mut tx, tenant, schedule, database)
-                        .await?;
-                }
-            }
+            recheck_schedule_authority(&mut tx, tenant, &new).await?;
             // The member who asked for the reset is looked at again where the run is admitted, under the lock
             // of their membership: a revocation that has returned stops the run.
             if let Some(pending) = &new.pending_reset {

@@ -9,12 +9,13 @@ use sagat_application::clock::Clock;
 use sagat_application::error::AppError;
 use sagat_application::identity::RequestContext;
 use sagat_application::schedule_codec::{policies_from_json, spec_from_json, target_from_json};
-use sagat_application::schedule_firing::{Fired, ScheduleFiring, ScheduledStart, ScheduledStarts};
+use sagat_application::schedule_firing::{
+    Fired, ScheduleFiring, ScheduledRun, ScheduledStart, ScheduledStarts,
+};
 use sagat_application::schedules::{
     DueSchedule, ScheduleAdmission, ScheduleRecord, ScheduleService, ScheduleStore, ScheduleWrite,
 };
 use sagat_domain::definition::WorkflowId;
-use sagat_domain::execution::RunId;
 use sagat_domain::identity::Principal;
 use sagat_domain::schedules::{Ceilings, ScheduleName};
 use sagat_infra_ir::schedule_calendar::SpecCalendar;
@@ -62,7 +63,7 @@ impl ScheduledStarts for Starts {
         request: &ScheduledStart<'_>,
         admission: ScheduleAdmission,
         ctx: &RequestContext,
-    ) -> Result<RunId, AppError> {
+    ) -> Result<ScheduledRun, AppError> {
         ScheduledStarts::start_scheduled(&self.0.runs, principal, request, admission, ctx).await
     }
 

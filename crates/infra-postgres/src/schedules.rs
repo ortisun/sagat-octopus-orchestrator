@@ -258,6 +258,36 @@ async fn insert_recorded(
     Ok(())
 }
 
+/// Settles the waiting action of the identity of `action` as the decision `action` makes (a business id held), if there is one:
+/// `BUFFERED` is the one outcome an action leaves, and the guard of the table lets it go to a final one. `true` when a waiting
+/// row was there.
+async fn settle_waiting(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    schedule: ScheduleId,
+    action: &RecordedAction,
+    now: OffsetDateTime,
+) -> Result<bool, StoreError> {
+    Ok(sqlx::query(
+        "UPDATE schedule_actions SET outcome = $5, reason = $6, run_id = $7, decided_at = $8 \
+         WHERE tenant_id = $1 AND schedule_id = $2 AND origin = $3 AND nominal_at = $4 \
+           AND outcome = 'BUFFERED'",
+    )
+    .bind(tenant.as_uuid())
+    .bind(schedule.as_uuid())
+    .bind(action.kind.origin().as_str())
+    .bind(action.nominal_at)
+    .bind(action.outcome.as_str())
+    .bind(action.reason)
+    .bind(action.run)
+    .bind(now)
+    .execute(conn)
+    .await
+    .map_err(store_error)?
+    .rows_affected()
+        == 1)
+}
+
 /// The counters of a schedule after rows were recorded: one per outcome, a summary counting the
 /// times it stands for.
 fn bumped(counters: &mut Value, outcome: Outcome, by: u64) {
@@ -1476,6 +1506,19 @@ impl ScheduleStore for PgScheduleStore {
             .collect()
     }
 
+    async fn waiting_scheduled(&self, tenant: TenantId, id: ScheduleId) -> Result<u32, StoreError> {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM schedule_actions \
+             WHERE tenant_id = $1 AND schedule_id = $2 AND outcome = 'BUFFERED' AND kind = 'SCHEDULED'",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)?;
+        u32::try_from(waiting).map_err(|_| corrupt("waiting actions"))
+    }
+
     async fn oldest_buffered(
         &self,
         tenant: TenantId,
@@ -1580,15 +1623,32 @@ impl ScheduleStore for PgScheduleStore {
             .map(|action| (by_backfill, action))
             .chain(decision.after.extra.iter().map(|action| (None, action)))
         {
-            insert_recorded(
+            // an action that waited for a run to end and then found its business id held is settled where it stands: it
+            // is the row of the decision, not a second one, and it does not wait any more
+            let settled = matches!(
+                action.outcome,
+                Outcome::BusinessIdConflict | Outcome::AlreadyActed
+            ) && settle_waiting(
                 &mut tx,
                 decision.tenant_id,
                 decision.schedule,
                 action,
-                made,
                 decision.at,
             )
             .await?;
+            if settled {
+                waiting -= 1;
+            } else {
+                insert_recorded(
+                    &mut tx,
+                    decision.tenant_id,
+                    decision.schedule,
+                    action,
+                    made,
+                    decision.at,
+                )
+                .await?;
+            }
             bumped(
                 &mut counters,
                 action.outcome,

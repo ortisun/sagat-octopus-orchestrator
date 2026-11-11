@@ -1035,10 +1035,37 @@ where
         admission: crate::schedules::ScheduleAdmission,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
+        self.start_scheduled_under(principal, request, None, admission, ctx)
+            .await
+            .map(|started| started.run)
+    }
+
+    /// As [`Self::start_scheduled`], for an action whose run is started under a business identifier (the prefix of the
+    /// schedule's action and the nominal time, feature 018 `FR-018-016`). The identifier is claimed in the creation
+    /// transaction, after the schedule's row and before any run's (the lock order of ADR-0050 decision 7), with the
+    /// policies the schedule names. The answer says whether a run was made (`existing` is false) or an open holder
+    /// answered instead (`USE_EXISTING`): nothing was created and nothing of the action was written, so the caller
+    /// records the action.
+    ///
+    /// # Errors
+    /// As [`Self::start_scheduled`], and [`AppError::BusinessIdConflict`] when the identifier is held and the policy
+    /// refuses (`BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`): nothing was written either, and the caller records
+    /// the refusal as the decision of the action.
+    pub async fn start_scheduled_under(
+        &self,
+        principal: &Principal,
+        request: &StartRun<'_>,
+        business: Option<BusinessStart>,
+        admission: crate::schedules::ScheduleAdmission,
+        ctx: &RequestContext,
+    ) -> Result<Started, AppError> {
         self.start_with(
             principal,
             request,
-            StartOptions::default(),
+            StartOptions {
+                business,
+                start_delay: None,
+            },
             None,
             None,
             Some(admission),
@@ -1046,7 +1073,6 @@ where
             ctx,
         )
         .await
-        .map(|started| started.run)
     }
 
     /// Starts with a staged upload belonging to this principal. The external bytes stay opaque;
@@ -1228,14 +1254,6 @@ where
             return Err(AppError::NotAllowed(
                 "the correlation id is too long or has control characters",
             ));
-        }
-        if options.business.is_some() && scheduled.is_some() {
-            // a schedule's action never carries an identifier (a rerun derives its own from the run
-            // it repeats, in `rerun_with`, never from the caller)
-            return Err(AppError::InvalidStart {
-                reason: "BUSINESS_ID_NOT_APPLICABLE",
-                field: Some("/businessId".to_owned()),
-            });
         }
         if let Some(delay) = options.start_delay
             && !(Duration::from_millis(1)..=MAX_START_DELAY).contains(&delay)
@@ -2888,9 +2906,9 @@ where
         request: &crate::schedule_firing::ScheduledStart<'_>,
         admission: crate::schedules::ScheduleAdmission,
         ctx: &RequestContext,
-    ) -> Result<RunId, AppError> {
+    ) -> Result<crate::schedule_firing::ScheduledRun, AppError> {
         let key = admission.run_key();
-        let started = RunService::start_scheduled(
+        let started = RunService::start_scheduled_under(
             self,
             principal,
             &StartRun {
@@ -2902,11 +2920,16 @@ where
                 deadline: None,
                 key: &key,
             },
+            request.business.clone(),
             admission,
             ctx,
         )
         .await?;
-        Ok(started.info.run_id)
+        Ok(if started.existing {
+            crate::schedule_firing::ScheduledRun::Existing(started.run.info.run_id)
+        } else {
+            crate::schedule_firing::ScheduledRun::Started(started.run.info.run_id)
+        })
     }
 
     async fn cancel_run(

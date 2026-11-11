@@ -24,13 +24,19 @@ fn overlaps() -> impl Strategy<Value = Overlap> {
 }
 
 fn standings() -> impl Strategy<Value = Standing> {
-    (0..1200u32, 0..1200u32, proptest::option::of(0..1300u32)).prop_map(
-        |(open_runs, buffered, remaining)| Standing {
+    // `reserved` is the part of the waiting actions that will use a remaining action up: never more than the waiting ones
+    (
+        0..1200u32,
+        0..1200u32,
+        0..1200u32,
+        proptest::option::of(0..1300u32),
+    )
+        .prop_map(|(open_runs, buffered, reserving, remaining)| Standing {
             open_runs,
             buffered,
+            reserved: reserving.min(buffered),
             remaining,
-        },
-    )
+        })
 }
 
 fn policies_with(overlap: Overlap, buffer_limit: u32) -> Policies {
@@ -88,14 +94,15 @@ proptest! {
         }
     }
 
-    /// Buffered actions never outnumber the remaining ones: each waiting action holds one.
+    /// The waiting actions that use one up never outnumber the remaining ones: each of them holds one. A waiting action that
+    /// uses none up (a trigger-now, a backfill step) holds none (D2190).
     #[test]
     fn a_waiting_action_always_has_a_remaining_action_to_run_on(
         overlap in overlaps(), standing in standings(), limit in 1..=1000u32,
     ) {
         let decision = decide(&policies_with(overlap, limit), &standing, &Ceilings::default());
         if let (Some(remaining), Decision::Buffer { .. } | Decision::Start) = (standing.remaining, decision) {
-            prop_assert!(remaining > standing.buffered, "{standing:?} {decision:?}");
+            prop_assert!(remaining > standing.reserved, "{standing:?} {decision:?}");
         }
     }
 

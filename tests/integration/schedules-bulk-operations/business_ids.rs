@@ -72,7 +72,7 @@ pub(crate) async fn holder_of(f: &Fixture, id: &str) -> Option<Uuid> {
 }
 
 /// Ends the run: `a` and `b` succeed (the run `SUCCEEDED`).
-async fn succeed(f: &Fixture, run: RunId) {
+pub(crate) async fn succeed(f: &Fixture, run: RunId) {
     let session = f.w.session(&["act.a", "act.b"]).await;
     for activity in ["act.a", "act.b"] {
         let task = f.w.one_task_of(&session, activity).await;

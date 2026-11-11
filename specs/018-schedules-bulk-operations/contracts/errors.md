@@ -9,7 +9,7 @@ caller or another tenant's identifier. A foreign resource is `NOT_FOUND` without
 | `code` | HTTP | `details.reason` | Retryable | Raised by | Remediation (one sentence, closed table) |
 | --- | --- | --- | --- | --- | --- |
 | `VALIDATION_FAILED` | 422 | `SCHEDULE_NAME_RESERVED` | no | create/update schedule | The name is one a schedule of a cron trigger has or may fall back to (`trigger-` and 32 hex digits, optionally `-` and digits); choose another. |
-| `VALIDATION_FAILED` | 422 | `SCHEDULE_SPEC_INVALID` | no | create/update schedule | A spec field is outside its domain or ceiling; `details.field` names the JSON pointer. |
+| `VALIDATION_FAILED` | 422 | `SCHEDULE_SPEC_INVALID` | no | create/update schedule (also the action's business id: `details.field` is `/action/businessIdPrefix` for a prefix that is not 1 to 160 visible ASCII characters, and `/action/businessIdConflictPolicy` or `/action/businessIdReusePolicy` for a policy that has no prefix to belong to; the text is never echoed) | A spec field is outside its domain or ceiling; `details.field` names the JSON pointer. |
 | `VALIDATION_FAILED` | 422 | `SCHEDULE_NEVER_FIRES` | no | create/update | The spec has no occurrence between `startAt` and `endAt`. |
 | `VALIDATION_FAILED` | 422 | `SCHEDULE_TOO_FREQUENT` | no | create/update | Two occurrences are closer than the minimum spacing; widen the spec. |
 | `VALIDATION_FAILED` | 422 | `SCHEDULE_ZONE_UNKNOWN` | no | create/update | Use an IANA zone name known to the platform. |
@@ -40,7 +40,7 @@ caller or another tenant's identifier. A foreign resource is `NOT_FOUND` without
 | `VALIDATION_FAILED` | 422 | `BATCH_LIMITS_INVALID` | no | batch create | `maxItems` is 1 to 100,000 and `itemsPerSecond` above 0 and at most 200. |
 | `VALIDATION_FAILED` | 422 | `BATCH_REASON_INVALID` | no | batch create/cancel | The reason is 8 to 2,000 characters of plain text once trimmed: no control character, a new line included. |
 | `VALIDATION_FAILED` | 422 | `BATCH_PAYLOAD_INVALID`, `BATCH_PAYLOAD_TOO_LARGE` | no | batch create with `signal` or `update` | The payload must be a JSON object (a signal) and at most 256 KiB. |
-| `VALIDATION_FAILED` | 422 | `BATCH_SELECTOR_UNSUPPORTED` | no | batch create/preview with `businessIdPrefix` | Business ids are not bound to runs yet; select by the other filters or by run ids. |
+| `VALIDATION_FAILED` | 422 | `BATCH_SELECTOR_UNSUPPORTED` | no | reserved: nothing in this build raises it (`businessIdPrefix` selects runs since D2177; the `020` query is `QUERY_UNSUPPORTED_OPERATOR`); kept because the set only grows | This deployment cannot evaluate that selector; select by the other filters or by run ids. |
 | `VALIDATION_FAILED` | 422 | `BATCH_ACTION_PARAMETERS` | no | batch create | The action needs (or refuses) `stepId`, `signal` or `update`; a signal name is 1 to 128 characters of letters, digits and `_ . : -`; a step id is a step of the workflow. |
 | `CONFLICT` | 409 | `BATCH_NOT_CANCELLABLE` | no | batch cancel | The job already ended. |
 | `VALIDATION_FAILED` | 422 | `RESET_NOT_SUPPORTED_FOR_SOURCE` | no | reset points/preview/reset | Child runs, members of a continuation chain and runs of a database execution cannot be reset in this version. |
@@ -65,7 +65,9 @@ the canonical `Error.code` the single action returned. Batch job `failureReason`
 `AUTHORITY_REVOKED`, `SELECTION_FAILED`.
 
 Schedule action `reason`: `TRACKING_LIMIT`, `VERSION_MISSING`, `ADMISSION_REFUSED`, `AUTHORITY_REVOKED`,
-`BUSINESS_ID_IN_USE`.
+`BUSINESS_ID_IN_USE` (the outcome `BUSINESS_ID_CONFLICT` under `FAIL`, and `ALREADY_ACTED` with the holder as `runId` under
+`USE_EXISTING`) and `BUSINESS_ID_REUSE_REJECTED` (the outcome `BUSINESS_ID_CONFLICT` when a closed holder inside its reuse window and the
+reuse policy refuse the id, added by D2173). Never the business id, the prefix or the holder's identifier of another tenant.
 
 Reset `failureReason`: `BOUNDARY_NO_LONGER_ELIGIBLE`, `ADMISSION_REFUSED`, `BUSINESS_ID_IN_USE`,
 `CONCURRENCY_PERMIT_UNAVAILABLE`, `RUN_PURGED`, and the reason of a `REMATERIALIZE` rule that could not

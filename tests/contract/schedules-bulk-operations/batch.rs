@@ -90,6 +90,22 @@ async fn every_batch_operation_conforms_to_the_contract_on_its_normal_and_error_
             json!({"selector": {"filter": {}}, "nonsense": 1}),
             422,
         ),
+        // the prefix of a business id: a literal, counted (zero is an answer), and a malformed one is a malformed selector
+        (
+            alice.clone(),
+            json!({"selector": {"filter": {"businessIdPrefix": "order-"}}}),
+            200,
+        ),
+        (
+            alice.clone(),
+            json!({"selector": {"filter": {"businessIdPrefix": "%"}}}),
+            200,
+        ),
+        (
+            alice.clone(),
+            json!({"selector": {"filter": {"businessIdPrefix": "has space"}}}),
+            422,
+        ),
     ] {
         let (m, t, s, _) = check_body(
             &api,

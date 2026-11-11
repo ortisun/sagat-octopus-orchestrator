@@ -7815,6 +7815,9 @@ components:
         input: {type: object, description: 'The input of every run, at most 64 KiB; never returned.'}
         nominalTimeField: {type: string, pattern: '^[A-Za-z_][A-Za-z0-9_]{0,63}$', description: 'A top-level input property set to the nominal time of the action (RFC 3339, UTC).'}
         runTimeoutMs: {type: integer, minimum: 1000, maximum: 31622400000}
+        businessIdPrefix: {type: string, minLength: 1, maxLength: 160, pattern: '^[!-~]+$', description: 'Every run of the schedule is started under the business id `<prefix>-<nominal time>`, the nominal time being RFC 3339 in UTC to the second and ending in `Z` (`order-2026-11-10T12:00:00Z`; a trigger-now action takes the second of the request). Customer text: it is kept with the schedule (charged as content), never in a log, a span, a metric, an audit reason or an outbox payload. A trigger-owned schedule has none.'}
+        businessIdConflictPolicy: {type: string, enum: [FAIL, USE_EXISTING], default: FAIL, description: 'Only with `businessIdPrefix`. What the action does when an open execution holds the id: `FAIL` records the action `BUSINESS_ID_CONFLICT` (reason `BUSINESS_ID_IN_USE`) and starts nothing; `USE_EXISTING` records it `ALREADY_ACTED` with the holder as its `runId` and starts nothing. Either way the time is acted on: the schedule goes on to the next one, uses up no remaining action and does not pause.'}
+        businessIdReusePolicy: {type: string, enum: [ALLOW_DUPLICATE, ALLOW_DUPLICATE_FAILED_ONLY, REJECT_DUPLICATE], default: ALLOW_DUPLICATE, description: 'Only with `businessIdPrefix`. What the action does when a closed execution still remembers the id (the reuse window, 30 days by default); a refusal records the action `BUSINESS_ID_CONFLICT` with the reason `BUSINESS_ID_REUSE_REJECTED`.'}
     ScheduleFields:
       type: object
       required: [name, spec, action]
@@ -7868,7 +7871,7 @@ components:
                 scheduleId: {type: string, format: uuid}
                 createdAfter: {type: string, format: date-time}
                 createdBefore: {type: string, format: date-time}
-                businessIdPrefix: {type: string, minLength: 1, maxLength: 200, description: 'Not matched yet: refused with BATCH_SELECTOR_UNSUPPORTED until business ids are bound to runs.'}
+                businessIdPrefix: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$', description: 'The runs of the namespace whose business id starts with this text. A literal: nothing in it is a wildcard (`%`, `_` and `\` match themselves). The match is on the business id the run carries, so a run whose binding was purged is still selected and a run whose id was erased (feature 020) is not. A prefix that matches nothing selects nothing: a preview counts zero. Customer text, kept with the job and nowhere else.'}
         - type: object
           additionalProperties: false
           required: [runIds]
@@ -8002,6 +8005,9 @@ components:
             inputDigest: {type: string, pattern: '^[0-9a-f]{64}$'}
             nominalTimeField: {type: string}
             runTimeoutMs: {type: integer}
+            businessIdPrefix: {type: string, description: 'Present when the action names a prefix; with the two policies below, which are written out with their defaults. Customer text.'}
+            businessIdConflictPolicy: {type: string, enum: [FAIL, USE_EXISTING]}
+            businessIdReusePolicy: {type: string, enum: [ALLOW_DUPLICATE, ALLOW_DUPLICATE_FAILED_ONLY, REJECT_DUPLICATE]}
         note: {type: [string, 'null']}
         noteBy: {type: [string, 'null']}
         noteAt: {type: [string, 'null'], format: date-time}
@@ -8044,7 +8050,7 @@ components:
     ScheduleActionOutcome:
       type: string
       enum: [STARTED, BUFFERED, SKIPPED_OVERLAP, DROPPED_BUFFER_FULL, DROPPED_DELETED, COALESCED, MISSED_CATCHUP_WINDOW, ALREADY_ACTED, AUTHORITY_REVOKED, BUSINESS_ID_CONFLICT]
-      description: The set only grows; a client treats an unknown value as another outcome.
+      description: 'The set only grows; a client treats an unknown value as another outcome. BUSINESS_ID_CONFLICT: the business id of the action (see businessIdPrefix) was held and the policy refused it; nothing was started. ALREADY_ACTED with a business-id reason: the holder answered the action (USE_EXISTING) and nothing was started.'
     ScheduleActionRecord:
       type: object
       required: [nominalTime, kind, revision, outcome, decidedAt]
@@ -8055,8 +8061,8 @@ components:
         origin: {type: string, enum: [SPEC, MANUAL], description: 'The identity of the time: SPEC (scheduled and backfill actions share the nominal times of the spec) or MANUAL (trigger-now).'}
         revision: {type: integer, minimum: 1}
         outcome: {$ref: '#/components/schemas/ScheduleActionOutcome'}
-        reason: {type: [string, 'null'], description: 'A closed code, for example TRACKING_LIMIT.'}
-        runId: {type: [string, 'null'], format: uuid}
+        reason: {type: [string, 'null'], description: 'A closed code, for example TRACKING_LIMIT, AUTHORITY_REVOKED, BUSINESS_ID_IN_USE or BUSINESS_ID_REUSE_REJECTED. Never the business id.'}
+        runId: {type: [string, 'null'], format: uuid, description: 'The run the action started, or, for ALREADY_ACTED, the run that already stood for it (a business-id holder under USE_EXISTING).'}
         backfillId: {type: [string, 'null'], format: uuid}
         summaryCount: {type: [integer, 'null'], minimum: 1, description: 'How many times a COALESCED or MISSED_CATCHUP_WINDOW summary stands for.'}
         summaryLastNominalTime: {type: [string, 'null'], format: date-time}

@@ -63,6 +63,9 @@ mod workers;
 
 pub use approval_progress::PgApprovalProgressStore;
 pub use batch::PgBatchStore;
+/// The statements of a batch selector by business-id prefix, exposed so a test can ask the planner about the very text they run.
+#[doc(hidden)]
+pub use batch::{PREVIEW_BY_PREFIX_SQL, SELECTION_BY_PREFIX_SQL};
 pub use capacity_acquire::PgCapacityAcquireStore;
 pub use capacity_finish::PgCapacityFinishStore;
 pub use capacity_vacate::PgCapacityVacateStore;

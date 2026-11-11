@@ -582,7 +582,9 @@ components:
             inputBytes: {type: integer, minimum: 0}
             nominalTimeField: {type: string}
             runTimeoutMs: {type: integer}
-            businessIdPrefix: {type: string}
+            businessIdPrefix: {type: string, description: 'Present when the action names a prefix; with the two policies, written out with their defaults.'}
+            businessIdConflictPolicy: {type: string, enum: [FAIL, USE_EXISTING]}
+            businessIdReusePolicy: {$ref: '#/components/schemas/BusinessIdReusePolicy'}
         note: {type: [string, 'null']}
         noteBy: {type: [string, 'null']}
         noteAt: {type: [string, 'null'], format: date-time}
@@ -630,8 +632,8 @@ components:
         origin: {type: string, enum: [SPEC, MANUAL], description: 'Identity origin: SPEC (scheduled and backfill share nominal times) or MANUAL (trigger-now).'}
         revision: {type: integer, minimum: 1}
         outcome: {$ref: '#/components/schemas/ScheduleActionOutcome'}
-        reason: {type: [string, 'null'], description: Closed code, e.g. TRACKING_LIMIT.}
-        runId: {type: [string, 'null'], format: uuid}
+        reason: {type: [string, 'null'], description: 'Closed code: TRACKING_LIMIT, AUTHORITY_REVOKED, BUSINESS_ID_IN_USE, BUSINESS_ID_REUSE_REJECTED. Never the business id.'}
+        runId: {type: [string, 'null'], format: uuid, description: 'The run the action started or, for ALREADY_ACTED, the run that already stood for it (the holder of the business id under USE_EXISTING).'}
         backfillId: {type: [string, 'null'], format: uuid}
         summaryCount: {type: [integer, 'null'], minimum: 1, description: For COALESCED and MISSED_CATCHUP_WINDOW summaries.}
         summaryLastNominalTime: {type: [string, 'null'], format: date-time}
@@ -772,7 +774,7 @@ components:
                 scheduleId: {type: string, format: uuid}
                 createdAfter: {type: string, format: date-time}
                 createdBefore: {type: string, format: date-time}
-                businessIdPrefix: {type: string, minLength: 1, maxLength: 200}
+                businessIdPrefix: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$', description: 'A literal prefix of the business id a run carries (nothing in it is a wildcard); runs of the namespace only; zero matches is a count of zero, not an error.'}
         - type: object
           additionalProperties: false
           required: [runIds]

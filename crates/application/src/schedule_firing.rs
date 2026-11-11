@@ -11,6 +11,7 @@
 use std::future::Future;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
+use sagat_domain::business_ids::ReuseWindow;
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{RunId, RunStatus};
 use sagat_domain::identity::{Permission, Principal, Role, Subject};
@@ -34,7 +35,7 @@ use crate::clock::Clock;
 use crate::definitions::Idempotency;
 use crate::error::{AppError, StoreError};
 use crate::identity::{IdentityStore, RequestContext};
-use crate::runs::NO_PUBLISHED_VERSION;
+use crate::runs::{BusinessStart, NO_PUBLISHED_VERSION};
 use crate::schedule_triggers::{TriggerTick, cron_document};
 use crate::schedules::{
     AUTHORITY_REVOKED, ActionDedupe, ActionView, AutoPause, BackfillProgress, DueBackfill,
@@ -48,6 +49,11 @@ use crate::schedules::{
 /// older control plane dropped it): the schedule is removed by the next step, as the reconciliation would.
 pub const TRIGGER_GONE: &str = "the cron trigger of the schedule is no longer in force";
 
+/// The reason recorded with an action whose business id an open execution holds (`FR-018-016`, `FR-018-019`): a refusal under
+/// `FAIL`, and the run that answered the action under `USE_EXISTING`. A remembered id that the reuse policy refuses is
+/// `BUSINESS_ID_REUSE_REJECTED`, the reason the store gives (`contracts/errors.md`).
+const BUSINESS_ID_IN_USE: &str = "BUSINESS_ID_IN_USE";
+
 /// What a person who asks for a run, or for a backfill, of such a schedule is told: a documented reason, not the sentence above.
 pub const TRIGGER_GONE_REASON: &str = "SCHEDULE_TRIGGER_GONE";
 
@@ -58,18 +64,34 @@ pub struct ScheduledStart<'a> {
     pub workflow: WorkflowId,
     pub version: Option<WorkflowVersionId>,
     pub input: &'a [u8],
+    /// The business id the run is started under, made from the prefix of the schedule's action and the nominal time
+    /// (`FR-018-016`), with the policies of the action. Customer text: its `Debug` hides it.
+    pub business: Option<BusinessStart>,
+}
+
+/// What asking the run service for the run of an action came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduledRun {
+    /// The run was admitted, and the action and the new state of the schedule were committed with it.
+    Started(RunId),
+    /// An open execution holds the business id of the action and the schedule asked for `USE_EXISTING`: no run was made
+    /// and nothing was written. Carries the run that answers the action (the one a person's start would be given).
+    Existing(RunId),
 }
 
 /// Starts the run of a schedule's action. Implemented by the run service, which admits the run and
 /// commits the action with it ([`ScheduleAdmission`]).
 pub trait ScheduledStarts: Send + Sync {
+    /// # Errors
+    /// Those of the admission of a run, and [`AppError::BusinessIdConflict`] when the business id of the action is held
+    /// and the policy refuses: nothing was written, and the caller records the decision.
     fn start_scheduled(
         &self,
         principal: &Principal,
         request: &ScheduledStart<'_>,
         admission: ScheduleAdmission,
         ctx: &RequestContext,
-    ) -> impl Future<Output = Result<RunId, AppError>> + Send;
+    ) -> impl Future<Output = Result<ScheduledRun, AppError>> + Send;
 
     /// Cancels `run` through the ordinary cancel use case, as the schedule (`CANCEL_OTHER`). The cancel
     /// is idempotent under `key`: a repeat of it, by this process or another, changes nothing more.
@@ -238,6 +260,7 @@ where
         let standing = Standing {
             open_runs: self.open_runs(&record).await?,
             buffered: record.buffered,
+            reserved: 0,
             // a manual action is not limited by what is left
             remaining: None,
         };
@@ -493,6 +516,7 @@ where
         let standing = Standing {
             open_runs: self.open_runs(&record).await?,
             buffered: record.buffered,
+            reserved: 0,
             // a backfill is not limited by what is left
             remaining: None,
         };
@@ -700,9 +724,19 @@ where
         }
 
         // 3. an action that was waiting goes first once nothing is open
+        // Only a waiting scheduled action keeps a remaining action for itself (D1042, D2190): a waiting trigger-now or backfill
+        // step uses none up. The count is read only when it can matter (a limit and something waiting).
+        let reserved = if record.remaining_actions.is_some() && record.buffered > 0 {
+            self.store
+                .waiting_scheduled(record.tenant_id, record.id)
+                .await?
+        } else {
+            0
+        };
         let standing = Standing {
             open_runs: u32::try_from(open).unwrap_or(u32::MAX),
             buffered: record.buffered,
+            reserved,
             remaining: record.remaining_actions,
         };
         if release(&standing) == Release::StartOldest
@@ -869,6 +903,7 @@ where
             Standing {
                 open_runs: 0,
                 buffered: 0,
+                reserved: 0,
                 remaining: None,
             }
         } else {
@@ -1194,7 +1229,7 @@ where
         principal: &Principal,
         admission: ScheduleAdmission,
         ctx: &RequestContext,
-    ) -> Result<RunId, AppError> {
+    ) -> Result<(), AppError> {
         // A run the clock starts has no request to take a trace from. It begins one, as the legacy cron pass does (the one
         // place that does it for every start of this module: a due time, a buffered release, a backfill step, trigger-now
         // without a trace): a run with no trace id is not told to the collector (D2084). A request's own trace is kept.
@@ -1228,33 +1263,133 @@ where
             };
             with_nominal_time(input, record.target.nominal_time_field(), nominal)?
         };
+        // The id of the run is the prefix of the action, a dash and the nominal time (`FR-018-016`). A cron trigger's schedule
+        // has none: its run is the tick of feature 004 and is never bound.
+        let business = match (record.target.business_id(), admission.trigger) {
+            (Some(target), None) => Some(BusinessStart {
+                id: target
+                    .for_nominal_time(&nominal_text(nominal)?)
+                    .map_err(|_| AppError::Internal)?,
+                conflict: target.conflict(),
+                reuse: target.reuse(),
+                window: ReuseWindow::default(),
+            }),
+            _ => None,
+        };
         let request = ScheduledStart {
             namespace: &namespace,
             workflow,
             version,
             input: &input,
+            business,
         };
         let kind = admission.kind;
         let current = record.next_action_at == Some(nominal);
-        let started = self
+        // what the decision of a time that starts no run is made of, kept in case the id is taken
+        let decided = admission.clone();
+        match self
             .starts
             .start_scheduled(principal, &request, admission, ctx)
-            .await;
-        if started.is_ok() {
-            count_action(kind, Outcome::Started.as_str());
-            // How late the time it was meant for was acted on. Only the time the schedule was
-            // waiting for has one: a time that waited behind an open run, or one of a backfill,
-            // was held on purpose.
-            if kind == ActionKind::Scheduled
-                && current
-                && let Some(meant) = record.next_actual_at
-            {
-                let late = (self.clock.now() - meant).as_seconds_f64().max(0.0);
-                metrics::histogram!("schedule_action_lag_seconds", "kind" => "scheduled")
-                    .record(late);
+            .await
+        {
+            Ok(ScheduledRun::Started(_)) => {
+                count_action(kind, Outcome::Started.as_str());
+                // How late the time it was meant for was acted on. Only the time the schedule was
+                // waiting for has one: a time that waited behind an open run, or one of a backfill,
+                // was held on purpose.
+                if kind == ActionKind::Scheduled
+                    && current
+                    && let Some(meant) = record.next_actual_at
+                {
+                    let late = (self.clock.now() - meant).as_seconds_f64().max(0.0);
+                    metrics::histogram!("schedule_action_lag_seconds", "kind" => "scheduled")
+                        .record(late);
+                }
+                Ok(())
             }
+            // `USE_EXISTING`: the open run that holds the id stands for the action, and nothing starts
+            Ok(ScheduledRun::Existing(holder)) => {
+                self.record_held(
+                    record,
+                    &decided,
+                    Outcome::AlreadyActed,
+                    BUSINESS_ID_IN_USE,
+                    Some(holder),
+                )
+                .await
+            }
+            // `FAIL` with an open holder, or a reuse policy that refuses a remembered id: the time is acted on, as a
+            // decision that names why and no run
+            Err(AppError::BusinessIdConflict { reason, .. }) => {
+                self.record_held(record, &decided, Outcome::BusinessIdConflict, reason, None)
+                    .await
+            }
+            Err(other) => Err(other),
         }
-        started
+    }
+
+    /// Records what became of an action whose business id was held (`FR-018-016`, `FR-018-019`, `FR-018-020`): the time is
+    /// acted on, and no run is made. The decision commits with the new state the schedule would have moved to had it
+    /// started a run, except that nothing is used up: `remainingActions` stays, as it is decremented only by an action
+    /// that starts a run (`FR-018-012`), and no run is tracked. The action of a manual request (trigger-now) and the step of
+    /// a backfill commit with what they carry, as they do with a run. A waiting action that finds its id held becomes this
+    /// decision instead of the run it was waiting to start. It is not retried: a held id is the answer of the policy, not a
+    /// lack of room, so the time is not owed (`ADMISSION_RETRY` is for the refusals of the platform), and the schedule does
+    /// not pause (it pauses when a run it started fails).
+    async fn record_held(
+        &self,
+        record: &ScheduleRecord,
+        admission: &ScheduleAdmission,
+        outcome: Outcome,
+        reason: &'static str,
+        run: Option<RunId>,
+    ) -> Result<(), AppError> {
+        let now = self.clock.now();
+        let mut after = ScheduleAfter {
+            remaining_actions: record.remaining_actions,
+            ..admission.after.clone()
+        };
+        // A waiting action keeps the last remaining action for itself, which made the next time "exhausted" (`decide`) and cleared the
+        // schedule's next times. Settled without using the action up, it gives that action back, and the schedule goes on from the
+        // first time after now (the time that fell due meanwhile was passed over without a decision, as `Exhausted` does): it must
+        // not stay active with an action left and no time to act on. A schedule past its end has none either way.
+        if admission.kind == ActionKind::Scheduled
+            && after.next_action_at.is_none()
+            && record.remaining_actions.is_some_and(|left| left > 0)
+        {
+            let (next, actual) = next_times(&self.calendar, record.id, &record.spec, now)
+                .map_err(|_| AppError::Internal)?;
+            after.next_action_at = next;
+            after.next_actual_at = actual;
+        }
+        let decision = ScheduleDecision {
+            tenant_id: record.tenant_id,
+            schedule: admission.schedule,
+            expected_state_version: admission.expected_state_version,
+            fence: admission.fence.clone(),
+            actions: vec![RecordedAction {
+                nominal_at: admission.nominal_at,
+                kind: admission.kind,
+                revision: admission.revision,
+                outcome,
+                reason: Some(reason),
+                summary: None,
+                run: run.map(RunId::as_uuid),
+            }],
+            after,
+            pause: None,
+            at: now,
+            dedupe: admission.manual.as_ref().map(|m| m.dedupe.clone()),
+            backfill: admission.backfill.clone().map(|progress| BackfillProgress {
+                outcome: progress.outcome.map(|_| outcome.as_str()),
+                ..progress
+            }),
+            obligations: Vec::new(),
+        };
+        let audit = admission.manual.as_ref().map(|m| &m.audit);
+        self.commit_decision(&decision, audit)
+            .await
+            .map_err(AppError::from)
     }
 
     /// The requester of a backfill can no longer start runs: the backfill is stopped, with an audit
@@ -1378,6 +1513,19 @@ where
     }
 }
 
+/// The nominal time as text: RFC 3339 in UTC to the whole second, ending in `Z` (`2026-11-10T12:00:00Z`). It is what the
+/// declared input field receives and what ends the business id of a run (`FR-018-016`), so the two always agree. The
+/// seconds are whole on purpose: the instant is kept in microseconds by PostgreSQL and in nanoseconds by some clocks, and an
+/// id must not depend on which one read it.
+fn nominal_text(nominal: OffsetDateTime) -> Result<String, AppError> {
+    nominal
+        .to_offset(time::UtcOffset::UTC)
+        .replace_nanosecond(0)
+        .map_err(|_| AppError::Internal)?
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| AppError::Internal)
+}
+
 /// The input of the run, with the nominal time set in the declared field (RFC 3339, UTC, seconds).
 fn with_nominal_time(
     input: Vec<u8>,
@@ -1389,12 +1537,7 @@ fn with_nominal_time(
     };
     let mut document: serde_json::Value =
         serde_json::from_slice(&input).map_err(|_| AppError::Internal)?;
-    let text = nominal
-        .to_offset(time::UtcOffset::UTC)
-        .replace_nanosecond(0)
-        .map_err(|_| AppError::Internal)?
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|_| AppError::Internal)?;
+    let text = nominal_text(nominal)?;
     match document.as_object_mut() {
         Some(map) => {
             map.insert(field.to_owned(), serde_json::Value::String(text));

@@ -795,6 +795,14 @@ pub trait ScheduleStore: Send + Sync {
         runs: &[Uuid],
     ) -> impl Future<Output = Result<Vec<(Uuid, sagat_domain::execution::RunStatus)>, StoreError>> + Send;
 
+    /// How many of the actions of the schedule that are waiting are scheduled ones: the only kind that uses a remaining action
+    /// up, so the only one that keeps one for itself (D2190).
+    fn waiting_scheduled(
+        &self,
+        tenant: TenantId,
+        id: ScheduleId,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
     /// The oldest action of the schedule that is still waiting.
     fn oldest_buffered(
         &self,
@@ -1254,13 +1262,6 @@ where
             TargetCheck::VersionMissing => {
                 return Err(invalid("SCHEDULE_SPEC_INVALID", "/action/versionId"));
             }
-        }
-        if write.target.business_id().is_some() {
-            // PENDING (US03): business identifiers are not enforced yet, so a schedule that asks
-            // for one is refused instead of silently starting runs without it.
-            return Err(AppError::NotAllowed(
-                "business identifiers on schedules are not available yet",
-            ));
         }
         self.calendar
             .validate(&write.spec, now, &self.ceilings)

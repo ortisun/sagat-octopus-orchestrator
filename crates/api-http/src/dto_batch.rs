@@ -21,8 +21,9 @@ fn invalid(reason: &'static str, field: &str) -> AppError {
     }
 }
 
-/// The structured filter of a selector; every field is optional and they AND together.
-#[derive(Debug, Deserialize)]
+/// The structured filter of a selector; every field is optional and they AND together. The prefix of a business id is customer text:
+/// the `Debug` below says whether there is one and never what it is.
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FilterBody {
     pub workflow_id: Option<String>,
@@ -35,6 +36,24 @@ pub struct FilterBody {
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub created_before: Option<OffsetDateTime>,
     pub business_id_prefix: Option<String>,
+}
+
+impl std::fmt::Debug for FilterBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilterBody")
+            .field("workflow_id", &self.workflow_id)
+            .field("version_id", &self.version_id)
+            .field("status", &self.status)
+            .field("origin", &self.origin)
+            .field("schedule_id", &self.schedule_id)
+            .field("created_after", &self.created_after)
+            .field("created_before", &self.created_before)
+            .field(
+                "business_id_prefix",
+                &self.business_id_prefix.as_ref().map(|_| ".."),
+            )
+            .finish()
+    }
 }
 
 /// Which runs a job or a preview looks at: a filter, a list of ids, or (while the query language of
@@ -358,4 +377,34 @@ impl From<&ItemRecord> for ItemBody {
 pub struct ItemPageBody {
     pub items: Vec<ItemBody>,
     pub next_cursor: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::{FilterBody, SelectorBody};
+    use serde_json::json;
+
+    /// The prefix of a business id is customer text, and a debug print of a request reaches logs: neither the filter nor the selector
+    /// that holds it says what the prefix is, only that there is one.
+    #[test]
+    fn the_debug_text_of_a_filter_and_of_a_selector_never_holds_the_business_id_prefix() {
+        let canary = "canary-prefix-5b1e";
+        let filter: FilterBody =
+            serde_json::from_value(json!({"businessIdPrefix": canary})).expect("a filter");
+        let printed = format!("{filter:?}");
+        assert!(!printed.contains(canary), "{printed}");
+        assert!(
+            printed.contains("business_id_prefix: Some(\"..\")"),
+            "it says there is one: {printed}"
+        );
+        let selector: SelectorBody =
+            serde_json::from_value(json!({"filter": {"businessIdPrefix": canary}}))
+                .expect("a selector");
+        let printed = format!("{selector:?}");
+        assert!(!printed.contains(canary), "{printed}");
+        let none: FilterBody = serde_json::from_value(json!({})).expect("a filter");
+        assert!(format!("{none:?}").contains("business_id_prefix: None"));
+    }
 }

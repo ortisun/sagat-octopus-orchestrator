@@ -315,17 +315,6 @@ async fn parameters_the_action_does_not_take_and_limits_out_of_range_create_noth
         ),
         (
             BatchWrite {
-                selector: Selector::filter(Filter {
-                    business_id_prefix: Some("order-".to_owned()),
-                    ..Filter::default()
-                })
-                .expect("selector"),
-                ..cancel()
-            },
-            "BATCH_SELECTOR_UNSUPPORTED",
-        ),
-        (
-            BatchWrite {
                 action: Action::Signal,
                 signal: Some(NamedPayload {
                     name: "approve".to_owned(),

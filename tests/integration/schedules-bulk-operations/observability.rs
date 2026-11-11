@@ -15,8 +15,9 @@
 //!   or its parent's): a span a service created with customer text in it is exported, and a mutant that creates one turns
 //!   the test red (it was shown to, once). And spans of the platform's crates, not only the probes, are required to have
 //!   reached the collector;
-//! * every class of canary is shown to have been carried (stored where the platform keeps it, or, for a selector that is
-//!   refused, refused), and the run each class concerns is shown to have been told to the collector.
+//! * every class of canary is shown to have been carried (stored where the platform keeps it: the prefix of a schedule's action
+//!   in its revision, the prefix of a batch selector in its job, both again in the ids of the runs they made or reached), and the
+//!   run each class concerns is shown to have been told to the collector.
 //!
 //! The canaries are `[a-z0-9-]`, which JSON writes as they are: the wire is searched for the text as it is.
 #![allow(clippy::expect_used, clippy::panic)]
@@ -25,7 +26,6 @@ use std::future::Future;
 use std::time::Duration as StdDuration;
 
 use reqwest::Method;
-use sagat_application::error::AppError;
 use sagat_application::runs::{
     BusinessStart, RerunBusinessId, ResetRequest, ResetSourcePolicy, RunOperation, StartOptions,
     StartRun,
@@ -94,6 +94,10 @@ fn canaries(suffix: &str) -> Vec<Canary> {
         canary("business id", format!("canary-obs-business-{suffix}")),
         canary("batch reason", format!("canary-obs-batch-reason-{suffix}")),
         canary("batch selector", format!("canary-obs-prefix-{suffix}")),
+        canary(
+            "schedule prefix",
+            format!("canary-obs-schedprefix-{suffix}"),
+        ),
         canary("reset reason", format!("canary-obs-reset-reason-{suffix}")),
     ]
 }
@@ -204,7 +208,11 @@ fn the_search_finds_a_canary_that_is_put_where_the_pipeline_exports_it_and_asser
 /// What the flows made: the run each class of canary concerns, and where each class was kept.
 struct Flow {
     schedule_run: Uuid,
+    /// The run of the schedule whose action names a business-id prefix, once its first id was held and once it was free.
+    prefixed_run: Uuid,
     id_run: Uuid,
+    /// A run a batch job reached by the prefix of its business id.
+    selected_run: Uuid,
     batch_target: Uuid,
     reset_source: Uuid,
     reset_new: Uuid,
@@ -317,6 +325,75 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
             assert!(f.drain(&schedule).await >= 1, "the schedule started a run");
             let schedule_run = f.runs(&schedule).await[0];
 
+            // --- a schedule whose action names a business-id prefix: the first id is held by a person's run (the action is a
+            // recorded conflict), the next is free (the action starts a run under it)
+            let prefix = text("schedule prefix");
+            let prefixed = f
+                .try_create({
+                    let mut write = f.write_of(
+                        "obs-prefixed",
+                        &hourly(),
+                        &json!({}),
+                        Some(json!({
+                            "workflowId": f.workflow.to_string(),
+                            "businessIdPrefix": prefix,
+                            "businessIdConflictPolicy": "FAIL"
+                        })),
+                    );
+                    write.note = None;
+                    write
+                })
+                .await
+                .expect("create the schedule with a prefix");
+            // a person holds the id of the first time of the schedule: 14:00 on the day of the fixture, the clock being at 13:00:01
+            let held = format!("{prefix}-2026-10-28T14:00:00Z");
+            f.w.runs
+                .start_with_options(
+                    &f.w.admin,
+                    &StartRun {
+                        namespace: "payments",
+                        workflow: f.workflow,
+                        version: None,
+                        input: b"{}",
+                        correlation_id: None,
+                        deadline: None,
+                        key: "observability-held",
+                    },
+                    StartOptions {
+                        business: Some(BusinessStart {
+                            id: BusinessId::new(&held).expect("an identifier"),
+                            conflict: ConflictPolicy::Fail,
+                            reuse: ReusePolicy::AllowDuplicate,
+                            window: ReuseWindow::default(),
+                        }),
+                        ..StartOptions::default()
+                    },
+                    &ctx(),
+                )
+                .await
+                .expect("the holder");
+            f.clock.advance(Duration::hours(1));
+            f.drain(&prefixed).await; // the held id: a recorded conflict
+            f.clock.advance(Duration::hours(1));
+            f.drain(&prefixed).await; // a free id: a run
+            let decisions: Vec<String> = sqlx::query_scalar(
+                "SELECT outcome FROM schedule_actions WHERE schedule_id = $1 ORDER BY nominal_at",
+            )
+            .bind(prefixed.id.as_uuid())
+            .fetch_all(&f.w.db.pool)
+            .await
+            .expect("decisions");
+            assert_eq!(
+                decisions.first().map(String::as_str),
+                Some("BUSINESS_ID_CONFLICT"),
+                "the first action found its id held: {decisions:?}"
+            );
+            let prefixed_run = *f
+                .runs(&prefixed)
+                .await
+                .last()
+                .expect("the schedule with a prefix started a run");
+
             // --- an identifier: a start, a refusal, a returned holder, the lookup
             let id = text("business id");
             let start = |conflict: ConflictPolicy, key: &str| {
@@ -362,41 +439,90 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
                     .business_binding(&f.w.admin, namespace, &BusinessId::new(&id).expect("id"))
                     .await;
 
-            // --- a batch job: a selector with a prefix (refused: it is the one selector customer text can be in, G2027)
-            let mut refused = write(
-                Action::Cancel,
-                Selector::filter(Filter {
-                    business_id_prefix: Some(text("batch selector")),
-                    ..Filter::default()
-                })
-                .expect("selector"),
-            );
-            refused.reason = Justification::new(&text("batch reason")).expect("a reason");
-            let refusal = batch_service(&f)
-                .create(
-                    &f.w.admin,
-                    namespace,
-                    refused,
-                    "observability-batch-refused-key",
-                    &ctx(),
-                )
+            // --- a batch job by the prefix of a business id: the runs started under it are selected and cancelled, and the same
+            // prefix is asked of the run list and the preview
+            let selector_text = text("batch selector");
+            let mut selected = Vec::new();
+            for n in 0..2 {
+                selected.push(
+                    f.w.runs
+                        .start_with_options(
+                            &f.w.admin,
+                            &StartRun {
+                                namespace: "payments",
+                                workflow: f.workflow,
+                                version: None,
+                                input: b"{}",
+                                correlation_id: None,
+                                deadline: None,
+                                key: &format!("observability-selected-{n}"),
+                            },
+                            StartOptions {
+                                business: Some(BusinessStart {
+                                    id: BusinessId::new(&format!("{selector_text}-{n}"))
+                                        .expect("an identifier"),
+                                    conflict: ConflictPolicy::Fail,
+                                    reuse: ReusePolicy::AllowDuplicate,
+                                    window: ReuseWindow::default(),
+                                }),
+                                ..StartOptions::default()
+                            },
+                            &ctx(),
+                        )
+                        .await
+                        .expect("a run under the prefix")
+                        .run
+                        .info
+                        .run_id
+                        .as_uuid(),
+                );
+            }
+            let by_prefix = Selector::filter(Filter {
+                business_id_prefix: Some(selector_text.clone()),
+                ..Filter::default()
+            })
+            .expect("selector");
+            let preview = batch_service(&f)
+                .preview(&f.w.admin, namespace, &by_prefix, None)
                 .await
-                .expect_err("a selector by the prefix of an identifier is refused today (G2027)");
-            assert!(
-                matches!(
-                    &refusal,
-                    AppError::InvalidBatch {
-                        reason: "BATCH_SELECTOR_UNSUPPORTED",
-                        ..
-                    }
-                ),
-                "{refusal:?}"
+                .expect("a preview by the prefix");
+            assert_eq!(
+                preview.matched, 2,
+                "the preview counts the runs of the prefix"
             );
-            assert_absent(
-                "the refusal of a selector",
-                &format!("{refusal} {refusal:?}"),
-                &canaries,
-            );
+            let listed =
+                f.w.runs
+                    .list(
+                        &f.w.admin,
+                        "payments",
+                        &sagat_application::runs::RunFilter {
+                            business_id_prefix: Some(selector_text.clone()),
+                            ..sagat_application::runs::RunFilter::default()
+                        },
+                        &sagat_application::identity::PageRequest::default(),
+                    )
+                    .await
+                    .expect("the run list by the prefix");
+            assert_eq!(listed.items.len(), 2);
+            let mut by_prefix_job = write(Action::Cancel, by_prefix);
+            by_prefix_job.reason = Justification::new(&text("batch reason")).expect("a reason");
+            let by_prefix_job =
+                create_job(&f, by_prefix_job, "observability-batch-prefix-key").await;
+            live(&f);
+            let exec = executor(&f);
+            select(&exec, &by_prefix_job).await;
+            let _ = settle(&exec, &by_prefix_job).await;
+            let reached: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT run_id FROM batch_items WHERE job_id = $1 ORDER BY run_id",
+            )
+            .bind(by_prefix_job.id)
+            .fetch_all(&f.w.db.pool)
+            .await
+            .expect("items");
+            let mut expected = selected.clone();
+            expected.sort_unstable();
+            assert_eq!(reached, expected, "the job reached the runs of the prefix");
+            let selected_run = selected[0];
             // and one that is accepted, with a reason of the canary's class, that cancels a run of its own
             let batch_target = f.w.start(f.workflow, &json!({})).await;
             let mut accepted = write(
@@ -418,7 +544,13 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
             );
 
             // --- where each class was kept: the flows carried the text to a place where a leak could have shown
-            for class in ["business id", "batch reason", "reset reason"] {
+            for class in [
+                "business id",
+                "batch reason",
+                "reset reason",
+                "batch selector",
+                "schedule prefix",
+            ] {
                 carried.push((class, tables_holding(&f.w.db.pool, &text(class)).await));
             }
 
@@ -445,7 +577,9 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
             }
             Flow {
                 schedule_run,
+                prefixed_run,
                 id_run,
+                selected_run,
                 batch_target: batch_target.as_uuid(),
                 reset_source: source.as_uuid(),
                 reset_new,
@@ -476,6 +610,8 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
         ("schedule input", flow.schedule_run),
         ("pause note", flow.schedule_run),
         ("business id", flow.id_run),
+        ("schedule prefix", flow.prefixed_run),
+        ("batch selector", flow.selected_run),
         ("batch reason", flow.batch_target),
         ("reset reason (its source)", flow.reset_source),
         ("reset reason (its new run)", flow.reset_new),

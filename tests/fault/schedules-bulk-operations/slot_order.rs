@@ -12,7 +12,7 @@
 //! the path did what it was asked, and that the path was seen waiting for the lock `k` (otherwise it never met the
 //! reference and the run fails by name).
 //!
-//! What it proves: for the paths of its cases (the schedule pass, trigger-now, a backfill step, the release of a buffered
+//! What it proves: for the paths of its cases (the schedule pass (with a business-id prefix too), trigger-now, a backfill step, the release of a buffered
 //! time, the payment of a `CANCEL_OTHER` debt, the release of a delayed start, the claim of a business identifier, the
 //! request and the completion of a pending reset), the locks the references name are taken in the order they are listed
 //! in. The authority, in the references of the paths that look at it again under the lock (the schedule paths and the completion of
@@ -330,6 +330,88 @@ async fn a_scheduled_action_takes_the_schedule_then_the_authority_then_the_quota
                         .map_err(|e| format!("{e:?}"))?;
                     ensure(fired == Fired::Acted, format!("{fired:?}"))?;
                     ensure(fx.runs(&schedule).await.len() == 1, "it started its run")
+                }),
+            }
+        })
+    })
+    .await;
+}
+
+/// The firing of a schedule whose action names a business-id prefix (`FR-018-016`, plan table row 2): the schedule's row, then
+/// the binding of the id (the slot of the run-creating aggregates, after the schedule's row), then the authority, the quotas and
+/// the usage. The id is bound to a run that has ended, so the claim finds the binding, locks it and takes it over.
+#[tokio::test]
+async fn a_scheduled_action_under_a_business_id_takes_the_schedule_then_the_binding_then_the_authority_the_quotas_and_the_usage()
+ {
+    let f = fixture().await;
+    let fx = &f;
+    at_every_start(fx, "a scheduled action under a business id", |k| {
+        Box::pin(async move {
+            let prefix = format!("slot-order-prefix-{k}");
+            let schedule = fx
+                .create(
+                    &prefix,
+                    &hourly(),
+                    &json!({}),
+                    Some(json!({
+                        "workflowId": fx.workflow.to_string(),
+                        "businessIdPrefix": prefix,
+                        "businessIdConflictPolicy": "FAIL",
+                        "businessIdReusePolicy": "ALLOW_DUPLICATE"
+                    })),
+                )
+                .await;
+            // the id of the first action, held by a person's run that has ended
+            let first = schedule.next_action_at.expect("the first time of the schedule");
+            let id = format!(
+                "{prefix}-{}",
+                first
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .expect("a time")
+            );
+            let holder = start_under(fx, &id, &format!("slot-order-prefix-holder-{k}"))
+                .await
+                .expect("the holder");
+            fx.end(holder.as_uuid(), "SUCCEEDED").await;
+            fx.clock.advance(Duration::hours(1) + Duration::seconds(1));
+            let fence = fence(fx, schedule.id.as_uuid()).await;
+            let mut reference = vec![
+                schedule_row(fx, &schedule),
+                (
+                    Slot::Aggregate,
+                    Lock::statement(
+                        "the binding of the id of the action",
+                        format!(
+                            "SELECT 1 FROM business_ids WHERE tenant_id = '{}' AND namespace_id = '{}' AND business_id = '{id}' FOR UPDATE",
+                            tenant(fx),
+                            fx.w.namespace.id().as_uuid()
+                        ),
+                    ),
+                ),
+            ];
+            reference.extend(admission(fx));
+            Prepared {
+                reference,
+                path: Box::pin(async move {
+                    let fired = fx
+                        .firing
+                        .fire(&fx.due(&schedule), Some(fence))
+                        .await
+                        .map_err(|e| format!("{e:?}"))?;
+                    ensure(fired == Fired::Acted, format!("{fired:?}"))?;
+                    let runs = fx.runs(&schedule).await;
+                    ensure(runs.len() == 1, "it started its run")?;
+                    let bound: String = sqlx::query_scalar(
+                        "SELECT execution_id::text FROM business_ids WHERE business_id = $1",
+                    )
+                    .bind(&id)
+                    .fetch_one(&fx.w.db.pool)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    ensure(
+                        bound == runs[0].to_string(),
+                        "the run holds the id of its action",
+                    )
                 }),
             }
         })

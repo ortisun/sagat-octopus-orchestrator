@@ -40,7 +40,7 @@ impl ItemActions for Runs {
 
 pub(crate) type Executor = BatchExecutor<PgBatchStore, Runs, PgIdentityStore, TestClock>;
 
-fn executor_with(f: &Fixture, settings: ExecutorSettings) -> Executor {
+pub(crate) fn executor_with(f: &Fixture, settings: ExecutorSettings) -> Executor {
     BatchExecutor::new(
         PgBatchStore::new(f.w.db.pool.clone()),
         Runs(Arc::clone(&f.w)),

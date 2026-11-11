@@ -11,10 +11,11 @@ use std::sync::Arc;
 
 use sagat_application::error::AppError;
 use sagat_application::identity::RequestContext;
-use sagat_application::schedule_firing::{Fired, ScheduleFiring, ScheduledStart, ScheduledStarts};
+use sagat_application::schedule_firing::{
+    Fired, ScheduleFiring, ScheduledRun, ScheduledStart, ScheduledStarts,
+};
 use sagat_application::schedules::{ScheduleAdmission, ScheduleRecord, ScheduleState, ShardFence};
 use sagat_application::shards::Lease;
-use sagat_domain::execution::RunId;
 use sagat_domain::identity::{Principal, Role, Subject};
 use sagat_domain::schedules::Ceilings;
 use sagat_domain::sharding::Shard;
@@ -116,7 +117,7 @@ impl ScheduledStarts for FinishesFirst {
         request: &ScheduledStart<'_>,
         admission: ScheduleAdmission,
         ctx: &RequestContext,
-    ) -> Result<RunId, AppError> {
+    ) -> Result<ScheduledRun, AppError> {
         self.inner
             .start_scheduled(principal, request, admission, ctx)
             .await
