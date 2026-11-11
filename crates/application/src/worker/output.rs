@@ -390,7 +390,7 @@ where
         if applied.is_ok()
             && let Some(probe) = &probe_result
         {
-            Self::count_probe_checks(&probe.result);
+            lake_complete::count_probe_checks(&probe.result);
         }
         applied
     }

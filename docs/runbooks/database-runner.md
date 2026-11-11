@@ -207,7 +207,9 @@ runner for the SQL activity, of both, or of an ordinary activity beside either, 
   leaves is removed only by the next process, after about an hour.
 - *Metrics* (closed labels, nothing of a table, a connection or a run): `lake_writes_total` (mode, catalog and storage kind,
   outcome), `lake_sandbox_exits_total` and `lake_relay_denials_total` (reason), and, from the runner,
-  `database_runner_lake_directories_total` (removed or failed by the sweep). Not yet: the phase histograms, the effect-key
+  `database_runner_lake_directories_total` (removed or failed by the sweep). **From the control plane, not the runner:** `lake_probe_checks_total{check,outcome,code}`, once per check of a probe result the server kept
+  (`check` is `CATALOG_AUTH`, `WAREHOUSE` or `STORAGE_ACCESS`; `outcome` `PASSED`, `FAILED` or `SKIPPED`; `code` the closed code of a failure, `none` otherwise; never a connection, a run or a tenant). A failed check is a result and not a
+  fault of the platform, so a rising `FAILED` with `STORAGE_UNAVAILABLE` or `DATABASE_AUTHENTICATION_FAILED` is the customers' catalogs and stores, while a probe that fails as a step is the platform's and counts here as nothing. Not yet: the phase histograms, the effect-key
   lookup counter, and the audit of what the relay refused (the protocol has no call for it: G035-078).
 
 **The credentials of a lake step** (D035-141). A lake runner that has leased its step asks `ResolveDatabase` for the connection and
