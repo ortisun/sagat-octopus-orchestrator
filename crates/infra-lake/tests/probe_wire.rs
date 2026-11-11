@@ -217,6 +217,18 @@ fn the_request_line_of_a_probe_is_the_one_the_host_is_held_to() {
 }
 
 #[test]
+fn the_request_line_of_a_development_runner_is_the_probe_line_and_one_member_more() {
+    // O035-010: the runner's own flag, written beside the relay and only when true
+    let line = encode_request(&Request::probe(relay(), body()).with_development(true)).unwrap();
+
+    let sent: Value = serde_json::from_slice(&line[..line.len() - 1]).unwrap();
+    assert_eq!(sent, json_of("requests/probe-development.json"));
+    let mut without = sent.as_object().unwrap().clone();
+    assert_eq!(without.remove("development"), Some(Value::Bool(true)));
+    assert_eq!(Value::Object(without), json_of("requests/probe.json"));
+}
+
+#[test]
 fn a_probe_line_names_neither_an_effect_key_nor_an_instant() {
     let line = encode_request(&Request::probe(relay(), body())).unwrap();
     let sent: Value = serde_json::from_slice(&line[..line.len() - 1]).unwrap();

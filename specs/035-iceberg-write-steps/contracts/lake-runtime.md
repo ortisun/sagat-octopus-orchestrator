@@ -68,6 +68,7 @@ the metadata service and the engine socket all fail (G035-022).
   "connection": {"catalog": {…pinned settings…}, "storage": {…}, "warehouseLocations": ["s3://lake/"],
                  "credentials": {…resolved values…}},
   "relay": {"socket": "/work/<attempt-id>/relay.sock", "token": "…"},
+  "development": true,
   "table": {"namespace": ["sales"], "name": "orders"}, "ref": "main",
   "mode": "append", "overwrite": null, "upsert": null,
   "inputs": [{"file": "in/blob-0.parquet", "format": "parquet"}],
@@ -77,6 +78,11 @@ the metadata service and the engine socket all fail (G035-022).
 }
 ```
 
+   **`development`** (optional, written only when true, for `icebergWrite` and `probe`; O035-010, option b, built 2026-11-10) says that the **runner is a development one**.
+   It is a member of the envelope that a body cannot name, set from the runner's own settings and never from the connection. Only then does the host read a storage
+   endpoint or an OAuth2 token endpoint over plain `http`, and then on the loopback alone (`localhost`, `127.0.0.1`, `::1`), as it reads the catalog's address everywhere;
+   the runner's endpoint policy makes the same allowance and the relay opens the loopback in the same case. Without it (every production runner) such an address is
+   `LAKE_HOST_PROTOCOL`, as it was, and an `http` address that is not the loopback is refused in either case. `fixtures/requests/probe-development.json` is the golden line.
 5. The host writes **progress lines** (`{"heartbeat": true}`, at most one per second) and exactly
    **one result line** on the same socket, then exits 0:
    `{"receipt": {…}, "relayDenials": 0}` or

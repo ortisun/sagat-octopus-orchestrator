@@ -57,6 +57,19 @@ def test_the_request_built_from_the_lease_of_the_corpus_is_read() -> None:
     assert parsed.connection["warehouseLocations"] == ["s3://lake/warehouse/"]
 
 
+def test_the_development_flag_is_read_and_is_false_when_the_request_has_none() -> None:
+    assert parse_probe(request()).development is False
+    assert parse_probe(request(development=False)).development is False
+    assert parse_probe(request(development=True)).development is True
+
+
+@pytest.mark.parametrize("value", [1, 0, "true", None, [], {}])
+def test_a_development_flag_that_is_not_a_boolean_is_a_break(value: object) -> None:
+    with pytest.raises(Failure) as caught:
+        parse_probe(request(development=value))
+    assert caught.value.code == LAKE_HOST_PROTOCOL
+
+
 def test_the_relay_member_is_accepted_and_not_required() -> None:
     assert parse_probe(request(relay={"socket": "/work/a/relay.sock", "token": "t"})).name == "lake-main"
     assert "relay" not in request()

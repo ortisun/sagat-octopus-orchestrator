@@ -97,6 +97,42 @@ fn the_request_is_one_line_that_ends_with_a_newline() {
 }
 
 #[test]
+fn the_request_of_a_development_runner_says_so_and_no_other_request_has_the_member() {
+    let members = json!({"table": {"namespace": ["sales"], "name": "orders"}, "mode": "append"});
+    let parsed = |request: &Request| -> Value {
+        let encoded = encode_request(request).unwrap();
+        serde_json::from_slice(&encoded[..encoded.len() - 1]).unwrap()
+    };
+
+    let ordinary = parsed(&request(members.clone()));
+    assert!(
+        ordinary.get("development").is_none(),
+        "the line of every other runner is the one it always was: {ordinary}"
+    );
+    let explicit = parsed(&request(members.clone()).with_development(false));
+    assert!(explicit.get("development").is_none(), "{explicit}");
+    let development = parsed(&request(members).with_development(true));
+    assert_eq!(development["development"], json!(true));
+    // everything else of the line is unchanged
+    let mut stripped = development.as_object().unwrap().clone();
+    stripped.remove("development");
+    assert_eq!(Value::Object(stripped), ordinary);
+}
+
+#[test]
+fn a_probe_of_a_development_runner_says_so_too() {
+    let probe = Request::probe(
+        RelayAccess::new("/work/a1/relay.sock", RelayToken::new(TOKEN).unwrap()),
+        body(json!({"probe": {"connection": {"name": "lake-main", "revision": 3}}})),
+    );
+    let encoded = encode_request(&probe.with_development(true)).unwrap();
+    let parsed: Value = serde_json::from_slice(&encoded[..encoded.len() - 1]).unwrap();
+    assert_eq!(parsed["development"], json!(true));
+    assert_eq!(parsed["operation"], "probe");
+    assert!(parsed.get("effectKey").is_none());
+}
+
+#[test]
 fn every_operation_has_the_name_the_contract_gives_it() {
     let names: Vec<(Operation, &str)> = vec![
         (Operation::IcebergWrite, "icebergWrite"),
@@ -127,6 +163,7 @@ fn a_body_cannot_replace_a_member_of_the_envelope() {
         "effectKey",
         "firstAttemptStartedAt",
         "relay",
+        "development",
     ] {
         let mut members = Map::new();
         members.insert(reserved.to_owned(), json!("x"));

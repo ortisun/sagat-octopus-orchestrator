@@ -50,6 +50,7 @@ _TOP = frozenset(
         "snapshotProperties",
         "connection",
         "relay",
+        "development",
         "table",
         "ref",
         "mode",
@@ -65,6 +66,7 @@ _TOP = frozenset(
 )
 _REQUIRED = _TOP - {
     "relay",
+    "development",
     "overwrite",
     "upsert",
     "mapping",
@@ -110,6 +112,9 @@ class WriteRequest:
     deadline_at_ms: int
     # The pinned connection with its resolved credentials. It is never part of a representation.
     connection: Mapping[str, Any] = field(repr=False)
+    # The runner says it is a development one (O035-010): a store or a token endpoint over ``http`` on the loopback is
+    # then read. The runner's own flag, a member of the envelope: never a part of the connection.
+    development: bool = False
 
 
 def _break() -> Failure:
@@ -155,6 +160,7 @@ def parse_write(document: object, *, attempt_dir: Path) -> WriteRequest:
         append=append,
         deadline_at_ms=_millis(limits["deadlineAt"]),
         connection=connection,
+        development=_flag(document.get("development", False)),
     )
 
 
@@ -168,12 +174,14 @@ class ProbeRequest:
     check_timeout: float
     # The pinned connection with its resolved credentials. It is never part of a representation.
     connection: Mapping[str, Any] = field(repr=False)
+    # See ``WriteRequest.development``.
+    development: bool = False
 
 
 def parse_probe(document: object) -> ProbeRequest:
     """The request of a ``probe``, or ``Failure(LAKE_HOST_PROTOCOL)``."""
-    keys = {"protocol", "operation", "connection", "relay", "probe"}
-    if not isinstance(document, dict) or not keys - {"relay"} <= document.keys() <= keys:
+    keys = {"protocol", "operation", "connection", "relay", "probe", "development"}
+    if not isinstance(document, dict) or not keys - {"relay", "development"} <= document.keys() <= keys:
         raise _break()
     if document["protocol"] != PROTOCOL or document["operation"] != PROBE_OPERATION:
         raise _break()
@@ -198,6 +206,7 @@ def parse_probe(document: object) -> ProbeRequest:
         revision=revision,
         check_timeout=milliseconds / 1000,
         connection=_connection(document["connection"]),
+        development=_flag(document.get("development", False)),
     )
 
 

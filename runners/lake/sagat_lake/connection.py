@@ -66,17 +66,21 @@ def _break() -> Failure:
     return Failure(LAKE_HOST_PROTOCOL)
 
 
-def open_connection(connection: object) -> OpenConnection:
-    """The hygiene and the client properties of ``connection``, or the failure that stops the attempt."""
+def open_connection(connection: object, *, development: bool = False) -> OpenConnection:
+    """The hygiene and the client properties of ``connection``, or the failure that stops the attempt.
+
+    ``development`` is the runner's own flag (O035-010, option b): only then is a storage endpoint or an OAuth2 token
+    endpoint read over plain ``http``, and then on the loopback alone, as the catalog's address is everywhere.
+    """
     try:
-        return _open(connection)
+        return _open(connection, development=development)
     except HygieneError as error:
         raise Failure(error.code) from None
     except ValueError:
         raise _break() from None
 
 
-def _open(connection: object) -> OpenConnection:
+def _open(connection: object, *, development: bool) -> OpenConnection:
     document = _object(connection, {"catalog", "storage", "warehouseLocations", "credentials"})
     catalog = _object(document["catalog"], {"type", "rest"})
     storage = _object(document["storage"], {"type", "credentials", "s3"})
@@ -107,12 +111,12 @@ def _open(connection: object) -> OpenConnection:
     }
     if "prefix" in rest:
         properties["prefix"] = _prefix(rest["prefix"])
-    properties.update(_auth(rest.get("auth"), secrets.get("catalog")))
+    properties.update(_auth(rest.get("auth"), secrets.get("catalog"), development=development))
 
     properties["s3.region"] = _region(s3["region"])
     properties["s3.force-virtual-addressing"] = "false" if _flag(s3["pathStyle"]) else "true"
     if "endpoint" in s3:
-        properties["s3.endpoint"] = _url(s3["endpoint"], loopback_http=False)
+        properties["s3.endpoint"] = _url(s3["endpoint"], loopback_http=development)
     properties.update(_storage_secrets(secrets.get("storage"), vended=vended))
 
     locations = document["warehouseLocations"]
@@ -126,7 +130,7 @@ def _open(connection: object) -> OpenConnection:
     return OpenConnection(hygiene=hygiene, properties=properties, locations=tuple(locations), vended=vended)
 
 
-def _auth(auth: object, secrets: object) -> dict[str, str]:
+def _auth(auth: object, secrets: object, *, development: bool) -> dict[str, str]:
     held = _secrets(secrets)
     if auth is None:
         if held:
@@ -148,7 +152,7 @@ def _auth(auth: object, secrets: object) -> dict[str, str]:
             raise _break()
         properties = {
             "credential": f"{held['clientId']}:{held['clientSecret']}",
-            "oauth2-server-uri": _url(described["tokenUri"], loopback_http=False),
+            "oauth2-server-uri": _url(described["tokenUri"], loopback_http=development),
         }
         if "scope" in described:
             properties["scope"] = _text(described["scope"], 256)

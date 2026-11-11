@@ -321,6 +321,59 @@ def test_a_warehouse_location_that_does_not_fit_the_storage_is_a_break(locations
     refused(changed(("warehouseLocations",), locations))
 
 
+# -------------------------------------------------------------------------- a development runner (O035-010, option b)
+def with_store(endpoint: str) -> dict[str, Any]:
+    document = connection()
+    document["storage"]["s3"] = {"region": "us-east-1", "pathStyle": True, "endpoint": endpoint}
+    return document
+
+
+def with_token_endpoint(uri: str) -> dict[str, Any]:
+    document = connection()
+    document["catalog"]["rest"]["auth"] = {"type": "oauth2", "tokenUri": uri}
+    document["credentials"]["catalog"] = {"clientId": "id", "clientSecret": "s"}
+    return document
+
+
+@pytest.mark.parametrize("endpoint", ["http://127.0.0.1:9000", "http://localhost:9000", "http://[::1]:9000"])
+def test_a_development_host_reads_a_store_over_http_on_the_loopback_and_any_other_host_does_not(endpoint: str) -> None:
+    # what the server lets a development namespace save, honoured only when the runner says it is a development one
+    assert open_connection(with_store(endpoint), development=True).properties["s3.endpoint"] == endpoint
+    refused(with_store(endpoint))
+    with pytest.raises(Failure):
+        open_connection(with_store(endpoint), development=False)
+
+
+def test_a_development_host_reads_a_token_endpoint_over_http_on_the_loopback_and_any_other_host_does_not() -> None:
+    document = with_token_endpoint("http://localhost:8080/token")
+    assert open_connection(document, development=True).properties["oauth2-server-uri"] == "http://localhost:8080/token"
+    refused(document)
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://minio.example:9000",
+        "http://10.0.0.5:9000",
+        "http://localhost.evil.example:9000",
+        "http://u:p@127.0.0.1:9000",
+        "http://127.0.0.1:9000?x=1",
+    ],
+)
+def test_a_development_host_still_refuses_what_is_not_the_plain_loopback(endpoint: str) -> None:
+    for document in (with_store(endpoint), with_token_endpoint(endpoint)):
+        with pytest.raises(Failure) as caught:
+            open_connection(document, development=True)
+        assert (caught.value.code, caught.value.reason, caught.value.column) == ("LAKE_HOST_PROTOCOL", None, None)
+
+
+def test_a_development_host_does_not_loosen_what_a_catalog_may_be() -> None:
+    # the catalog was `http` on the loopback everywhere; it is not `http` anywhere else for a development host either
+    document = changed(("catalog", "rest", "uri"), "http://catalog.example/api")
+    with pytest.raises(Failure):
+        open_connection(document, development=True)
+
+
 def test_a_token_uri_is_held_to_the_same_rule_as_the_address() -> None:
     for uri in ("http://auth.example/token", "https://u:p@auth.example/token", "https://auth.example/token?x=1", ""):
         document = connection()
