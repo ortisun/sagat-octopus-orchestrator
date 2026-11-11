@@ -51,7 +51,7 @@ from .request import parse_write
 
 Operation = Callable[[Mapping[str, object]], Awaitable[dict[str, object]]]
 # Opens the catalog of a connection (the document of the request) with a time limit for each request it makes.
-CatalogOpener = Callable[[Any, float], Catalog]
+CatalogOpener = Callable[[Any, float, bool], Catalog]
 
 # How long one request to the catalog may take. The deadline of the attempt is the runner's, which kills the container.
 CATALOG_TIMEOUT = 30.0
@@ -62,9 +62,12 @@ CATALOG_UNAVAILABLE = "CATALOG_UNAVAILABLE"
 STORAGE_UNAVAILABLE = "STORAGE_UNAVAILABLE"
 
 
-def open_lake_catalog(connection: Any, request_timeout: float) -> Catalog:
-    """The catalog of the pinned connection: the one that believes nothing its server says."""
-    return open_connection(connection).catalog(request_timeout=request_timeout)
+def open_lake_catalog(connection: Any, request_timeout: float, development: bool = False) -> Catalog:
+    """The catalog of the pinned connection: the one that believes nothing its server says.
+
+    ``development`` is the runner's own flag (O035-010).
+    """
+    return open_connection(connection, development=development).catalog(request_timeout=request_timeout)
 
 
 def iceberg_write(
@@ -77,7 +80,7 @@ def iceberg_write(
         identifier = (*request.namespace, request.table)
 
         def work() -> dict[str, object]:
-            catalog = open_catalog(request.connection, request_timeout)
+            catalog = open_catalog(request.connection, request_timeout, request.development)
             return append(lambda: catalog.load_table(identifier), request.append)
 
         try:

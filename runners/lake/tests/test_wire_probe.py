@@ -37,6 +37,13 @@ def test_the_host_parses_the_line_the_runner_builds() -> None:
     assert request.connection["warehouseLocations"] == ["s3://lake/warehouse/"]
 
 
+def test_the_host_parses_the_line_of_a_development_runner_and_the_ordinary_line_is_not_one() -> None:
+    assert parse_probe(fixture("requests/probe-development.json")).development is True
+    assert parse_probe(fixture("requests/probe.json")).development is False
+    line = fixture("requests/probe-development.json")
+    assert {key: value for key, value in line.items() if key != "development"} == fixture("requests/probe.json")
+
+
 def test_the_host_opens_the_connection_the_runner_builds() -> None:
     request = parse_probe(fixture("requests/probe.json"))
 

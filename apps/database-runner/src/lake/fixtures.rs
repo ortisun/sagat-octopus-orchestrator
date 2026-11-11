@@ -87,6 +87,21 @@ pub fn converted() -> Converted {
     convert(&mut message()).unwrap()
 }
 
+/// The connection of [`converted`] over an S3-compatible store at `endpoint`, addressed by path.
+pub fn converted_with_store(endpoint: &str) -> Converted {
+    let mut connection = message();
+    connection.storage = Some(pb::LakeStorage {
+        kind: Some(Kind::S3(pb::LakeS3Storage {
+            region: "eu-west-1".into(),
+            endpoint: endpoint.into(),
+            path_style: true,
+            ..pb::LakeS3Storage::default()
+        })),
+        vended_credentials: false,
+    });
+    convert(&mut connection).unwrap()
+}
+
 /// The document that `tests/contract/iceberg-writes/fixtures/attempt-input/cases.json` is built on.
 pub fn base() -> Value {
     let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

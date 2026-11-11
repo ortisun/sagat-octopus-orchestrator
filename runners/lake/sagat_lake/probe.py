@@ -154,7 +154,7 @@ def probe_operation(*, list_storage: ListStorage = list_one_key) -> Operation:
 
     async def operation(document: Mapping[str, object]) -> dict[str, object]:
         request = parse_probe(document)
-        connection = open_connection(request.connection)
+        connection = open_connection(request.connection, development=request.development)
         done: list[tuple[str, str, str | None]] = []
         await _run(request.check_timeout, connection, list_storage, done)
         # a check after the one that failed did not run

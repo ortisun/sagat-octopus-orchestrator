@@ -285,8 +285,14 @@ impl Connection {
     /// [`crate::policy::PolicyError`] for a connection the host cannot open, or an address it must not be allowed to reach.
     pub fn endpoint_policy(
         &self,
+        development: bool,
     ) -> Result<crate::relay::EndpointPolicy, crate::policy::PolicyError> {
-        crate::policy::endpoint_policy(&self.catalog, &self.storage, &self.warehouse_locations)
+        crate::policy::endpoint_policy(
+            &self.catalog,
+            &self.storage,
+            &self.warehouse_locations,
+            development,
+        )
     }
 
     pub(super) fn to_value(&self) -> Result<Value, BodyError> {

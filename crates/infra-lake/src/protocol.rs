@@ -63,12 +63,13 @@ const MAX_COLUMN_CHARS: usize = 128;
 const MAX_REASON_CHARS: usize = 48;
 
 /// The members of the request that belong to the envelope; an operation's body cannot name them.
-const ENVELOPE: [&str; 5] = [
+const ENVELOPE: [&str; 6] = [
     "protocol",
     "operation",
     "effectKey",
     "firstAttemptStartedAt",
     "relay",
+    "development",
 ];
 
 /// What the host is asked to do.
@@ -229,6 +230,8 @@ impl fmt::Debug for Body {
 /// members cannot be overridden by it.
 #[derive(Clone)]
 pub struct Request {
+    /// The runner is a development one: the host may then read a storage or token endpoint over `http` on the loopback (O035-010).
+    development: bool,
     operation: Operation,
     /// The effect key and the instant of the first attempt: what an operation that can write has, so that the next attempt
     /// finds what the first did. A probe writes nothing and has neither, and the host refuses a line that has them.
@@ -249,6 +252,7 @@ impl Request {
         body: impl Into<Body>,
     ) -> Self {
         Self {
+            development: false,
             operation,
             effect: Some((effect_key.into(), first_attempt_started_at.into())),
             relay,
@@ -256,11 +260,21 @@ impl Request {
         }
     }
 
+    /// Says that the runner is a development one. **The runner's own flag and never the connection's**: the line carries it as
+    /// a member of the envelope, which a body cannot name. It is written only when it is true, so the line of every other
+    /// runner is the one it always was.
+    #[must_use]
+    pub const fn with_development(mut self, development: bool) -> Self {
+        self.development = development;
+        self
+    }
+
     /// The request of a probe (D035-150): the body of a [`ProbeBody`], and neither an effect key nor an instant, because a
     /// probe writes nothing that a later attempt would look for.
     #[must_use]
     pub fn probe(relay: RelayAccess, body: impl Into<Body>) -> Self {
         Self {
+            development: false,
             operation: Operation::Probe,
             effect: None,
             relay,
@@ -342,6 +356,10 @@ pub fn encode_request(request: &Request) -> Result<Zeroizing<Vec<u8>>, EncodeErr
         );
     }
     members.insert("relay".to_owned(), relay);
+    // written only when true: the line of every other runner is the one it always was
+    if request.development {
+        members.insert("development".to_owned(), Value::from(true));
+    }
     line_of(&mut Value::Object(members))
 }
 

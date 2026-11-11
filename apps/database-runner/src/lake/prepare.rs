@@ -276,7 +276,7 @@ pub fn prepare_probe(
         secrets(&storage_secret),
     );
     let endpoints = connection
-        .endpoint_policy()
+        .endpoint_policy(attempt.development)
         .map_err(|_| PrepareError::Connection)?;
 
     let token = RelayToken::generate().map_err(|_| PrepareError::Request)?;
@@ -295,7 +295,8 @@ pub fn prepare_probe(
         token.clone(),
     );
     let request =
-        encode_request(&Request::probe(relay_access, body)).map_err(|_| PrepareError::Request)?;
+        encode_request(&Request::probe(relay_access, body).with_development(attempt.development))
+            .map_err(|_| PrepareError::Request)?;
 
     let relay = RelayConfig::new(token, endpoints, settings.relay_allow.iter().copied())
         .with_deny(settings.relay_deny.iter().copied())
@@ -341,7 +342,7 @@ pub async fn prepare<B: Blobs>(
         secrets(&storage_secret),
     );
     let endpoints = connection
-        .endpoint_policy()
+        .endpoint_policy(attempt.development)
         .map_err(|_| PrepareError::Connection)?;
 
     let token = RelayToken::generate().map_err(|_| PrepareError::Request)?;
@@ -387,13 +388,17 @@ pub async fn prepare<B: Blobs>(
         format!("/work/{}/relay.sock", directory.id()),
         token.clone(),
     );
-    let request = encode_request(&Request::new(
-        Operation::IcebergWrite,
-        input.effect_key(),
-        input.first_attempt_started_at(),
-        relay_access,
-        body,
-    ))
+    // the runner's own flag, never the connection's: the host reads a store over `http` on the loopback only when it is set
+    let request = encode_request(
+        &Request::new(
+            Operation::IcebergWrite,
+            input.effect_key(),
+            input.first_attempt_started_at(),
+            relay_access,
+            body,
+        )
+        .with_development(attempt.development),
+    )
     .map_err(|_| PrepareError::Request)?;
 
     let relay = RelayConfig::new(token, endpoints, settings.relay_allow.iter().copied())
@@ -419,7 +424,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::super::connection::convert;
-    use super::super::fixtures::{SECRET, base, converted, message, my_uid, settings};
+    use super::super::fixtures::{
+        SECRET, base, converted, converted_with_store, message, my_uid, settings,
+    };
     use super::*;
 
     const ATTEMPT: &str = "0192f5aa-1111-7000-8000-000000000001";
@@ -563,6 +570,72 @@ mod tests {
             b"{\"a\":1}\n{\"a\":2}\n"
         );
         assert_eq!(prepared.staged_bytes, 15 + 16);
+    }
+
+    #[tokio::test]
+    async fn a_development_runner_prepares_a_store_over_http_on_the_loopback_and_tells_the_host_it_is_one()
+     {
+        // O035-010, option b: what the server lets a development namespace save, honoured by a development runner
+        let work = tempfile::tempdir().unwrap();
+        let mut development = attempt(3);
+        development.development = true;
+        let prepared = prepare(
+            input(|_| {}),
+            converted_with_store("http://127.0.0.1:9000"),
+            &nothing(),
+            &settings(work.path()),
+            development,
+        )
+        .await
+        .unwrap();
+        assert_eq!(line(&prepared)["development"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn any_other_runner_refuses_that_store_and_its_line_never_says_development() {
+        let work = tempfile::tempdir().unwrap();
+        let error = prepare(
+            input(|_| {}),
+            converted_with_store("http://127.0.0.1:9000"),
+            &nothing(),
+            &settings(work.path()),
+            attempt(3),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, PrepareError::Connection);
+        assert!(
+            entries(work.path()).is_empty(),
+            "nothing is made for a connection the host cannot open"
+        );
+
+        let ordinary = prepare(
+            input(|_| {}),
+            converted(),
+            &nothing(),
+            &settings(work.path()),
+            attempt(3),
+        )
+        .await
+        .unwrap();
+        assert!(line(&ordinary).get("development").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_development_runner_still_refuses_an_http_store_that_is_not_the_loopback() {
+        let work = tempfile::tempdir().unwrap();
+        let mut development = attempt(3);
+        development.development = true;
+        let error = prepare(
+            input(|_| {}),
+            converted_with_store("http://minio.internal:9000"),
+            &nothing(),
+            &settings(work.path()),
+            development,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, PrepareError::Connection);
     }
 
     #[tokio::test]
@@ -1028,6 +1101,32 @@ mod tests {
 
     fn probe() -> ProbeInput {
         ProbeInput::read(&super::super::fixtures::probe_input_json(|_| {})).unwrap()
+    }
+
+    #[test]
+    fn the_probe_of_a_development_runner_tells_the_host_so_and_any_other_refuses_the_store() {
+        let work = tempfile::tempdir().unwrap();
+        let mut development = attempt(3);
+        development.development = true;
+        let prepared = prepare_probe(
+            &probe(),
+            2500,
+            converted_with_store("http://127.0.0.1:9000"),
+            &settings(work.path()),
+            development,
+        )
+        .unwrap();
+        assert_eq!(line(&prepared)["development"], json!(true));
+
+        let error = prepare_probe(
+            &probe(),
+            2500,
+            converted_with_store("http://127.0.0.1:9000"),
+            &settings(work.path()),
+            attempt(3),
+        )
+        .unwrap_err();
+        assert_eq!(error, PrepareError::Connection);
     }
 
     #[test]

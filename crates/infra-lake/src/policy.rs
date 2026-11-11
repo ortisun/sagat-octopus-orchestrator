@@ -13,7 +13,9 @@
 //! addresses a name may resolve to; this module says nothing about that.
 //!
 //! `http` is for the catalog on the loopback alone, the way the host reads it. A token endpoint and an S3 endpoint are
-//! `https`.
+//! `https`, **except for a development runner**, which also accepts them over `http` on the loopback: it is what the server
+//! already lets a development namespace save (`requires_development`), and the host reads it the same way when the request
+//! line says it is a development one (O035-010, option b). The flag is the runner's own and never a member of the connection.
 
 use std::collections::BTreeSet;
 use std::net::IpAddr;
@@ -133,8 +135,9 @@ fn is_loopback(host: &str) -> bool {
             .is_ok_and(|address| address.is_loopback())
 }
 
-/// The endpoints the catalog declares: its address and, for OAuth2, its token endpoint.
-fn catalog_endpoints(catalog: &Value) -> Result<Vec<Endpoint>, PolicyError> {
+/// The endpoints the catalog declares: its address and, for OAuth2, its token endpoint (over `http` on the loopback only for a
+/// development runner).
+fn catalog_endpoints(catalog: &Value, development: bool) -> Result<Vec<Endpoint>, PolicyError> {
     match text(catalog, "type") {
         Some("rest") => {}
         Some("glue" | "hive" | "jdbc") => return Err(PolicyError::Unsupported),
@@ -154,7 +157,7 @@ fn catalog_endpoints(catalog: &Value) -> Result<Vec<Endpoint>, PolicyError> {
             Some("bearer") => {}
             Some("oauth2") => {
                 let token = text(auth, "tokenUri").ok_or(PolicyError::Shape)?;
-                declared.push(endpoint_of(token, false)?);
+                declared.push(endpoint_of(token, development)?);
             }
             Some("sigv4") => return Err(PolicyError::Unsupported),
             _ => return Err(PolicyError::Shape),
@@ -179,7 +182,8 @@ fn buckets(locations: &[String]) -> Result<BTreeSet<String>, PolicyError> {
 }
 
 /// The allowance of the sandbox for a connection: `catalog` and `storage` are the documents the platform stored, and
-/// `locations` the warehouse locations.
+/// `locations` the warehouse locations. `development` is the runner's: only a development runner lets a token endpoint and an
+/// S3 endpoint be `http` (on the loopback, as the catalog is everywhere).
 ///
 /// # Errors
 /// [`PolicyError`] for a document that is not the stored shape, an address the sandbox must not be allowed to reach, a
@@ -188,8 +192,9 @@ pub fn endpoint_policy(
     catalog: &Value,
     storage: &Value,
     locations: &[String],
+    development: bool,
 ) -> Result<EndpointPolicy, PolicyError> {
-    let mut declared = catalog_endpoints(catalog)?;
+    let mut declared = catalog_endpoints(catalog, development)?;
 
     match text(storage, "type") {
         Some("s3") => {}
@@ -218,7 +223,7 @@ pub fn endpoint_policy(
 
     if let Some(endpoint) = s3.get("endpoint") {
         // An S3-compatible store: its address is the allowance, and the regional hosts of AWS are not added beside it.
-        let (host, port) = address_of(endpoint.as_str().ok_or(PolicyError::Shape)?, false)?;
+        let (host, port) = address_of(endpoint.as_str().ok_or(PolicyError::Shape)?, development)?;
         declared.push(Endpoint::new(&host, port).map_err(|_| PolicyError::Url)?);
         // With `pathStyle: false` the host asks its client for virtual addressing, and the client then connects to
         // `<bucket>.<endpoint host>` (measured with PyArrow: `Host: mybucket.localhost:PORT`). Each bucket of the warehouse

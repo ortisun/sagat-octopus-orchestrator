@@ -234,6 +234,33 @@ SKIPPED_AFTER_CATALOG = [("WAREHOUSE", "SKIPPED", None), ("STORAGE_ACCESS", "SKI
 
 
 # ------------------------------------------------------------------------------------------------------ the success
+def development_line(stub: Catalog, *, development: bool | None) -> bytes:
+    """The request of the corpus with a store over plain http on the loopback, and the runner's flag as given."""
+    document = json.loads(line(stub))
+    document["connection"]["storage"]["s3"] = {
+        "region": "eu-west-1",
+        "pathStyle": True,
+        "endpoint": "http://127.0.0.1:9",
+    }
+    if development is not None:
+        document["development"] = development
+    return json.dumps(document, separators=(",", ":")).encode()
+
+
+def test_a_development_runner_gets_its_store_over_http_on_the_loopback_and_any_other_is_a_protocol_failure(
+    stub: Catalog,
+) -> None:
+    storage = Storage()
+
+    result = result_of(converse(development_line(stub, development=True), storage=storage))
+
+    # the checks ran: the flag reached the connection, and the storage client was given the endpoint
+    assert [check["check"] for check in result["checks"]] == ["CATALOG_AUTH", "WAREHOUSE", "STORAGE_ACCESS"]
+    assert storage.properties[0]["s3.endpoint"] == "http://127.0.0.1:9"
+    for development in (False, None):
+        assert failure_code(converse(development_line(stub, development=development))) == "LAKE_HOST_PROTOCOL"
+
+
 def test_a_connection_that_works_passes_every_check(stub: Catalog) -> None:
     storage = Storage()
 

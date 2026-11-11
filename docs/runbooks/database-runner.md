@@ -132,6 +132,11 @@ curl -X PUT "$SAGAT/namespaces/$NAMESPACE_ID/worker-bindings/$RUNNER_SUBJECT" \
 
 What a person who connects a catalog does and sees is in [the guide](../guides/iceberg-connections.md).
 
+**A development runner and plain `http`** (O035-010, option b). Every runner refuses an S3 endpoint and an OAuth2 token endpoint that are not `https`; the catalog's address may be `http` on the loopback. A runner
+that is a **development** one (its `development` setting, which the relay already reads to open the loopback) also accepts the S3 endpoint and the token endpoint over `http` **on the loopback**, so that
+the fixtures of `infra/docker/compose.lake.yaml` can be reached; it tells the host so on every request line, and a runner that is not a development one never does. Never set it in production: the server
+lets only a development namespace save such a connection, and the runner is the second place that decides.
+
 A lake runner that has a probe to run (a runner of the version that serves the probe of an Iceberg connection) offers it beside its write,
 and its binding covers both: `"activities": ["sagat.database.iceberg.write", "sagat.database.lake.probe"]`. **Roll it out in this order: the
 server, then the binding, then the runner.** A step is handed only to a session that offers its own activity, so a runner that offers the
