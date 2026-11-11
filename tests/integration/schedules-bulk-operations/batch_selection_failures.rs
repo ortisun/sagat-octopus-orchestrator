@@ -402,6 +402,122 @@ fn a_selection_that_always_fails_waits_after_each_round_and_fails_the_job_at_the
     }
 }
 
+/// `SagatBatchSelectionFailed` is `increase(batch_selection_failures_total{outcome="failed"}[15m]) > 0`, and Prometheus's
+/// `increase` does not count the first sample of a series: a counter that appears with the value 1 has increased by nothing, so
+/// the alert never fired for the first job an engine ended `SELECTION_FAILED` (found on the compose stack, quickstart pass of
+/// 2026-11-11, G2102). The two series must therefore exist at zero once an executor does, before any failure. Catches: the series
+/// created by the first increment (the page has no such line before it).
+#[test]
+fn the_two_series_of_the_selection_counter_exist_at_zero_before_the_first_failure() {
+    let page = recorded(|| async {
+        let f = fixture().await;
+        let pool = role_pool(&f).await;
+        // an executor and nothing else: no job, no failure
+        let _executor = executor_on(&f, &pool, ExecutorSettings::default());
+    });
+    for outcome in ["retry", "failed"] {
+        assert_eq!(
+            series(
+                &page,
+                "batch_selection_failures_total",
+                &[("outcome", outcome)]
+            ),
+            Some(0.0),
+            "the series `{outcome}` is on the page at zero before any failure, so that `increase` sees the first one:\n{page}"
+        );
+    }
+}
+
+/// A clock that moves one second each time it is read, so that a time written from an early reading can be told from one
+/// written from a later reading.
+#[derive(Clone)]
+struct Ticking {
+    next: Arc<std::sync::Mutex<OffsetDateTime>>,
+}
+
+impl Ticking {
+    fn from(start: OffsetDateTime) -> Self {
+        Self {
+            next: Arc::new(std::sync::Mutex::new(start)),
+        }
+    }
+
+    /// What the next reading will be (it does not move the clock).
+    fn peek(&self) -> OffsetDateTime {
+        *self.next.lock().expect("clock")
+    }
+}
+
+impl sagat_application::clock::Clock for Ticking {
+    fn now(&self) -> OffsetDateTime {
+        let mut next = self.next.lock().expect("clock");
+        let now = *next;
+        *next += time::Duration::seconds(1);
+        now
+    }
+}
+
+/// The end of a job whose selection failed is stamped when the failure is recorded, not when the round began: a round that
+/// ends in a statement timeout began up to ten seconds before, and `finishedAt` (and the time of the audit record) said so (found
+/// on the compose stack, quickstart pass of 2026-11-11: a job read `SELECTING` at 11:05:02 and had `finishedAt` 11:04:56, G2103).
+/// Catches: the instant read at the start of the step used for the record of the failure.
+#[tokio::test]
+async fn a_job_that_fails_its_selection_is_finished_when_the_failure_is_recorded_not_when_the_round_began()
+ {
+    let f = fixture().await;
+    runs_started(&f, 2).await;
+    live(&f);
+    let pool = role_pool(&f).await;
+    let clock = Ticking::from(sagat_application::clock::Clock::now(&f.clock));
+    let exec = BatchExecutor::new(
+        PgBatchStore::new(pool.clone()),
+        Runs(Arc::clone(&f.w)),
+        PgIdentityStore::new(pool.clone()),
+        clock.clone(),
+        ExecutorSettings::default(),
+    );
+    let created = create(
+        &f,
+        write(Action::Cancel, everything()),
+        "selection-finished-at",
+    )
+    .await;
+    let record = due(&created);
+    break_selection(&f, created.id).await;
+    // ten failed rounds in a row are on record: the next one is the eleventh and ends the job
+    sqlx::query("UPDATE batch_jobs SET selection_failures = 10 WHERE id = $1")
+        .bind(created.id)
+        .execute(&f.w.db.pool)
+        .await
+        .expect("the count");
+
+    let give_up = Instant::now() + GIVE_UP_AFTER;
+    let began = loop {
+        // the reading the round of this step starts from
+        let began = clock.peek();
+        let stepped = exec.step(&record, None).await.expect("step");
+        if stepped == Stepped::Acted {
+            break began;
+        }
+        assert!(
+            Instant::now() < give_up,
+            "the job stayed idle for {GIVE_UP_AFTER:?}"
+        );
+        tokio::time::sleep(StdDuration::from_millis(20)).await;
+    };
+    let ended = stored(&f, created.id).await;
+    assert_eq!(
+        (ended.state.as_str(), ended.reason.as_deref()),
+        ("FAILED", Some("SELECTION_FAILED"))
+    );
+    let finished = ended.finished.expect("it has an end");
+    assert!(
+        finished > began,
+        "the end is stamped {finished} and the round began at {began}: the record of the failure was made after the round, \
+         so its time is a later reading of the clock"
+    );
+}
+
 /// A failure that passes is not the end of the job: one failed round, then a round that picks. The count goes back to zero in
 /// the transaction that picks, and the job selects as if nothing had happened. Catches: a count that a pick does not reset
 /// (it stays at one on a job that runs), a failure that ends the job at once, and a round that is not put off by the backoff.

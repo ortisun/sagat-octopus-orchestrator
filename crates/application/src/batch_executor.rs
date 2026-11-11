@@ -182,13 +182,8 @@ where
     I: IdentityStore,
     C: Clock,
 {
-    pub const fn new(
-        store: S,
-        actions: A,
-        identity: I,
-        clock: C,
-        settings: ExecutorSettings,
-    ) -> Self {
+    pub fn new(store: S, actions: A, identity: I, clock: C, settings: ExecutorSettings) -> Self {
+        register_selection_failure_series();
         Self {
             store,
             actions,
@@ -213,7 +208,7 @@ where
         };
         let now = self.clock.now();
         match job.state {
-            JobState::Selecting => self.select(&job, fence, now).await,
+            JobState::Selecting => self.select(&job, fence).await,
             JobState::Cancelling => self.drain(&job, fence, now).await,
             JobState::Running => self.item(&job, fence, now).await,
             JobState::Completed | JobState::Cancelled | JobState::Failed => Ok(Stepped::Idle),
@@ -246,7 +241,6 @@ where
         &self,
         job: &JobRecord,
         fence: Option<ShardFence>,
-        now: OffsetDateTime,
     ) -> Result<Stepped, AppError> {
         match self
             .store
@@ -267,7 +261,7 @@ where
             // read is its SQLSTATE, a closed code (`StoreError::sqlstate`), which is what the operator is given in its place.
             Err(error) => {
                 let sqlstate = error.sqlstate().map(str::to_owned);
-                self.record_failed_round(job, fence, now, sqlstate.as_deref())
+                self.record_failed_round(job, fence, sqlstate.as_deref())
                     .await
             }
         }
@@ -279,13 +273,17 @@ where
     /// two it is, because the count, the wait and the end must be one transaction (D2197); the audit record of the end is
     /// built here, as the other ends of a job are, and the store writes it only when the job ends: one small allocation for a
     /// round that failed, at most a few seconds apart for a job.
+    ///
+    /// The instant of the end is read **now**, after the round: the round began up to the statement timeout (ten seconds)
+    /// before, and a job that ends `SELECTION_FAILED` was read `SELECTING` after the `finishedAt` its record gave when that
+    /// was the reading the step began with (found on the compose stack, G2103).
     async fn record_failed_round(
         &self,
         job: &JobRecord,
         fence: Option<ShardFence>,
-        now: OffsetDateTime,
         sqlstate: Option<&str>,
     ) -> Result<Stepped, AppError> {
+        let now = self.clock.now();
         let finished = self.finished(job, FailureReason::SelectionFailed.as_str(), now);
         let sqlstate = sqlstate.unwrap_or("none");
         match self
@@ -530,6 +528,16 @@ const fn outcome_label(outcome: &ItemOutcome) -> &'static str {
         ItemOutcome::Skipped(_) => "skipped",
         ItemOutcome::Failed { .. } => "failed",
         ItemOutcome::Deferred { .. } => "deferred",
+    }
+}
+
+/// Puts the two series of `batch_selection_failures_total` on the page at zero as soon as an executor exists. Prometheus's
+/// `increase` does not count the first sample of a series, so a counter that appears with the value 1 has increased by nothing,
+/// and `SagatBatchSelectionFailed` (`increase(…{outcome="failed"}[15m]) > 0`) would stay silent for the first job an engine
+/// ends `SELECTION_FAILED` (found on the compose stack, G2102). An engine that never fails a selection shows two zeros.
+fn register_selection_failure_series() {
+    for outcome in ["retry", "failed"] {
+        metrics::counter!("batch_selection_failures_total", "outcome" => outcome).absolute(0);
     }
 }
 
