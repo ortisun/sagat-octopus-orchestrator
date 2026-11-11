@@ -36,10 +36,10 @@ use crate::tripwire::{Tripwire, table_digests};
 
 /// An action with no effect of its own that remembers the keys it was asked for.
 #[derive(Clone, Default)]
-pub(crate) struct Applies(Arc<Mutex<Vec<String>>>);
+pub(crate) struct Applies(pub(crate) Arc<Mutex<Vec<String>>>);
 
 impl Applies {
-    fn keys(&self) -> Vec<String> {
+    pub(crate) fn keys(&self) -> Vec<String> {
         self.0.lock().expect("keys").clone()
     }
 }
@@ -418,24 +418,69 @@ async fn die_at_every_write(stage: Stage) {
         let result = until_it_acts(&f, &exec, &job).await;
         wire.disarm().await;
 
+        // What the switch kills is the connection of one transaction; the process lives on. The page of a selection is a round,
+        // and a round that fails is recorded by a transaction of its own (G2093): when that transaction makes fewer writing
+        // statements than the position the switch is armed at, it is not cut, and the step answers `Backoff` where it answered
+        // an error. Nothing of the page may have committed, and what changed is that record and nothing else.
+        let recorded = matches!(stage, Stage::Select) && matches!(result, Ok(Stepped::Backoff));
         assert!(
-            result.is_err(),
+            result.is_err() || recorded,
             "{}: cut off at write {position} ({table}), the step answered {result:?}",
             stage.name()
         );
-        assert_eq!(
-            table_digests(&f.w.db.pool).await,
-            digests,
-            "{}: cut off at write {position} ({table}), a table changed",
-            stage.name()
-        );
         let after = self::job(&f, job.id).await;
-        assert_eq!(
-            (after.state, after.counts, after.next_slot_at),
-            (before.state, before.counts, before.next_slot_at),
-            "{}: cut off at write {position} ({table}) moved the job on",
-            stage.name()
-        );
+        if recorded {
+            let mut digests_after = table_digests(&f.w.db.pool).await;
+            let mut digests_before = digests;
+            let (jobs_after, jobs_before) = (
+                digests_after.remove("batch_jobs"),
+                digests_before.remove("batch_jobs"),
+            );
+            assert_eq!(
+                digests_after,
+                digests_before,
+                "{}: cut off at write {position} ({table}), a table other than the job's changed",
+                stage.name()
+            );
+            assert_ne!(
+                jobs_after,
+                jobs_before,
+                "{}: the failure of the round is on record, in the row of the job",
+                stage.name()
+            );
+            assert_eq!(
+                (after.state, after.counts, after.select_cursor),
+                (before.state, before.counts, before.select_cursor),
+                "{}: cut off at write {position} ({table}), a page of the selection committed",
+                stage.name()
+            );
+            let failures: i16 =
+                sqlx::query_scalar("SELECT selection_failures FROM batch_jobs WHERE id = $1")
+                    .bind(job.id)
+                    .fetch_one(&f.w.db.pool)
+                    .await
+                    .expect("the count of failed rounds");
+            assert_eq!(failures, 1, "{}: one failed round on record", stage.name());
+            // the wait of the failed round is over when the restarted process comes
+            sqlx::query("UPDATE batch_jobs SET next_slot_at = clock_timestamp() WHERE id = $1")
+                .bind(job.id)
+                .execute(&f.w.db.pool)
+                .await
+                .expect("the backoff is over");
+        } else {
+            assert_eq!(
+                table_digests(&f.w.db.pool).await,
+                digests,
+                "{}: cut off at write {position} ({table}), a table changed",
+                stage.name()
+            );
+            assert_eq!(
+                (after.state, after.counts, after.next_slot_at),
+                (before.state, before.counts, before.next_slot_at),
+                "{}: cut off at write {position} ({table}) moved the job on",
+                stage.name()
+            );
+        }
         assert_eq!(items(&f, job.id).await, items_before);
 
         // The process restarts: a new executor, from nothing but the database.

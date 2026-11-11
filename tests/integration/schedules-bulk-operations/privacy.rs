@@ -497,3 +497,270 @@ fn the_prefix_of_a_batch_selector_reaches_only_the_job_that_holds_it() {
         "the prefix of a selector reached a metric label"
     );
 }
+/// How the rounds of the job fail in the canary test of a failed selection.
+#[derive(Clone, Copy, Debug)]
+enum Cause {
+    /// The store of the test answers every round with an error whose text quotes the prefix: what the executor and the pass do with an
+    /// error they are handed, whatever its text.
+    HandedOn,
+    /// The real store over a real database error whose message quotes the prefix (a trigger raises it when the round inserts an item):
+    /// what the storage layer does with the error before anyone is handed it, `store_error` and its log line included (G2094, D2203).
+    Database,
+}
+
+/// A job over a business-id prefix whose selection fails until it is failed for good leaves the prefix where it was put and in no
+/// other table, log line, span or metric label, and the text of the errors of its rounds, which here quotes the prefix as a database
+/// error can quote a value, is kept nowhere (G2093, D2197, D2203). The real store records the failures, so the count, the backoff, the
+/// end of the job and its audit record are the real ones.
+fn a_failed_selection_keeps_the_prefix_where_it_was_put(cause: Cause) {
+    use std::sync::Arc;
+
+    use sagat_application::batch::BatchStore;
+    use sagat_application::batch_executor::{BatchExecutor, ExecutorSettings, Stepped};
+    use sagat_domain::batch::{Action, Filter, JobState, SELECTION_RETRIES, Selector};
+    use sagat_infra_postgres::{PgBatchStore, PgIdentityStore};
+
+    use crate::batch_executor::{Runs, create, due, live, service, write};
+    use crate::batch_selection_failures::{break_selection_quoting, role_pool, the_backoff_ends};
+    use crate::firing::Fixture;
+    use crate::gap_store::SlotComesBetween;
+    use crate::support::schedules::TestClock;
+
+    /// Steps the job to its end, moving the wait of each recorded failure; bounded by a time and by the count.
+    async fn to_the_end<S: BatchStore>(
+        f: &Fixture,
+        exec: &BatchExecutor<S, Runs, PgIdentityStore, TestClock>,
+        job: &sagat_application::batch::JobRecord,
+    ) {
+        let give_up = std::time::Instant::now() + StdDuration::from_secs(180);
+        let mut recorded = 0;
+        loop {
+            assert!(
+                std::time::Instant::now() < give_up && recorded <= SELECTION_RETRIES,
+                "the job {} did not fail in time: {recorded} failed rounds recorded",
+                job.id
+            );
+            match exec.step(&due(job), None).await.expect("step") {
+                Stepped::Acted => break,
+                Stepped::Backoff => {
+                    recorded += 1;
+                    the_backoff_ends(f, job.id).await;
+                }
+                // its selection waits for a transaction of the whole server
+                _ => tokio::time::sleep(StdDuration::from_millis(20)).await,
+            }
+        }
+        assert_eq!(
+            recorded, SELECTION_RETRIES,
+            "ten failed rounds, then the end"
+        );
+    }
+
+    let canary = format!("canary-failed-selector-{}", Uuid::now_v7().simple());
+    let hex: String = canary.bytes().map(|b| format!("{b:02x}")).collect();
+    let quoting = format!("the statement over the ids that start with {canary} was cancelled");
+    let (metrics, recorder) = Metrics::detached(StdDuration::from_secs(60));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let (guard, logs, said, leaked_tables) = metrics::with_local_recorder(&recorder, || {
+        runtime.block_on(async {
+            let f = fixture().await;
+            let mut said: Vec<(&str, String)> = Vec::new();
+            for n in 0..2 {
+                crate::business_ids::start(
+                    &f,
+                    options(
+                        &format!("{canary}-{n}"),
+                        ConflictPolicy::Fail,
+                        ReusePolicy::AllowDuplicate,
+                    ),
+                    &crate::business_ids::key(),
+                )
+                .await
+                .expect("a run under an id of the prefix");
+            }
+            let by_prefix = Selector::filter(Filter {
+                business_id_prefix: Some(canary.clone()),
+                ..Filter::default()
+            })
+            .expect("selector");
+            live(&f);
+            let job = create(
+                &f,
+                write(Action::Cancel, by_prefix.clone()),
+                "privacy-failed-selection-key",
+            )
+            .await;
+            let pool = role_pool(&f).await;
+            if matches!(cause, Cause::Database) {
+                break_selection_quoting(&f.w.db.pool, job.id, &quoting).await;
+            }
+            // The capture is installed as late as the test allows, right before the rounds whose log is searched: `tracing`
+            // caches per call site whether anybody listens, and a call site that another test of this binary registers at the
+            // moment a subscriber is installed can be cached as "nobody" (`support/logs.rs`).
+            let (guard, logs) = capture_with_spans(tracing::Level::TRACE);
+            tracing::warn!(probe = "privacy-probe", "the capture is on");
+            drop(tracing::info_span!("privacy_span_probe", probe = "kept"));
+            match cause {
+                Cause::HandedOn => {
+                    let exec = BatchExecutor::new(
+                        SlotComesBetween::failing_selection(pool.clone(), quoting.clone()),
+                        Runs(Arc::clone(&f.w)),
+                        PgIdentityStore::new(pool.clone()),
+                        f.clock.clone(),
+                        ExecutorSettings::default(),
+                    );
+                    to_the_end(&f, &exec, &job).await;
+                }
+                Cause::Database => {
+                    let exec = BatchExecutor::new(
+                        PgBatchStore::new(pool.clone()),
+                        Runs(Arc::clone(&f.w)),
+                        PgIdentityStore::new(pool.clone()),
+                        f.clock.clone(),
+                        ExecutorSettings::default(),
+                    );
+                    to_the_end(&f, &exec, &job).await;
+                }
+            }
+            let read = crate::batch_executor::job(&f, job.id).await;
+            assert_eq!(read.state, JobState::Failed, "the job failed its selection");
+            said.push(("the job as read", format!("{read:?}")));
+            let listed = service(&f)
+                .list(
+                    &f.w.admin,
+                    f.w.namespace.id(),
+                    None,
+                    &sagat_application::identity::PageRequest::default(),
+                )
+                .await
+                .expect("the jobs");
+            said.push(("the list of jobs", format!("{listed:?}")));
+            let items = crate::batch_executor::items(&f, job.id).await;
+            said.push(("the items", format!("{items:?}")));
+            let ending: Vec<String> = sqlx::query_scalar(
+                "SELECT t::text FROM audit_records t WHERE action = 'batch.finished' AND resource_id = $1",
+            )
+            .bind(job.id.to_string())
+            .fetch_all(&f.w.db.pool)
+            .await
+            .expect("the audit record of the end");
+            assert_eq!(ending.len(), 1, "one record of the end");
+            said.push(("the audit record of the end", ending.join("\n")));
+            let events: Vec<String> = sqlx::query_scalar(
+                "SELECT t::text FROM event_outbox t WHERE t::text LIKE '%' || $1 || '%'",
+            )
+            .bind(job.id.to_string())
+            .fetch_all(&f.w.db.pool)
+            .await
+            .expect("the events that name the job");
+            said.push(("the events that name the job", events.join("\n")));
+
+            let tables: Vec<String> = sqlx::query_scalar(
+                "SELECT tablename::text FROM pg_tables WHERE schemaname = current_schema() ORDER BY 1",
+            )
+            .fetch_all(&f.w.db.pool)
+            .await
+            .expect("tables");
+            assert!(
+                tables.len() > 50,
+                "the whole schema is searched: {}",
+                tables.len()
+            );
+            let mut leaked_tables: Vec<String> = Vec::new();
+            for table in tables {
+                if BATCH_ALLOWED.contains(&table.as_str()) {
+                    continue;
+                }
+                let hits: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    "SELECT count(*) FROM {table} t WHERE t::text LIKE '%' || $1 || '%' OR t::text LIKE '%' || $2 || '%'"
+                )))
+                .bind(&canary)
+                .bind(&hex)
+                .fetch_one(&f.w.db.pool)
+                .await
+                .unwrap_or_else(|error| panic!("search {table}: {error}"));
+                if hits > 0 {
+                    leaked_tables.push(table);
+                }
+            }
+            // the text of the errors is kept nowhere at all, the places that hold the prefix on purpose included
+            for table in BATCH_ALLOWED {
+                let kept: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    "SELECT count(*) FROM {table} t WHERE t::text LIKE '%' || $1 || '%'"
+                )))
+                .bind("was cancelled")
+                .fetch_one(&f.w.db.pool)
+                .await
+                .expect("count");
+                assert_eq!(kept, 0, "{table} keeps the text of an error of a round");
+                let holds_the_prefix: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    "SELECT count(*) FROM {table} t WHERE t::text LIKE '%' || $1 || '%'"
+                )))
+                .bind(&canary)
+                .fetch_one(&f.w.db.pool)
+                .await
+                .expect("count");
+                assert!(holds_the_prefix > 0, "{table} keeps the prefix");
+            }
+            (guard, logs, said, leaked_tables)
+        })
+    });
+    drop(guard);
+    assert!(
+        leaked_tables.is_empty(),
+        "{cause:?}: the prefix, or the text of an error that quotes it, reached a table of the database: {leaked_tables:?}"
+    );
+    for (surface, text) in said {
+        assert!(
+            !text.contains(&canary) && !text.contains(&hex) && !text.contains("was cancelled"),
+            "{cause:?}: the prefix, or the text of an error that quotes it, reached {surface}"
+        );
+    }
+    let text = logs.text();
+    assert!(
+        text.contains("privacy-probe") && text.contains("privacy_span_probe"),
+        "the log capture was listening, spans included"
+    );
+    assert!(
+        text.contains("a batch selection round failed") && text.contains("a batch job failed"),
+        "{cause:?}: the failures were logged, which is what this searches: {text}"
+    );
+    assert!(
+        !text.contains(&canary) && !text.contains(&hex) && !text.contains("was cancelled"),
+        "{cause:?}: the prefix, or the text of an error that quotes it, reached a log line or a span: {text}"
+    );
+    let page = metrics.render();
+    assert!(
+        page.contains("batch_selection_failures_total"),
+        "{cause:?}: the failures were counted, which is what this searches: {page}"
+    );
+    assert!(
+        !page.contains(&canary) && !page.contains("was cancelled"),
+        "{cause:?}: the prefix, or the text of an error that quotes it, reached a metric label"
+    );
+    if matches!(cause, Cause::Database) {
+        // what an operator is given in place of the text: the SQLSTATE of the error, a closed code
+        assert!(
+            text.contains("sqlstate=P0001"),
+            "the executor's line names the SQLSTATE of the error of the round: {text}"
+        );
+    }
+}
+
+/// The error of a round, handed to the executor with a text that quotes the prefix of the selector, is read by nobody (D2197): an
+/// executor and a pass that log `%error` would put the prefix in the log. Catches: the error logged by the executor.
+#[test]
+fn the_prefix_of_a_batch_selector_whose_selection_fails_reaches_only_the_job_that_holds_it() {
+    a_failed_selection_keeps_the_prefix_where_it_was_put(Cause::HandedOn);
+}
+
+/// The same over the real path: the round fails for real inside the store, with a database error whose message quotes the prefix
+/// (a trigger raises it when the round inserts an item), and nothing of it may reach a log line, a span, a label, an audit record or
+/// a table (G2094, D2203). Catches: the storage layer logging the text of the error of a round (`store_error`).
+#[test]
+fn the_prefix_of_a_batch_selector_quoted_by_a_database_error_of_its_selection_reaches_no_log() {
+    a_failed_selection_keeps_the_prefix_where_it_was_put(Cause::Database);
+}

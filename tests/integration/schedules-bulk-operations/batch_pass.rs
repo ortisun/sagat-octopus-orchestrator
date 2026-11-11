@@ -787,9 +787,11 @@ async fn the_scan_of_the_due_jobs_says_how_long_until_the_soonest_slot_that_is_a
     );
 }
 
-/// Only an applied item moves a slot ahead, and only a running job has one: a job that is selecting is due from its creation
-/// (or waits for a transaction, which no slot is for) and one that is being cancelled is moved back to its request. A slot
-/// that is ahead on such a job is nobody's wake-up: the statement does not look for it.
+/// The hint of the scan is of running jobs only: a slot that is ahead on a job that is not running is nobody's wake-up, and the
+/// statement does not look for it. A selecting job has a slot ahead while it waits the backoff of a failed round (D2198, G2095:
+/// the loop finds it at its poll after its time, not at it); a cancelling one has none ahead in practice, since the cancel brings
+/// the slot back to now (D2205), but one that is moved ahead by hand is not a wake-up either. What this pins: neither job is
+/// returned as due while its slot is ahead, and neither is reported as the soonest slot (`next_slot_in` stays `None`).
 #[tokio::test]
 async fn a_slot_ahead_of_a_job_that_is_not_running_is_not_a_wake_up() {
     let f = fixture().await;

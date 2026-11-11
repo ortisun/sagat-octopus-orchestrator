@@ -1334,3 +1334,128 @@ async fn an_action_under_a_business_id_makes_its_run_under_the_id_and_a_held_id_
         "{described}"
     );
 }
+/// A job that failed to select is read over HTTP with the reason `SELECTION_FAILED` and nothing else of the failure: the body has
+/// the very fields of a job that has not failed (no count, no backoff, no cause), and no selector (G2093, D2197).
+#[tokio::test]
+async fn a_job_whose_selection_failed_is_read_with_its_reason_and_nothing_else_of_the_failure() {
+    use sagat_application::batch::DueJob;
+    use sagat_application::batch_executor::{
+        BatchExecutor, ExecutorSettings, ItemActions, ItemEffect, ItemRequest, Stepped,
+    };
+    use sagat_application::clock::SystemClock;
+    use sagat_application::error::AppError;
+    use sagat_infra_postgres::{PgBatchStore, PgIdentityStore};
+
+    use crate::batch_selection_failures::{break_selection_on, the_backoff_ends_on};
+
+    /// The action of a job that never selects a run: nothing calls it.
+    #[derive(Clone)]
+    struct Never;
+
+    impl ItemActions for Never {
+        async fn apply(&self, _: &ItemRequest<'_>) -> Result<ItemEffect, AppError> {
+            Err(AppError::Internal)
+        }
+    }
+
+    let r = rig().await;
+    let batches = format!("/namespaces/{}/batch-operations", r.namespace);
+    // a run the prefix reaches, so that a round has an item to insert (the statement the test makes fail)
+    let (status, run) =
+        r.p.rest(
+            Method::POST,
+            "/runs",
+            Some(&json!({"workflowId": r.workflow, "input": {}, "businessId": "lot-1"})),
+        )
+        .await;
+    assert_eq!(status, 202, "{run}");
+    let (status, made) =
+        r.p.rest(
+            Method::POST,
+            &batches,
+            Some(&json!({
+                "selector": {"filter": {"businessIdPrefix": "lot-"}},
+                "action": "CANCEL",
+                "reason": "cancel the runs of the lot"
+            })),
+        )
+        .await;
+    assert_eq!(status, 202, "{made}");
+    let id: Uuid = made["batchId"]
+        .as_str()
+        .expect("an id")
+        .parse()
+        .expect("a UUID");
+    let keys = |body: &Value| -> Vec<String> {
+        body.as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect()
+    };
+    let of_a_job_that_has_not_failed = keys(&made);
+
+    // its selection fails until the platform gives up, with the executor over the pool the API uses
+    let owner = r.p.api.db.pool.clone();
+    break_selection_on(&owner, id).await;
+    let pool = r.p.api.api_pool.clone();
+    let executor = BatchExecutor::new(
+        PgBatchStore::new(pool.clone()),
+        Never,
+        PgIdentityStore::new(pool),
+        SystemClock,
+        ExecutorSettings::default(),
+    );
+    let job = DueJob {
+        tenant_id: r.p.tenant,
+        id,
+    };
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    let mut recorded = 0;
+    loop {
+        assert!(
+            std::time::Instant::now() < give_up && recorded <= 11,
+            "the job {id} did not fail in time: {recorded} failed rounds recorded, and the eleventh ends it"
+        );
+        match executor.step(&job, None).await.expect("step") {
+            Stepped::Acted => break,
+            Stepped::Backoff => {
+                recorded += 1;
+                the_backoff_ends_on(&owner, id).await;
+            }
+            // its selection waits for a transaction of the whole server
+            _ => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+        }
+    }
+    assert_eq!(
+        recorded, 10,
+        "ten failed rounds were survived and the eleventh ended the job"
+    );
+
+    let (status, read) =
+        r.p.rest(Method::GET, &format!("{batches}/{id}"), None)
+            .await;
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(read["state"], "FAILED", "{read}");
+    assert_eq!(read["failureReason"], "SELECTION_FAILED", "{read}");
+    assert_eq!(
+        keys(&read),
+        of_a_job_that_has_not_failed,
+        "no field is added by the failure: no count, no backoff, no cause: {read}"
+    );
+    assert!(
+        !read.to_string().contains("lot-"),
+        "a read of a job never returns the selector: {read}"
+    );
+    let (status, listed) = r.p.rest(Method::GET, &batches, None).await;
+    assert_eq!(status, 200, "{listed}");
+    assert_eq!(
+        listed["items"][0]["failureReason"], "SELECTION_FAILED",
+        "{listed}"
+    );
+    assert_eq!(
+        keys(&listed["items"][0]),
+        of_a_job_that_has_not_failed,
+        "and the list says no more: {listed}"
+    );
+}

@@ -401,7 +401,7 @@ fn no_metric_is_labelled_with_something_that_grows_with_the_data() {
 
 /// The rules the schedules, batch, trigger-handover and instance-registry slices of feature 018 added or lean on, with the
 /// runbook each must point to. A rule removed or renamed fails here by name (the generic tests above only read what is there).
-const SCHEDULE_RULES: [(&str, &str); 10] = [
+const SCHEDULE_RULES: [(&str, &str); 11] = [
     (
         "SagatSchedulerLate",
         "docs/runbooks/scaling.md#scheduler-late",
@@ -409,6 +409,10 @@ const SCHEDULE_RULES: [(&str, &str); 10] = [
     (
         "SagatBatchJobsStalled",
         "docs/runbooks/batch-operations.md#5-when-a-job-does-not-move",
+    ),
+    (
+        "SagatBatchSelectionFailed",
+        "docs/runbooks/batch-operations.md#51-a-selection-that-keeps-failing-selection_failed-g2093",
     ),
     (
         "SagatTriggerScheduleReconcileFailing",

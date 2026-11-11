@@ -165,7 +165,7 @@ pub(crate) async fn settle(exec: &Executor, job: &JobRecord) -> u32 {
     for _ in 0..200 {
         match exec.step(&due(job), None).await.expect("step") {
             Stepped::Acted => acted += 1,
-            Stepped::Idle | Stepped::Refused(_) => return acted,
+            Stepped::Idle | Stepped::Refused(_) | Stepped::Backoff => return acted,
         }
     }
     panic!("the job never became idle");

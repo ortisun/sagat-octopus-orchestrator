@@ -173,14 +173,27 @@ groups:
 
       - alert: SagatBatchJobsStalled
         # Jobs are active and no run has had an outcome for a quarter of an hour: the usual cause is a
-        # control plane that accepts jobs while no engine runs them (SAGAT_BATCHES_ENABLED), or a
-        # selection waiting for an old transaction. Neither is the scheduler being late.
+        # control plane that accepts jobs while no engine runs them (SAGAT_BATCHES_ENABLED), a
+        # selection waiting for an old transaction, or selections that keep failing while no other job runs.
+        # None is the scheduler being late. It is silent while any other job gets outcomes, which is why a job
+        # whose selection fails has an alert of its own (SagatBatchSelectionFailed).
         expr: (max(batch_jobs_active) > 0) unless on() (sum(rate(batch_items_total[10m])) > 0)
         for: 15m
         labels: {severity: warning}
         annotations:
           summary: Batch jobs are active and no run has had an outcome from any of them for fifteen minutes.
           runbook: docs/runbooks/batch-operations.md#5-when-a-job-does-not-move
+
+      - alert: SagatBatchSelectionFailed
+        # A batch job ended FAILED with SELECTION_FAILED: its selection rounds failed eleven times in a row, about 25 minutes
+        # (G2093). Its creator has to narrow the selector and create the job again. One is a selector too wide for the database; a
+        # burst across many jobs or tenants is the database, not the selectors. It needs no `for`: a job ended, which is an event,
+        # and the increase stays in the window for a quarter of an hour.
+        expr: sum(increase(batch_selection_failures_total{outcome="failed"}[15m])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: A batch job ended SELECTION_FAILED. A burst of these across many jobs means the database, not the selectors.
+          runbook: docs/runbooks/batch-operations.md#51-a-selection-that-keeps-failing-selection_failed-g2093
 
       - alert: SagatTriggerScheduleReconcileFailing
         # The reconciliation of the schedules of the cron triggers keeps failing for an entry or for the round: a trigger whose

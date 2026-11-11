@@ -11,6 +11,14 @@
 //! **The creator is checked at every item**: if the subject that created the job no longer holds
 //! `run:batch` and every permission of the action, the job fails `AUTHORITY_REVOKED` and nothing more
 //! is applied.
+//!
+//! **A selection round that fails is counted and bounded** (G2093, D2197): the round rolled back its own work, and the
+//! step records the failure in one fenced transaction of its own: the count of consecutive failed rounds goes up and the
+//! job waits a backoff (5 seconds doubling to 5 minutes, as a refused item does) before its next round; the eleventh in a
+//! row fails the job `SELECTION_FAILED` by the writes `AUTHORITY_REVOKED` uses. A round that picks resets the count. The
+//! text of the error is never kept, logged or counted: it can quote a value of the selector. What the operator is given in its
+//! place is the SQLSTATE of the error (a closed code, `StoreError::sqlstate`), in the line the step logs with the id of the job and
+//! the count (D2203).
 
 use std::future::Future;
 
@@ -23,7 +31,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::batch::{
-    BatchStore, DueJob, ItemOutcome, ItemRecord, JobRecord, NextItem, Selected, action_permissions,
+    BatchStore, DueJob, ItemOutcome, ItemRecord, JobRecord, NextItem, Selected, SelectionFailure,
+    action_permissions,
 };
 use crate::clock::Clock;
 use crate::error::{AppError, StoreError};
@@ -97,6 +106,9 @@ pub enum Stepped {
     Acted,
     /// The lease of the shard is no longer held, or the job moved under this step: nothing changed.
     Refused(&'static str),
+    /// A selection round failed and the failure was recorded: the job waits its backoff before the next round (a job that
+    /// the failure ended is [`Stepped::Acted`]).
+    Backoff,
 }
 
 pub struct BatchExecutor<S, A, I, C> {
@@ -201,7 +213,7 @@ where
         };
         let now = self.clock.now();
         match job.state {
-            JobState::Selecting => self.select(&job, fence).await,
+            JobState::Selecting => self.select(&job, fence, now).await,
             JobState::Cancelling => self.drain(&job, fence, now).await,
             JobState::Running => self.item(&job, fence, now).await,
             JobState::Completed | JobState::Cancelled | JobState::Failed => Ok(Stepped::Idle),
@@ -234,6 +246,7 @@ where
         &self,
         job: &JobRecord,
         fence: Option<ShardFence>,
+        now: OffsetDateTime,
     ) -> Result<Stepped, AppError> {
         match self
             .store
@@ -247,6 +260,60 @@ where
         {
             Ok(Selected::Picked { .. }) => Ok(Stepped::Acted),
             Ok(Selected::Waiting | Selected::NotSelecting) => Ok(Stepped::Idle),
+            // the lease or the job moved: the step did not happen, which is not a failure of the round
+            Err(StoreError::StateConflict(reason)) => Ok(Stepped::Refused(reason)),
+            // The round failed (a statement over its timeout, a deadlock victim, an error that will come again) and rolled
+            // back its own work. The text of the error is not read: it can quote a value of the selector (D2203). What is
+            // read is its SQLSTATE, a closed code (`StoreError::sqlstate`), which is what the operator is given in its place.
+            Err(error) => {
+                let sqlstate = error.sqlstate().map(str::to_owned);
+                self.record_failed_round(job, fence, now, sqlstate.as_deref())
+                    .await
+            }
+        }
+    }
+
+    /// Records the failed round in a transaction of its own under the fence: the count and the backoff, or, at the bound,
+    /// the end of the job `SELECTION_FAILED` by the writes of `fail_job`. Only the id of the job, the number of failures and
+    /// the SQLSTATE of the error reach the log, and only one of two closed words the metric. The store decides which of the
+    /// two it is, because the count, the wait and the end must be one transaction (D2197); the audit record of the end is
+    /// built here, as the other ends of a job are, and the store writes it only when the job ends: one small allocation for a
+    /// round that failed, at most a few seconds apart for a job.
+    async fn record_failed_round(
+        &self,
+        job: &JobRecord,
+        fence: Option<ShardFence>,
+        now: OffsetDateTime,
+        sqlstate: Option<&str>,
+    ) -> Result<Stepped, AppError> {
+        let finished = self.finished(job, FailureReason::SelectionFailed.as_str(), now);
+        let sqlstate = sqlstate.unwrap_or("none");
+        match self
+            .store
+            .selection_failed(job.tenant_id, job.id, now, fence.as_ref(), &finished)
+            .await
+        {
+            Ok(SelectionFailure::Retry { failures }) => {
+                count_selection_failure("retry");
+                tracing::warn!(
+                    job = %job.id,
+                    failures,
+                    sqlstate = %sqlstate,
+                    "a batch selection round failed; the job waits before the next one"
+                );
+                Ok(Stepped::Backoff)
+            }
+            Ok(SelectionFailure::Failed { failures }) => {
+                count_selection_failure("failed");
+                tracing::warn!(
+                    job = %job.id,
+                    failures,
+                    sqlstate = %sqlstate,
+                    "a batch job failed: its selection rounds kept failing"
+                );
+                Ok(Stepped::Acted)
+            }
+            Ok(SelectionFailure::NotSelecting) => Ok(Stepped::Idle),
             Err(error) => Self::refused(error),
         }
     }
@@ -464,6 +531,13 @@ const fn outcome_label(outcome: &ItemOutcome) -> &'static str {
         ItemOutcome::Failed { .. } => "failed",
         ItemOutcome::Deferred { .. } => "deferred",
     }
+}
+
+/// Counts a failed selection round once its record is committed (`batch_selection_failures_total`). The label is one of two
+/// closed words, `retry` (the job waits and tries again) and `failed` (the job ended `SELECTION_FAILED`); none is a tenant, a
+/// job, a selector or an error.
+fn count_selection_failure(outcome: &'static str) {
+    metrics::counter!("batch_selection_failures_total", "outcome" => outcome).increment(1);
 }
 
 /// Counts items once their outcome is committed (`batch_items_total`). The labels are the closed

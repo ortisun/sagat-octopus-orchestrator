@@ -7,8 +7,8 @@
 
 use sagat_application::batch::{
     ActiveJobLimits, BatchStore, Counts, Drained, DueJob, DueJobs, ItemOutcome, ItemRecord,
-    JobParams, JobRecord, NewJob, NextItem, Preview, Selected, failure_reason_from,
-    item_state_from, item_state_name, selector_from_json, selector_to_json,
+    JobParams, JobRecord, NewJob, NextItem, Preview, Selected, SelectionFailure,
+    failure_reason_from, item_state_from, item_state_name, selector_from_json, selector_to_json,
 };
 use sagat_application::definitions::Applied;
 use sagat_application::error::StoreError;
@@ -16,19 +16,22 @@ use sagat_application::quotas::QuotaLookup;
 use sagat_application::schedules::ShardFence;
 use sagat_domain::audit::AuditRecord;
 use sagat_domain::batch::{
-    Action, FailureReason, ItemState, JobState, Rate, Selector, SelectorKind, next_slot,
+    Action, FailureReason, ItemState, JobState, Rate, Retry, Selector, SelectorKind, next_slot,
+    selection_retry,
 };
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::quota::QuotaResource;
 use sagat_domain::sharding::Shard;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use sqlx::PgPool;
 use sqlx::postgres::PgRow;
+use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::identity::{col, corrupt, insert_audit, store_error};
+use crate::identity::{
+    col, corrupt, insert_audit, store_error, store_error_without_text as round_error,
+};
 use crate::pool::BeginSafely;
 use crate::quotas::{effective, ensure_room_for_batch, lock_batch_jobs};
 use crate::schedules::check_fence;
@@ -63,12 +66,16 @@ impl PgBatchStore {
         // and the slot that is "ahead" is one after `t0`, so a slot that comes while the statement runs, or between this
         // statement and the next thing the round does, is ahead of the instant the round was decided at and is never lost
         // (G2043). The slot ahead is one index probe for each shard the replica owns (64 at the most), each walking
-        // `batch_jobs_due_idx (shard, next_slot_at)` from `t0` to the first running job and stopping there, and only a running
-        // job's slot is ever ahead (an applied item moves it; a job in selection is due from its creation and a cancelled one
-        // is moved back to its request, and a test holds that): the cost does not grow with the jobs. The due scan's bound on
-        // the slot is an index condition on the same index. A slot that had come by `t0` and is not due (a selection that
-        // waits for a transaction, items all deferred) is in neither answer, so such a job never becomes a wake-up that
-        // spins. The time to the slot is measured at the end of the statement, by the same clock, never below zero.
+        // `batch_jobs_due_idx (shard, next_slot_at)` from `t0` to the first running job and stopping there. Only a running job's
+        // slot is looked for: an applied item moves it; a cancel brings the slot of any job back to the database's now (D2205),
+        // so a cancelling job has none ahead; and a selecting job has one only while it waits the backoff of a failed round
+        // (D2198), which is not a wake-up (G2095): the loop finds that job at its first poll after its time, and until then the
+        // scan does not read it at all (the bound on the slot is an index condition). The probe walks past such jobs, so its
+        // cost is the running job's index position plus the number of selecting jobs that wait ahead of it in the shard: bounded
+        // by the failing jobs (a tenant's active-job ceilings), not by the jobs. The due scan's bound on the slot is an index
+        // condition on the same index. A slot that had come by `t0` and is not due (a selection that waits for a transaction,
+        // items all deferred) is in neither answer, so such a job never becomes a wake-up that spins. The time to the slot is
+        // measured at the end of the statement, by the same clock, never below zero.
         let rows: Vec<(Option<Uuid>, Option<Uuid>, Option<f64>)> = sqlx::query_as(
             "WITH t0 AS MATERIALIZED (SELECT coalesce($3::timestamptz, clock_timestamp()) AS at), \
                   due AS MATERIALIZED ( \
@@ -552,7 +559,6 @@ impl BatchStore for PgBatchStore {
         &self,
         tenant: TenantId,
         id: Uuid,
-        at: OffsetDateTime,
         audit: &AuditRecord,
     ) -> Result<Option<JobRecord>, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
@@ -569,13 +575,15 @@ impl BatchStore for PgBatchStore {
         };
         // a job that is cancelling or over stays as it is: asking twice is asking once
         if matches!(state.as_str(), "SELECTING" | "RUNNING") {
+            // The slot comes back to the database's now, never to the service's: a job that waits (the next item of a running one,
+            // the backoff of a selecting one whose round failed) has a slot ahead, and a service whose clock runs ahead of the
+            // database's would leave the cancel waiting for the difference (D2205).
             sqlx::query(
-                "UPDATE batch_jobs SET state = 'CANCELLING', next_slot_at = LEAST(next_slot_at, $3) \
+                "UPDATE batch_jobs SET state = 'CANCELLING', next_slot_at = LEAST(next_slot_at, clock_timestamp()) \
                  WHERE tenant_id = $1 AND id = $2",
             )
             .bind(tenant.as_uuid())
             .bind(id)
-            .bind(at)
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -633,25 +641,26 @@ impl BatchStore for PgBatchStore {
         fence: Option<&ShardFence>,
         page: u32,
     ) -> Result<Selected, StoreError> {
-        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let mut tx = self.pool.begin_safely().await.map_err(round_error)?;
         // a selection that scans for too long is given up and tried again, not held for ever
         sqlx::query("SET LOCAL statement_timeout = '10s'")
             .execute(&mut *tx)
             .await
-            .map_err(store_error)?;
+            .map_err(round_error)?;
         check_fence(&mut tx, id, fence).await?;
         // The snapshot of this statement against the horizon of the job: every transaction that was
         // open when the job was created has ended once the oldest one still open is not older.
         let job = sqlx::query(
             "SELECT namespace_id, state, select_cursor, selected, max_items, selection_bound_at, selector, \
-                    pg_snapshot_xmin(pg_current_snapshot()) > selection_horizon AS ready \
+                    pg_snapshot_xmin(pg_current_snapshot()) > selection_horizon AS ready, \
+                    clock_timestamp() >= next_slot_at AS due \
              FROM batch_jobs WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
         )
         .bind(tenant.as_uuid())
         .bind(id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(store_error)?;
+        .map_err(round_error)?;
         let Some(job) = job else {
             return Err(StoreError::MissingReference);
         };
@@ -660,6 +669,12 @@ impl BatchStore for PgBatchStore {
             return Ok(Selected::NotSelecting);
         }
         if !col::<bool>(&job, "ready")? {
+            return Ok(Selected::Waiting);
+        }
+        // The backoff that a failed round put on the job (`selection_failed`), by the database's clock: a step that was
+        // decided before the failure was recorded (a replica that took the job over, a stale scan) does not run the round
+        // again at once, which would count two failures where there was one wait.
+        if !col::<bool>(&job, "due")? {
             return Ok(Selected::Waiting);
         }
         let namespace: Uuid = col(&job, "namespace_id")?;
@@ -703,7 +718,7 @@ impl BatchStore for PgBatchStore {
                 .await
             }
         }
-        .map_err(store_error)?;
+        .map_err(round_error)?;
         let picked = i32::try_from(ids.len()).unwrap_or(i32::MAX);
         if !ids.is_empty() {
             sqlx::query(
@@ -718,13 +733,15 @@ impl BatchStore for PgBatchStore {
             .bind(&ids)
             .execute(&mut *tx)
             .await
-            .map_err(store_error)?;
+            .map_err(round_error)?;
         }
         // the selection is over when a page comes back short or the job has all it asked for
         let over = i64::from(picked) < take || selected + picked >= max_items;
+        // a round that gets as far as picking is progress: the failures in a row start again from zero, in this transaction
         sqlx::query(
             "UPDATE batch_jobs SET selected = selected + $3, \
                     select_cursor = COALESCE($4, select_cursor), \
+                    selection_failures = 0, \
                     state = CASE WHEN $5 THEN 'RUNNING' ELSE state END, \
                     started_at = CASE WHEN $5 THEN clock_timestamp() ELSE started_at END \
              WHERE tenant_id = $1 AND id = $2",
@@ -736,8 +753,8 @@ impl BatchStore for PgBatchStore {
         .bind(over)
         .execute(&mut *tx)
         .await
-        .map_err(store_error)?;
-        tx.commit().await.map_err(store_error)?;
+        .map_err(round_error)?;
+        tx.commit().await.map_err(round_error)?;
         Ok(Selected::Picked {
             items: u32::try_from(picked).unwrap_or(0),
         })
@@ -1074,35 +1091,72 @@ impl BatchStore for PgBatchStore {
         if !matches!(state.as_str(), "SELECTING" | "RUNNING") {
             return Err(StoreError::StateConflict("the batch job cannot fail now"));
         }
-        // what had not ended is cancelled, so the counters equal the outcomes of the items
-        let cancelled: i64 = sqlx::query_scalar(
-            "WITH moved AS (UPDATE batch_items SET state = 'CANCELLED', updated_at = $3 \
-                 WHERE tenant_id = $1 AND job_id = $2 AND state IN ('PENDING', 'DEFERRED') \
-                 RETURNING 1) \
-             SELECT count(*) FROM moved",
-        )
-        .bind(tenant.as_uuid())
-        .bind(id)
-        .bind(at)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        // the deferred ones were counted as such: they leave that count when they are cancelled
-        sqlx::query(
-            "UPDATE batch_jobs SET state = 'FAILED', failure_reason = $3, finished_at = $4, \
-                    cancelled = cancelled + $5, deferred = 0 \
-             WHERE tenant_id = $1 AND id = $2",
-        )
-        .bind(tenant.as_uuid())
-        .bind(id)
-        .bind(reason.as_str())
-        .bind(at)
-        .bind(i32::try_from(cancelled).unwrap_or(i32::MAX))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        insert_audit(&mut tx, finished).await?;
+        end_failed(&mut tx, tenant, id, reason, at, None, finished).await?;
         tx.commit().await.map_err(store_error)
+    }
+
+    async fn selection_failed(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        at: OffsetDateTime,
+        fence: Option<&ShardFence>,
+        finished: &AuditRecord,
+    ) -> Result<SelectionFailure, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(round_error)?;
+        // the same path as every other write of the executor: the lease of the shard, then the row of the job
+        check_fence(&mut tx, id, fence).await?;
+        let row: Option<(String, i16)> = sqlx::query_as(
+            "SELECT state, selection_failures FROM batch_jobs WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(round_error)?;
+        let Some((state, was)) = row else {
+            return Err(StoreError::MissingReference);
+        };
+        // a job that was cancelled, or that another step ended, while the round ran: nothing to record
+        if state != JobState::Selecting.as_str() {
+            return Ok(SelectionFailure::NotSelecting);
+        }
+        let failures = u32::try_from(was).unwrap_or(0).saturating_add(1);
+        let counted = i16::try_from(failures).unwrap_or(i16::MAX);
+        match selection_retry(failures) {
+            Retry::After(wait) => {
+                // The next round is not before the backoff passes, by the database's clock (the instant the scan reads),
+                // and it is not due for the scan before then: a job whose slot is ahead is not read by it at all.
+                sqlx::query(
+                    "UPDATE batch_jobs SET selection_failures = $3, \
+                            next_slot_at = clock_timestamp() + make_interval(secs => $4) \
+                     WHERE tenant_id = $1 AND id = $2",
+                )
+                .bind(tenant.as_uuid())
+                .bind(id)
+                .bind(counted)
+                .bind(wait.as_seconds_f64())
+                .execute(&mut *tx)
+                .await
+                .map_err(round_error)?;
+                tx.commit().await.map_err(round_error)?;
+                Ok(SelectionFailure::Retry { failures })
+            }
+            Retry::Exhausted => {
+                end_failed(
+                    &mut tx,
+                    tenant,
+                    id,
+                    FailureReason::SelectionFailed,
+                    at,
+                    Some(counted),
+                    finished,
+                )
+                .await?;
+                tx.commit().await.map_err(round_error)?;
+                Ok(SelectionFailure::Failed { failures })
+            }
+        }
     }
 
     async fn payload(
@@ -1176,4 +1230,50 @@ impl BatchStore for PgBatchStore {
             sample: found.into_iter().take(sample).collect(),
         })
     }
+}
+
+/// The writes that end a job `FAILED`, in the transaction that holds the job's row `FOR UPDATE` and has seen it `SELECTING`
+/// or `RUNNING`: the items that had not ended become `CANCELLED` (so the counters equal the outcomes of the items), the job
+/// takes its state, its reason and its end, and the audit record of the end is written. Items that already ended, and the
+/// runs they were applied to, are not touched. `AUTHORITY_REVOKED` and `SELECTION_FAILED` take this one path (G2093, D2197);
+/// `failures` is the count of failed selection rounds the last one leaves on the job, which only `SELECTION_FAILED` has.
+async fn end_failed(
+    tx: &mut PgConnection,
+    tenant: TenantId,
+    id: Uuid,
+    reason: FailureReason,
+    at: OffsetDateTime,
+    failures: Option<i16>,
+    finished: &AuditRecord,
+) -> Result<(), StoreError> {
+    // what had not ended is cancelled, so the counters equal the outcomes of the items
+    let cancelled: i64 = sqlx::query_scalar(
+        "WITH moved AS (UPDATE batch_items SET state = 'CANCELLED', updated_at = $3 \
+             WHERE tenant_id = $1 AND job_id = $2 AND state IN ('PENDING', 'DEFERRED') \
+             RETURNING 1) \
+         SELECT count(*) FROM moved",
+    )
+    .bind(tenant.as_uuid())
+    .bind(id)
+    .bind(at)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(round_error)?;
+    // the deferred ones were counted as such: they leave that count when they are cancelled
+    sqlx::query(
+        "UPDATE batch_jobs SET state = 'FAILED', failure_reason = $3, finished_at = $4, \
+                cancelled = cancelled + $5, deferred = 0, \
+                selection_failures = COALESCE($6, selection_failures) \
+         WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(id)
+    .bind(reason.as_str())
+    .bind(at)
+    .bind(i32::try_from(cancelled).unwrap_or(i32::MAX))
+    .bind(failures)
+    .execute(&mut *tx)
+    .await
+    .map_err(round_error)?;
+    insert_audit(tx, finished).await
 }

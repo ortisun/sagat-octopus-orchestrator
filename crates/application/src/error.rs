@@ -107,6 +107,27 @@ pub enum StoreError {
     },
 }
 
+impl StoreError {
+    /// The SQLSTATE of a failure that a store reported by it and by nothing else of the error: five upper-case letters and digits
+    /// (`57014` a statement over its timeout, `40P01` a deadlock), written by the adapter as `sqlstate:XXXXX` in `detail`
+    /// (G2094, D2203). It is the one thing of the error of a selection round that may be logged: the text of a database error can
+    /// quote a value. `None` for every other error, whatever its text, and for a failure that was no database error.
+    #[must_use]
+    pub fn sqlstate(&self) -> Option<&str> {
+        match self {
+            Self::Unavailable { detail } | Self::Internal { detail } => {
+                detail.strip_prefix("sqlstate:").filter(|code| {
+                    code.len() == 5
+                        && code
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Failure of a use case, already expressed in terms the API can translate one-to-one.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AppError {
@@ -337,5 +358,40 @@ impl From<StoreError> for AppError {
                 reusable_after,
             },
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::StoreError;
+
+    /// The one thing of the error of a selection round that may be logged is its SQLSTATE, and only as the closed code the adapter
+    /// writes: five upper-case letters and digits after `sqlstate:`. Any other text, however it is dressed, is nothing (G2094, D2203).
+    /// Catches: a reader that hands back a longer or looser text (a message that quotes a value would pass for a code).
+    #[test]
+    fn only_a_closed_sqlstate_is_read_from_an_error_and_never_its_text() {
+        let unavailable = |detail: &str| StoreError::Unavailable {
+            detail: detail.to_owned(),
+        };
+        let internal = |detail: &str| StoreError::Internal {
+            detail: detail.to_owned(),
+        };
+        assert_eq!(unavailable("sqlstate:57014").sqlstate(), Some("57014"));
+        assert_eq!(internal("sqlstate:40P01").sqlstate(), Some("40P01"));
+        for text in [
+            "sqlstate:none",
+            "sqlstate:",
+            "sqlstate:5701",
+            "sqlstate:570144",
+            "sqlstate:57o14",
+            "sqlstate:57014 and a value that was quoted",
+            "error returned from database: the statement over canary-1 was cancelled",
+            "",
+        ] {
+            assert_eq!(unavailable(text).sqlstate(), None, "{text:?}");
+            assert_eq!(internal(text).sqlstate(), None, "{text:?}");
+        }
+        // an error that is no failure of the store says no code, whatever it is
+        assert_eq!(StoreError::MissingReference.sqlstate(), None);
+        assert_eq!(StoreError::StateConflict("sqlstate:57014").sqlstate(), None);
     }
 }

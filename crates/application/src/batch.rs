@@ -412,11 +412,25 @@ pub struct DueJobs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selected {
     /// A transaction that was open when the job was created has not ended: the selection starts
-    /// once every one of them has (`FR-018-029`).
+    /// once every one of them has (`FR-018-029`). Or the job waits the backoff that a failed round put on it
+    /// (`next_slot_at` is ahead of the database's clock).
     Waiting,
     /// A page of runs became items; the job runs once the selection has reached its end or `maxItems`.
     Picked { items: u32 },
     /// The job is no longer selecting.
+    NotSelecting,
+}
+
+/// What the record of a failed selection round did (G2093, D2197).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionFailure {
+    /// The round is counted and the job waits its backoff (`next_slot_at`, by the database's clock) before the next round.
+    /// `failures` is how many rounds have failed in a row, this one included.
+    Retry { failures: u32 },
+    /// That was one failure too many: the job is `FAILED` with `SELECTION_FAILED`, in the same transaction, by the same
+    /// writes as a job that fails for another reason (the items that had not ended `CANCELLED`, the audit record).
+    Failed { failures: u32 },
+    /// The job is no longer selecting (cancelled, ended): nothing was recorded.
     NotSelecting,
 }
 
@@ -505,12 +519,12 @@ pub trait BatchStore: QuotaLookup + Send + Sync {
     ) -> impl Future<Output = Result<Vec<ItemRecord>, StoreError>> + Send;
 
     /// Asks the job to stop: new items stop after the one in flight, the rest are marked cancelled
-    /// by the executor (`FR-018-032`). A job that is already cancelling or over is returned as it is.
+    /// by the executor (`FR-018-032`). A job that is already cancelling or over is returned as it is. The job is due at once:
+    /// its slot (the next item's, or the end of the wait after a failed selection round) comes back to the database's now.
     fn request_cancel(
         &self,
         tenant: TenantId,
         id: Uuid,
-        at: OffsetDateTime,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<Option<JobRecord>, StoreError>> + Send;
 
@@ -543,7 +557,9 @@ pub trait BatchStore: QuotaLookup + Send + Sync {
     /// One round of the selection: once every transaction that was open when the job was created
     /// has ended, the next page of the runs the selector matches (those created at or before the
     /// bound of the job, by run id after the cursor) become items, in one transaction with the
-    /// cursor and the counters. A lost lease is a `StateConflict` and commits nothing.
+    /// cursor and the counters; the count of consecutive failed rounds goes back to zero in that same transaction (a round
+    /// that gets as far as picking is progress). A job whose next round is put off by a backoff ([`Self::selection_failed`])
+    /// is [`Selected::Waiting`] until the database's clock reaches it. A lost lease is a `StateConflict` and commits nothing.
     fn select_round(
         &self,
         tenant: TenantId,
@@ -551,6 +567,28 @@ pub trait BatchStore: QuotaLookup + Send + Sync {
         fence: Option<&ShardFence>,
         page: u32,
     ) -> impl Future<Output = Result<Selected, StoreError>> + Send;
+
+    /// Records that a selection round of the job failed (the round rolled back its own work), under the fence of the shard,
+    /// in one transaction: the count of consecutive failed rounds goes up by one and the job's next round is put off by the
+    /// backoff of `sagat_domain::batch::selection_retry` (`next_slot_at`, read from the database's clock), or, when the
+    /// count passes the bound, the job is ended as `FailureReason::SelectionFailed` by the writes of
+    /// [`fail_job`](Self::fail_job). A job that is not selecting records nothing ([`SelectionFailure::NotSelecting`]); a
+    /// lost lease is a `StateConflict` and commits nothing. The error of the round is not an argument: its text can quote a
+    /// value of the selector, and nothing of it is kept (the executor reads its SQLSTATE, `StoreError::sqlstate`, for its log).
+    ///
+    /// **The store decides retry or end, not the executor** (D2197): the count, the wait and the end must be one transaction
+    /// under one lock of the job row, and that decision is made on the count read under that lock. An executor that read the
+    /// count, decided and then asked the store to write it would decide on a number another step, or a cancel, can have moved
+    /// (D2204). The answer is a type with meaning of its own, [`SelectionFailure`]: the job waits, the job ended, or it is not
+    /// selecting any more. The policy itself is the domain's (`selection_retry`), which the store applies.
+    fn selection_failed(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        at: OffsetDateTime,
+        fence: Option<&ShardFence>,
+        finished: &AuditRecord,
+    ) -> impl Future<Output = Result<SelectionFailure, StoreError>> + Send;
 
     /// The next item to apply: the first that is pending, or deferred and due.
     fn next_item(
@@ -1068,7 +1106,7 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
         )
         .with_reason(reason.as_str());
         self.store
-            .request_cancel(principal.tenant_id(), id, now, &audit)
+            .request_cancel(principal.tenant_id(), id, &audit)
             .await?
             .ok_or(AppError::NotFound)
     }

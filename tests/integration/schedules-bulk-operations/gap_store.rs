@@ -1,7 +1,9 @@
 //! A batch store with a gap in it: the real store over the real database, which, the first time its scan of the due jobs
 //! returns, makes a job's slot come before it hands the answer back. That is the time between two statements of one round
 //! (G2043, the lost wake-up), held where a test can put something in it, with no sleep: the store does the move itself,
-//! after the scan has answered and before the caller has seen the answer.
+//! after the scan has answered and before the caller has seen the answer. Or, made by [`SlotComesBetween::failing_selection`],
+//! one whose selection rounds fail with an error whose text the test chooses (G2093): what a database error that quotes a value
+//! of the selector would be, which nothing of the platform may keep.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
@@ -9,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use sagat_application::batch::{
     ActiveJobLimits, BatchStore, Drained, DueJobs, ItemOutcome, ItemRecord, JobRecord, NewJob,
-    NextItem, Preview, Selected,
+    NextItem, Preview, Selected, SelectionFailure,
 };
 use sagat_application::definitions::{Applied, Idempotency};
 use sagat_application::error::StoreError;
@@ -33,6 +35,8 @@ pub(crate) struct SlotComesBetween {
     owner: PgPool,
     job: Uuid,
     armed: Arc<AtomicBool>,
+    /// The text of the error every selection round fails with, while there is one.
+    failing_with: Option<String>,
 }
 
 impl SlotComesBetween {
@@ -42,6 +46,16 @@ impl SlotComesBetween {
             owner,
             job,
             armed: Arc::new(AtomicBool::new(true)),
+            failing_with: None,
+        }
+    }
+
+    /// The real store whose every selection round fails with a storage error that says `detail`, and which moves no slot.
+    pub(crate) fn failing_selection(pool: PgPool, detail: String) -> Self {
+        Self {
+            armed: Arc::new(AtomicBool::new(false)),
+            failing_with: Some(detail),
+            ..Self::new(pool, Uuid::nil())
         }
     }
 
@@ -122,10 +136,9 @@ impl BatchStore for SlotComesBetween {
         &self,
         tenant: TenantId,
         id: Uuid,
-        at: OffsetDateTime,
         audit: &AuditRecord,
     ) -> Result<Option<JobRecord>, StoreError> {
-        self.inner.request_cancel(tenant, id, at, audit).await
+        self.inner.request_cancel(tenant, id, audit).await
     }
 
     async fn ensure_live(
@@ -151,7 +164,25 @@ impl BatchStore for SlotComesBetween {
         fence: Option<&ShardFence>,
         page: u32,
     ) -> Result<Selected, StoreError> {
+        if let Some(detail) = &self.failing_with {
+            return Err(StoreError::Unavailable {
+                detail: detail.clone(),
+            });
+        }
         self.inner.select_round(tenant, id, fence, page).await
+    }
+
+    async fn selection_failed(
+        &self,
+        tenant: TenantId,
+        id: Uuid,
+        at: OffsetDateTime,
+        fence: Option<&ShardFence>,
+        finished: &AuditRecord,
+    ) -> Result<SelectionFailure, StoreError> {
+        self.inner
+            .selection_failed(tenant, id, at, fence, finished)
+            .await
     }
 
     async fn next_item(

@@ -79,7 +79,9 @@ pub struct BatchRound {
     pub steps: u32,
     /// Steps another replica or a lost lease took away.
     pub refused: u32,
-    /// Steps that failed for a reason of the store or the platform.
+    /// Steps that failed for a reason of the store or the platform. A selection round that failed and was recorded
+    /// (`Stepped::Backoff`, G2093) counts too: the job waits its backoff and is not scanned until then, and the round, like
+    /// any round that failed, leaves the loop to its poll (`next_due_in` is `None`).
     pub failed: u32,
     /// How long until the loop should look again, when that is sooner than its poll (G2043). Only a round that did nothing
     /// and met no refusal or failure says it: the time to the soonest slot of a running job of the shards (measured against
@@ -187,6 +189,13 @@ where
                                 .increment(1);
                         }
                         round.refused += 1;
+                        break;
+                    }
+                    // a selection round failed and was recorded (the executor logged it, with the id of the job and the
+                    // count only): the job leaves the scan until its backoff has passed, so the jobs behind it are reached
+                    // and this one is not stepped again in this round
+                    Ok(Stepped::Backoff) => {
+                        round.failed += 1;
                         break;
                     }
                     Err(error) => {
