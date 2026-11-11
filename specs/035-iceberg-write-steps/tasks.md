@@ -1261,6 +1261,9 @@ one commit carries the key.
   `tests/e2e/iceberg-writes/append.rs` (happy path and a recovered crash, quickstart scenario 2).
   Refs: FR-035-032, SC-035-003.
 
+  *2026-11-10, blocked, not started:* the real end to end needs the host to reach the fixtures, and the host, the runner's policy and the server disagree about a plain-`http` storage or token endpoint (G035-095, owner question
+  O035-010). Until that is decided the test cannot be built without a test PKI, and the quickstart's scenario 1 cannot run as written.
+
 **Checkpoint**: the MVP. An append on REST + S3 is exactly-once-or-unknown, proven with the
 independent reader.
 

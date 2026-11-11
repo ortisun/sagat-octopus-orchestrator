@@ -20,6 +20,9 @@ docker compose -f infra/docker/compose.yaml -f infra/docker/compose.database.yam
 
 ## Scenario 1 — connection and probe (US01, SC-035-001)
 
+> **2026-11-10: step 1 cannot run as written.** The runner and the host accept a plain-`http` address only for the catalog and only on the loopback, and an S3 endpoint and a token endpoint only over `https`;
+> `http://iceberg-rest:8181` and the RustFS endpoint are neither. The server still lets a development namespace save them (G035-095, owner question O035-010).
+
 1. Create a namespace secret and an Iceberg connection `lake` (REST catalog
    `http://iceberg-rest:8181`, storage `s3` at the RustFS endpoint, `warehouseLocations: ["s3://lake/"]`,
    `allowedModes: [append, overwrite, upsert]`, `egressCeiling: internal`).
