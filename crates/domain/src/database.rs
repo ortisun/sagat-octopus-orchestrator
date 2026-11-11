@@ -221,8 +221,22 @@ impl ConnectionConfig {
         config.validate()?;
         Ok(config)
     }
-    /// An Iceberg connection, checked against every rule of `data-model.md` section 1.
+    /// An Iceberg connection **being saved**, checked against every rule of `data-model.md` section 1, including that a plain `http` address
+    /// names the loopback (O035-010).
+    ///
+    /// # Errors
+    /// [`DatabaseError::Lake`] with the rule that does not hold.
     pub fn iceberg(config: IcebergConfig) -> Result<Self, DatabaseError> {
+        config.validate_saved()?;
+        Ok(Self::Iceberg(Box::new(config)))
+    }
+
+    /// An Iceberg connection **read back from the store**: every rule a build of any age enforced, and none that came later about what
+    /// may be saved. A revision stays readable after the rules of saving tighten.
+    ///
+    /// # Errors
+    /// [`DatabaseError::Lake`] with the rule that does not hold.
+    pub fn iceberg_stored(config: IcebergConfig) -> Result<Self, DatabaseError> {
         config.validate()?;
         Ok(Self::Iceberg(Box::new(config)))
     }

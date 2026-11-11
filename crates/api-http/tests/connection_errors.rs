@@ -8,9 +8,10 @@ use sagat_api_http::error::{ApiError, ErrorCode};
 use sagat_application::error::AppError;
 use sagat_domain::database::LakeConfigError;
 
-const REASONS: [LakeConfigError; 13] = [
+const REASONS: [LakeConfigError; 14] = [
     LakeConfigError::InvalidUri,
     LakeConfigError::CredentialInUri,
+    LakeConfigError::PlainHttpOutsideLoopback,
     LakeConfigError::InvalidCatalog,
     LakeConfigError::InvalidStorage,
     LakeConfigError::VendedNeedsDelegation,

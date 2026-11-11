@@ -376,14 +376,14 @@ fn each_of_the_four_catalog_types_builds_with_its_own_members() {
 /// "REST `uri` is HTTPS outside development": plain HTTP builds, and says it is for development only.
 #[test]
 fn a_rest_catalog_over_plain_http_is_for_development_only() {
-    let plain = with_rest(|catalog| catalog.uri = "http://catalog.local:8181".to_owned());
+    let plain = with_rest(|catalog| catalog.uri = "http://localhost:8181".to_owned());
     let connection = ConnectionConfig::iceberg(plain).expect("it builds");
 
     assert!(connection.requires_development());
 
     let plain_token = with_rest(|catalog| {
         catalog.auth = RestAuth::OAuth2 {
-            token_uri: "http://catalog.local:8181/token".to_owned(),
+            token_uri: "http://localhost:8181/token".to_owned(),
             scope: None,
         };
     });
@@ -391,6 +391,79 @@ fn a_rest_catalog_over_plain_http_is_for_development_only() {
         ConnectionConfig::iceberg(plain_token)
             .expect("it builds")
             .requires_development()
+    );
+}
+
+/// O035-010, the server's half: a plain `http` address names the loopback or it is refused, whatever it is the address of, because
+/// the runner and the host read `http` on the loopback alone and so nothing could run such a connection.
+#[test]
+fn a_plain_http_address_must_name_the_loopback() {
+    let by_uri = |host: &str| with_rest(|catalog| catalog.uri = format!("http://{host}:8181/api"));
+    let by_token = |host: &str| {
+        with_rest(|catalog| {
+            catalog.auth = RestAuth::OAuth2 {
+                token_uri: format!("http://{host}:8181/token"),
+                scope: None,
+            };
+        })
+    };
+    let by_endpoint = |host: &str| {
+        let mut config = lake();
+        config.storage.kind = StorageKind::S3(S3Storage {
+            endpoint: Some(format!("http://{host}:9000")),
+            ..s3()
+        });
+        config
+    };
+    for host in ["localhost", "127.0.0.1", "[::1]"] {
+        for config in [by_uri(host), by_token(host), by_endpoint(host)] {
+            assert_eq!(reason(&config), None, "{host}");
+            assert!(
+                ConnectionConfig::iceberg(config)
+                    .expect("it builds")
+                    .requires_development(),
+                "{host}: it is for development"
+            );
+        }
+    }
+    for host in [
+        "catalog.local",
+        "minio.internal",
+        "10.0.0.5",
+        "127.0.0.2",
+        "localhost.evil.example",
+        "LOCALHOST.evil.example",
+        "[2001:db8::1]",
+    ] {
+        for (what, config) in [
+            ("uri", by_uri(host)),
+            ("token", by_token(host)),
+            ("endpoint", by_endpoint(host)),
+        ] {
+            assert_eq!(
+                reason(&config),
+                Some(LakeConfigError::PlainHttpOutsideLoopback),
+                "{what} {host}"
+            );
+        }
+    }
+    // https is any host, as it always was, and the rule does not reach the other refusals
+    assert_eq!(
+        reason(&with_rest(
+            |catalog| catalog.uri = "https://catalog.local:8181".to_owned()
+        )),
+        None
+    );
+    assert_eq!(
+        reason(&with_rest(
+            |catalog| catalog.uri = "http://user:secret@catalog.local:8181".to_owned()
+        )),
+        Some(LakeConfigError::CredentialInUri),
+        "a credential in a URI is still that, whatever the host"
+    );
+    assert_eq!(
+        LakeConfigError::PlainHttpOutsideLoopback.reason(),
+        "PLAIN_HTTP_OUTSIDE_LOOPBACK"
     );
 }
 
