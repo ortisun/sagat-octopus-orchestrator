@@ -32,9 +32,9 @@ are classified in `crates/infra-postgres/storage-classification.json` (ADR-0027)
 | `DROPPED_BUFFER_FULL`, `DROPPED_DELETED` | yes | no | Buffer full; schedule deleted while buffered. |
 | `COALESCED` | yes | no | Catch-up mode `ONE` acted on an earlier missed time. |
 | `MISSED_CATCHUP_WINDOW` | yes | no | Recorded once per recovery as a summary (count, first, last). |
-| `ALREADY_ACTED` | yes | existing | A backfill or a replayed key found an existing action/run. |
+| `ALREADY_ACTED` | yes | existing | A backfill or a replayed key found an existing action/run, or (D2173) the open run that holds the action's business id answered it under `USE_EXISTING` (reason `BUSINESS_ID_IN_USE`, `run_id` the holder). |
 | `AUTHORITY_REVOKED` | yes | no | Authorizing subject lost `run:start`; schedule paused. |
-| `BUSINESS_ID_CONFLICT` | yes | no | Templated business id held by an open execution under `FAIL`. |
+| `BUSINESS_ID_CONFLICT` | yes | no | The business id of the action (`<prefix>-<nominal time>`) was held by an open execution under `FAIL` (reason `BUSINESS_ID_IN_USE`), or remembered by a closed one that the reuse policy refuses (reason `BUSINESS_ID_REUSE_REJECTED`) (D2173). The time is acted on: no retry, no remaining action used, no pause. |
 
 An owed time whose admission was refused has **no** action row: the schedule keeps `next_action_at`
 and sets `retry_at` (plan transaction 4).

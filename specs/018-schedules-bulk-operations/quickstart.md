@@ -278,6 +278,41 @@ After two minutes the first step is released once, within about a second of the 
      4  step.released  compose
 ```
 
+### 3.1 The runs of a schedule under a business id (FR-018-016)
+
+The step of the first demo that was refused (`422`, "business identifiers on schedules are not available yet") now makes the id. **This
+step was not run on the Compose stack** (it was not started for this slice); each line says the test it rests on instead.
+
+```sh
+cat > hourly-cart.json <<EOF
+{"name": "hourly-cart",
+ "spec": {"intervals": [{"everyMs": 3600000}]},
+ "action": {"workflowId": "$CART", "input": {"cartId": "scheduled"}}}
+EOF
+sagat schedule create --definition hourly-cart.json --business-id-prefix cart --if-exists use-existing
+export SCHEDULE=$(sagat schedule list | awk '$2=="hourly-cart" {print $1}')
+sagat schedule trigger $SCHEDULE
+sagat schedule trigger $SCHEDULE --overlap allow-all   # in the same second: the first run is open (SKIP, the default, would skip the time before the id is asked for), the id is taken
+sagat schedule get $SCHEDULE
+sagat schedule actions $SCHEDULE
+curl -sS "$SAGAT_SERVER/runs?businessIdPrefix=cart-" -H "$AUTH" -H 'X-Octopus-Namespace: payments' | jq -c '.items[] | {runId, businessId, schedule}'
+```
+
+What to expect, and the test that says so:
+
+- `schedule create` is `201`; `sagat schedule get` says `business id: cart-<time of the action>  (held by an open run: USE_EXISTING; remembered by a closed one: ALLOW_DUPLICATE)`
+  (`rest::the_prefix_and_the_policies_of_an_action_are_written_and_read_back…`, the CLI's `a_schedule_with_a_prefix_says_so_…`).
+- The first `trigger` starts a run: `cart-` and the second of the request in RFC 3339 UTC, ending in `Z` (`scheduled_business_ids::trigger_now_takes_the_second_of_the_request…`).
+- The second `trigger` (`--overlap allow-all`: under the default `SKIP` the open run of the first would skip the time before its id is asked for) in the same second finds the id held by the open `cart` run: with `USE_EXISTING` the action is `ALREADY_ACTED`, reason `BUSINESS_ID_IN_USE`, and its `runId` is the
+  run that holds the id; with the default `FAIL` it would be `BUSINESS_ID_CONFLICT` and name no run (`scheduled_business_ids::use_existing_records_the_holder…`,
+  `an_open_holder_under_fail_makes_the_action_a_recorded_conflict…`). Nothing starts, the schedule does not pause and `remainingActions` is not used up.
+- `sagat schedule actions` lists both decisions with their reasons; the run list by `businessIdPrefix=cart-` finds the runs the schedule made and the ones a person made under the same prefix.
+- A prefix that is not an id (`--business-id-prefix "has space"`) is refused before anything is sent by the CLI; sent in a document it is `422`, reason `SCHEDULE_SPEC_INVALID`, `details.field`
+  `/action/businessIdPrefix` (`rest::a_prefix_that_is_not_one_is_refused_with_its_place_and_never_echoed`).
+
+A batch job can select by the same prefix (`sagat batch preview --business-id-prefix cart-`, then `sagat batch create --business-id-prefix cart- --action cancel --reason "..."`), and a
+prefix that matches nothing counts zero (`batch_business_id_selector::`).
+
 ## 4. Happy path — Signal-with-Start (US04)
 
 ```sh

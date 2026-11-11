@@ -170,6 +170,14 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `resets::` (the run and the list validated against the `Run` schema). **Not done:** the sentence "assert `workflow.schema.json` and
   `worker.baseline.json` unchanged" has no test of its own (G2065: checked with `git diff` against the merge-base with `develop`,
   the baseline identical and the schema different only by `reapplyOnReset`, T018-078), and the `inputBytes` of G1015.
+  *Update 2026-11-10 (D2171 to D2178; the task stays open, nothing ticked):* the REST contract gained, additively, the business-id fields the
+  first merge left out "until US03": `ScheduleAction` takes `businessIdPrefix`, `businessIdConflictPolicy` and `businessIdReusePolicy`, `Schedule.action`
+  returns them (all three or none), the outcome and reason descriptions of an action record say the new reasons (`BUSINESS_ID_IN_USE`,
+  `BUSINESS_ID_REUSE_REJECTED`) and the `runId` of an `ALREADY_ACTED`, and `BatchSelector.filter.businessIdPrefix` is a literal prefix that now selects runs.
+  No operation, status or error code was added. `docs/reference/api.md` was regenerated after reading the diff, `schema.d.ts` regenerated
+  (`npm run check:api` clean), the digests of the operations whose schemas changed re-pinned in the iceberg-writes baseline after reading
+  the diff (`verification.md` (j)), and `contract_schedules_bulk_operations` validates a create with a prefix, its describe and list, and a
+  preview by prefix against the schemas.
 - [ ] T018-011 Ports `ScheduleStore`, `ScheduleCalendar`, `BusinessIdStore`, `BatchStore`, `ResetStore`;
   `NewRun` admissions `schedule`, `business_id`, `delay`, `reset` processed by `RunStore::create` in
   ADR-0050 order — `crates/application/src/{schedules.rs,batch.rs,runs.rs,runs/business_id.rs,runs/reset.rs}`
@@ -311,6 +319,25 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   workflow with would be inconsistent, and the check needs a validator port that the run start would use as well. What a
   schedule checks stays: an object, at most 64 KiB. The business-id prefix waits for US03. `nominalTimeField` is
   already written into the input at the action.
+  *Part done 2026-11-10 (task stays open; D2171 to D2176, G2081): the business-id prefix of a schedule's action (FR-018-016) is built, and with it
+  every surface; what is left is only the input check against the target version's schema (G1955, G2081: the owner's).* The action
+  accepts `businessIdPrefix` (1 to 160 visible ASCII characters) with `businessIdConflictPolicy` and `businessIdReusePolicy`, as a person's
+  start has them (the same domain types and the same claim, `business_ids::claim` in `PgRunStore::create`, after the schedule's row and before
+  any run's); each run is bound to `<prefix>-<nominal time>` (RFC 3339 UTC, whole seconds, `Z`). A held id is the decision of the time:
+  `BUSINESS_ID_CONFLICT` (`BUSINESS_ID_IN_USE` under `FAIL`; `BUSINESS_ID_REUSE_REJECTED` when the reuse policy refuses a remembered id) or
+  `ALREADY_ACTED` with the holder's run (`USE_EXISTING`), terminal, never retried, no remaining action used, no pause; a waiting action
+  that finds its id held is settled in place. The `422 business identifiers on schedules are not available yet` and the run service's
+  `BUSINESS_ID_NOT_APPLICABLE` are gone; an invalid prefix is `SCHEDULE_SPEC_INVALID` naming `/action/businessIdPrefix`, and a policy without a
+  prefix is refused. Evidence (the red runs first, in `verification.md` (j)): `integration_schedules_bulk_operations` `scheduled_business_ids::`
+  (12), `rest::` (3 new), `privacy::` and `observability::` extended with the prefix as customer text; `fault_schedules_bulk_operations`
+  `firing::` (the start under an id cut at each of its 34 writes, the decision of a held id at each of its 4) and `slot_order::` (the firing
+  under an id, a start at every lock); the codec's unit test; the six SDKs, the CLI and the Studio each with its own tests.
+  *Third review, 2026-11-10 (D2186 to D2195, G2091 to G2093; the task stays open for G1955 only):* a waiting trigger-now or backfill step no longer keeps a
+  remaining action for itself, which had left a schedule `ACTIVE` with an action and no next time when the waiting action started or found its id held
+  (half of it older than this slice; D2190, G1017 closed, `waiting_reservation::`); the preview by prefix no longer sorts (D2191); the three ways a prefix
+  reaches runs are compared at the edges of the range; the batch selector's prefix has its privacy canary; the Studio refuses spaces alone as a prefix (D2195).
+  Not built: a bound on a selection round that always fails (a migration: D2192, G2093); an audit action for a held id (the owner's: G2086); a registry gate
+  for the first prefixed schedule (G2091).
 - [x] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
   `crates/scheduler/src/{schedules.rs,lib.rs,monitor.rs}`, `apps/execution-engine/src/lib.rs` — two-replica
   pass tests — FR-018-005, FR-018-044.
@@ -998,6 +1025,14 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   new refusal of a finished job; `apps/control-plane/tests/config.rs` the strict flag; `contract_developer_experience` was
   blessed after reading the diff (six operations in a new group, 176 in all) and rerun without the switch; Studio
   `npm run api`, `check:api` and `typecheck` are clean. Gap G1960.
+  *Rest done 2026-11-10 (D2177, D2178; G2027 closed, G2084):* the selector by `businessIdPrefix` (a literal prefix of the id a run carries) is
+  counted by the preview and selected by the job through `runs_business_id_idx` as a range (no migration: the index exists since
+  `20270103000000`), tenant- and namespace-scoped, case-sensitive, with `%`, `_` and `\` as plain characters; a prefix that matches nothing
+  counts zero. `BATCH_SELECTOR_UNSUPPORTED` stays in the closed set with no producer and a corrected remediation. Evidence:
+  `integration_schedules_bulk_operations` `batch_business_id_selector::` (8, among them the plan of both statements on a namespace of 6,001
+  runs with statistics) and `rest::a_batch_preview_and_a_job_select_by_the_prefix…`; the contract test previews a prefix, a wildcard and a
+  malformed one; the six SDKs' scenario `batch-operations`; the CLI's `--business-id-prefix`; the Studio's batch dialog. The task's other
+  open part (feature 020's query selector) is unchanged.
 - [x] T018-046 [US5] Executor pass (horizon wait on `pg_snapshot_xmin`, keyset selection rounds, item order
   run → fence → job → item, rate slot, deferral, drain) with kill/restart, duplicate, lost-hint and
   late-commit faults — `crates/scheduler/src/batches.rs`, `tests/fault/schedules-bulk-operations/batch.rs`

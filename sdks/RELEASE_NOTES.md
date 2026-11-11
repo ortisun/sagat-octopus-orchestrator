@@ -22,6 +22,23 @@ does not read them. The platform's `run.finished` webhook and broker body gain t
 schedule started (`events.asyncapi.yaml`, `info.version` 0.3.0): a receiver that ignores properties it does not know, as the evolution policy asks,
 is not affected.
 
+The action of a schedule may name a business-id prefix (FR-018-016): in every language the write and the read type of a schedule's action gain
+the optional `businessIdPrefix`, `businessIdConflictPolicy` (`FAIL`, `USE_EXISTING`) and `businessIdReusePolicy`, with the same casing as the
+`start` options. Every run the schedule starts is bound to `<prefix>-<nominal time>` (RFC 3339, UTC, to the second). Absent means absent: a
+write that sets none of them sends none of the three keys, and a schedule without a prefix reads back with none (null, None or nil); the prefix
+is sent as given (no trimming, no local check: the platform answers `VALIDATION_FAILED`, reason `SCHEDULE_SPEC_INVALID`) and the SDK never
+puts it in a log line, a span, a metric or its own error text. A schedule action record may now be `BUSINESS_ID_CONFLICT` (reasons
+`BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`) or an `ALREADY_ACTED` that names the run that held the id: outcomes and reasons were already
+kept as the string the platform sent. The batch selector's `businessIdPrefix`, typed since the first release of the surface, now selects runs
+(it was refused with `BATCH_SELECTOR_UNSUPPORTED`). Nothing changes for a caller that does not use them.
+
+Two things to know when you upgrade. **Engines first:** an execution engine built before this change does not know the prefix, so a schedule written with one
+is fired by it without a business id (no claim, no conflict decision), and nothing says so; upgrade every engine before you write the first schedule
+with a prefix. **A policy with no prefix is refused:** `businessIdConflictPolicy` or `businessIdReusePolicy` on a schedule's action with no
+`businessIdPrefix` is now `422` `VALIDATION_FAILED` (reason `SCHEDULE_SPEC_INVALID`, field `/action/businessIdConflictPolicy` or
+`/action/businessIdReusePolicy`) where it was accepted and dropped; the SDKs send the policies only with a prefix, so a caller that uses them is not
+affected. The sample of a preview by prefix (`batchPreview`) is a few of the matching runs in no promised order, as it always was.
+
 ## 0.2.0
 
 All five SDK packages use 0.2.0 and remain distributed through GitHub Release assets. Go uses

@@ -86,7 +86,35 @@ of the identifier, creating the run first if none is open. It needs `run:start` 
 | `409` | `IDEMPOTENCY_KEY_REUSED` | the same key, another request (also another delay) |
 | `404` | | the identifier is unbound, forgotten, impossible, or another tenant's |
 
-## 6. What is not built yet
+## 6. The identifiers a schedule makes, and selecting runs by prefix
 
-- **Selecting runs by identifier prefix in a batch job**: refused with `BATCH_SELECTOR_UNSUPPORTED`; select by the other filters
-  or by run ids (the run list does filter by prefix, so list first, then give the ids).
+**A schedule's action may name a prefix** (`businessIdPrefix`, 1 to 160 characters, with `businessIdConflictPolicy` and
+`businessIdReusePolicy`). Every run it starts is bound to `<prefix>-<nominal time>` (RFC 3339, UTC, to the second, ending in `Z`:
+`order-2026-11-10T12:00:00Z`), in the transaction that makes the run, with the policies of the action. What an action does when
+the id is taken (a recorded decision, never a run, never a retry) is in
+[`schedules.md`](schedules.md#11-the-business-id-of-the-runs-of-a-schedule-fr-018-016). The prefix is customer content like the
+id: it is kept in the schedule's revision (charged as content) and in the ids it makes, in no log, label, span, audit reason or
+event. Two schedules with the same prefix compete for the same ids at the same instant: one of them gets the run and the other
+the decision `BUSINESS_ID_CONFLICT` (or, with `USE_EXISTING`, `ALREADY_ACTED` naming the run that has it); give each schedule
+its own prefix.
+
+**A batch job can select runs by the prefix of their id** (`selector.filter.businessIdPrefix`, 1 to 200 visible ASCII
+characters; the Studio's run list filter carries into *Batch operation…*; `sagat batch create --business-id-prefix`):
+
+- **A literal prefix.** `%`, `_` and `\` match themselves: the match is a range over the ids (`id >= prefix AND id < prefix with
+  its last character one step up`), not `LIKE`, and `%` alone selects nothing. It is case-sensitive, like the id.
+- **Runs, not bindings.** It matches the id **the run carries** (`runs.business_id`), so a run whose binding was purged after its
+  window (the binding exists only for an open holder and a recently closed one) is still selected, and a run whose id was erased by
+  feature 020 (the column set to null) is not. It is the namespace's runs only, whatever the tenant: another namespace's and another tenant's
+  runs are never reached.
+- **Counted like every other filter.** The preview counts up to `maxItems + 1`; a prefix that matches nothing counts zero and a job
+  over it completes with no item (it is not an error). It composes with the other filters (status, workflow, creation range).
+- **Cost.** The selection reads `runs_business_id_idx (tenant, namespace, business_id text_pattern_ops)` as a range, a page of
+  500 runs by run id at a time, so a selective prefix does not read every run of the namespace; a prefix that matches most of the
+  namespace's runs (`o`, for ids that all begin with `o`) reads most of them, as an unfiltered job does, and sorts each page by run id.
+  The preview is cut off at five seconds.
+- **The prefix is customer text**: it is kept in the job (`batch_jobs.selector`, charged as content) and nowhere else. A read of a job never
+  returns it (the Studio's job page does not show it either, G2084).
+
+What is not built yet: nothing here; the `020` query selector is refused with `QUERY_UNSUPPORTED_OPERATOR` until that feature is
+approved.

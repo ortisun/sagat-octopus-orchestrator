@@ -26,6 +26,15 @@ decides from now on changes:
 Workers that are stopped before their in-flight activities end now create review items. Drain
 workers before a restart ([scaling runbook](../runbooks/scaling.md#draining-workers-before-a-restart)).
 
+## Schedules: the business-id prefix of an action (feature 018)
+
+An action of a schedule may name a business-id prefix with a conflict and a reuse policy; each run it starts is bound to `<prefix>-<nominal time>`, and a
+held id is the recorded decision of the time (`BUSINESS_ID_CONFLICT`, or `ALREADY_ACTED` naming the holder). A batch selector by `businessIdPrefix` selects runs.
+Two things change for an operator: **upgrade the execution engines before the first schedule with a prefix is written** (an older engine fires it with no
+business id and says nothing: [schedules runbook](../runbooks/schedules.md#11-the-business-id-of-the-runs-of-a-schedule-fr-018-016)), and **a policy with no prefix is now
+a `422 SCHEDULE_SPEC_INVALID`** where it was accepted and dropped. Schedules that waited under a `remainingActions` limit for a manual action and were left with no next
+time by an older build are not repaired by the upgrade: pause and resume them (G2092).
+
 ## Breaking: event detail values require an explicit reveal
 
 `getInboxEvent` omits `data` by default. `getConnectorDeadLetter` omits `body` and `headers` by
