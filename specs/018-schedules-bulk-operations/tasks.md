@@ -1911,6 +1911,18 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   `cargo test --workspace` as one command (the `sagat-tests` targets were run one by one), the released-upgrade profile. T018-075 stays unticked: the success criteria that are only
   partly verified (section (c)) and the tasks blocked on features not approved (section (d)) are what "all SC" cannot yet say.
 
+  *Second quickstart pass, 2026-11-11 (G2066 closed, D2211 to D2216, G2102 to G2106; the task stays open, nothing ticked):* the page was run again, in order, on a compose stack built from `83447218`
+  (its own project, its own image names, the four switches on), with what the tree gained since the first pass: the prefix of a schedule's action and of a batch selector (create, `schedule get`, the id of
+  the runs, run now twice in a second under `FAIL` and `USE_EXISTING`, an update, the `422` that names the field and does not echo the text, a batch preview, job and cancel by the prefix), the provenance
+  (`Run.schedule`, the line of `sagat workflow inspect`, `resetFrom`, the `run.finished` body from the delivery row: no receiver can be allowed on a laptop), the Studio in a real browser, a selection that really
+  times out (SQLSTATE `57014`, in this stack's database only), and the metrics and the alert on the stack's Prometheus: 78 steps, 67 PASS, 2 DOC FIXED, 2 DEFECT FIXED, 7 SKIPPED (`verification.md` (b.2) and (l)).
+  **Two defects, both in the bound of the selection, found on the stack and fixed with a test seen failing first:** `SagatBatchSelectionFailed` never fired for the first job an engine ended (the counter was
+  created by its first increment, which `increase` does not count: G2102, D2212) and `finishedAt` of such a job was the start of its last round (G2103, D2213). After them the engine was rebuilt from the tree and the
+  alert was seen `firing`. `quickstart.md` was rewritten from the real output; the runbook `batch-operations.md` says the series are at zero from the start. **Gates, owner and `sagat_app`:**
+  `integration_schedules_bulk_operations` 714 passed, `fault_schedules_bulk_operations` 117, `integration_platform_foundation` 104 (each in both roles), `contract_observability_operations` 11, the workspace unit tests 2,970,
+  fmt, clippy `-D warnings` and the three checkers clean. **Not done, and why:** the real 25 minutes of the backoff (D2214), a signed delivery to a receiver (G2106), the alerts on the other counters (G2105: the same
+  first-sample property may hold for them), the conformance suites, the SDKs, the Studio gates and the full runtime-role sweep (the maintainer's, rule 17); no mutation testing.
+
 ## Dependencies & execution order
 
 - Phase 1 → Phase 2 → stories. T018-008 and T018-011 block every story; T018-012 blocks T018-036 and
