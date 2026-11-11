@@ -227,6 +227,16 @@ fn book(
     failures.forget(trigger);
 }
 
+/// Puts the two counters the alerts `SagatTriggerScheduleReconcileFailing` and `SagatCronLegacyFiredAfterHandover` read on the
+/// page at zero as soon as a pass exists. Both alerts are `increase(…[15m]) > 0` and Prometheus's `increase` does not count the
+/// first sample of a series: a counter made by its first increment would leave the first failed reconciliation, and the first
+/// fire of an old engine binary after the handover (a tripwire), untold (G2105, found with G2102 on the compose stack).
+fn register_alert_series() {
+    metrics::counter!("trigger_schedule_reconcile_failures_total").absolute(0);
+    metrics::counter!("cron_legacy_fires_after_handover_total", "source" => "legacy_pass")
+        .absolute(0);
+}
+
 /// The pass over the triggers of the shards a replica owns.
 pub struct TriggerPass<S, K, C> {
     reconciler: TriggerReconciler<S, K, C>,
@@ -253,6 +263,7 @@ where
         placement: Placement,
         settings: TriggerSettings,
     ) -> Self {
+        register_alert_series();
         Self {
             reconciler,
             placement,

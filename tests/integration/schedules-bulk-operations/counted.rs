@@ -320,3 +320,38 @@ fn a_decision_the_fence_refused_counts_nothing() {
         "the time was decided once, by the replica that held the shard: {page}"
     );
 }
+
+/// `SagatTriggerScheduleReconcileFailing` and `SagatCronLegacyFiredAfterHandover` are `increase(…[15m]) > 0` over counters that
+/// the pass makes only when the event happens, and Prometheus's `increase` does not count the first sample of a series: the first
+/// failed reconciliation, and the first fire of an old engine binary after the handover (a tripwire: the first one is the one
+/// that matters), would not have been told (G2105, found with G2102 on the compose stack). Both series exist at zero once a
+/// pass does. Catches: a counter created by its first increment (the page has no such line before it).
+#[test]
+fn the_counters_the_trigger_alerts_read_exist_at_zero_before_their_first_event() {
+    let page = recorded(|| async {
+        let t = crate::support::trigger_schedules::triggers().await;
+        // a pass and nothing else: no trigger, no failure, no old binary
+        let _replica =
+            crate::trigger_reconcile::replica(&t, sagat_scheduler::TriggerSettings::default());
+    });
+    let plain = |name: &str| {
+        page.lines()
+            .find(|line| line.starts_with(name) && line[name.len()..].starts_with(' '))
+            .and_then(|line| line.rsplit(' ').next())
+            .and_then(|value| value.parse::<f64>().ok())
+    };
+    assert_eq!(
+        plain("trigger_schedule_reconcile_failures_total"),
+        Some(0.0),
+        "the series is on the page at zero before any failure, so that `increase` sees the first one:\n{page}"
+    );
+    assert_eq!(
+        series(
+            &page,
+            "cron_legacy_fires_after_handover_total",
+            &[("source", "legacy_pass")]
+        ),
+        Some(0.0),
+        "the series is on the page at zero before any old binary fires, so that `increase` sees the first one:\n{page}"
+    );
+}
