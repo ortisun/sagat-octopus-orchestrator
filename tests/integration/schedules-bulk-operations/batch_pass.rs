@@ -642,9 +642,26 @@ const SELECTION_BOUND: StdDuration = StdDuration::from_secs(180);
 /// Rounds of `replica`, one at a time, until the selection of the job is over and it is running; returns the round that
 /// ended the selection (it goes on to apply the first item, whose slot has come: a step after a step in one round).
 async fn until_running(f: &Fixture, replica: &Replica, id: Uuid) -> BatchRound {
+    until_selected(f, replica, id, &[JobState::Running]).await
+}
+
+/// Like [`until_running`], for a job whose items can all be applied in the round that ends its selection: the round goes on
+/// to apply every item whose slot has come, and on a slow runner the four items of a job at the default rate (slots of 50 ms)
+/// are all due by then, so the job is `COMPLETED` when the wait looks and was never seen `RUNNING` (CI, 2026-11-10: the
+/// wait ran out at 180 s on a job that was `COMPLETED`, the horizon free; the diagnostic below is what showed it).
+async fn until_selection_over(f: &Fixture, replica: &Replica, id: Uuid) -> BatchRound {
+    until_selected(f, replica, id, &[JobState::Running, JobState::Completed]).await
+}
+
+async fn until_selected(
+    f: &Fixture,
+    replica: &Replica,
+    id: Uuid,
+    selected: &[JobState],
+) -> BatchRound {
     let waiting = async {
         let mut last = BatchRound::default();
-        while state_of(f, id).await != JobState::Running {
+        while !selected.contains(&state_of(f, id).await) {
             last = replica.pass.round().await;
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
@@ -1056,7 +1073,8 @@ async fn the_engines_loop_applies_the_items_of_a_lone_job_at_its_slots_and_not_a
         "wake-lone-job",
     )
     .await;
-    until_running(&f, &a, created.id).await;
+    // not `until_running`: on a slow runner the round that ends the selection applies all four items (see its doc)
+    until_selection_over(&f, &a, created.id).await;
 
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let looping = sagat_execution_engine::loops::run_batches(
