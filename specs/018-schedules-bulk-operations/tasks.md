@@ -338,6 +338,9 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   reaches runs are compared at the edges of the range; the batch selector's prefix has its privacy canary; the Studio refuses spaces alone as a prefix (D2195).
   Not built: a bound on a selection round that always fails (a migration: D2192, G2093); an audit action for a held id (the owner's: G2086); a registry gate
   for the first prefixed schedule (G2091).
+  *Added 2026-11-11 (D2197 to D2202, G2093 closed, G2094 to G2098 registered; the task stays as it was):* the bound that the line above says was not built is built,
+  for every selector: `batch_jobs.selection_failures` (migration `20270116000000`), the wait in `next_slot_at`, the eleventh failed round in a row ends the job
+  `SELECTION_FAILED` (`verification.md` (k)).
 - [x] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
   `crates/scheduler/src/{schedules.rs,lib.rs,monitor.rs}`, `apps/execution-engine/src/lib.rs` — two-replica
   pass tests — FR-018-005, FR-018-044.
@@ -1092,6 +1095,17 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   the counters equal the items, one record of the end, the monitor of the row locks of `runs` looked 4,290 times and never saw
   two, no deadlock. Hand mutants: a fresh key at each attempt (four items `SKIPPED`) and no wait for the horizon: red. Found:
   nothing. The older `a_job_over_a_thousand_runs_applies_each_once_…` of `batch.rs` used an action with no effect of its own.
+  *Added 2026-11-11 (D2197 to D2202, G2093 closed), the task stays as it was:* a selection round that fails was retried at every poll for ever and
+  `SELECTION_FAILED` was raised nowhere. The failure is now recorded by a fenced transaction of its own (`BatchStore::selection_failed`: the count of
+  failed rounds in a row, `batch_jobs.selection_failures`, and the wait, `next_slot_at`, which the due-scan already honours and the store checks), a round that
+  picks resets the count in its own transaction, and the eleventh in a row ends the job `FAILED` `SELECTION_FAILED` by the writes `AUTHORITY_REVOKED` uses.
+  The record is cut at every write of its transaction in `fault … batch_selection` (the failure the job survives, 2 writes; the failure past the bound, 4: the
+  count is never lost, the job ends once). Evidence and hand mutants: `verification.md` (k).
+  *Added 2026-11-11 after three independent reviews of that work (D2203 to D2210, G2094 reworded, G2097 closed, G2099 to G2101, O1953; the task stays as it was):* the
+  error of a selection round now reaches the log as its SQLSTATE and not as text (a real database error that quotes the canary was logged by the storage layer; red
+  first); the cancel that commits while a failure is recorded is held by a test with a held lock (the hand mutant without `FOR UPDATE` survived before); a cancel
+  brings the slot back to the database's clock; the `down` refuses only for a job that is still selecting; the slot column has a catalog comment; the alert
+  `SagatBatchSelectionFailed` with its promtool tests; the spec carries the policy (US05 scenario 6, FR-018-029, SC-018-018). `verification.md` (k.2).
 - [ ] T018-047 [US5] Item adapters for the eight actions through single-run use cases, skip reasons (incl.
   `TEST_RUN`), failed compensation of cancelled runs — `tests/integration/schedules-bulk-operations/batch_actions.rs`
   — one case per action and reason — FR-018-030, FR-018-031, FR-018-034, FR-018-050.

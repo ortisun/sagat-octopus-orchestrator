@@ -62,7 +62,8 @@ Batch item `reason` (outcome `SKIPPED`): `NOT_APPLICABLE`, `NOT_WAITING`, `OPERA
 `RUN_CONTINUED`, `ALREADY_TERMINAL`, `HIDDEN_FROM_CREATOR`, `TEST_RUN`. Item `DEFERRED` causes:
 `QUOTA_EXCEEDED`, `RATE_LIMITED`, `CONCURRENCY_QUEUE_FULL`, `LOCK_WAIT`. Batch item `errorCode` (outcome `FAILED`):
 the canonical `Error.code` the single action returned. Batch job `failureReason`:
-`AUTHORITY_REVOKED`, `SELECTION_FAILED`.
+`AUTHORITY_REVOKED`, `SELECTION_FAILED` (the platform could not select the runs: the eleventh selection round in a row
+failed, G2093; the read says the reason and nothing of the rounds, the count or the cause).
 
 Schedule action `reason`: `TRACKING_LIMIT`, `VERSION_MISSING`, `ADMISSION_REFUSED`, `AUTHORITY_REVOKED`,
 `BUSINESS_ID_IN_USE` (the outcome `BUSINESS_ID_CONFLICT` under `FAIL`, and `ALREADY_ACTED` with the holder as `runId` under

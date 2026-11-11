@@ -268,7 +268,8 @@ registration, so the table is "full" only of live rows (D2016); the epoch check 
 | `select_cursor` | uuid null | Keyset cursor. |
 | `selection_bound_at` | timestamptz | = creation instant (database clock). |
 | `selection_horizon` | xid8 | `pg_snapshot_xmax(pg_current_snapshot())` at creation; selection starts when `pg_snapshot_xmin(pg_current_snapshot()) >= selection_horizon` (D1033). |
-| `next_slot_at` | timestamptz | Durable rate slot. |
+| `next_slot_at` | timestamptz | Durable rate slot: the earliest instant the next step of the job may be taken. For a running job the next item's; for a selecting job whose round failed, the end of its backoff (database clock, D2198). |
+| `selection_failures` | smallint, default 0 | Selection rounds that failed in a row (G2093, D2197, migration `20270116000000`): up by one in the transaction that records a failed round, back to 0 in the transaction of a round that picks, 11 on a job that failed `SELECTION_FAILED` (the evidence). `CHECK (>= 0)`; no rule ties it to the state (D2201). A job that runs has 0 unless an older engine picked its page. Never read by the API. |
 | `shard` | smallint | Generated `run_shard(id)`. |
 | `created_at`, `started_at`, `finished_at`, `expires_at` | timestamptz | |
 
