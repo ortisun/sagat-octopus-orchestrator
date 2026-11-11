@@ -1,6 +1,8 @@
 import type { Overlap, Schedule, ScheduleWrite } from '../../api/endpoints';
+import { isApiError } from '../../api/errors';
 import { UnsafeJsonNumber, parseAuthoringJson } from '../../model/safeJson';
 import type { StatusView } from '../../model/status';
+import { businessIdProblem } from '../runs/businessId';
 
 export const OVERLAPS: readonly Overlap[] = ['SKIP', 'BUFFER_ONE', 'BUFFER_ALL', 'CANCEL_OTHER', 'ALLOW_ALL'];
 
@@ -18,9 +20,70 @@ export const UNIT_LABEL: Record<Unit, string> = { SECONDS: 'seconds', MINUTES: '
 
 export const MAX_INPUT_BYTES = 64 * 1024;
 export const MAX_NOTE = 512;
+/** The longest prefix of a business id the platform takes (visible ASCII, 1 to 160 characters). */
+export const MAX_BUSINESS_PREFIX = 160;
 const UUID = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
 export type When = 'INTERVAL' | 'CRON';
+
+// --- the business id of what a schedule starts ----------------------------------------------------
+
+/** The closed values of the contract: a value it adds is a type error here until the table below says it in words. */
+export type BusinessConflict = NonNullable<NonNullable<Schedule['action']>['businessIdConflictPolicy']>;
+export type BusinessReuse = NonNullable<NonNullable<Schedule['action']>['businessIdReusePolicy']>;
+
+export const BUSINESS_CONFLICTS: readonly BusinessConflict[] = ['FAIL', 'USE_EXISTING'];
+export const BUSINESS_REUSES: readonly BusinessReuse[] = ['ALLOW_DUPLICATE', 'ALLOW_DUPLICATE_FAILED_ONLY', 'REJECT_DUPLICATE'];
+export const DEFAULT_CONFLICT: BusinessConflict = 'FAIL';
+export const DEFAULT_REUSE: BusinessReuse = 'ALLOW_DUPLICATE';
+
+/** What an action does when an open run holds its business id: `label` for a choice, `effect` to finish "the action ...". */
+export const BUSINESS_CONFLICT_TEXT: Record<BusinessConflict, { label: string; effect: string }> = {
+  FAIL: { label: 'Record a conflict and start nothing', effect: 'records a business id conflict and starts nothing' },
+  USE_EXISTING: { label: 'Record that run and start nothing', effect: 'records that run as the answer and starts nothing' },
+};
+
+/** What an action does when a closed run still remembers its business id. */
+export const BUSINESS_REUSE_TEXT: Record<BusinessReuse, { label: string; effect: string }> = {
+  ALLOW_DUPLICATE: { label: 'Start a new run', effect: 'starts a new run' },
+  ALLOW_DUPLICATE_FAILED_ONLY: { label: 'Start a new run unless it succeeded', effect: 'starts a new run unless that run succeeded, which is a business id conflict' },
+  REJECT_DUPLICATE: { label: 'Record a conflict and start nothing', effect: 'records a business id conflict and starts nothing' },
+};
+
+/** The two policies in one sentence, for whoever is about to choose them. */
+export function businessPolicySentence(conflict: BusinessConflict, reuse: BusinessReuse): string {
+  return `If an open run holds the id, the action ${BUSINESS_CONFLICT_TEXT[conflict].effect}; if a closed run still remembers it (30 days by default), the action ${BUSINESS_REUSE_TEXT[reuse].effect}.`;
+}
+
+/**
+ * Why the text of the prefix field cannot be sent, or nothing. An empty field is how a person says "no prefix"; spaces alone are
+ * refused on the field, never read as that, so that a schedule does not lose the prefix someone thought they had written. The
+ * text around a prefix is trimmed, as the request does.
+ */
+export function businessPrefixProblem(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (trimmed === '' && text !== '') return 'Spaces alone are not a prefix: write one, or empty the field.';
+  return businessIdProblem(trimmed, MAX_BUSINESS_PREFIX);
+}
+
+/** Whether the platform refused the prefix of the business id, as opposed to anything else about the schedule. */
+export function refusedPrefix(error: unknown): boolean {
+  return isApiError(error) && error.code === 'VALIDATION_FAILED' && error.reason === 'SCHEDULE_SPEC_INVALID' && error.details?.['field'] === '/action/businessIdPrefix';
+}
+
+/** An instant as the platform writes the time of a business id: RFC 3339 in UTC, to the second, ending in `Z`. */
+function toTheSecond(at: Date): string {
+  return at.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * The business id an action would make: the prefix, a dash and the nominal time. The time is the platform's (the next nominal time of
+ * the schedule); with none to go by it is the clock's, so that the shape can be shown. Nothing here is sent.
+ */
+export function businessIdPreview(prefix: string, nominalTime: string | undefined, now: Date): string {
+  const parsed = nominalTime === undefined ? Number.NaN : Date.parse(nominalTime);
+  return `${prefix}-${toTheSecond(Number.isNaN(parsed) ? now : new Date(parsed))}`;
+}
 
 /** What the form does not show, carried from the schedule being edited so that saving does not reset it. */
 export interface Carry {
@@ -54,6 +117,10 @@ export interface Draft {
   remainingActions: string;
   paused: boolean;
   note: string;
+  /** Empty for none: then neither policy is written. */
+  businessIdPrefix: string;
+  businessIdConflictPolicy: BusinessConflict;
+  businessIdReusePolicy: BusinessReuse;
   carry: Carry;
 }
 
@@ -75,6 +142,9 @@ export const EMPTY_DRAFT: Draft = {
   remainingActions: '',
   paused: false,
   note: '',
+  businessIdPrefix: '',
+  businessIdConflictPolicy: DEFAULT_CONFLICT,
+  businessIdReusePolicy: DEFAULT_REUSE,
   carry: {},
 };
 
@@ -141,6 +211,9 @@ export function requestOf(draft: Draft): { body: ScheduleWrite } | { problem: st
   const remaining = draft.remainingActions.trim() === '' ? undefined : whole(draft.remainingActions);
   if (draft.remainingActions.trim() !== '' && (remaining === undefined || remaining < 1)) return { problem: 'Give the number of actions that may start a run as a whole number, at least 1, or leave it empty.' };
   if ([...draft.note].length > MAX_NOTE) return { problem: `Keep the note to ${MAX_NOTE} characters.` };
+  const wrongPrefix = businessPrefixProblem(draft.businessIdPrefix);
+  if (wrongPrefix) return { problem: `The business id prefix: ${wrongPrefix}` };
+  const prefix = draft.businessIdPrefix.trim();
 
   const body: ScheduleWrite = {
     name,
@@ -159,6 +232,8 @@ export function requestOf(draft: Draft): { body: ScheduleWrite } | { problem: st
       input: input as Record<string, unknown>,
       ...(draft.carry.nominalTimeField === undefined ? {} : { nominalTimeField: draft.carry.nominalTimeField }),
       ...(draft.carry.runTimeoutMs === undefined ? {} : { runTimeoutMs: draft.carry.runTimeoutMs }),
+      // all three or none: the policies mean nothing without a prefix
+      ...(prefix === '' ? {} : { businessIdPrefix: prefix, businessIdConflictPolicy: draft.businessIdConflictPolicy, businessIdReusePolicy: draft.businessIdReusePolicy }),
     },
     paused: draft.paused,
   };
@@ -208,6 +283,9 @@ export function draftOf(schedule: Schedule): { draft: Draft } | { cannot: string
     remainingActions: schedule.remainingActions === null || schedule.remainingActions === undefined ? '' : String(schedule.remainingActions),
     paused: schedule.state === 'PAUSED',
     note: schedule.note ?? '',
+    businessIdPrefix: action?.businessIdPrefix ?? '',
+    businessIdConflictPolicy: action?.businessIdConflictPolicy ?? DEFAULT_CONFLICT,
+    businessIdReusePolicy: action?.businessIdReusePolicy ?? DEFAULT_REUSE,
     carry,
   };
   if (oneInterval) {
@@ -259,9 +337,9 @@ const OUTCOME: Record<string, StatusView> = {
   DROPPED_DELETED: { label: 'Dropped: schedule deleted', symbol: '⊘', tone: 'skip', help: 'The schedule was deleted while this time waited.' },
   COALESCED: { label: 'Coalesced', symbol: '⧉', tone: 'skip', help: 'Several late times were merged into one.' },
   MISSED_CATCHUP_WINDOW: { label: 'Missed', symbol: '⌛', tone: 'bad', help: 'The time was too late to catch up.' },
-  ALREADY_ACTED: { label: 'Already acted on', symbol: '≡', tone: 'idle', help: 'A backfill found this time already acted on.' },
+  ALREADY_ACTED: { label: 'Already acted on', symbol: '≡', tone: 'idle', help: 'The time was already acted on: a backfill found it done, or a run already held its business id. Nothing was started.' },
   AUTHORITY_REVOKED: { label: 'Not allowed', symbol: '✕', tone: 'bad', help: 'The person who authorized the schedule may no longer start the run.' },
-  BUSINESS_ID_CONFLICT: { label: 'Business id in use', symbol: '✕', tone: 'bad', help: 'The business id of the run was already in use.' },
+  BUSINESS_ID_CONFLICT: { label: 'Business id conflict', symbol: '✕', tone: 'bad', help: 'The business id of the run was held by an open run, or remembered by a closed one, and the policy refused it. Nothing was started.' },
 };
 
 /** An outcome in words; one this version does not know is "another outcome". */
@@ -277,6 +355,8 @@ const REASON: Record<string, string> = {
   AUTHORITY_REVOKED: 'The person who authorized the schedule lost a permission it needs.',
   OVERLAP: 'A run of the schedule was open.',
   BUFFER_FULL: 'The waiting times were at their limit.',
+  BUSINESS_ID_IN_USE: 'The business id was held by an open run.',
+  BUSINESS_ID_REUSE_REJECTED: 'A closed run still remembers the id and the reuse policy refuses it.',
 };
 
 export function reasonText(code: string | null | undefined): string {

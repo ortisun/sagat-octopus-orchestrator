@@ -35,6 +35,8 @@ export interface RunFilters {
   status: string;
   workflowId: string;
   origin: string;
+  /** The business id filter of the run list (feature 018): a literal prefix, 1 to 200 visible ASCII characters. Customer text. */
+  businessIdPrefix?: string;
 }
 
 /** The selector of a batch job made from the filters of the run list: what the person sees is what the job takes. */
@@ -43,6 +45,8 @@ export function selectorOf(filters: RunFilters): BatchSelector {
   if (filters.status !== '') filter['status'] = [filters.status];
   if (filters.workflowId !== '') filter['workflowId'] = filters.workflowId;
   if (filters.origin !== '') filter['origin'] = filters.origin;
+  // a literal: the platform matches `%`, `_` and a backslash as themselves, so nothing is escaped here
+  if (filters.businessIdPrefix !== undefined && filters.businessIdPrefix !== '') filter['businessIdPrefix'] = filters.businessIdPrefix;
   return { filter };
 }
 
@@ -52,6 +56,7 @@ export function describeFilters(filters: RunFilters, workflowName?: string): str
   if (filters.status !== '') parts.push(`status ${filters.status.toLowerCase().replace(/_/g, ' ')}`);
   if (filters.workflowId !== '') parts.push(`workflow ${workflowName ?? filters.workflowId}`);
   if (filters.origin !== '') parts.push(`origin ${filters.origin.toLowerCase().replace(/_/g, ' ')}`);
+  if (filters.businessIdPrefix !== undefined && filters.businessIdPrefix !== '') parts.push(`business id starting with "${filters.businessIdPrefix}"`);
   return parts.length === 0 ? 'every run of the namespace' : `the runs with ${parts.join(' and ')}`;
 }
 

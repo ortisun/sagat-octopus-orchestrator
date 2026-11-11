@@ -22,7 +22,18 @@ export interface ScheduleWrite {
   name: string;
   spec: Record<string, unknown>;
   policies?: Record<string, unknown>;
-  action: { workflowId: string; versionPolicy?: 'ACTIVE' | 'PINNED'; versionId?: string; input: Record<string, unknown>; nominalTimeField?: string; runTimeoutMs?: number };
+  action: {
+    workflowId: string;
+    versionPolicy?: 'ACTIVE' | 'PINNED';
+    versionId?: string;
+    input: Record<string, unknown>;
+    nominalTimeField?: string;
+    runTimeoutMs?: number;
+    /** Written with both policies, or not at all: absent means the runs have no business id. */
+    businessIdPrefix?: string;
+    businessIdConflictPolicy?: 'FAIL' | 'USE_EXISTING';
+    businessIdReusePolicy?: 'ALLOW_DUPLICATE' | 'ALLOW_DUPLICATE_FAILED_ONLY' | 'REJECT_DUPLICATE';
+  };
   paused?: boolean;
   note?: string;
   remainingActions?: number;

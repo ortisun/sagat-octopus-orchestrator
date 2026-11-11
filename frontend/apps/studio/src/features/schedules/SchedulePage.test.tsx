@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ScheduleActionRecord } from '../../api/endpoints';
-import { BASE, ID, NS, backfill, bodyOf, decision, described, failure, json, keyOf, mountSchedules, schedule, writes } from '../../../test/schedules';
+import { BASE, ID, NS, WORKFLOW, backfill, bodyOf, decision, described, failure, json, keyOf, mountSchedules, schedule, writes } from '../../../test/schedules';
 import { SchedulePage } from './SchedulePage';
 
 type Options = { permissions?: string[]; routes?: Record<string, (init: RequestInit, url: string) => unknown> };
@@ -30,6 +30,54 @@ describe('A schedule', () => {
     expect(screen.getByText(/input of its runs is not shown/)).toBeVisible();
     expect(screen.getByText(/abababababababab…/)).toBeVisible();
     expect(document.body).not.toHaveTextContent('ab'.repeat(32));
+  });
+
+  it('says the business id prefix of its action and what each policy does, in words', async () => {
+    await mount({
+      routes: {
+        [`GET ${BASE}/${ID}`]: () =>
+          described({
+            action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', inputDigest: 'ab'.repeat(32), businessIdPrefix: 'order-', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY' },
+          }),
+      },
+    });
+    await screen.findByRole('heading', { name: /nightly/ });
+    const prefix = screen.getByText('Business id prefix', { selector: 'dt' }).nextElementSibling as HTMLElement;
+    expect(within(prefix).getByText('order-', { selector: 'code' })).toBeVisible();
+    expect(prefix).toHaveTextContent(/followed by a dash and the nominal time of the action/);
+    expect(screen.getByText('If an open run has the id', { selector: 'dt' }).nextElementSibling).toHaveTextContent('Record that run and start nothing');
+    expect(screen.getByText('If a closed run remembers the id', { selector: 'dt' }).nextElementSibling).toHaveTextContent('Start a new run unless it succeeded');
+  });
+
+  it('says the defaults for a prefix the platform returned without its policies, and nothing about business ids for a schedule that has none', async () => {
+    await mount({ routes: { [`GET ${BASE}/${ID}`]: () => described({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', businessIdPrefix: 'order-' } }) } });
+    await screen.findByRole('heading', { name: /nightly/ });
+    expect(screen.getByText('If an open run has the id', { selector: 'dt' }).nextElementSibling).toHaveTextContent('Record a conflict and start nothing');
+    expect(screen.getByText('If a closed run remembers the id', { selector: 'dt' }).nextElementSibling).toHaveTextContent('Start a new run');
+  });
+
+  it('shows no business id for a schedule that has no prefix', async () => {
+    await mount();
+    await screen.findByRole('heading', { name: /nightly/ });
+    expect(screen.queryByText('Business id prefix', { selector: 'dt' })).not.toBeInTheDocument();
+    expect(screen.queryByText('If an open run has the id', { selector: 'dt' })).not.toBeInTheDocument();
+    expect(screen.queryByText('If a closed run remembers the id', { selector: 'dt' })).not.toBeInTheDocument();
+  });
+
+  it('shows the prefix as text, never as markup, and says it nowhere else', async () => {
+    const logged = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) => vi.spyOn(console, method).mockImplementation(() => undefined));
+    const { app } = await mount({
+      routes: { [`GET ${BASE}/${ID}`]: () => described({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', businessIdPrefix: '<img/src=x/onerror=alert(1)>', businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' } }) },
+    });
+    await screen.findByRole('heading', { name: /nightly/ });
+    expect(screen.getByText('<img/src=x/onerror=alert(1)>', { selector: 'code' })).toBeVisible();
+    expect(document.querySelector('img')).toBeNull();
+    // not in an address, not in an attribute a test or a script reads back, not in a log
+    expect(window.location.href).not.toContain('onerror');
+    expect(document.querySelector('[data-testid*="onerror"], [aria-label*="onerror"]')).toBeNull();
+    expect(logged.flatMap((spy) => spy.mock.calls).map((call) => JSON.stringify(call)).join('\n')).not.toContain('onerror');
+    expect(JSON.stringify(app.queries.getQueryCache().getAll().map((query) => query.queryKey))).not.toContain('onerror');
+    vi.restoreAllMocks();
   });
 
   it('asks the platform for its next times and no recent decisions, which it lists apart', async () => {
@@ -296,6 +344,25 @@ describe('Running a schedule now', () => {
     expect(bodyOf(writes(platform)[0]!)).toEqual({});
   });
 
+  it('says, when the business id was held, why nothing started and which run held it', async () => {
+    const HOLDER = '0194f5e2-7b1c-7000-8000-0000000000f7';
+    const { user } = await mount({ routes: { [`POST ${BASE}/${ID}/trigger`]: () => decision({ kind: 'TRIGGERED', origin: 'MANUAL', outcome: 'ALREADY_ACTED', reason: 'BUSINESS_ID_IN_USE', runId: HOLDER }) } });
+    await user.click(await screen.findByRole('button', { name: 'Run now' }));
+    await user.click(inDialog().getByRole('button', { name: 'Run now' }));
+    expect(await inDialog().findByText('Already acted on.')).toBeVisible();
+    expect(inDialog().getByText(/The business id was held by an open run\./)).toBeVisible();
+    expect(inDialog().getByRole('link', { name: 'Open the run' })).toHaveAttribute('href', `/runs/${HOLDER}`);
+  });
+
+  it('says, when the business id was refused, why, and links no run', async () => {
+    const { user } = await mount({ routes: { [`POST ${BASE}/${ID}/trigger`]: () => decision({ kind: 'TRIGGERED', origin: 'MANUAL', outcome: 'BUSINESS_ID_CONFLICT', reason: 'BUSINESS_ID_REUSE_REJECTED', runId: null }) } });
+    await user.click(await screen.findByRole('button', { name: 'Run now' }));
+    await user.click(inDialog().getByRole('button', { name: 'Run now' }));
+    expect(await inDialog().findByText('Business id conflict.')).toBeVisible();
+    expect(inDialog().getByText(/A closed run still remembers the id and the reuse policy refuses it\./)).toBeVisible();
+    expect(inDialog().queryByRole('link', { name: 'Open the run' })).not.toBeInTheDocument();
+  });
+
   it('can name another rule for this one time', async () => {
     const { user, platform } = await mount({ routes: { [`POST ${BASE}/${ID}/trigger`]: () => decision({ outcome: 'SKIPPED_OVERLAP', runId: null }) } });
     await user.click(await screen.findByRole('button', { name: 'Run now' }));
@@ -438,6 +505,45 @@ describe('The decisions of a schedule', () => {
     expect(within(rows[2]!).getByText('Backfill')).toBeVisible();
     expect(within(rows[3]!).getByText('Another outcome')).toBeVisible();
     expect(within(rows[3]!).getByText('Run now')).toBeVisible();
+  });
+
+  it('say, for a business id that was held, who held it and why nothing started, in words and never a code alone', async () => {
+    const HOLDER = '0194f5e2-7b1c-7000-8000-0000000000f7';
+    await mount({
+      routes: {
+        [`GET ${BASE}/${ID}/actions`]: () => ({
+          items: [
+            decision({ outcome: 'BUSINESS_ID_CONFLICT', reason: 'BUSINESS_ID_IN_USE', runId: null }),
+            decision({ nominalTime: '2026-11-03T02:00:00Z', outcome: 'ALREADY_ACTED', reason: 'BUSINESS_ID_IN_USE', runId: HOLDER, decidedAt: '2026-11-03T02:00:01Z' }),
+            decision({ nominalTime: '2026-11-02T02:00:00Z', outcome: 'BUSINESS_ID_CONFLICT', reason: 'BUSINESS_ID_REUSE_REJECTED', runId: null, decidedAt: '2026-11-02T02:00:01Z' }),
+          ],
+          nextCursor: null,
+        }),
+      },
+    });
+    const table = await screen.findByRole('table', { name: /decisions of the schedule/ });
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(rows).toHaveLength(3);
+    expect(within(rows[0]!).getByText('Business id conflict')).toBeVisible();
+    expect(within(rows[0]!).getByText('The business id was held by an open run.')).toBeVisible();
+    expect(within(rows[0]!).queryByRole('link')).not.toBeInTheDocument();
+    // the run that held the id is the run of the action, and is linked like the run of any other decision
+    expect(within(rows[1]!).getByText('Already acted on')).toBeVisible();
+    expect(within(rows[1]!).getByText('The business id was held by an open run.')).toBeVisible();
+    expect(within(rows[1]!).getByRole('link', { name: '000000f7' })).toHaveAttribute('href', `/runs/${HOLDER}`);
+    expect(within(rows[2]!).getByText('Business id conflict')).toBeVisible();
+    expect(within(rows[2]!).getByText('A closed run still remembers the id and the reuse policy refuses it.')).toBeVisible();
+    expect(table).not.toHaveTextContent('BUSINESS_ID_IN_USE');
+    expect(table).not.toHaveTextContent('BUSINESS_ID_REUSE_REJECTED');
+  });
+
+  it('can be limited to the two business id outcomes, which the platform filters', async () => {
+    const { user, platform } = await mount();
+    await screen.findByRole('table', { name: /decisions of the schedule/ });
+    const select = screen.getByLabelText('Outcome');
+    expect(within(select).getByRole('option', { name: 'Business id conflict' })).toBeInTheDocument();
+    await user.selectOptions(select, 'BUSINESS_ID_CONFLICT');
+    await waitFor(() => expect(platform.calls.some((call) => call.url.includes('outcome=BUSINESS_ID_CONFLICT'))).toBe(true));
   });
 
   it('can be limited to one outcome, asked of the platform, and paged', async () => {

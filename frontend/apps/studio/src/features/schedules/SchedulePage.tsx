@@ -10,7 +10,7 @@ import { useWorkflowIndex } from '../runs/queries';
 import { Backfills } from './Backfills';
 import { Decisions } from './Decisions';
 import { ScheduleControls } from './ScheduleControls';
-import { OVERLAP_TEXT, describeSpec, outcomeView, scheduleState } from './model';
+import { BUSINESS_CONFLICT_TEXT, BUSINESS_REUSE_TEXT, DEFAULT_CONFLICT, DEFAULT_REUSE, OVERLAP_TEXT, describeSpec, outcomeView, scheduleState } from './model';
 import { Time, useNamespaceId } from './shared';
 import { shortId } from '../runs/display';
 
@@ -88,6 +88,24 @@ function Summary({ schedule }: { schedule: ScheduleDescription }) {
           <dt>When</dt>
           <dd>{describeSpec(schedule)}</dd>
         </div>
+        {schedule.action?.businessIdPrefix ? (
+          <>
+            <div>
+              <dt>Business id prefix</dt>
+              <dd style={{ overflowWrap: 'anywhere' }}>
+                <code>{schedule.action.businessIdPrefix}</code>, followed by a dash and the nominal time of the action
+              </dd>
+            </div>
+            <div>
+              <dt>If an open run has the id</dt>
+              <dd>{BUSINESS_CONFLICT_TEXT[schedule.action.businessIdConflictPolicy ?? DEFAULT_CONFLICT].label}</dd>
+            </div>
+            <div>
+              <dt>If a closed run remembers the id</dt>
+              <dd>{BUSINESS_REUSE_TEXT[schedule.action.businessIdReusePolicy ?? DEFAULT_REUSE].label}</dd>
+            </div>
+          </>
+        ) : null}
         <div>
           <dt>When a run is open</dt>
           <dd>{OVERLAP_TEXT[policies?.overlap ?? 'SKIP'].label}</dd>

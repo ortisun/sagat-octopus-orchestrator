@@ -419,6 +419,26 @@ describe('the runs page: business identifiers', () => {
     expect(screen.queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument();
   });
 
+  it('carries the prefix of the filter into the batch operation, which counts the runs with it and says so', async () => {
+    const NS = '019b5d6e-0000-7000-8000-0000000000a1';
+    const { platform, user } = await open([run(1, { status: 'FAILED' })], {
+      path: '/runs?business=order-&status=FAILED',
+      permissions: [...OPERATOR, 'run:batch'],
+      routes: {
+        'GET /namespaces': () => ({ items: [{ id: NS, workspaceId: NS, slug: 'dev', environment: 'dev', createdAt: '2026-11-04T10:00:00Z' }], nextCursor: null }),
+        [`POST /namespaces/${NS}/batch-operations/preview`]: () => ({ matched: 2, capped: false, sample: [] }),
+      },
+    });
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    await user.click(await screen.findByRole('button', { name: 'Batch operation…' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(await dialog.findByText(/applies one action to the runs with status failed and business id starting with "order-"/)).toBeVisible();
+    await user.click(dialog.getByRole('button', { name: 'Count the runs' }));
+    expect(await dialog.findByText(/2 runs match/)).toBeVisible();
+    const preview = platform.calls.find((call) => call.method === 'POST' && call.url.endsWith('/preview'));
+    expect(JSON.parse(preview!.init.body as string)).toEqual({ selector: { filter: { status: ['FAILED'], businessIdPrefix: 'order-' } } });
+  });
+
   it('clears the identifier with the other filters', async () => {
     const { platform, user } = await open([run(1, { status: 'FAILED' })], { path: '/runs?business=order-&status=FAILED' });
     await screen.findByRole('table', { name: 'Runs, newest first' });

@@ -15,6 +15,13 @@ describe('the business identifier of a start', () => {
     }
   });
 
+  it('takes another ceiling, for the prefix of a schedule, and says it', () => {
+    expect(businessIdProblem('x'.repeat(160), 160)).toBeUndefined();
+    expect(businessIdProblem('x'.repeat(161), 160)).toBe('At most 160 characters.');
+    expect(businessIdProblem('x'.repeat(161))).toBeUndefined();
+    expect(businessIdProblem('has space', 160)).toMatch(/no space/);
+  });
+
   it('sends nothing without an identifier, and no default policy with one', () => {
     expect(businessFields('', 'USE_EXISTING', 'REJECT_DUPLICATE')).toEqual({});
     expect(businessFields('order-1', 'FAIL', 'ALLOW_DUPLICATE')).toEqual({ businessId: 'order-1' });

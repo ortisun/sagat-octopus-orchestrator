@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { env } from '../support/env';
 import { expectAccessible } from '../support/accessibility';
-import { activate, choose, closeWithEscape, inspectDialog, openDialog, openFromMenu, reach, signInByKeyboard, typeInto, walk } from '../support/keyboard';
+import { activate, choose, closeWithEscape, inspectDialog, landedOn, openDialog, openFromMenu, reach, signInByKeyboard, typeInto, walk } from '../support/keyboard';
 import { Api } from '../support/platform';
 import { failOnBrowserErrors } from '../support/studio';
 import { endWorkflow, namespaceIdOf, ownNamespace, setQuota, recordRefusals, unique, withoutRefusals } from '../support/world';
@@ -349,5 +349,57 @@ test('SCHEDULES a backfill acts on the times of a past range: asked for in a dia
   await expect(table.getByRole('row').filter({ hasText: '3 already acted on' })).toContainText('Completed', { timeout: 60_000 });
   await expect(table.getByRole('row')).toHaveCount(3);
   await expectAccessible(page, 'the schedule, a second backfill that found every time acted on');
+  expect(problems).toEqual([]);
+});
+
+test('SCHEDULES the run a schedule makes carries the business id of its prefix: the prefix, a dash and the time of the action in UTC (FR-018-016, G2027)', async ({ page }) => {
+  test.setTimeout(240_000);
+  const problems = failOnBrowserErrors(page);
+  const api = new Api('admin');
+  const target = unique('sched-bid-target');
+  await endWorkflow(api, target);
+  const namespaceId = await namespaceIdOf(api, env.namespace);
+  const name = unique('bid-schedule');
+  // letters, digits and dashes only (what `unique` makes), so the pattern below needs no escaping
+  const prefix = unique('order');
+  // RFC 3339 in UTC, to the second, ending in Z: whatever second the action is taken at
+  const businessId = new RegExp(`^${prefix}-\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$`);
+
+  await signInByKeyboard(page, env.tokens.admin, env.namespace);
+  await openFromMenu(page, 'Schedules', 'Schedules');
+  await activate(page, page.getByRole('link', { name: 'New schedule' }));
+  await expect(page.getByRole('heading', { level: 1, name: 'New schedule' })).toBeVisible();
+  await typeInto(page, page.getByLabel('Name', { exact: true }), name);
+  await choose(page, page.getByLabel('Workflow', { exact: true }), target);
+  // the policies and the id this schedule would make are offered once there is a prefix, with the defaults chosen
+  await expect(page.getByLabel('If an open run already has the id')).toHaveCount(0);
+  await typeInto(page, page.getByLabel('Business id prefix', { exact: true }), prefix);
+  await expect(page.getByLabel('If an open run already has the id').locator('option:checked')).toHaveText('Record a conflict and start nothing (default)');
+  await expect(page.getByLabel('If a closed run still remembers the id').locator('option:checked')).toHaveText('Start a new run (default)');
+  await expect(page.getByRole('main').locator('code').filter({ hasText: businessId })).toBeVisible();
+  await expectAccessible(page, 'the schedule form, with a business id prefix');
+  await activate(page, page.getByRole('button', { name: 'Create schedule' }));
+
+  // The schedule says its prefix and its policies, in words.
+  await expect(page.getByRole('heading', { level: 1, name: new RegExp(`^${name}`) })).toBeVisible();
+  const scheduleId = new URL(page.url()).pathname.split('/').at(-1)!;
+  await expect(page.locator('dl.batch-counts > div').filter({ hasText: 'Business id prefix' }).locator('code')).toHaveText(prefix);
+  await expect(page.locator('dl.batch-counts > div').filter({ hasText: 'If an open run has the id' })).toContainText('Record a conflict and start nothing');
+  await expectAccessible(page, 'the schedule, with a business id prefix');
+  const stored = (await api.call<{ action: Record<string, string> }>('GET', `/namespaces/${namespaceId}/schedules/${scheduleId}`, undefined, 200)).body.action;
+  expect(stored).toMatchObject({ businessIdPrefix: prefix, businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' });
+
+  // Run now takes one time at once; the run it made is the one the dialog links, and it carries the id.
+  const triggerDialog = await openDialog(page, page.getByRole('button', { name: 'Run now', exact: true }), 'Run the schedule now');
+  await activate(page, triggerDialog.getByRole('button', { name: 'Run now', exact: true }));
+  await expect(triggerDialog.getByRole('status')).toContainText('Started a run.');
+  await activate(page, triggerDialog.getByRole('link', { name: 'Open the run' }));
+  // the address of the schedule ends in an identifier too: the run is the one it moves to
+  const runId = await landedOn(page, scheduleId);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText(runId);
+  const fact =page.locator('dl.rn-facts > div').filter({ hasText: 'Business id' }).filter({ hasNotText: 'Started by schedule' });
+  await expect(fact.locator('dd')).toHaveText(businessId);
+  expect((await api.call<{ businessId?: string }>('GET', `/runs/${runId}`, undefined, 200)).body.businessId).toMatch(businessId);
+  await expectAccessible(page, 'the run a schedule started, with its business id');
   expect(problems).toEqual([]);
 });

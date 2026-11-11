@@ -12,8 +12,28 @@ import { ErrorState } from '../../ui/ErrorState';
 import { Field } from '../../ui/Field';
 import { NotAllowed } from '../runs/NotAllowed';
 import { useWorkflowIndex } from '../runs/queries';
-import { EMPTY_DRAFT, MAX_NOTE, OVERLAPS, OVERLAP_TEXT, UNITS, UNIT_LABEL, draftOf, requestOf } from './model';
-import type { Draft, Unit, When } from './model';
+import {
+  BUSINESS_CONFLICTS,
+  BUSINESS_CONFLICT_TEXT,
+  BUSINESS_REUSES,
+  BUSINESS_REUSE_TEXT,
+  DEFAULT_CONFLICT,
+  DEFAULT_REUSE,
+  EMPTY_DRAFT,
+  MAX_BUSINESS_PREFIX,
+  MAX_NOTE,
+  OVERLAPS,
+  OVERLAP_TEXT,
+  UNITS,
+  UNIT_LABEL,
+  businessIdPreview,
+  businessPolicySentence,
+  businessPrefixProblem,
+  draftOf,
+  refusedPrefix,
+  requestOf,
+} from './model';
+import type { BusinessConflict, BusinessReuse, Draft, Unit, When } from './model';
 import { useCommand, useNamespaceId } from './shared';
 import { shortId } from '../runs/display';
 
@@ -38,7 +58,8 @@ function Edit({ id }: { id: string }) {
     // (the revision they save against must be the one they started from), and never kept after.
     staleTime: Number.POSITIVE_INFINITY,
     gcTime: 0,
-    queryFn: ({ signal }) => ep.getSchedule(namespace.id as string, id, { nextCount: 0, recentCount: 0 }, signal),
+    // One next time, for the preview of the business id: the platform calculates it, the form calculates none.
+    queryFn: ({ signal }) => ep.getSchedule(namespace.id as string, id, { nextCount: 1, recentCount: 0 }, signal),
   });
   if (namespace.pending || current.isPending) return <p role="status">Loading the schedule…</p>;
   if (namespace.error || current.error) return <ErrorState error={namespace.error ?? current.error} what="Loading the schedule" onRetry={() => void current.refetch()} />;
@@ -66,10 +87,10 @@ function Edit({ id }: { id: string }) {
       </section>
     );
   }
-  return <Editor initial={editable.draft} existing={{ id, revision: schedule.revision, name: schedule.name }} />;
+  return <Editor initial={editable.draft} existing={{ id, revision: schedule.revision, name: schedule.name }} nextNominalTime={schedule.nextActions[0]?.nominalTime} />;
 }
 
-function Editor({ initial, existing: opened }: { initial: Draft; existing?: { id: string; revision: number; name: string } }) {
+function Editor({ initial, existing: opened, nextNominalTime }: { initial: Draft; existing?: { id: string; revision: number; name: string }; nextNominalTime?: string | undefined }) {
   // The revision the person opened the schedule at is the one every save asks at: a copy that were read again under them (by a refresh
   // of the query it came from) would turn a refusal into an acceptance of somebody else's change.
   const [existing] = useState(opened);
@@ -81,6 +102,10 @@ function Editor({ initial, existing: opened }: { initial: Draft; existing?: { id
   const workflows = useWorkflowIndex();
   const [draft, setDraft] = useState<Draft>(initial);
   const [problem, setProblem] = useState<string>();
+  // The clock of the example id is read once: it does not move under the person while they type.
+  const [openedAt] = useState(() => new Date());
+  // The prefix the last request carried: a refusal of the platform is about that text, so it goes when the text changes.
+  const [sentPrefix, setSentPrefix] = useState<string>();
   const request = requestOf(draft);
   const command = useCommand(JSON.stringify([existing?.id ?? null, existing?.revision ?? null, 'body' in request ? request.body : null]));
   const set = <K extends keyof Draft>(field: K, value: Draft[K]) => setDraft((last) => ({ ...last, [field]: value }));
@@ -88,6 +113,8 @@ function Editor({ initial, existing: opened }: { initial: Draft; existing?: { id
   const choices = (workflows.data?.list ?? []).filter((workflow) => workflow.activeVersion || workflow.id === draft.workflowId);
   const known = choices.some((workflow) => workflow.id === draft.workflowId);
   const pinned = draft.carry.versionPolicy === 'PINNED';
+  const prefix = draft.businessIdPrefix.trim();
+  const prefixProblem = businessPrefixProblem(draft.businessIdPrefix);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -97,6 +124,7 @@ function Editor({ initial, existing: opened }: { initial: Draft; existing?: { id
       return;
     }
     setProblem(undefined);
+    setSentPrefix(prefix);
     const namespaceId = namespace.id;
     const body = request.body;
     command.send(
@@ -114,6 +142,7 @@ function Editor({ initial, existing: opened }: { initial: Draft; existing?: { id
   };
 
   const conflict = isApiError(command.error) && command.error.reason === 'REVISION_CONFLICT';
+  const prefixRefused = refusedPrefix(command.error) && sentPrefix === prefix;
   // The banner sends the person back to the schedule to see what the other person saved: the page they came from may have read it
   // moments ago and would still show the old one, so what it holds is marked out of date and read again when it is shown. Only that
   // key, and only marked (`exact`, `refetchType: 'none'`): the key of this form (`[..., 'form']`, a prefix match would reach it) is a
@@ -149,6 +178,54 @@ function Editor({ initial, existing: opened }: { initial: Draft; existing?: { id
         <Field label="Input" hint={existing ? 'A JSON object, at most 64 KiB. The platform never returns the input of a schedule, so write it again: what you save replaces it.' : 'A JSON object, at most 64 KiB, given to every run.'}>
           <textarea rows={5} spellCheck={false} autoComplete="off" value={draft.input} onChange={(event) => set('input', event.target.value)} />
         </Field>
+
+        <Field
+          label="Business id prefix"
+          hint={`Optional: every run the schedule starts is given the business id "<prefix>-<time>". 1 to ${MAX_BUSINESS_PREFIX} letters, digits and punctuation. ${[...prefix].length} of ${MAX_BUSINESS_PREFIX} characters.`}
+          error={prefixProblem ?? (prefixRefused ? `The platform refused this prefix: it takes 1 to ${MAX_BUSINESS_PREFIX} letters, digits and punctuation, with no space, accent or control character.` : undefined)}
+        >
+          <input type="text" autoComplete="off" spellCheck={false} value={draft.businessIdPrefix} onChange={(event) => set('businessIdPrefix', event.target.value)} />
+        </Field>
+        {prefix !== '' ? (
+          <>
+            <div className="toolbar">
+              <Field label="If an open run already has the id">
+                <select value={draft.businessIdConflictPolicy} onChange={(event) => set('businessIdConflictPolicy', event.target.value as BusinessConflict)}>
+                  {BUSINESS_CONFLICTS.map((value) => (
+                    <option key={value} value={value}>
+                      {BUSINESS_CONFLICT_TEXT[value].label}
+                      {value === DEFAULT_CONFLICT ? ' (default)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="If a closed run still remembers the id">
+                <select value={draft.businessIdReusePolicy} onChange={(event) => set('businessIdReusePolicy', event.target.value as BusinessReuse)}>
+                  {BUSINESS_REUSES.map((value) => (
+                    <option key={value} value={value}>
+                      {BUSINESS_REUSE_TEXT[value].label}
+                      {value === DEFAULT_REUSE ? ' (default)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            {prefixProblem === undefined ? (
+              <p style={{ overflowWrap: 'anywhere' }}>
+                {nextNominalTime === undefined ? (
+                  <>
+                    Each run gets the prefix, a dash and the nominal time of its action in UTC, for example <code>{businessIdPreview(prefix, undefined, openedAt)}</code>.
+                  </>
+                ) : (
+                  <>
+                    The next action would start its run under the business id <code>{businessIdPreview(prefix, nextNominalTime, openedAt)}</code>.
+                  </>
+                )}
+              </p>
+            ) : null}
+            <p>{businessPolicySentence(draft.businessIdConflictPolicy, draft.businessIdReusePolicy)}</p>
+          </>
+        ) : null}
 
         <Field label="Repeat by">
           <select value={draft.when} onChange={(event) => set('when', event.target.value as When)}>

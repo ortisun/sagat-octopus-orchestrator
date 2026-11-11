@@ -1,6 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import type { Schedule } from '../../api/endpoints';
-import { EMPTY_DRAFT, MAX_NOTE, OUTCOMES, backfillOf, describeSpec, draftOf, noteProblem, outcomeView, reasonText, requestOf, scheduleState } from './model';
+import { ApiError } from '../../api/errors';
+import {
+  BUSINESS_CONFLICTS,
+  BUSINESS_CONFLICT_TEXT,
+  BUSINESS_REUSES,
+  BUSINESS_REUSE_TEXT,
+  EMPTY_DRAFT,
+  MAX_BUSINESS_PREFIX,
+  MAX_NOTE,
+  OUTCOMES,
+  backfillOf,
+  businessIdPreview,
+  businessPolicySentence,
+  describeSpec,
+  draftOf,
+  noteProblem,
+  outcomeView,
+  reasonText,
+  businessPrefixProblem,
+  refusedPrefix,
+  requestOf,
+  scheduleState,
+} from './model';
 import type { Draft } from './model';
 
 const WORKFLOW = '0194f5e2-7b1c-7000-8000-000000000001';
@@ -116,6 +138,143 @@ describe('the request a form makes', () => {
   });
 });
 
+describe('the business id of what a schedule starts', () => {
+  const actionOf = (changes: Partial<Draft>) => bodyOf(requestOf({ ...VALID, ...changes })).action as Record<string, unknown>;
+
+  it('is absent from the request when no prefix is set: no key, not null, not an empty string, whatever the policies say', () => {
+    expect(Object.keys(actionOf({}))).toEqual(['workflowId', 'versionPolicy', 'input']);
+    const chosen = actionOf({ businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'REJECT_DUPLICATE' });
+    expect(Object.keys(chosen)).toEqual(['workflowId', 'versionPolicy', 'input']);
+    const action = actionOf({ businessIdPrefix: '', businessIdConflictPolicy: 'USE_EXISTING' });
+    expect(Object.keys(action)).toEqual(['workflowId', 'versionPolicy', 'input']);
+  });
+
+  it('is never dropped silently: spaces alone are refused on the field, and only an empty field means no prefix', () => {
+    for (const businessIdPrefix of [' ', '   ', '\t ', '\n']) {
+      expect(problemOf(requestOf({ ...VALID, businessIdPrefix })), JSON.stringify(businessIdPrefix)).toMatch(/business id prefix.*spaces alone/i);
+      expect(businessPrefixProblem(businessIdPrefix), JSON.stringify(businessIdPrefix)).toMatch(/spaces alone/i);
+    }
+    expect(businessPrefixProblem('')).toBeUndefined();
+    expect(businessPrefixProblem('order-')).toBeUndefined();
+    // the text around a prefix is still trimmed, as it was: it is the spaces alone that said nothing
+    expect(businessPrefixProblem('  order  ')).toBeUndefined();
+  });
+
+  it('is written with both policies, the defaults included, as soon as a prefix is set', () => {
+    expect(actionOf({ businessIdPrefix: 'order' })).toMatchObject({ businessIdPrefix: 'order', businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' });
+    expect(actionOf({ businessIdPrefix: 'order', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY' })).toMatchObject({
+      businessIdPrefix: 'order',
+      businessIdConflictPolicy: 'USE_EXISTING',
+      businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY',
+    });
+    expect(actionOf({ businessIdPrefix: 'order', businessIdReusePolicy: 'REJECT_DUPLICATE' })).toMatchObject({ businessIdReusePolicy: 'REJECT_DUPLICATE' });
+  });
+
+  it('is written without the spaces round it, and keeps every visible ASCII character in it', () => {
+    expect(actionOf({ businessIdPrefix: '  order  ' })['businessIdPrefix']).toBe('order');
+    expect(actionOf({ businessIdPrefix: '<b>"o&k"</b>~!' })['businessIdPrefix']).toBe('<b>"o&k"</b>~!');
+  });
+
+  it('takes 1 to 160 visible ASCII characters and refuses the rest in words, before asking the platform', () => {
+    expect(MAX_BUSINESS_PREFIX).toBe(160);
+    expect(actionOf({ businessIdPrefix: 'a' })['businessIdPrefix']).toBe('a');
+    expect(actionOf({ businessIdPrefix: 'a'.repeat(160) })['businessIdPrefix']).toBe('a'.repeat(160));
+    expect(problemOf(requestOf({ ...VALID, businessIdPrefix: 'a'.repeat(161) }))).toMatch(/business id prefix.*at most 160/i);
+    for (const businessIdPrefix of ['an order', 'a b', 'olá', 'orderé', 'order\u0007', '🐙', 'order x', 'tab\tinside']) {
+      expect(problemOf(requestOf({ ...VALID, businessIdPrefix })), JSON.stringify(businessIdPrefix)).toMatch(/business id prefix.*no space/i);
+    }
+  });
+
+  it('is shown by the draft of a schedule that has one, with its policies, and none for a schedule without one', () => {
+    const result = draftOf(
+      schedule({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', inputDigest: 'ab'.repeat(32), businessIdPrefix: 'order', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'REJECT_DUPLICATE' } }),
+    );
+    expect(result).toMatchObject({ draft: { businessIdPrefix: 'order', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'REJECT_DUPLICATE' } });
+    const without = draftOf(schedule());
+    expect(without).toMatchObject({ draft: { businessIdPrefix: '', businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' } });
+  });
+
+  it('shows the defaults for a prefix the platform returned without its policies', () => {
+    const result = draftOf(schedule({ action: { workflowId: WORKFLOW, versionPolicy: 'ACTIVE', businessIdPrefix: 'order' } }));
+    expect(result).toMatchObject({ draft: { businessIdPrefix: 'order', businessIdConflictPolicy: 'FAIL', businessIdReusePolicy: 'ALLOW_DUPLICATE' } });
+  });
+
+  it('is saved as it was, with what the form does not show kept as well', () => {
+    const original = schedule({
+      action: {
+        workflowId: WORKFLOW,
+        versionPolicy: 'ACTIVE',
+        inputDigest: 'cd'.repeat(32),
+        nominalTimeField: 'at',
+        runTimeoutMs: 30_000,
+        businessIdPrefix: 'order-',
+        businessIdConflictPolicy: 'USE_EXISTING',
+        businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY',
+      },
+    });
+    const result = draftOf(original);
+    if (!('draft' in result)) throw new Error(result.cannot);
+    expect(bodyOf(requestOf({ ...result.draft, input: '{"k":1}' })).action).toEqual({
+      workflowId: WORKFLOW,
+      versionPolicy: 'ACTIVE',
+      input: { k: 1 },
+      nominalTimeField: 'at',
+      runTimeoutMs: 30_000,
+      businessIdPrefix: 'order-',
+      businessIdConflictPolicy: 'USE_EXISTING',
+      businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY',
+    });
+  });
+
+  it('has a word and a sentence for every closed value of the contract', () => {
+    expect(BUSINESS_CONFLICTS).toEqual(['FAIL', 'USE_EXISTING']);
+    expect(BUSINESS_REUSES).toEqual(['ALLOW_DUPLICATE', 'ALLOW_DUPLICATE_FAILED_ONLY', 'REJECT_DUPLICATE']);
+    for (const value of BUSINESS_CONFLICTS) expect(BUSINESS_CONFLICT_TEXT[value].label.length + BUSINESS_CONFLICT_TEXT[value].effect.length, value).toBeGreaterThan(10);
+    for (const value of BUSINESS_REUSES) expect(BUSINESS_REUSE_TEXT[value].label.length + BUSINESS_REUSE_TEXT[value].effect.length, value).toBeGreaterThan(10);
+    expect(new Set(BUSINESS_CONFLICTS.map((value) => BUSINESS_CONFLICT_TEXT[value].label)).size).toBe(2);
+    expect(new Set(BUSINESS_REUSES.map((value) => BUSINESS_REUSE_TEXT[value].label)).size).toBe(3);
+  });
+
+  it('is previewed as the prefix, a dash and the nominal time in UTC to the second, ending in Z', () => {
+    const now = new Date('2026-11-10T12:34:56.789Z');
+    expect(businessIdPreview('order', '2026-11-10T12:00:00Z', now)).toBe('order-2026-11-10T12:00:00Z');
+    // the platform may write fractions or an offset; the id is the instant in UTC, to the second
+    expect(businessIdPreview('order', '2026-11-10T12:00:00.250Z', now)).toBe('order-2026-11-10T12:00:00Z');
+    expect(businessIdPreview('order', '2026-11-10T13:00:00+01:00', now)).toBe('order-2026-11-10T12:00:00Z');
+    // with no time to go by, the shape is shown with the clock, to the second
+    expect(businessIdPreview('order', undefined, now)).toBe('order-2026-11-10T12:34:56Z');
+    expect(businessIdPreview('order', 'not a time', now)).toBe('order-2026-11-10T12:34:56Z');
+  });
+
+  it('knows the refusal of the platform that is about the prefix, and no other', () => {
+    const refusal = (status: number, code: ApiError['code'], details: Record<string, unknown> | undefined) => new ApiError({ code, status, message: 'refused', details });
+    const about = { reason: 'SCHEDULE_SPEC_INVALID', field: '/action/businessIdPrefix' };
+    expect(refusedPrefix(refusal(422, 'VALIDATION_FAILED', about))).toBe(true);
+    expect(refusedPrefix(refusal(422, 'VALIDATION_FAILED', { ...about, field: '/action/runTimeoutMs' }))).toBe(false);
+    expect(refusedPrefix(refusal(422, 'VALIDATION_FAILED', { ...about, reason: 'SOMETHING_ELSE' }))).toBe(false);
+    expect(refusedPrefix(refusal(422, 'VALIDATION_FAILED', { reason: 'SCHEDULE_SPEC_INVALID' }))).toBe(false);
+    expect(refusedPrefix(refusal(422, 'VALIDATION_FAILED', undefined))).toBe(false);
+    expect(refusedPrefix(refusal(409, 'CONFLICT', about))).toBe(false);
+    expect(refusedPrefix(new Error('SCHEDULE_SPEC_INVALID'))).toBe(false);
+    expect(refusedPrefix(undefined)).toBe(false);
+  });
+
+  it('says in one sentence what the two policies do, for each of their values', () => {
+    expect(businessPolicySentence('FAIL', 'ALLOW_DUPLICATE')).toBe(
+      'If an open run holds the id, the action records a business id conflict and starts nothing; if a closed run still remembers it (30 days by default), the action starts a new run.',
+    );
+    expect(businessPolicySentence('USE_EXISTING', 'REJECT_DUPLICATE')).toMatch(/open run holds the id, the action records that run as the answer and starts nothing; .* the action records a business id conflict and starts nothing\.$/);
+    expect(businessPolicySentence('FAIL', 'ALLOW_DUPLICATE_FAILED_ONLY')).toMatch(/starts a new run unless that run succeeded, which is a business id conflict\.$/);
+    // one sentence: its only full stop is the last character
+    for (const conflict of BUSINESS_CONFLICTS) {
+      for (const reuse of BUSINESS_REUSES) {
+        const sentence = businessPolicySentence(conflict, reuse);
+        expect(sentence.indexOf('.'), `${conflict} ${reuse}`).toBe(sentence.length - 1);
+      }
+    }
+  });
+});
+
 describe('the draft that edits a schedule', () => {
   it('shows an interval in the largest unit that divides it', () => {
     const cases: [number, string, string][] = [
@@ -228,6 +387,18 @@ describe('the outcome of a decision', () => {
 
   it('says "another outcome" for one this version does not know, and keeps its name as the help', () => {
     expect(outcomeView('FROM_THE_FUTURE')).toMatchObject({ label: 'Another outcome', tone: 'idle', help: 'FROM_THE_FUTURE' });
+  });
+
+  it('tells the two business id outcomes apart in words, and says an already-acted time may be one a run holds', () => {
+    expect(outcomeView('BUSINESS_ID_CONFLICT')).toMatchObject({ label: 'Business id conflict', tone: 'bad' });
+    expect(outcomeView('BUSINESS_ID_CONFLICT').help).toMatch(/nothing was started/i);
+    expect(outcomeView('ALREADY_ACTED').help).toMatch(/backfill/);
+    expect(outcomeView('ALREADY_ACTED').help).toMatch(/business id/);
+  });
+
+  it('says the reasons of a business id in words, and never a code alone', () => {
+    expect(reasonText('BUSINESS_ID_IN_USE')).toBe('The business id was held by an open run.');
+    expect(reasonText('BUSINESS_ID_REUSE_REJECTED')).toBe('A closed run still remembers the id and the reuse policy refuses it.');
   });
 
   it('explains a closed reason code, shows an unknown one as it is, and nothing for none', () => {

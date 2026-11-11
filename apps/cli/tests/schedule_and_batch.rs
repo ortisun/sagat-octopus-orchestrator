@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
 use sagat_cli::Env;
-use sagat_cli::args::{BatchCommand, Command, ScheduleCommand, parse};
+use sagat_cli::args::{
+    ActionBusiness, BatchCommand, Command, IfExists, Reuse, ScheduleCommand, parse,
+};
 use serde_json::{Value, json};
 use support::{Reply, request_body, request_line, server};
 
@@ -120,7 +122,8 @@ fn the_schedule_commands_take_the_words_and_flags_they_document() {
         schedule("schedule create --definition s.json --key k-0123456789"),
         ScheduleCommand::Create {
             file: "s.json".into(),
-            key: Some("k-0123456789".into())
+            key: Some("k-0123456789".into()),
+            business: ActionBusiness::default()
         }
     );
     assert_eq!(
@@ -131,7 +134,8 @@ fn the_schedule_commands_take_the_words_and_flags_they_document() {
             id: ID.into(),
             file: "s.json".into(),
             revision: 3,
-            key: None
+            key: None,
+            business: ActionBusiness::default()
         }
     );
     assert_eq!(
@@ -196,7 +200,8 @@ fn the_batch_commands_take_the_words_and_flags_they_document() {
     assert_eq!(
         batch("batch preview --selector {} --max-items 5"),
         BatchCommand::Preview {
-            selector: "{}".into(),
+            selector: Some("{}".into()),
+            business_id_prefix: None,
             max_items: Some(5)
         }
     );
@@ -205,7 +210,8 @@ fn the_batch_commands_take_the_words_and_flags_they_document() {
     ) else {
         panic!("a creation");
     };
-    assert_eq!(created.selector, "@s.json");
+    assert_eq!(created.selector.as_deref(), Some("@s.json"));
+    assert_eq!(created.business_id_prefix, None);
     assert_eq!(created.action, "RETRY_STEP");
     assert_eq!(created.reason, "because");
     assert_eq!(created.max_items, Some(50));
@@ -1149,4 +1155,396 @@ fn a_namespace_the_tenant_does_not_have_is_said_and_nothing_else_is_asked() {
         "{out}{err}"
     );
     assert_eq!(calls(&requests).len(), 1);
+}
+// --- the business-id prefix of a schedule's action and of a batch selector (FR-018-016, G2027) --------------------------
+
+#[test]
+fn the_flags_for_the_business_id_of_an_action_and_of_a_selector_are_taken_and_checked_before_anything_is_sent()
+ {
+    let schedule = |line: &str| match parse(&argv(line)).expect(line).command {
+        Command::Schedule(command) => command,
+        other => panic!("{line}: {other:?}"),
+    };
+    assert_eq!(
+        schedule(
+            "schedule create --definition s.json --business-id-prefix order --if-exists use-existing --reuse reject-duplicate"
+        ),
+        ScheduleCommand::Create {
+            file: "s.json".into(),
+            key: None,
+            business: ActionBusiness {
+                prefix: Some("order".into()),
+                if_exists: Some(IfExists::UseExisting),
+                reuse: Some(Reuse::RejectDuplicate)
+            }
+        }
+    );
+    assert_eq!(
+        schedule(&format!(
+            "schedule update {ID} --definition s.json --revision 2 --business-id-prefix o"
+        )),
+        ScheduleCommand::Update {
+            id: ID.into(),
+            file: "s.json".into(),
+            revision: 2,
+            key: None,
+            business: ActionBusiness {
+                prefix: Some("o".into()),
+                if_exists: None,
+                reuse: None
+            }
+        }
+    );
+    let long = "o".repeat(161);
+    for (line, mentions) in [
+        (
+            format!("schedule create --definition s.json --business-id-prefix {long}"),
+            "--business-id-prefix is 1 to 160 visible ASCII characters",
+        ),
+        (
+            "batch preview --max-items 5".to_owned(),
+            "--selector is required (or --business-id-prefix",
+        ),
+        (
+            format!("batch preview --business-id-prefix {}", "o".repeat(201)),
+            "--business-id-prefix is 1 to 200 visible ASCII characters",
+        ),
+    ] {
+        let error = parse(&argv(&line)).expect_err(&line);
+        let said = error.0.clone();
+        assert!(said.contains(mentions), "{line} -> {said}");
+        assert!(
+            !said.contains(&long),
+            "the typed text is never echoed: {said}"
+        );
+    }
+    // a prefix with a character an id cannot hold is refused without the text
+    let bad = vec![
+        "schedule".to_owned(),
+        "create".to_owned(),
+        "--definition".to_owned(),
+        "s.json".to_owned(),
+        "--business-id-prefix".to_owned(),
+        "has space canary-text".to_owned(),
+    ];
+    let said = parse(&bad).expect_err("a space").0;
+    assert!(
+        said.contains("visible ASCII") && !said.contains("canary-text"),
+        "{said}"
+    );
+
+    let BatchCommand::Create(created) = (match parse(&argv(
+        "batch create --business-id-prefix lot- --action cancel --reason because",
+    ))
+    .expect("a creation")
+    .command
+    {
+        Command::Batch(command) => command,
+        other => panic!("{other:?}"),
+    }) else {
+        panic!("a creation");
+    };
+    assert_eq!(created.selector, None);
+    assert_eq!(created.business_id_prefix.as_deref(), Some("lot-"));
+}
+
+#[test]
+fn a_schedule_created_or_updated_with_a_prefix_sends_it_in_the_action_over_what_the_file_says() {
+    let file = write_temp(
+        r#"{"name":"orders","spec":{"intervals":[{"everyMs":3600000}]},"action":{"workflowId":"w","input":{},"businessIdPrefix":"from-the-file","businessIdConflictPolicy":"FAIL"}}"#,
+    );
+    let (code, _, err, requests) = run(
+        &[
+            "schedule",
+            "create",
+            "--definition",
+            file.to_str().expect("path"),
+            "--business-id-prefix",
+            "order",
+            "--if-exists",
+            "use-existing",
+            "--reuse",
+            "allow-duplicate-failed-only",
+        ],
+        vec![
+            namespaces(),
+            reply(
+                201,
+                &json!({"scheduleId": ID, "name": "orders", "revision": 1, "state": "ACTIVE"}),
+            ),
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let c = calls(&requests);
+    let action = &c[1].1["action"];
+    assert_eq!(
+        action["businessIdPrefix"], "order",
+        "the flag goes over the file"
+    );
+    assert_eq!(action["businessIdConflictPolicy"], "USE_EXISTING");
+    assert_eq!(
+        action["businessIdReusePolicy"],
+        "ALLOW_DUPLICATE_FAILED_ONLY"
+    );
+    assert_eq!(
+        action["workflowId"], "w",
+        "the rest of the action is the file's"
+    );
+
+    // without the flags the document is sent as it is
+    let (code, _, err, requests) = run(
+        &[
+            "schedule",
+            "update",
+            ID,
+            "--definition",
+            file.to_str().expect("path"),
+            "--revision",
+            "1",
+        ],
+        vec![
+            namespaces(),
+            reply(200, &json!({"scheduleId": ID, "revision": 2})),
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let c = calls(&requests);
+    assert_eq!(c[1].1["action"]["businessIdPrefix"], "from-the-file");
+    assert_eq!(c[1].1["expectedRevision"], 1);
+
+    // and an update with a prefix puts it in the action too
+    let (code, _, err, requests) = run(
+        &[
+            "schedule",
+            "update",
+            ID,
+            "--definition",
+            file.to_str().expect("path"),
+            "--revision",
+            "1",
+            "--business-id-prefix",
+            "new",
+        ],
+        vec![
+            namespaces(),
+            reply(200, &json!({"scheduleId": ID, "revision": 2})),
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(calls(&requests)[1].1["action"]["businessIdPrefix"], "new");
+
+    // a document with no action has nowhere to put it, and nothing is sent
+    let bare = write_temp(r#"{"name":"x"}"#);
+    let (code, _, err, requests) = run(
+        &[
+            "schedule",
+            "create",
+            "--definition",
+            bare.to_str().expect("path"),
+            "--business-id-prefix",
+            "order",
+        ],
+        vec![namespaces(), reply(201, &json!({"scheduleId": ID}))],
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("no action"), "{err}");
+    assert!(
+        calls(&requests)
+            .iter()
+            .all(|(line, _)| !line.starts_with("POST"))
+    );
+}
+
+#[test]
+fn a_policy_without_a_prefix_goes_with_the_prefix_of_the_file_and_means_nothing_without_one() {
+    // the file names the prefix: the policy flags alone change its policies (found by the independent review of this slice)
+    let named = write_temp(
+        r#"{"name":"orders","spec":{"intervals":[{"everyMs":3600000}]},"action":{"workflowId":"w","input":{},"businessIdPrefix":"order"}}"#,
+    );
+    let (code, _, err, requests) = run(
+        &[
+            "schedule",
+            "create",
+            "--definition",
+            named.to_str().expect("path"),
+            "--if-exists",
+            "use-existing",
+        ],
+        vec![
+            namespaces(),
+            reply(
+                201,
+                &json!({"scheduleId": ID, "name": "orders", "revision": 1}),
+            ),
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let action = &calls(&requests)[1].1["action"];
+    assert_eq!(action["businessIdPrefix"], "order", "the file's");
+    assert_eq!(
+        action["businessIdConflictPolicy"], "USE_EXISTING",
+        "the flag's"
+    );
+
+    // no prefix anywhere: refused in words before anything is sent
+    let bare = write_temp(
+        r#"{"name":"x","spec":{"intervals":[{"everyMs":3600000}]},"action":{"workflowId":"w","input":{}}}"#,
+    );
+    let (code, _, err, requests) = run(
+        &[
+            "schedule",
+            "create",
+            "--definition",
+            bare.to_str().expect("path"),
+            "--reuse",
+            "reject-duplicate",
+        ],
+        vec![namespaces(), reply(201, &json!({"scheduleId": ID}))],
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("go with a business id prefix"), "{err}");
+    assert!(
+        calls(&requests)
+            .iter()
+            .all(|(line, _)| !line.starts_with("POST"))
+    );
+}
+
+#[test]
+fn a_schedule_with_a_prefix_says_so_and_an_action_that_found_its_id_held_says_why() {
+    let (code, out, err, _) = run(
+        &["schedule", "get", ID],
+        vec![
+            namespaces(),
+            Reply::ok(
+                json!({
+                    "scheduleId": ID, "name": "orders", "state": "ACTIVE", "revision": 1,
+                    "action": {"workflowId": "w", "businessIdPrefix": "order",
+                               "businessIdConflictPolicy": "USE_EXISTING", "businessIdReusePolicy": "REJECT_DUPLICATE"},
+                    "nextActions": [], "recentActions": [], "openRuns": [], "bufferedCount": 0, "counters": {}
+                })
+                .to_string(),
+            ),
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("business id: order-<time of the action>")
+            && out.contains("held by an open run: USE_EXISTING")
+            && out.contains("remembered by a closed one: REJECT_DUPLICATE"),
+        "{out}"
+    );
+    // a schedule without one says nothing of it
+    let (_, out, _, _) = run(
+        &["schedule", "get", ID],
+        vec![
+            namespaces(),
+            Reply::ok(
+                json!({"scheduleId": ID, "name": "plain", "state": "ACTIVE", "revision": 1,
+                       "action": {"workflowId": "w"}, "nextActions": [], "recentActions": [],
+                       "openRuns": [], "bufferedCount": 0, "counters": {}})
+                .to_string(),
+            ),
+        ],
+    );
+    assert!(!out.contains("business id"), "{out}");
+
+    let (code, out, err, _) = run(
+        &["schedule", "actions", ID],
+        vec![
+            namespaces(),
+            Reply::ok(
+                json!({"items": [
+                    {"nominalTime": "2026-11-06T13:00:00Z", "kind": "SCHEDULED", "outcome": "BUSINESS_ID_CONFLICT",
+                     "reason": "BUSINESS_ID_IN_USE"},
+                    {"nominalTime": "2026-11-06T12:00:00Z", "kind": "SCHEDULED", "outcome": "ALREADY_ACTED",
+                     "reason": "BUSINESS_ID_IN_USE", "runId": RUN},
+                    {"nominalTime": "2026-11-06T11:00:00Z", "kind": "SCHEDULED", "outcome": "STARTED", "runId": RUN}
+                ]})
+                .to_string(),
+            ),
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(
+        lines[0].contains("BUSINESS_ID_CONFLICT") && lines[0].ends_with("BUSINESS_ID_IN_USE"),
+        "{out}"
+    );
+    assert!(
+        lines[1].contains(RUN) && lines[1].ends_with("BUSINESS_ID_IN_USE"),
+        "{out}"
+    );
+    assert!(
+        lines[2].ends_with(RUN),
+        "a started action has no reason to give: {out}"
+    );
+}
+
+#[test]
+fn a_selection_by_the_prefix_of_a_business_id_is_previewed_and_a_job_made_from_it() {
+    // the prefix alone is a filter of its own
+    let (code, out, err, requests) = run(
+        &["batch", "preview", "--business-id-prefix", "lot-"],
+        vec![
+            namespaces(),
+            Reply::ok(json!({"matched": 2, "capped": false, "sample": [RUN]}).to_string()),
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("2 run(s) match"), "{out}");
+    assert_eq!(
+        calls(&requests)[1].1,
+        json!({"selector": {"filter": {"businessIdPrefix": "lot-"}}})
+    );
+
+    // it joins the filter of a selector that has one
+    let (code, _, err, requests) = run(
+        &[
+            "batch",
+            "create",
+            "--selector",
+            r#"{"filter":{"status":["RUNNING"]}}"#,
+            "--business-id-prefix",
+            "lot-",
+            "--action",
+            "cancel",
+            "--reason",
+            "cancel the runs of the lot",
+        ],
+        vec![
+            namespaces(),
+            reply(202, &json!({"batchId": ID, "state": "SELECTING"})),
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        calls(&requests)[1].1["selector"],
+        json!({"filter": {"status": ["RUNNING"], "businessIdPrefix": "lot-"}})
+    );
+
+    // a selector with no filter to join it to, or with a prefix already, is refused before anything is sent
+    for selector in [
+        r#"{"runIds":["a"]}"#,
+        r#"{"filter":{"businessIdPrefix":"x"}}"#,
+    ] {
+        let (code, out, err, requests) = run(
+            &[
+                "batch",
+                "preview",
+                "--selector",
+                selector,
+                "--business-id-prefix",
+                "lot-",
+            ],
+            vec![namespaces(), reply(200, &json!({"matched": 0}))],
+        );
+        assert_ne!(code, 0, "{selector}: {out}{err}");
+        assert!(
+            calls(&requests)
+                .iter()
+                .all(|(line, _)| !line.starts_with("POST")),
+            "{selector}"
+        );
+    }
 }

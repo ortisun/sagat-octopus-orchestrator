@@ -128,7 +128,7 @@ export function RunsPage({ variant = 'page', selectedRunId }: RunsPageProps = {}
         ) : null}
         {variant === 'page' ? <OpenRun /> : null}
         {variant === 'page' ? <StartRun choices={(workflows.data?.list ?? []).filter((workflow) => workflow.activeVersion)} /> : null}
-        {variant === 'page' ? <BatchFromRuns filters={{ status, workflowId, origin }} {...(workflowId ? { workflowName: workflows.data?.list.find((workflow) => workflow.id === workflowId)?.name } : {})} /> : null}
+        {variant === 'page' ? <BatchFromRuns filters={{ status, workflowId, origin, businessIdPrefix: business }}{...(workflowId ? { workflowName: workflows.data?.list.find((workflow) => workflow.id === workflowId)?.name } : {})} /> : null}
       </div>
       {namespace === undefined ? (
         <p role="status">Waiting for a namespace…</p>

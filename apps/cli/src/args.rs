@@ -73,17 +73,19 @@ ONE WORKFLOW:
 SCHEDULES AND BATCH JOBS:
     schedule list [--state active|paused] [--limit <N>]
     schedule get <ID>                    the schedule, its next times and its latest actions
-    schedule create --definition <FILE> [--key <KEY>]
-    schedule update <ID> --definition <FILE> --revision <N> [--key <KEY>]
+    schedule create --definition <FILE> [--business-id-prefix <TEXT> [--if-exists fail|use-existing] [--reuse <POLICY>]] [--key <KEY>]
+    schedule update <ID> --definition <FILE> --revision <N> [--business-id-prefix <TEXT> [--if-exists ..] [--reuse ..]] [--key <KEY>]
     schedule delete <ID> --revision <N> [--key <KEY>]
     schedule pause <ID> --note <TEXT> [--key <KEY>]
     schedule resume <ID> --note <TEXT> [--key <KEY>]
     schedule trigger <ID> [--overlap skip|buffer-one|buffer-all|cancel-other|allow-all] [--key <KEY>]
     schedule backfill <ID> --from <TIME> --to <TIME> [--overlap <POLICY>] [--key <KEY>]
     schedule actions <ID> [--limit <N>]
-                          a schedule is a JSON document of the contract; --revision is the one you saw
-    batch preview --selector <JSON|@FILE> [--max-items <N>]
-    batch create --selector <JSON|@FILE> --action <ACTION> --reason <TEXT> [--max-items <N>] [--rate <PER SECOND>]
+                          a schedule is a JSON document of the contract; --revision is the one you saw; with
+                          --business-id-prefix its runs get the id <TEXT>-<time of the action> (RFC 3339, UTC), the
+                          flags going over what the file says
+    batch preview (--selector <JSON|@FILE> | --business-id-prefix <TEXT>) [--max-items <N>]
+    batch create (--selector <JSON|@FILE> | --business-id-prefix <TEXT>) --action <ACTION> --reason <TEXT> [--max-items <N>] [--rate <PER SECOND>]
                  [--signal <NAME> [--payload <JSON|@FILE>]] [--step-id <STEP>] [--drop-business-id] [--key <KEY>]
     batch get <ID> | batch list [--state <STATE>] [--limit <N>] | batch cancel <ID> --reason <TEXT> [--key <KEY>]
     batch items <ID> [--state <STATE>] [--limit <N>]
@@ -304,6 +306,16 @@ pub enum Command {
     Batch(BatchCommand),
 }
 
+/// What a schedule's action says about the business id of the runs it starts (feature 018, `FR-018-016`): the prefix, and what to
+/// do when an open run holds the id (`--if-exists`) or a closed one still remembers it (`--reuse`). What the flags give goes
+/// over what the file says; the platform decides whether it is valid.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActionBusiness {
+    pub prefix: Option<String>,
+    pub if_exists: Option<IfExists>,
+    pub reuse: Option<Reuse>,
+}
+
 /// `sagat schedule …` (feature 018): the schedules of the namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScheduleCommand {
@@ -317,12 +329,14 @@ pub enum ScheduleCommand {
     Create {
         file: PathBuf,
         key: Option<String>,
+        business: ActionBusiness,
     },
     Update {
         id: String,
         file: PathBuf,
         revision: u64,
         key: Option<String>,
+        business: ActionBusiness,
     },
     Delete {
         id: String,
@@ -360,7 +374,10 @@ pub enum ScheduleCommand {
 /// What a batch job does to each run it selects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchRequest {
-    pub selector: String,
+    /// The selector, as JSON or `@FILE`; none when the runs are named by `--business-id-prefix` alone.
+    pub selector: Option<String>,
+    /// The runs whose business id starts with this text, joined to the filter of the selector (`G2027`).
+    pub business_id_prefix: Option<String>,
     pub action: String,
     pub reason: String,
     pub max_items: Option<u32>,
@@ -379,7 +396,8 @@ pub struct BatchRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchCommand {
     Preview {
-        selector: String,
+        selector: Option<String>,
+        business_id_prefix: Option<String>,
         max_items: Option<u32>,
     },
     Create(Box<BatchRequest>),
@@ -527,7 +545,7 @@ impl Flags {
 }
 
 /// Flags that take a value; every other `--flag` is a switch.
-const WITH_VALUE: [&str; 51] = [
+const WITH_VALUE: [&str; 52] = [
     "--definition",
     "--note",
     "--revision",
@@ -535,6 +553,7 @@ const WITH_VALUE: [&str; 51] = [
     "--to",
     "--overlap",
     "--selector",
+    "--business-id-prefix",
     "--action",
     "--max-items",
     "--rate",
@@ -691,6 +710,53 @@ fn business_id(text: String) -> Result<String, UsageError> {
             "--business-id is 1 to 200 visible ASCII characters".to_owned(),
         ))
     }
+}
+
+/// A business-id prefix as a schedule's action or a batch filter takes it: 1 to 160 visible ASCII characters (the id it makes
+/// is the prefix, a dash and 20 characters of time, inside the 200 of an id; the filter takes up to 200 of them). It is the
+/// caller's own text, so a refusal says what the rule is and never what was typed. A convenience, not the rule: the platform checks
+/// the same limits when the schedule is written or the selector is used (a `422`), so this only says so before a request is made,
+/// and a change of the limits there is a change of the numbers here.
+fn business_id_prefix(text: String, longest: usize) -> Result<String, UsageError> {
+    if (1..=longest).contains(&text.len()) && text.bytes().all(|byte| (b'!'..=b'~').contains(&byte))
+    {
+        Ok(text)
+    } else {
+        Err(UsageError(format!(
+            "--business-id-prefix is 1 to {longest} visible ASCII characters"
+        )))
+    }
+}
+
+/// What a schedule's action takes about the business id of its runs.
+fn action_business(flags: &mut Flags) -> Result<ActionBusiness, UsageError> {
+    let prefix = flags
+        .take_value(&["--business-id-prefix"])
+        .map(|text| business_id_prefix(text, 160))
+        .transpose()?;
+    // the policies go with a prefix: the flag's, or the one in the file (which is looked at when the document is read)
+    Ok(ActionBusiness {
+        prefix,
+        if_exists: if_exists(flags)?,
+        reuse: reuse(flags)?,
+    })
+}
+
+/// The selector of a batch command: `--selector`, `--business-id-prefix`, or both (the prefix joins the filter), and at least
+/// one of them.
+fn batch_selector(flags: &mut Flags) -> Result<(Option<String>, Option<String>), UsageError> {
+    let selector = flags.take_value(&["--selector"]);
+    let prefix = flags
+        .take_value(&["--business-id-prefix"])
+        .map(|text| business_id_prefix(text, 200))
+        .transpose()?;
+    if selector.is_none() && prefix.is_none() {
+        return Err(UsageError(
+            "--selector is required (or --business-id-prefix, for the runs whose business id starts with it)"
+                .to_owned(),
+        ));
+    }
+    Ok((selector, prefix))
 }
 
 /// The id of a schedule or of a batch job: a UUID, which goes into a path, so nothing else is let through.
@@ -1173,6 +1239,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
                 nothing(tail)?;
                 ScheduleCommand::Create {
                     file: definition_file(&mut flags)?,
+                    business: action_business(&mut flags)?,
                     key: flags.take_value(&["--key"]),
                 }
             }
@@ -1180,6 +1247,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
                 id: resource_id(argument(tail, "the schedule (its id)")?, "schedule")?,
                 file: definition_file(&mut flags)?,
                 revision: revision(&mut flags)?,
+                business: action_business(&mut flags)?,
                 key: flags.take_value(&["--key"]),
             },
             Some((sub, tail)) if sub == "delete" => ScheduleCommand::Delete {
@@ -1228,8 +1296,10 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
         Some("batch") => Command::Batch(match rest.split_first() {
             Some((sub, tail)) if sub == "preview" => {
                 nothing(tail)?;
+                let (selector, business_id_prefix) = batch_selector(&mut flags)?;
                 BatchCommand::Preview {
-                    selector: flags.required("--selector")?,
+                    selector,
+                    business_id_prefix,
                     max_items: flags
                         .take_value(&["--max-items"])
                         .map(|value| number(&value, "--max-items"))
@@ -1238,8 +1308,10 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
             }
             Some((sub, tail)) if sub == "create" => {
                 nothing(tail)?;
+                let (selector, business_id_prefix) = batch_selector(&mut flags)?;
                 BatchCommand::Create(Box::new(BatchRequest {
-                    selector: flags.required("--selector")?,
+                    selector,
+                    business_id_prefix,
                     action: batch_action(&flags.required("--action")?)?,
                     reason: flags.required("--reason")?,
                     max_items: flags

@@ -75,17 +75,19 @@ ONE WORKFLOW:
 SCHEDULES AND BATCH JOBS:
     schedule list [--state active|paused] [--limit <N>]
     schedule get <ID>                    the schedule, its next times and its latest actions
-    schedule create --definition <FILE> [--key <KEY>]
-    schedule update <ID> --definition <FILE> --revision <N> [--key <KEY>]
+    schedule create --definition <FILE> [--business-id-prefix <TEXT> [--if-exists fail|use-existing] [--reuse <POLICY>]] [--key <KEY>]
+    schedule update <ID> --definition <FILE> --revision <N> [--business-id-prefix <TEXT> [--if-exists ..] [--reuse ..]] [--key <KEY>]
     schedule delete <ID> --revision <N> [--key <KEY>]
     schedule pause <ID> --note <TEXT> [--key <KEY>]
     schedule resume <ID> --note <TEXT> [--key <KEY>]
     schedule trigger <ID> [--overlap skip|buffer-one|buffer-all|cancel-other|allow-all] [--key <KEY>]
     schedule backfill <ID> --from <TIME> --to <TIME> [--overlap <POLICY>] [--key <KEY>]
     schedule actions <ID> [--limit <N>]
-                          a schedule is a JSON document of the contract; --revision is the one you saw
-    batch preview --selector <JSON|@FILE> [--max-items <N>]
-    batch create --selector <JSON|@FILE> --action <ACTION> --reason <TEXT> [--max-items <N>] [--rate <PER SECOND>]
+                          a schedule is a JSON document of the contract; --revision is the one you saw; with
+                          --business-id-prefix its runs get the id <TEXT>-<time of the action> (RFC 3339, UTC), the
+                          flags going over what the file says
+    batch preview (--selector <JSON|@FILE> | --business-id-prefix <TEXT>) [--max-items <N>]
+    batch create (--selector <JSON|@FILE> | --business-id-prefix <TEXT>) --action <ACTION> --reason <TEXT> [--max-items <N>] [--rate <PER SECOND>]
                  [--signal <NAME> [--payload <JSON|@FILE>]] [--step-id <STEP>] [--drop-business-id] [--key <KEY>]
     batch get <ID> | batch list [--state <STATE>] [--limit <N>] | batch cancel <ID> --reason <TEXT> [--key <KEY>]
     batch items <ID> [--state <STATE>] [--limit <N>]

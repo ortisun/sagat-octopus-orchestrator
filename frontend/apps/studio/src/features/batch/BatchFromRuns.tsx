@@ -11,7 +11,7 @@ import { Field } from '../../ui/Field';
 import { useAnnounce } from '../../ui/Announcer';
 import { ACTION_TEXT, BATCH_ACTIONS, EMPTY_DRAFT, describeFilters, maxItemsOf, requestOf, selectorOf } from './model';
 import type { BatchActionName, Draft, RunFilters } from './model';
-import { notServed, useNamespaceId } from './queries';
+import { notServed, selectorNotSupported, useNamespaceId } from './queries';
 import { shortId } from '../runs/display';
 
 const DEFAULT_MAX = 10_000;
@@ -60,8 +60,10 @@ function BatchForm({ filters, workflowName, onClose }: { filters: RunFilters; wo
 
   const selector = useMemo(() => selectorOf(filters), [filters]);
   const set = (changes: Partial<Draft>) => setDraft((current) => ({ ...current, ...changes }));
-  // What was counted is what the job would take: a different limit is a different count.
-  const counted = preview !== undefined && previewedFor === draft.maxItems.trim() ? preview : undefined;
+  // What was counted is what the job would take: a different limit, or other filters (the address can change under an open dialog),
+  // is a different count.
+  const asked = JSON.stringify([selector, draft.maxItems.trim()]);
+  const counted = preview !== undefined && previewedFor === asked ? preview : undefined;
   const parsed = maxItemsOf(draft.maxItems);
   const limit = ('value' in parsed ? parsed.value : undefined) ?? DEFAULT_MAX;
 
@@ -96,7 +98,7 @@ function BatchForm({ filters, workflowName, onClose }: { filters: RunFilters; wo
       (signal) => ep.previewBatch(namespace.id as string, { selector, ...(max.value !== undefined ? { maxItems: max.value } : {}) }, signal),
       (result) => {
         setPreview(result);
-        setPreviewedFor(draft.maxItems.trim());
+        setPreviewedFor(asked);
         announce(result.capped ? `More than ${limit} runs match.` : `${result.matched} runs match.`);
       },
       setPreviewing,
@@ -140,7 +142,7 @@ function BatchForm({ filters, workflowName, onClose }: { filters: RunFilters; wo
   const idle = !sending && !previewing;
   return (
     <form onSubmit={submit} noValidate>
-      <p>
+      <p style={{ overflowWrap: 'anywhere' }}>
         A batch job applies one action to {describeFilters(filters, workflowName)}, one run at a time, at a fixed rate. It selects the runs that exist when it is
         created. What it applies is not undone if you cancel it.
       </p>
@@ -214,6 +216,8 @@ function BatchForm({ filters, workflowName, onClose }: { filters: RunFilters; wo
       ) : null}
       {error && notServed(error) ? (
         <Banner tone="info">Batch operations are not enabled on this deployment.</Banner>
+      ) : error && selectorNotSupported(error) ? (
+        <Banner tone="info">This selector is not supported by this deployment. Change the filters of the run list and count the runs again.</Banner>
       ) : error ? (
         <ErrorState error={error} what="The batch operation" />
       ) : null}

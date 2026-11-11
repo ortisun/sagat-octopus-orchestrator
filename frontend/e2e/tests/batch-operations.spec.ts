@@ -10,8 +10,8 @@ import { cancelAfterwards, cancelLeftovers, namespaceIdOf, openWorkflow, ownName
 
 /**
  * The batch operations of the Studio in a real browser, with the keyboard alone and the accessibility rules on every state
- * (T018-074, FR-018-047, SC-018-015). A batch job is made from the filters of the run list (the status, the workflow and the
- * origin): there is no way to tick runs one by one, so the journeys choose a workflow of their own and every run of it is
+ * (T018-074, FR-018-047, SC-018-015). A batch job is made from the filters of the run list (the status, the workflow, the
+ * origin and the start of the business id): there is no way to tick runs one by one, so the journeys choose a workflow of their own and every run of it is
  * what the job takes. The engine's batch pass is on in this platform (`SAGAT_BATCHES_ENABLED`, tests/e2e/workflow-studio).
  */
 test.use({ viewport: { width: 1470, height: 900 } });
@@ -123,6 +123,50 @@ test('BATCH a person selects runs by the filters of the list, counts them, start
   await expectAccessible(page, 'the batch jobs');
   await activate(page, row.getByRole('link', { name: batchId.slice(-8) }));
   await expect(page.getByRole('heading', { level: 1, name: /^Batch job: Cancel/ })).toBeVisible();
+  expect(problems).toEqual([]);
+});
+
+test('BATCH a job made from the business id filter of the list takes exactly the runs started under that prefix, as the count said before it started (FR-018-016, G2027)', async ({ page }) => {
+  test.setTimeout(240_000);
+  const problems = failOnBrowserErrors(page);
+  const api = new Api('admin');
+  const namespaceId = await namespaceIdOf(api, env.namespace);
+  const workflow = await openWorkflow(api, unique('batch-bid'));
+  // two runs under one prefix and one under another, all open: the prefix is unique to this journey, so no other journey's runs match
+  const prefix = unique('lot');
+  const inside = [await api.start(workflow.id, {}, { businessId: `${prefix}-a` }), await api.start(workflow.id, {}, { businessId: `${prefix}-b` })];
+  const outside = await api.start(workflow.id, {}, { businessId: `${unique('lot')}-a` });
+  cancelAfterwards(api, ...inside, outside);
+
+  await signInByKeyboard(page, env.tokens.admin, env.namespace);
+  await openFromMenu(page, 'Runs', 'Runs');
+  await typeInto(page, page.getByLabel('Business id starts with'), `${prefix}-`);
+  const rows = page.getByRole('table', { name: 'Runs, newest first' }).locator('tbody tr[data-index]');
+  await expect(rows).toHaveCount(2);
+  await expectAccessible(page, 'the run list, filtered by business id');
+
+  // The dialog says which runs it takes, and the count is made with the prefix: two runs, the two of the list.
+  const dialog = await openBatchDialog(page);
+  await expect(dialog).toContainText(`the runs with business id starting with "${prefix}-"`);
+  await activate(page, dialog.getByRole('button', { name: 'Count the runs' }));
+  const counted = dialog.getByRole('status').filter({ hasText: 'runs match' });
+  await expect(counted).toContainText(/^2 runs match\./);
+  for (const run of inside) await expect(counted.getByRole('link', { name: run.slice(-8) })).toBeVisible();
+  await expectAccessible(page, 'the batch dialog, counted by business id prefix');
+  await typeInto(page, dialog.getByLabel('Reason'), 'cancel the lot that was ordered twice');
+  await activate(page, dialog.getByRole('button', { name: 'Start the batch job' }));
+
+  // The job selected those two runs and no other.
+  await expect(page.getByRole('heading', { level: 1, name: /^Batch job: Cancel/ })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Completed', { timeout: 60_000 });
+  const job = (await api.call<Job>('GET', `/namespaces/${namespaceId}/batch-operations/${jobIdOf(page)}`, undefined, 200)).body;
+  expect(job.counts).toMatchObject({ selected: 2, succeeded: 2, failed: 0, skipped: 0 });
+  const items = page.getByRole('table', { name: 'The runs of the job and what became of each' });
+  await expect(items.locator('tbody tr')).toHaveCount(2);
+  for (const run of inside) await expect(items.getByRole('link', { name: run.slice(-8) })).toBeVisible();
+  await expect(items.getByRole('link', { name: outside.slice(-8) })).toHaveCount(0);
+  for (const run of inside) await api.until(run, 'CANCELLED');
+  expect((await api.run(outside)).status).not.toBe('CANCELLED');
   expect(problems).toEqual([]);
 });
 

@@ -23,6 +23,29 @@ describe('the selector of a batch job', () => {
     expect(describeFilters({ status: '', workflowId: '', origin: '' })).toBe('every run of the namespace');
     expect(describeFilters({ status: 'MANUAL_REVIEW', workflowId: 'w-1', origin: '' }, 'checkout')).toBe('the runs with status manual review and workflow checkout');
   });
+
+  it('carries the business id prefix of the run list, as the platform takes it: a literal in the filter', () => {
+    expect(selectorOf({ status: '', workflowId: '', origin: '', businessIdPrefix: 'order-' })).toEqual({ filter: { businessIdPrefix: 'order-' } });
+    expect(selectorOf({ status: 'FAILED', workflowId: '', origin: 'AD_HOC_STEP', businessIdPrefix: 'order-' })).toEqual({
+      filter: { status: ['FAILED'], origin: 'AD_HOC_STEP', businessIdPrefix: 'order-' },
+    });
+    // characters that mean something elsewhere are not touched: the platform matches them as they are
+    expect(selectorOf({ status: '', workflowId: '', origin: '', businessIdPrefix: '50%_off\\' })).toEqual({ filter: { businessIdPrefix: '50%_off\\' } });
+  });
+
+  it('has no key for an empty prefix or none: no null, no empty string', () => {
+    expect(selectorOf({ status: '', workflowId: '', origin: '', businessIdPrefix: '' })).toEqual({ filter: {} });
+    expect(selectorOf({ status: '', workflowId: '', origin: '' })).toEqual({ filter: {} });
+    expect(JSON.stringify(selectorOf({ status: 'FAILED', workflowId: '', origin: '', businessIdPrefix: '' }))).not.toContain('businessIdPrefix');
+  });
+
+  it('says the prefix in words, among the other filters', () => {
+    expect(describeFilters({ status: '', workflowId: '', origin: '', businessIdPrefix: 'order-' })).toBe('the runs with business id starting with "order-"');
+    expect(describeFilters({ status: 'MANUAL_REVIEW', workflowId: 'w-1', origin: '', businessIdPrefix: 'order-' }, 'checkout')).toBe(
+      'the runs with status manual review and workflow checkout and business id starting with "order-"',
+    );
+    expect(describeFilters({ status: '', workflowId: '', origin: '', businessIdPrefix: '' })).toBe('every run of the namespace');
+  });
 });
 
 describe('the request a draft makes', () => {

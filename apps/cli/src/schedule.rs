@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use crate::args::{Common, ScheduleCommand};
+use crate::args::{ActionBusiness, Common, ScheduleCommand};
 use crate::client::{CallError, Client};
 use crate::{EXIT_DONE, EXIT_FAILED, Env, Io, namespace_of, remote, resolve, session};
 
@@ -42,6 +42,40 @@ fn document(env: &Env, file: &std::path::Path) -> Result<Value, String> {
     }
 }
 
+/// The document with the business id of the action the flags ask for: what they give goes over what the file says. The platform
+/// decides whether the prefix is valid.
+fn with_business(mut body: Value, business: &ActionBusiness) -> Result<Value, String> {
+    if business.prefix.is_none() && business.if_exists.is_none() && business.reuse.is_none() {
+        return Ok(body);
+    }
+    let Some(action) = body.get_mut("action").and_then(Value::as_object_mut) else {
+        return Err(
+            "the schedule has no action to put the business id prefix in: write it as the contract says"
+                .to_owned(),
+        );
+    };
+    match &business.prefix {
+        Some(prefix) => {
+            action.insert("businessIdPrefix".to_owned(), json!(prefix));
+        }
+        // a policy with no prefix of its own goes with the one the file names; with none it means nothing
+        None if !action.contains_key("businessIdPrefix") => {
+            return Err(
+                "--if-exists and --reuse go with a business id prefix: give --business-id-prefix, or write one in the action of the file"
+                    .to_owned(),
+            );
+        }
+        None => {}
+    }
+    if let Some(policy) = business.if_exists {
+        action.insert("businessIdConflictPolicy".to_owned(), json!(policy.api()));
+    }
+    if let Some(policy) = business.reuse {
+        action.insert("businessIdReusePolicy".to_owned(), json!(policy.api()));
+    }
+    Ok(body)
+}
+
 pub(crate) async fn run(
     common: &Common,
     env: &Env,
@@ -60,8 +94,12 @@ pub(crate) async fn run(
             list(client, &base, &namespace, state.as_deref(), *limit, io).await
         }
         ScheduleCommand::Get { id } => get(client, &base, id, io).await,
-        ScheduleCommand::Create { file, key } => {
-            let body = document(env, file)?;
+        ScheduleCommand::Create {
+            file,
+            key,
+            business,
+        } => {
+            let body = with_business(document(env, file)?, business)?;
             let key = key_of(key.as_ref(), "schedule-create", &[&base]);
             match client.call("POST", &base, Some(&body), Some(&key)).await {
                 Ok((_, made)) => {
@@ -81,8 +119,9 @@ pub(crate) async fn run(
             file,
             revision,
             key,
+            business,
         } => {
-            let mut body = document(env, file)?;
+            let mut body = with_business(document(env, file)?, business)?;
             body["expectedRevision"] = json!(revision);
             let key = key_of(
                 key.as_ref(),
@@ -282,6 +321,15 @@ async fn get(client: &Client, base: &str, id: &str, io: &mut Io<'_>) -> Result<u
             text(action, "outcome")
         ));
     }
+    // the business id its runs are started under: the prefix is the customer's own text, shown to them and nowhere else
+    if let Some(prefix) = schedule["action"]["businessIdPrefix"].as_str() {
+        io.say(format!(
+            "  business id: {}-<time of the action>  (held by an open run: {}; remembered by a closed one: {})",
+            crate::one_line(prefix),
+            text(&schedule["action"], "businessIdConflictPolicy"),
+            text(&schedule["action"], "businessIdReusePolicy")
+        ));
+    }
     io.say(format!(
         "  {} open run(s), {} buffered",
         schedule["openRuns"].as_array().map_or(0, Vec::len),
@@ -328,13 +376,20 @@ async fn actions(
     }
     for action in &items {
         io.say(format!(
-            "{}  {:<9} {:<22} {}",
+            "{}  {:<9} {:<22} {}{}",
             text(action, "nominalTime"),
             text(action, "kind"),
             text(action, "outcome"),
             action["runId"]
                 .as_str()
-                .map_or_else(|| "-".to_owned(), crate::one_line)
+                .map_or_else(|| "-".to_owned(), crate::one_line),
+            // why nothing started, when the platform says (a business id that was held, a ceiling)
+            action["reason"]
+                .as_str()
+                .map_or_else(String::new, |reason| format!(
+                    "  {}",
+                    crate::one_line(reason)
+                ))
         ));
     }
     Ok(EXIT_DONE)

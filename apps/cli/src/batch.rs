@@ -33,10 +33,33 @@ fn json_arg(env: &Env, argument: &str, what: &str) -> Result<Value, String> {
         .map_err(|e| format!("the {what} is not JSON ({e}); give JSON, or @file"))
 }
 
+/// The selector a command asks for: the one given, with the business-id prefix joined to its filter, or a filter of the prefix alone.
+/// A selector of run ids or of a query has no filter to join it to, and is refused before anything is asked of the platform.
+fn selector_of(env: &Env, selector: Option<&str>, prefix: Option<&str>) -> Result<Value, String> {
+    let given = selector
+        .map(|argument| json_arg(env, argument, "selector"))
+        .transpose()?;
+    let Some(prefix) = prefix else {
+        return given.ok_or_else(|| "give a --selector or a --business-id-prefix".to_owned());
+    };
+    let mut selector = given.unwrap_or_else(|| json!({ "filter": {} }));
+    let Some(filter) = selector.get_mut("filter").and_then(Value::as_object_mut) else {
+        return Err(
+            "--business-id-prefix joins the filter of a selector: a selector of run ids or of a query has none"
+                .to_owned(),
+        );
+    };
+    if filter.contains_key("businessIdPrefix") {
+        return Err("the selector has a businessIdPrefix already: give it once".to_owned());
+    }
+    filter.insert("businessIdPrefix".to_owned(), json!(prefix));
+    Ok(selector)
+}
+
 /// The body of a creation from what was asked.
 fn creation(env: &Env, ask: &BatchRequest) -> Result<Value, String> {
     let mut body = json!({
-        "selector": json_arg(env, &ask.selector, "selector")?,
+        "selector": selector_of(env, ask.selector.as_deref(), ask.business_id_prefix.as_deref())?,
         "action": ask.action,
         "reason": ask.reason,
     });
@@ -105,9 +128,10 @@ pub(crate) async fn run(
     match command {
         BatchCommand::Preview {
             selector,
+            business_id_prefix,
             max_items,
         } => {
-            let mut body = json!({ "selector": json_arg(env, selector, "selector")? });
+            let mut body = json!({ "selector": selector_of(env, selector.as_deref(), business_id_prefix.as_deref())? });
             if let Some(max) = max_items {
                 body["maxItems"] = json!(max);
             }

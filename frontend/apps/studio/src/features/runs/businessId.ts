@@ -18,10 +18,13 @@ export const REUSES: readonly { value: Reuse; label: string }[] = [
 
 const VISIBLE_ASCII = /^[!-~]+$/;
 
-/** Why `text` cannot be an identifier, or nothing when it can (and when it is empty: a start needs none). */
-export function businessIdProblem(text: string): string | undefined {
+/**
+ * Why `text` cannot be an identifier, or nothing when it can (and when it is empty: a start needs none). `max` is the ceiling of
+ * the field: 200 for an identifier and for the filter of the run list, 160 for the prefix of a schedule.
+ */
+export function businessIdProblem(text: string, max: number = MAX_BUSINESS_ID): string | undefined {
   if (text === '') return undefined;
-  if (text.length > MAX_BUSINESS_ID) return `At most ${MAX_BUSINESS_ID} characters.`;
+  if (text.length > max) return `At most ${max} characters.`;
   if (!VISIBLE_ASCII.test(text)) return 'Letters, digits and punctuation only: no space, no accent, no control character.';
   return undefined;
 }

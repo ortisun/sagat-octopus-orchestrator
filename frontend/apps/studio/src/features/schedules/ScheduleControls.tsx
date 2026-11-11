@@ -11,7 +11,7 @@ import { Button } from '../../ui/Button';
 import { Dialog } from '../../ui/Dialog';
 import { ErrorState } from '../../ui/ErrorState';
 import { Field } from '../../ui/Field';
-import { MAX_NOTE, OVERLAPS, OVERLAP_TEXT, noteProblem, outcomeView } from './model';
+import { MAX_NOTE, OVERLAPS, OVERLAP_TEXT, noteProblem, outcomeView, reasonText } from './model';
 import { useCommand } from './shared';
 
 /** What a person may do to one schedule, each behind the permission the platform will ask for. */
@@ -172,14 +172,14 @@ function TriggerForm({ schedule, namespaceId, onClose }: { schedule: Schedule; n
   const queries = useQueryClient();
   const announce = useAnnounce();
   const [overlap, setOverlap] = useState<Overlap | ''>('');
-  const [result, setResult] = useState<{ outcome: string; runId: string | null | undefined }>();
+  const [result, setResult] = useState<{ outcome: string; reason: string | null | undefined; runId: string | null | undefined }>();
   const command = useCommand(`trigger:${overlap}`);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     command.send(
       (key, signal) => ep.triggerSchedule(namespaceId, schedule.scheduleId, overlap === '' ? undefined : overlap, key, signal),
       async (action) => {
-        setResult({ outcome: action.outcome, runId: action.runId });
+        setResult({ outcome: action.outcome, reason: action.reason, runId: action.runId });
         announce(`${outcomeView(action.outcome).label}.`);
         await queries.invalidateQueries({ queryKey: ['schedule', namespaceId, schedule.scheduleId], exact: true });
         await queries.invalidateQueries({ queryKey: ['schedule-actions', namespaceId, schedule.scheduleId] });
@@ -192,6 +192,7 @@ function TriggerForm({ schedule, namespaceId, onClose }: { schedule: Schedule; n
       <div>
         <Banner tone={view.tone === 'bad' ? 'warn' : 'ok'} title={`${view.label}.`}>
           {view.help}{' '}
+          {reasonText(result.reason) ? <>{reasonText(result.reason)} </> : null}
           {result.runId ? <Link to={`/runs/${result.runId}`}>Open the run</Link> : null}
         </Banner>
         <Button onClick={onClose}>Close</Button>
