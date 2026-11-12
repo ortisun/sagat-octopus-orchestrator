@@ -16,6 +16,7 @@ pub mod lake_lease;
 pub mod lake_probe_input;
 pub mod lake_result;
 mod output;
+mod poll_order;
 mod scoped;
 mod scoped_capabilities;
 mod scoped_claims;
@@ -25,6 +26,7 @@ mod secret_resolution;
 mod secrets;
 use claim_counters::{ClaimProgress, count_claim};
 pub use output::BlobOutput;
+use poll_order::{PollsInFlight, start_past};
 use secrets::SecretReport;
 
 use std::future::Future;
@@ -587,6 +589,8 @@ pub struct WorkerService<S, C, E, R> {
     /// Rebuilds the receipt of a lake step; without it a lake step cannot be completed (feature 035, D035-142).
     lake_receipts: Option<Arc<dyn crate::database::LakeReceiptCodec>>,
     lake_probes: Option<Arc<dyn crate::database::LakeProbeCodec>>,
+    /// The polls of each namespace in flight in this process, shared by every clone (design 038).
+    polls_in_flight: Arc<PollsInFlight>,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -602,7 +606,7 @@ where
     E: ExpressionEvaluator,
     R: Entropy,
 {
-    pub const fn new(
+    pub fn new(
         store: S,
         clock: C,
         engine: Engine<E>,
@@ -621,6 +625,7 @@ where
             database_results: None,
             lake_receipts: None,
             lake_probes: None,
+            polls_in_flight: Arc::default(),
         }
     }
 
@@ -969,6 +974,13 @@ where
                 },
             )
             .await?;
+        // Polls of the namespace in flight together start at different points of the window; a poll
+        // alone keeps the scan's order. Only the eligible candidates turn: the ineligible sample stays
+        // behind every one of them (ADR-0075 activation condition d). The turn ends with the poll.
+        let turn = self
+            .polls_in_flight
+            .enter(session.tenant_id, session.namespace_id);
+        start_past(&mut candidates, turn.ahead, wanted as usize);
         if self.child_root_capacity_guard {
             // Behind every eligible candidate, never ahead of one (ADR-0075 activation condition d).
             let refused = self

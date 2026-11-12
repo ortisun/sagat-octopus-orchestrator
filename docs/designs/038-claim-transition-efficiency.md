@@ -72,8 +72,8 @@ The counts above do not depend on the machine's load; the rates do, and are stat
   statement after the run lock is granted, and no projection load.
 - **FR-038-003** A poll MUST stop at the first candidate that proves the session can take nothing more.
 - **FR-038-004** Concurrent pollers MUST NOT all try the fetched window in the same order. The order a
-  poll tries it in is a preference derived from a value the server holds for the session and the client
-  does not choose per request; it never removes a candidate. A lone poller MUST be served in `ready_at`
+  poll tries it in is a preference derived from a value the server holds and the client does not choose
+  per request; it never removes a candidate. A lone poller MUST be served in `ready_at`
   order, and every poll MUST still have the oldest ready step of each of its activities in its window.
 - **FR-038-005** A command MUST NOT run a projection load for a kind of state its run cannot have. The
   decision MUST come from a fact that is true by construction and checked by a test; when it is unknown
@@ -189,9 +189,12 @@ where it adds a statement (FR-038-002), as ADR-0078's open item asks.
    the kind follows from it, and a property test that no row of a kind exists for a run the predicate
    excludes, operator commands, cancellation and timeouts included. A kind whose rows can come from
    elsewhere (a parent, a legacy row, a continuation policy) is always loaded.
-9. **Window order** (FR-038-004). The application tries the fetched window from an offset derived from
-   the session's server-side id, wrapping, so no candidate is removed; the scan and its `ready_at` order
-   are unchanged. After k consecutive skipped candidates a poll fetches again instead of walking on.
+9. **Window order** (FR-038-004). The application tries the fetched window from an offset, wrapping, so
+   no candidate is removed; the scan and its `ready_at` order are unchanged. The offset is the poll's turn
+   among the polls of its namespace in flight in the process, times what each asks for: a poll alone has
+   turn 0 and keeps the oldest-first order, which an offset from the session's id would not (it would
+   start a lone worker anywhere). The turn is per process, so polls in different API replicas can still
+   collide. Fetching again after k consecutive skipped candidates is not built.
 10. **Selector rule** (FR-038-008) in `scripts/select-test-targets.py`, with a negative fixture. The budget tests move to a
     target of their own, `integration_claim_transition_efficiency`, so that what such a pull request runs is the budget and
     not a five-minute suite; the rule needs constitution 4.4.0 (CI gates).
