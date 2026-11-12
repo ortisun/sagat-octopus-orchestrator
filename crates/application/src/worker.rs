@@ -1024,6 +1024,10 @@ where
         let mut bytes = 0usize;
         let mut failures = 0u8;
         let mut first_error = None;
+        // Set by a claim that found, under the locks a drain and a session replacement wait for,
+        // that this session can take nothing more. The rest of the window would find the same,
+        // each candidate at the cost of loading its run.
+        let mut session_full = false;
         for (run, path) in candidates {
             let remaining = wanted - claimed.len();
             if remaining == 0 || bytes >= byte_budget {
@@ -1040,10 +1044,16 @@ where
                     byte_budget,
                     trace_id,
                     &mut bytes,
+                    &mut session_full,
                 )
                 .await
             {
-                Ok(tasks) => claimed.extend(tasks),
+                Ok(tasks) => {
+                    claimed.extend(tasks);
+                    if session_full {
+                        break;
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(%error, %run, "leasing the steps of a run failed");
                     let down = matches!(error, AppError::Unavailable);
@@ -1073,6 +1083,7 @@ where
         byte_budget: usize,
         trace_id: Option<&str>,
         bytes: &mut usize,
+        session_full: &mut bool,
     ) -> Result<Vec<ClaimedTask>, AppError>
     where
         S: PathExecutionStore,
@@ -1103,6 +1114,7 @@ where
         // made again here, under the lock a drain waits for, so a drain that has returned has
         // stopped every poll that had not leased yet.
         if tx.worker_drained(&session.subject).await? {
+            *session_full = true;
             return Ok(Vec::new());
         }
         let room = tx
@@ -1110,6 +1122,9 @@ where
             .await?;
         let remaining = remaining.min(room as usize);
         if remaining == 0 {
+            // The session holds all it declared (or is gone): decided under its row lock, and true
+            // of every other candidate of this poll.
+            *session_full = true;
             return Ok(Vec::new());
         }
         // Candidate selection is only a bounded hint. Recheck catalog-backed capability needs
