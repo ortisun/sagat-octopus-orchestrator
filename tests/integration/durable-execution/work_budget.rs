@@ -52,6 +52,59 @@ async fn work(w: &World) -> Work {
     }
 }
 
+/// `pg_stat_statements` keeps a bounded number of entries for the whole server and throws the
+/// least used away when it is full, which restarts their counts. Every test database adds entries,
+/// so in a suite that happens all the time. A window in which it happened measured nothing.
+#[derive(Debug)]
+struct Evicted;
+
+async fn evictions(w: &World) -> i64 {
+    sqlx::query_scalar("SELECT dealloc FROM pg_stat_statements_info")
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("eviction counter")
+}
+
+/// A reading that opens a window.
+struct Reading {
+    work: Work,
+    evictions: i64,
+}
+
+async fn reading(w: &World) -> Reading {
+    let evictions = evictions(w).await;
+    Reading {
+        work: work(w).await,
+        evictions,
+    }
+}
+
+/// What ran since `before`, unless an eviction fell in the window.
+async fn spent(w: &World, before: Reading) -> Result<Work, Evicted> {
+    let after = work(w).await;
+    if evictions(w).await == before.evictions {
+        Ok(after - before.work)
+    } else {
+        Err(Evicted)
+    }
+}
+
+/// Runs a measured scenario again, in a world of its own, while an eviction spoils it.
+macro_rules! measured {
+    ($(#[$doc:meta])* $name:ident, $once:ident) => {
+        $(#[$doc])*
+        #[tokio::test]
+        async fn $name() {
+            for _ in 0..8 {
+                if $once().await.is_ok() {
+                    return;
+                }
+            }
+            panic!("pg_stat_statements evicted entries during every one of eight attempts");
+        }
+    };
+}
+
 /// Calls per statement so far, for the message of a failed budget: it names what was added.
 async fn calls(w: &World) -> BTreeMap<String, i64> {
     let rows: Vec<(String, i64)> = sqlx::query_as(
@@ -101,22 +154,22 @@ async fn one_run(
     w: &World,
     workflow: sagat_domain::definition::WorkflowId,
     session: &crate::support::engine::Session,
-) -> [Work; 6] {
+) -> Result<[Work; 6], Evicted> {
     w.start(workflow, &json!({})).await;
     let mut costs = Vec::with_capacity(6);
     for _ in 0..3 {
-        let before = work(w).await;
+        let before = reading(w).await;
         let mut tasks = w.poll(session, 1).await;
-        costs.push(work(w).await - before);
+        costs.push(spent(w, before).await?);
         assert_eq!(tasks.len(), 1, "the next step of the chain is leased");
         let task = tasks.remove(0);
-        let before = work(w).await;
+        let before = reading(w).await;
         w.complete(session, &task, &json!({}))
             .await
             .expect("completed");
-        costs.push(work(w).await - before);
+        costs.push(spent(w, before).await?);
     }
-    costs.try_into().expect("six commands")
+    Ok(costs.try_into().expect("six commands"))
 }
 
 const fn cost(statements: i64, transactions: i64, rows_written: i64) -> Work {
@@ -132,8 +185,7 @@ const LEASE: Work = cost(42, 2, 5);
 const COMPLETION_WITH_A_NEXT_STEP: Work = cost(54, 1, 11);
 const COMPLETION_THAT_ENDS_THE_RUN: Work = cost(51, 1, 9);
 
-#[tokio::test]
-async fn a_lease_and_a_completion_cost_what_the_budget_says() {
+async fn a_lease_and_a_completion_cost_what_the_budget_says_once() -> Result<(), Evicted> {
     let w = world().await;
     sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
         .execute(&w.db.pool)
@@ -152,9 +204,9 @@ async fn a_lease_and_a_completion_cost_what_the_budget_says() {
         .await;
     let session = w.session(&["act.a", "act.b", "act.c"]).await;
     // The first run pays for what is cached afterwards (the definition, prepared statements).
-    one_run(&w, workflow, &session).await;
-    let first = one_run(&w, workflow, &session).await;
-    let second = one_run(&w, workflow, &session).await;
+    one_run(&w, workflow, &session).await?;
+    let first = one_run(&w, workflow, &session).await?;
+    let second = one_run(&w, workflow, &session).await?;
     assert_eq!(first, second, "the counts of a quiet database do not vary");
     let [lease_a, done_a, lease_b, done_b, lease_c, done_c] = first;
     if (lease_a, lease_b, lease_c) != (LEASE, LEASE, LEASE)
@@ -171,7 +223,13 @@ async fn a_lease_and_a_completion_cost_what_the_budget_says() {
             itemised(&w, workflow, &session).await
         );
     }
+    Ok(())
 }
+
+measured!(
+    a_lease_and_a_completion_cost_what_the_budget_says,
+    a_lease_and_a_completion_cost_what_the_budget_says_once
+);
 
 /// Sets the stored kind of the one step row of `run` at `node`, as the owner.
 async fn store_kind(w: &World, run: sagat_domain::execution::RunId, node: &str, kind: &str) {
@@ -253,8 +311,7 @@ async fn a_legacy_step_is_given_its_kind_by_the_first_write() {
 
 /// A session that holds all it declared can take nothing more, whatever is ready: its poll ends
 /// at the first candidate that shows it, and costs the same with one run waiting as with four.
-#[tokio::test]
-async fn a_poll_of_a_full_session_does_not_walk_its_window() {
+async fn a_poll_of_a_full_session_does_not_walk_its_window_once() -> Result<(), Evicted> {
     let w = world().await;
     sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
         .execute(&w.db.pool)
@@ -271,20 +328,290 @@ async fn a_poll_of_a_full_session_does_not_walk_its_window() {
     );
     // Once more, so that both measurements below run with everything cached.
     assert!(w.poll(&session, 8).await.is_empty());
-    let before = work(&w).await;
+    let before = reading(&w).await;
     assert!(
         w.poll(&session, 8).await.is_empty(),
         "no room, nothing leased"
     );
-    let one_waiting = work(&w).await - before;
+    let one_waiting = spent(&w, before).await?;
     for _ in 0..3 {
         w.start(workflow, &json!({})).await;
     }
-    let before = work(&w).await;
+    let before = reading(&w).await;
     assert!(w.poll(&session, 8).await.is_empty(), "still no room");
-    let four_waiting = work(&w).await - before;
+    let four_waiting = spent(&w, before).await?;
     assert_eq!(
         one_waiting, four_waiting,
         "a full session pays for one candidate, not for every run that is ready"
+    );
+    Ok(())
+}
+
+measured!(
+    a_poll_of_a_full_session_does_not_walk_its_window,
+    a_poll_of_a_full_session_does_not_walk_its_window_once
+);
+
+/// A candidate is read by a poll before it is claimed. When its step has been taken in between,
+/// opening it for a claim costs the chain lookup and one read of the run row, and loads nothing.
+async fn a_candidate_with_no_ready_step_is_dropped_before_its_run_is_loaded_once()
+-> Result<(), Evicted> {
+    use sagat_application::runs::{Lock, RunStore};
+    let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("the test PostgreSQL preloads pg_stat_statements");
+    let workflow = one_activity(&w, "stale-candidate").await;
+    let session = w.session(&["act.a"]).await;
+    let taken = w.start(workflow, &json!({})).await;
+    assert_eq!(
+        w.poll(&session, 1).await.len(),
+        1,
+        "its only step is leased"
+    );
+    let ready = w.start(workflow, &json!({})).await;
+    let tenant = w.admin.tenant_id();
+    // Once before measuring, so that the statements are prepared.
+    assert!(
+        w.store
+            .begin(tenant, taken, Lock::Claim)
+            .await
+            .expect("opened")
+            .is_none()
+    );
+    let before = reading(&w).await;
+    let opened = w
+        .store
+        .begin(tenant, taken, Lock::Claim)
+        .await
+        .expect("opened");
+    let cost = spent(&w, before).await?;
+    assert!(
+        opened.is_none(),
+        "a run with nothing ready is not opened for a claim"
+    );
+    assert_eq!(
+        cost,
+        cost_of(2, 1, 0),
+        "the chain lookup and the run row, in one transaction"
+    );
+    assert!(
+        w.store
+            .begin(tenant, ready, Lock::Claim)
+            .await
+            .expect("opened")
+            .is_some(),
+        "a run with a ready step is opened"
+    );
+    assert!(
+        w.store
+            .begin(tenant, taken, Lock::SkipLocked)
+            .await
+            .expect("opened")
+            .is_some(),
+        "and any run still opens for a command that is not a claim"
+    );
+    Ok(())
+}
+
+measured!(
+    a_candidate_with_no_ready_step_is_dropped_before_its_run_is_loaded,
+    a_candidate_with_no_ready_step_is_dropped_before_its_run_is_loaded_once
+);
+
+const fn cost_of(statements: i64, transactions: i64, rows_written: i64) -> Work {
+    cost(statements, transactions, rows_written)
+}
+
+/// How many times the step rows of a run were loaded for a command, so far.
+async fn run_loads(w: &World) -> i64 {
+    calls(w)
+        .await
+        .into_iter()
+        .filter(|(query, _)| {
+            query.starts_with("SELECT node, instance_path_nodes, instance_path_indices, status")
+        })
+        .map(|(_, count)| count)
+        .sum()
+}
+
+/// The same through two polls. Worker A reads two candidates and is held while it leases the
+/// first; worker B leases the second meanwhile. When A goes on, its second candidate is stale:
+/// it drops it without loading the run. Three loads would mean the claim opened it as before.
+async fn a_poll_does_not_load_a_run_another_worker_emptied_meanwhile_once() -> Result<(), Evicted> {
+    let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("the test PostgreSQL preloads pg_stat_statements");
+    let workflow = one_activity(&w, "emptied-meanwhile").await;
+    let a = w.session(&["act.a"]).await;
+    let b = w.session(&["act.a"]).await;
+    // Both polls once on a run of their own, so that nothing below is a first execution.
+    for session in [&a, &b] {
+        w.start(workflow, &json!({})).await;
+        assert_eq!(w.poll(session, 1).await.len(), 1);
+    }
+    // The barrier: A's lease, and only A's, waits for this lock as it is written.
+    sqlx::query("CREATE TABLE held_worker (worker text NOT NULL)")
+        .execute(&w.db.pool)
+        .await
+        .expect("barrier target");
+    sqlx::query("INSERT INTO held_worker VALUES ($1)")
+        .bind(a.worker_id.to_string())
+        .execute(&w.db.pool)
+        .await
+        .expect("A is the one held");
+    sqlx::query("GRANT SELECT ON held_worker TO PUBLIC")
+        .execute(&w.db.pool)
+        .await
+        .expect("readable by the runtime role");
+    sqlx::query(
+        "CREATE FUNCTION hold_a_lease() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+           IF OLD.status = 'READY' AND NEW.status = 'LEASED' \
+              AND NEW.leased_by = (SELECT worker FROM held_worker) THEN \
+             PERFORM pg_advisory_xact_lock_shared(910380006); END IF; RETURN NEW; END $$",
+    )
+    .execute(&w.db.pool)
+    .await
+    .expect("barrier function");
+    sqlx::query("CREATE TRIGGER hold_a_lease BEFORE UPDATE ON steps FOR EACH ROW EXECUTE FUNCTION hold_a_lease()")
+        .execute(&w.db.pool)
+        .await
+        .expect("barrier trigger");
+    let mut barrier = w.db.pool.begin().await.expect("barrier");
+    sqlx::query("SELECT pg_advisory_xact_lock(910380006)")
+        .execute(&mut *barrier)
+        .await
+        .expect("hold the barrier");
+    w.start(workflow, &json!({})).await;
+    w.start(workflow, &json!({})).await;
+    let evictions_before = evictions(&w).await;
+    let before = run_loads(&w).await;
+    let poll_a = w.workers.poll(&a.principal, a.worker_id, &a.token, 2, None);
+    tokio::pin!(poll_a);
+    let held =
+        crate::support::eventually("A is held while it leases its first candidate", || async {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
+               AND objid = 910380006 AND database = (SELECT oid FROM pg_database \
+               WHERE datname = current_database()))",
+            )
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("observe the barrier");
+            waiting.then_some(())
+        });
+    tokio::select! {
+        result = &mut poll_a => panic!("A passed the barrier: {result:?}"),
+        () = held => {}
+    }
+    let taken_by_b = w.poll(&b, 1).await;
+    assert_eq!(
+        taken_by_b.len(),
+        1,
+        "B skips the run A holds and leases the other"
+    );
+    barrier.commit().await.expect("release A");
+    let taken_by_a = poll_a.await.expect("A's poll");
+    assert_eq!(
+        taken_by_a.len(),
+        1,
+        "A leases the run it held and nothing else"
+    );
+    assert_ne!(taken_by_a[0].run_id, taken_by_b[0].run_id);
+    let loads = run_loads(&w).await - before;
+    if evictions(&w).await != evictions_before {
+        return Err(Evicted);
+    }
+    assert_eq!(
+        loads, 2,
+        "one load for each lease; the candidate B emptied is dropped unloaded"
+    );
+    Ok(())
+}
+
+measured!(
+    a_poll_does_not_load_a_run_another_worker_emptied_meanwhile,
+    a_poll_does_not_load_a_run_another_worker_emptied_meanwhile_once
+);
+
+/// What the drop does not cover: any ready step keeps the run open, also one that is not for
+/// this worker. The run is loaded and nothing is leased, as before.
+#[tokio::test]
+async fn a_run_whose_ready_step_is_for_another_activity_is_still_opened() {
+    use sagat_application::runs::{Lock, RunStore};
+    let w = world().await;
+    let (workflow, _) = w
+        .publish(document(
+            "other-activity",
+            "fork",
+            vec![
+                json!({"id":"fork","type":"parallel","branches":["a","b"],"join":"all"}),
+                activity("a"),
+                activity("b"),
+            ],
+        ))
+        .await;
+    let run = w.start(workflow, &json!({})).await;
+    let only_a = w.session(&["act.a"]).await;
+    assert_eq!(
+        w.poll(&only_a, 2).await.len(),
+        1,
+        "a is leased, b stays ready"
+    );
+    assert!(
+        w.store
+            .begin(w.admin.tenant_id(), run, Lock::Claim)
+            .await
+            .expect("opened")
+            .is_some(),
+        "a ready step of another activity keeps the run open for a claim"
+    );
+    assert!(
+        w.poll(&only_a, 2).await.is_empty(),
+        "and nothing of it is leased to this worker"
+    );
+}
+
+/// A step made ready by a transaction that has not committed is not there yet for a claim, and
+/// is there once it has.
+#[tokio::test]
+async fn a_claim_sees_a_ready_step_only_once_it_is_committed() {
+    use sagat_application::runs::{Lock, RunStore};
+    let w = world().await;
+    let workflow = one_activity(&w, "ready-uncommitted").await;
+    let session = w.session(&["act.a"]).await;
+    let run = w.start(workflow, &json!({})).await;
+    assert_eq!(
+        w.poll(&session, 1).await.len(),
+        1,
+        "its only step is leased"
+    );
+    let tenant = w.admin.tenant_id();
+    let mut writer = w.db.pool.begin().await.expect("writer");
+    sqlx::query("UPDATE steps SET status = 'READY', lease_token_hash = NULL, lease_expires_at = NULL, leased_by = NULL, ready_at = clock_timestamp() WHERE tenant_id = $1 AND run_id = $2")
+        .bind(tenant.as_uuid())
+        .bind(run.as_uuid())
+        .execute(&mut *writer)
+        .await
+        .expect("make the step ready, uncommitted");
+    assert!(
+        w.store
+            .begin(tenant, run, Lock::Claim)
+            .await
+            .expect("opened")
+            .is_none(),
+        "not ready for anyone else yet"
+    );
+    writer.commit().await.expect("committed");
+    assert!(
+        w.store
+            .begin(tenant, run, Lock::Claim)
+            .await
+            .expect("opened")
+            .is_some(),
+        "ready once committed"
     );
 }

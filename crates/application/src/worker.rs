@@ -1088,13 +1088,10 @@ where
     where
         S: PathExecutionStore,
     {
-        let mut tx = match self
-            .store
-            .begin(session.tenant_id, run, Lock::SkipLocked)
-            .await
-        {
+        let mut tx = match self.store.begin(session.tenant_id, run, Lock::Claim).await {
             Ok(Some(tx)) => tx,
-            Ok(None) => return Ok(Vec::new()), // locked by someone else, or gone
+            // Locked by someone else, gone, or without a ready step by now.
+            Ok(None) => return Ok(Vec::new()),
             // A run pinned to a definition this build cannot read (a rolled-back build meeting a
             // newer run) is not this poll's to serve and is not damaged. It is skipped for this
             // poll, counted and logged, and does not use up the failures the poll tolerates, so
