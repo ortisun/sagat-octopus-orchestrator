@@ -11,8 +11,10 @@
 Six independent reads ran in parallel: the durable execution core, scalability and performance, resilience, the
 Windmill-side product surface, the delivery ledger, and a web baseline of Temporal, Windmill and neighbouring engines.
 
-- Nothing was compiled, run or measured. "Built" means the code and its tests exist, not that they were seen passing.
-- Performance figures for this platform come from `tests/performance/reports/`, not from new measurements.
+- Nothing was compiled or run for the six reads. "Built" means the code and its tests exist, not that they were seen
+  passing.
+- Performance figures for this platform come from `tests/performance/reports/`, except the rerun of the transitions
+  scenario recorded under "Rerun on current develop" below.
 - Competitor figures are vendor claims unless marked otherwise.
 - Confirmed a second time in code after the reads: the run-row lock and full step load per command
   (`crates/infra-postgres/src/execution.rs`, `RUN_FOR_UPDATE`), the refusal of a signal sent to a run that is not
@@ -20,8 +22,8 @@ Windmill-side product surface, the delivery ledger, and a web baseline of Tempor
   claim path (`crates/infra-postgres/src/quotas.rs`, `lock_activity`), the absence of table partitioning in the
   migrations, the polled dispatch (`idle_retry` in `crates/api-grpc/src/service.rs`) and the benchmark figures.
 - Reported by one reader and not confirmed a second time: the count of about 30 database round trips per
-  transition, that no component subscribes to the broker hints, that the advisory lock is taken when no quota is
-  configured, and the "not found" results for a general serialization-failure retry and a stuck-run detector.
+  transition, that no component subscribes to the broker hints, and the "not found" results for a general
+  serialization-failure retry and a stuck-run detector.
 - There is no file called "master prompt" in the repository. The original specification package (commit `140b03f8`),
   [constitution.md](constitution.md), `AGENTS.md` and `SPECIFICATION-INDEX.md` were read in that role.
 
@@ -100,6 +102,31 @@ marks Go and Java scripts as not built although the backend accepts them. No sin
   The figure is stale.
 - One million suspended runs were measured, at about 2.8 KB each and a flat idle scheduler tick.
 
+### Rerun on current develop (2026-11-11)
+
+The transitions scenario alone was run again with `tests/performance/scalability-ha/run.sh` on the same machine
+(Apple M3 Max, PostgreSQL 18.6, same server configuration), at `develop` `ed11d044` plus documentation commits. The
+load average was 27 when it began (12 in October), so absolute figures are noisy; the wait profile is not.
+
+| API replicas | Workers | October, transitions/s | Now, transitions/s | Now, share of active backends waiting on `Lock:advisory` |
+|---:|---:|---:|---:|---:|
+| 1 | 4 | 1,444 | 363 | 62% |
+| 1 | 16 | 1,513 | 368 | 92% |
+| 1 | 64 | 1,014 | 302 | 90% |
+| 1 | 128 | 829 | 288 | 89% |
+| 2 | 64 | 907 | 230 | 96% |
+| 2 | 128 | 663 | 272 | 95% |
+| 4 | 64 | 746 | 358 | 98% |
+| 4 | 128 | 696 | 200 | 98% |
+| 8 | 128 | 514 | 171 | 98% |
+
+The best figure fell from 1,513 to 368 transitions per second, and 1,000 per second is no longer reached. In October
+no backend waited on an advisory lock. The only exclusive advisory lock on the claim and completion path is the
+per-activity one of `activity_admitted` (`crates/infra-postgres/src/quotas.rs`), added on 2026-10-12 by `ee2063a0`,
+the day after the October measurement. It is taken on every lease although the default limit is `MAX_LIMIT`, so a
+namespace with no configured limit pays a mutex per activity to enforce a bound it cannot reach. That the lock is the
+cause is an inference from the wait profile and the dates; it is proven only when the fix is measured.
+
 ### Numbers to beat
 
 | Reference | Figure | Kind |
@@ -132,7 +159,7 @@ Nobody publishes crash-recovery times. Measuring and publishing them is an openi
 |---|---|
 | Load a run in one statement, batch journal inserts, skip loads the definition does not need | no spec |
 | Claim simple root steps with one `UPDATE ... FOR UPDATE SKIP LOCKED` over a lean queue table | no spec |
-| Take the activity lock only when a limit is configured, or count with slotted counters | no spec |
+| Serialise the leases of an activity only when its effective limit is bounded; a default (`MAX_LIMIT`) limit needs a fence against a policy change, not a mutex or a count | no spec |
 | Wake parked streams on commit; return the next ready step in the completion response | no spec |
 | Partition `run_events` and `payloads`; retention and archival | 020 covers retention, not partitioning |
 | A statement-count and throughput budget as a CI regression gate | no spec |
