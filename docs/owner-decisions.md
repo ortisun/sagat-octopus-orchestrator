@@ -4,6 +4,22 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-12 — Design 038 (claim and transition efficiency) accepted for implementation
+
+The assistant measured the transitions scenario on `develop` (368 transitions per second against 1,513 on 2026-10-11),
+removed two advisory-lock mutexes (pull request 203, 763 afterwards on a busy machine) and profiled what remains: 34 probe
+transactions and 7.5 full run loads per lease. It drafted [038-claim-transition-efficiency.md](designs/038-claim-transition-efficiency.md)
+(pull request 204), said it was new scope and asked "Aceita o desenho 038 (PR 204) para implementação?".
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-12-1 | "Aceito, implementar" | owner | Decided; not built | docs/designs/038-claim-transition-efficiency.md |
+
+Read as the answer to the question asked and no more. It does not answer the design's second owner question, whether a
+bounded departure from oldest-first claiming is acceptable (FR-038-003, task T038-6): that task waits for it. It does not
+make the design `Approved` either: `egm-review` and the architecture, security and correctness reviews still have to end
+with no Blocker or Major finding open.
+
 ## 2026-11-10 — A plain-`http` storage or token endpoint is a development allowance that the host and the runner honour (O035-010)
 
 The assistant asked the owner in the Claude session which layer owns the allowance, with three options (specs/035-iceberg-write-steps/research.md, G035-095): (a) a TLS front for the fixtures and a CA the host
