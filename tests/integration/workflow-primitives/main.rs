@@ -76,6 +76,7 @@ mod release_upgrade_inflight;
 mod scope_compensation_http;
 mod scope_frontier;
 mod scoped_blob_completion;
+mod scoped_node_kind;
 mod scoped_worker;
 mod security;
 mod switch_storage;
