@@ -667,6 +667,25 @@ fn check(h: &Harness, terminal_seen: &mut BTreeMap<NodeId, StepStatus>) {
 
 /// What must hold for every saga, whatever happened.
 fn check_sagas(h: &Harness) {
+    // A kind of projected state exists only for a definition that says it can: the store leaves the
+    // others unread on that word (`WorkflowDefinition::projected_state`).
+    let kinds = h.def.projected_state();
+    assert!(
+        kinds.sagas || h.state.sagas().next().is_none(),
+        "saga state without a saga node"
+    );
+    assert!(
+        kinds.collections || h.state.collections().next().is_none(),
+        "collection state without a forEach node"
+    );
+    assert!(
+        kinds.loops || h.state.loops().next().is_none(),
+        "loop state without a while or repeatUntil node"
+    );
+    assert!(
+        kinds.scope_sagas() || h.state.scope_sagas().next().is_none(),
+        "scope compensation state without a scope"
+    );
     for (saga_node, saga) in h.state.sagas() {
         let step = h.state.step(saga_node).expect("a saga has a step");
         match saga.phase() {

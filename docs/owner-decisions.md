@@ -41,6 +41,30 @@ second draft, which renumbered them after the reviews; it also asks whether the 
 that change the hot path, T038-10). It does not
 make the design `Approved` either: `egm-review` and the architecture, security and correctness reviews still have to end
 with no Blocker or Major finding open.
+## 2026-11-11 — Drafts 019 to 032 and 036 approved for implementation
+
+The assistant had presented an assessment of the distance to Temporal and Windmill
+([roadmap-assessment-2026-11-11.md](roadmap-assessment-2026-11-11.md)) and said that drafts 019 to 032 and 036 needed the
+owner's explicit approval before anything of theirs was built. The owner answered in the Claude session.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-11-1 | "Aprovo os rascunhos 019–032 e 036, pode implementar" | owner | Decided; not built | specs/019-worker-deployments-dispatch to specs/032-multi-region-failover, specs/036-elastic-scaling, docs/roadmap.md |
+
+Read narrowly, which is the assistant's reading and the owner can widen it: the fifteen specifications may be implemented,
+in the order the assessment recommends unless the owner names another. The sentence does not by itself:
+
+- accept the proposed ADRs of those features (ADR-0051 to ADR-0068, ADR-0072 to ADR-0074): the ADR rules say a person
+  accepts each one, and the assistant asks when the first task that depends on one is reached;
+- answer the open owner questions of each feature (among them O1081 on `pii` leaving the platform, O1360 on the app
+  builder, O1700 to O1702, O1704 and O1710 of 036), which keep their recommended default as a proposal until answered;
+- amend the constitution, which 032 needs (O1560: the Delivery Constraints fix a single region) and 020 needs for
+  retention under principle I;
+- tick the `checklists/*.md` items of a feature, which block its implementation until the owner accepts them
+  (OD-2026-11-03-33).
+
+It unblocks the 018 tasks that waited for 019, 020 and 022 to be approved (T018-037's permit, T018-051, T018-053's permit,
+T018-055, T018-077, T018-079) as far as approval was what held them; they still need those features built.
 
 ## 2026-11-10 — A plain-`http` storage or token endpoint is a development allowance that the host and the runner honour (O035-010)
 

@@ -50,8 +50,14 @@ pub const NO_PUBLISHED_VERSION: &str = "the workflow has no published version";
 pub enum Lock {
     /// Wait for the run's row lock (API commands, timers).
     Wait,
-    /// Give up at once when another transaction holds it (workers polling for tasks).
+    /// Give up at once when another transaction holds it.
     SkipLocked,
+    /// A worker's claim: give up at once when another transaction holds the run, and also when the
+    /// run has no ready step, which a candidate read a moment ago may no longer have. Nothing is
+    /// loaded for either. Any ready step keeps the run open, whatever its activity or path, so a
+    /// run whose ready steps are not for this worker is still loaded to find that out. A scoped
+    /// path is opened as with [`Lock::SkipLocked`].
+    Claim,
 }
 
 /// A run about to be created.
@@ -249,8 +255,8 @@ pub trait RunStore:
         revision: Option<u32>,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
-    /// Opens a run for a command. `None` when it does not exist (or, with
-    /// [`Lock::SkipLocked`], when another transaction holds it).
+    /// Opens a run for a command. `None` when it does not exist, when another transaction holds it
+    /// ([`Lock::SkipLocked`], [`Lock::Claim`]) or when it has no ready step ([`Lock::Claim`]).
     fn begin(
         &self,
         tenant: TenantId,

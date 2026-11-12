@@ -111,7 +111,11 @@ Run statuses are `RUNNING`, `WAITING`, `PAUSED`, `CANCELLING`, `COMPENSATING`, `
 
 Unary polling and protocol 1.4 task streams use the same durable claim transaction. Its lock order
 is the run row, the shared worker-drain fence, the worker-session row, then the sorted activity
-policy/quota locks. The session row is held through commit while the transaction rechecks its
+policy/quota locks (per activity: the shared policy fences, the activity's shared fence, and its
+exclusive count lock when the effective limit is between 1 and the maximum). The authority check
+of an ordinary worker's report shares the namespace's secrets lock, which catalog mutations hold
+exclusively, before it locks its membership row; a transaction that shares it never asks for it
+exclusively afterwards (`crates/infra-postgres/src/quotas.rs`, `secrets_lock_rule`). The session row is held through commit while the transaction rechecks its
 current token hash, tenant, namespace, subject, expiry and `max_inflight`, counts durable active
 leases and checks the current activity bindings. Earlier claims in the same transaction consume
 capacity too. A prior standalone in-flight count is only an optimization.

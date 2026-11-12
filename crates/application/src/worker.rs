@@ -8,6 +8,7 @@
 //! [`AppError::StaleAttempt`] and changes nothing, although the external effect it describes may
 //! have happened (hence idempotency keys).
 
+mod claim_counters;
 mod database;
 mod lake_complete;
 pub mod lake_input;
@@ -22,6 +23,7 @@ mod scoped_output_refusal;
 mod scoped_reports;
 mod secret_resolution;
 mod secrets;
+use claim_counters::{ClaimProgress, count_claim};
 pub use output::BlobOutput;
 use secrets::SecretReport;
 
@@ -1024,11 +1026,19 @@ where
         let mut bytes = 0usize;
         let mut failures = 0u8;
         let mut first_error = None;
+        // Set by a claim that found, under the locks a drain and a session replacement wait for,
+        // that this session can take nothing more. The rest of the window would find the same,
+        // each candidate at the cost of loading its run.
+        let mut progress = ClaimProgress::default();
+        let fetched = candidates.len() as u64;
+        let already = claimed.len();
+        let mut probed = 0u64;
         for (run, path) in candidates {
             let remaining = wanted - claimed.len();
             if remaining == 0 || bytes >= byte_budget {
                 break;
             }
+            probed += 1;
             match self
                 .claim_run(
                     principal,
@@ -1040,10 +1050,16 @@ where
                     byte_budget,
                     trace_id,
                     &mut bytes,
+                    &mut progress,
                 )
                 .await
             {
-                Ok(tasks) => claimed.extend(tasks),
+                Ok(tasks) => {
+                    claimed.extend(tasks);
+                    if progress.session_full {
+                        break;
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(%error, %run, "leasing the steps of a run failed");
                     let down = matches!(error, AppError::Unavailable);
@@ -1055,6 +1071,12 @@ where
                 }
             }
         }
+        count_claim(
+            fetched,
+            probed,
+            progress.opened,
+            (claimed.len() - already) as u64,
+        );
         match first_error {
             Some(error) if claimed.is_empty() => Err(error),
             _ => Ok(()),
@@ -1073,17 +1095,15 @@ where
         byte_budget: usize,
         trace_id: Option<&str>,
         bytes: &mut usize,
+        progress: &mut ClaimProgress,
     ) -> Result<Vec<ClaimedTask>, AppError>
     where
         S: PathExecutionStore,
     {
-        let mut tx = match self
-            .store
-            .begin(session.tenant_id, run, Lock::SkipLocked)
-            .await
-        {
+        let mut tx = match self.store.begin(session.tenant_id, run, Lock::Claim).await {
             Ok(Some(tx)) => tx,
-            Ok(None) => return Ok(Vec::new()), // locked by someone else, or gone
+            // Locked by someone else, gone, or without a ready step by now.
+            Ok(None) => return Ok(Vec::new()),
             // A run pinned to a definition this build cannot read (a rolled-back build meeting a
             // newer run) is not this poll's to serve and is not damaged. It is skipped for this
             // poll, counted and logged, and does not use up the failures the poll tolerates, so
@@ -1099,10 +1119,12 @@ where
             }
             Err(error) => return Err(error.into()),
         };
+        progress.opened += 1;
         // The identity may have been drained after the poll looked at its session: the check is
         // made again here, under the lock a drain waits for, so a drain that has returned has
         // stopped every poll that had not leased yet.
         if tx.worker_drained(&session.subject).await? {
+            progress.session_full = true;
             return Ok(Vec::new());
         }
         let room = tx
@@ -1110,6 +1132,9 @@ where
             .await?;
         let remaining = remaining.min(room as usize);
         if remaining == 0 {
+            // The session holds all it declared (or is gone): decided under its row lock, and true
+            // of every other candidate of this poll.
+            progress.session_full = true;
             return Ok(Vec::new());
         }
         // Candidate selection is only a bounded hint. Recheck catalog-backed capability needs
@@ -1327,9 +1352,10 @@ where
                     break;
                 }
             }
-            // The quota decision and READY -> LEASED transition share this run transaction. Its
-            // activity-scoped lock makes concurrent pollers exact; a full activity stays ready so
-            // this bounded candidate scan can still serve another activity.
+            // The quota decision and READY -> LEASED transition share this run transaction. A
+            // reachable limit is counted under the activity's count lock, which makes concurrent
+            // pollers exact; a full activity stays ready so this bounded candidate scan can still
+            // serve another activity. The default limit is not counted.
             if !tx.activity_admitted(&activity).await? {
                 metrics::counter!(
                     "quota_exceeded_total",

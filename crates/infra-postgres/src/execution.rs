@@ -137,6 +137,9 @@ pub struct PgRunStore {
     pub(crate) definitions: PgDefinitionStore,
     breaker: BreakerPolicy,
     pub(crate) scoped_worker_protocol: bool,
+    /// Reads the projections a definition excludes and refuses a run that has any, for a test run that
+    /// checks the exclusion against everything the suites do. Off: such a projection is not read.
+    verify_skipped_loads: bool,
     /// The deployment's `lake.enabled` (feature 035): whether a run may carry an Iceberg write. Off unless set.
     pub(crate) lake_enabled: bool,
 }
@@ -151,8 +154,17 @@ impl PgRunStore {
             cache,
             breaker: BreakerPolicy::default(),
             scoped_worker_protocol: false,
+            verify_skipped_loads: false,
             lake_enabled: false,
         }
+    }
+
+    /// Makes every command check that a projection its definition excludes is in fact empty. For
+    /// test runs: it costs a statement per command and refuses a run that fails it.
+    #[must_use]
+    pub const fn with_skipped_load_verification(mut self, verify: bool) -> Self {
+        self.verify_skipped_loads = verify;
+        self
     }
 
     /// Lets a run carry an Apache Iceberg write: the deployment's `lake.enabled`, off by default (D035-059, D035-137).
@@ -263,6 +275,9 @@ impl PgRunStore {
             Lock::SkipLocked => sqlx::query(RUN_FOR_UPDATE_SKIP_LOCKED)
                 .bind(tenant.as_uuid())
                 .bind(run.as_uuid()),
+            Lock::Claim => sqlx::query(RUN_FOR_CLAIM)
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid()),
         }
         .fetch_optional(&mut *tx)
         .await
@@ -295,15 +310,29 @@ impl PgRunStore {
         .map_err(store_error)?;
         let mut steps = BTreeMap::new();
         let mut stored = BTreeSet::new();
+        let mut stored_kinds = BTreeMap::new();
         for row in &step_rows {
             let node: String = col(row, "node")?;
             let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
             let path = step_instance_path(row)?;
             let instance = ExecutionInstanceId::in_path(path, node);
             stored.insert(instance.clone());
+            stored_kinds.insert(instance.clone(), col::<String>(row, "stored_node_kind")?);
             steps.insert(instance, step_state(row)?);
         }
-        let sagas = load_sagas(&mut tx, tenant, run).await?;
+        // The pinned definition says which kinds of state the run can have; the others are not read.
+        let definition = self
+            .definition(&mut tx, tenant, record.info.version_id)
+            .await?;
+        let kinds = definition.projected_state();
+        if self.verify_skipped_loads {
+            verify_excluded_projections(&mut tx, tenant, run, kinds).await?;
+        }
+        let sagas = if kinds.sagas {
+            load_sagas(&mut tx, tenant, run).await?
+        } else {
+            BTreeMap::new()
+        };
         let stop = match record.stop_reason {
             None => None,
             Some(reason) => Some((
@@ -323,12 +352,15 @@ impl PgRunStore {
             sagas,
             record.version,
         );
-        let definition = self
-            .definition(&mut tx, tenant, record.info.version_id)
-            .await?;
-        load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
-        load_loops(&mut tx, tenant, run, &mut state).await?;
-        load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
+        if kinds.collections {
+            load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
+        }
+        if kinds.loops {
+            load_loops(&mut tx, tenant, run, &mut state).await?;
+        }
+        if kinds.scope_sagas() {
+            load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
+        }
         load_chain(&mut tx, tenant, run, &mut state).await?;
         for row in &step_rows {
             let node = NodeId::parse_stored(&col::<String>(row, "node")?)
@@ -383,6 +415,7 @@ impl PgRunStore {
             data: None,
             input_digest,
             stored,
+            stored_kinds,
             timer_read_states,
             event_wait_read_states,
             breaker: self.breaker,
@@ -418,7 +451,7 @@ impl PgRunStore {
                 "SELECT namespace_id,current_run_id,revision,cancel_requested,final_outcome \
                            FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 FOR UPDATE"
             }
-            Lock::SkipLocked => {
+            Lock::SkipLocked | Lock::Claim => {
                 "SELECT namespace_id,current_run_id,revision,cancel_requested,final_outcome \
                                  FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 \
                                  FOR UPDATE SKIP LOCKED"
@@ -433,7 +466,7 @@ impl PgRunStore {
         let Some(row) = row else {
             return match lock {
                 Lock::Wait => Err(corrupt("chain membership without chain")),
-                Lock::SkipLocked => Ok(RunChainLock::Contended),
+                Lock::SkipLocked | Lock::Claim => Ok(RunChainLock::Contended),
             };
         };
         Ok(RunChainLock::Locked(LockedChainHead::restore(
@@ -500,6 +533,16 @@ impl PgRunStore {
             .map_err(|e| e.to_string())?
             .ok_or("the run does not exist")?;
         let stored = stored_tx.state.clone();
+        // The projection above was read without the kinds the definition excludes. Here that
+        // exclusion is part of what is verified: a row of such a kind is a difference too.
+        verify_excluded_projections(
+            &mut stored_tx.tx,
+            tenant,
+            run,
+            stored_tx.def.projected_state(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         let rows = sqlx::query(
             "SELECT seq, event_type, node, detail, instance_path_nodes, instance_path_indices \
              FROM run_events \
@@ -721,7 +764,7 @@ async fn lock_path_revision(
 ) -> Result<Option<u64>, StoreError> {
     let query = match lock {
         Lock::Wait => "SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
-        Lock::SkipLocked => {
+        Lock::SkipLocked | Lock::Claim => {
             "SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE SKIP LOCKED"
         }
     };
@@ -946,7 +989,11 @@ async fn current_worker_authorized(
     namespace: NamespaceId,
     subject: &str,
 ) -> Result<bool, StoreError> {
-    crate::quotas::lock_secrets(tx, tenant, namespace).await?;
+    // Every report and scoped claim of an ordinary worker passes here. It reads its membership under
+    // the row lock a revocation waits for, and takes the namespace's secrets lock first only to keep
+    // the order of the catalog mutations. Shared: held exclusively it made one namespace's reports
+    // wait for each other until commit.
+    crate::quotas::share_secrets_lock(tx, tenant, namespace).await?;
     let role: Option<String> =
         sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
             .bind(tenant.as_uuid())
@@ -1308,6 +1355,7 @@ impl RunStore for PgRunStore {
                 info.created_at = now;
                 return Ok(Applied::Done(PgRunTx {
                     tx,
+                    stored_kinds: BTreeMap::new(),
                     timer_read_states: BTreeMap::new(),
                     event_wait_read_states: BTreeMap::new(),
                     info,
@@ -1870,6 +1918,15 @@ macro_rules! run_columns_sql {
 const RUN_FOR_UPDATE: &str = run_columns_sql!(" FOR UPDATE");
 
 const RUN_FOR_UPDATE_SKIP_LOCKED: &str = run_columns_sql!(" FOR UPDATE SKIP LOCKED");
+
+/// The run of a candidate a poll read a moment ago, for a claim: not locked by another transaction,
+/// and still with a ready step. The condition only ever makes a claim give up on a run, as a lock
+/// held by another poller does, and a run it gives up on is found again by a later poll if a step of
+/// it is ready then; what is leased is still decided from the step rows read under the lock.
+const RUN_FOR_CLAIM: &str = run_columns_sql!(
+    " AND EXISTS (SELECT 1 FROM steps s WHERE s.tenant_id = runs.tenant_id \
+        AND s.run_id = runs.id AND s.status = 'READY') FOR UPDATE SKIP LOCKED"
+);
 
 /// The same read without a lock, for the bounded snapshot of a scope transition (D523).
 pub(crate) const RUN_SNAPSHOT: &str = run_columns_sql!("");
@@ -3273,6 +3330,38 @@ fn scope_owner_instance(row: &PgRow) -> Result<ExecutionInstanceId, StoreError> 
     ))
 }
 
+/// The check behind the loads a definition lets a command skip: a run has no row of a kind its
+/// definition excludes. `verify_run` always makes it; a store asked to
+/// ([`PgRunStore::with_skipped_load_verification`]) makes it for every command.
+async fn verify_excluded_projections(
+    tx: &mut Transaction<'static, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    kinds: sagat_domain::workflow::ProjectedState,
+) -> Result<(), StoreError> {
+    let (sagas, scope_sagas, collections, loops): (bool, bool, bool, bool) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM scope_sagas WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM iteration_scopes WHERE tenant_id = $1 AND run_id = $2) \
+                  OR EXISTS (SELECT 1 FROM collection_iterations WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM loop_scopes WHERE tenant_id = $1 AND run_id = $2) \
+                  OR EXISTS (SELECT 1 FROM loop_iterations WHERE tenant_id = $1 AND run_id = $2)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if (sagas && !kinds.sagas)
+        || (scope_sagas && !kinds.scope_sagas())
+        || (collections && !kinds.collections)
+        || (loops && !kinds.loops)
+    {
+        return Err(corrupt("a projection its definition excludes"));
+    }
+    Ok(())
+}
+
 /// The sagas of a run, rebuilt from their rows.
 async fn load_sagas(
     tx: &mut Transaction<'static, Postgres>,
@@ -3371,6 +3460,9 @@ pub struct PgRunTx {
     /// "insert or update" is decided here, not by `ON CONFLICT` (which checks constraints on the
     /// proposed row before it takes the update path).
     stored: BTreeSet<ExecutionInstanceId>,
+    /// The kind each step row held when the run was loaded under its row lock. Nothing else writes a
+    /// kind while that lock is held, so a row whose kind is already the definition's needs no write.
+    stored_kinds: BTreeMap<ExecutionInstanceId, String>,
     timer_read_states: BTreeMap<ExecutionInstanceId, TimerReadState>,
     event_wait_read_states: BTreeMap<ExecutionInstanceId, EventWaitReadState>,
     breaker: BreakerPolicy,
@@ -3415,6 +3507,15 @@ impl PgRunTx {
         instance: &ExecutionInstanceId,
         node_kind: &str,
     ) -> Result<(), StoreError> {
+        // The kind is immutable. A row read with the definition's kind is left alone; any other is
+        // put to the statement below, which upgrades a legacy row and refuses everything else.
+        if self
+            .stored_kinds
+            .get(instance)
+            .is_some_and(|stored| stored == node_kind)
+        {
+            return Ok(());
+        }
         let (path_nodes, path_indices) = stored_path_parts(instance.path());
         let updated = sqlx::query(
             "UPDATE steps SET node_kind=$6 \
@@ -3434,6 +3535,8 @@ impl PgRunTx {
         if updated.rows_affected() != 1 {
             return Err(corrupt("immutable step node kind"));
         }
+        self.stored_kinds
+            .insert(instance.clone(), node_kind.to_owned());
         Ok(())
     }
 
