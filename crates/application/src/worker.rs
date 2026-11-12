@@ -1112,7 +1112,11 @@ where
     where
         S: PathExecutionStore,
     {
-        let mut tx = match self.store.begin(session.tenant_id, run, Lock::Claim).await {
+        let mut tx = match self
+            .store
+            .begin_claim(session.tenant_id, run, &session.activities)
+            .await
+        {
             Ok(Some(tx)) => tx,
             // Locked by someone else, gone, or without a ready step by now.
             Ok(None) => return Ok(Vec::new()),
