@@ -128,9 +128,9 @@ const fn cost(statements: i64, transactions: i64, rows_written: i64) -> Work {
 }
 
 /// The budget. Lower a line in the change that earns it; raise one only with the reason beside it.
-const LEASE: Work = cost(46, 2, 6);
-const COMPLETION_WITH_A_NEXT_STEP: Work = cost(58, 1, 12);
-const COMPLETION_THAT_ENDS_THE_RUN: Work = cost(55, 1, 10);
+const LEASE: Work = cost(42, 2, 5);
+const COMPLETION_WITH_A_NEXT_STEP: Work = cost(54, 1, 11);
+const COMPLETION_THAT_ENDS_THE_RUN: Work = cost(51, 1, 9);
 
 #[tokio::test]
 async fn a_lease_and_a_completion_cost_what_the_budget_says() {
@@ -171,4 +171,82 @@ async fn a_lease_and_a_completion_cost_what_the_budget_says() {
             itemised(&w, workflow, &session).await
         );
     }
+}
+
+/// Sets the stored kind of the one step row of `run` at `node`, as the owner.
+async fn store_kind(w: &World, run: sagat_domain::execution::RunId, node: &str, kind: &str) {
+    let changed = sqlx::query(
+        "UPDATE steps SET node_kind = $3 WHERE tenant_id = $1 AND run_id = $2 AND node = $4",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(run.as_uuid())
+    .bind(kind)
+    .bind(node)
+    .execute(&w.db.pool)
+    .await
+    .expect("rewrite the stored kind")
+    .rows_affected();
+    assert_eq!(changed, 1, "the step row exists");
+}
+
+async fn stored_kind(w: &World, run: sagat_domain::execution::RunId, node: &str) -> String {
+    sqlx::query_scalar(
+        "SELECT node_kind FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(run.as_uuid())
+    .bind(node)
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("stored kind")
+}
+
+async fn one_activity(w: &World, name: &str) -> sagat_domain::definition::WorkflowId {
+    w.publish(document(name, "a", vec![activity("a")])).await.0
+}
+
+/// The kind of a step is written once. A row that holds another kind than its definition's is
+/// refused when the step is next written, whether or not the write of the kind is skipped.
+#[tokio::test]
+async fn a_step_whose_stored_kind_is_not_its_definitions_is_refused() {
+    let w = world().await;
+    let workflow = one_activity(&w, "kind-mismatch").await;
+    let run = w.start(workflow, &json!({})).await;
+    let session = w.session(&["act.a"]).await;
+    store_kind(&w, run, "a", "timer").await;
+    let leased = w
+        .workers
+        .poll(
+            &session.principal,
+            session.worker_id,
+            &session.token,
+            1,
+            None,
+        )
+        .await;
+    assert!(
+        leased.as_ref().map_or(true, Vec::is_empty),
+        "a step whose kind was changed is not leased: {leased:?}"
+    );
+    assert_eq!(
+        stored_kind(&w, run, "a").await,
+        "timer",
+        "and is not repaired"
+    );
+}
+
+/// A row written before kinds were stored is upgraded by the first write, once.
+#[tokio::test]
+async fn a_legacy_step_is_given_its_kind_by_the_first_write() {
+    let w = world().await;
+    let workflow = one_activity(&w, "kind-legacy").await;
+    let run = w.start(workflow, &json!({})).await;
+    let session = w.session(&["act.a"]).await;
+    store_kind(&w, run, "a", "legacyControl").await;
+    let mut tasks = w.poll(&session, 1).await;
+    assert_eq!(tasks.len(), 1, "a legacy step is leased");
+    assert_eq!(stored_kind(&w, run, "a").await, "activity");
+    w.complete(&session, &tasks.remove(0), &json!({}))
+        .await
+        .expect("completed");
 }

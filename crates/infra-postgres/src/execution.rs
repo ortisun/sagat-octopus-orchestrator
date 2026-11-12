@@ -295,12 +295,14 @@ impl PgRunStore {
         .map_err(store_error)?;
         let mut steps = BTreeMap::new();
         let mut stored = BTreeSet::new();
+        let mut stored_kinds = BTreeMap::new();
         for row in &step_rows {
             let node: String = col(row, "node")?;
             let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
             let path = step_instance_path(row)?;
             let instance = ExecutionInstanceId::in_path(path, node);
             stored.insert(instance.clone());
+            stored_kinds.insert(instance.clone(), col::<String>(row, "stored_node_kind")?);
             steps.insert(instance, step_state(row)?);
         }
         let sagas = load_sagas(&mut tx, tenant, run).await?;
@@ -383,6 +385,7 @@ impl PgRunStore {
             data: None,
             input_digest,
             stored,
+            stored_kinds,
             timer_read_states,
             event_wait_read_states,
             breaker: self.breaker,
@@ -1312,6 +1315,7 @@ impl RunStore for PgRunStore {
                 info.created_at = now;
                 return Ok(Applied::Done(PgRunTx {
                     tx,
+                    stored_kinds: BTreeMap::new(),
                     timer_read_states: BTreeMap::new(),
                     event_wait_read_states: BTreeMap::new(),
                     info,
@@ -3375,6 +3379,9 @@ pub struct PgRunTx {
     /// "insert or update" is decided here, not by `ON CONFLICT` (which checks constraints on the
     /// proposed row before it takes the update path).
     stored: BTreeSet<ExecutionInstanceId>,
+    /// The kind each step row held when the run was loaded under its row lock. Nothing else writes a
+    /// kind while that lock is held, so a row whose kind is already the definition's needs no write.
+    stored_kinds: BTreeMap<ExecutionInstanceId, String>,
     timer_read_states: BTreeMap<ExecutionInstanceId, TimerReadState>,
     event_wait_read_states: BTreeMap<ExecutionInstanceId, EventWaitReadState>,
     breaker: BreakerPolicy,
@@ -3419,6 +3426,15 @@ impl PgRunTx {
         instance: &ExecutionInstanceId,
         node_kind: &str,
     ) -> Result<(), StoreError> {
+        // The kind is immutable. A row read with the definition's kind is left alone; any other is
+        // put to the statement below, which upgrades a legacy row and refuses everything else.
+        if self
+            .stored_kinds
+            .get(instance)
+            .is_some_and(|stored| stored == node_kind)
+        {
+            return Ok(());
+        }
         let (path_nodes, path_indices) = stored_path_parts(instance.path());
         let updated = sqlx::query(
             "UPDATE steps SET node_kind=$6 \
@@ -3438,6 +3454,8 @@ impl PgRunTx {
         if updated.rows_affected() != 1 {
             return Err(corrupt("immutable step node kind"));
         }
+        self.stored_kinds
+            .insert(instance.clone(), node_kind.to_owned());
         Ok(())
     }
 
