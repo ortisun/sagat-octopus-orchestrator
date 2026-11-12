@@ -121,11 +121,19 @@ load average was 27 when it began (12 in October), so absolute figures are noisy
 | 8 | 128 | 514 | 171 | 98% |
 
 The best figure fell from 1,513 to 368 transitions per second, and 1,000 per second is no longer reached. In October
-no backend waited on an advisory lock. The only exclusive advisory lock on the claim and completion path is the
-per-activity one of `activity_admitted` (`crates/infra-postgres/src/quotas.rs`), added on 2026-10-12 by `ee2063a0`,
-the day after the October measurement. It is taken on every lease although the default limit is `MAX_LIMIT`, so a
-namespace with no configured limit pays a mutex per activity to enforce a bound it cannot reach. That the lock is the
-cause is an inference from the wait profile and the dates; it is proven only when the fix is measured.
+no backend waited on an advisory lock.
+
+The lock was identified by its hash in `pg_locks` during a run, not by reading the code: it is
+`quota:secrets:{tenant}:{namespace}`, taken exclusively by `current_worker_authorized`
+(`crates/infra-postgres/src/execution.rs`) on every completion, failure and heartbeat of an ordinary worker and held
+until commit. It was added on 2026-10-24 by `482979a6`. The check only reads the worker's membership; the lock keeps
+the order of the catalog mutations. Held exclusively it makes the reports of one namespace wait for each other.
+
+A first attribution, made from the dates and the code alone, blamed the per-activity admission lock of
+`activity_admitted` (`ee2063a0`, 2026-10-12). Removing that mutex for an unbounded limit left the benchmark where it
+was (369 transitions per second at best, 62 to 99% still on `Lock:advisory`), so it is a real mutex and not this
+bottleneck. Whether sharing the secrets lock restores the October figure is not measured yet: the run that would show
+it ended with the machine's disk full.
 
 ### Numbers to beat
 
@@ -160,6 +168,7 @@ Nobody publishes crash-recovery times. Measuring and publishing them is an openi
 | Load a run in one statement, batch journal inserts, skip loads the definition does not need | no spec |
 | Claim simple root steps with one `UPDATE ... FOR UPDATE SKIP LOCKED` over a lean queue table | no spec |
 | Serialise the leases of an activity only when its effective limit is bounded; a default (`MAX_LIMIT`) limit needs a fence against a policy change, not a mutex or a count | no spec |
+| Share, not hold, the namespace's secrets lock in the worker authorization check of every report | no spec |
 | Wake parked streams on commit; return the next ready step in the completion response | no spec |
 | Partition `run_events` and `payloads`; retention and archival | 020 covers retention, not partitioning |
 | A statement-count and throughput budget as a CI regression gate | no spec |
