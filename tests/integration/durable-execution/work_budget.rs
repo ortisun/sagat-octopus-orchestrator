@@ -250,3 +250,41 @@ async fn a_legacy_step_is_given_its_kind_by_the_first_write() {
         .await
         .expect("completed");
 }
+
+/// A session that holds all it declared can take nothing more, whatever is ready: its poll ends
+/// at the first candidate that shows it, and costs the same with one run waiting as with four.
+#[tokio::test]
+async fn a_poll_of_a_full_session_does_not_walk_its_window() {
+    let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("the test PostgreSQL preloads pg_stat_statements");
+    let workflow = one_activity(&w, "full-session").await;
+    let session = w.session_as(&w.worker, &["act.a"], 1).await;
+    w.start(workflow, &json!({})).await;
+    w.start(workflow, &json!({})).await;
+    assert_eq!(
+        w.poll(&session, 1).await.len(),
+        1,
+        "the session is now full"
+    );
+    // Once more, so that both measurements below run with everything cached.
+    assert!(w.poll(&session, 8).await.is_empty());
+    let before = work(&w).await;
+    assert!(
+        w.poll(&session, 8).await.is_empty(),
+        "no room, nothing leased"
+    );
+    let one_waiting = work(&w).await - before;
+    for _ in 0..3 {
+        w.start(workflow, &json!({})).await;
+    }
+    let before = work(&w).await;
+    assert!(w.poll(&session, 8).await.is_empty(), "still no room");
+    let four_waiting = work(&w).await - before;
+    assert_eq!(
+        one_waiting, four_waiting,
+        "a full session pays for one candidate, not for every run that is ready"
+    );
+}
