@@ -136,3 +136,119 @@ async fn in_flight_together(telemetry: &sagat_telemetry::Metrics) {
     started.sort_unstable();
     assert_eq!(all, started, "every ready run is leased once");
 }
+
+/// K polls of one namespace in flight together on one window (design 038, T038-4, SC-038-001).
+/// Four workers ask for one task each from four ready runs, and each is held as it leases, so all
+/// four are in flight at once. Each starts at its own point of the window and tries one candidate:
+/// four probes and four runs opened for four leases. Tried in one order they would make ten probes
+/// (the k-th poll skipping the k-1 runs held before it).
+#[test]
+fn k_polls_in_flight_together_probe_once_per_lease() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let (telemetry, recorder) =
+        sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(60));
+    metrics::with_local_recorder(&recorder, || {
+        runtime.block_on(k_in_flight(&telemetry, 4));
+    });
+}
+
+async fn k_in_flight(telemetry: &sagat_telemetry::Metrics, k: usize) {
+    let w = world().await;
+    let workflow = one_activity(&w, "k-in-flight").await;
+    let mut sessions = Vec::new();
+    for _ in 0..k {
+        sessions.push(w.session(&["act.a"]).await);
+    }
+    sqlx::query("CREATE TABLE held_workers (worker text NOT NULL)")
+        .execute(&w.db.pool)
+        .await
+        .expect("barrier targets");
+    for session in &sessions {
+        sqlx::query("INSERT INTO held_workers VALUES ($1)")
+            .bind(session.worker_id.to_string())
+            .execute(&w.db.pool)
+            .await
+            .expect("held");
+    }
+    sqlx::query("GRANT SELECT ON held_workers TO PUBLIC")
+        .execute(&w.db.pool)
+        .await
+        .expect("readable by the runtime role");
+    sqlx::query(
+        "CREATE FUNCTION hold_leases() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+           IF OLD.status = 'READY' AND NEW.status = 'LEASED' \
+              AND NEW.leased_by IN (SELECT worker FROM held_workers) THEN \
+             PERFORM pg_advisory_xact_lock_shared(910380004); END IF; RETURN NEW; END $$",
+    )
+    .execute(&w.db.pool)
+    .await
+    .expect("barrier function");
+    sqlx::query("CREATE TRIGGER hold_leases BEFORE UPDATE ON steps FOR EACH ROW EXECUTE FUNCTION hold_leases()")
+        .execute(&w.db.pool)
+        .await
+        .expect("barrier trigger");
+    let mut barrier = w.db.pool.begin().await.expect("barrier");
+    sqlx::query("SELECT pg_advisory_xact_lock(910380004)")
+        .execute(&mut *barrier)
+        .await
+        .expect("hold the barrier");
+    let mut started = Vec::new();
+    for _ in 0..k {
+        started.push(w.start(workflow, &json!({})).await);
+    }
+    let before = (
+        claim_stage(telemetry, "probed"),
+        claim_stage(telemetry, "opened"),
+        claim_stage(telemetry, "leased"),
+    );
+    let mut polls = Vec::new();
+    for (held, session) in sessions.iter().enumerate() {
+        let mut poll = Box::pin(w.workers.poll(
+            &session.principal,
+            session.worker_id,
+            &session.token,
+            1,
+            None,
+        ));
+        // Started one after the other, each held before the next begins: all k are in flight.
+        let waiting = crate::support::eventually("the poll is held as it leases", || async {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
+                   AND objid = 910380004 AND database = (SELECT oid FROM pg_database \
+                   WHERE datname = current_database())",
+            )
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("observe the barrier");
+            (waiting == i64::try_from(held + 1).expect("small")).then_some(())
+        });
+        tokio::select! {
+            result = &mut poll => panic!("poll {held} passed the barrier: {result:?}"),
+            () = waiting => {}
+        }
+        polls.push(poll);
+    }
+    barrier.commit().await.expect("release them");
+    let mut leased = Vec::new();
+    for poll in polls {
+        let tasks = poll.await.expect("poll");
+        assert_eq!(tasks.len(), 1, "each poll is served what it asked for");
+        leased.push(tasks[0].run_id);
+    }
+    leased.sort_unstable();
+    started.sort_unstable();
+    assert_eq!(leased, started, "every run leased once");
+    let k = u64::try_from(k).expect("small");
+    assert_eq!(
+        (
+            claim_stage(telemetry, "probed") - before.0,
+            claim_stage(telemetry, "opened") - before.1,
+            claim_stage(telemetry, "leased") - before.2,
+        ),
+        (k, k, k),
+        "one probe and one opened run per lease"
+    );
+}
