@@ -685,3 +685,54 @@ async fn a_run_with_state_its_definition_excludes_is_refused_when_the_check_is_o
         "and the integrity check still reports it: {verified:?}"
     );
 }
+
+/// The counters of a poll say what it did: three runs are ready, a worker asks for two tasks, so
+/// three candidates are fetched and two are tried, opened and leased (FR-038-007).
+#[test]
+fn a_poll_counts_what_it_fetched_probed_opened_and_leased() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let (telemetry, recorder) =
+        sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(60));
+    metrics::with_local_recorder(&recorder, || {
+        runtime.block_on(async {
+            let w = world().await;
+            let workflow = one_activity(&w, "counted-poll").await;
+            let session = w.session(&["act.a"]).await;
+            for _ in 0..3 {
+                w.start(workflow, &json!({})).await;
+            }
+            assert_eq!(w.poll(&session, 2).await.len(), 2);
+        });
+    });
+    let rendered = telemetry.render();
+    let stage = |name: &str| -> Option<u64> {
+        rendered
+            .lines()
+            .find(|line| {
+                line.starts_with("worker_claim_candidates_total{")
+                    && line.contains(&format!("stage=\"{name}\""))
+            })
+            .and_then(|line| line.rsplit(' ').next())
+            .and_then(|value| value.parse().ok())
+    };
+    assert_eq!(
+        (
+            stage("fetched"),
+            stage("probed"),
+            stage("opened"),
+            stage("leased")
+        ),
+        (Some(3), Some(2), Some(2), Some(2)),
+        "{rendered}"
+    );
+    assert!(
+        rendered
+            .lines()
+            .filter(|line| line.starts_with("worker_claim_candidates_total{"))
+            .all(|line| line.matches('=').count() == 1),
+        "the stage is the only label: {rendered}"
+    );
+}

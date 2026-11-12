@@ -20,7 +20,7 @@ where
         byte_budget: usize,
         trace_id: Option<&str>,
         bytes: &mut usize,
-        session_full: &mut bool,
+        progress: &mut ClaimProgress,
     ) -> Result<Vec<ClaimedTask>, AppError> {
         if path.is_root() {
             self.claim_root_run(
@@ -32,7 +32,7 @@ where
                 byte_budget,
                 trace_id,
                 bytes,
-                session_full,
+                progress,
             )
             .await
         } else if self.store.supports_scoped_worker_protocol()
@@ -48,7 +48,7 @@ where
                 byte_budget,
                 trace_id,
                 bytes,
-                session_full,
+                progress,
             )
             .await
         } else {
@@ -70,7 +70,7 @@ where
         byte_budget: usize,
         trace_id: Option<&str>,
         bytes: &mut usize,
-        session_full: &mut bool,
+        progress: &mut ClaimProgress,
     ) -> Result<Vec<ClaimedTask>, AppError> {
         let mut tx = match self
             .store
@@ -87,12 +87,13 @@ where
             }
             Err(error) => return Err(error.into()),
         };
+        progress.opened += 1;
         if tx.snapshot().info.namespace_id != session.namespace_id {
             return Ok(Vec::new());
         }
         if tx.worker_drained(&session.subject).await? {
             // Nothing more for this session, whatever the next candidate is.
-            *session_full = true;
+            progress.session_full = true;
             return Ok(Vec::new());
         }
         // Binding replacement locks binding authority before closing sessions. Acquire that
@@ -112,7 +113,7 @@ where
             .await?;
         let remaining = remaining.min(room as usize);
         if remaining == 0 {
-            *session_full = true;
+            progress.session_full = true;
             return Ok(Vec::new());
         }
         if !tx.current_worker_authorized(&session.subject).await?
