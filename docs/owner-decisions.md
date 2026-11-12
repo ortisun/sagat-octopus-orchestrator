@@ -4,6 +4,26 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-12 — Merge the hot-path stack, let polls try their window in their own order, budget the hot path in CI
+
+The assistant had stopped its loop with seven pull requests stacked and three questions open, and on the owner's
+question "O que prciso decidir?" set out each with options and a recommendation: (1) merge pull requests 203 and 205
+to 210 into `develop` one at a time once 210's CI passed (recommended); (2) let each poll try the shared candidate window
+from its own starting point, no candidate removed, a lone worker still served in `ready_at` order and the oldest step
+always in the window, with the SDK conformance scenario that states the order narrowed to a lone worker (recommended);
+(3) run the budget target on a pull request that changes the hot-path files, about a minute and a half of CI on those
+(recommended). The owner answered in the Claude session.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-12-2 | "Seguir as recomendações": merge pull requests 203, 205, 206, 207, 208, 209 and 210 into `develop`, one at a time, each after its CI | owner | Decided | pull requests 203, 205-210 |
+| OD-2026-11-12-3 | "Seguir as recomendações": a poll tries its window from a per-session starting point within FR-038-004's limits; the conformance scenario's ordering holds for a lone worker | owner | Decided; not built | docs/designs/038-claim-transition-efficiency.md T038-8, FR-038-004 |
+| OD-2026-11-12-4 | "Seguir as recomendações": the budget target runs on a pull request that changes the hot-path files | owner | Decided; not built | docs/designs/038-claim-transition-efficiency.md T038-10, FR-038-008 |
+
+One sentence answered three questions; each row is the recommendation it accepted, as it was put to the owner. It
+widens the 2026-11-04 rule that a suite runs on a pull request only when its own files change, for one target, and
+does not change that rule otherwise.
+
 ## 2026-11-12 — Design 038 (claim and transition efficiency) accepted for implementation
 
 The assistant measured the transitions scenario on `develop` (368 transitions per second against 1,513 on 2026-10-11),

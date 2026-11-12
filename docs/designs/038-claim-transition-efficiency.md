@@ -129,6 +129,8 @@ The counts above do not depend on the machine's load; the rates do, and are stat
 
 ## Owner decisions needed
 
+Both answered on 2026-11-12 (OD-2026-11-12-3 and OD-2026-11-12-4, `docs/owner-decisions.md`), as recommended:
+
 - Whether a poll may try its window in an order other than oldest-first, within FR-038-004's limits.
   `tests/contract/sdk-conformance/scenarios/signals-and-events.json` says a worker is leased its tasks
   in the order they became ready, which FR-038-004 keeps for a lone poller only. No requirement of
@@ -265,12 +267,12 @@ Each step is its own pull request and moves the budget or the counters' bound it
   Refs: FR-038-006
 - [ ] T038-8 Try the window from a per-session offset and fetch again after k skips.
   Refs: FR-038-004, SC-038-001
-  Owner-gate: OD-YYYY-MM-DD-N
+  Owner-gate: OD-2026-11-12-3
 - [ ] T038-9 Skip projection loads by a domain predicate with its property test.
   Refs: FR-038-005
 - [ ] T038-10 Select the budget target on pull requests that change the hot-path files.
   Refs: FR-038-008
-  Owner-gate: OD-YYYY-MM-DD-N
+  Owner-gate: OD-2026-11-12-4
 - [ ] T038-11 Run the transitions scenario on a quiet machine and append the dated section to the report.
   Refs: SC-038-002, NFR-038-PERF
 
