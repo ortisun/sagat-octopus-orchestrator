@@ -172,6 +172,21 @@ async fn one_run(
     Ok(costs.try_into().expect("six commands"))
 }
 
+/// [`one_run`], on a new run each time an eviction spoils the last: a run is cheap and its windows
+/// are short, where the whole scenario is long enough for an eviction to fall in it every time.
+async fn one_run_measured(
+    w: &World,
+    workflow: sagat_domain::definition::WorkflowId,
+    session: &crate::support::engine::Session,
+) -> Result<[Work; 6], Evicted> {
+    for _ in 0..40 {
+        if let Ok(costs) = one_run(w, workflow, session).await {
+            return Ok(costs);
+        }
+    }
+    Err(Evicted)
+}
+
 const fn cost(statements: i64, transactions: i64, rows_written: i64) -> Work {
     Work {
         statements,
@@ -181,9 +196,9 @@ const fn cost(statements: i64, transactions: i64, rows_written: i64) -> Work {
 }
 
 /// The budget. Lower a line in the change that earns it; raise one only with the reason beside it.
-const LEASE: Work = cost(42, 2, 5);
-const COMPLETION_WITH_A_NEXT_STEP: Work = cost(54, 1, 11);
-const COMPLETION_THAT_ENDS_THE_RUN: Work = cost(51, 1, 9);
+const LEASE: Work = cost(38, 2, 5);
+const COMPLETION_WITH_A_NEXT_STEP: Work = cost(50, 1, 11);
+const COMPLETION_THAT_ENDS_THE_RUN: Work = cost(47, 1, 9);
 
 async fn a_lease_and_a_completion_cost_what_the_budget_says_once() -> Result<(), Evicted> {
     let w = world().await;
@@ -204,9 +219,9 @@ async fn a_lease_and_a_completion_cost_what_the_budget_says_once() -> Result<(),
         .await;
     let session = w.session(&["act.a", "act.b", "act.c"]).await;
     // The first run pays for what is cached afterwards (the definition, prepared statements).
-    one_run(&w, workflow, &session).await?;
-    let first = one_run(&w, workflow, &session).await?;
-    let second = one_run(&w, workflow, &session).await?;
+    one_run_measured(&w, workflow, &session).await?;
+    let first = one_run_measured(&w, workflow, &session).await?;
+    let second = one_run_measured(&w, workflow, &session).await?;
     assert_eq!(first, second, "the counts of a quiet database do not vary");
     let [lease_a, done_a, lease_b, done_b, lease_c, done_c] = first;
     if (lease_a, lease_b, lease_c) != (LEASE, LEASE, LEASE)
@@ -613,5 +628,60 @@ async fn a_claim_sees_a_ready_step_only_once_it_is_committed() {
             .expect("opened")
             .is_some(),
         "ready once committed"
+    );
+}
+
+/// The loads a command skips are skipped because the definition excludes their state. With the
+/// check on, a run that has a row of an excluded kind is refused instead of read past.
+#[tokio::test]
+async fn a_run_with_state_its_definition_excludes_is_refused_when_the_check_is_on() {
+    use sagat_application::runs::{Lock, RunStore};
+    let w = world().await;
+    let workflow = one_activity(&w, "excluded-state").await;
+    let run = w.start(workflow, &json!({})).await;
+    let tenant = w.admin.tenant_id();
+    let checking = sagat_infra_postgres::PgRunStore::new(
+        w.execution_pool.clone(),
+        sagat_application::execution::DefinitionCache::new(
+            std::sync::Arc::new(sagat_infra_ir::JsonIrCodec),
+            8,
+        ),
+    )
+    .with_skipped_load_verification(true);
+    assert!(
+        checking
+            .begin(tenant, run, Lock::Wait)
+            .await
+            .expect("opened")
+            .is_some(),
+        "a run with nothing excluded passes the check"
+    );
+    sqlx::query(
+        "INSERT INTO run_sagas (tenant_id, run_id, node, phase, updated_at) \
+         VALUES ($1, $2, 'ghost', 'FORWARD', clock_timestamp())",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("a saga row no node of the definition could have made");
+    let refused = checking
+        .begin(tenant, run, Lock::Wait)
+        .await
+        .expect_err("the check refuses the run");
+    assert!(
+        format!("{refused:?}").contains("a projection its definition excludes"),
+        "refused for the excluded projection, not for something else: {refused:?}"
+    );
+    assert!(
+        w.store.begin(tenant, run, Lock::Wait).await.is_ok(),
+        "a store that does not check reads past it"
+    );
+    let verified = w.store.verify_run(tenant, run).await;
+    assert!(
+        verified
+            .as_ref()
+            .is_err_and(|why| why.contains("a projection its definition excludes")),
+        "and the integrity check still reports it: {verified:?}"
     );
 }
