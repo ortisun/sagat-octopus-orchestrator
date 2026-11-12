@@ -22,7 +22,9 @@ Scoped selection:
                 package.
   integration   a `sagat-tests` target runs only when it was itself changed: (a) a file of its directory, or its
                 [[test]] entry, changed; or (b) a harness it drives changed (frontend/e2e, sdks/*/conformance, examples/,
-                runners/lake/ for the lake suites). Nothing else selects a suite: not a changed package that the suite
+                runners/lake/ for the lake suites); or (c) for the budget of the hot path, a file of
+                crates/infra-postgres/ or of the claim and command path of crates/application changed
+                (OD-2026-11-12-4). Nothing else selects a suite: not a changed package that the suite
                 uses or that depends on it, and not a shared input (tests/support, tests/fixtures, runners/ other than
                 runners/lake/, a contract file under specs/, a dependency of tests/Cargo.toml, Cargo.lock): the
                 integration suites are expensive, and the release runs all of them.
@@ -55,6 +57,7 @@ TESTS_PACKAGE = "sagat-tests"
 SDK_LANGUAGES = ("typescript", "python", "go", "dotnet", "java", "rust")
 BROWSER_SUITES = ("e2e_workflow_studio", "e2e_developer_experience", "e2e_database_connections")
 SDK_SUITES = ("sdk_conformance", "e2e_sdk_multilanguage", "fault_sdk_multilanguage")
+BUDGET_SUITES = ("integration_claim_transition_efficiency",)
 LAKE_SUITES = ("integration_iceberg_writes", "fault_iceberg_writes", "e2e_iceberg_writes", "perf_iceberg_writes")
 HARNESSES = (
     (re.compile(r"frontend/e2e/"), BROWSER_SUITES),
@@ -62,6 +65,11 @@ HARNESSES = (
     (re.compile(r"examples/"), ("e2e_developer_experience",)),
     # The lake runtime is driven by these suites; the contract suite reads the contract fragments, not the runtime.
     (re.compile(r"runners/lake/"), LAKE_SUITES),
+    # The budget of the hot path (OD-2026-11-12-4, design 038): what a lease and a completion cost the database is a
+    # property of the code that runs them, not of the suite that measures it, so the code selects the suite. Every
+    # statement and trigger of the adapter can add to it, and so can the claim and the command path that drive it.
+    (re.compile(r"crates/infra-postgres/|crates/application/src/(worker|execution)(\.rs$|/)|crates/application/src/runs\.rs$"),
+     BUDGET_SUITES),
 )
 # Inputs of every Rust package: a change selects the unit tests of every package, and no suite.
 RUST_ROOT_INPUTS = re.compile(r"Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|clippy\.toml|rustfmt\.toml|\.cargo/.*|vendor/.*")

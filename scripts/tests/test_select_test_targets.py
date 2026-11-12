@@ -28,7 +28,9 @@ TARGETS = {
     "fault_sdk_multilanguage": "fault/sdk-multilanguage/main.rs",
     "integration_iceberg_writes": "integration/iceberg-writes/main.rs",
     "e2e_iceberg_writes": "e2e/iceberg-writes/main.rs",
+    "integration_claim_transition_efficiency": "integration/claim-transition-efficiency/main.rs",
 }
+BUDGET = {"integration_claim_transition_efficiency"}
 LAKE_SUITE_NAMES = {"integration_iceberg_writes", "e2e_iceberg_writes"}
 # What each target's own sources name: integration_a -> domain, contract_a -> application, contract_rest_a -> leaf.
 SOURCES = {
@@ -374,6 +376,35 @@ class Scope(unittest.TestCase):
         self.commit()
         result = self.run_select()
         self.assertIn("select fault_b: tests/fault/b/x.rs", result.stdout)
+
+    # -- the budget of the hot path (OD-2026-11-12-4) --------------------------------------
+    def test_a_change_of_the_postgresql_adapter_selects_the_budget_suite_only(self):
+        for rel in ("crates/infra-postgres/src/execution.rs", "crates/infra-postgres/src/execution/path.rs",
+                    "crates/infra-postgres/migrations/20991231000000_x.up.sql"):
+            with self.subTest(rel=rel):
+                self.write(rel, f"// {rel}\n")
+                self.commit()
+                self.assertEqual(self.chosen(), BUDGET)
+                self.base = git(self.root, "rev-parse", "HEAD")
+
+    def test_a_change_of_the_claim_or_the_command_path_selects_the_budget_suite(self):
+        for rel in ("crates/application/src/worker.rs", "crates/application/src/worker/claim_counters.rs",
+                    "crates/application/src/execution.rs", "crates/application/src/runs.rs"):
+            with self.subTest(rel=rel):
+                self.write(rel, f"// {rel}\n")
+                self.commit()
+                self.assertEqual(self.chosen(), BUDGET)
+                self.base = git(self.root, "rev-parse", "HEAD")
+
+    def test_the_rest_of_the_application_selects_no_suite(self):
+        self.write("crates/application/src/schedules.rs", "// x\n")
+        self.commit()
+        self.assertEqual(self.chosen(), set())
+
+    def test_markdown_of_the_hot_path_selects_nothing(self):
+        self.write("crates/infra-postgres/src/README.md", "# x\n")
+        self.commit()
+        self.assertEqual(self.chosen(), set())
 
     # -- SDKs, Studio and scripts ----------------------------------------------------------
     def test_an_sdk_change_selects_that_languages_unit_tests(self):

@@ -26,7 +26,7 @@ mutexes (the namespace secrets lock in the worker's authority check and the per-
 lock) and the figure rose to 763, with the machine busier than in October. It is still half. What
 changed between the two commits is not attributed yet; the claim path itself did not (G246).
 
-**Without concurrency** (`tests/integration/durable-execution/work_budget.rs`, pull request 205, on the
+**Without concurrency** (`work_budget.rs`, pull request 205, now in `tests/integration/claim-transition-efficiency/`, on the
 tree of pull request 203): a poll that leases one step is 46 statements in 2 transactions and writes 6
 rows; a completion that makes the next step ready is 58 statements and 12 rows; the one that ends the
 run 55 and 10. A transition is 104 statements. Among them, for a workflow that has none of these, five
@@ -192,7 +192,9 @@ where it adds a statement (FR-038-002), as ADR-0078's open item asks.
 9. **Window order** (FR-038-004). The application tries the fetched window from an offset derived from
    the session's server-side id, wrapping, so no candidate is removed; the scan and its `ready_at` order
    are unchanged. After k consecutive skipped candidates a poll fetches again instead of walking on.
-10. **Selector rule** (FR-038-008) in `scripts/select-test-targets.py`, with a negative fixture.
+10. **Selector rule** (FR-038-008) in `scripts/select-test-targets.py`, with a negative fixture. The budget tests move to a
+    target of their own, `integration_claim_transition_efficiency`, so that what such a pull request runs is the budget and
+    not a five-minute suite; the rule needs constitution 4.4.0 (CI gates).
 
 Each step is its own pull request and moves the budget or the counters' bound it earns.
 

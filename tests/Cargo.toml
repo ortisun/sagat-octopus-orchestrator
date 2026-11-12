@@ -106,6 +106,10 @@ name = "integration_durable_execution"
 path = "integration/durable-execution/main.rs"
 
 [[test]]
+name = "integration_claim_transition_efficiency"
+path = "integration/claim-transition-efficiency/main.rs"
+
+[[test]]
 name = "contract_rest_durable_execution"
 path = "contract/durable-execution/rest/main.rs"
 
