@@ -137,6 +137,9 @@ pub struct PgRunStore {
     pub(crate) definitions: PgDefinitionStore,
     breaker: BreakerPolicy,
     pub(crate) scoped_worker_protocol: bool,
+    /// Reads the projections a definition excludes and refuses a run that has any, for a test run that
+    /// checks the exclusion against everything the suites do. Off: such a projection is not read.
+    verify_skipped_loads: bool,
     /// The deployment's `lake.enabled` (feature 035): whether a run may carry an Iceberg write. Off unless set.
     pub(crate) lake_enabled: bool,
 }
@@ -151,8 +154,17 @@ impl PgRunStore {
             cache,
             breaker: BreakerPolicy::default(),
             scoped_worker_protocol: false,
+            verify_skipped_loads: false,
             lake_enabled: false,
         }
+    }
+
+    /// Makes every command check that a projection its definition excludes is in fact empty. For
+    /// test runs: it costs a statement per command and refuses a run that fails it.
+    #[must_use]
+    pub const fn with_skipped_load_verification(mut self, verify: bool) -> Self {
+        self.verify_skipped_loads = verify;
+        self
     }
 
     /// Lets a run carry an Apache Iceberg write: the deployment's `lake.enabled`, off by default (D035-059, D035-137).
@@ -308,7 +320,19 @@ impl PgRunStore {
             stored_kinds.insert(instance.clone(), col::<String>(row, "stored_node_kind")?);
             steps.insert(instance, step_state(row)?);
         }
-        let sagas = load_sagas(&mut tx, tenant, run).await?;
+        // The pinned definition says which kinds of state the run can have; the others are not read.
+        let definition = self
+            .definition(&mut tx, tenant, record.info.version_id)
+            .await?;
+        let kinds = definition.projected_state();
+        if self.verify_skipped_loads {
+            verify_excluded_projections(&mut tx, tenant, run, kinds).await?;
+        }
+        let sagas = if kinds.sagas {
+            load_sagas(&mut tx, tenant, run).await?
+        } else {
+            BTreeMap::new()
+        };
         let stop = match record.stop_reason {
             None => None,
             Some(reason) => Some((
@@ -328,12 +352,15 @@ impl PgRunStore {
             sagas,
             record.version,
         );
-        let definition = self
-            .definition(&mut tx, tenant, record.info.version_id)
-            .await?;
-        load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
-        load_loops(&mut tx, tenant, run, &mut state).await?;
-        load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
+        if kinds.collections {
+            load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
+        }
+        if kinds.loops {
+            load_loops(&mut tx, tenant, run, &mut state).await?;
+        }
+        if kinds.scope_sagas() {
+            load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
+        }
         load_chain(&mut tx, tenant, run, &mut state).await?;
         for row in &step_rows {
             let node = NodeId::parse_stored(&col::<String>(row, "node")?)
@@ -506,6 +533,16 @@ impl PgRunStore {
             .map_err(|e| e.to_string())?
             .ok_or("the run does not exist")?;
         let stored = stored_tx.state.clone();
+        // The projection above was read without the kinds the definition excludes. Here that
+        // exclusion is part of what is verified: a row of such a kind is a difference too.
+        verify_excluded_projections(
+            &mut stored_tx.tx,
+            tenant,
+            run,
+            stored_tx.def.projected_state(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         let rows = sqlx::query(
             "SELECT seq, event_type, node, detail, instance_path_nodes, instance_path_indices \
              FROM run_events \
@@ -3291,6 +3328,38 @@ fn scope_owner_instance(row: &PgRow) -> Result<ExecutionInstanceId, StoreError> 
         NodeId::parse_stored(&col::<String>(row, "owner_node")?)
             .map_err(|_| corrupt("scope compensation owner"))?,
     ))
+}
+
+/// The check behind the loads a definition lets a command skip: a run has no row of a kind its
+/// definition excludes. `verify_run` always makes it; a store asked to
+/// ([`PgRunStore::with_skipped_load_verification`]) makes it for every command.
+async fn verify_excluded_projections(
+    tx: &mut Transaction<'static, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    kinds: sagat_domain::workflow::ProjectedState,
+) -> Result<(), StoreError> {
+    let (sagas, scope_sagas, collections, loops): (bool, bool, bool, bool) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM scope_sagas WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM iteration_scopes WHERE tenant_id = $1 AND run_id = $2) \
+                  OR EXISTS (SELECT 1 FROM collection_iterations WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM loop_scopes WHERE tenant_id = $1 AND run_id = $2) \
+                  OR EXISTS (SELECT 1 FROM loop_iterations WHERE tenant_id = $1 AND run_id = $2)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if (sagas && !kinds.sagas)
+        || (scope_sagas && !kinds.scope_sagas())
+        || (collections && !kinds.collections)
+        || (loops && !kinds.loops)
+    {
+        return Err(corrupt("a projection its definition excludes"));
+    }
+    Ok(())
 }
 
 /// The sagas of a run, rebuilt from their rows.
