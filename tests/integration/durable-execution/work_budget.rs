@@ -155,19 +155,35 @@ async fn one_run(
     workflow: sagat_domain::definition::WorkflowId,
     session: &crate::support::engine::Session,
 ) -> Result<[Work; 6], Evicted> {
-    w.start(workflow, &json!({})).await;
+    let run = w.start(workflow, &json!({})).await;
     let mut costs = Vec::with_capacity(6);
+    // The run is taken to its end whatever a window says: one left half done would hand its next
+    // step, not this run's first, to the next measured run.
+    let mut evicted = false;
     for _ in 0..3 {
         let before = reading(w).await;
         let mut tasks = w.poll(session, 1).await;
-        costs.push(spent(w, before).await?);
+        match spent(w, before).await {
+            Ok(cost) => costs.push(cost),
+            Err(Evicted) => evicted = true,
+        }
         assert_eq!(tasks.len(), 1, "the next step of the chain is leased");
         let task = tasks.remove(0);
+        assert_eq!(
+            task.run_id, run,
+            "a step of this run, not one left by another"
+        );
         let before = reading(w).await;
         w.complete(session, &task, &json!({}))
             .await
             .expect("completed");
-        costs.push(spent(w, before).await?);
+        match spent(w, before).await {
+            Ok(cost) => costs.push(cost),
+            Err(Evicted) => evicted = true,
+        }
+    }
+    if evicted {
+        return Err(Evicted);
     }
     Ok(costs.try_into().expect("six commands"))
 }
@@ -439,27 +455,39 @@ const fn cost_of(statements: i64, transactions: i64, rows_written: i64) -> Work 
     cost(statements, transactions, rows_written)
 }
 
-/// How many times the step rows of a run were loaded for a command, so far.
-async fn run_loads(w: &World) -> i64 {
-    calls(w)
-        .await
-        .into_iter()
-        .filter(|(query, _)| {
-            query.starts_with("SELECT node, instance_path_nodes, instance_path_indices, status")
-        })
-        .map(|(_, count)| count)
-        .sum()
-}
-
 /// The same through two polls. Worker A reads two candidates and is held while it leases the
 /// first; worker B leases the second meanwhile. When A goes on, its second candidate is stale:
-/// it drops it without loading the run. Three loads would mean the claim opened it as before.
-async fn a_poll_does_not_load_a_run_another_worker_emptied_meanwhile_once() -> Result<(), Evicted> {
+/// it drops it without opening the run. Three runs opened would mean the claim loaded it as
+/// before. Read from the claim's own counters, which no eviction of statement statistics touches.
+#[test]
+fn a_poll_does_not_load_a_run_another_worker_emptied_meanwhile() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let (telemetry, recorder) =
+        sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(60));
+    metrics::with_local_recorder(&recorder, || {
+        runtime.block_on(emptied_meanwhile(&telemetry));
+    });
+}
+
+/// `worker_claim_candidates_total{stage}` so far, zero before its first increment.
+fn claim_stage(telemetry: &sagat_telemetry::Metrics, name: &str) -> u64 {
+    telemetry
+        .render()
+        .lines()
+        .find(|line| {
+            line.starts_with("worker_claim_candidates_total{")
+                && line.contains(&format!("stage=\"{name}\""))
+        })
+        .and_then(|line| line.rsplit(' ').next())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+}
+
+async fn emptied_meanwhile(telemetry: &sagat_telemetry::Metrics) {
     let w = world().await;
-    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
-        .execute(&w.db.pool)
-        .await
-        .expect("the test PostgreSQL preloads pg_stat_statements");
     let workflow = one_activity(&w, "emptied-meanwhile").await;
     let a = w.session(&["act.a"]).await;
     let b = w.session(&["act.a"]).await;
@@ -502,8 +530,10 @@ async fn a_poll_does_not_load_a_run_another_worker_emptied_meanwhile_once() -> R
         .expect("hold the barrier");
     w.start(workflow, &json!({})).await;
     w.start(workflow, &json!({})).await;
-    let evictions_before = evictions(&w).await;
-    let before = run_loads(&w).await;
+    let (probed, opened) = (
+        claim_stage(telemetry, "probed"),
+        claim_stage(telemetry, "opened"),
+    );
     let poll_a = w.workers.poll(&a.principal, a.worker_id, &a.token, 2, None);
     tokio::pin!(poll_a);
     let held =
@@ -536,21 +566,14 @@ async fn a_poll_does_not_load_a_run_another_worker_emptied_meanwhile_once() -> R
         "A leases the run it held and nothing else"
     );
     assert_ne!(taken_by_a[0].run_id, taken_by_b[0].run_id);
-    let loads = run_loads(&w).await - before;
-    if evictions(&w).await != evictions_before {
-        return Err(Evicted);
-    }
+    // A probes its two candidates and B its two (the run A holds, then the other).
+    assert_eq!(claim_stage(telemetry, "probed") - probed, 4);
     assert_eq!(
-        loads, 2,
-        "one load for each lease; the candidate B emptied is dropped unloaded"
+        claim_stage(telemetry, "opened") - opened,
+        2,
+        "one run opened for each lease; the candidate B emptied is dropped unopened"
     );
-    Ok(())
 }
-
-measured!(
-    a_poll_does_not_load_a_run_another_worker_emptied_meanwhile,
-    a_poll_does_not_load_a_run_another_worker_emptied_meanwhile_once
-);
 
 /// What the drop does not cover: any ready step keeps the run open, also one that is not for
 /// this worker. The run is loaded and nothing is leased, as before.
