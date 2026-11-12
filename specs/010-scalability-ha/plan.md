@@ -150,7 +150,8 @@ change. T010-038 installs the real chart and tests queue-driven scaling in a dis
 cluster; rendering and canary policy tests alone do not close that gate.
 
 T010-040 orders ready activity candidates before transactional admission. PostgreSQL takes shared
-tenant/namespace policy fences then exact activity locks; defaults and ceilings exclusively fence
+tenant/namespace policy fences then the activity's shared fence, and its exclusive count lock only
+when the effective limit is between 1 and the maximum; defaults and ceilings exclusively fence
 their changed level before writing/auditing. Gated real-DB tests reproduce opposite-node-order
 deadlocks and prove that a limit update cannot acknowledge while an older admission is unfinished.
 

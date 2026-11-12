@@ -946,7 +946,11 @@ async fn current_worker_authorized(
     namespace: NamespaceId,
     subject: &str,
 ) -> Result<bool, StoreError> {
-    crate::quotas::lock_secrets(tx, tenant, namespace).await?;
+    // Every report and scoped claim of an ordinary worker passes here. It reads its membership under
+    // the row lock a revocation waits for, and takes the namespace's secrets lock first only to keep
+    // the order of the catalog mutations. Shared: held exclusively it made one namespace's reports
+    // wait for each other until commit.
+    crate::quotas::share_secrets_lock(tx, tenant, namespace).await?;
     let role: Option<String> =
         sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
             .bind(tenant.as_uuid())

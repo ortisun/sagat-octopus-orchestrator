@@ -1327,9 +1327,10 @@ where
                     break;
                 }
             }
-            // The quota decision and READY -> LEASED transition share this run transaction. Its
-            // activity-scoped lock makes concurrent pollers exact; a full activity stays ready so
-            // this bounded candidate scan can still serve another activity.
+            // The quota decision and READY -> LEASED transition share this run transaction. A
+            // reachable limit is counted under the activity's count lock, which makes concurrent
+            // pollers exact; a full activity stays ready so this bounded candidate scan can still
+            // serve another activity. The default limit is not counted.
             if !tx.activity_admitted(&activity).await? {
                 metrics::counter!(
                     "quota_exceeded_total",
