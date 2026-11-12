@@ -16,7 +16,9 @@ transactions and 7.5 full run loads per lease. It drafted [038-claim-transition-
 | OD-2026-11-12-1 | "Aceito, implementar" | owner | Decided; not built | docs/designs/038-claim-transition-efficiency.md |
 
 Read as the answer to the question asked and no more. It does not answer the design's second owner question, whether a
-bounded departure from oldest-first claiming is acceptable (FR-038-003, task T038-6): that task waits for it. It does not
+bounded departure from oldest-first claiming is acceptable: the task that needs it waits (T038-8 and FR-038-004 in the
+second draft, which renumbered them after the reviews; it also asks whether the budget target may run on pull requests
+that change the hot path, T038-10). It does not
 make the design `Approved` either: `egm-review` and the architecture, security and correctness reviews still have to end
 with no Blocker or Major finding open.
 
