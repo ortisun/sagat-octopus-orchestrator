@@ -8,6 +8,7 @@
 //! [`AppError::StaleAttempt`] and changes nothing, although the external effect it describes may
 //! have happened (hence idempotency keys).
 
+mod claim_counters;
 mod database;
 mod lake_complete;
 pub mod lake_input;
@@ -22,6 +23,7 @@ mod scoped_output_refusal;
 mod scoped_reports;
 mod secret_resolution;
 mod secrets;
+use claim_counters::{ClaimProgress, count_claim};
 pub use output::BlobOutput;
 use secrets::SecretReport;
 
@@ -1027,12 +1029,16 @@ where
         // Set by a claim that found, under the locks a drain and a session replacement wait for,
         // that this session can take nothing more. The rest of the window would find the same,
         // each candidate at the cost of loading its run.
-        let mut session_full = false;
+        let mut progress = ClaimProgress::default();
+        let fetched = candidates.len() as u64;
+        let already = claimed.len();
+        let mut probed = 0u64;
         for (run, path) in candidates {
             let remaining = wanted - claimed.len();
             if remaining == 0 || bytes >= byte_budget {
                 break;
             }
+            probed += 1;
             match self
                 .claim_run(
                     principal,
@@ -1044,13 +1050,13 @@ where
                     byte_budget,
                     trace_id,
                     &mut bytes,
-                    &mut session_full,
+                    &mut progress,
                 )
                 .await
             {
                 Ok(tasks) => {
                     claimed.extend(tasks);
-                    if session_full {
+                    if progress.session_full {
                         break;
                     }
                 }
@@ -1065,6 +1071,12 @@ where
                 }
             }
         }
+        count_claim(
+            fetched,
+            probed,
+            progress.opened,
+            (claimed.len() - already) as u64,
+        );
         match first_error {
             Some(error) if claimed.is_empty() => Err(error),
             _ => Ok(()),
@@ -1083,7 +1095,7 @@ where
         byte_budget: usize,
         trace_id: Option<&str>,
         bytes: &mut usize,
-        session_full: &mut bool,
+        progress: &mut ClaimProgress,
     ) -> Result<Vec<ClaimedTask>, AppError>
     where
         S: PathExecutionStore,
@@ -1107,11 +1119,12 @@ where
             }
             Err(error) => return Err(error.into()),
         };
+        progress.opened += 1;
         // The identity may have been drained after the poll looked at its session: the check is
         // made again here, under the lock a drain waits for, so a drain that has returned has
         // stopped every poll that had not leased yet.
         if tx.worker_drained(&session.subject).await? {
-            *session_full = true;
+            progress.session_full = true;
             return Ok(Vec::new());
         }
         let room = tx
@@ -1121,7 +1134,7 @@ where
         if remaining == 0 {
             // The session holds all it declared (or is gone): decided under its row lock, and true
             // of every other candidate of this poll.
-            *session_full = true;
+            progress.session_full = true;
             return Ok(Vec::new());
         }
         // Candidate selection is only a bounded hint. Recheck catalog-backed capability needs
