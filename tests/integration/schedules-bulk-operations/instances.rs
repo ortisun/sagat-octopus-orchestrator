@@ -1158,11 +1158,15 @@ async fn the_runtime_role_reads_the_registry_and_calls_three_functions_only() {
                 .expect("privilege");
         assert!(!has, "{function} is the operator's");
     }
-    // and nobody else holds them: a role with no grant of its own
-    sqlx::query("CREATE ROLE registry_outsider NOLOGIN")
-        .execute(owner)
-        .await
-        .expect("role");
+    // and nobody else holds them: a role with no grant of its own. Roles belong to the server, not to the test's
+    // database, so a server that ran this test before (or runs it in parallel) already has it; it never gets a grant.
+    sqlx::query(
+        "DO $$ BEGIN CREATE ROLE registry_outsider NOLOGIN; \
+         EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+    )
+    .execute(owner)
+    .await
+    .expect("role");
     for function in PROCESS_FUNCTIONS.into_iter().chain(OPERATOR_FUNCTIONS) {
         let has: bool =
             sqlx::query_scalar("SELECT has_function_privilege('registry_outsider', $1, 'EXECUTE')")
