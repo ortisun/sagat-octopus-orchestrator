@@ -839,6 +839,9 @@ impl PendingResetStore for PgRunStore {
             failure.audit,
         )
         .await?;
+        if let Some(conflict) = failure.conflict {
+            insert_audit(&mut tx, conflict).await?;
+        }
         tx.commit().await.map_err(store_error)?;
         Ok(())
     }

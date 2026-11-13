@@ -1381,17 +1381,20 @@ where
             obligations: Vec::new(),
         };
         // A conflict is audited with the decision that found it (`FR-018-044`, `G2086`): by the schedule, on the schedule,
-        // with the closed reason; the business id is customer text and is not written. `USE_EXISTING` answers with the
-        // holder and is no conflict. The request of a trigger-now commits its own record beside it.
-        let conflict = (outcome == Outcome::BusinessIdConflict).then(|| {
-            self.audit(
+        // with the closed reason and the nominal time it decides (so two times are two records: the action collapses
+        // identical repeats, D2221); the business id is customer text and is not written. `USE_EXISTING` answers with
+        // the holder and is no conflict. The request of a trigger-now commits its own record beside it.
+        let conflict = if outcome == Outcome::BusinessIdConflict {
+            Some(self.audit(
                 record,
                 &Subject::schedule(record.id.as_uuid()),
                 AuditAction::BusinessIdConflict,
-                reason,
+                &format!("{reason} at {}", nominal_text(admission.nominal_at)?),
                 now,
-            )
-        });
+            ))
+        } else {
+            None
+        };
         let audits: Vec<&AuditRecord> = admission
             .manual
             .as_ref()

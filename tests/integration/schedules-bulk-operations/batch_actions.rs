@@ -579,25 +579,26 @@ async fn item_and_effect_in_one_transaction(
     (item, effects)
 }
 
+/// The item of `run` ended `state`, and its record and the audit record `action` of its effect were written by one
+/// transaction.
+async fn recorded_with(f: &Fixture, job: &JobRecord, run: RunId, action: &str, state: &str) {
+    assert_eq!(item(&outcomes(f, job).await, run).0, state, "{action}");
+    let (item, effects) = item_and_effect_in_one_transaction(f, job, run, action).await;
+    assert_eq!(
+        effects,
+        [item],
+        "{action}: one effect, written by the transaction that recorded its item"
+    );
+}
+
 #[tokio::test]
 async fn the_effect_of_each_use_case_commits_with_the_record_of_its_item() {
     let f = fixture().await;
     let exec = executor(&f);
+    let stuck = run_with_a_stuck_compensation(&f.w).await;
     let check = |job: JobRecord, run: RunId, action: &'static str| {
         let f = &f;
-        async move {
-            assert_eq!(
-                item(&outcomes(f, &job).await, run).0,
-                "SUCCEEDED",
-                "{action}"
-            );
-            let (item, effects) = item_and_effect_in_one_transaction(f, &job, run, action).await;
-            assert_eq!(
-                effects,
-                [item],
-                "{action}: one effect, written by the transaction that recorded its item"
-            );
-        }
+        async move { recorded_with(f, &job, run, action, "SUCCEEDED").await }
     };
 
     // `operate`
@@ -690,4 +691,89 @@ async fn the_effect_of_each_use_case_commits_with_the_record_of_its_item() {
     )
     .await;
     check(update, account, "run.updated").await;
+
+    // `operate` again: cancel and resume
+    let open = f.w.start(f.workflow, &json!({})).await;
+    let cancelled = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[open]),
+            ..write(
+                Action::Cancel,
+                Selector::filter(Filter::default()).expect("s"),
+            )
+        },
+        "one-tx-cancel",
+    )
+    .await;
+    check(cancelled, open, "run.cancel_requested").await;
+    let paused_run = f.w.start(f.workflow, &json!({})).await;
+    f.w.operate(paused_run, sagat_application::runs::RunOperation::Pause)
+        .await
+        .expect("pause it");
+    let resumed = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[paused_run]),
+            ..write(
+                Action::Resume,
+                Selector::filter(Filter::default()).expect("s"),
+            )
+        },
+        "one-tx-resume",
+    )
+    .await;
+    check(resumed, paused_run, "run.resumed").await;
+
+    // `review` again: a compensation retried (the run was made first, while its worker's tasks were the only ones)
+    let retried = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[stuck]),
+            ..step("reserve~c", Action::RetryStep)
+        },
+        "one-tx-retry",
+    )
+    .await;
+    check(retried, stuck, "saga.step_retried").await;
+
+    // the rerun of an ad-hoc run (`rerun_private`)
+    let ad_hoc = crate::support::schedules::ad_hoc_run(&f.w, "one-tx").await;
+    let ad_hoc_rerun = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[ad_hoc]),
+            ..write(
+                Action::Rerun,
+                Selector::filter(Filter::default()).expect("s"),
+            )
+        },
+        "one-tx-ad-hoc-rerun",
+    )
+    .await;
+    check(ad_hoc_rerun, ad_hoc, "run.rerun").await;
+
+    // an Update the run's rule rejects: its receipt and the failed item commit together
+    let (refusing_flow, _) = f.w.publish(declared_waiter("one-tx-rejected")).await;
+    let refusing =
+        f.w.start(
+            refusing_flow,
+            &json!({"account": {"balance": 10}, "k": "s"}),
+        )
+        .await;
+    let rejected = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[refusing]),
+            ..update_job(false, 30)
+        },
+        "one-tx-rejected-update",
+    )
+    .await;
+    recorded_with(&f, &rejected, refusing, "run.updated", "FAILED").await;
 }

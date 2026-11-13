@@ -203,9 +203,10 @@ impl BatchStore for SlotComesBetween {
         at: OffsetDateTime,
         fence: Option<&ShardFence>,
         finished: &AuditRecord,
+        conflict: Option<&AuditRecord>,
     ) -> Result<JobRecord, StoreError> {
         self.inner
-            .record_item(tenant, id, ordinal, outcome, at, fence, finished)
+            .record_item(tenant, id, ordinal, outcome, at, fence, finished, conflict)
             .await
     }
 

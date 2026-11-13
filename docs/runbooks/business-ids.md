@@ -89,10 +89,14 @@ of the identifier, creating the run first if none is open. It needs `run:start` 
 Each `409` of the first two rows is audited as `business_id.conflict` (`GET /audit?action=business_id.conflict`): the person who asked,
 the workflow they asked to start (`resourceType` `workflow`) and the closed reason, `BUSINESS_ID_IN_USE` or `BUSINESS_ID_REUSE_REJECTED`.
 **The identifier is not in the record** (it is customer text). The record is written after the refused start rolled back, in a
-transaction of its own, so nothing of the start commits with it; a failure to write it is logged (`failed to record audit entry`) and
-the answer is the same `409`. The decision of a schedule that finds its id held is audited the same way, by the schedule
-(`system:schedule:<id>`, `resourceType` `schedule`), in the transaction of its decision. `USE_EXISTING`, which answers with the holder,
-is no conflict and writes no such record (G2086, D2218).
+transaction of its own, so nothing of the start commits with it. It is **best effort and collapsed** (D2221): the same refusal asked
+again by the same person within five minutes is one record, and a record that could not be written is counted in
+`audit_write_failures_total{action="business_id.conflict"}` and logged (`failed to record audit entry`); the answer is the same `409`.
+The platform's own conflicts are recorded by the platform, in the transaction of their decision (D2220): a schedule's, by the
+schedule (`system:schedule:<id>`, `resourceType` `schedule`, the reason followed by `at <nominal time>`); a batch `RERUN` item's,
+by `system:engine` on the run it reruns (`BUSINESS_ID_IN_USE batch <job>`); the completion of a waiting reset, by `system:engine`
+on its source (`BUSINESS_ID_IN_USE reset <reset>`). A replica that lost its lease writes none of them. `USE_EXISTING`, which answers
+with the holder, is no conflict and writes no such record (G2086, D2218).
 
 ## 6. The identifiers a schedule makes, and selecting runs by prefix
 

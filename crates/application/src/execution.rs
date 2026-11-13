@@ -1088,11 +1088,14 @@ pub trait RunTx: Send {
     /// are locked after the run (slot 3R, then 8a), the job must still run and the item must not have ended, and the
     /// outcome, the counters and the next slot of the job are written, with the audit record of the end of the job when
     /// the item is the last. A refusal is [`StoreError::StateConflict`] and the caller drops the transaction, its effect
-    /// with it. An adapter that cannot refuses; the failure is the wiring's.
+    /// with it. `replay` is set when the transaction found the effect of the item's key already committed (an engine
+    /// older than D2219 applied it and did not record the item): the record then takes a job that is cancelling too,
+    /// because the cancel came after the effect. An adapter that cannot refuses; the failure is the wiring's.
     fn settle_batch_item<'a>(
         &'a mut self,
         _item: &'a crate::batch::ItemSettlement,
         _outcome: &'a crate::batch::ItemOutcome,
+        _replay: bool,
     ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
         async {
             Err(StoreError::Internal {

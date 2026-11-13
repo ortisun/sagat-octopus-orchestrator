@@ -821,6 +821,25 @@ unchanged since `6ed58c82`) and, in the second run only, `instances::the_runtime
 (`role "registry_outsider" already exists`: a role is the cluster's, and this cluster keeps what the first run made). Neither was run on a fresh,
 UTF-8 cluster here.
 
+## (o) Two independent reviews of (m) and (n) (2026-11-13, D2220 to D2223)
+
+| Finding | Test | Red first |
+| --- | --- | --- |
+| a replay of an older engine's effect was refused on a cancelling job, and the drain then cancelled an item whose run had changed | `fault … batch_item_transaction::an_effect_an_older_engine_applied_is_recorded_though_the_job_was_cancelled_since` | `Refused("the job no longer runs this item")` |
+| a failure after the commit turned a recorded item into `DEFERRED`/`Refused` | `…::an_outcome_that_committed_stands_when_the_call_fails_after_the_commit` | `Refused("the batch job is over")` |
+| an item recorded with another run | `…::an_item_is_recorded_only_with_its_own_run` | hand mutant without the two checks: `Ok(Settled(Succeeded))` |
+| a batch `RERUN` and a reset completion wrote the person's record after the rollback, again on every retry | `integration … business_id_audit_platform::` (2, the lease taken over while the refusal waits for its fence) | `[("alice", "workflow", …, "BUSINESS_ID_IN_USE")]` |
+| a person repeating a refused start grew the trail | `business_id_audit::a_person_who_repeats_a_refused_start_leaves_one_record_within_the_window` | `left: 5`, `right: 1` |
+| the rollback of a refused record was proven for `CANCEL` only | `…::a_refused_record_rolls_back_a_signal`, `_a_review`, `_a_rerun`, `_an_ad_hoc_rerun`, `_an_update` | not a behaviour change; each red against the hand mutant that takes a cancelling job (`running_only: false`), with the `CANCEL` test |
+| the crash test did not prove the effect came before the record | the cut backend holds `RowExclusiveLock` on `runs` and `run_events` while it waits for the item | |
+| the one-`xmin` test missed paths | `batch_actions::the_effect_of_each_use_case_commits_with_the_record_of_its_item` adds `CANCEL`, `RESUME`, `RETRY_STEP`, the ad-hoc rerun and a rejected Update (`FAILED` with its receipt) | |
+| the order of a `RERUN` that keeps its id | `…::a_rerun_that_keeps_its_id_and_an_update_write_in_the_order_of_the_slots` (D2223) | |
+
+**Gates of (o)** (fresh UTF-8 PostgreSQL 18, `RUST_TEST_THREADS=2`): fmt and workspace clippy `-D warnings` clean; the three checkers pass; unit tests of
+application, domain, scheduler and infra-postgres 1,427 passed; `contract_observability_operations` 11 passed; `fault_schedules_bulk_operations` 129 passed as
+the owner and 129 as `sagat_app`; `integration_schedules_bulk_operations` 723 passed, 2 ignored, as the owner and as `sagat_app`. The two failures of (m)/(n) were
+the scratch server's (`SQL_ASCII`; a role left by a first run, fixed in `6e38a671`) and do not recur.
+
 ## Appendix: the 257 waits of step 6.8
 
 ```sh

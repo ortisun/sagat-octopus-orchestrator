@@ -25,6 +25,16 @@ async fn conflicts(f: &Fixture) -> Vec<(String, String, String, Option<String>)>
     .expect("the audit trail")
 }
 
+/// The tenants of the `business_id.conflict` records.
+async fn conflict_tenants(f: &Fixture) -> Vec<uuid::Uuid> {
+    sqlx::query_scalar(
+        "SELECT tenant_id FROM audit_records WHERE action = 'business_id.conflict' ORDER BY created_at, id",
+    )
+    .fetch_all(&f.w.db.pool)
+    .await
+    .expect("the audit trail")
+}
+
 /// How many audit records, of any action, carry `text` in a column a reader is shown.
 async fn records_naming(f: &Fixture, text: &str) -> i64 {
     sqlx::query_scalar(
@@ -80,6 +90,11 @@ async fn a_start_refused_because_an_open_execution_holds_the_id_is_audited_witho
             Some("BUSINESS_ID_IN_USE".to_owned()),
         )],
         "one record, by the person, on the workflow they asked to start, with the closed reason"
+    );
+    assert_eq!(
+        conflict_tenants(&f).await,
+        [f.w.admin.tenant_id().as_uuid()],
+        "in the tenant of the person"
     );
     assert_eq!(
         records_naming(&f, id).await,
@@ -191,10 +206,44 @@ async fn a_schedule_that_finds_its_id_held_audits_the_conflict_with_its_decision
             format!("system:schedule:{}", schedule.id),
             "schedule".to_owned(),
             schedule.id.to_string(),
-            Some("BUSINESS_ID_IN_USE".to_owned()),
+            Some("BUSINESS_ID_IN_USE at 2026-10-28T13:00:00Z".to_owned()),
         )],
         "one record, by the schedule, on the schedule, with the closed reason: the decision is the schedule's, \
          and the person's start that held the id first was no conflict"
     );
     assert_eq!(records_naming(&f, "secret-order").await, 0);
+    assert_eq!(
+        conflict_tenants(&f).await,
+        [f.w.admin.tenant_id().as_uuid()]
+    );
+}
+
+#[tokio::test]
+async fn a_person_who_repeats_a_refused_start_leaves_one_record_within_the_window() {
+    let f = fixture().await;
+    let id = "order-repeated-1";
+    start(
+        &f,
+        business(id, ConflictPolicy::Fail, ReusePolicy::AllowDuplicate),
+        &key(),
+    )
+    .await
+    .expect("the first start binds the id");
+    for _ in 0..5 {
+        let refused = start(
+            &f,
+            business(id, ConflictPolicy::Fail, ReusePolicy::AllowDuplicate),
+            &key(),
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(AppError::BusinessIdConflict { .. })),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(
+        conflicts(&f).await.len(),
+        1,
+        "the same refusal asked again within five minutes is the same event (AuditAction::collapses_repeats)"
+    );
 }

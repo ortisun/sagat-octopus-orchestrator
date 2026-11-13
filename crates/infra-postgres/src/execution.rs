@@ -5499,11 +5499,15 @@ impl RunTx for PgRunTx {
         &mut self,
         item: &sagat_application::batch::ItemSettlement,
         outcome: &sagat_application::batch::ItemOutcome,
+        replay: bool,
     ) -> Result<(), StoreError> {
-        // the tenant of the item is the run's: a batch job acts only on runs of its own tenant
-        if item.tenant != self.info.tenant_id {
+        // the item is recorded only with its own run: the run this transaction acts on, or the run a rerun repeats, in
+        // the tenant of the run (a batch job acts only on runs of its own tenant)
+        let own_run = self.info.run_id.as_uuid() == item.run
+            || self.info.rerun_of.map(RunId::as_uuid) == Some(item.run);
+        if item.tenant != self.info.tenant_id || !own_run {
             return Err(StoreError::Internal {
-                detail: "a batch item was recorded with a run of another tenant".to_owned(),
+                detail: "a batch item was recorded with a run that is not its own".to_owned(),
             });
         }
         crate::batch::record_item_in(
@@ -5515,7 +5519,10 @@ impl RunTx for PgRunTx {
                 at: item.at,
                 fence: item.fence.as_ref(),
                 finished: &item.finished,
-                running_only: true,
+                run: Some(item.run),
+                conflict: None,
+                // an effect applied now needs a job that still runs; one that committed before the cancel does not
+                running_only: !replay,
             },
             outcome,
         )

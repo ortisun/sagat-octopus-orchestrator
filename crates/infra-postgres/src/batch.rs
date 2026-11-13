@@ -808,6 +808,7 @@ impl BatchStore for PgBatchStore {
         at: OffsetDateTime,
         fence: Option<&ShardFence>,
         finished: &AuditRecord,
+        conflict: Option<&AuditRecord>,
     ) -> Result<JobRecord, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         record_item_in(
@@ -819,6 +820,8 @@ impl BatchStore for PgBatchStore {
                 at,
                 fence,
                 finished,
+                run: None,
+                conflict,
                 // the record of an item the action did not apply, or of an effect that committed before: a cancel that
                 // came after it does not undo it, so a cancelling job still takes it
                 running_only: false,
@@ -1137,6 +1140,10 @@ pub(crate) struct ItemRecordTarget<'a> {
     pub(crate) at: OffsetDateTime,
     pub(crate) fence: Option<&'a ShardFence>,
     pub(crate) finished: &'a AuditRecord,
+    /// The run the item must be of, when the caller knows it (the run's transaction): another item is not touched.
+    pub(crate) run: Option<Uuid>,
+    /// The `business_id.conflict` record of the decision, written with it (D2220).
+    pub(crate) conflict: Option<&'a AuditRecord>,
     /// Only a job that still runs takes it: the record that commits with an effect, which a job that is cancelling must
     /// not take (the effect would go through after the cancel).
     pub(crate) running_only: bool,
@@ -1185,11 +1192,13 @@ pub(crate) async fn record_item_in(
     }
     let item = sqlx::query(
         "SELECT state, attempts FROM batch_items \
-             WHERE tenant_id = $1 AND job_id = $2 AND ordinal = $3 FOR UPDATE",
+             WHERE tenant_id = $1 AND job_id = $2 AND ordinal = $3 \
+               AND ($4::uuid IS NULL OR run_id = $4) FOR UPDATE",
     )
     .bind(tenant.as_uuid())
     .bind(id)
     .bind(i32::try_from(ordinal).unwrap_or(i32::MAX))
+    .bind(target.run)
     .fetch_optional(&mut *conn)
     .await
     .map_err(store_error)?;
@@ -1279,6 +1288,9 @@ pub(crate) async fn record_item_in(
     .execute(&mut *conn)
     .await
     .map_err(store_error)?;
+    if let Some(conflict) = target.conflict {
+        insert_audit(&mut *conn, conflict).await?;
+    }
     if complete {
         insert_audit(&mut *conn, target.finished).await?;
     }

@@ -116,6 +116,9 @@ pub struct ResetFailure<'a> {
     pub fence: Option<&'a ShardFence>,
     /// The audit record of the failure, committed with it.
     pub audit: &'a AuditRecord,
+    /// The `business_id.conflict` record of a completion refused because the id it keeps is held, committed with the
+    /// failure or not at all (D2220).
+    pub conflict: Option<&'a AuditRecord>,
 }
 
 /// Storage port of the pass that completes pending resets. Implemented by `sagat-infra-postgres`.
@@ -332,7 +335,9 @@ where
             None => None,
         };
         let (Some(requester), Some(membership)) = (requester, membership) else {
-            return self.fail(&entry, "AUTHORITY_REVOKED", fence, now).await;
+            return self
+                .fail(&entry, "AUTHORITY_REVOKED", fence, now, None)
+                .await;
         };
         let principal = Principal::new(entry.tenant_id, requester, membership.role());
         // the run this makes has no request to take a trace from: it begins one, or it is never told to the collector (D2087)
@@ -348,7 +353,16 @@ where
             }
             Ok(Completion::SourceOpen) => Ok(Completed::Idle),
             Err(error) => match failure_of(&error) {
-                Some(reason) => self.fail(&entry, reason, fence, now).await,
+                Some(reason) => {
+                    let conflict = match &error {
+                        AppError::BusinessIdConflict { reason, .. } => {
+                            Some(conflict_record(&entry, reason, now))
+                        }
+                        _ => None,
+                    };
+                    self.fail(&entry, reason, fence, now, conflict.as_ref())
+                        .await
+                }
                 None => match error {
                     // the lease is gone, or the entry was completed first: an ordinary race
                     AppError::StateConflict(reason) if is_known_race(reason) => {
@@ -367,6 +381,7 @@ where
         reason: &'static str,
         fence: Option<ShardFence>,
         now: OffsetDateTime,
+        conflict: Option<&AuditRecord>,
     ) -> Result<Completed, AppError> {
         let audit = engine_record(entry, reason, now);
         let failure = ResetFailure {
@@ -376,6 +391,7 @@ where
             at: now,
             fence: fence.as_ref(),
             audit: &audit,
+            conflict,
         };
         match self.store.fail_reset(&failure).await {
             Ok(()) => {
@@ -388,6 +404,21 @@ where
             Err(other) => Err(other.into()),
         }
     }
+}
+
+/// The record of a completion refused because the business id it keeps is held (`FR-018-044`, D2220): by the engine, on
+/// the source, with the closed reason and the entry; never the id.
+fn conflict_record(entry: &PendingReset, reason: &'static str, now: OffsetDateTime) -> AuditRecord {
+    let engine = Principal::new(entry.tenant_id, Subject::engine(), Role::Operator);
+    AuditRecord::by(
+        &engine,
+        AuditAction::BusinessIdConflict,
+        ResourceType::Run,
+        entry.source.to_string(),
+        None,
+        now,
+    )
+    .with_reason(format!("{reason} reset {}", entry.id))
 }
 
 /// The record of the platform ending an entry (a failure, or the expiry): the engine is the actor, not a person, the

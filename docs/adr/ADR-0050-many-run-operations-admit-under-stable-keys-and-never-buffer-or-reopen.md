@@ -98,6 +98,8 @@ be delivered at creation without a buffer; `RunState::replay` rebuilds state for
 
    Recorded deviation (aligned, T018-057): the `CANCEL_SOURCE` request takes its source row (3R), then the pending-resets quota lock (8b), then inserts the entry (8a), then writes the receipt it read in slot 2; no cycle, argued in ADR-0081 decision 5.
 
+   Recorded deviation (D2223, 2026-11-13): a batch `RERUN` item that keeps its business identifier takes the business-id row (slot 3, order (a)) and, after the new run (6), its job and item rows (8a), in the one transaction decision 2 asks for; order (a) otherwise never locks a job or an item. No cycle: no transaction that holds a job or an item row locks a business-id row or a run, and the other transactions that take a business-id row first lock no job or item.
+
    Transitions on an existing run (claims, completions, approvals, stream appends, operation messages,
    agent rows) start at slot 3R with the run (chain before run), then take the rows their own ADR lists
    (019 claim fences, 025 agent rows, 026 stream heads, 030 operation record and message), never a

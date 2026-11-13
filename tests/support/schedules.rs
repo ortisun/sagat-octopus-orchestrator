@@ -465,3 +465,91 @@ pub(crate) fn some_hours_ago() -> OffsetDateTime {
     let now = OffsetDateTime::now_utc().unix_timestamp();
     OffsetDateTime::from_unix_timestamp(now - now % 3_600 - 3 * 3_600).expect("instant")
 }
+
+/// An ad-hoc database run of the world's admin (feature 017's private document), ended: what a batch `RERUN` repeats
+/// through `rerun_private`. Its connection is declared and never reached: the run is cancelled before any worker asks.
+#[allow(dead_code)]
+pub(crate) async fn ad_hoc_run(w: &World, tag: &str) -> sagat_domain::execution::RunId {
+    use sagat_application::database::{ConnectionService, ConnectionWrite};
+    use sagat_application::runs::{AdHocMode, RunOperation, StartDatabaseExecution};
+    use sagat_domain::database::{ConnectionConfig, ConnectionStatus, DatabaseLimits, TlsPolicy};
+    use sagat_domain::identity::Slug;
+    use sagat_domain::secrets::SecretName;
+
+    let name = format!("ad-hoc-{tag}");
+    // the credential the connection names must exist, and is never read: the run is cancelled before a worker asks
+    let _ = w
+        .secrets
+        .put(
+            &w.admin,
+            w.namespace.id(),
+            "db-credentials",
+            b"never-read".to_vec(),
+            &RequestContext::default(),
+        )
+        .await;
+    // as if it had been moved to OpenBao (no OpenBao runs here): the admission of a connection asks only that
+    sqlx::query(
+        "UPDATE secrets SET authority = 'openbao' WHERE tenant_id = $1 AND namespace_id = $2 AND name = 'db-credentials'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("the authority of the credential");
+    ConnectionService::new(w.store.clone(), sagat_application::clock::SystemClock)
+        .put(
+            &w.admin,
+            w.namespace.id(),
+            ConnectionWrite {
+                name: Slug::parse(&name).expect("a slug"),
+                expected_revision: 0,
+                request_id: Uuid::new_v4(),
+                status: ConnectionStatus::Active,
+                config: ConnectionConfig::postgres(
+                    "db.example.com",
+                    5432,
+                    "orders",
+                    TlsPolicy::VerifyFull { ca_pem: None },
+                    SecretName::parse("db-credentials").expect("a name"),
+                    DatabaseLimits::default(),
+                )
+                .expect("a config"),
+            },
+            &RequestContext::default(),
+        )
+        .await
+        .expect("the connection");
+    let bytes = serde_json::to_vec(&super::engine::document(
+        &format!("database-ad-hoc-{tag}"),
+        "query",
+        vec![json!({
+            "id": "query", "type": "database", "connectionRef": {"name": name},
+            "operation": "query", "statement": "SELECT 1::bigint"
+        })],
+    ))
+    .expect("the document");
+    let key = format!("ad-hoc-{tag}-{}", Uuid::now_v7().simple());
+    let run = w
+        .runs
+        .start_database(
+            &w.admin,
+            &StartDatabaseExecution {
+                namespace: w.namespace.id(),
+                mode: AdHocMode::Step,
+                document: &bytes,
+                input: b"{}",
+                timeout_ms: None,
+                key: &key,
+            },
+            &RequestContext::default(),
+        )
+        .await
+        .expect("the ad-hoc run")
+        .info
+        .run_id;
+    w.operate(run, RunOperation::Cancel)
+        .await
+        .expect("cancel it");
+    run
+}

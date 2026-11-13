@@ -240,6 +240,28 @@ where
         .with_reason(reason)
     }
 
+    /// The record of an item refused because the business id its rerun keeps is held (`FR-018-044`, D2220): by the
+    /// engine (the platform decided it, not the creator), on the run the item reruns, with the closed reason and the
+    /// job. Never the id itself.
+    fn conflict(
+        &self,
+        job: &JobRecord,
+        item: &ItemRecord,
+        reason: &'static str,
+        now: OffsetDateTime,
+    ) -> AuditRecord {
+        let engine = Principal::new(job.tenant_id, Subject::engine(), Role::Operator);
+        AuditRecord::by(
+            &engine,
+            AuditAction::BusinessIdConflict,
+            ResourceType::Run,
+            item.run_id.to_string(),
+            None,
+            now,
+        )
+        .with_reason(format!("{reason} batch {}", job.id))
+    }
+
     /// A store refusal that means "the lease or the job moved": the step did not happen.
     fn refused(error: StoreError) -> Result<Stepped, AppError> {
         match error {
@@ -455,6 +477,7 @@ where
             job.tenant_id,
             job.id,
             item.ordinal,
+            item.run_id,
             fence.clone(),
             now,
             self.finished(job, "COMPLETED", now),
@@ -482,11 +505,22 @@ where
         let applied = self.actions.apply(&request).await;
         metrics::histogram!("batch_item_duration_seconds", "action" => job.action.as_str().to_ascii_lowercase())
             .record(started.elapsed().as_secs_f64());
+        // What committed with the effect stands, whatever the call answered after its commit (a read of the run that
+        // failed): the item is recorded, and nothing more is written for it.
+        if let Some(outcome) = settlement.settled() {
+            count_items(job.action, outcome_label(&outcome), 1);
+            return Ok(Stepped::Acted);
+        }
+        // the platform's own decision that the business id of a rerun is held: recorded by the engine with the item (D2220)
+        let mut conflict = None;
         let outcome = match applied {
-            // the effect and its record committed together: nothing more to write
             Ok(ItemEffect::Settled(outcome)) => {
                 count_items(job.action, outcome_label(&outcome), 1);
                 return Ok(Stepped::Acted);
+            }
+            Err(AppError::BusinessIdConflict { reason, .. }) => {
+                conflict = Some(self.conflict(job, item, reason, now));
+                ItemOutcome::Failed { code: "CONFLICT" }
             }
             // the record was refused in the run's transaction, and the effect with it: the lease, the job or the item
             // moved since the last look
@@ -519,6 +553,7 @@ where
                 now,
                 fence.as_ref(),
                 &finished,
+                conflict.as_ref(),
             )
             .await
         {

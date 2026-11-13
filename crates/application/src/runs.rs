@@ -216,9 +216,10 @@ async fn commit_with_item<T: RunTx>(
     mut tx: T,
     item: Option<&ItemSettlement>,
     outcome: ItemOutcome,
+    replay: bool,
 ) -> Result<(), AppError> {
     if let Some(item) = item {
-        tx.settle_batch_item(item, &outcome)
+        tx.settle_batch_item(item, &outcome, replay)
             .await
             .map_err(|error| match error {
                 StoreError::StateConflict(reason) => AppError::BatchConflict { reason },
@@ -1726,8 +1727,14 @@ where
             Err(error) => {
                 self.audit_database_denial(principal, workflow.id(), &error, ctx)
                     .await;
-                // the action of a schedule records its conflict with its decision, in the decision's transaction
-                if !scheduled_start {
+                // Only a person's start is recorded here. The platform's own decisions record their conflict with the
+                // fenced record of the decision, by the engine (D2220): the action of a schedule with its decision, a
+                // batch item with the item, the completion of a waiting reset with the failed entry. Written here, those
+                // would name the person and be written again by every replica that retried after its record was refused.
+                let by_platform = scheduled_start
+                    || pending_completion
+                    || rerun.is_some_and(|rerun| rerun.item.is_some());
+                if !by_platform {
                     self.audit_business_id_conflict(principal, workflow.id(), &error, ctx)
                         .await;
                 }
@@ -2005,12 +2012,12 @@ where
                     new_run: Some(run_id.as_uuid()),
                 };
                 if let Some(item) = item {
-                    tx.settle_batch_item(item, &outcome)
-                        .await
-                        .map_err(|error| match error {
+                    tx.settle_batch_item(item, &outcome, false).await.map_err(
+                        |error| match error {
                             StoreError::StateConflict(reason) => AppError::BatchConflict { reason },
                             other => store_failure(pending_completion, other),
-                        })?;
+                        },
+                    )?;
                 }
                 tx.commit()
                     .await
@@ -2124,14 +2131,16 @@ where
                 },
             },
         };
-        commit_with_item(tx, item, outcome).await?;
+        commit_with_item(tx, item, outcome, applied.resolution.replayed()).await?;
         Ok((applied, served))
     }
 
-    /// The record of a start refused because its business identifier is held (`FR-018-044`, `G2086`): written where the
-    /// refusal is decided, after the transaction of the start rolled back (nothing of the start may commit with it), in one
-    /// of its own. It names the person, the workflow and the closed reason; the identifier is customer text and is not
-    /// written. A failure to write it is logged and does not change the answer: the refusal stands either way.
+    /// The record of a person's start refused because its business identifier is held (`FR-018-044`, `G2086`): written
+    /// where the refusal is decided, after the transaction of the start rolled back (nothing of the start may commit with
+    /// it), in one of its own. It names the person, the workflow and the closed reason; the identifier is customer text and
+    /// is not written. It is best effort and collapsed (D2221): the same refusal asked again within five minutes is one
+    /// record (`AuditAction::collapses_repeats`), and a failure to write it is counted (`audit_write_failures_total`) and
+    /// logged and does not change the answer.
     async fn audit_business_id_conflict(
         &self,
         principal: &Principal,
@@ -2152,6 +2161,9 @@ where
         )
         .with_reason(*reason);
         if let Err(error) = self.store.record_refusal(&audit).await {
+            // the refusal stands without it (D2221): a record that is lost is counted, not only logged
+            metrics::counter!("audit_write_failures_total", "action" => audit.action().as_str())
+                .increment(1);
             tracing::error!(%error, action = %audit.action(), "failed to record audit entry");
         }
     }
@@ -2529,7 +2541,7 @@ where
         if tx.replay(&idempotency).await?.is_some() {
             // an effect of this key committed before its item's record existed: the item takes it now
             if item.is_some() {
-                commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }).await?;
+                commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }, true).await?;
             } else {
                 drop(tx);
             }
@@ -2575,7 +2587,7 @@ where
             })
             .await
             .map_err(engine_error)?;
-        commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }).await?;
+        commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }, false).await?;
         self.get(principal, id, ctx).await
     }
 
@@ -2706,7 +2718,7 @@ where
         if tx.replay(&idempotency).await?.is_some() {
             // an effect of this key committed before its item's record existed: the item takes it now
             if item.is_some() {
-                commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }).await?;
+                commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }, true).await?;
             } else {
                 drop(tx);
             }
@@ -2790,7 +2802,7 @@ where
                 .await
                 .map_err(engine_error)?;
         }
-        commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }).await?;
+        commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }, false).await?;
         self.get(principal, id, ctx).await
     }
 
@@ -2875,7 +2887,9 @@ where
         else {
             return Err(self.missing(principal, id, ctx).await);
         };
-        let woken = match tx.replay(&idempotency).await? {
+        let replayed = tx.replay(&idempotency).await?;
+        let replay = replayed.is_some();
+        let woken = match replayed {
             Some(delivered) => delivered
                 .split(',')
                 .filter(|n| !n.is_empty())
@@ -2896,7 +2910,7 @@ where
             HolderReceipt::Read(start) => tx.replay(&served_marker(start)).await?.is_some(),
         };
         // a replay too: an effect of this key that committed before its item's record existed is the item's now
-        commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }).await?;
+        commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }, replay).await?;
         Ok((woken, served))
     }
 

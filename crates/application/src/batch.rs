@@ -478,6 +478,8 @@ pub struct ItemSettlement {
     pub tenant: TenantId,
     pub job: Uuid,
     pub ordinal: u32,
+    /// The run of the item: the run the transaction acts on, or the run a rerun repeats. The record refuses any other.
+    pub run: Uuid,
     pub fence: Option<ShardFence>,
     /// The instant of the record (the executor's clock, as the record of a refusal has it).
     pub at: OffsetDateTime,
@@ -492,6 +494,7 @@ impl ItemSettlement {
         tenant: TenantId,
         job: Uuid,
         ordinal: u32,
+        run: Uuid,
         fence: Option<ShardFence>,
         at: OffsetDateTime,
         finished: AuditRecord,
@@ -500,6 +503,7 @@ impl ItemSettlement {
             tenant,
             job,
             ordinal,
+            run,
             fence,
             at,
             finished,
@@ -660,7 +664,9 @@ pub trait BatchStore: QuotaLookup + Send + Sync {
     /// fence of the shard, in one transaction: an item the action did not apply (a skip, a failure, a
     /// refusal for now), or one whose effect committed before this record existed (a replay of its
     /// key). An effect applied now is recorded in the run's transaction instead ([`ItemSettlement`]).
-    /// A job that is over or an item that has ended is a `StateConflict`.
+    /// A job that is over or an item that has ended is a `StateConflict`. `conflict`, when given, is the
+    /// `business_id.conflict` record of an item the platform refused because its business id is held: it commits
+    /// with the item or not at all (D2220).
     #[allow(clippy::too_many_arguments)]
     fn record_item(
         &self,
@@ -671,6 +677,7 @@ pub trait BatchStore: QuotaLookup + Send + Sync {
         at: OffsetDateTime,
         fence: Option<&ShardFence>,
         finished: &AuditRecord,
+        conflict: Option<&AuditRecord>,
     ) -> impl Future<Output = Result<JobRecord, StoreError>> + Send;
 
     /// Marks a job whose items have all ended `COMPLETED`.

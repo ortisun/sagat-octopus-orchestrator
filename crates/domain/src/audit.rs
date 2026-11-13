@@ -234,7 +234,9 @@ pub enum AuditAction {
     RunResetRequested,
     /// A start or a schedule's action was refused because its business identifier is held: an open execution holds it
     /// (`BUSINESS_ID_IN_USE`) or the reuse policy refuses a remembered one (`BUSINESS_ID_REUSE_REJECTED`). The reason is
-    /// that closed word; the identifier is customer text and is never written (`FR-018-044`, `G2086`).
+    /// that closed word; the identifier is customer text and is never written (`FR-018-044`, `G2086`). A person can repeat
+    /// the refused start at will, so the same refusal within five minutes is one record (D2221); the platform's records
+    /// carry the time, the job or the entry they decide in their reason and are each their own (D2220).
     BusinessIdConflict,
 }
 
@@ -270,6 +272,7 @@ impl AuditAction {
                 | Self::RunQueried
                 | Self::ApprovalDenied
                 | Self::ScheduleInputDisclosed
+                | Self::BusinessIdConflict
         )
     }
 
@@ -288,7 +291,8 @@ impl AuditAction {
             | Self::PayloadDisclosed
             | Self::PayloadRevealDenied
             | Self::RunQueried
-            | Self::ScheduleInputDisclosed => Some(std::time::Duration::from_secs(300)),
+            | Self::ScheduleInputDisclosed
+            | Self::BusinessIdConflict => Some(std::time::Duration::from_secs(300)),
             Self::ApprovalDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
