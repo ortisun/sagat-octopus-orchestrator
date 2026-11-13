@@ -353,8 +353,8 @@ reversible until the owner confirms them.
 
 | Limit | Value | Source |
 |---|---|---|
-| `maxItems` of one collection | Validation accepts 1 to 10,000. The published ceiling is 10,000 if the T014-042 acceptance run on the release candidate meets its thresholds, otherwise 1,000; the release notes say which | OD-2026-11-04-5 (delegate) |
-| `maxIterations` of one loop | Validation accepts 1 to 10,000. Published 1,000 unless a 10,000-iteration loop completes within 1,800 s on that run | OD-2026-11-04-5 (delegate) |
+| `maxItems` of one collection | Validation accepts 1 to 10,000. Published 1,000 in 0.3.0 | OD-2026-11-04-5, OD-2026-11-13-1 (owner) |
+| `maxIterations` of one loop | Validation accepts 1 to 10,000. Published 1,000 in 0.3.0 | OD-2026-11-04-5, OD-2026-11-13-1 (owner) |
 | `maxConcurrency` of one collection | 1 to 256, and bounded by the tenant's `iteration_concurrency` quota | `crates/domain/src/workflow.rs` |
 | Pending waits (approvals, timers, event waits) | 20,000 per scheduler replica at the default 500 ms interval | OD-2026-11-04-6 (delegate) |
 
