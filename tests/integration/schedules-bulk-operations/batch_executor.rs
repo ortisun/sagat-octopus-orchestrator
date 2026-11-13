@@ -410,8 +410,11 @@ async fn a_run_that_has_ended_or_is_not_there_is_skipped_with_its_reason() {
     assert_eq!(status_of(&f, open).await, "CANCELLED");
 }
 
+/// An effect of the item's key that committed without the item's record (what an engine from before O1951 left when it
+/// died between its two transactions; the run's transaction now records the item with the effect, so it cannot arise any
+/// more) is recorded by the next step, and the repeat of the key changes nothing on the run.
 #[tokio::test]
-async fn a_crash_between_the_effect_and_its_record_costs_a_repeat_that_changes_nothing() {
+async fn an_effect_that_committed_before_its_record_existed_is_recorded_once_and_not_repeated() {
     let f = fixture().await;
     let runs = runs_started(&f, 1).await;
     live(&f);
@@ -423,23 +426,18 @@ async fn a_crash_between_the_effect_and_its_record_costs_a_repeat_that_changes_n
     )
     .await;
     select(&exec, &job_).await;
-    // the effect committed, the process died before the outcome was recorded
-    let creator = sagat_domain::identity::Principal::new(
-        job_.tenant_id,
-        sagat_domain::identity::Subject::parse("alice").expect("subject"),
-        sagat_domain::identity::Role::Admin,
-    );
+    // the effect under the item's key, with no record of the item
     let key = format!("batch:{}:{}", job_.id, runs[0]);
-    let ctx = RequestContext::default();
-    Runs(Arc::clone(&f.w))
-        .apply(&ItemRequest {
-            principal: &creator,
-            job: &job_,
-            run: runs[0],
-            key: &key,
-            payload: None,
-            ctx: &ctx,
-        })
+    f.w.runs
+        .operate(
+            &f.w.admin,
+            sagat_domain::execution::RunId::new(runs[0]),
+            sagat_application::runs::RunOperation::Cancel,
+            &format!("batch {}: {}", job_.id, job_.reason),
+            None,
+            &key,
+            &RequestContext::default(),
+        )
         .await
         .expect("the effect");
     assert_eq!(items(&f, job_.id).await[0].1, "PENDING");

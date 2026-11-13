@@ -1109,6 +1109,12 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   first); the cancel that commits while a failure is recorded is held by a test with a held lock (the hand mutant without `FOR UPDATE` survived before); a cancel
   brings the slot back to the database's clock; the `down` refuses only for a job that is still selecting; the slot column has a catalog comment; the alert
   `SagatBatchSelectionFailed` with its promtool tests; the spec carries the policy (US05 scenario 6, FR-018-029, SC-018-018). `verification.md` (k.2).
+  *Added 2026-11-13 (OD-2026-11-13-2, O1951 (b), D2219, G1961 closed), the task stays as it was:* the effect on a run and the record of its item are one
+  transaction, the run's: each single-run use case takes the item (`ItemSettlement`) and, after its effect, checks the fence and locks the job and the item
+  (run, then job, then item) and records the outcome before it commits. Evidence, each red first: `fault_schedules_bulk_operations batch_item_transaction::`
+  3 passed (a cancel of the job and a lease lost between the last look and the effect let nothing through; a death at the record leaves neither);
+  `integration_schedules_bulk_operations batch_actions::the_effect_of_each_use_case_commits_with_the_record_of_its_item` (one `xmin` for the item and the
+  effect, for `operate`, `signal`, `review`, `rerun` and the Update). `batch_thousand` now cuts the run's transaction at the record (`verification.md` (n)).
 - [ ] T018-047 [US5] Item adapters for the eight actions through single-run use cases, skip reasons (incl.
   `TEST_RUN`), failed compensation of cancelled runs — `tests/integration/schedules-bulk-operations/batch_actions.rs`
   — one case per action and reason — FR-018-030, FR-018-031, FR-018-034, FR-018-050.

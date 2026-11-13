@@ -810,125 +810,22 @@ impl BatchStore for PgBatchStore {
         finished: &AuditRecord,
     ) -> Result<JobRecord, StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        check_fence(&mut tx, id, fence).await?;
-        let job = sqlx::query(
-            "SELECT state, selected, succeeded + skipped + failed + cancelled AS ended, deferred, \
-                    rate_milli, next_slot_at \
-             FROM batch_jobs WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+        record_item_in(
+            &mut tx,
+            &ItemRecordTarget {
+                tenant,
+                id,
+                ordinal,
+                at,
+                fence,
+                finished,
+                // the record of an item the action did not apply, or of an effect that committed before: a cancel that
+                // came after it does not undo it, so a cancelling job still takes it
+                running_only: false,
+            },
+            outcome,
         )
-        .bind(tenant.as_uuid())
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let Some(job) = job else {
-            return Err(StoreError::MissingReference);
-        };
-        let state: String = col(&job, "state")?;
-        if !matches!(state.as_str(), "RUNNING" | "CANCELLING") {
-            return Err(StoreError::StateConflict("the batch job is over"));
-        }
-        let item = sqlx::query(
-            "SELECT state, attempts FROM batch_items \
-             WHERE tenant_id = $1 AND job_id = $2 AND ordinal = $3 FOR UPDATE",
-        )
-        .bind(tenant.as_uuid())
-        .bind(id)
-        .bind(i32::try_from(ordinal).unwrap_or(i32::MAX))
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let Some(item) = item else {
-            return Err(StoreError::MissingReference);
-        };
-        let was: String = col(&item, "state")?;
-        let was = item_state_from(&was).map_err(|_| corrupt("batch item state"))?;
-        if was.is_terminal() {
-            return Err(StoreError::StateConflict("the batch item already ended"));
-        }
-        // what the item becomes, and what moves in the counters of the job
-        let (to, reason, error, new_run, retry_at): (
-            ItemState,
-            Option<&'static str>,
-            Option<&'static str>,
-            Option<Uuid>,
-            Option<OffsetDateTime>,
-        ) = match outcome {
-            ItemOutcome::Succeeded { new_run } => {
-                (ItemState::Succeeded, None, None, *new_run, None)
-            }
-            ItemOutcome::Skipped(reason) => {
-                (ItemState::Skipped, Some(reason.as_str()), None, None, None)
-            }
-            ItemOutcome::Failed { code } => (ItemState::Failed, None, Some(*code), None, None),
-            ItemOutcome::Deferred { cause, retry_at } => (
-                ItemState::Deferred,
-                Some(cause.as_str()),
-                None,
-                None,
-                Some(*retry_at),
-            ),
-        };
-        let refusal = to == ItemState::Deferred;
-        sqlx::query(
-            "UPDATE batch_items SET state = $4, reason = $5, error_code = $6, new_run_id = $7, \
-                    attempts = attempts + $8, \
-                    first_refused_at = CASE WHEN $9 THEN COALESCE(first_refused_at, $10) ELSE first_refused_at END, \
-                    next_attempt_at = $11, updated_at = $10 \
-             WHERE tenant_id = $1 AND job_id = $2 AND ordinal = $3",
-        )
-        .bind(tenant.as_uuid())
-        .bind(id)
-        .bind(i32::try_from(ordinal).unwrap_or(i32::MAX))
-        .bind(item_state_name(to))
-        .bind(reason)
-        .bind(error)
-        .bind(new_run)
-        .bind(i16::from(refusal))
-        .bind(refusal)
-        .bind(at)
-        .bind(retry_at)
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let delta = |state: ItemState| i32::from(to == state);
-        let deferred_delta = i32::from(to == ItemState::Deferred && was == ItemState::Pending)
-            - i32::from(to != ItemState::Deferred && was == ItemState::Deferred);
-        let rate_milli: i32 = col(&job, "rate_milli")?;
-        let slot: OffsetDateTime = col(&job, "next_slot_at")?;
-        let slot = next_slot(
-            slot,
-            at,
-            Rate::from_milli(u32::try_from(rate_milli).unwrap_or(1))
-                .map_err(|_| corrupt("batch rate"))?,
-        );
-        let selected: i32 = col(&job, "selected")?;
-        let ended: i32 = col::<i32>(&job, "ended")? + i32::from(to.is_terminal());
-        let deferred: i32 = col::<i32>(&job, "deferred")? + deferred_delta;
-        // a running job whose items have all ended is complete in the same transaction
-        let complete = state == "RUNNING" && ended == selected && deferred == 0;
-        sqlx::query(
-            "UPDATE batch_jobs SET succeeded = succeeded + $3, skipped = skipped + $4, \
-                    failed = failed + $5, deferred = deferred + $6, next_slot_at = $7, \
-                    state = CASE WHEN $8 THEN 'COMPLETED' ELSE state END, \
-                    finished_at = CASE WHEN $8 THEN $9 ELSE finished_at END \
-             WHERE tenant_id = $1 AND id = $2",
-        )
-        .bind(tenant.as_uuid())
-        .bind(id)
-        .bind(delta(ItemState::Succeeded))
-        .bind(delta(ItemState::Skipped))
-        .bind(delta(ItemState::Failed))
-        .bind(deferred_delta)
-        .bind(slot)
-        .bind(complete)
-        .bind(at)
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        if complete {
-            insert_audit(&mut tx, finished).await?;
-        }
+        .await?;
         let row = sqlx::query(select_jobs!("WHERE tenant_id = $1 AND id = $2"))
             .bind(tenant.as_uuid())
             .bind(id)
@@ -1230,6 +1127,162 @@ impl BatchStore for PgBatchStore {
             sample: found.into_iter().take(sample).collect(),
         })
     }
+}
+
+/// Where and when an item's outcome is recorded, and what the job must be for it.
+pub(crate) struct ItemRecordTarget<'a> {
+    pub(crate) tenant: TenantId,
+    pub(crate) id: Uuid,
+    pub(crate) ordinal: u32,
+    pub(crate) at: OffsetDateTime,
+    pub(crate) fence: Option<&'a ShardFence>,
+    pub(crate) finished: &'a AuditRecord,
+    /// Only a job that still runs takes it: the record that commits with an effect, which a job that is cancelling must
+    /// not take (the effect would go through after the cancel).
+    pub(crate) running_only: bool,
+}
+
+/// Records the outcome of an item with the counters and the next slot of its job, in the caller's transaction: the fence
+/// (`FOR SHARE`, a leaf lock), then the job's row and the item's row `FOR UPDATE`, in that order (ADR-0050 decision 3,
+/// order (b): after the run, when the caller holds one). The job ends `COMPLETED` in the same transaction when this is its
+/// last item, with its audit record. A job that is over (or, with `running_only`, no longer running) and an item that has
+/// ended are a `StateConflict`; the caller rolls back.
+pub(crate) async fn record_item_in(
+    conn: &mut PgConnection,
+    target: &ItemRecordTarget<'_>,
+    outcome: &ItemOutcome,
+) -> Result<(), StoreError> {
+    let ItemRecordTarget {
+        tenant,
+        id,
+        ordinal,
+        at,
+        fence,
+        ..
+    } = *target;
+    check_fence(&mut *conn, id, fence).await?;
+    let job = sqlx::query(
+        "SELECT state, selected, succeeded + skipped + failed + cancelled AS ended, deferred, \
+                    rate_milli, next_slot_at \
+             FROM batch_jobs WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+    )
+    .bind(tenant.as_uuid())
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    let Some(job) = job else {
+        return Err(StoreError::MissingReference);
+    };
+    let state: String = col(&job, "state")?;
+    if target.running_only && state != "RUNNING" {
+        return Err(StoreError::StateConflict(
+            "the job no longer runs this item",
+        ));
+    }
+    if !matches!(state.as_str(), "RUNNING" | "CANCELLING") {
+        return Err(StoreError::StateConflict("the batch job is over"));
+    }
+    let item = sqlx::query(
+        "SELECT state, attempts FROM batch_items \
+             WHERE tenant_id = $1 AND job_id = $2 AND ordinal = $3 FOR UPDATE",
+    )
+    .bind(tenant.as_uuid())
+    .bind(id)
+    .bind(i32::try_from(ordinal).unwrap_or(i32::MAX))
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    let Some(item) = item else {
+        return Err(StoreError::MissingReference);
+    };
+    let was: String = col(&item, "state")?;
+    let was = item_state_from(&was).map_err(|_| corrupt("batch item state"))?;
+    if was.is_terminal() {
+        return Err(StoreError::StateConflict("the batch item already ended"));
+    }
+    // what the item becomes, and what moves in the counters of the job
+    let (to, reason, error, new_run, retry_at): (
+        ItemState,
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<Uuid>,
+        Option<OffsetDateTime>,
+    ) = match outcome {
+        ItemOutcome::Succeeded { new_run } => (ItemState::Succeeded, None, None, *new_run, None),
+        ItemOutcome::Skipped(reason) => {
+            (ItemState::Skipped, Some(reason.as_str()), None, None, None)
+        }
+        ItemOutcome::Failed { code } => (ItemState::Failed, None, Some(*code), None, None),
+        ItemOutcome::Deferred { cause, retry_at } => (
+            ItemState::Deferred,
+            Some(cause.as_str()),
+            None,
+            None,
+            Some(*retry_at),
+        ),
+    };
+    let refusal = to == ItemState::Deferred;
+    sqlx::query(
+            "UPDATE batch_items SET state = $4, reason = $5, error_code = $6, new_run_id = $7, \
+                    attempts = attempts + $8, \
+                    first_refused_at = CASE WHEN $9 THEN COALESCE(first_refused_at, $10) ELSE first_refused_at END, \
+                    next_attempt_at = $11, updated_at = $10 \
+             WHERE tenant_id = $1 AND job_id = $2 AND ordinal = $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id)
+        .bind(i32::try_from(ordinal).unwrap_or(i32::MAX))
+        .bind(item_state_name(to))
+        .bind(reason)
+        .bind(error)
+        .bind(new_run)
+        .bind(i16::from(refusal))
+        .bind(refusal)
+        .bind(at)
+        .bind(retry_at)
+        .execute(&mut *conn)
+        .await
+        .map_err(store_error)?;
+    let delta = |state: ItemState| i32::from(to == state);
+    let deferred_delta = i32::from(to == ItemState::Deferred && was == ItemState::Pending)
+        - i32::from(to != ItemState::Deferred && was == ItemState::Deferred);
+    let rate_milli: i32 = col(&job, "rate_milli")?;
+    let slot: OffsetDateTime = col(&job, "next_slot_at")?;
+    let slot = next_slot(
+        slot,
+        at,
+        Rate::from_milli(u32::try_from(rate_milli).unwrap_or(1))
+            .map_err(|_| corrupt("batch rate"))?,
+    );
+    let selected: i32 = col(&job, "selected")?;
+    let ended: i32 = col::<i32>(&job, "ended")? + i32::from(to.is_terminal());
+    let deferred: i32 = col::<i32>(&job, "deferred")? + deferred_delta;
+    // a running job whose items have all ended is complete in the same transaction
+    let complete = state == "RUNNING" && ended == selected && deferred == 0;
+    sqlx::query(
+        "UPDATE batch_jobs SET succeeded = succeeded + $3, skipped = skipped + $4, \
+                    failed = failed + $5, deferred = deferred + $6, next_slot_at = $7, \
+                    state = CASE WHEN $8 THEN 'COMPLETED' ELSE state END, \
+                    finished_at = CASE WHEN $8 THEN $9 ELSE finished_at END \
+             WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(tenant.as_uuid())
+    .bind(id)
+    .bind(delta(ItemState::Succeeded))
+    .bind(delta(ItemState::Skipped))
+    .bind(delta(ItemState::Failed))
+    .bind(deferred_delta)
+    .bind(slot)
+    .bind(complete)
+    .bind(at)
+    .execute(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    if complete {
+        insert_audit(&mut *conn, target.finished).await?;
+    }
+    Ok(())
 }
 
 /// The writes that end a job `FAILED`, in the transaction that holds the job's row `FOR UPDATE` and has seen it `SELECTING`

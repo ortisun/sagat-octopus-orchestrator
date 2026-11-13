@@ -1,7 +1,8 @@
 //! One real job of 1,000 runs through a kill and a cancellation (`T018-046`, `SC-018-009`, `FR-018-029..031`,
 //! `FR-018-033`, `NFR-018-001`): the job cancels 1,000 real runs on two replicas of the engine (a keeper and a batch pass
 //! each, the real run service for the effect) while their processes are killed between the effect on a run and the
-//! record of the item (the connection of the transaction that records it is cut inside PostgreSQL), and once outright,
+//! record of the item (the connection of the run's transaction is cut inside PostgreSQL at a write of the record, after the
+//! writes of the effect: since O1951 the effect and the record are one transaction, so neither commits), and once outright,
 //! at a moment nothing chose; the shards of the dead process pass to the other, a new process takes its place, and the
 //! job is cancelled by the API half way. The matrix of `batch.rs` cuts each write of each transaction of a job of three
 //! items; this is the same claim at the size the success criterion names, with the whole engine in the way.
@@ -358,7 +359,8 @@ async fn a_job_of_a_thousand_runs_loses_its_process_three_times_between_an_effec
     let mut engines: Vec<Engine> = Vec::new();
 
     // which of them has the job; it takes the selection and then applies items. One round of it is watched: the writes of the
-    // transaction that records an item are what is cut off below, at the first and at the last
+    // record of an item, in the run's transaction after the writes of the effect, are what is cut off below, at the first and
+    // at the last
     let owner = owner_of(&f, created.id).await;
     let leader = if owner == one.name { &one } else { &two };
     within("the job is selected", WAIT, async {
@@ -382,7 +384,7 @@ async fn a_job_of_a_thousand_runs_loses_its_process_three_times_between_an_effec
     wire.disarm().await;
     assert!(round.steps > 0, "the watched round took steps: {round:?}");
     let writes = wire.writes().await;
-    // the transaction that records an item writes `batch_items` and the job and does not write the run
+    // the transaction that applies an item writes the run and then records the item: `batch_items` and the job (O1951)
     let by_transaction: Vec<(i64, Vec<(usize, String)>)> = {
         let mut order: Vec<i64> = Vec::new();
         for (xid, _, _) in &writes {
@@ -408,15 +410,39 @@ async fn a_job_of_a_thousand_runs_loses_its_process_three_times_between_an_effec
         .iter()
         .find(|(_, tables)| {
             tables.iter().any(|(_, table)| table == "batch_items")
-                && !tables.iter().any(|(_, table)| table == "runs")
+                && tables.iter().any(|(_, table)| table == "runs")
         })
-        .expect("a transaction that records an item");
+        .expect("a transaction that applies an item and records it");
+    // the writes of the record come after every write of the effect and before the usage rows, which are last (ADR-0050
+    // decision 7: slot 6, then 8a, then 8b; the quota deltas are flushed when the transaction commits)
+    let is_record = |table: &str| table == "batch_items" || table == "batch_jobs";
+    let is_usage = |table: &str| table == "quota_transaction_deltas";
+    let last_effect = record
+        .1
+        .iter()
+        .filter(|(_, table)| !is_record(table) && !is_usage(table))
+        .map(|(position, _)| *position)
+        .max()
+        .expect("the effect writes");
+    let first_usage = record
+        .1
+        .iter()
+        .filter(|(_, table)| is_usage(table))
+        .map(|(position, _)| *position)
+        .min()
+        .unwrap_or(usize::MAX);
     let cuts: Vec<(usize, String)> = record
         .1
         .iter()
         .filter(|(_, table)| table == "batch_items" || table == "batch_jobs")
         .cloned()
         .collect();
+    assert!(
+        cuts.iter()
+            .all(|(position, _)| *position > last_effect && *position < first_usage),
+        "the record follows the effect in its transaction: {:?}",
+        record.1
+    );
     assert!(!cuts.is_empty());
     println!(
         "a record of an item is one transaction of {} writes ({:?}); the cuts are at {:?}",
@@ -451,12 +477,18 @@ async fn a_job_of_a_thousand_runs_loses_its_process_three_times_between_an_effec
         } else {
             cuts.first().expect("a cut").clone()
         };
+        let kills = wire.kills().await;
         wire.arm_on(&table, position).await;
         until(
             "an item is cut off between its effect and its record",
-            || async { effects_without_a_record(&f, created.id).await > 0 },
+            || async { wire.kills().await > kills },
         )
         .await;
+        assert_eq!(
+            effects_without_a_record(&f, created.id).await,
+            0,
+            "the cut rolled the effect back with its record: no run is changed that its item does not say"
+        );
         // the process that was doing it dies here, with its connection cut
         let owner = owner_of(&f, created.id).await;
         let index = engines

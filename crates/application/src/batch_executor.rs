@@ -3,10 +3,14 @@
 //! end of a job. One call of [`BatchExecutor::step`] does one thing to one job, and the pass of the
 //! scheduler calls it for the jobs of the shards the replica owns.
 //!
-//! **No step holds two run locks.** The effect on a run is applied by the single-run use case under
-//! the key `batch:{job}:{run}` and commits on its own; the outcome of the item, the counters and the
-//! next slot of the job commit after it, under the fence of the shard. A crash in between costs a
-//! repeat of the effect, which the key makes a no-op, and the next step records the outcome.
+//! **The effect and the record of the item are one transaction, and no step holds two run locks** (O1951, ADR-0050
+//! decision 2). The effect on a run is applied by the single-run use case under the key `batch:{job}:{run}`, and the
+//! run's own transaction, after the effect, checks the fence of the shard, locks the job and then the item (run, then
+//! job, then item: slot 3R before 8a) and records the outcome, the counters and the next slot of the job before it
+//! commits ([`ItemSettlement`]). A cancel of the job or a lease lost after the executor's last look rolls the effect back
+//! instead of letting it through, and a crash leaves the effect and its record both or neither. What the action refuses
+//! (a skip, a failure, a refusal for now) changed nothing on the run and is recorded by a fenced transaction of its own,
+//! as is an effect of the key that committed before its item's record existed (a replay).
 //!
 //! **The creator is checked at every item**: if the subject that created the job no longer holds
 //! `run:batch` and every permission of the action, the job fails `AUTHORITY_REVOKED` and nothing more
@@ -31,8 +35,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::batch::{
-    BatchStore, DueJob, ItemOutcome, ItemRecord, JobRecord, NextItem, Selected, SelectionFailure,
-    action_permissions,
+    BatchStore, DueJob, ItemOutcome, ItemRecord, ItemSettlement, JobRecord, NextItem, Selected,
+    SelectionFailure, action_permissions,
 };
 use crate::clock::Clock;
 use crate::error::{AppError, StoreError};
@@ -51,6 +55,8 @@ pub struct ItemRequest<'a> {
     /// The signal payload or the update arguments.
     pub payload: Option<&'a [u8]>,
     pub ctx: &'a RequestContext,
+    /// What the run's transaction records of the item with the effect, before it commits (O1951).
+    pub settlement: &'a ItemSettlement,
 }
 
 /// What the action did to the run.
@@ -62,14 +68,19 @@ pub enum ItemEffect {
     },
     /// The action did not apply to the run as it is now.
     Skip(SkipReason),
+    /// The effect and this outcome of the item committed together, in the run's transaction ([`ItemSettlement`]):
+    /// nothing is left to record.
+    Settled(ItemOutcome),
 }
 
 /// The single-run use cases, one per action. Implemented by the run service.
 pub trait ItemActions: Send + Sync {
     /// Applies the action of `request.job` to `request.run` through its use case, under
-    /// `request.key`. A refusal that means "not for this run" is [`ItemEffect::Skip`]; an
-    /// [`AppError`] is a failure, a refusal to defer or the loss of a permission, as the executor
-    /// reads it.
+    /// `request.key`, and records the item with the effect in the run's transaction
+    /// (`request.settlement`, [`ItemEffect::Settled`]). A refusal that means "not for this run" is
+    /// [`ItemEffect::Skip`]; an [`AppError`] is a failure, a refusal to defer or the loss of a
+    /// permission, as the executor reads it, except [`AppError::BatchConflict`], which is the record
+    /// refused (the lease, the job or the item moved) with the effect rolled back.
     fn apply(
         &self,
         request: &ItemRequest<'_>,
@@ -440,6 +451,14 @@ where
         let key = format!("batch:{}:{}", job.id, item.run_id);
         // a rerun makes a run with no request to take a trace from: the item begins one (D2087)
         let ctx = RequestContext::default().traced();
+        let settlement = ItemSettlement::new(
+            job.tenant_id,
+            job.id,
+            item.ordinal,
+            fence.clone(),
+            now,
+            self.finished(job, "COMPLETED", now),
+        );
         let request = ItemRequest {
             principal,
             job,
@@ -447,9 +466,11 @@ where
             key: &key,
             payload: payload.as_deref(),
             ctx: &ctx,
+            settlement: &settlement,
         };
         // The last look before the run is touched: a replica that lost its lease, a job that was
-        // cancelled or an item that has ended since they were read does not apply the action.
+        // cancelled or an item that has ended since they were read does not even try the action. It
+        // is not what decides: the run's transaction checks again under the locks of the job and the item.
         if let Err(error) = self
             .store
             .ensure_live(job.tenant_id, job.id, item.ordinal, fence.as_ref())
@@ -462,6 +483,14 @@ where
         metrics::histogram!("batch_item_duration_seconds", "action" => job.action.as_str().to_ascii_lowercase())
             .record(started.elapsed().as_secs_f64());
         let outcome = match applied {
+            // the effect and its record committed together: nothing more to write
+            Ok(ItemEffect::Settled(outcome)) => {
+                count_items(job.action, outcome_label(&outcome), 1);
+                return Ok(Stepped::Acted);
+            }
+            // the record was refused in the run's transaction, and the effect with it: the lease, the job or the item
+            // moved since the last look
+            Err(AppError::BatchConflict { reason }) => return Ok(Stepped::Refused(reason)),
             Ok(ItemEffect::Applied { new_run }) => ItemOutcome::Succeeded { new_run },
             Ok(ItemEffect::Skip(reason)) => ItemOutcome::Skipped(reason),
             // the creator lost a permission of the action while the job ran

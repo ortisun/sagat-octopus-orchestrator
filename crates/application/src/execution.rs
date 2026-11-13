@@ -1083,6 +1083,24 @@ pub trait RunTx: Send {
         }
     }
 
+    /// Records, in this transaction and after its effect, the outcome of the batch item that drives it (O1951, ADR-0050
+    /// decision 2, `FR-018-030`): the fence of the shard is checked (`FOR SHARE`, a leaf lock), the job and then the item
+    /// are locked after the run (slot 3R, then 8a), the job must still run and the item must not have ended, and the
+    /// outcome, the counters and the next slot of the job are written, with the audit record of the end of the job when
+    /// the item is the last. A refusal is [`StoreError::StateConflict`] and the caller drops the transaction, its effect
+    /// with it. An adapter that cannot refuses; the failure is the wiring's.
+    fn settle_batch_item<'a>(
+        &'a mut self,
+        _item: &'a crate::batch::ItemSettlement,
+        _outcome: &'a crate::batch::ItemOutcome,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot record a batch item with its run".into(),
+            })
+        }
+    }
+
     /// Applies a declared Update to this run inside this transaction, which the caller then commits
     /// (a business rejection leaves its receipt with the run) or drops (nothing of it persists):
     /// Update-with-Start, feature 018. Whatever the Update needs to read it reads here, so the

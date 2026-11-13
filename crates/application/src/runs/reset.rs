@@ -719,6 +719,7 @@ where
                     acknowledged: creation.acknowledged,
                     pending: creation.pending,
                 }),
+                item: None,
             }),
             None,
             None,

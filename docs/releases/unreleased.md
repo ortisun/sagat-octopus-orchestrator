@@ -42,6 +42,14 @@ that finds its id held, now write the audit action `business_id.conflict` with t
 ([business-ids runbook](../runbooks/business-ids.md#5-reading-the-refusals)). A consumer of the audit trail that lists the actions it knows
 meets one more.
 
+## Batch operations: the effect on a run and the record of its item are one transaction (feature 018)
+
+Each item of a batch job now records its outcome in the run's own transaction, after the effect (O1951, OD-2026-11-13-2): a crash
+leaves the effect and the record both or neither, and a cancel of the job or a lease lost after the engine looked rolls the
+effect back instead of letting one more through ([batch runbook](../runbooks/batch-operations.md#1-what-a-job-is-and-what-it-promises)).
+An engine of this version still records an effect that an older engine applied without its record. Upgrade every engine before a
+cancel of a job is relied on to stop an item in flight: an older engine keeps the two transactions.
+
 ## Batch operations: a selection that keeps failing ends the job (feature 018)
 
 A batch job whose selection round fails (a statement over its ten-second timeout on a selector that reaches most of a namespace, a deadlock, a

@@ -545,3 +545,149 @@ async fn mark_manual_review_holds_a_step_that_has_not_started_and_skips_the_othe
     assert_eq!(f.w.run_status(ready).await, RunStatus::ManualReview);
     assert_eq!(counts(&hold), (2, 1, 1, 0, 0));
 }
+
+// --- one transaction for the effect and the record of the item (O1951, G1961, ADR-0050 decision 2) ---------------------
+
+/// Whether the item of `run` in `job` was written by the transaction that wrote the audit record `action` of its effect:
+/// rows that one transaction writes carry its id as `xmin`. The record names the run (`run`, or `run/step` for a decision
+/// about a step), or the run it made (`run.rerun` names the new run, which the item keeps).
+async fn item_and_effect_in_one_transaction(
+    f: &Fixture,
+    job: &JobRecord,
+    run: RunId,
+    action: &str,
+) -> (String, Vec<String>) {
+    let item: String =
+        sqlx::query_scalar("SELECT xmin::text FROM batch_items WHERE job_id = $1 AND run_id = $2")
+            .bind(job.id)
+            .bind(run.as_uuid())
+            .fetch_one(&f.w.db.pool)
+            .await
+            .expect("the item");
+    let effects: Vec<String> = sqlx::query_scalar(
+        "SELECT a.xmin::text FROM audit_records a, batch_items i \
+         WHERE i.job_id = $1 AND i.run_id = $2 AND a.action = $3 \
+           AND (a.resource_id = i.run_id::text OR a.resource_id LIKE i.run_id::text || '/%' \
+                OR a.resource_id = i.new_run_id::text)",
+    )
+    .bind(job.id)
+    .bind(run.as_uuid())
+    .bind(action)
+    .fetch_all(&f.w.db.pool)
+    .await
+    .expect("the audit records of the effect");
+    (item, effects)
+}
+
+#[tokio::test]
+async fn the_effect_of_each_use_case_commits_with_the_record_of_its_item() {
+    let f = fixture().await;
+    let exec = executor(&f);
+    let check = |job: JobRecord, run: RunId, action: &'static str| {
+        let f = &f;
+        async move {
+            assert_eq!(
+                item(&outcomes(f, &job).await, run).0,
+                "SUCCEEDED",
+                "{action}"
+            );
+            let (item, effects) = item_and_effect_in_one_transaction(f, &job, run, action).await;
+            assert_eq!(
+                effects,
+                [item],
+                "{action}: one effect, written by the transaction that recorded its item"
+            );
+        }
+    };
+
+    // `operate`
+    let open = f.w.start(f.workflow, &json!({})).await;
+    let pause = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[open]),
+            ..write(
+                Action::Pause,
+                Selector::filter(Filter::default()).expect("s"),
+            )
+        },
+        "one-tx-pause",
+    )
+    .await;
+    check(pause, open, "run.paused").await;
+
+    // `signal`
+    let (payments, _) = f.w.publish(payment_flow("one-tx-payments")).await;
+    let waiting = f.w.start(payments, &json!({"paymentId": "p-9"})).await;
+    let signal = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[waiting]),
+            signal: Some(NamedPayload {
+                name: "payment.confirmed".to_owned(),
+                body: br#"{"ok": true}"#.to_vec(),
+            }),
+            ..write(
+                Action::Signal,
+                Selector::filter(Filter::default()).expect("s"),
+            )
+        },
+        "one-tx-signal",
+    )
+    .await;
+    check(signal, waiting, "run.signalled").await;
+
+    // `review`
+    let (flow, _) =
+        f.w.publish(document("one-tx-held", "charge", vec![activity("charge")]))
+            .await;
+    let ready = f.w.start(flow, &json!({})).await;
+    let hold = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[ready]),
+            ..step("charge", Action::MarkManualReview)
+        },
+        "one-tx-hold",
+    )
+    .await;
+    check(hold, ready, "run.marked_for_review").await;
+
+    // `rerun`
+    let ended = finished_run(&f).await;
+    let rerun = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[ended]),
+            ..write(
+                Action::Rerun,
+                Selector::filter(Filter::default()).expect("s"),
+            )
+        },
+        "one-tx-rerun",
+    )
+    .await;
+    assert!(item(&outcomes(&f, &rerun).await, ended).3.is_some());
+    check(rerun, ended, "run.rerun").await;
+
+    // the declared Update
+    let (declared, _) = f.w.publish(declared_waiter("one-tx-accounts")).await;
+    let account =
+        f.w.start(declared, &json!({"account": {"balance": 10}, "k": "s"}))
+            .await;
+    let update = run_job(
+        &f,
+        &exec,
+        BatchWrite {
+            selector: over(&[account]),
+            ..update_job(true, 30)
+        },
+        "one-tx-update",
+    )
+    .await;
+    check(update, account, "run.updated").await;
+}

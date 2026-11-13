@@ -23,6 +23,8 @@ impl Tripwire {
         for statement in [
             "CREATE TABLE fault_plan (kill_at int, watching boolean NOT NULL DEFAULT false, kill_table text)",
             "INSERT INTO fault_plan (kill_at, watching) VALUES (NULL, false)",
+            // counts the kills: a sequence is not rolled back with the transaction it kills
+            "CREATE SEQUENCE fault_kills",
             "CREATE TABLE fault_log (id bigserial PRIMARY KEY, xid bigint NOT NULL, \
              statement int NOT NULL, table_name text NOT NULL)",
             "CREATE FUNCTION fault_tripwire() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER \
@@ -37,6 +39,7 @@ impl Tripwire {
                  VALUES (txid_current(), n, TG_TABLE_NAME); \
                END IF; \
                IF target IS NOT NULL AND n = target AND (ktable IS NULL OR ktable = TG_TABLE_NAME) THEN \
+                 PERFORM nextval('fault_kills'); \
                  PERFORM pg_terminate_backend(pg_backend_pid()); \
                  PERFORM pg_sleep(30); \
                END IF; \
@@ -96,6 +99,14 @@ impl Tripwire {
             .execute(&self.pool)
             .await
             .expect("plan");
+    }
+
+    /// How many connections the switch has killed since it was installed.
+    pub async fn kills(&self) -> i64 {
+        sqlx::query_scalar("SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM fault_kills")
+            .fetch_one(&self.pool)
+            .await
+            .expect("kills")
     }
 
     /// The writing statements the watched transactions made: transaction, position, table.

@@ -39,13 +39,14 @@ use sagat_domain::business_ids::{BusinessId, ConflictPolicy, ReusePolicy, ReuseW
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
     self, ExecutionError, ExecutionInstanceId, OperationAddress, OperationScope, Progress,
-    ReviewOutcome, RunEvent, RunId, RunStatus, StepStatus, StopReason, UpdateKey, UpdateRequest,
-    WaitVia, WaitingOn,
+    ReviewOutcome, RunEvent, RunId, RunStatus, StepStatus, StopReason, UpdateKey,
+    UpdateReceiptStatus, UpdateRejection, UpdateRequest, WaitVia, WaitingOn,
 };
 use sagat_domain::identity::{Namespace, NamespaceId, Permission, Principal, TenantId};
 use sagat_domain::workflow::{ActivityName, Digest, NodeId, NodeKind, WorkflowDefinition};
 use time::OffsetDateTime;
 
+use crate::batch::{ItemOutcome, ItemSettlement};
 use crate::clock::Clock;
 use crate::declared_operations::{AppliedInTx, DeclaredOperationEvaluator, DeclaredUpdate};
 use crate::definitions::{DefinitionStore, Idempotency};
@@ -207,6 +208,30 @@ enum HolderReceipt<'a> {
 }
 
 /// The record that says a holder, not a new run, answered the request under `start`.
+/// Commits the run's transaction. For a batch item, its outcome is recorded in it first, after the effect
+/// ([`RunTx::settle_batch_item`]: the fence, the job and the item locked after the run, O1951), and said to the item once
+/// it has committed ([`ItemSettlement::committed`]). A refusal of that record (the lease, the job or the item moved since
+/// the executor looked) drops the transaction with its effect, and is [`AppError::BatchConflict`] with the store's reason.
+async fn commit_with_item<T: RunTx>(
+    mut tx: T,
+    item: Option<&ItemSettlement>,
+    outcome: ItemOutcome,
+) -> Result<(), AppError> {
+    if let Some(item) = item {
+        tx.settle_batch_item(item, &outcome)
+            .await
+            .map_err(|error| match error {
+                StoreError::StateConflict(reason) => AppError::BatchConflict { reason },
+                other => other.into(),
+            })?;
+    }
+    tx.commit().await?;
+    if let Some(item) = item {
+        item.committed(outcome);
+    }
+    Ok(())
+}
+
 fn served_marker(start: &Idempotency) -> Idempotency {
     Idempotency {
         scope: format!("{}.served", start.scope),
@@ -716,6 +741,8 @@ pub struct Rerun<'a> {
     pub business: RerunBusinessId,
     /// Set when the run is a reset: the prefix of the source it re-emits (feature 018, `FR-018-037`).
     pub reset: Option<ResetStart<'a>>,
+    /// Set when a batch item asks for it: the item's outcome is recorded in the transaction that creates the run (O1951).
+    pub item: Option<&'a ItemSettlement>,
 }
 
 /// The prefix a reset re-emits under the run it creates, and what it delivers again after it.
@@ -1194,6 +1221,23 @@ where
         business: RerunBusinessId,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
+        self.rerun_item(principal, id, reason, key, business, None, ctx)
+            .await
+    }
+
+    /// [`Self::rerun_with`], and, for a batch item, its outcome recorded in the transaction that creates the run
+    /// ([`ItemSettlement`]). A replay of the key commits nothing and records nothing: the executor records it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn rerun_item(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        reason: &str,
+        key: &str,
+        business: RerunBusinessId,
+        item: Option<&ItemSettlement>,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
         principal.authorize(Permission::RunOperate)?;
         principal.authorize(Permission::RunStart)?;
         let reason = reason.trim();
@@ -1225,6 +1269,7 @@ where
                         reason,
                         business,
                         reset: None,
+                        item,
                     },
                     key,
                     ctx,
@@ -1252,6 +1297,7 @@ where
                 reason,
                 business,
                 reset: None,
+                item,
             }),
             None,
             None,
@@ -1688,7 +1734,9 @@ where
                 return Err(store_failure(pending_completion, error));
             }
         };
-        self.finish_start(
+        // boxed: the initial reduction is a large future, and every caller of a start (a schedule's firing among them)
+        // would otherwise carry it on its own stack (a debug build overflowed the 2 MiB of a test thread)
+        Box::pin(self.finish_start(
             principal,
             run_id,
             created,
@@ -1697,8 +1745,9 @@ where
             held_until_us,
             with.map(|with| (with, &start_receipt)),
             reset,
+            rerun.and_then(|rerun| rerun.item),
             ctx,
-        )
+        ))
         .await
     }
 
@@ -1713,6 +1762,7 @@ where
         held_until_us: Option<i64>,
         with: Option<(WithStart<'_>, &Idempotency)>,
         reset: Option<ResetStart<'_>>,
+        item: Option<&ItemSettlement>,
         ctx: &RequestContext,
     ) -> Result<Started, AppError> {
         match created {
@@ -1745,6 +1795,7 @@ where
                                 started.run.info.namespace_id,
                                 update,
                                 HolderReceipt::Read(start),
+                                None,
                                 ctx,
                             )
                             .await?;
@@ -1779,6 +1830,7 @@ where
                                 &start.key,
                                 HolderReceipt::Keep(start),
                                 WaitVia::SignalWithStart,
+                                None,
                                 ctx,
                             )
                             .await
@@ -1801,6 +1853,7 @@ where
                                 started.run.info.namespace_id,
                                 update,
                                 HolderReceipt::Keep(start),
+                                None,
                                 ctx,
                             )
                             .await?;
@@ -1947,9 +2000,24 @@ where
                         Err(other) => return Err(other),
                     };
                 }
+                // a batch `RERUN` item: its outcome is recorded with the run it made, in this transaction (O1951)
+                let outcome = ItemOutcome::Succeeded {
+                    new_run: Some(run_id.as_uuid()),
+                };
+                if let Some(item) = item {
+                    tx.settle_batch_item(item, &outcome)
+                        .await
+                        .map_err(|error| match error {
+                            StoreError::StateConflict(reason) => AppError::BatchConflict { reason },
+                            other => store_failure(pending_completion, other),
+                        })?;
+                }
                 tx.commit()
                     .await
                     .map_err(|error| store_failure(pending_completion, error))?;
+                if let Some(item) = item {
+                    item.committed(outcome);
+                }
                 // counted once it is committed: a creation that was dropped delivered nothing
                 count_reapply(&reapplied);
                 let mut started = self
@@ -2015,6 +2083,7 @@ where
     /// Applies the Update to a run that exists, in a transaction of its own: the open holder of a
     /// business identifier, or the run a retry of the same request finds already started (the receipt
     /// the first request left answers again).
+    #[allow(clippy::too_many_arguments)]
     async fn update_in_own_transaction(
         &self,
         principal: &Principal,
@@ -2022,6 +2091,7 @@ where
         namespace: sagat_domain::identity::NamespaceId,
         update: UpdateAtStart<'_>,
         receipt: HolderReceipt<'_>,
+        item: Option<&ItemSettlement>,
         ctx: &RequestContext,
     ) -> Result<(AppliedInTx, bool), AppError> {
         let evaluator = self.declared_evaluator()?;
@@ -2043,7 +2113,18 @@ where
             }
             HolderReceipt::Read(start) => tx.replay(&served_marker(start)).await?.is_some(),
         };
-        tx.commit().await?;
+        // An Update that is applied, or that the run's rule rejects, commits its receipt: the item records what the single
+        // `updateRun` call would have answered, with it (a rejection fails the item as it fails the call).
+        let outcome = match applied.resolution.receipt().status() {
+            UpdateReceiptStatus::Applied => ItemOutcome::Succeeded { new_run: None },
+            UpdateReceiptStatus::Rejected => ItemOutcome::Failed {
+                code: match applied.resolution.receipt().rejection() {
+                    Some(UpdateRejection::RevisionConflict { .. }) => "CONFLICT",
+                    _ => "VALIDATION_FAILED",
+                },
+            },
+        };
+        commit_with_item(tx, item, outcome).await?;
         Ok((applied, served))
     }
 
@@ -2402,6 +2483,32 @@ where
         key: &str,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
+        self.operate_item(
+            principal,
+            id,
+            operation,
+            reason,
+            expected_version,
+            key,
+            None,
+            ctx,
+        )
+        .await
+    }
+
+    /// [`Self::operate`], and, for a batch item, its outcome recorded in the run's transaction ([`ItemSettlement`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn operate_item(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        operation: RunOperation,
+        reason: &str,
+        expected_version: Option<u64>,
+        key: &str,
+        item: Option<&ItemSettlement>,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
         principal.authorize(Permission::RunOperate)?;
         let idempotency = Idempotency {
             scope: format!("run.operate:{id}"),
@@ -2420,7 +2527,12 @@ where
             return Err(self.missing(principal, id, ctx).await);
         };
         if tx.replay(&idempotency).await?.is_some() {
-            drop(tx);
+            // an effect of this key committed before its item's record existed: the item takes it now
+            if item.is_some() {
+                commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }).await?;
+            } else {
+                drop(tx);
+            }
             return self.get(principal, id, ctx).await;
         }
         let version = tx.parts().1.version();
@@ -2463,7 +2575,7 @@ where
             })
             .await
             .map_err(engine_error)?;
-        tx.commit().await?;
+        commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }).await?;
         self.get(principal, id, ctx).await
     }
 
@@ -2524,6 +2636,35 @@ where
         key: &str,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
+        self.review_item(
+            principal,
+            id,
+            instance,
+            action,
+            reason,
+            expected_version,
+            key,
+            None,
+            ctx,
+        )
+        .await
+    }
+
+    /// [`Self::review_instance`], and, for a batch item, its outcome recorded in the run's transaction
+    /// ([`ItemSettlement`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn review_item(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        instance: &ExecutionInstanceId,
+        action: &ReviewAction,
+        reason: &str,
+        expected_version: Option<u64>,
+        key: &str,
+        item: Option<&ItemSettlement>,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
         let node = instance.node();
         principal.authorize(match action {
             ReviewAction::Retry | ReviewAction::Hold => Permission::RunOperate,
@@ -2563,7 +2704,12 @@ where
             return Err(self.missing(principal, id, ctx).await);
         };
         if tx.replay(&idempotency).await?.is_some() {
-            drop(tx);
+            // an effect of this key committed before its item's record existed: the item takes it now
+            if item.is_some() {
+                commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }).await?;
+            } else {
+                drop(tx);
+            }
             return self.get(principal, id, ctx).await;
         }
         if tx.parts().1.instance(instance).is_none() {
@@ -2644,7 +2790,7 @@ where
                 .await
                 .map_err(engine_error)?;
         }
-        tx.commit().await?;
+        commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }).await?;
         self.get(principal, id, ctx).await
     }
 
@@ -2665,6 +2811,22 @@ where
         key: &str,
         ctx: &RequestContext,
     ) -> Result<Vec<NodeId>, AppError> {
+        self.signal_item(principal, id, name, payload, key, None, ctx)
+            .await
+    }
+
+    /// [`Self::signal`], and, for a batch item, its outcome recorded in the run's transaction ([`ItemSettlement`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn signal_item(
+        &self,
+        principal: &Principal,
+        id: RunId,
+        name: &str,
+        payload: &[u8],
+        key: &str,
+        item: Option<&ItemSettlement>,
+        ctx: &RequestContext,
+    ) -> Result<Vec<NodeId>, AppError> {
         self.signal_with_receipt(
             principal,
             id,
@@ -2673,6 +2835,7 @@ where
             key,
             HolderReceipt::None,
             WaitVia::Signal,
+            item,
             ctx,
         )
         .await
@@ -2691,6 +2854,7 @@ where
         key: &str,
         receipt: HolderReceipt<'_>,
         via: WaitVia,
+        item: Option<&ItemSettlement>,
         ctx: &RequestContext,
     ) -> Result<(Vec<NodeId>, bool), AppError> {
         principal.authorize(Permission::RunSignal)?;
@@ -2731,7 +2895,8 @@ where
             }
             HolderReceipt::Read(start) => tx.replay(&served_marker(start)).await?.is_some(),
         };
-        tx.commit().await?;
+        // a replay too: an effect of this key that committed before its item's record existed is the item's now
+        commit_with_item(tx, item, ItemOutcome::Succeeded { new_run: None }).await?;
         Ok((woken, served))
     }
 

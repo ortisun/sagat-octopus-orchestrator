@@ -523,7 +523,16 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         let result = match self.store.create(new).await {
             Ok(created) => self
                 .finish_start(
-                    principal, run_id, created, false, false, None, None, None, ctx,
+                    principal,
+                    run_id,
+                    created,
+                    false,
+                    false,
+                    None,
+                    None,
+                    None,
+                    rerun.and_then(|rerun| rerun.item),
+                    ctx,
                 )
                 .await
                 .map(|started| started.run),

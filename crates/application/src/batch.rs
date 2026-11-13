@@ -463,6 +463,64 @@ pub enum ItemOutcome {
     },
 }
 
+/// What the transaction of a run does for the batch item that drives it (O1951, ADR-0050 decision 2, `FR-018-030`): the
+/// single-run use case hands it to [`crate::execution::RunTx::settle_batch_item`] after its effect and before it commits,
+/// so the fence of the shard, the job and the item are locked after the run (slot 3R, then 8a; the lease row is a leaf
+/// lock), checked (the lease is the replica's, the job runs, the item has not ended) and the outcome, the counters and
+/// the next slot of the job written in the run's own transaction. A refusal there rolls the effect back. Nothing else of
+/// the item is decided by the use case: a refusal of the action itself rolls the run's transaction back and the executor
+/// records it as before, because nothing happened to the run.
+///
+/// The use case says which outcome it committed with the effect through [`Self::committed`], once its transaction has
+/// committed; the executor reads it back with [`Self::settled`] and records nothing more.
+#[derive(Debug)]
+pub struct ItemSettlement {
+    pub tenant: TenantId,
+    pub job: Uuid,
+    pub ordinal: u32,
+    pub fence: Option<ShardFence>,
+    /// The instant of the record (the executor's clock, as the record of a refusal has it).
+    pub at: OffsetDateTime,
+    /// The audit record of the end of the job, written when this item is the last.
+    pub finished: AuditRecord,
+    settled: std::sync::OnceLock<ItemOutcome>,
+}
+
+impl ItemSettlement {
+    #[must_use]
+    pub const fn new(
+        tenant: TenantId,
+        job: Uuid,
+        ordinal: u32,
+        fence: Option<ShardFence>,
+        at: OffsetDateTime,
+        finished: AuditRecord,
+    ) -> Self {
+        Self {
+            tenant,
+            job,
+            ordinal,
+            fence,
+            at,
+            finished,
+            settled: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Says that `outcome` committed with the effect. Called after the run's transaction committed, never before.
+    pub fn committed(&self, outcome: ItemOutcome) {
+        // one transaction commits per item: a second call would be a defect of the use case, and the first stands
+        let _ = self.settled.set(outcome);
+    }
+
+    /// The outcome that committed with the effect, `None` when the use case committed none (a replay of an effect that
+    /// committed before this item's record existed, or a refusal).
+    #[must_use]
+    pub fn settled(&self) -> Option<ItemOutcome> {
+        self.settled.get().copied()
+    }
+}
+
 /// What a drain of a cancelled job did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Drained {
@@ -530,9 +588,9 @@ pub trait BatchStore: QuotaLookup + Send + Sync {
 
     /// The last look before an effect is applied to a run: the lease is still the replica's, the job
     /// still runs (not cancelled, not over) and the item has not ended. Anything else is a
-    /// `StateConflict`. The effect is a transaction of its own, so a lease lost or a cancel made
-    /// after this look still lets it through; the record that follows is refused then, and a repeat of
-    /// the keyed effect changes nothing.
+    /// `StateConflict`. It spares the run's transaction a wasted effect; what decides is the same check
+    /// made again inside that transaction, under the locks of the job and the item
+    /// ([`ItemSettlement`]), so a lease lost or a cancel made after this look rolls the effect back.
     fn ensure_live(
         &self,
         tenant: TenantId,
@@ -599,9 +657,10 @@ pub trait BatchStore: QuotaLookup + Send + Sync {
     ) -> impl Future<Output = Result<NextItem, StoreError>> + Send;
 
     /// Records the outcome of an item with the counters and the next slot of the job, under the
-    /// fence of the shard, in one transaction. The effect was applied before, under the key of the
-    /// item, so a repeat of it changes nothing. A job that is over or an item that has ended is a
-    /// `StateConflict`.
+    /// fence of the shard, in one transaction: an item the action did not apply (a skip, a failure, a
+    /// refusal for now), or one whose effect committed before this record existed (a replay of its
+    /// key). An effect applied now is recorded in the run's transaction instead ([`ItemSettlement`]).
+    /// A job that is over or an item that has ended is a `StateConflict`.
     #[allow(clippy::too_many_arguments)]
     fn record_item(
         &self,

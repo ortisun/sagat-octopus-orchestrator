@@ -10,6 +10,7 @@ mod support;
 
 mod audit_rollback;
 mod batch;
+mod batch_item_transaction;
 mod batch_locks;
 mod batch_selection;
 mod batch_thousand;

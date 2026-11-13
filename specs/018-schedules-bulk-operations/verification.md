@@ -800,6 +800,27 @@ screenshot looked at and not kept; the layout of its pages was not reviewed. (7)
 `cargo test -p sagat-tests --test integration_schedules_bulk_operations business_id`: 90 passed (the new 4 and every business-id test of the suite);
 `cargo test -p sagat-domain --test schedule_permissions`: 7 passed. The whole-suite gates are in (n).
 
+## (n) The effect of a batch item and its record in one transaction (2026-11-13, OD-2026-11-13-2, O1951 (b), G1961, D2219)
+
+| Claim | Test | Red first |
+| --- | --- | --- |
+| a cancel of the job that commits after the last look and before the effect lets no effect through; the drain then cancels the item | `fault … batch_item_transaction::a_cancel_of_the_job_between_the_last_look_and_the_effect_lets_no_effect_through` (the run's row held, the step seen waiting for it in `pg_stat_activity`, the cancel committed, the row released) | the step answered `Acted` and the run was `CANCELLED` |
+| a replica whose lease is taken over in that window lets no effect through; the new owner applies it once | `fault … batch_item_transaction::a_replica_that_loses_its_lease_between_the_last_look_and_the_effect_lets_no_effect_through` | `left: "CANCELLED"` (the run changed, the item `PENDING`) |
+| a process that dies at the record of its item (its task stopped, its connection cut while it waits for the item's row) leaves neither the effect nor the record; a restarted one applies it once | `fault … batch_item_transaction::a_process_that_dies_between_the_effect_and_the_record_of_its_item_leaves_neither` | `the run CANCELLED, the item PENDING` |
+| the five paths commit the effect and the item in one transaction | `integration … batch_actions::the_effect_of_each_use_case_commits_with_the_record_of_its_item` (`xmin` of the item = `xmin` of the effect's audit record, for `PAUSE`, `SIGNAL`, `MARK_MANUAL_REVIEW`, `RERUN`, `UPDATE`) | `left: ["321092"]`, `right: ["321093"]` |
+| an effect of the key left without a record by an older engine is recorded once and not repeated | `integration … batch_executor::an_effect_that_committed_before_its_record_existed_is_recorded_once_and_not_repeated` (was `a_crash_between_the_effect_and_its_record_costs_a_repeat_that_changes_nothing`, which made the state through the action and now makes it through `operate`) | not red: it characterizes the replay path that stays |
+| 1,000 runs, four deaths, a cancel: the cut lands in the run's transaction at the writes of the record, and no run is changed whose item does not say so | `fault … batch_thousand::` (writes 1 to 13 the effect, 14 `batch_items`, 15 `batch_jobs`, 16 to 18 `quota_transaction_deltas`; 703 succeeded, 297 cancelled) | the old test failed with "a transaction that records an item" (no transaction records an item without its run any more): adapted, not a regression |
+
+**Gates of (m) and (n)** (2026-11-13, local PostgreSQL 18, `RUST_TEST_THREADS=2`): `cargo fmt --check` and `cargo clippy --workspace --all-targets
+--locked -- -D warnings` clean; the three checkers pass; unit tests of `sagat-application`, `sagat-domain`, `sagat-scheduler` and `sagat-infra-postgres`
+1,427 passed. `fault_schedules_bulk_operations`: 120 passed as the owner, 120 passed as `sagat_app`. `integration_schedules_bulk_operations`: 719
+passed, 1 failed, 2 ignored as the owner; 718 passed, 2 failed as `sagat_app`. The failures are of the machine, not of this work, and none touches
+code it changed: `trigger_round3::the_database_refuses_a_name_that_could_make_the_record_read_as_somebody_else` (`"\u{feff}ana" must not be recorded`:
+the scratch cluster was initialised `SQL_ASCII`, where the check's Unicode class does not catch U+FEFF; the migration, the function and the test are
+unchanged since `6ed58c82`) and, in the second run only, `instances::the_runtime_role_reads_the_registry_and_calls_three_functions_only`
+(`role "registry_outsider" already exists`: a role is the cluster's, and this cluster keeps what the first run made). Neither was run on a fresh,
+UTF-8 cluster here.
+
 ## Appendix: the 257 waits of step 6.8
 
 ```sh

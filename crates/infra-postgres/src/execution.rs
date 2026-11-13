@@ -5495,6 +5495,33 @@ impl RunTx for PgRunTx {
         Ok(inserted)
     }
 
+    async fn settle_batch_item(
+        &mut self,
+        item: &sagat_application::batch::ItemSettlement,
+        outcome: &sagat_application::batch::ItemOutcome,
+    ) -> Result<(), StoreError> {
+        // the tenant of the item is the run's: a batch job acts only on runs of its own tenant
+        if item.tenant != self.info.tenant_id {
+            return Err(StoreError::Internal {
+                detail: "a batch item was recorded with a run of another tenant".to_owned(),
+            });
+        }
+        crate::batch::record_item_in(
+            &mut self.tx,
+            &crate::batch::ItemRecordTarget {
+                tenant: item.tenant,
+                id: item.job,
+                ordinal: item.ordinal,
+                at: item.at,
+                fence: item.fence.as_ref(),
+                finished: &item.finished,
+                running_only: true,
+            },
+            outcome,
+        )
+        .await
+    }
+
     async fn worker_capacity_available(&mut self) -> Result<bool, StoreError> {
         worker_capacity::available(&mut self.tx, &self.info).await
     }

@@ -1,7 +1,9 @@
 //! The single-run use cases a batch job applies to each run it selected (feature 018, `T018-047`).
 //! One action, one use case, under the key `batch:{job}:{run}` so that a repeat of an item changes
 //! nothing more. What a use case refuses because the run is not in a state the action applies to is a
-//! skip with its reason, never a failure.
+//! skip with its reason, never a failure. Each use case is given the item (`request.settlement`) and
+//! records its outcome in the run's own transaction, after the effect (O1951, ADR-0050 decision 2):
+//! what it committed is read back here as [`ItemEffect::Settled`].
 
 use super::*;
 use crate::batch_executor::{ItemActions, ItemEffect, ItemRequest};
@@ -22,7 +24,15 @@ where
             .chars()
             .take(512)
             .collect();
-        let done = || ItemEffect::Applied { new_run: None };
+        let settlement = Some(request.settlement);
+        // what committed with the effect, or, for a replay of an effect that committed before its item's record
+        // existed, what the executor records
+        let done = || {
+            request
+                .settlement
+                .settled()
+                .map_or(ItemEffect::Applied { new_run: None }, ItemEffect::Settled)
+        };
         let params = crate::batch::JobParams::from_json(&request.job.params)
             .map_err(|_| AppError::Internal)?;
         let skip = |reason: SkipReason| Ok(ItemEffect::Skip(reason));
@@ -34,13 +44,14 @@ where
                     _ => RunOperation::Resume,
                 };
                 match self
-                    .operate(
+                    .operate_item(
                         request.principal,
                         id,
                         operation,
                         &reason,
                         None,
                         request.key,
+                        settlement,
                         request.ctx,
                     )
                     .await
@@ -60,12 +71,13 @@ where
                     return Err(AppError::Internal);
                 };
                 match self
-                    .signal(
+                    .signal_item(
                         request.principal,
                         id,
                         name,
                         payload,
                         request.key,
+                        settlement,
                         request.ctx,
                     )
                     .await
@@ -91,14 +103,15 @@ where
                 // from the review means the run has no such step, which is not for this action.
                 self.get(request.principal, id, request.ctx).await?;
                 match self
-                    .review(
+                    .review_item(
                         request.principal,
                         id,
-                        &node,
+                        &ExecutionInstanceId::root(node),
                         &action,
                         &reason,
                         None,
                         request.key,
+                        settlement,
                         request.ctx,
                     )
                     .await
@@ -118,19 +131,23 @@ where
                     RerunBusinessId::Keep
                 };
                 match self
-                    .rerun_with(
+                    .rerun_item(
                         request.principal,
                         id,
                         &reason,
                         request.key,
                         business,
+                        settlement,
                         request.ctx,
                     )
                     .await
                 {
-                    Ok(started) => Ok(ItemEffect::Applied {
-                        new_run: Some(started.info.run_id.as_uuid()),
-                    }),
+                    Ok(started) => Ok(request.settlement.settled().map_or(
+                        ItemEffect::Applied {
+                            new_run: Some(started.info.run_id.as_uuid()),
+                        },
+                        ItemEffect::Settled,
+                    )),
                     // only a run that has ended is started again
                     Err(AppError::StateConflict(_)) => skip(SkipReason::RunContinued),
                     Err(other) => Err(other),
@@ -170,11 +187,14 @@ where
                         namespace,
                         update,
                         HolderReceipt::None,
+                        settlement,
                         request.ctx,
                     )
                     .await
                     .map(|(applied, _)| applied)
                 {
+                    // applied or rejected, what the item says committed with the receipt
+                    Ok(_) if request.settlement.settled().is_some() => Ok(done()),
                     Ok(applied) => match applied.resolution.receipt().status() {
                         UpdateReceiptStatus::Applied => Ok(done()),
                         // a business rejection fails the item as `updateRun` fails the call
