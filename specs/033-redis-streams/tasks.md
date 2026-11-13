@@ -12,7 +12,7 @@
   existing HTTP callback behavior using disposable fixtures and deterministic barriers.
 - [x] T033-006 Add pinned Compose Redis/AOF/healthcheck, deployment selection and operator examples;
   regenerate/check Studio types and canonical REST/AsyncAPI contracts.
-- [ ] T033-007 Run appropriate format/lint/static/contract/integration gates; update validation report,
+- [x] T033-007 Run appropriate format/lint/static/contract/integration gates; update validation report,
   traceability, roadmap and release 0.3 dependency evidence. Tick only obtained acceptance.
 
 
@@ -26,5 +26,5 @@ typecheck/lint and canonical REST/AsyncAPI contracts.
 T033-007: actual old callback writer/reader, login/session revocation, process join before Redis
 activation and preserved old rows now pass; six source-bound released profiles, 139 messaging/
 Redis regressions and five common scenarios in six SDKs pass on the combined tree. Evidence:
-[released-callback-cutover.md](released-callback-cutover.md). The final release-tree gates remain
-open; no acceptance is inferred from the default-off flag.
+[released-callback-cutover.md](released-callback-cutover.md). The final release-tree gates passed on
+2026-11-13: CI run 43467642086 (manual dispatch, the whole stack, OD-2026-11-04-8) on the release-candidate commit `a4f6e9db`, an ancestor of `develop`: 14 of 14 jobs passed, 2026-11-13 16:55 to 19:05 UTC (rust fmt/clippy/tests, architecture, contracts, sdks with the six-SDK conformance and faults, studio, lake runtime, observability files, native Go and Java on two architectures, the Compose smoke test, scale and recovery with the disaster-recovery drill, released v0.2 upgrade compatibility, cargo audit). Redis callbacks stay off by default (`SAGAT_REDIS_CALLBACKS_ENABLED`).
