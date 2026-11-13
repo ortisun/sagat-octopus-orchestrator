@@ -4,6 +4,19 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-12 — Merge the rest of the design 038 stack
+
+OD-2026-11-12-2 covered pull requests 203 and 205 to 210. The assistant then built the remaining tasks of design 038 in
+pull requests 211 to 215 (the budget suite in CI with constitution 4.4.0, the window order, the scoped kind check, the
+claim's session filter, the K-poller test and the dated report section), said that merging them needed the owner's word,
+and asked "Integro os PRs 211 a 215 no develop quando o CI de cada passar?". The owner answered in the Claude session.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-12-5 | "Sim, integrar": merge pull requests 211, 212, 213, 214 and 215 into `develop`, one at a time, each after its CI | owner | Decided; merged 2026-11-12 | pull requests 211-215, constitution 4.4.0 |
+
+Merging 211 adopts constitution 4.4.0, whose Sync Impact Report named OD-2026-11-12-4 as the decision it rests on.
+
 ## 2026-11-12 — Merge the hot-path stack, let polls try their window in their own order, budget the hot path in CI
 
 The assistant had stopped its loop with seven pull requests stacked and three questions open, and on the owner's
