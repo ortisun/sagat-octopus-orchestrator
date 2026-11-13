@@ -127,11 +127,15 @@ macro_rules! label_type {
 
 label_type!(
     /// The effect key of a step (D035-030): 1 to 512 characters, no control character.
-    EffectKey, MAX_EFFECT_KEY_CHARS, "not an effect key"
+    EffectKey,
+    MAX_EFFECT_KEY_CHARS,
+    "not an effect key"
 );
 label_type!(
     /// The ref a write targeted: 1 to 256 characters, no control character.
-    RefName, MAX_REF_CHARS, "not a ref name"
+    RefName,
+    MAX_REF_CHARS,
+    "not a ref name"
 );
 
 /// A SHA-256 digest as 64 lowercase hexadecimal digits.

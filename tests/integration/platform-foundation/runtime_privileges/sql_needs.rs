@@ -256,8 +256,8 @@ impl Scan {
 
     fn close_of(&self, open: usize) -> usize {
         let mut level = 0;
-        for i in open..self.t.len() {
-            match self.t[i] {
+        for (i, token) in self.t.iter().enumerate().skip(open) {
+            match token {
                 Sql::Sym('(' | '[') => level += 1,
                 Sql::Sym(')' | ']') => {
                     level -= 1;
