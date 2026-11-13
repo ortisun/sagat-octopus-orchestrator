@@ -1,6 +1,6 @@
 # ADR-0085: Step-log text is read under its own permission and redacted by value in the worker, by shape on the server
 
-**Status:** Proposed (2026-11-13). Accepting it is the owner's, separately from the answers of OD-2026-11-13-14. It states a limit
+**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo")
 on principle V of the constitution, which makes its acceptance a security decision.
 **Decided by:** Agent proposal for feature 041. The owner chose, among the options of the design, that capture is on by default
 (O041-001), who may read (O041-002), that reads are audited once per window (O041-003) and that the limit of redaction is accepted as

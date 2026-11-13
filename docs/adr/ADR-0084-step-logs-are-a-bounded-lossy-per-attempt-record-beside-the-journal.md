@@ -1,6 +1,6 @@
 # ADR-0084: Step logs are a bounded, lossy, per-attempt record beside the journal
 
-**Status:** Proposed (2026-11-13). Accepting it is the owner's, separately from the answers of OD-2026-11-13-14.
+**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo")
 **Decided by:** Agent proposal for feature 041. The owner chose the feature (OD-2026-11-13-9) and, among the options of the design,
 the store (O041-004), the ceilings (O041-005), the retention (O041-006), what is kept at a ceiling (O041-007) and the tail route
 (O041-008) on 2026-11-13 ("Aceitar todas", OD-2026-11-13-14). The rules below that those answers do not cover (the fence, the absence
