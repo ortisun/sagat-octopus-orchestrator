@@ -1,6 +1,6 @@
 # ADR-0056: Concurrency keys are durable permits taken after the run lock, and a queued run is granted oldest first by its own shard owner
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo")
 **Decided by:** agent proposal, pending owner acceptance (2026-10-26; revised after architecture review 2026-10-27)
 **Refines / supersedes:** refines ADR-0020 (sharded, fenced scheduler) and ADR-0027 (lock order and
 quotas); builds on ADR-0002, ADR-0012 and ADR-0030 (chain-before-run order). Supersedes none.

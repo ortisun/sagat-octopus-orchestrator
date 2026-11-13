@@ -1,6 +1,6 @@
 # ADR-0088: Rate limits are a durable window of grants on the database clock, buffered work is granted by its shard owner's scheduler pass, and a claim never reads the window
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo")
 **Decided by:** agent proposal, pending owner acceptance (2026-11-13; the owner asked for the capability in OD-2026-11-13-11 and chose the meaning of the window and of the buffer in OD-2026-11-13-16; the ADR itself is not yet accepted)
 **Refines / supersedes:** refines ADR-0056 (durable permits, one admission port, grant by the waiter's
 shard owner), ADR-0050 decision 7 (merged admission lock order, slot 8b), ADR-0020 (sharded, fenced
