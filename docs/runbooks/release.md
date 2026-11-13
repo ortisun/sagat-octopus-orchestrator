@@ -10,7 +10,7 @@ repository (`sdks/go`), tagged `sdks/go/v<version>` as described in [sdk-packagi
 |---|---|
 | `sagat-<version>-x86_64-unknown-linux-gnu.tar.gz` | `cargo build --release --locked -p sagat-cli` on `ubuntu-24.04` |
 | `sagat-<version>-aarch64-unknown-linux-gnu.tar.gz` | the same on `ubuntu-24.04-arm` |
-| `sagat-<version>-aarch64-apple-darwin.tar.gz` | the same on `macos-14` |
+| `sagat-<version>-aarch64-apple-darwin.tar.gz` | the same on `macos-15` (Apple Silicon; GitHub retired `macos-14`) |
 | The SDK packages (npm tarball, Python wheel and sdist, Go module source archive, NuGet package, Maven JARs and POMs) and the SDK release notes | `scripts/package-sdks.sh`, which also installs each into a clean consumer; its own `SHA256SUMS` is replaced by the release-wide one |
 | `SHA256SUMS` | the release job, over every file above |
 
