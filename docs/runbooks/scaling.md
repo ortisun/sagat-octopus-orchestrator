@@ -152,6 +152,23 @@ helm install sagat infra/helm -f my-values.yaml          # after the migrations 
 - **Do:** with shards unowned, that section. With a burst, wait for the backlog to drain: fairness gives every tenant its share meanwhile (`scheduler_fairness_limited_total`). If it does not drain, add replicas (up to 64) or raise the concurrency, and look at the database first.
 - **Over when:** every pass's lag is under the threshold.
 
+## scheduler-tick-slow
+
+**`SagatSchedulerTickSlow`.** The 95th percentile of `scheduler_tick_seconds` has been above 0.5 seconds (the default `SAGAT_SCHEDULER_INTERVAL_MS`) for ten minutes: one tick of a replica's passes takes longer than the interval between ticks, so what is due waits for the next one. The release 0.3 ceiling of pending waits per replica (OD-2026-11-04-6) holds only while ticks fit the interval.
+
+- **Confirm:** `scheduler_tick_seconds` by `instance` (one replica or all?); `scheduler_waits_per_replica`; `scheduler_lag_seconds` by `pass`; `db_pool_connections{state="in_use"}` against the pool size; the database's slow queries.
+- **Likely causes:** more pending waits than a replica handles (the next alert); a slow database; a replica starved of CPU.
+- **Do:** add replicas (up to 64), give the pods the CPU they ask for, and look at the database first. Lengthening the interval only hides it.
+- **Over when:** the percentile is under the interval.
+
+## scheduler-waits-per-replica
+
+**`SagatSchedulerWaitsPerReplica`.** `scheduler_waits_per_replica` (timers, event waits and approvals that wait, over the scheduler replicas alive) has been above 16,000 for fifteen minutes, 80% of the release 0.3 ceiling of 20,000 per replica at the default interval (OD-2026-11-04-6). Nothing is late yet; it is the warning before ticks grow slow.
+
+- **Confirm:** `scheduler_pending_waits`; `scheduler_members` (are replicas missing?); `scheduler_tick_seconds`.
+- **Do:** add scheduler replicas (up to 64) so the waits per replica fall under 16,000; if a replica is missing, find why (the keeper alert). A tenant that opens waits without bound is limited by its quotas, not here.
+- **Over when:** the gauge is under 16,000.
+
 ## shard-fencing
 
 **`SagatShardFencing`.** `scheduler_fenced_total` has been rising for ten minutes: a replica keeps finding that the shard of a run it was about to change is no longer its own. Once is a handover (a shard was taken while a pass was selecting); continuously is a replica that cannot drop what it no longer holds.

@@ -358,8 +358,10 @@ reversible until the owner confirms them.
 | `maxConcurrency` of one collection | 1 to 256, and bounded by the tenant's `iteration_concurrency` quota | `crates/domain/src/workflow.rs` |
 | Pending waits (approvals, timers, event waits) | 20,000 per scheduler replica at the default 500 ms interval | OD-2026-11-04-6 (delegate) |
 
-OD-2026-11-04-6 also asks for a `scheduler_tick_seconds` metric with a slow-tick alert and an alert above 16,000
-waits per replica; until they exist, watch the scheduler lag (`scheduler_lag_seconds`) instead. A collection's real
+The pending-waits ceiling is watched by `scheduler_waits_per_replica` (the monitor's count of waiting timers, event waits
+and approvals over the live scheduler replicas) and `scheduler_tick_seconds` (how long each tick takes), with the alerts
+`SagatSchedulerWaitsPerReplica` (above 16,000) and `SagatSchedulerTickSlow` (95th percentile above the 500 ms interval);
+both are in `docs/runbooks/scaling.md`. A collection's real
 bound is the smaller of its `maxItems` and what the tenant's quotas leave: raise a quota, not the published ceiling.
 
 ## Rollback and compatibility
