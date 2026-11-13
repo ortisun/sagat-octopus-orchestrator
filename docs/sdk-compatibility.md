@@ -14,7 +14,7 @@ reviewed-golden hashes and35 independently compared runtime artifacts are record
 `tasks/project-completion/evidence/chain-sdk-20261017.json`. Segment waits retain their exact-run
 behavior; explicit chain waits follow the final outcome. Shared release gates remain open.
 
-The five released SDKs report version `0.2.0`; the new official Rust SDK is a `0.3.0` candidate tracked by feature 034. They use the additive
+The six official SDKs (the Rust SDK of feature 034 among them) report version `0.3.0`. They use the additive
 `sagat-octopus-orchestrator.io/v1` workflow document and offer worker protocol `1.5` by default.
 These versions describe different boundaries:
 
@@ -29,12 +29,12 @@ These versions describe different boundaries:
 
 | SDK | Package version | Default worker offer | Workflow document |
 | --- | --- | --- | --- |
-| TypeScript | 0.2.0 | 1.5 | additive v1 |
-| Go | 0.2.0 | 1.5 | additive v1 |
-| Python | 0.2.0 | 1.5 | additive v1 |
-| .NET/C# | 0.2.0 | 1.5 | additive v1 |
-| Java | 0.2.0 | 1.5 | additive v1 |
-| Rust candidate | 0.3.0 | 1.5 | additive v1 |
+| TypeScript | 0.3.0 | 1.5 | additive v1 |
+| Go | 0.3.0 | 1.5 | additive v1 |
+| Python | 0.3.0 | 1.5 | additive v1 |
+| .NET/C# | 0.3.0 | 1.5 | additive v1 |
+| Java | 0.3.0 | 1.5 | additive v1 |
+| Rust | 0.3.0 | 1.5 | additive v1 |
 
 ## Current public compatibility matrix
 
@@ -42,7 +42,7 @@ These versions describe different boundaries:
 private database fixture or test-only adapter. A public route whose prerequisite resource cannot
 yet be created publicly is called out separately.
 
-| Capability | Current public state | SDK 0.2.0 client/builders | Worker 1.4 | Worker 1.5 | Evidence and remaining gate |
+| Capability | Current public state | SDK 0.3.0 client/builders | Worker 1.4 | Worker 1.5 | Evidence and remaining gate |
 | --- | --- | --- | --- | --- | --- |
 | Existing root workflows, run lifecycle, signals, events, timers, children and sagas | Public | Shared client and builder contract in all five SDKs | Executes root tasks without instance identity | Executes root tasks and echoes server-supplied identity | Shared runtime scenarios and the protocol-negotiation scenario |
 | Ordered `switch` | Public | Builder and runtime calls covered in all five SDKs | Executes selected root activity tasks | Executes the same root tasks | Reviewed builder/runtime golden plus PostgreSQL fault tests |

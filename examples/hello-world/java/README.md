@@ -47,7 +47,7 @@ The SDK also logs on `System.Logger` (the JDK's default: standard error), for ex
   of the steps before it by step id; what it returns is its output.
 - A real effect (a payment, an e-mail) sends `ctx.idempotencyKey()` to its provider: it is the same for
   every attempt of the step; the provider must deduplicate that key to prevent duplicate effects.
-- The dependency in `pom.xml` (`dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk:0.2.0`) resolves
+- The dependency in `pom.xml` (`dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk:0.3.0`) resolves
   to the copy `prepare.sh` installed; remove the install step from `prepare.sh` once the SDK is published.
 
 ## Interface

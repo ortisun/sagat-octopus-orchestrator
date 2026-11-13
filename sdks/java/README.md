@@ -12,13 +12,13 @@ Go, Python, C# and Rust SDKs through the shared conformance suite
 
 ## Install
 
-Coordinates: `dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk:0.2.0`, Java 17 or newer.
+Coordinates: `dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk:0.3.0`, Java 17 or newer.
 
 ```xml
 <dependency>
   <groupId>dev.sagatoctopusorchestrator</groupId>
   <artifactId>sagat-octopus-orchestrator-sdk</artifactId>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
 </dependency>
 ```
 
@@ -285,7 +285,7 @@ properties). A build from an empty local repository (511 files) was run with the
 public API follows SemVer. The SDK's version is independent of the platform's. The **worker protocol** has its own
 version, negotiated at registration: this SDK offers `1.5`; a server that speaks an older minor serves it at that
 minor, a server of another major refuses with `UNSUPPORTED_PROTOCOL` (ADR-0015). Package metadata: group
-`dev.sagatoctopusorchestrator`, artifact `sagat-octopus-orchestrator-sdk`, version `0.2.0`, license `MIT` (the
+`dev.sagatoctopusorchestrator`, artifact `sagat-octopus-orchestrator-sdk`, version `0.3.0`, license `MIT` (the
 JAR includes the license text under `META-INF/LICENSE`),
 repository `https://github.com/ortisun/sagat-octopus-orchestrator`, JPMS automatic module name
 `dev.sagatoctopusorchestrator.sdk`.
@@ -333,7 +333,7 @@ are resolved by the separate managed executor.
 
 ## Interface
 
-- Parent coordinates dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk-parent:0.2.0 group sdk and conformance modules. Production contracts below cover sdk and scripts. [pom.xml:artifactId] [pom.xml:modules]
+- Parent coordinates dev.sagatoctopusorchestrator:sagat-octopus-orchestrator-sdk-parent:0.3.0 group sdk and conformance modules. Production contracts below cover sdk and scripts. [pom.xml:artifactId] [pom.xml:modules]
 - The Maven wrapper pins Maven 3.9.16 and a distribution SHA-256; Maven configuration enables strict checksums. [.mvn/wrapper/maven-wrapper.properties:distributionUrl] [.mvn/wrapper/maven-wrapper.properties:distributionSha256Sum] [.mvn/maven.config:--strict-checksums]
 
 - [scripts](./scripts/README.md) — component contract.

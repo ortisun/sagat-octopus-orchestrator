@@ -60,7 +60,7 @@ It writes a table the runtime role cannot, so it is run with the owner role from
 
 ## 3. Upgrade
 
-The current chart/application version is `0.2.0`. The earlier numbering reset is documented in
+The current chart/application version is `0.3.0`. The earlier numbering reset is documented in
 [0.1.0](../releases/0.1.0.md); it did not revert code or schema. Required, fail-closed NetworkPolicy
 peers remain mandatory: populate `networkPolicy.apiFrom`, `workersFrom`, `metricsFrom` and
 `egress.{dnsTo,postgres.to,oidc.to}`, plus `egress.nats.to` for selected NATS or explicit
@@ -83,7 +83,7 @@ first; missing, empty or global peers are refused.
    writes of new scoped workflows.
 
 Follow [security upgrade/rollback](security-governance.md#upgrade-and-rollback),
-[workflow boundaries](workflow-primitives.md) and the current [release notes](../releases/0.2.0.md).
+[workflow boundaries](workflow-primitives.md) and the current [release notes](../releases/0.3.0.md).
 After OpenBao cutover, application rollback alone does not restore credential authority; use the
 [coordinated database/provider recovery](database-recovery.md) procedure, preserving references,
 Raft state/tombstones and the intent-binding key, with cleanup stopped until references are checked.

@@ -4,4 +4,4 @@ This is the skeleton (T035-006). The relay client, the write protocol and the re
 test them; nothing here pretends to implement them (AGENTS.md rule 11).
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

@@ -2,7 +2,7 @@
 
 > Documentation status: the contract sections below describe the inspected source. Existing runtime, test-count and advisory records are historical developer notes; this documentation update did not rerun or revalidate those records.
 
-`sagat-octopus-orchestrator` 0.2.0 is the Python SDK of the Sagat Octopus Orchestrator, a durable workflow
+`sagat-octopus-orchestrator` 0.3.0 is the Python SDK of the Sagat Octopus Orchestrator, a durable workflow
 platform. It is three things in one package and nothing else (`sdks/SPEC.md`):
 
 1. a **client** of the REST API: start, read, list, cancel and signal runs, publish events (`SagatClient`, on
@@ -314,7 +314,7 @@ are resolved by the separate managed executor.
 
 ## Interface
 
-- Distribution sagat-octopus-orchestrator 0.2.0 declares Python >=3.10, httpx/grpcio/protobuf dependencies and an optional OpenTelemetry extra. Setuptools includes the SDK package, py.typed and generated typing metadata. [pyproject.toml:requires-python] [pyproject.toml:dependencies] [pyproject.toml:optional-dependencies] [pyproject.toml:package-data]
+- Distribution sagat-octopus-orchestrator 0.3.0 declares Python >=3.10, httpx/grpcio/protobuf dependencies and an optional OpenTelemetry extra. Setuptools includes the SDK package, py.typed and generated typing metadata. [pyproject.toml:requires-python] [pyproject.toml:dependencies] [pyproject.toml:optional-dependencies] [pyproject.toml:package-data]
 
 - [proto](./proto/README.md) — component contract.
 - [sagat_octopus_orchestrator](./sagat_octopus_orchestrator/README.md) — component contract.
