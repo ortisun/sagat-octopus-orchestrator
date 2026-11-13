@@ -5,7 +5,7 @@ numbers are never reused or renumbered; a gap is closed by evidence, not by dele
 
 ## Decisions
 
-Each holds as long as the owner question beside it, if any, is answered as recommended.
+The owner questions these rest on were all answered as recommended (OD-2026-11-13-14).
 
 | ID | Date | Decision | Why |
 |---|---|---|---|
@@ -26,27 +26,28 @@ Each holds as long as the owner question beside it, if any, is answered as recom
 
 | ID | Date | Gap | Closed by |
 |---|---|---|---|
-| G041-001 | 2026-11-13 | A secret the step's code transforms before logging (encoded, split, shorter than 6 bytes), or one obtained outside `ResolveSecrets`, is not recognised; a hand-written 1.7 client can skip the SDK's redaction | Open; put to the owner as O041-011 |
+| G041-001 | 2026-11-13 | A secret the step's code transforms before logging (encoded, split, shorter than 6 bytes), or one obtained outside `ResolveSecrets`, is not recognised; a hand-written 1.7 client can skip the SDK's redaction | Open as a limit; accepted by the owner as stated (O041-011, OD-2026-11-13-14) and written into ADR-0085 |
 | G041-002 | 2026-11-13 | The lines an attempt wrote after its last successful flush are lost when its lease or its network is lost; the stream shows "ended without its final flush" and cannot say how many | Open |
-| G041-003 | 2026-11-13 | A script step's lines are not live and not interleaved with the run's log; the run's log holds a marker that points to the script execution | Open; follow-up after O041-009 |
+| G041-003 | 2026-11-13 | A script step's lines are not live and not interleaved with the run's log; the run's log holds a marker that points to the script execution | Open; a follow-up, since O041-009 chose the marker (OD-2026-11-13-14) |
 | G041-004 | 2026-11-13 | With no foreign key to `runs`, feature 020 must delete a run's log streams and usage row when it deletes the run | Open; owned by feature 020 |
 | G041-005 | 2026-11-13 | A deployment whose protocol ceiling is held below 1.6 by a missing store proof captures no step logs | Open |
 | G041-006 | 2026-11-13 | SC-041-007 is measured on one machine on one day | Open |
 
 ## Owner questions
 
-The options and the reasoning are in the design, section "Owner decisions needed".
+The options and the reasoning are in the design, section "Owner decisions needed". The owner answered all eleven
+on 2026-11-13 ("Aceitar todas"), recorded as OD-2026-11-13-14.
 
-| ID | Date | Question | Recommendation | Answer |
+| ID | Date | Question | Decision | Answer |
 |---|---|---|---|---|
-| O041-001 | 2026-11-13 | Is capture on by default? | On at `info`, with a namespace switch and a worker option | Open |
-| O041-002 | 2026-11-13 | Who may read step logs? | A new `run:logs:read` for admin, developer and operator, not viewer | Open |
-| O041-003 | 2026-11-13 | Are reads audited? | One `run.logs_read` per subject and run per 300 seconds | Open |
-| O041-004 | 2026-11-13 | Where are lines stored? | PostgreSQL, one row per line, ordinary table, for 0.3.0 | Open |
-| O041-005 | 2026-11-13 | The ceilings | 8 KiB a message; 1 MiB and 10,000 records an attempt; 16 MiB and 100,000 a run; the shared `tenant_log_bytes` | Open |
-| O041-006 | 2026-11-13 | Retention | `step_log_retention_days`, default 14, 1 to 365 | Open |
-| O041-007 | 2026-11-13 | What is kept at the attempt ceiling? | The first lines, a marker and a count | Open |
-| O041-008 | 2026-11-13 | The live tail | A new server-sent event route, `/runs/{runId}/logs/stream` | Open |
-| O041-009 | 2026-11-13 | Script steps in the first delivery | A marker that points to the script execution | Open |
-| O041-010 | 2026-11-13 | What "in 0.3.0" requires | Server, six SDKs, routes and Studio together | Open |
-| O041-011 | 2026-11-13 | The limit of redaction (G041-001) | Accept it as stated, with ADR-0085 | Open |
+| O041-001 | 2026-11-13 | Is capture on by default? | On at `info`, with a namespace switch and a worker option | Answered 2026-11-13, option (a), as recommended: OD-2026-11-13-14 |
+| O041-002 | 2026-11-13 | Who may read step logs? | A new `run:logs:read` for admin, developer and operator, not viewer | Answered 2026-11-13, option (a), as recommended: OD-2026-11-13-14 |
+| O041-003 | 2026-11-13 | Are reads audited? | One `run.logs_read` per subject and run per 300 seconds | Answered 2026-11-13, option (a), as recommended: OD-2026-11-13-14 |
+| O041-004 | 2026-11-13 | Where are lines stored? | PostgreSQL, one row per line, ordinary table, for 0.3.0 | Answered 2026-11-13, option (a), as recommended: OD-2026-11-13-14 |
+| O041-005 | 2026-11-13 | The ceilings | 8 KiB a message; 1 MiB and 10,000 records an attempt; 16 MiB and 100,000 a run; the shared `tenant_log_bytes` | Answered 2026-11-13, the defaults and option (a), as recommended: OD-2026-11-13-14 |
+| O041-006 | 2026-11-13 | Retention | `step_log_retention_days`, default 14, 1 to 365 | Answered 2026-11-13, option (a), as recommended: OD-2026-11-13-14 |
+| O041-007 | 2026-11-13 | What is kept at the attempt ceiling? | The first lines, a marker and a count | Answered 2026-11-13, option (a), as recommended: OD-2026-11-13-14 |
+| O041-008 | 2026-11-13 | The live tail | A new server-sent event route, `/runs/{runId}/logs/stream` | Answered 2026-11-13, option (a), as recommended: OD-2026-11-13-14 |
+| O041-009 | 2026-11-13 | Script steps in the first delivery | A marker that points to the script execution | Answered 2026-11-13, option (a), as recommended: OD-2026-11-13-14 |
+| O041-010 | 2026-11-13 | What "in 0.3.0" requires | Server, six SDKs, routes and Studio together | Answered 2026-11-13, option (a), as recommended: OD-2026-11-13-14 |
+| O041-011 | 2026-11-13 | The limit of redaction (G041-001) | Accept it as stated, with ADR-0085 | Answered 2026-11-13, the limit accepted as stated, as recommended: OD-2026-11-13-14 |

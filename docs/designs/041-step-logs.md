@@ -19,11 +19,10 @@ state: no transition reads it, a lost line never changes a step's outcome, and t
 complete a step do not touch it. What it must never be is a second place where a secret or another tenant's
 data can be read.
 
-This document is a Draft written without the owner in the conversation. `egm-draft` asks the owner to choose
-wherever more than one design is defensible; here each such choice is written as a numbered open question
-(O041-001 to O041-011) with its options and a recommendation, and the rest of the text assumes the
-recommendation so that it can be read as one design. An answer that differs changes the sections named beside
-the question.
+Eleven choices in this design had more than one defensible answer and were put to the owner as O041-001 to
+O041-011, each with its options and a recommendation. The owner answered all of them on 2026-11-13 ("Aceitar
+todas", OD-2026-11-13-14): every recommendation is the decision. The section "Owner decisions needed" records
+each answer and what was not chosen; the rest of the text states the decided design.
 
 ## The Problem
 
@@ -215,7 +214,8 @@ Three facts of the code shape what can be built:
 
 ## Open Questions
 
-Owner questions are in the next section. These are technical and are closed by a task, not by a decision:
+The owner's questions are answered (next section). These are technical and are closed by a task, not by a
+decision:
 
 - **Does the tenant usage row become a point of contention?** ADR-0027 counts retained bytes in
   `tenant_retained_usage`, one row per tenant, updated by a deferred trigger at commit. A completion that
@@ -228,8 +228,8 @@ Owner questions are in the next section. These are technical and are closed by a
   proves it with a held transaction on both.
 - **Which scope do the new quota resources take?** The catalogue has tenant-scoped storage and retention
   resources; whether the namespace scope is available for the capture switch and the ceilings is settled in
-  T041-4 against `crates/domain/src/quota.rs`. If it is not, O041-001's "per namespace" becomes "per tenant" in
-  the first delivery and that is said in the release notes.
+  T041-4 against `crates/domain/src/quota.rs`. If it is not, the switch O041-001 decided "per namespace" cannot
+  be built as decided: T041-4 stops and the difference goes back to the owner, it is not reinterpreted.
 - **Is 1.7 reachable where 1.6 is not?** `protocol_ceiling` (`crates/application/src/worker.rs`) offers 1.5
   only when the store proves scoped support and 1.6 only when it also proves database support. Minors are a
   line, so 1.7 is offered when both hold and the log tables exist. A deployment held at 1.5 by a missing proof
@@ -237,65 +237,66 @@ Owner questions are in the next section. These are technical and are closed by a
 
 ## Owner decisions needed
 
-Each is asked once, with options and a recommendation, and is registered as an O item in
-`specs/041-step-logs/research.md`. When the owner answers, the answer becomes a row of
-`docs/owner-decisions.md` and the tasks named here gain an `Owner-gate:` line citing it. No task has that line
-yet because no row exists yet. Accepting this design as a whole can answer all of them "as recommended".
+All answered. The owner accepted every recommendation on 2026-11-13 ("Aceitar todas"), recorded as
+OD-2026-11-13-14 in `docs/owner-decisions.md`; the tasks that waited on an answer carry an `Owner-gate:` line
+citing that row. Each item below states the decision, then the options that were not chosen and why. They are
+registered as O items in `specs/041-step-logs/research.md`. Two decisions remain the owner's and are separate
+from this row: accepting ADR-0084 and ADR-0085, which are proposed.
 
-- **O041-001 Is capture on by default?** (a) On for every namespace at level `info`, with a switch to turn it
-  off per namespace and a worker option to turn it off per process; (b) off until a namespace turns it on;
-  (c) on for new namespaces, off for existing ones. *Recommendation: (a).* It is what the decision asks for
-  and what a person opening the Logs tab expects. Its cost is that upgrading an SDK starts sending text the
-  customer wrote for their own machines; the release notes must say so in the first paragraph, and (b) is the
-  answer if the owner weighs that surprise above the feature working unasked. Changes FR-041-001, FR-041-020.
-- **O041-002 Who may read step logs?** (a) A new permission `run:logs:read` held by admin, developer and
-  operator; (b) the same, and viewer too; (c) no role holds it and it is granted per namespace, as
-  `payload:reveal-pii` is. *Recommendation: (a).* A log is free text that can hold personal data, so it should
-  not ride on `run:read`, which viewers hold; (c) makes the feature unusable until someone grants it. Changes
-  FR-041-013.
-- **O041-003 Are reads audited?** (a) One `run.logs_read` record per subject and run per 300 seconds, as
-  `payload.inspected` is; (b) one per request; (c) none. *Recommendation: (a).* (b) writes an audit row for
-  every page a tail delivers. Changes FR-041-013.
-- **O041-004 Where are lines stored?** (a) PostgreSQL, one row per line, in an ordinary table; (b) PostgreSQL,
-  one row per batch holding compressed lines; (c) objects in the blob store with an index row per chunk in
-  PostgreSQL. *Recommendation: (a) for 0.3.0.* It gives duplicate removal by primary key, filters and paging in
-  SQL, and exact quota accounting with the triggers ADR-0027 already generates. (b) writes roughly a tenth of
-  the rows and is the next step if SC-041-007 fails on storage rather than on transactions; filters and search
-  then decode chunks in the application. (c) is the cheapest per byte, and needs what the blob store does not
-  have: committed blobs are never purged today (G69), and a tail would read objects. A partitioned table was
-  considered and is not recommended: see Alternatives Considered. Changes the Technical Plan and ADR-0084.
-- **O041-005 The ceilings.** Proposed defaults: 8 KiB per message; 1 MiB and 10,000 records per attempt (the
-  figure a script log already has); 16 MiB and 100,000 records per run; the tenant's existing
-  `tenant_log_bytes`, shared with script logs. Options for the tenant ceiling: (a) share `tenant_log_bytes`;
-  (b) a separate `tenant_step_log_bytes`. *Recommendation: the defaults above and (a)*: one number for "how
-  much log this tenant keeps". Changes FR-041-006.
-- **O041-006 Retention.** (a) 14 days by default, 1 to 365, as `step_log_retention_days`; (b) 7 days; (c) 30
-  days; (d) reuse `script_retention_days`. *Recommendation: (a).* When feature 020 is built, a run's log never
-  outlives the run. Changes FR-041-009.
-- **O041-007 What is kept when an attempt reaches its ceiling?** (a) The first lines, then a marker and a
-  count; (b) the last lines, by deleting the oldest. *Recommendation: (a).* (b) keeps what precedes a failure,
-  which is often what is wanted, but it needs deletes on the write path and makes a cursor unstable. The
-  step's error is in the journal either way. Changes FR-041-006.
-- **O041-008 The live tail.** (a) A new server-sent event route, `/runs/{runId}/logs/stream`; (b) the Studio
-  polls the list route with its cursor; (c) log events on the existing `/runs/{runId}/stream`.
-  *Recommendation: (a).* (c) is refused by the design, not left open: that stream resumes by one
-  `Last-Event-ID`, which is the projection sequence, and it is granted by `run:read`. (b) is what the Studio
-  falls back to anyway when a stream cannot be held. Changes FR-041-012.
-- **O041-009 Script steps in the first delivery.** (a) A marker in the run's log that points to the script
-  execution, whose log is read where it is today; (b) the script runner streams its lines through 1.7 during
-  the run; (c) script steps are left out. *Recommendation: (a).* (b) needs redaction over a moving window in
-  `crates/infra-sandbox` and either stores the log twice or changes feature 005's contract; it is G041-003.
-  Changes FR-041-016.
-- **O041-010 What "in 0.3.0" requires.** (a) Server, six SDKs, routes and Studio together; (b) server, routes
-  and Studio with the SDKs following one by one. *Recommendation: (a).* Principle IV holds the six SDKs to one
-  conformance suite; a release that captures from two languages would publish a difference between them. The
-  estimate at the end of this document says what (a) costs.
-- **O041-011 The limit of redaction.** The platform cannot recognise a secret that the step's code transforms
-  before logging it (encoded, split, shorter than 6 bytes) or one the code obtained elsewhere, and a
-  hand-written client that speaks 1.7 without the SDK's redaction can store what it was given (G041-001). The
-  owner is asked to accept this as the stated limit, with ADR-0085, or to choose (b) of O041-001 so that no
-  log is stored unless a namespace asks for it.
-- **Acceptance.** ADR-0084 and ADR-0085 (proposed by this design), and this design for implementation.
+- **O041-001 Capture is on by default.** *Decided (OD-2026-11-13-14): on for every namespace at level `info`,
+  with a switch to turn it off per namespace and a worker option to turn it off per process.* Not chosen: off
+  until a namespace turns it on; on for new namespaces only. The cost of the decision is that upgrading an SDK
+  starts sending text the customer wrote for their own machines, so the release notes say it in their first
+  paragraph (T041-25). Governs FR-041-001 and FR-041-020.
+- **O041-002 Who may read step logs.** *Decided (OD-2026-11-13-14): a new permission `run:logs:read` held by
+  admin, developer and operator.* Not chosen: giving it to viewer too (a log is free text that can hold
+  personal data, and viewers hold `run:read`); granting it per namespace as `payload:reveal-pii` is (the
+  feature would be unusable until someone grants it). Governs FR-041-013.
+- **O041-003 Reads are audited.** *Decided (OD-2026-11-13-14): one `run.logs_read` record per subject and run
+  per 300 seconds, as `payload.inspected` is.* Not chosen: one per request (an audit row for every page a tail
+  delivers); none. Governs FR-041-013.
+- **O041-004 Where lines are stored.** *Decided (OD-2026-11-13-14): PostgreSQL, one row per line, in an
+  ordinary table, for 0.3.0.* It gives duplicate removal by primary key, filters and paging in SQL, and exact
+  quota accounting with the triggers ADR-0027 already generates. Not chosen: one row per batch holding
+  compressed lines (about a tenth of the rows; it is the next step if SC-041-007 fails on storage rather than
+  on transactions, and filters and search would then decode chunks in the application); objects in the blob
+  store with an index row per chunk (cheapest per byte, but committed blobs are never purged today, G69, and a
+  tail would read objects); a partitioned table (Alternatives Considered). Governs the Technical Plan and
+  ADR-0084.
+- **O041-005 The ceilings.** *Decided (OD-2026-11-13-14): 8 KiB per message; 1 MiB and 10,000 records per
+  attempt (the figure a script log already has); 16 MiB and 100,000 records per run; the tenant's existing
+  `tenant_log_bytes`, shared with script logs.* Not chosen: a separate `tenant_step_log_bytes`; one number says
+  how much log a tenant keeps. Governs FR-041-006.
+- **O041-006 Retention.** *Decided (OD-2026-11-13-14): 14 days by default, 1 to 365, as
+  `step_log_retention_days`.* Not chosen: 7 days, 30 days, reusing `script_retention_days`. When feature 020 is
+  built, a run's log never outlives the run. Governs FR-041-009.
+- **O041-007 What is kept when an attempt reaches its ceiling.** *Decided (OD-2026-11-13-14): the first lines,
+  then a marker and a count.* Not chosen: the last lines, by deleting the oldest. That keeps what precedes a
+  failure, which is often what is wanted, but it needs deletes on the write path and makes a cursor unstable;
+  the step's error is in the journal either way. Governs FR-041-006.
+- **O041-008 The live tail.** *Decided (OD-2026-11-13-14): a new server-sent event route,
+  `/runs/{runId}/logs/stream`.* Not chosen: the Studio polling the list route with its cursor (it remains the
+  fallback when a stream cannot be held). Log events on the existing `/runs/{runId}/stream` were never an
+  option: that stream resumes by one `Last-Event-ID`, which is the projection sequence, and it is granted by
+  `run:read`. Governs FR-041-012.
+- **O041-009 Script steps in the first delivery.** *Decided (OD-2026-11-13-14): a marker in the run's log that
+  points to the script execution, whose log is read where it is today.* Not chosen: the script runner
+  streaming its lines through 1.7 during the run (it needs redaction over a moving window in
+  `crates/infra-sandbox` and either stores the log twice or changes feature 005's contract; it stays as
+  G041-003); leaving script steps out. Governs FR-041-016.
+- **O041-010 What "in 0.3.0" requires.** *Decided (OD-2026-11-13-14): server, six SDKs, routes and Studio
+  together.* Not chosen: the SDKs following one by one. Principle IV holds the six SDKs to one conformance
+  suite; a release that captures from two languages would publish a difference between them. The estimate at
+  the end of this document says what the decision costs.
+- **O041-011 The limit of redaction.** *Decided (OD-2026-11-13-14): accepted as the stated limit.* The
+  platform cannot recognise a secret that the step's code transforms before logging it (encoded, split,
+  shorter than 6 bytes) or one the code obtained elsewhere, and a hand-written client that speaks 1.7 without
+  the SDK's redaction can store what it was given (G041-001). The limit is written into ADR-0085, the runbook
+  and the release notes; the namespace switch of O041-001 is the control for code that cannot be trusted with
+  it.
+- **Still to decide: acceptance of the ADRs.** [ADR-0084](../adr/ADR-0084-step-logs-are-a-bounded-lossy-per-attempt-record-beside-the-journal.md)
+  and [ADR-0085](../adr/ADR-0085-step-log-text-is-read-under-its-own-permission-and-redacted-by-value-in-the-worker.md)
+  are Proposed. Accepting an ADR is the owner's, separately from OD-2026-11-13-14.
 
 ## Critical User Journeys (CUJs)
 
@@ -639,7 +640,7 @@ the migration needs the lines purged first.
 
 | Risk | Mitigation |
 |---|---|
-| A step's code logs a secret the platform cannot recognise (transformed, short, obtained elsewhere) | Stated as G041-001 and put to the owner (O041-011). Value redaction in the SDK, shape rules on the server, a permission of its own, the namespace switch, a runbook step to delete a stream's lines |
+| A step's code logs a secret the platform cannot recognise (transformed, short, obtained elsewhere) | Stated as G041-001 and accepted by the owner as the limit (O041-011, OD-2026-11-13-14). Value redaction in the SDK, shape rules on the server, a permission of its own, the namespace switch, a runbook step to delete a stream's lines |
 | Log batches contend with completions on `tenant_retained_usage` | Measured by T041-9 against SC-041-007 before the SDKs are built; the fallback is the grouped commit, then a separate usage row with an amendment of ADR-0027 |
 | Each logging step adds one transaction to the database beside its lease and completion | The ingest semaphore bounds it and sheds; a step that logs nothing sends nothing; the same measurement decides whether the grouped commit is needed |
 | The final flush delays the completion of every step that logs | One call, bounded at 2 seconds, skipped when the buffer is empty; its added time is measured in T041-9 and stated |
@@ -659,7 +660,7 @@ the migration needs the lines purged first.
 | II. Modular domain, ports and adapters | Pass | Domain types in `crates/domain/src/step_logs.rs` with no wire or SQL import; ports `StepLogStore` and `StepLogReader` in the application crate; adapters in `infra-postgres`, `api-grpc`, `api-http`. No DTO without semantics: the wire record maps to the domain record at the gRPC boundary only. `scripts/check-architecture.py` runs on every slice |
 | III. External effects are at-least-once; sagas compensate | Pass | Delivery of a batch is at-least-once and made idempotent by (attempt, generation, sequence); nothing here is an external effect or changes how one is retried, and a compensation step logs as any step does |
 | IV. Compatibility is versioned and pinned | Pass | Additive minor 1.7 negotiated as ADR-0015 says; older workers and servers behave as today (FR-041-014); three new OpenAPI operations, no changed one; no IR change; the six SDKs pass the same five scenarios (SC-041-005) |
-| V. Code, tenant boundary and secrets are isolated | Pass with conditions | Tenant in every key and predicate, 404 and audit for another tenant's run, a permission of its own, reads audited. Secrets: the platform's own paths never write a secret value to a log line, and values handed to an attempt are removed before the line leaves the worker. The condition is G041-001: a value the step's code transforms cannot be recognised. See Complexity Tracking and O041-011 |
+| V. Code, tenant boundary and secrets are isolated | Pass with conditions | Tenant in every key and predicate, 404 and audit for another tenant's run, a permission of its own, reads audited. Secrets: the platform's own paths never write a secret value to a log line, and values handed to an attempt are removed before the line leaves the worker. The condition is G041-001: a value the step's code transforms cannot be recognised; the owner accepted that limit (O041-011, OD-2026-11-13-14). See Complexity Tracking and ADR-0085 |
 | VI. Observability and audit are part of the feature | Pass | FR-041-018: metrics with closed labels, a span without text, typed errors, alerts, `run.logs_read`; no tenant or run identifier in a metric label |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | No broker is involved: a batch goes worker to API to PostgreSQL and is safe to deliver twice. Backpressure is designed (bounded buffer, `RETRY_LATER`, counted drops). There is no dead-letter path because a dropped line is counted and marked, not parked; that is a stated property of a lossy diagnostic record (ADR-0084), not an omission |
 | VIII. Failure is tested and contracts are verified, honestly | Pass | The Verification Plan names the crash, duplicate, lost-batch, stale-lease, flood, old-worker and restart tests, with barriers and held locks, each seen failing first. What is not proven is listed as gaps G041-001 to G041-006 |
@@ -682,7 +683,8 @@ the migration needs the lines purged first.
 
 - **Chunk rows in PostgreSQL** (one row per batch, compressed). About a tenth of the rows, index entries and
   trigger calls. Filters, search and the per-line identity move into the application, and duplicate removal
-  depends on a resend being byte-identical. Kept as the next step if the measurement asks for it (O041-004).
+  depends on a resend being byte-identical. Not chosen for 0.3.0 (O041-004); the next step if the measurement
+  asks for it.
 - **The blob store** (ADR-0023) with an index in PostgreSQL. Cheapest per byte and the natural home for very
   large logs. Today committed blobs are never purged (G69), so retention would have to be built there first,
   and the tail and the filters would read objects. Not for 0.3.0.
@@ -699,8 +701,8 @@ the migration needs the lines purged first.
 - **A grouped commit on the server** (several requests' batches in one transaction, each answered after it).
   Fewer transactions and one update of the tenant usage row per group. It adds a queue and a failure that
   touches several requests at once. Held back until T041-9 shows it is needed; it changes no contract.
-- **Keeping the last lines at the ceiling** (a ring). See O041-007.
-- **Capture off unless a namespace asks.** See O041-001.
+- **Keeping the last lines at the ceiling** (a ring). Not chosen: O041-007.
+- **Capture off unless a namespace asks.** Not chosen: O041-001.
 - **Accepting batches after the lease has ended**, with a log capability that outlives the lease. It would
   save the tail of an attempt whose lease expired. It needs a second token with its own lifetime and
   revocation; the loss it avoids is at most one flush interval and is shown as "ended without its final
@@ -728,19 +730,20 @@ the migration needs the lines purged first.
 ## Detailed Implementation Plan
 
 Six slices; each task is one reviewable pull request unless it says otherwise, and each slice leaves `develop`
-releasable. A task whose answer depends on an open owner question says which; it gains an `Owner-gate:` line
-when the owner's row exists.
+releasable. A task that builds what an owner answer decided carries an `Owner-gate:` line citing
+OD-2026-11-13-14.
 
 Slice A, decisions and contracts (nothing runs yet):
 
-- [ ] T041-1 Record the owner's answers to O041-001 to O041-011 in `docs/owner-decisions.md` and in the
-  registers of `specs/041-step-logs/research.md`, add the `Owner-gate:` lines they open, and take this design
-  through `egm-review` and the three repository reviewers.
+- [ ] T041-1 Take this design, with the owner's answers of OD-2026-11-13-14 written in, through `egm-review`
+  and the three repository reviewers, and commit their reports.
   Refs: FR-041-001, FR-041-013
-- [ ] T041-2 Write ADR-0084 (step logs are a bounded, lossy, per-attempt record beside the journal) and
+- [ ] T041-2 Bring ADR-0084 (step logs are a bounded, lossy, per-attempt record beside the journal) and
   ADR-0085 (step-log text is read under its own permission, redacted by value in the worker and by shape on
-  the server), each with its alternatives and the check that enforces it. Depends on O041-004 and O041-011.
+  the server), written as Proposed with this design, to the owner's acceptance, and correct them for what the
+  reviews find.
   Refs: FR-041-007, FR-041-008
+  Owner-gate: OD-2026-11-13-14
 - [ ] T041-3 Add `AppendStepLogs`, its messages and `StepLogPolicy` to `worker.proto` and its six copies,
   update `worker.baseline.json`, and add the three operations to `openapi.yaml` tagged `x-implemented: '041'`
   with the digest test's list extended; regenerate the Studio types. Contract checks pass; nothing is served.
@@ -750,21 +753,24 @@ Slice B, the server stores:
 
 - [ ] T041-4 Domain types and validation (`crates/domain/src/step_logs.rs`), the quota resources
   (`step_log_retention_days`, the attempt and run ceilings, the capture switch) at the scope the catalogue
-  allows, and the `run:logs:read` permission with the role matrix test. Depends on O041-002, O041-005,
-  O041-006.
+  allows, and the `run:logs:read` permission with the role matrix test.
   Refs: FR-041-003, FR-041-006, FR-041-013, FR-041-020
+  Owner-gate: OD-2026-11-13-14
 - [ ] T041-5 The migration (three tables, indexes, the no-update trigger, grants, storage classification, a
   down that refuses data loss), following `.claude/skills/migration`; the privilege audit and the manifest test
   pass; a test asserts no foreign key from the log tables to `runs` or `steps`.
   Refs: FR-041-008
+  Owner-gate: OD-2026-11-13-14
 - [ ] T041-6 `StepLogStore` and its PostgreSQL adapter: the ingest transaction with the lock-free lease read,
   stream upsert, the three ceilings, markers, duplicate removal and the shape scrub; its statement budget as an
   equality; the held-run-lock test of SC-041-001; `work_budget.rs` unmodified.
   Refs: FR-041-002, FR-041-004, FR-041-006, FR-041-007, FR-041-008, SC-041-001
+  Owner-gate: OD-2026-11-13-14
 - [ ] T041-7 The gRPC handler, minor 1.7 in `negotiate_protocol_details` and `protocol_ceiling`, the policy in
   `RegisterWorkerResponse`, the ingest semaphore and `RETRY_LATER`, `SAGAT_STEP_LOGS_ENABLED`, the metrics and
   the span.
   Refs: FR-041-001, FR-041-004, FR-041-005, FR-041-014, FR-041-018
+  Owner-gate: OD-2026-11-13-14
 - [ ] T041-8 Server fault tests with barriers and held locks: crash before commit, crash after commit and
   before the answer, the same batch twice at once, a stale lease, a batch for another tenant's run, a flood
   from a hand-written client that ignores every verdict, restart of the API in the middle of an attempt.
@@ -779,16 +785,19 @@ Slice C, the server serves:
 - [ ] T041-10 Retention: `expires_at`, the housekeeping pass, the kept stream row with `purged_at`, the purge
   metrics; a test that a purge releases the quota bytes and skips a leased attempt.
   Refs: FR-041-009, FR-041-018
+  Owner-gate: OD-2026-11-13-14
 - [ ] T041-11 `StepLogReader`, `GET /runs/{runId}/logs` and `/logs/streams`: order and cursor below the
   snapshot horizon (with the held-transaction test on PostgreSQL 16 and 18), filters, `q`, the throttled
-  `run.logs_read` audit, the cross-tenant battery, the runtime-role run. Depends on O041-003.
+  `run.logs_read` audit, the cross-tenant battery, the runtime-role run.
   Refs: FR-041-010, FR-041-011, FR-041-013, FR-041-002
+  Owner-gate: OD-2026-11-13-14
 - [ ] T041-12 `GET /runs/{runId}/logs/stream`: events, resume, end, reconnect, caps shared with the graph
-  stream, role re-check; a test that a reconnect neither skips nor repeats. Depends on O041-008.
+  stream, role re-check; a test that a reconnect neither skips nor repeats.
   Refs: FR-041-012
+  Owner-gate: OD-2026-11-13-14
 - [ ] T041-13 The script-output marker in `record_execution` and the `script` source in the streams route.
-  Depends on O041-009.
   Refs: FR-041-016
+  Owner-gate: OD-2026-11-13-14
 
 Slice D, the SDKs (one pull request per SDK after the specification; they can be built in parallel):
 
@@ -809,8 +818,9 @@ Slice D, the SDKs (one pull request per SDK after the specification; they can be
 - [ ] T041-20 Rust: add `ActivityContext::log()` and capture; the four lock files move together.
   Refs: FR-041-005, FR-041-007, FR-041-015, SC-041-004
 - [ ] T041-21 Run the five scenarios in the six SDKs on the merged tree and record the matrix; the flood
-  scenario's counts add up in each. Depends on O041-010.
+  scenario's counts add up in each.
   Refs: SC-041-002, SC-041-004, SC-041-005
+  Owner-gate: OD-2026-11-13-14
 
 Slice E, the Studio:
 
@@ -830,6 +840,7 @@ Slice F, operations and close:
   (generated files regenerated after reading the diff), `docs/traceability.md`, the quickstart demo of the
   happy and the failure scenario, and the release notes that state O041-001's default first.
   Refs: FR-041-018, NFR-041-OPS
+  Owner-gate: OD-2026-11-13-14
 - [ ] T041-26 End-to-end lineage and mixed versions on the Compose stack: retry, reset, rerun and
   continue-as-new each leave logs where FR-041-019 says; a 1.5 worker beside a 1.7 worker; an old API replica
   beside a new one; the incident switch.
