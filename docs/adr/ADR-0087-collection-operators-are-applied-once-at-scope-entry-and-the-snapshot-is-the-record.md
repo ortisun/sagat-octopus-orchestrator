@@ -1,6 +1,6 @@
 # ADR-0087: Collection operators are applied once at scope entry and the snapshot is the record
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo")
 **Decided by:** agent proposal, pending owner acceptance (2026-11-13; the owner asked for the operators in OD-2026-11-13-13 and chose their scope in OD-2026-11-13-15, and has not accepted the mechanism)
 **Refines / supersedes:** refines ADR-0032 (additive IR v1, one capability at a time, the frozen expression limits) and ADR-0030 (bounded expressions, scoped instances); builds on ADR-0003. Supersedes none.
 **Enforced by:** proposed checks of design 042, slices S0 and S1: the IR contract fixtures (T042-6), the operator tests and the restart-on-snapshot test in `integration_workflow_primitives` (T042-7 to T042-9), and the six-language scenarios `collection-operators`, `collection-operators-runtime` and `collection-operators-limits` (T042-11). None exists yet; until they do, this rule is review only.

@@ -1,6 +1,6 @@
 # ADR-0086: Operator chains on triggers are declared data, their state is rows on the database clock, and a fenced pass seals a window that starts one run by its identity
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-13, OD-2026-11-13-17: the owner's "Aceito tudo")
 **Decided by:** agent proposal, pending owner acceptance (2026-11-13; the owner asked for the operators in OD-2026-11-13-13 and put the trigger operators in a release after 0.3.0 in OD-2026-11-13-15, and has not accepted the mechanism)
 **Refines / supersedes:** refines ADR-0012 (events pass through a durable inbox and a durable delivery table), ADR-0020 (sharded, fenced scheduler) and ADR-0032 (additive IR v1, one capability at a time); composes with ADR-0056 and the proposed ADR-0088 (one admission port; rate limits). Supersedes none.
 **Enforced by:** proposed checks of design 042, slices S2 to S4: the fault, race, restart and capacity tests T042-27 to T042-32, the zero-cost budget test T042-19, and the composition test with feature 022, T042-3. None exists yet, and none is in release 0.3.0; until they exist, this rule is review only.
