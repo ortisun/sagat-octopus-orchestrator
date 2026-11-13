@@ -4,14 +4,16 @@ The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`
 `switch`, run-addressed declared Query/Update and a bounded root human approval are available
 with the existing basic root nodes. A public collection workflow may start with ordinary source
 activities followed by a chain of `forEach` nodes ending at `end`; each referenced body contains a
-bounded acyclic graph with an activity/condition/switch/timer entry, one to eight executable nodes (activities,
-conditions, switches, timers) and one `return`. In the 0.3 increment, local `onError` routes and
+bounded acyclic graph with an activity/condition/switch/timer/event-wait entry, one to eight executable nodes
+(activities, conditions, switches, timers, event waits) and one `return`. In the 0.3 increment, local `onError` routes and
 recorded decisions may select a branch; a recovery failure drains with its own
 code. Unselected branches retain their lifetime charge as retired reservations, while actual
 completed/unknown effects keep the compensation capacity they require.
 The restricted public loop shape uses an activity followed by a return in its body; a loop's
-`onError` edge may lead to an `end` or to recovery activities that end at an `end`. Nested
-collections, event waits inside bodies, triggers and broader structured combinations remain closed.
+`onError` edge may lead to an `end` or to recovery activities that end at an `end`. Event waits
+inside collection bodies are open (see "Public collection event waits"). Nested collections, triggers and broader
+structured combinations remain closed: feature 014 ships unnested collections, and general nesting with the capacity
+program it needs is feature 039 (OD-2026-11-12-6).
 The public continuation subset accepts an activity followed by `continueAsNew`, including exact
 declared-state transfer, or an activity and condition that select the same continuation or `end`.
 An approval combines with declared state and with a continuation chain (an entry activity, then an
@@ -340,9 +342,25 @@ SAGAT_SDK_SCENARIO=collection-control-routing cargo test -p sagat-tests --test s
 ```
 
 The published body has an activity/condition/switch entry, up to eight executable activity/condition/switch
-nodes and one Return. Conditions, switches, timers and event waits may be scheduler-owned entries. Children, approvals and nesting remain gated. The existing
+nodes and one Return. Conditions, switches, timers and event waits may be scheduler-owned entries. Children, approvals and nesting remain gated (nesting is feature 039). The existing
 wire fields and worker minor1.5 are unchanged; a full release-wide compatibility matrix
 remains required before shipping.
+
+## Limits and ceilings (0.3)
+
+These are the ceilings decided for release 0.3 (`docs/owner-decisions.md`). Two are decided by delegation and stay
+reversible until the owner confirms them.
+
+| Limit | Value | Source |
+|---|---|---|
+| `maxItems` of one collection | Validation accepts 1 to 10,000. The published ceiling is 10,000 if the T014-042 acceptance run on the release candidate meets its thresholds, otherwise 1,000; the release notes say which | OD-2026-11-04-5 (delegate) |
+| `maxIterations` of one loop | Validation accepts 1 to 10,000. Published 1,000 unless a 10,000-iteration loop completes within 1,800 s on that run | OD-2026-11-04-5 (delegate) |
+| `maxConcurrency` of one collection | 1 to 256, and bounded by the tenant's `iteration_concurrency` quota | `crates/domain/src/workflow.rs` |
+| Pending waits (approvals, timers, event waits) | 20,000 per scheduler replica at the default 500 ms interval | OD-2026-11-04-6 (delegate) |
+
+OD-2026-11-04-6 also asks for a `scheduler_tick_seconds` metric with a slow-tick alert and an alert above 16,000
+waits per replica; until they exist, watch the scheduler lag (`scheduler_lag_seconds`) instead. A collection's real
+bound is the smaller of its `maxItems` and what the tenant's quotas leave: raise a quota, not the published ceiling.
 
 ## Rollback and compatibility
 
