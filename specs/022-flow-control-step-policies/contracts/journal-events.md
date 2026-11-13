@@ -21,6 +21,14 @@ shows it as an unsupported event, never an error). `verify_run` replays them.
 | `concurrency.wait_timed_out` | T12 or step timeout | `pool`, `scope`, `group`, `key_label` | run or step fails `CONCURRENCY_WAIT_TIMEOUT` |
 | `concurrency.dequeued` | cancellation, run deadline | `pool`, `group`, `key_label` | waiter removed; no permit |
 
+| `rate_limit.queued` | T19, T22 | `pool`, `scope` ∈ `RUN`, `STEP`; `group`, `key_label`, `limit`, `period_ms`, `queue_deadline_us` | run or step `WAITING` (wait kind `RATE_LIMIT`); a step spends no attempt |
+| `rate_limit.granted` | T19, T20, T22 | `pool`, `scope`, `group`, `key_label`, `limit`, `period_ms`, `granted_at_us`, `from_queue` (boolean) | run: first tasks follow in the same transaction; step: `READY` |
+| `rate_limit.wait_timed_out` | T21 | `pool`, `scope`, `group`, `key_label` | run or step fails `RATE_LIMIT_WAIT_TIMEOUT` |
+| `rate_limit.dequeued` | T24 | `pool`, `scope`, `group`, `key_label` | waiter removed; no slot consumed |
+
+The four `rate_limit.*` rows belong to the release 0.3.0 slice (US07, D022-012). A rate slot has no
+release event: it stops counting by time, which replay never needs to know (FR-022-045).
+
 `run.started` (existing) gains optional provenance `handler_for`, `origin` and `test_tree`. `key_label` is
 the 12-hex-character prefix of the keyed digest (D1168), never the key value.
 
@@ -41,6 +49,9 @@ including ADR-0056's holder count, skip them. Rules for this feature's event typ
 | `concurrency.queued` | `REMATERIALIZE` | a point after `concurrency.queued` and before its `concurrency.acquired` is refused (the run never started work); otherwise history |
 | `concurrency.acquired`, `concurrency.released` | `REMATERIALIZE` | restored rows are history; after `run.reset` the reset transaction acquires a fresh run permit through the permit port (ADR-0056 decision 3) and never queues, else the reset is refused (`CONCURRENCY_PERMIT_UNAVAILABLE`, 018's code); a point with an open step-scope acquisition is not eligible (no attempt in flight, ADR-0050 decision 5) |
 | `concurrency.wait_timed_out`, `concurrency.dequeued` | `REFUSE` | points after them lie in a terminal tail of a run that never started work |
+| `rate_limit.queued` | `REMATERIALIZE` | a point after a run-scope `rate_limit.queued` and before its `rate_limit.granted` is refused (the run never started work); otherwise history |
+| `rate_limit.granted` | `REMATERIALIZE` | restored rows are history and create no grant row; after `run.reset` the reset transaction takes a fresh run-scope slot through the admission port and never waits, else the reset is refused (`RATE_LIMIT_SLOT_UNAVAILABLE`, to be registered in 018's contract, G1181); a point with a step waiting for a slot or granted and not yet completed is not eligible (no attempt in flight, ADR-0050 decision 5) |
+| `rate_limit.wait_timed_out`, `rate_limit.dequeued` | `REFUSE` | run scope: points after them lie in a terminal tail of a run that never started work; step scope: reset to a point before the step asked for its slot |
 | `run.started` provenance (`handler_for`) | `REMATERIALIZE` | the reset run does not inherit `handler_for` (exactly one handler run per failure, unique index); its link to the source is 018's reset provenance; `origin` and `test_tree` are copied (test trees are refused as sources) |
 
 ## Spans

@@ -141,3 +141,26 @@ SAGAT_SDK_SCENARIO=flow-cache cargo test -p sagat-tests --test sdk_conformance -
 
 Record the actual commands, exits and environment in the feature's verification record; a skipped or
 failing scenario is reported as such.
+
+## 7. Rate limit with buffering (US07, release 0.3.0 slice)
+
+Proposed; nothing here runs yet. The workflow `provider-sync` (second example of
+`contracts/workflow-ir-fragment.schema.json`) declares `rateLimit: {key: "input.providerId", limit: 100,
+per: "minute"}` at the top level and `rateLimit: {limit: 10, per: "second"}` on its `fetch` activity. For
+the demo publish a version with `limit: 5, per: "minute"` at the top level.
+
+```sh
+for i in $(seq 1 8); do sagat workflow run provider-sync --input '{"providerId":"p-1","accountId":"acc-'$i'"}'; done
+sagat workflow run provider-sync --input '{"providerId":"p-2","accountId":"acc-9"}'
+```
+
+Expected: five `p-1` runs start at once (`rate_limit.granted`, `from_queue: false`); three are `WAITING`
+with `rateLimit.state = WAITING`, `position` 1 to 3 and an `estimatedGrantAt` about one minute after the
+first grants; the `p-2` run is not delayed. `GET /v1/namespaces/{id}/rate-limit-keys` shows
+`grantsInWindow: 5, waiters: 3` for one label. As the first grants age out, the three start in admission
+order; in the journals no minute holds more than five grants of the key.
+
+Failure scenario: restart every engine while the three wait and observe the same grants afterwards, none
+twice. Then publish `queueTimeoutMs: 3000`, start eight more and observe the last three end `FAILED` with
+`RATE_LIMIT_WAIT_TIMEOUT`; cancel one buffered run and observe `rate_limit.dequeued` and no grant for it.
+

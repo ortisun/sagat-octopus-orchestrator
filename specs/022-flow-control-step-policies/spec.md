@@ -6,6 +6,13 @@
 
 **Status**: Draft — specification, plan and tasks proposed; not implemented; pending owner review
 
+**Release 0.3.0 slice (2026-11-13)**: the owner put throughput control in release 0.3.0 (OD-2026-11-13-11,
+quoted in [research.md](research.md#owner-decision-of-2026-11-13-throughput-control-in-release-030)): US02
+(concurrency limits by key, FR-022-017..022) as specified, plus rate limits per time window with buffering,
+added below as US07 (FR-022-039..050, NFR-022-007..008, SC-022-017..023). US01 and US03–US06 are not in the
+slice. The slice, its tasks and what it leaves out are in [Release 0.3.0 slice](#release-030-slice). Nothing
+of it is implemented.
+
 **Input**: Bring Windmill/Temporal flow control to the platform without changing its execution model: a
 declared **step result cache** (key = canonical input digest + pinned identity + scope, TTL, retained and
 classified entries, journaled hits, explicit invalidation); **early return** of a workflow's declared
@@ -53,6 +60,15 @@ content-store registry (FR-022-037). Business-ID
 policies for standalone executions are 018; priority/fairness keys are 019 (grants are oldest first until
 then); run-and-wait and Streams are 026 (they consume the early result); the time-skipping clock is 028;
 encrypted fields (031) are opaque to keys (FR-022-036).
+
+Rate limits (US07, added on 2026-11-13) reuse the same pieces as concurrency keys: the key expression, the
+keyed digest and its label, groups, the one admission port, the queue ceilings and the shard-fenced grant
+(ADR-0056). What differs is that a rate slot is freed by time, not by a holder finishing, so the count is a
+durable window of grants on the database clock and every grant to a buffered waiter is made by a scheduler
+pass (proposed [ADR-0084](../../docs/adr/ADR-0084-rate-limits-are-a-durable-window-of-grants-on-the-database-clock-and-the-scheduler-grants-never-the-claim.md)).
+They are distinct from the tenant rate quotas of feature 009 (`api_requests_per_second`,
+`events_per_second`), which refuse a request and never buffer, and from 018's schedule overlap policies
+(`BUFFER_ONE`, `BUFFER_ALL`), which buffer a schedule's actions before a run exists.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -214,6 +230,50 @@ reducer elsewhere; the same request in a `prod` namespace is refused.
 5. **Given** a test run, **when** it ends, **then** it created no outbound delivery, no namespace handler
    dispatch and no shared cache entry.
 
+---
+
+### US07 — Limit how often work starts per business key, buffering the excess (Priority: P1)
+
+An author allows at most N run starts (or N dispatches of a step) per second, minute or hour for a business
+key, for example 100 calls a minute to one provider account. Work beyond the limit is not refused and does
+not fail: it waits durably, in arrival order, without a lease or a worker, and starts as the window frees.
+
+**Why this priority**: a downstream system with a quota is otherwise protected by sleeps in worker code,
+which lose their state on restart and are invisible to the operator; the owner asked for it in release
+0.3.0 (OD-2026-11-13-11).
+
+**Independent Test**: 30 same-key runs at `rateLimit: {limit: 10, per: "second"}` started at once; kill the
+engine while 20 wait; restart. From the journals alone: no window of one second on the database clock holds
+more than 10 `rate_limit.granted` events of the key, grants follow admission order, every run was granted
+exactly once, and a second key started in the middle of the flood is not delayed.
+
+**Acceptance Scenarios**:
+
+1. **Given** workflow-level `rateLimit: {key: "input.accountId", limit: 10, per: "second"}` and no grant
+   of the key in the last second, **when** 10 same-key runs are admitted, **then** each is granted in its
+   admission transaction (`rate_limit.granted`) and starts at once.
+2. **Given** 10 grants of the key in the last second, **when** an eleventh run is admitted, **then** it is
+   `WAITING` (wait kind `RATE_LIMIT`) with `rate_limit.queued`, no ready step, a timer at its queue
+   deadline, and it counts as an active and as a queued run.
+3. **Given** buffered runs of one key, **when** grants age out of the window, **then** a scheduler pass
+   grants the oldest waiters first, each in its own fenced transaction that journals the grant and creates
+   the run's first tasks; no replica's own clock is read.
+4. **Given** a grant racing the queue timeout or a cancellation, **when** both try to commit, **then** the
+   first commit wins (the run starts, or ends `FAILED`/`RATE_LIMIT_WAIT_TIMEOUT`, or `CANCELLED`) and the
+   other changes nothing; a waiter that leaves the queue consumed no slot.
+5. **Given** a node-level `rateLimit`, **when** more attempts would become ready than the window admits,
+   **then** the extra steps are not claimable, spend no attempt and hold no lease until granted, and at
+   most `limit` attempts of the key are leased in any window; a step waiting past its queue timeout fails
+   `RATE_LIMIT_WAIT_TIMEOUT` through its failure route.
+6. **Given** both `concurrency` and `rateLimit` at workflow level, **when** a run cannot have both, **then**
+   it holds neither: it is granted the permit and the slot in one transaction, or it waits.
+7. **Given** a full per-key buffer or a full namespace `queued_runs`, **when** a synchronous start arrives,
+   **then** it is refused with `QUOTA_EXCEEDED`/`RATE_LIMIT_QUEUE_FULL` and no run exists; an event or
+   cron start stays pending under its retry.
+8. **Given** a buffered run, **when** it is inspected, **then** it shows that it waits for a rate slot,
+   since when, its queue deadline, its position in the key's queue and an estimated grant time marked as an
+   estimate, with the key shown only as a label.
+
 ### Edge Cases
 
 - A cache key expression errors or exceeds its bound: the lookup is `bypassed`; never a run failure.
@@ -241,6 +301,36 @@ reducer elsewhere; the same request in a `prod` namespace is refused.
 - `MISSING_PIN` checks expression references only: worker code that reads an unpinned upstream output from
   its run data document sees it absent. The Studio warns about unpinned upstream nodes.
 - A standalone script with an unknown artifact digest is refused as at publication (`UNKNOWN_SCRIPT`).
+
+Rate limits (US07):
+
+- The limit is lowered while runs wait (a new version, or a lower namespace policy ceiling): no grant is
+  revoked; each waiter is evaluated at its next grant against its own pinned `limit` and `per` clamped by
+  the current policy, so a lowered policy applies to waiters at once and a lowered declaration to new runs.
+- Two definitions share an explicit group with different `limit` or `per`: each acquirer counts the shared
+  grants over its own `per` against its own `limit`; publication warns `RATE_LIMIT_MISMATCH`; an older
+  waiter its own limit refuses does not block a younger one (no head-of-line blocking, as D1196).
+- The engine is down longer than the window: on restart every waiter is still buffered, the window has
+  aged on the database clock, and the first pass grants at most `limit` per key; nothing is granted twice.
+- The database clock moves backwards (a failover to a server whose clock is behind): grants counted "in
+  the future" keep counting, so the limit is under-delivered until the clock catches up and never exceeded.
+- Workers stop while steps hold granted slots: a granted step that no worker leases keeps its slot, so at
+  most `limit` granted steps of a key are ever unleased and a returning worker cannot lease a backlog
+  larger than the limit.
+- A retry of a rate-limited step asks for a new slot when its backoff ends; the wait for the slot is not an
+  attempt and does not consume the retry budget.
+- A granted step is cancelled or its run ends before any worker leases it: its slot is returned in that
+  transaction. A leased attempt never returns its slot, whatever its outcome.
+- A flood of starts on one key fills that key's buffer and is refused beyond it; other keys, other
+  workflows and other tenants keep being granted in the same passes.
+- A buffered run whose key cannot be evaluated never existed as a waiter: it ends
+  `FAILED`/`EXPRESSION_ERROR` in its admission transaction, as for concurrency (D1180).
+- A schedule (018) starts a rate-limited workflow: the buffered run is an open run for the overlap policy,
+  so `SKIP` skips and `BUFFER_ONE`/`BUFFER_ALL` buffer the next action in 018; the two buffers never hold
+  the same start.
+- A collection body wants a rate limit per item: `rateLimit` on a body node is refused in this slice
+  (`SCOPED_RATE_LIMIT`, G1175); a body `child` node that starts a workflow declaring a top-level
+  `rateLimit` is buffered through the admission port like any other start.
 
 ## Requirements *(mandatory)*
 
@@ -429,6 +519,96 @@ reducer elsewhere; the same request in a `prod` namespace is refused.
   (O1162). Features 026 (no approval notifications) and 020 (no export of `DRAFT_TEST` runs) apply their
   own rules to test trees.
 
+#### Rate limits with buffering (US07)
+
+- **FR-022-039 — Rate-limit declaration**: A definition MUST be able to declare top-level `rateLimit` (run
+  starts) and root `activity`/`script` nodes node-level `rateLimit` (attempt dispatches), each with a
+  positive `limit`, a required `per` (`second` | `minute` | `hour`), an optional `key` (run level over
+  `input`, step level over run data, same bounds, keyed digest and label as FR-022-017), an optional
+  `group` (same default and sharing rule as FR-022-017) and an optional `queueTimeoutMs`. Run-level and
+  step-level limits never share a window, and a rate limit never shares a row with a concurrency
+  semaphore, whatever the group names. Publication MUST refuse an invalid policy
+  (`RATE_LIMIT_POLICY_INVALID`), `rateLimit` on a body node (`UNSUPPORTED_NODE`, dependency
+  `SCOPED_RATE_LIMIT`) and `rateLimit` together with `continueAsNew` (`FLOW_CONTROL_COMBINATION`). The
+  declaration is beside `concurrency`, not inside it; a definition may declare either or both.
+- **FR-022-040 — The window**: For every key, the number of grants an acquirer may see in any interval of
+  length `per`, measured on the database clock, MUST NOT exceed that acquirer's `limit` (O1163). A
+  run-level grant counts from the instant of its grant. A step-level grant counts from the instant its
+  attempt is leased, and counts without end while it is granted and not yet leased, so at most `limit`
+  attempts of a key are leased in any window. The window MUST be PostgreSQL rows changed only in the
+  transactions of the plan; process memory, NATS, Redis and a replica's own clock MUST NOT decide or
+  remember a grant. A slot MUST be returned only when a granted step ends without ever being leased.
+- **FR-022-041 — Run admission and grant**: Admission MUST evaluate the key and, in its transaction, grant
+  the slot (`rate_limit.granted`) when the window admits the run and no waiter of the key is ahead of it,
+  or buffer the run (`rate_limit.queued`, `WAITING`/`RATE_LIMIT`, timer at the queue deadline, no task).
+  Every run creator MUST use the one admission port of FR-022-018; a run with an 018 start delay is
+  evaluated when the delay elapses. A key error MUST end the new run `FAILED`/`EXPRESSION_ERROR` in that
+  transaction. A grant to a buffered run MUST be made by the scheduler replica that owns the waiter's
+  shard, under its fence, in a transaction that journals the grant, removes the waiter, cancels its timer
+  and creates the run's first tasks and outbox (ADR-0084). A **reset** run (018) MUST take a slot in its
+  reset admission transaction and MUST NOT be buffered: without a free slot the reset is refused
+  (`RATE_LIMIT_SLOT_UNAVAILABLE`, to be registered in 018's contract), and `rate_limit.*` events copied
+  from the source prefix are history (FR-022-038).
+- **FR-022-042 — What buffering guarantees**: Buffered work MUST survive a restart of every process and
+  hold no lease, worker, attempt or concurrency permit. Within one key, grants MUST follow enqueue order
+  (database clock of the enqueuing commit, ties by run id and node) among the waiters that are not paused
+  and that their own limit and their other gate admit; there is no order between keys (O1164). The buffer
+  MUST be bounded: the per-key waiter ceiling and the namespace `queued_runs` ceiling of FR-022-021 apply
+  to rate waiters too; a full buffer MUST refuse a synchronous start (`QUOTA_EXCEEDED`,
+  `RATE_LIMIT_QUEUE_FULL`) before a run exists and leave event and cron starts pending under their retry
+  (O1165). A waiter past its queue deadline MUST end `RATE_LIMIT_WAIT_TIMEOUT` (a run `FAILED`; a step
+  through its failure route); a grant and the timeout MUST be decided by first commit.
+- **FR-022-043 — Step slots**: A step with node-level `rateLimit` MUST ask for a slot in the transaction
+  that would make it ready, for its first attempt and for every retry after its backoff (O1166). With a
+  free slot and no waiter ahead it is granted there and becomes `READY`; otherwise it waits (step
+  `WAITING`, wait kind `RATE_LIMIT`, no attempt spent) and a scheduler pass grants it later and makes it
+  `READY`. A claim MUST NOT read or write any rate-limit row: a step is claimable only after its grant,
+  and the claim of a rate-limited step runs the same statements as the claim of any other step
+  (NFR-022-007). The pass MUST record the lease instant of a granted attempt from the journal fact the
+  claim already writes; until it has, the grant counts as unleased, so the pass may be late and never
+  early.
+- **FR-022-044 — Concurrency and rate together**: When a definition declares both at run level, a run MUST
+  be given the permit and the slot in one transaction or neither: it MUST NOT hold a permit while it waits
+  for a slot, nor consume a slot while it waits for a permit. It waits once, with one queue deadline (the
+  earlier of the two), and a timeout names the gate that refused at the deadline. Every transaction that
+  touches both MUST lock the semaphore (slot 7 of ADR-0050's order) before the rate-limit rows, which are
+  rate rows of slot 8b and are locked in `(pool, scope, group, key)` order before the usage rows; no path
+  reverses it. At step level the rate grant comes first (it makes the step claimable) and the step permit
+  is taken at the claim (FR-022-019); a granted step waiting for a permit keeps its slot.
+- **FR-022-045 — Replay**: `rate_limit.queued`, `rate_limit.granted`, `rate_limit.wait_timed_out` and
+  `rate_limit.dequeued` MUST be journal events committed with the transition they cause, carrying the
+  facts of the decision (`limit`, `period_ms`, `granted_at_us`, key label). Replay and `verify_run` MUST
+  reach the persisted state from the journal alone and MUST NOT read the clock, the window or the queue.
+- **FR-022-046 — Lifecycle**: Cancellation, the run deadline and any other terminal transition of a
+  buffered run or step MUST remove it from the buffer in that transaction (`rate_limit.dequeued`) without
+  consuming a slot. A paused waiter MUST be skipped by grants until resumed; pausing a granted run changes
+  nothing. Lowering a limit MUST NOT revoke a grant. A run that ends before it was ever granted finishes
+  without its workflow failure handler (as D1197). Reruns, 017 ad hoc starts, child runs, and 018 schedule
+  firings, batch reruns and Signal/Update-with-Start are ordinary admissions. Draft test trees, when US06
+  exists, use the draft-test pool and never share a window with ordinary runs.
+- **FR-022-047 — Quotas, ceilings and fairness**: Buffered runs MUST count against `active_runs`,
+  `tenant_active_runs` and `queued_runs`. `limit`, `per`, the queue timeout, waiters per key and live
+  rate-limit keys per namespace MUST have the defaults and hard ceilings of the plan; the effective value
+  is the minimum of declaration, namespace policy and deployment; zero refuses. A grant pass MUST bound
+  the work it does for one key and for one tenant, so that a flood on one key cannot delay an eligible
+  grant of another key or tenant by more than one further pass.
+- **FR-022-048 — Visibility**: A run MUST show its rate-limit state (waiting or granted, since, queue
+  deadline, group, key label, position in the key's queue, and an estimated grant time that is absent when
+  it cannot be computed and is never a promise). A step waiting for a slot MUST be shown as such in the
+  run's steps. A namespace view MUST list rate-limit keys with their grants in the current window,
+  waiters, oldest wait and the instant the next slot frees, by key label only. Raw key values MUST NOT
+  appear in any response, log, span, metric or audit (FR-022-022).
+- **FR-022-049 — Observability and alerts**: The capability MUST emit the plan's spans and fixed-label
+  metrics (decisions by outcome, wait time, waiters, grant lag behind a free slot) and raise per-namespace
+  alerts when grants lag behind free slots (`rate_limit_grant_lagging`) and when a key's buffer nears its
+  ceiling (`rate_limit_queue_saturated`), each with a runbook section. Labels follow FR-022-033.
+- **FR-022-050 — Capability, SDKs and Studio**: `rateLimits` MUST be a capability enabled separately from
+  `concurrencyKeys` under the rules of FR-022-031. The six SDKs (TypeScript, Go, Python, C#, Java, Rust;
+  FR-022-035 predates the Rust SDK and reads "five") MUST author identical canonical IR for `concurrency`
+  and `rateLimit` and pass the shared conformance scenarios `flow-concurrency` and `flow-rate-limit`. The
+  Studio MUST author the same IR, show a run or step waiting for a rate slot with its position and
+  estimate from the run resource, and list the keys. The worker protocol MUST NOT change.
+
 #### Cross-cutting
 
 - **FR-022-031 — Additive IR and capability gates**: New fields and kind MUST be additive in IR v1
@@ -493,6 +673,13 @@ reducer elsewhere; the same request in a `prod` namespace is refused.
   monitor per namespace and alerted with a runbook; every operator action has an audited API.
 - **NFR-022-006 (privacy)**: Keys are stored and shown only as keyed digests or labels that cannot be
   confirmed offline without the deployment's digest key.
+- **NFR-022-007 (hot path)**: A definition that declares neither `concurrency` nor `rateLimit` adds no
+  statement, lock or row to a claim, a completion or an admission (the recorded budget of design 038,
+  FR-038-001, is unchanged). A node-level `rateLimit` adds none to any claim. What a declaring definition
+  adds to its own admission and completions is recorded as a budget line in the change that adds it.
+- **NFR-022-008 (time)**: Every instant a rate decision uses is read from the database clock inside the
+  deciding transaction. Replicas whose own clocks disagree grant the same waiters; a database clock that
+  moves backwards delays grants and never adds one.
 
 ### Key Entities
 
@@ -503,6 +690,8 @@ reducer elsewhere; the same request in a `prod` namespace is refused.
   obligation per failed run and the handler run it admits.
 - **Concurrency semaphore**: per tenant, namespace, pool, permit scope, group and key digest: holders,
   waiters, counters.
+- **Rate-limit window**: per tenant, namespace, pool, scope, group and key digest: the grants that still
+  count, the waiters in enqueue order, counters.
 - **Standalone execution**: a private one-node definition and its ordinary run.
 - **Draft test run**: a private definition of a draft revision, its pins, start node and test tree.
 
@@ -555,6 +744,35 @@ All criteria are future evidence; none is satisfied by this document.
   remains, the next lookup misses, the manifest-driven reference check reports no unregistered
   referencing column, and every consumer copy is listed by source run. (FR-022-037)
 
+- **SC-022-017**: With `limit: 10, per: second` and 1,000 same-key starts, across an engine restart, no
+  one-second interval of the journals holds more than 10 grants of the key, grants follow admission order,
+  each run is granted once, starts beyond the buffer ceiling are refused with their code, and a run of
+  another key and of another tenant admitted during the flood is granted within two passes.
+  (FR-022-040..042, FR-022-047)
+- **SC-022-018**: In 20 rounds of grant-versus-timeout, 20 rounds of grant-versus-cancel, a crash at every
+  commit point of admission, grant, timeout and lease recording, and a duplicate grant attempt across a
+  shard takeover, every waiter ends in exactly one outcome, the window's grant counter equals the journals'
+  grants, and every waiter row has an open `rate_limit.queued`. (FR-022-041, FR-022-042, FR-022-045)
+- **SC-022-019**: With both `concurrency` and `rateLimit` at run level, no committed state ever shows a
+  run holding a permit while waiting for a slot or the reverse, and the lock-order barrier test for each
+  path ends without a deadlock while its reversed-order control waits. (FR-022-044)
+- **SC-022-020**: The budget test of design 038 passes unchanged for a definition without the new fields,
+  and the claim of a rate-limited step has the same statements, transactions and rows as the claim of a
+  plain step. (NFR-022-007, FR-022-043)
+- **SC-022-021**: With a step-level limit and no worker for three windows, at most `limit` steps of the
+  key are granted and unleased, a returning worker leases at most `limit` in its first window, a retry
+  waits for a new slot without spending an attempt, and a granted step cancelled before its lease returns
+  its slot. (FR-022-040, FR-022-043)
+- **SC-022-022**: Lowering the policy ceiling while runs wait slows later grants and revokes none;
+  cancellation, run deadline and pause of a waiter behave as specified; a reset takes a slot or is
+  refused and never waits; every run creator of the plan is buffered through the port. (FR-022-041,
+  FR-022-046)
+- **SC-022-023**: Two engine replicas whose process clocks differ by ten minutes produce grants that
+  satisfy SC-022-017, and a database clock set back by one window produces no grant until it catches up.
+  The six SDKs emit byte-identical canonical IR for the rate-limit fixture and identical normalized
+  observations for `flow-rate-limit`; no raw-key canary appears in any surface. (NFR-022-008, FR-022-048,
+  FR-022-050)
+
 ## Assumptions
 
 - Cache, concurrency and early return target the root graph first; bodies follow with per-instance
@@ -564,6 +782,9 @@ All criteria are future evidence; none is satisfied by this document.
   effects in the chosen non-production namespace.
 - The idempotency key identifies a standalone execution until 018 adds business-ID policies; grants are
   oldest first until 019 adds priority.
+- A rate limit bounds when work becomes eligible (a run's start, a step's lease), not how long the work
+  takes or how many calls an activity makes once it runs. Rate limits target the root graph first
+  (G1175); a limit rate is a ceiling, never a promised throughput (G1176).
 
 ## Dependencies
 
@@ -581,11 +802,40 @@ All criteria are future evidence; none is satisfied by this document.
   handler regions.
 - Caching blob outputs, database results, child results or compensations; deduplicating concurrent misses;
   cross-namespace caches.
-- Rate limits per time window (Windmill "N executions per window"); only concurrency is limited.
+- ~~Rate limits per time window (Windmill "N executions per window"); only concurrency is limited.~~
+  Brought into scope by the owner on 2026-11-13 (OD-2026-11-13-11) as US07.
+- For rate limits: a lossy mode that drops or refuses instead of buffering; a `burst` allowance or evenly
+  spaced grants (O1163); limits on body nodes (G1175) or with `continueAsNew` (G1177); a limit shared
+  across namespaces or tenants; priority between waiters (019); limiting the calls an activity makes
+  inside one attempt.
 - Completing a parent's `child` node on the child's early result.
 - Test runs in `prod`; mocks in published versions; partial execution of published versions.
 
 ## Owner questions
 
 See [research.md](research.md#owner-questions): O1160 (test runs in `prod`), O1161 (handler recovery),
-O1162 (secrets in draft test runs), each with a recommended default.
+O1162 (secrets in draft test runs), each with a recommended default. For the 0.3.0 slice: O1163 (what "N per
+window" means), O1164 (what the buffer guarantees), O1165 (a full buffer), O1166 (whether a retry takes a
+slot), O1167 (rate limits inside collections), O1168 (whether a reset may wait), each with options and a
+recommendation.
+
+## Release 0.3.0 slice
+
+Decided by the owner on 2026-11-13 (OD-2026-11-13-11): throughput control for flows with execution limits,
+as "Concorrência + taxa".
+
+| In the slice | Requirements | Success criteria |
+|---|---|---|
+| US02 — concurrency limits by key with a durable queue, as specified | FR-022-017..022 | SC-022-003, SC-022-004, SC-022-015 (creators that exist) |
+| US07 — rate limits per window with buffering | FR-022-039..050 | SC-022-017..023 |
+| The cross-cutting rules both need | FR-022-031 (gates `concurrencyKeys`, `rateLimits`), FR-022-032..035, FR-022-038; NFR-022-001..008 | SC-022-010..014 for these two capabilities |
+
+Not in the slice, and unchanged by it: US01 (cache, FR-022-001..007), US03 (failure handlers,
+FR-022-012..016), US04 (early return, FR-022-008..011), US05 (standalone steps, FR-022-023..025), US06
+(draft test mode, FR-022-026..030), and FR-022-036..037 (features 031 and 020). Consequences for the
+slice: the run creators "022 standalone, draft-test and handler dispatch" of FR-022-018 do not exist yet
+and join the port when their stories are built; the draft-test pool exists as a column value with no
+writer; the rule "no workflow handler without a permit" (D1197) has nothing to act on until US03; the
+permissions `cache:invalidate`, `failure-handler:manage` and `step:standalone` are not added. The tasks of
+the slice are listed in [tasks.md](tasks.md#release-030-slice-us02-and-us07) and its plan in
+[plan.md](plan.md#release-030-slice).

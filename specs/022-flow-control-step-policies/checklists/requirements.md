@@ -60,6 +60,23 @@ unchecked item states why.
 | FR-022-031..036 | SC-022-010..014 | T022-005, 006, 011–014, 048–062, 065 |
 | FR-022-037 | SC-022-016 | T022-016, 063 |
 | FR-022-038 | SC-022-015 | T022-008, 064 |
+| FR-022-039..050, NFR-022-007..008 (US07, release 0.3.0 slice, added 2026-11-13) | SC-022-017..023 | T022-066..090 |
+
+## Release 0.3.0 slice (author, 2026-11-13)
+
+Added for OD-2026-11-13-11; a reviewer still owns the final marks, and the three repository reviewers have
+not read the amendment.
+
+- [x] The new story has an independent test, Given/When/Then scenarios for the happy and failure paths,
+  and edge cases (US07).
+- [x] Every new requirement names an observable outcome and is traced to a success criterion and a task
+  (table above).
+- [x] Scope is bounded: what the slice leaves out is listed in spec.md, "Release 0.3.0 slice" and "Out of
+  Scope"; gaps G1174–G1183 state what is not covered or not measured.
+- [ ] No [NEEDS CLARIFICATION] markers remain — six owner choices are open (O1163–O1168), each with
+  options and a recommendation; the requirements are written for the recommended answers.
+- [ ] Reviewed — not yet: no `egm-review`, `architecture-reviewer`, `security-reviewer` or
+  `correctness-reviewer` pass has been run on US07 or ADR-0084.
 
 ## Notes
 

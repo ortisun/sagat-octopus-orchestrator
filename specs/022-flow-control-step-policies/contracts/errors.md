@@ -21,6 +21,9 @@ key value, a cached value, a pin, a payload or a secret. Every row needs a test 
 | Same idempotency key, different body (standalone, test, invalidation, redrive) | 409 | `CONFLICT` | `IDEMPOTENCY_KEY_REUSED` | no |
 | Per-key waiter queue full (synchronous start) | 429 | `QUOTA_EXCEEDED` | `CONCURRENCY_QUEUE_FULL` | no |
 | Live semaphore keys, namespace `queued_runs`, cache entries, test runs, pins over a ceiling | 429 | `QUOTA_EXCEEDED` | `FLOW_CONTROL_LIMIT` (`details.limit`) | no |
+| Per-key rate-limit buffer full, or namespace `queued_runs` full, for a start that would be buffered (synchronous start; US07) | 429 | `QUOTA_EXCEEDED` | `RATE_LIMIT_QUEUE_FULL` | no |
+| Live rate-limit keys over the namespace ceiling (US07) | 429 | `QUOTA_EXCEEDED` | `FLOW_CONTROL_LIMIT` (`details.limit`) | no |
+| Reset (018) of a run whose workflow declares a run-level `rateLimit`, with no free slot (a reset never waits; US07) | per 018 | 018 contract | `RATE_LIMIT_SLOT_UNAVAILABLE` (to be registered by 018, G1181) | no |
 | Reset (018) of a permit-holding source with no free permit (a reset never queues) | per 018 | 018 contract | `CONCURRENCY_PERMIT_UNAVAILABLE` | no |
 | Reset (018) to a point refused by a 022 reset rule (inside a handler phase, after a queue timeout or dequeue, while queued) | per 018 | 018 contract | 018's reset-point refusal reason | no |
 | Reset, rerun or batch (018) of a test-tree run | per 018 | 018 contract | `RESET_SOURCE_TEST_RUN` | no |
@@ -42,21 +45,25 @@ Existing reasons reused unchanged: `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`, `
 | `CONCURRENCY_POLICY_INVALID` | error | bad limit/group/timeout, timeout above the run deadline, key over the top-level `input` reads other data |
 | `CONCURRENCY_SELF_CHILD` | warning | a child node names this workflow and the group/key can coincide |
 | `CONCURRENCY_LIMIT_MISMATCH` | warning | an explicit group is already declared by another published definition of the namespace with a different limit (grants then skip ahead, D1196) |
+| `RATE_LIMIT_POLICY_INVALID` | error | US07: bad `limit`, `per`, group or timeout, a `limit` above the ceiling of its `per`, a timeout above the run deadline, a top-level key that reads other data than `input`, or `rateLimit` on a kind other than activity/script |
+| `RATE_LIMIT_MISMATCH` | warning | US07: an explicit group is already declared by another published definition of the namespace with a different `limit` or `per` (each acquirer then applies its own, D022-009) |
 | `EARLY_RETURN_PLACEMENT` | error | placement rules of FR-022-008 |
 | `FAILURE_HANDLER_REGION` | error | region rules of FR-022-012 |
-| `FLOW_CONTROL_COMBINATION` | error | `earlyReturn`, `onFailure` or `concurrency` with `continueAsNew` |
+| `FLOW_CONTROL_COMBINATION` | error | `earlyReturn`, `onFailure`, `concurrency` or (US07) `rateLimit` with `continueAsNew` |
 | `ENCODING_READ_BY_CACHE_KEY` | error | owned by 031 (`specs/031-client-side-encryption/contracts/workflow-encoding.md` §5): a cache key reads an encoded location |
 | `ENCODING_READ_BY_CONCURRENCY_KEY` | error | owned by 031, which registers it: a run- or step-level concurrency key reads an encoded location |
 | `ENCODING_CARRIAGE_MISMATCH` | error | owned by 031: `earlyReturn.result` carries encoded locations that differ from `outputSchema` (as `end.outputExpr`) |
 | `UNSUPPORTED_NODE` + `dependency` `SCOPED_CACHE` / `SCOPED_CONCURRENCY` | error | `cache` or node `concurrency` inside a body |
-| `UNSUPPORTED_NODE` (capability disabled) | error | existing code: any of the four capabilities not enabled |
+| `UNSUPPORTED_NODE` + `dependency` `SCOPED_RATE_LIMIT` | error | US07: node `rateLimit` inside a body (G1175) |
+| `UNSUPPORTED_NODE` (capability disabled) | error | existing code: any of the four capabilities, or (US07) `rateLimits`, not enabled |
 
 ## Durable failure codes (journal, step failure, run cause)
 
 | Code | Where | Meaning |
 |---|---|---|
 | `CONCURRENCY_WAIT_TIMEOUT` | run (queued) or step (ready) | the queue deadline passed before a permit; non-retryable for a run, ordinary failure route for a step |
-| `EXPRESSION_ERROR` | run | existing: an `earlyReturn.result` or a top-level concurrency key failed to evaluate |
+| `RATE_LIMIT_WAIT_TIMEOUT` | run (buffered) or step (waiting for a slot) | US07: the queue deadline passed before a slot; non-retryable for a run, ordinary failure route for a step; the wait spent no attempt |
+| `EXPRESSION_ERROR` | run | existing: an `earlyReturn.result` or a top-level concurrency or rate-limit key failed to evaluate |
 | `RUN_DATA_LIMIT` | run | existing: an early result over 256 KiB, or a cache-hit copy over the run's retained limit |
 | `STORAGE_QUOTA_EXCEEDED` | run | existing: the copy of a hit or an early result exceeded the tenant content quota (ADR-0027 path) |
 | `FAILURE_HANDLER_TIMEOUT` | handler outcome only | the handler exceeded `onFailure.timeoutMs`; the run keeps its pending status |
@@ -70,4 +77,5 @@ Existing reasons reused unchanged: `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`, `
 
 Unchanged. No draft invents an encrypted-field code: encoded-field refusals are 031's `ENCODING_*` codes
 (coordinator decision C7). Mocked and cached steps never produce a lease; a step waiting for a permit is simply not
-returned by `PollTasks` (it stays `READY`, no attempt spent), exactly as for an exhausted activity quota.
+returned by `PollTasks` (it stays `READY`, no attempt spent), exactly as for an exhausted activity quota. A step waiting
+for a rate slot (US07) is not `READY` at all, so no claim ever considers it.
