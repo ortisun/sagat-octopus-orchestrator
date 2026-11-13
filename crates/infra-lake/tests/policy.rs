@@ -37,7 +37,17 @@ fn policy(
     locations: &[&str],
 ) -> Result<EndpointPolicy, PolicyError> {
     let locations: Vec<String> = locations.iter().map(|text| (*text).to_owned()).collect();
-    endpoint_policy(catalog, storage, &locations)
+    endpoint_policy(catalog, storage, &locations, false)
+}
+
+/// As [`policy`], for a runner that is a development one (O035-010, option b).
+fn policy_in_development(
+    catalog: &Value,
+    storage: &Value,
+    locations: &[&str],
+) -> Result<EndpointPolicy, PolicyError> {
+    let locations: Vec<String> = locations.iter().map(|text| (*text).to_owned()).collect();
+    endpoint_policy(catalog, storage, &locations, true)
 }
 
 fn lake() -> Vec<&'static str> {
@@ -286,6 +296,107 @@ fn an_s3_endpoint_over_plain_http_is_refused_whatever_the_host() {
             "{endpoint}"
         );
     }
+}
+
+fn path_style_s3(endpoint: &str) -> Value {
+    json!({
+        "type": "s3",
+        "s3": {"region": "us-east-1", "endpoint": endpoint, "pathStyle": true},
+        "credentials": "static"
+    })
+}
+
+#[test]
+fn in_development_an_s3_endpoint_over_http_on_the_loopback_is_declared_on_its_port_and_nothing_else_of_it()
+ {
+    // what the server already lets a development namespace save (`requires_development`), honoured by a development runner
+    for (endpoint, host) in [
+        ("http://localhost:9000", "localhost"),
+        ("http://127.0.0.1:9000", "127.0.0.1"),
+    ] {
+        let allowed = policy_in_development(
+            &rest("https://catalog.example"),
+            &path_style_s3(endpoint),
+            &lake(),
+        )
+        .unwrap_or_else(|error| panic!("{endpoint}: {error:?}"));
+        assert!(allowed.allows(host, 9000), "{endpoint}");
+        assert!(
+            !allowed.allows(host, 80),
+            "{endpoint}: not the default port"
+        );
+        assert!(!allowed.allows(host, 443), "{endpoint}: not https");
+        assert!(
+            allowed.allows("catalog.example", 443),
+            "the catalog is declared as ever"
+        );
+        assert!(
+            !allowed.allows("s3.us-east-1.amazonaws.com", 443),
+            "{endpoint}: the regional hosts of AWS are not added beside a store"
+        );
+    }
+}
+
+#[test]
+fn in_development_a_token_endpoint_over_http_on_the_loopback_is_declared() {
+    let catalog = json!({
+        "type": "rest",
+        "rest": {
+            "uri": "https://catalog.example",
+            "warehouse": "s3://lake/",
+            "auth": {"type": "oauth2", "tokenUri": "http://localhost:8080/token"},
+            "accessDelegation": "none",
+            "remoteSigning": false
+        }
+    });
+    let allowed = policy_in_development(&catalog, &s3("eu-west-1"), &lake()).unwrap();
+    assert!(allowed.allows("localhost", 8080));
+    assert!(!allowed.allows("localhost", 80));
+}
+
+#[test]
+fn in_development_an_http_endpoint_that_is_not_the_loopback_is_still_refused() {
+    for endpoint in [
+        "http://minio.internal:9000",
+        "http://10.0.0.5:9000",
+        "http://localhost.evil.example:9000",
+        "http://2130706433:9000",
+    ] {
+        assert_eq!(
+            policy_in_development(
+                &rest("https://catalog.example"),
+                &path_style_s3(endpoint),
+                &lake()
+            )
+            .unwrap_err(),
+            PolicyError::Url,
+            "{endpoint}"
+        );
+    }
+    let catalog = json!({
+        "type": "rest",
+        "rest": {
+            "uri": "https://catalog.example",
+            "warehouse": "s3://lake/",
+            "auth": {"type": "oauth2", "tokenUri": "http://auth.example/token"},
+            "accessDelegation": "none",
+            "remoteSigning": false
+        }
+    });
+    assert_eq!(
+        policy_in_development(&catalog, &s3("eu-west-1"), &lake()).unwrap_err(),
+        PolicyError::Url
+    );
+}
+
+#[test]
+fn a_runner_that_is_not_a_development_one_refuses_what_a_development_one_allows() {
+    let storage = path_style_s3("http://localhost:9000");
+    assert!(policy_in_development(&rest("https://catalog.example"), &storage, &lake()).is_ok());
+    assert_eq!(
+        policy(&rest("https://catalog.example"), &storage, &lake()).unwrap_err(),
+        PolicyError::Url
+    );
 }
 
 #[test]
@@ -607,7 +718,7 @@ fn the_connection_of_the_wire_fixture_allows_exactly_its_hosts() {
         BTreeMap::new(),
         BTreeMap::new(),
     );
-    let allowed = connection.endpoint_policy().unwrap();
+    let allowed = connection.endpoint_policy(false).unwrap();
     for (host, port) in [
         ("catalog.example", 443),
         ("auth.example", 443),

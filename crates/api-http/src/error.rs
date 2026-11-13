@@ -101,6 +101,9 @@ impl ErrorCode {
             (Self::ValidationFailed, "INVALID_URI") => {
                 "Send an http or https address with a host, and no space or control character."
             }
+            (Self::ValidationFailed, "PLAIN_HTTP_OUTSIDE_LOOPBACK") => {
+                "Use an https address. Plain http is only for a development fixture on the same machine, named localhost, 127.0.0.1 or ::1: no other http address can run."
+            }
             (Self::ValidationFailed, "CREDENTIAL_IN_URI") => {
                 "Remove the user name, the password and the query from the address: a credential belongs in a secret, which the connection refers to by name."
             }

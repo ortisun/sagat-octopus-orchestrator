@@ -12,7 +12,8 @@ mod reapply;
 mod reset;
 pub(crate) use ad_hoc::audit_denied as audit_database_execution_denied;
 pub use ad_hoc::{
-    AdHocMode, ConnectionProbe, RetainedDefinition, RunOrigin, StartDatabaseExecution,
+    AdHocMode, ConnectionProbe, ProbeView, ProbeViewInput, RetainedDefinition, RunOrigin,
+    StartDatabaseExecution, lake_probe_document, probe_view,
 };
 pub use pending_reset::{
     PendingAdmission, PendingRegistration, PendingReset, RESET_ALREADY_COMPLETED, ResetSourcePolicy,
@@ -433,6 +434,18 @@ pub trait RunStore:
         name: &sagat_domain::identity::Slug,
     ) -> impl Future<Output = Result<Option<ConnectionProbe>, StoreError>> + Send;
 
+    /// Whether the active connection `name` of the namespace, at `revision` (the current one when none is asked for), is an Apache
+    /// Iceberg connection: what the probe reads to choose its document (D035-150). It is `false` for every other answer, a SQL
+    /// connection, one that is missing, paused or deleted, a revision that is not there and another tenant's, so a caller who is
+    /// refused afterwards by admission learns no more from this than from that.
+    fn is_lake_connection(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &sagat_domain::identity::Slug,
+        revision: Option<u32>,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// Opens a run for a command. `None` when it does not exist (or, with
     /// [`Lock::SkipLocked`], when another transaction holds it).
     fn begin(
@@ -440,6 +453,17 @@ pub trait RunStore:
         tenant: TenantId,
         run: RunId,
         lock: Lock,
+    ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
+
+    /// Opens a run for a worker's claim, giving up at once as [`Lock::SkipLocked`] does. `None` also
+    /// when the run has no ready root step of one of `activities` (the activities the session
+    /// serves): a candidate a poll read a moment ago may no longer have one, and is then dropped
+    /// without loading anything. What is leased is still decided from the rows read under the lock.
+    fn begin_claim(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        activities: &[String],
     ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
 
     fn get(
@@ -768,6 +792,7 @@ pub struct RunService<S, C, E> {
     /// Whether a reset may cancel a source that has not ended and wait for it (`SAGAT_RESET_CANCEL_SOURCE_ENABLED`,
     /// off by default).
     reset_cancel_source: bool,
+    lake_probes: Option<Arc<dyn crate::database::LakeProbeCodec>>,
 }
 
 /// The state of a run's telemetry and what it is judged by.
@@ -802,6 +827,7 @@ where
             declared_updates: None,
             reset_reapply: false,
             reset_cancel_source: false,
+            lake_probes: None,
         }
     }
 
@@ -843,6 +869,14 @@ where
         checker: Arc<dyn crate::blobs::RunInputChecker>,
     ) -> Self {
         self.input_blobs = Some((blobs, checker));
+        self
+    }
+
+    /// The codec that reads the result of the probe of an Iceberg connection back from what the store kept (D035-150). Without it the checks
+    /// of a probe are not shown, and an Iceberg probe that succeeded says its result is unavailable, never that the connection is healthy.
+    #[must_use]
+    pub fn with_lake_probes(mut self, probes: Arc<dyn crate::database::LakeProbeCodec>) -> Self {
+        self.lake_probes = Some(probes);
         self
     }
 

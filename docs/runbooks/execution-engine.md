@@ -179,7 +179,9 @@ error message is dropped (decision D31); the journal holds a bounded failure cod
 ## 7. Not covered (read before relying on this)
 
 - **Fairness between tenants is of the scheduler's passes and the outbox (feature 010, ADR-0020).** The
-  worker claim path is still oldest-first across the tenant's own steps (a worker belongs to one tenant),
+  worker claim path reads the oldest ready steps of the tenant's own (a worker belongs to one tenant); a
+  poll alone tries them oldest first, and polls of a namespace in flight together in one process start at
+  different points of the same candidates, none of which is left out (design 038, OD-2026-11-12-3),
   and the database pool is shared by everything in a process. Quotas per queue (per activity) do not
   exist (G245).
 - Certificate-bound tokens, that is, tying a client certificate to the worker identity in the token (G44 of feature 009).

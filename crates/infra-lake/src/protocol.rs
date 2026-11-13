@@ -11,6 +11,7 @@
 //! test needs no sleep.
 
 mod attempt_input;
+mod probe;
 mod write_body;
 
 use std::collections::VecDeque;
@@ -28,6 +29,8 @@ pub use sagat_infra_ir::lake_receipt::{
 };
 
 pub use attempt_input::{AttemptInput, BlobRef, InputError, MAX_INPUT_BYTES, NodeLimits, Records};
+
+pub use probe::{MAX_PROBE_INPUT_BYTES, ProbeBody, ProbeInput, ProbeReport};
 
 pub use write_body::{
     BodyError, Connection, InputFile, InputFormat, Limits, SNAPSHOT_PROPERTIES, WriteAppend,
@@ -60,12 +63,13 @@ const MAX_COLUMN_CHARS: usize = 128;
 const MAX_REASON_CHARS: usize = 48;
 
 /// The members of the request that belong to the envelope; an operation's body cannot name them.
-const ENVELOPE: [&str; 5] = [
+const ENVELOPE: [&str; 6] = [
     "protocol",
     "operation",
     "effectKey",
     "firstAttemptStartedAt",
     "relay",
+    "development",
 ];
 
 /// What the host is asked to do.
@@ -226,16 +230,19 @@ impl fmt::Debug for Body {
 /// members cannot be overridden by it.
 #[derive(Clone)]
 pub struct Request {
+    /// The runner is a development one: the host may then read a storage or token endpoint over `http` on the loopback (O035-010).
+    development: bool,
     operation: Operation,
-    effect_key: String,
-    first_attempt_started_at: String,
+    /// The effect key and the instant of the first attempt: what an operation that can write has, so that the next attempt
+    /// finds what the first did. A probe writes nothing and has neither, and the host refuses a line that has them.
+    effect: Option<(String, String)>,
     relay: RelayAccess,
     body: Body,
 }
 
 impl Request {
     /// `first_attempt_started_at` is an RFC 3339 instant in UTC, formatted by the caller; [`encode_request`] refuses one
-    /// the host would not read.
+    /// the host would not read, and refuses an effect key on a probe.
     #[must_use]
     pub fn new(
         operation: Operation,
@@ -245,9 +252,31 @@ impl Request {
         body: impl Into<Body>,
     ) -> Self {
         Self {
+            development: false,
             operation,
-            effect_key: effect_key.into(),
-            first_attempt_started_at: first_attempt_started_at.into(),
+            effect: Some((effect_key.into(), first_attempt_started_at.into())),
+            relay,
+            body: body.into(),
+        }
+    }
+
+    /// Says that the runner is a development one. **The runner's own flag and never the connection's**: the line carries it as
+    /// a member of the envelope, which a body cannot name. It is written only when it is true, so the line of every other
+    /// runner is the one it always was.
+    #[must_use]
+    pub const fn with_development(mut self, development: bool) -> Self {
+        self.development = development;
+        self
+    }
+
+    /// The request of a probe (D035-150): the body of a [`ProbeBody`], and neither an effect key nor an instant, because a
+    /// probe writes nothing that a later attempt would look for.
+    #[must_use]
+    pub fn probe(relay: RelayAccess, body: impl Into<Body>) -> Self {
+        Self {
+            development: false,
+            operation: Operation::Probe,
+            effect: None,
             relay,
             body: body.into(),
         }
@@ -260,7 +289,7 @@ impl fmt::Debug for Request {
         formatter
             .debug_struct("Request")
             .field("operation", &self.operation)
-            .field("effect_key", &self.effect_key)
+            .field("effect_key", &self.effect.as_ref().map(|(key, _)| key))
             .field("body", &self.body)
             .finish_non_exhaustive()
     }
@@ -304,10 +333,14 @@ pub fn encode_request(request: &Request) -> Result<Zeroizing<Vec<u8>>, EncodeErr
     {
         return Err(EncodeError::ReservedMember);
     }
-    if !write_body::plain(&request.effect_key, MAX_EFFECT_KEY_BYTES)
-        || !write_body::is_instant(&request.first_attempt_started_at)
-    {
-        return Err(EncodeError::Envelope);
+    // an operation that can write names its effect key and the instant of its first attempt; a probe names neither
+    match &request.effect {
+        Some((key, instant))
+            if request.operation != Operation::Probe
+                && write_body::plain(key, MAX_EFFECT_KEY_BYTES)
+                && write_body::is_instant(instant) => {}
+        None if request.operation == Operation::Probe => {}
+        _ => return Err(EncodeError::Envelope),
     }
     let relay = serde_json::to_value(&request.relay).map_err(|_| EncodeError::Serialization)?;
     let operation =
@@ -315,15 +348,18 @@ pub fn encode_request(request: &Request) -> Result<Zeroizing<Vec<u8>>, EncodeErr
     let mut members = request.body.0.clone();
     members.insert("protocol".to_owned(), Value::from(PROTOCOL));
     members.insert("operation".to_owned(), operation);
-    members.insert(
-        "effectKey".to_owned(),
-        Value::from(request.effect_key.clone()),
-    );
-    members.insert(
-        "firstAttemptStartedAt".to_owned(),
-        Value::from(request.first_attempt_started_at.clone()),
-    );
+    if let Some((key, instant)) = &request.effect {
+        members.insert("effectKey".to_owned(), Value::from(key.clone()));
+        members.insert(
+            "firstAttemptStartedAt".to_owned(),
+            Value::from(instant.clone()),
+        );
+    }
     members.insert("relay".to_owned(), relay);
+    // written only when true: the line of every other runner is the one it always was
+    if request.development {
+        members.insert("development".to_owned(), Value::from(true));
+    }
     line_of(&mut Value::Object(members))
 }
 
@@ -469,6 +505,8 @@ impl HostFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Receipt(Receipt),
+    /// What a host says of the connection it probed (D035-150): not a receipt, since nothing was written.
+    Probe(ProbeReport),
     Failure(HostFailure),
 }
 
@@ -533,9 +571,15 @@ impl Decoder {
             .ok_or(ProtocolFailure::Malformed)?;
         let outcome = if is_receipt {
             let receipt = members.remove("receipt").unwrap_or(Value::Null);
-            Outcome::Receipt(
-                serde_json::from_value(receipt).map_err(|_| ProtocolFailure::InvalidReceipt)?,
-            )
+            if receipt.get("kind").and_then(Value::as_str) == Some("probe") {
+                Outcome::Probe(
+                    ProbeReport::from_value(&receipt).ok_or(ProtocolFailure::InvalidReceipt)?,
+                )
+            } else {
+                Outcome::Receipt(
+                    serde_json::from_value(receipt).map_err(|_| ProtocolFailure::InvalidReceipt)?,
+                )
+            }
         } else {
             Outcome::Failure(HostFailure::from_wire(
                 members.remove("failure").unwrap_or(Value::Null),

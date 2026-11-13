@@ -767,9 +767,39 @@ pub struct DatabaseDriverBody {
     pub default_limits: LimitsBody,
     pub maximum_limits: LimitsBody,
 }
+/// What the platform serves of Apache Iceberg **end to end**: a REST catalog over S3-compatible storage, appending, from the two record
+/// formats. Not what a connection document may say (the domain accepts other catalogs and stores, which no runner opens yet), because the
+/// list is what the Studio and the SDKs offer and so must not advertise a capability that is not built (G035-030). The integration test of the
+/// listing holds the body to the OpenAPI.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LakeDatabaseDriverBody {
+    pub id: &'static str,
+    pub catalog_types: &'static [&'static str],
+    pub storage_types: &'static [&'static str],
+    pub modes: &'static [&'static str],
+    pub formats: &'static [&'static str],
+}
+impl LakeDatabaseDriverBody {
+    /// Apache Iceberg as this build serves it.
+    pub const ICEBERG: Self = Self {
+        id: "iceberg",
+        catalog_types: &["rest"],
+        storage_types: &["s3"],
+        modes: &["append"],
+        formats: &["parquet", "ndjson"],
+    };
+}
+/// A driver of the list: the SQL one with its operations, parameters and limits, or one of the lake deployment.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum DatabaseDriverItem {
+    Sql(DatabaseDriverBody),
+    Lake(LakeDatabaseDriverBody),
+}
 #[derive(Serialize)]
 pub struct DatabaseDriverListBody {
-    pub items: [DatabaseDriverBody; 1],
+    pub items: Vec<DatabaseDriverItem>,
 }
 
 #[cfg(test)]
@@ -979,6 +1009,34 @@ mod tests {
             }
         );
         assert!(!format!("{refusal} {refusal:?}").contains("hunter2"));
+    }
+
+    /// O035-010: plain `http` names the loopback, because the runner and the host read it on the loopback alone.
+    #[test]
+    fn a_plain_http_address_on_another_host_than_the_loopback_is_refused_with_its_reason() {
+        for place in ["uri", "token", "endpoint"] {
+            let mut sent = rest_s3();
+            match place {
+                "uri" => sent["catalog"]["rest"]["uri"] = json!("http://catalog.local:8181/api"),
+                "token" => {
+                    sent["catalog"]["rest"]["auth"] =
+                        json!({"type": "oauth2", "tokenUri": "http://catalog.local:8181/token"});
+                }
+                _ => sent["storage"]["s3"]["endpoint"] = json!("http://minio.internal:9000"),
+            }
+
+            assert_eq!(
+                domain(sent).expect_err("refused"),
+                AppError::InvalidConnection {
+                    reason: "PLAIN_HTTP_OUTSIDE_LOOPBACK"
+                },
+                "{place}"
+            );
+        }
+
+        let mut loopback = rest_s3();
+        loopback["catalog"]["rest"]["uri"] = json!("http://127.0.0.1:8181/api");
+        assert!(domain(loopback).is_ok());
     }
 
     #[test]

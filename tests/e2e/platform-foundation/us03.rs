@@ -944,8 +944,9 @@ async fn an_operator_can_provision_a_real_tenant_in_production_and_its_admin_can
 
 /// The operator's switch reaches the services that publish (`SAGAT_LAKE_ENABLED`, feature 035): the process that
 /// `serve` starts refuses an Apache Iceberg write with `LAKE_DISABLED` while the lake is off, and does not once it is
-/// on (the store then decides, and fails closed until its checks exist). Without this, a switch that does nothing
-/// would pass every test of the services on their own.
+/// on (the store then decides, and fails closed until its checks exist). It reaches the list of drivers as well: Apache
+/// Iceberg is offered to a connection only by a deployment that has the lake on. Without this, a switch that does
+/// nothing would pass every test of the services on their own.
 #[tokio::test]
 async fn the_lake_switch_reaches_the_services_that_publish() {
     use crate::support::engine::document;
@@ -1018,20 +1019,59 @@ async fn the_lake_switch_reaches_the_services_that_publish() {
                 .expect("publish");
             let status = published.status();
             let body: serde_json::Value = published.json().await.expect("json");
+            // and what the same process offers a connection to be
+            let namespaces: serde_json::Value = Client::new()
+                .get(api.url("/namespaces"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .expect("namespaces")
+                .json()
+                .await
+                .expect("json");
+            let namespace = namespaces["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .find(|n| n["slug"] == "payments")
+                .and_then(|n| n["id"].as_str())
+                .expect("the namespace")
+                .to_owned();
+            let drivers = Client::new()
+                .get(api.url(&format!("/namespaces/{namespace}/database-drivers")))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .expect("drivers");
+            let drivers_status = drivers.status();
+            let drivers: serde_json::Value = drivers.json().await.expect("json");
+            assert_eq!(drivers_status, 200, "{drivers}");
+            let offered: Vec<String> = drivers["items"]
+                .as_array()
+                .expect("items")
+                .iter()
+                .map(|d| d["id"].as_str().expect("an id").to_owned())
+                .collect();
             api.stop().await.expect("clean shutdown");
-            (status, body)
+            (status, body, offered)
         }
     };
 
     // When the lake is off (the default), publication is refused and says why
-    let (status, body) = publish_reason(false).await;
+    let (status, body, offered) = publish_reason(false).await;
+    assert_eq!(offered, ["postgresql"], "no Iceberg connection is offered");
     assert_eq!(status, 422, "{body}");
     assert_eq!(body["code"], "VALIDATION_FAILED", "{body}");
     assert_eq!(body["details"]["reason"], "LAKE_DISABLED", "{body}");
     assert_eq!(body["details"]["node"], "save", "{body}");
 
     // And when the operator turns it on, the refusal is no longer the switch's
-    let (status, body) = publish_reason(true).await;
+    let (status, body, offered) = publish_reason(true).await;
+    assert_eq!(
+        offered,
+        ["postgresql", "iceberg"],
+        "and Iceberg is offered once the switch is on"
+    );
     assert_ne!(
         body["details"]["reason"], "LAKE_DISABLED",
         "{status} {body}"

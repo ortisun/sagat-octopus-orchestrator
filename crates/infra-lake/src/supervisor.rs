@@ -35,7 +35,7 @@
 use sagat_domain::database::DatabaseFailure;
 
 use crate::control::ControlFailure;
-use crate::protocol::{HostResult, Outcome, ProtocolFailure, Receipt};
+use crate::protocol::{HostResult, Outcome, ProbeReport, ProtocolFailure, Receipt};
 
 /// How the wait on an attempt ended. Exhaustive on purpose: a new way to end is decided here, in one place.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,17 +130,26 @@ pub enum Disposition {
     Abandon,
 }
 
+/// The failure a host reported, with its column kept only when it is a plain name.
+fn reported(failure: crate::protocol::HostFailure) -> Failure {
+    Failure {
+        code: failure.code,
+        column: failure.column.filter(|column| is_plain_name(column)),
+        reason: failure.reason,
+    }
+}
+
 /// The table above.
 #[must_use]
 pub fn dispose(ended: Ended, facts: AttemptFacts) -> Disposition {
     match ended {
         Ended::Conversation(Ok(result)) => match result.outcome {
             Outcome::Receipt(receipt) => Disposition::Complete(Box::new(receipt)),
-            Outcome::Failure(failure) => Disposition::Fail(Failure {
-                code: failure.code,
-                column: failure.column.filter(|column| is_plain_name(column)),
-                reason: failure.reason,
-            }),
+            // a write that is answered with what a probe says: the host does not speak this protocol
+            Outcome::Probe(_) => {
+                Disposition::Fail(Failure::code(DatabaseFailure::LakeHostProtocol))
+            }
+            Outcome::Failure(failure) => Disposition::Fail(reported(failure)),
         },
         // A killed host says nothing, or goes quiet while it swaps; any other break happened before the kill. A host that
         // never connected died of how it was started, which the deployment decides, and not of what the write needs.
@@ -166,6 +175,74 @@ pub fn dispose(ended: Ended, facts: AttemptFacts) -> Disposition {
             DatabaseFailure::Cancelled
         })),
         Ended::LeaseLost => Disposition::Abandon,
+    }
+}
+
+/// What a host that probes may report as a failure of the attempt: what the probe host raises (a secret that is missing, a
+/// warehouse outside the declared locations, a request that is not a probe, anything nobody expected). A failed check is a
+/// *result*, and never one of these. The host holds the secrets and reads what a hostile catalog sends, so a code of a write
+/// (a commit conflict, an unknown outcome, a schema mismatch) is not repeated for a probe as if the host could have meant it.
+const PROBE_HOST_MAY_FAIL_WITH: [DatabaseFailure; 4] = [
+    DatabaseFailure::Credential,
+    DatabaseFailure::IcebergLocationNotAllowed,
+    DatabaseFailure::LakeHostProtocol,
+    DatabaseFailure::WorkerError,
+];
+
+/// What the runner does about a probe that ended (D035-150): the same facts, a different table, because a probe is not a
+/// write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeDisposition {
+    /// Report `CompleteStep` with this result, written from its typed fields.
+    Complete(Box<ProbeReport>),
+    /// Report `FailStep`.
+    Fail(Failure),
+    /// Report nothing: the lease is gone.
+    Abandon,
+}
+
+/// How a probe ends. A probe writes nothing, so nothing it does is ever unknown and nothing fails to fit:
+///
+/// | The probe ended with | Reported |
+/// |---|---|
+/// | the host's result | `CompleteStep` with it (a connection that does not work is the answer, not a failure) |
+/// | the host's failure, with a code a probe can raise | `FailStep` with its code |
+/// | the host's failure, with any other code | `LAKE_HOST_PROTOCOL` |
+/// | a write's receipt | `LAKE_HOST_PROTOCOL` |
+/// | no result or silence, and the memory limit killed the container | `WORKER_ERROR` |
+/// | any other break, a host that never connected | `LAKE_HOST_PROTOCOL` |
+/// | a sandbox that did not start | `LAKE_SANDBOX_UNAVAILABLE` |
+/// | the deadline, **whether or not the request was sent** | `DATABASE_TIMEOUT` |
+/// | a cancellation, **whether or not the request was sent** | `DATABASE_CANCELLED` |
+/// | a lease lost | nothing |
+///
+/// The deadline and a cancellation are not `OUTCOME_UNKNOWN` as they are for a write, because there is no commit that may
+/// have landed. A memory kill is not `ICEBERG_LIMIT_EXCEEDED`, because no write failed to fit: the host died of a limit of
+/// its own and the probe could not say whether the connection works.
+#[must_use]
+pub fn dispose_probe(ended: Ended, facts: AttemptFacts) -> ProbeDisposition {
+    let fail = |code| ProbeDisposition::Fail(Failure::code(code));
+    match ended {
+        Ended::Conversation(Ok(result)) => match result.outcome {
+            Outcome::Probe(report) => ProbeDisposition::Complete(Box::new(report)),
+            // a code a probe cannot raise is a host that does not keep the protocol, and its column and reason go with it
+            Outcome::Failure(failure) if !PROBE_HOST_MAY_FAIL_WITH.contains(&failure.code) => {
+                fail(DatabaseFailure::LakeHostProtocol)
+            }
+            Outcome::Failure(failure) => ProbeDisposition::Fail(reported(failure)),
+            // a probe that is answered with what a write says: the host does not speak this protocol
+            Outcome::Receipt(_) => fail(DatabaseFailure::LakeHostProtocol),
+        },
+        Ended::Conversation(Err(
+            ControlFailure::Silent | ControlFailure::Protocol(ProtocolFailure::NoResult),
+        )) if facts.memory_killed => fail(DatabaseFailure::WorkerError),
+        Ended::Conversation(Err(_)) | Ended::HostNeverConnected => {
+            fail(DatabaseFailure::LakeHostProtocol)
+        }
+        Ended::SandboxUnavailable => fail(DatabaseFailure::LakeSandboxUnavailable),
+        Ended::DeadlinePassed => fail(DatabaseFailure::Timeout),
+        Ended::Cancelled => fail(DatabaseFailure::Cancelled),
+        Ended::LeaseLost => ProbeDisposition::Abandon,
     }
 }
 

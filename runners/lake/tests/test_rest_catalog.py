@@ -9,6 +9,8 @@ itself against a catalog that lies, over real HTTP.
 
 from __future__ import annotations
 
+import gzip
+import json
 import pathlib
 import time
 from collections.abc import Generator
@@ -17,15 +19,17 @@ import pytest
 import requests
 from pyiceberg.catalog.rest import RestCatalog
 from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.exceptions import ServerError
 from pyiceberg.io.pyarrow import PyArrowFileIO
 from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField
 
 import counting_catalog
+import network_doubles
 import recording_io
 from counting_catalog import Catalog
 from sagat_lake.config_hygiene import LOCATION_NOT_ALLOWED, Declaration, Denial, Hygiene, HygieneError, StorageType
-from sagat_lake.rest_catalog import LakeRestCatalog
+from sagat_lake.rest_catalog import LakeRestCatalog, ResponseTooLarge
 
 NAME = f"{counting_catalog.NAMESPACE}.{counting_catalog.TABLE}"
 PINNED_IO = "pyiceberg.io.pyarrow.PyArrowFileIO"
@@ -262,3 +266,64 @@ def test_a_header_property_cannot_ask_for_more_than_the_connection_declares(rest
     properties = {**guard.properties({"uri": rest.uri}, {}), "header.X-Iceberg-Access-Delegation": "vended-credentials"}
     LakeRestCatalog("lake", hygiene=guard, request_timeout=5.0, **properties)
     assert set(delegation_headers(rest)) == {None}
+
+
+# ----------------------------------------------------------------------------------- the token of OAuth2 and the bodies
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_the_request_for_an_oauth2_token_has_the_time_limit_of_every_other(rest: Catalog) -> None:
+    # PyIceberg's legacy manager asks the token endpoint for a token as it is built, with the session it is given, so
+    # the limit has to be on that session before the manager is: an endpoint that never answers must not be waited for
+    guard = hygiene()
+    with network_doubles.silent_server(hold=2.5) as port:
+        properties = guard.properties(
+            {"uri": rest.uri, "credential": "id:secret", "oauth2-server-uri": f"http://127.0.0.1:{port}"}, {}
+        )
+        started = time.monotonic()
+        with pytest.raises(requests.exceptions.Timeout):
+            LakeRestCatalog("lake", hygiene=guard, request_timeout=0.3, **properties)
+        elapsed = time.monotonic() - started
+    assert elapsed < 2.0
+
+
+def test_a_configuration_larger_than_any_catalog_has_is_refused_unread(rest: Catalog) -> None:
+    rest.config_defaults = {"warehouse": WAREHOUSE, "filler": "x" * (2 * 1024 * 1024)}
+    with pytest.raises(ResponseTooLarge):
+        lake(rest, hygiene())
+
+
+def test_an_error_body_larger_than_any_catalog_has_is_refused_unread(rest: Catalog) -> None:
+    # PyIceberg reads the text of a failed answer to say what failed: that is a read of the whole body as well
+    rest.config_raw = (500, b"x" * (2 * 1024 * 1024))
+    with pytest.raises(ResponseTooLarge):
+        lake(rest, hygiene())
+
+
+def test_a_failed_answer_of_a_sensible_size_is_still_what_it_says(rest: Catalog) -> None:
+    rest.config_raw = (500, b'{"error": {"message": "down", "type": "ServerError", "code": 500}}')
+    with pytest.raises(ServerError):
+        lake(rest, hygiene())
+
+
+def test_a_page_of_namespaces_larger_than_any_catalog_sends_is_refused_unread(rest: Catalog) -> None:
+    catalog = lake(rest, hygiene())
+    big = json.dumps({"namespaces": [["n" * 100]] * 20_000}).encode()
+    assert len(big) > 1024 * 1024
+    rest.namespaces_raw = ({}, big)
+    with pytest.raises(ResponseTooLarge):
+        catalog.probe_namespaces()
+
+
+def test_a_compressed_page_that_grows_past_the_limit_is_refused_as_it_is_decoded(rest: Catalog) -> None:
+    catalog = lake(rest, hygiene())
+    # 64 MiB of spaces is a few tens of kilobytes on the wire: the limit is on what the client would hold
+    bomb = gzip.compress(b" " * (64 * 1024 * 1024) + b'{"namespaces": []}')
+    assert len(bomb) < 1024 * 1024
+    rest.namespaces_raw = ({"Content-Encoding": "gzip"}, bomb)
+    with pytest.raises(ResponseTooLarge):
+        catalog.probe_namespaces()
+
+
+def test_a_page_of_namespaces_that_is_one_is_read(rest: Catalog) -> None:
+    catalog = lake(rest, hygiene())
+    catalog.probe_namespaces()
+    assert len(rest.namespace_requests) == 1

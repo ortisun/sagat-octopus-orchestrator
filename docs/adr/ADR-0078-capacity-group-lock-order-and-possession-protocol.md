@@ -201,9 +201,11 @@ Each is a pending decision, not a guarantee.
   cover these cases before activation.
 - **The worker's complete lock sequence.** Read in the code by the PostgreSQL review, not by the author,
   and not yet written down in a checked artifact. Before G: the drain advisory lock (shared), the binding
-  advisory lock (scoped path), a blocking `worker_sessions` lock and secret advisory locks
+  advisory lock (scoped path), a blocking `worker_sessions` lock and secret advisory locks (shared by an ordinary worker's
+  authority check since 2026-11-12, exclusive on the managed database paths)
   (`crates/application/src/worker.rs`, `crates/infra-postgres/src/execution.rs`). After G: the activity-quota
-  advisory lock (exclusive), the breaker, and the database and script locks (`quotas.rs`,
+  advisory lock (shared since 2026-11-11, followed by the exclusive activity-count lock when the
+  effective limit is between 1 and the maximum), the breaker, and the database and script locks (`quotas.rs`,
   `execution/database.rs`). G is re-taken per instance inside one run's transaction, which takes no new
   chain or run lock. The list MUST be written down where a check can read it and verified against rule 1,
   including ADR-0038's binding guard.

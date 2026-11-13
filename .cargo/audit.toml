@@ -13,20 +13,14 @@ ignore = [
   # and G701). Each entry below says when its fix passes the rule and the date by which the ignore
   # must be gone. See research.md, gap G700 and decision D700.
 
-  # ctutils 0.4.3 (through aes-gcm 0.11, digest 0.11 and universal-hash 0.6): `Choice` mask generation
-  # and u128 comparison could branch on a secret. Fixed in 0.4.4 (2026-10-23), a lock-only update;
-  # eligible on 2026-11-06. The secrets in this code base are held in memory by `sagat-infra-secrets`
-  # and are not exposed to a timing oracle: an attacker would need to time AES-GCM operations on the
-  # control-plane host. Expires 2026-11-06.
-  "RUSTSEC-2026-0385",
-
   # crypto-bigint 0.5.5 (timing variability in operations meant to be constant-time), reached only
   # through elliptic-curve 0.13.8, which p256 0.13 and p384 0.13 pull in for jsonwebtoken 11.1.0.
   # The fix (0.7.6, 2026-10-23) needs elliptic-curve 0.14, a major bump that jsonwebtoken has not
   # taken (no release after 11.1.0, 2026-09-16), and `[patch]` cannot cross a major version. The
   # control plane only VERIFIES ES256 tokens, with public keys and public inputs; the one signing path
-  # is the development identity provider (apps/dev-idp) with a throwaway key. Expires 2026-11-06,
-  # when it is re-evaluated (see research.md, gap G700).
+  # is the development identity provider (apps/dev-idp) with a throwaway key. Re-evaluated on
+  # 2026-11-12: jsonwebtoken still has no release after 11.1.0. Re-evaluate on 2026-12-02 (research.md,
+  # gap G703).
   "RUSTSEC-2026-0387",
 
   # Feature 035 independent reader (research.md, gap G035-024 and decision D035-072, owner decision
@@ -50,14 +44,16 @@ ignore = [
   # 2026-11-03, that `--deny warnings` turns into a red job for every release. See research.md, gaps G705
   # and G706 (decided by delegate on the owner's instruction "Tome as decisoes por mim").
   #
-  # pin-utils 0.1.1, macros (`pin_mut!`, `unsafe_pinned!`) reached through aws-smithy-http 0.64.1 and
-  # aws-smithy-types 1.8.1 (the AWS SigV4 signer of the connectors). aws-smithy-http 0.64.3 and
-  # aws-smithy-types 1.9.1 (2026-10-27) no longer depend on it; they pass the two-week rule on 2026-11-10.
-  # Expires 2026-11-10: take them with `cargo update` and delete this entry.
-  "RUSTSEC-2026-0441",
   # astral-tokio-tar 0.6.4 (maintenance ended 2026-11-03), reached only through `testcontainers` 0.27.3,
   # a dev-dependency of the test crates: `cargo tree -i astral-tokio-tar -e normal,build` prints nothing,
   # so no binary that ships links it. testcontainers 0.28.0 still depends on it and the advisory names no
   # patched version. Re-evaluate on 2026-12-02 (with G035-024) or when testcontainers drops it.
   "RUSTSEC-2026-0440",
+
+  # 2026-11-12: libsqlite3-sys 0.37.0 (bundled C SQLite, CVE-2026-119375), fixed in 0.39.0 (2026-10-24).
+  # It is in Cargo.lock only because sqlx-sqlite 0.9.0 is listed there; no feature of this workspace
+  # enables SQLite, `cargo tree -i libsqlite3-sys --target all` prints nothing, and nothing compiles or
+  # links it. sqlx-sqlite 0.9.0 requires `>=0.30.1, <0.38.0`, so the fix needs a sqlx release. Re-evaluate
+  # on 2026-12-02 or when sqlx takes libsqlite3-sys >= 0.39 (research.md, gap G707).
+  "RUSTSEC-2026-0459",
 ]

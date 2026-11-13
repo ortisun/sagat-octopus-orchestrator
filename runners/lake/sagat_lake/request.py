@@ -1,4 +1,4 @@
-"""The request line of an ``icebergWrite``, checked field by field (feature 035: T035-057, lake-runtime.md).
+"""The request line of an ``icebergWrite`` or a ``probe``, checked field by field (feature 035: T035-057, D035-150).
 
 The runner writes one JSON line; the host reads it before anything else. The runner is the platform's own, but the line
 carries what people write (a table, a mapping, a ref) and a connection with its credentials, so each field is checked
@@ -8,6 +8,11 @@ name and no value. So are the things that are not served yet: another mode, a Pa
 
 The paths of the inputs are resolved here, below ``<attempt dir>/in/``, so nothing downstream follows a name from the
 request out of the attempt's directory. The connection is kept whole for the catalog loader and is never shown.
+
+A ``probe`` is the lease of the server (``sagat.lake.probe-input.v1``: the connection by name and revision, the
+checks in the order they run, the time one check may take) next to the pinned connection with its resolved secrets, in
+a member of its own because the connection of the lease is a name and the connection of the request is a document. It
+asks for exactly what the server leases, and nothing the host does not run: the three checks once each, in order.
 """
 
 from __future__ import annotations
@@ -26,6 +31,9 @@ from .modes.append import AppendRequest, InputFile
 
 PROTOCOL = "sagat.lake.v1"
 OPERATION = "icebergWrite"
+PROBE_OPERATION = "probe"
+# The checks of a probe, in the order they run (``crates/domain/src/database/lake_probe.rs``, ``ProbeCheck::ALL``).
+PROBE_CHECKS = ("CATALOG_AUTH", "WAREHOUSE", "STORAGE_ACCESS")
 
 # What the platform puts in the summary of a commit (D035-016). PyIceberg refuses a key it owns, and the host does not
 # let a request name any other.
@@ -42,6 +50,7 @@ _TOP = frozenset(
         "snapshotProperties",
         "connection",
         "relay",
+        "development",
         "table",
         "ref",
         "mode",
@@ -57,6 +66,7 @@ _TOP = frozenset(
 )
 _REQUIRED = _TOP - {
     "relay",
+    "development",
     "overwrite",
     "upsert",
     "mapping",
@@ -84,6 +94,12 @@ _MAX_PROPERTY = 1024
 _MAX_KEY = 512
 _MAX_RETRIES = 16
 _INT64 = 2**63 - 1
+# The name of a connection is the domain's slug: 3 to 63 of a-z, 0-9 and '-', a letter first, no '-' last or twice.
+_SLUG = re.compile(r"[a-z][a-z0-9]*(-[a-z0-9]+)*")
+_MIN_SLUG, _MAX_SLUG = 3, 63
+_MAX_REVISION = 2**32 - 1
+# The server leases 7 000 ms; the host takes a tenth of a second to a minute and nothing else.
+_MIN_CHECK_MS, _MAX_CHECK_MS = 100, 60_000
 
 
 @dataclass(frozen=True)
@@ -96,6 +112,9 @@ class WriteRequest:
     deadline_at_ms: int
     # The pinned connection with its resolved credentials. It is never part of a representation.
     connection: Mapping[str, Any] = field(repr=False)
+    # The runner says it is a development one (O035-010): a store or a token endpoint over ``http`` on the loopback is
+    # then read. The runner's own flag, a member of the envelope: never a part of the connection.
+    development: bool = False
 
 
 def _break() -> Failure:
@@ -141,6 +160,53 @@ def parse_write(document: object, *, attempt_dir: Path) -> WriteRequest:
         append=append,
         deadline_at_ms=_millis(limits["deadlineAt"]),
         connection=connection,
+        development=_flag(document.get("development", False)),
+    )
+
+
+@dataclass(frozen=True)
+class ProbeRequest:
+    """What a probe needs of the request: whose probe it is (echoed in the result), how long a check may take, and the
+    connection to reach."""
+
+    name: str
+    revision: int
+    check_timeout: float
+    # The pinned connection with its resolved credentials. It is never part of a representation.
+    connection: Mapping[str, Any] = field(repr=False)
+    # See ``WriteRequest.development``.
+    development: bool = False
+
+
+def parse_probe(document: object) -> ProbeRequest:
+    """The request of a ``probe``, or ``Failure(LAKE_HOST_PROTOCOL)``."""
+    keys = {"protocol", "operation", "connection", "relay", "probe", "development"}
+    if not isinstance(document, dict) or not keys - {"relay", "development"} <= document.keys() <= keys:
+        raise _break()
+    if document["protocol"] != PROTOCOL or document["operation"] != PROBE_OPERATION:
+        raise _break()
+    probe = _object(document["probe"], {"connection", "checks", "checkTimeoutMs"})
+    if probe["checks"] != list(PROBE_CHECKS):
+        raise _break()
+    identity = _object(probe["connection"], {"name", "revision"})
+    name, revision = identity["name"], identity["revision"]
+    if not isinstance(name, str) or not _MIN_SLUG <= len(name) <= _MAX_SLUG or not _SLUG.fullmatch(name):
+        raise _break()
+    if isinstance(revision, bool) or not isinstance(revision, int) or not 1 <= revision <= _MAX_REVISION:
+        raise _break()
+    milliseconds = probe["checkTimeoutMs"]
+    if (
+        isinstance(milliseconds, bool)
+        or not isinstance(milliseconds, int)
+        or not _MIN_CHECK_MS <= milliseconds <= _MAX_CHECK_MS
+    ):
+        raise _break()
+    return ProbeRequest(
+        name=name,
+        revision=revision,
+        check_timeout=milliseconds / 1000,
+        connection=_connection(document["connection"]),
+        development=_flag(document.get("development", False)),
     )
 
 

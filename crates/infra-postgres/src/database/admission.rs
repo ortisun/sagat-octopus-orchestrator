@@ -70,9 +70,15 @@ pub(crate) fn database_writes(definition: &WorkflowDefinition) -> Option<bool> {
     // An Iceberg write is a write (it needs `database:write`, as an `execute` does), and a workflow that holds one has
     // managed steps even when it holds no SQL one: its run takes the same locks and the same authority re-check.
     let lake = definition.nodes().any(|n| n.iceberg_write().is_some());
+    // A probe is managed and changes nothing: its run takes the same locks and the same authority re-check, and asks for no write.
+    let probe = definition.nodes().any(|n| n.lake_probe_target().is_some());
     let mut operations = definition.nodes().filter_map(|n| n.database_operation());
     let Some(first) = operations.next() else {
-        return lake.then_some(true);
+        return if lake {
+            Some(true)
+        } else {
+            probe.then_some(false)
+        };
     };
     Some(
         lake || first.kind == OperationKind::Execute
@@ -181,13 +187,18 @@ async fn check_definition(
         .filter(|n| selected.is_none_or(|ids| ids.contains(n.id())))
         .filter_map(|n| n.iceberg_write().map(|write| (n.id(), write)))
         .collect();
-    if operations.is_empty() && lake_writes.is_empty() {
+    let lake_probes: Vec<_> = definition
+        .nodes()
+        .filter(|n| selected.is_none_or(|ids| ids.contains(n.id())))
+        .filter_map(|n| n.lake_probe_target().map(|probe| (n.id(), probe)))
+        .collect();
+    if operations.is_empty() && lake_writes.is_empty() && lake_probes.is_empty() {
         return Ok(Vec::new());
     }
     // An Iceberg write is admitted for publication and for the author's feedback always, and for a run only when the
     // deployment has turned the lake on (`lake.enabled`, off by default; D035-059, D035-137). Until then a run that would
     // carry one is refused, as a connection nobody may use is, instead of starting and waiting for a worker that is not there.
-    if !lake_writes.is_empty()
+    if (!lake_writes.is_empty() || !lake_probes.is_empty())
         && !lake_enabled
         && (pinned.is_some() || run_info.is_some() || selected.is_some())
     {
@@ -254,7 +265,7 @@ async fn check_definition(
         BTreeMap::new()
     };
     let mut resolved = BTreeMap::new();
-    let mut result = Vec::with_capacity(operations.len() + lake_writes.len());
+    let mut result = Vec::with_capacity(operations.len() + lake_writes.len() + lake_probes.len());
     for (node, operation) in operations {
         let pin = if pinned.is_some() {
             Some(
@@ -392,6 +403,53 @@ async fn check_definition(
             u32::try_from(revision).map_err(|_| corrupt("connection revision"))?,
         ));
     }
+    for (node, probe) in lake_probes {
+        // A run that exists keeps the connection and the revision it was admitted with, as a write does: a probe does not re-resolve at
+        // claim or replay.
+        let pin = if pinned.is_some() {
+            Some(
+                *pins
+                    .get(node.as_str())
+                    .ok_or(StoreError::DatabaseUnavailable)?,
+            )
+        } else {
+            None
+        };
+        let requested = pin
+            .map(|(_, r)| i64::from(r))
+            .or(probe.connection().revision.map(i64::from));
+        let key = (probe.connection().name.as_str(), requested);
+        let (id, revision, config) = if let Some(found) = resolved.get(&key) {
+            found
+        } else {
+            let found = resolve_connection(
+                conn,
+                (tenant, namespace),
+                actors,
+                &roles,
+                &environment,
+                key.0,
+                key.1,
+            )
+            .await?;
+            resolved.entry(key).or_insert(found)
+        };
+        // A probe tests an Iceberg connection and nothing else, as a SQL node can only use a SQL one.
+        config.as_iceberg().ok_or(StoreError::DatabaseUnavailable)?;
+        if pin.is_some_and(|p| p != (*id, *revision))
+            || probe
+                .connection()
+                .revision
+                .is_some_and(|r| i64::from(r) != i64::from(*revision))
+        {
+            return Err(StoreError::DatabaseUnavailable);
+        }
+        result.push((
+            node.clone(),
+            ConnectionId::new(*id),
+            u32::try_from(*revision).map_err(|_| corrupt("connection revision"))?,
+        ));
+    }
     Ok(result)
 }
 
@@ -452,7 +510,7 @@ mod tests {
     use sagat_domain::{
         database::{
             ColumnMapping, ConnectionRef, DatabaseLimits, DatabaseOperation, IcebergWrite,
-            IcebergWriteParts, LakeLimits, OperationKind, RecordSource, TableIdentifier,
+            IcebergWriteParts, LakeLimits, LakeProbe, OperationKind, RecordSource, TableIdentifier,
             WriteIntent,
         },
         identity::Slug,
@@ -497,6 +555,10 @@ mod tests {
         Node::iceberg(id(node), write)
     }
 
+    fn probe(node: &str) -> Node {
+        Node::lake_probe(id(node), LakeProbe::new(connection("lake-main")))
+    }
+
     /// The nodes in a line, then an end.
     fn line(nodes: Vec<Node>) -> WorkflowDefinition {
         let entry = nodes
@@ -533,6 +595,36 @@ mod tests {
         );
         assert_eq!(
             database_writes(&line(vec![sql("read", OperationKind::Query), lake("save")])),
+            Some(true)
+        );
+    }
+
+    /// A probe is a managed step that changes nothing (D035-150): the run it is in takes the same locks and the same authority re-check
+    /// as any managed run, and it asks for no write.
+    #[test]
+    fn a_probe_is_a_managed_step_that_asks_for_no_write() {
+        assert_eq!(
+            database_writes(&line(vec![probe("probe")])),
+            Some(false),
+            "a probe and nothing else has a managed step, and it does not write"
+        );
+        assert_eq!(
+            database_writes(&line(vec![
+                probe("probe"),
+                sql("read", OperationKind::Query)
+            ])),
+            Some(false)
+        );
+        assert_eq!(
+            database_writes(&line(vec![
+                probe("probe"),
+                sql("write", OperationKind::Execute)
+            ])),
+            Some(true),
+            "beside a write, the write decides"
+        );
+        assert_eq!(
+            database_writes(&line(vec![probe("probe"), lake("save")])),
             Some(true)
         );
     }

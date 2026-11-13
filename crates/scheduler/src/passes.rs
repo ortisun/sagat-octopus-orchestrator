@@ -640,6 +640,9 @@ where
             // database) has nothing to look at; the keeper is what changes that.
             return report;
         }
+        // How long a tick of a replica that holds shards takes: a tick longer than the interval
+        // means the passes fall behind (OD-2026-11-04-6).
+        let started = std::time::Instant::now();
         // A view for each pass, read when the pass begins: a tick that runs long must go on with the
         // leases the keeper has renewed since, not keep acting on the snapshot it began with until
         // that runs out (every later action would be counted as fenced and the later passes starved).
@@ -660,6 +663,7 @@ where
         self.children_start(&self.view(), &mut report).await;
         self.children_finish(&self.view(), &mut report).await;
         self.children_cancel(&self.view(), &mut report).await;
+        metrics::histogram!("scheduler_tick_seconds").record(started.elapsed().as_secs_f64());
         report
     }
 

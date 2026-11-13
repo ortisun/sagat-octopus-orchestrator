@@ -70,7 +70,7 @@ pub enum InputError {
 }
 
 /// A recursive JSON value in which no object has a name twice.
-struct Strict(Value);
+pub(super) struct Strict(pub(super) Value);
 
 impl<'de> Deserialize<'de> for Strict {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -136,25 +136,25 @@ impl<'de> Deserialize<'de> for Strict {
 }
 
 /// The members of one object, taken out by name; whatever is left over is a member the contract does not name.
-struct Members {
+pub(super) struct Members {
     left: Map<String, Value>,
     /// What to say when something is wrong at this level: the name of the object, or the document.
     place: &'static str,
 }
 
 impl Members {
-    fn of(value: Value, place: &'static str) -> Result<Self, InputError> {
+    pub(super) fn of(value: Value, place: &'static str) -> Result<Self, InputError> {
         match value {
             Value::Object(left) => Ok(Self { left, place }),
             _ => Err(InputError::Member(place)),
         }
     }
 
-    fn take(&mut self, name: &'static str) -> Result<Value, InputError> {
+    pub(super) fn take(&mut self, name: &'static str) -> Result<Value, InputError> {
         self.left.remove(name).ok_or(InputError::Member(name))
     }
 
-    fn text(&mut self, name: &'static str) -> Result<String, InputError> {
+    pub(super) fn text(&mut self, name: &'static str) -> Result<String, InputError> {
         match self.take(name)? {
             Value::String(text) => Ok(text),
             _ => Err(InputError::Member(name)),
@@ -165,7 +165,11 @@ impl Members {
         self.take(name)?.as_bool().ok_or(InputError::Member(name))
     }
 
-    fn number(&mut self, name: &'static str, (low, high): (u64, u64)) -> Result<u32, InputError> {
+    pub(super) fn number(
+        &mut self,
+        name: &'static str,
+        (low, high): (u64, u64),
+    ) -> Result<u32, InputError> {
         self.take(name)?
             .as_u64()
             .filter(|value| (low..=high).contains(value))
@@ -174,7 +178,7 @@ impl Members {
     }
 
     /// Nothing may be left: a member the contract does not name is refused, not ignored.
-    fn finish(self) -> Result<(), InputError> {
+    pub(super) fn finish(self) -> Result<(), InputError> {
         if self.left.is_empty() {
             Ok(())
         } else {

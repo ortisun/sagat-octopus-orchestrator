@@ -17,8 +17,9 @@ It writes no value of the request. A failure is a code of the closed set. An exc
 line count, and a message could carry a credential. `relayDenials` is the runner's to know, since it owns the relay, so
 the host writes 0 and the runner uses its own count (G035-028).
 
-It serves `icebergWrite` (`write.py`, T035-057). Each other operation arrives with the task that tests it, and a request
-for one that is not here is answered with `LAKE_HOST_PROTOCOL`, never with a pretence.
+It serves `icebergWrite` (`write.py`, T035-057) and `probe` (`probe.py`, D035-150). Each other operation arrives with
+the task that tests it, and a request for one that is not here is answered with `LAKE_HOST_PROTOCOL`, never with a
+pretence.
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ _PR_SET_DUMPABLE = 4
 Operation = Callable[[Mapping[str, object]], Awaitable[dict[str, object]]]
 
 # Each operation (`icebergWrite`, `icebergRevert`, `objectWrite`, `probe`, `browse`) arrives with its task;
-# `icebergWrite` is served by `write.py`, for the attempt directory it is started with.
+# `icebergWrite` is served by `write.py`, for the attempt directory it is started with, and `probe` by `probe.py`.
 
 
 def harden() -> bool:

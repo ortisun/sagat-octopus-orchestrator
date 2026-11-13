@@ -3759,10 +3759,33 @@ export interface components {
         ProbeDatabaseConnectionRequest: {
             revision?: number;
         };
+        /**
+         * @description The latest probe of a connection. `run.status` says that the probe ran; what it found is `failureCode` and, for the probe of an Iceberg
+         *     connection, `checks`. A failed check is the answer and not a fault of the platform, so the run of such a probe is `SUCCEEDED` and
+         *     `failureCode` is the code of its first failed check: a reader that knows no checks still sees that something is wrong. An Iceberg probe
+         *     that succeeded and whose result can no longer be read says `DATABASE_RESULT_UNAVAILABLE`: no checks never means a healthy connection.
+         *     A connection is confirmed only when every check is `PASSED`.
+         */
         DatabaseConnectionProbe: {
             run: components["schemas"]["Run"];
             revision: number;
             failureCode: string | null;
+            /** @description The checks of the probe of an Iceberg connection, in the order they ran. Absent for any other probe, and for an Iceberg probe whose result cannot be read. */
+            checks?: components["schemas"]["DatabaseConnectionProbeCheck"][];
+        };
+        DatabaseConnectionProbeCheck: {
+            /** @enum {string} */
+            check: "CATALOG_AUTH" | "WAREHOUSE" | "STORAGE_ACCESS";
+            /**
+             * @description A `SKIPPED` check did not run (an earlier one failed, or the connection vends its credentials). It is not confirmed, and is never `PASSED`.
+             * @enum {string}
+             */
+            outcome: "PASSED" | "FAILED" | "SKIPPED";
+            /**
+             * @description Why a `FAILED` check failed. Only a failed check has one.
+             * @enum {string}
+             */
+            code?: "DATABASE_AUTHENTICATION_FAILED" | "DATABASE_TLS_FAILED" | "DATABASE_DESTINATION_DENIED" | "DATABASE_TIMEOUT" | "CATALOG_UNAVAILABLE" | "STORAGE_UNAVAILABLE" | "ICEBERG_LOCATION_NOT_ALLOWED";
         };
         Run: {
             /** @description Present only for retained private managed executions. */

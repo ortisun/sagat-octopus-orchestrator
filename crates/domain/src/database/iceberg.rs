@@ -23,6 +23,8 @@ pub enum LakeConfigError {
     InvalidUri,
     #[error("a URI carries user information or query credentials")]
     CredentialInUri,
+    #[error("a plain http address must name the loopback; anything else is https")]
+    PlainHttpOutsideLoopback,
     #[error("the catalog settings are invalid")]
     InvalidCatalog,
     #[error("the storage settings are invalid")]
@@ -54,6 +56,7 @@ impl LakeConfigError {
         match self {
             Self::InvalidUri => "INVALID_URI",
             Self::CredentialInUri => "CREDENTIAL_IN_URI",
+            Self::PlainHttpOutsideLoopback => "PLAIN_HTTP_OUTSIDE_LOOPBACK",
             Self::InvalidCatalog => "INVALID_CATALOG",
             Self::InvalidStorage => "INVALID_STORAGE",
             Self::VendedNeedsDelegation => "VENDED_NEEDS_DELEGATION",
@@ -312,8 +315,50 @@ impl IcebergConfig {
         vec![WriteMode::Append]
     }
 
+    /// Every rule of a connection that is **stored**: what a build of any age saved and a build of today still reads.
+    ///
+    /// # Errors
+    /// [`DatabaseError::Lake`] with the rule that does not hold.
     pub fn validate(&self) -> Result<(), DatabaseError> {
         self.validate_lake().map_err(DatabaseError::Lake)
+    }
+
+    /// The rules of a connection that is being **saved**: those of [`Self::validate`], and that a plain `http` address names the loopback
+    /// (O035-010). The runner and the host read plain `http` on the loopback alone, so nothing could run another address, and it is
+    /// refused here and not at the first run. A revision that an earlier build saved with another host still reads (`validate`), and says
+    /// that it is for development only.
+    ///
+    /// # Errors
+    /// [`DatabaseError::Lake`] with the rule that does not hold.
+    pub fn validate_saved(&self) -> Result<(), DatabaseError> {
+        self.validate()?;
+        self.plain_http_names_the_loopback()
+            .map_err(DatabaseError::Lake)
+    }
+
+    fn plain_http_names_the_loopback(&self) -> Result<(), LakeConfigError> {
+        let (uri, token_uri) = match &self.catalog {
+            IcebergCatalog::Rest(rest) => (
+                Some(rest.uri.as_str()),
+                match &rest.auth {
+                    RestAuth::OAuth2 { token_uri, .. } => Some(token_uri.as_str()),
+                    _ => None,
+                },
+            ),
+            _ => (None, None),
+        };
+        let endpoint = match &self.storage.kind {
+            StorageKind::S3(s3) => s3.endpoint.as_deref(),
+            StorageKind::Gcs(gcs) => gcs.endpoint.as_deref(),
+            StorageKind::Adls(_) => None,
+        };
+        for address in [uri, token_uri, endpoint].into_iter().flatten() {
+            let (plain, host) = http_uri_parts(address)?;
+            if plain && !is_loopback_host(host) {
+                return Err(LakeConfigError::PlainHttpOutsideLoopback);
+            }
+        }
+        Ok(())
     }
 
     fn validate_lake(&self) -> Result<(), LakeConfigError> {
@@ -436,6 +481,11 @@ fn bounded_optional(text: Option<&str>, max: usize) -> bool {
 /// are credentials that would be stored, logged and shown in the clear, so they are refused as such. Returns whether it
 /// is plain `http`.
 fn http_uri(uri: &str) -> Result<bool, LakeConfigError> {
+    http_uri_parts(uri).map(|(plain, _)| plain)
+}
+
+/// As [`http_uri`], with the host the address names.
+fn http_uri_parts(uri: &str) -> Result<(bool, &str), LakeConfigError> {
     let (scheme, rest) = uri.split_once("://").ok_or(LakeConfigError::InvalidUri)?;
     let plain = match scheme {
         "https" => false,
@@ -468,7 +518,12 @@ fn http_uri(uri: &str) -> Result<bool, LakeConfigError> {
     if host.is_empty() || !valid_host(host) || !port_holds {
         return Err(LakeConfigError::InvalidUri);
     }
-    Ok(plain)
+    Ok((plain, host))
+}
+
+/// The loopback names the host of the sandbox reads over plain `http` (the host's own set, which is stricter than the runner's policy).
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }
 
 /// `thrift://host:port`

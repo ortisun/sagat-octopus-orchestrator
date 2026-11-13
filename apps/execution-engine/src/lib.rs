@@ -128,7 +128,8 @@ pub async fn serve(
         Arc::new(sagat_infra_secrets::database::JsonDatabaseCredentials),
         Arc::new(sagat_infra_ir::JsonDatabaseResultValidator),
     )
-    .with_lake_receipts(Arc::new(sagat_infra_ir::JsonLakeReceiptCodec));
+    .with_lake_receipts(Arc::new(sagat_infra_ir::JsonLakeReceiptCodec))
+    .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec));
     let provider: Option<Arc<dyn sagat_application::secret_provider::SecretProvider>> =
         match &engine.openbao {
             Some(settings) => Some(

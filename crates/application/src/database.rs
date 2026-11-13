@@ -38,6 +38,14 @@ pub struct LakeLeaseFacts {
     pub first_leased_at: Option<OffsetDateTime>,
 }
 
+/// What the lease of an Iceberg probe needs from the store, read in the lease transaction (D035-150): the connection it tests, by the name
+/// and the revision it was admitted with, which are what the result echoes back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeLeaseFacts {
+    pub connection: String,
+    pub revision: u32,
+}
+
 /// One secret a connection names, selected under the current run/ACL locks (feature 035, D035-140).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedSecret {
@@ -143,6 +151,9 @@ pub struct ConnectionService<S, C> {
     /// `allowUnauthenticatedMetastore`: whether a Hive metastore may be used without TLS. Off unless the deployment says
     /// so, since it has neither transport security nor authentication.
     allow_unauthenticated_metastore: bool,
+    /// `lake.enabled`: whether this deployment runs Apache Iceberg writes, so whether it offers an Iceberg connection (feature 035). Off
+    /// unless the deployment says so.
+    lake_enabled: bool,
 }
 impl<S: ConnectionStore, C: Clock> ConnectionService<S, C> {
     pub fn new(store: S, clock: C) -> Self {
@@ -150,7 +161,19 @@ impl<S: ConnectionStore, C: Clock> ConnectionService<S, C> {
             store,
             clock,
             allow_unauthenticated_metastore: false,
+            lake_enabled: false,
         }
+    }
+    /// The deployment's `lake.enabled`, which decides whether the drivers it lists include Apache Iceberg.
+    #[must_use]
+    pub const fn with_lake_enabled(mut self, enabled: bool) -> Self {
+        self.lake_enabled = enabled;
+        self
+    }
+    /// Whether the deployment offers an Iceberg connection: it runs Iceberg writes.
+    #[must_use]
+    pub const fn lake_enabled(&self) -> bool {
+        self.lake_enabled
     }
     /// Lets a connection use a Hive metastore with `tls: none` (the deployment's `allowUnauthenticatedMetastore`).
     #[must_use]
@@ -329,6 +352,53 @@ pub trait LakeReceiptCodec: Send + Sync {
         receipt: &[u8],
         expected: &ExpectedReceipt<'_>,
     ) -> Result<RebuiltReceipt, InvalidLakeReceipt>;
+}
+
+/// What the server knows of the probe a result must be about (D035-150): the connection it was leased with, by the name and the revision
+/// it was admitted with. Not what the runner says it tested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpectedProbe<'a> {
+    pub connection: &'a str,
+    pub revision: u32,
+}
+
+/// Why a probe result is not the one of the probe. Never carries the result: a member of it is not safe to print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidLakeProbe {
+    #[error("the result is larger than a result can be")]
+    TooLarge,
+    #[error("the result does not hold as typed fields")]
+    Malformed,
+    #[error("the result is of a kind a probe does not produce")]
+    Kind,
+    #[error("the checks of the result contradict each other")]
+    Inconsistent,
+    #[error("the result is not about this probe")]
+    Mismatch,
+}
+
+/// The result as the server stores it, and what it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RebuiltProbe {
+    /// The canonical bytes, built again from typed fields.
+    pub canonical: Vec<u8>,
+    pub result: sagat_domain::database::ProbeResult,
+}
+
+/// Result syntax belongs to an adapter, as a receipt's does. The server never stores what the runner sent: it reads it into typed fields that
+/// accept only what the contract names (closed words, numbers, and the connection's own name), checks it against the probe, and stores the
+/// result built again from those fields.
+pub trait LakeProbeCodec: Send + Sync {
+    /// The canonical result of the probe, or the reason what the runner reported is not the result of this one.
+    ///
+    /// # Errors
+    /// [`InvalidLakeProbe`] for a result that is too large, does not hold as typed fields, is of another kind, names another connection or
+    /// revision than `expected`, or whose checks contradict each other.
+    fn rebuild(
+        &self,
+        result: &[u8],
+        expected: &ExpectedProbe<'_>,
+    ) -> Result<RebuiltProbe, InvalidLakeProbe>;
 }
 
 #[cfg(test)]

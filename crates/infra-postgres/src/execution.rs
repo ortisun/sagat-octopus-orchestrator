@@ -141,6 +141,9 @@ pub struct PgRunStore {
     pub(crate) definitions: PgDefinitionStore,
     breaker: BreakerPolicy,
     pub(crate) scoped_worker_protocol: bool,
+    /// Reads the projections a definition excludes and refuses a run that has any, for a test run that
+    /// checks the exclusion against everything the suites do. Off: such a projection is not read.
+    verify_skipped_loads: bool,
     /// The deployment's `lake.enabled` (feature 035): whether a run may carry an Iceberg write. Off unless set.
     pub(crate) lake_enabled: bool,
 }
@@ -155,8 +158,17 @@ impl PgRunStore {
             cache,
             breaker: BreakerPolicy::default(),
             scoped_worker_protocol: false,
+            verify_skipped_loads: false,
             lake_enabled: false,
         }
+    }
+
+    /// Makes every command check that a projection its definition excludes is in fact empty. For
+    /// test runs: it costs a statement per command and refuses a run that fails it.
+    #[must_use]
+    pub const fn with_skipped_load_verification(mut self, verify: bool) -> Self {
+        self.verify_skipped_loads = verify;
+        self
     }
 
     /// Lets a run carry an Apache Iceberg write: the deployment's `lake.enabled`, off by default (D035-059, D035-137).
@@ -230,8 +242,10 @@ impl PgRunStore {
         if let Some(def) = self.cache.get(version) {
             return Ok(def);
         }
-        let document: Vec<u8> = sqlx::query_scalar(
-            "SELECT document FROM workflow_versions WHERE tenant_id = $1 AND id = $2",
+        // Whether the workflow is private is a row of the store (`workflows.internal`, immutable), and it alone decides which entry restores
+        // the document: nothing in the document does (ADR-0080).
+        let (document, internal): (Vec<u8>, bool) = sqlx::query_as(
+            "SELECT v.document, w.internal FROM workflow_versions v JOIN workflows w ON w.tenant_id = v.tenant_id AND w.id = v.workflow_id WHERE v.tenant_id = $1 AND v.id = $2",
         )
         .bind(tenant.as_uuid())
         .bind(version.as_uuid())
@@ -239,29 +253,51 @@ impl PgRunStore {
         .await
         .map_err(store_error)?
         .ok_or_else(|| corrupt("workflow version reference"))?;
-        self.cache
-            .get_or_parse(version, &document)
-            .map_err(|error| {
-                tracing::error!(%error, %version, "a stored workflow version no longer parses");
-                StoreError::UnreadableDefinition
-            })
+        if internal {
+            self.cache.get_or_parse_private(version, &document)
+        } else {
+            self.cache.get_or_parse(version, &document)
+        }
+        .map_err(|error| {
+            tracing::error!(%error, %version, "a stored workflow version no longer parses");
+            StoreError::UnreadableDefinition
+        })
     }
 
     pub(crate) async fn begin_in_transaction(
         &self,
-        mut tx: Transaction<'static, Postgres>,
+        tx: Transaction<'static, Postgres>,
         tenant: TenantId,
         run: RunId,
         lock: Lock,
         chain_lock: Option<LockedChainHead>,
     ) -> Result<Option<PgRunTx>, StoreError> {
         let row = match lock {
-            Lock::Wait => sqlx::query(RUN_FOR_UPDATE)
+            Lock::Wait => RunRow::Wait,
+            Lock::SkipLocked => RunRow::SkipLocked,
+        };
+        self.begin_row(tx, tenant, run, row, chain_lock).await
+    }
+
+    async fn begin_row(
+        &self,
+        mut tx: Transaction<'static, Postgres>,
+        tenant: TenantId,
+        run: RunId,
+        row: RunRow<'_>,
+        chain_lock: Option<LockedChainHead>,
+    ) -> Result<Option<PgRunTx>, StoreError> {
+        let row = match row {
+            RunRow::Wait => sqlx::query(RUN_FOR_UPDATE)
                 .bind(tenant.as_uuid())
                 .bind(run.as_uuid()),
-            Lock::SkipLocked => sqlx::query(RUN_FOR_UPDATE_SKIP_LOCKED)
+            RunRow::SkipLocked => sqlx::query(RUN_FOR_UPDATE_SKIP_LOCKED)
                 .bind(tenant.as_uuid())
                 .bind(run.as_uuid()),
+            RunRow::Claim(activities) => sqlx::query(RUN_FOR_CLAIM)
+                .bind(tenant.as_uuid())
+                .bind(run.as_uuid())
+                .bind(activities),
         }
         .fetch_optional(&mut *tx)
         .await
@@ -294,15 +330,29 @@ impl PgRunStore {
         .map_err(store_error)?;
         let mut steps = BTreeMap::new();
         let mut stored = BTreeSet::new();
+        let mut stored_kinds = BTreeMap::new();
         for row in &step_rows {
             let node: String = col(row, "node")?;
             let node = NodeId::parse_stored(&node).map_err(|_| corrupt("step node"))?;
             let path = step_instance_path(row)?;
             let instance = ExecutionInstanceId::in_path(path, node);
             stored.insert(instance.clone());
+            stored_kinds.insert(instance.clone(), col::<String>(row, "stored_node_kind")?);
             steps.insert(instance, step_state(row)?);
         }
-        let sagas = load_sagas(&mut tx, tenant, run).await?;
+        // The pinned definition says which kinds of state the run can have; the others are not read.
+        let definition = self
+            .definition(&mut tx, tenant, record.info.version_id)
+            .await?;
+        let kinds = definition.projected_state();
+        if self.verify_skipped_loads {
+            verify_excluded_projections(&mut tx, tenant, run, kinds).await?;
+        }
+        let sagas = if kinds.sagas {
+            load_sagas(&mut tx, tenant, run).await?
+        } else {
+            BTreeMap::new()
+        };
         let stop = match record.stop_reason {
             None => None,
             Some(reason) => Some((
@@ -331,12 +381,15 @@ impl PgRunStore {
                 })
                 .transpose()?,
         );
-        let definition = self
-            .definition(&mut tx, tenant, record.info.version_id)
-            .await?;
-        load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
-        load_loops(&mut tx, tenant, run, &mut state).await?;
-        load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
+        if kinds.collections {
+            load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
+        }
+        if kinds.loops {
+            load_loops(&mut tx, tenant, run, &mut state).await?;
+        }
+        if kinds.scope_sagas() {
+            load_scope_sagas(&mut tx, tenant, run, &mut state).await?;
+        }
         load_chain(&mut tx, tenant, run, &mut state).await?;
         for row in &step_rows {
             let node = NodeId::parse_stored(&col::<String>(row, "node")?)
@@ -391,6 +444,7 @@ impl PgRunStore {
             data: None,
             input_digest,
             stored,
+            stored_kinds,
             timer_read_states,
             event_wait_read_states,
             breaker: self.breaker,
@@ -508,6 +562,16 @@ impl PgRunStore {
             .map_err(|e| e.to_string())?
             .ok_or("the run does not exist")?;
         let stored = stored_tx.state.clone();
+        // The projection above was read without the kinds the definition excludes. Here that
+        // exclusion is part of what is verified: a row of such a kind is a difference too.
+        verify_excluded_projections(
+            &mut stored_tx.tx,
+            tenant,
+            run,
+            stored_tx.def.projected_state(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         let rows = sqlx::query(
             "SELECT seq, event_type, node, detail, instance_path_nodes, instance_path_indices \
              FROM run_events \
@@ -954,7 +1018,11 @@ async fn current_worker_authorized(
     namespace: NamespaceId,
     subject: &str,
 ) -> Result<bool, StoreError> {
-    crate::quotas::lock_secrets(tx, tenant, namespace).await?;
+    // Every report and scoped claim of an ordinary worker passes here. It reads its membership under
+    // the row lock a revocation waits for, and takes the namespace's secrets lock first only to keep
+    // the order of the catalog mutations. Shared: held exclusively it made one namespace's reports
+    // wait for each other until commit.
+    crate::quotas::share_secrets_lock(tx, tenant, namespace).await?;
     let role: Option<String> =
         sqlx::query_scalar("SELECT role FROM public.sagat_lock_memberships($1, ARRAY[$2::text])")
             .bind(tenant.as_uuid())
@@ -1132,10 +1200,14 @@ impl RunStore for PgRunStore {
                 return Err(StoreError::MissingReference);
             }
             let version_document: Vec<u8> = col(&version_row, "document")?;
-            let declared_state = self
-                .cache
-                .declared_state_publication(&version_document)
-                .map_err(|error| {
+            // A retained definition is a private workflow's (`retain` just wrote it), and a private version is read by the private entry
+            // here as everywhere else (ADR-0080): the row decides, not the document.
+            let declared_state = if new.retained.is_some() {
+                self.cache.declared_state_publication_private(&version_document)
+            } else {
+                self.cache.declared_state_publication(&version_document)
+            }
+            .map_err(|error| {
                     tracing::error!(%error, version = %new.info.version_id, "stored declared state no longer validates");
                     StoreError::Internal {
                         detail: "stored declared state no longer validates".to_owned(),
@@ -1228,6 +1300,29 @@ impl RunStore for PgRunStore {
             .await
             {
                 let _ = tx.rollback().await;
+                return Err(error);
+            }
+            // After admission (which holds the namespace's lock of secrets to the end of the transaction) and the quota lock of the
+            // namespace: see the function.
+            if info.origin == Some(sagat_application::runs::RunOrigin::ConnectionProbe)
+                && new
+                    .definition
+                    .nodes()
+                    .any(|n| n.lake_probe_target().is_some())
+                && let Err(error) =
+                    ad_hoc::ensure_no_probe_in_flight(&mut tx, info, &bindings).await
+            {
+                let _ = tx.rollback().await;
+                // A retry of the key that started the probe can reach this point while the first start still holds the lock (it did its
+                // replay lookup before that start committed): the probe in flight is then its own, and the key stands for that run
+                // and not for a conflict. A fresh transaction sees what the first one committed.
+                if matches!(error, StoreError::StateConflict(_))
+                    && let Some(existing) = self
+                        .replay_start(tenant, &new.info.started_by, &new.idempotency)
+                        .await?
+                {
+                    return Ok(Admitted::Replayed(existing));
+                }
                 return Err(error);
             }
             // Admission locks precede payload uniqueness checks, as in evaluated handoff.
@@ -1381,6 +1476,7 @@ impl RunStore for PgRunStore {
                 info.created_at = now;
                 return Ok(Admitted::Created(PgRunTx {
                     tx,
+                    stored_kinds: BTreeMap::new(),
                     timer_read_states: BTreeMap::new(),
                     event_wait_read_states: BTreeMap::new(),
                     info,
@@ -1434,6 +1530,15 @@ impl RunStore for PgRunStore {
     ) -> Result<Option<sagat_application::runs::ConnectionProbe>, StoreError> {
         ad_hoc::latest_probe(self, tenant, namespace, name).await
     }
+    async fn is_lake_connection(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        name: &Slug,
+        revision: Option<u32>,
+    ) -> Result<bool, StoreError> {
+        ad_hoc::is_lake_connection(self, tenant, namespace, name, revision).await
+    }
 
     async fn begin(
         &self,
@@ -1448,6 +1553,25 @@ impl RunStore for PgRunStore {
             RunChainLock::Contended => return Ok(None),
         };
         self.begin_in_transaction(tx, tenant, run, lock, chain_lock)
+            .await
+    }
+
+    async fn begin_claim(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        activities: &[String],
+    ) -> Result<Option<PgRunTx>, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let chain_lock = match self
+            .lock_chain_for_run(&mut tx, tenant, run, Lock::SkipLocked)
+            .await?
+        {
+            RunChainLock::NotMember => None,
+            RunChainLock::Locked(chain) => Some(chain),
+            RunChainLock::Contended => return Ok(None),
+        };
+        self.begin_row(tx, tenant, run, RunRow::Claim(activities), chain_lock)
             .await
     }
 
@@ -2024,6 +2148,28 @@ macro_rules! run_columns_sql {
 const RUN_FOR_UPDATE: &str = run_columns_sql!(" FOR UPDATE");
 
 const RUN_FOR_UPDATE_SKIP_LOCKED: &str = run_columns_sql!(" FOR UPDATE SKIP LOCKED");
+
+/// How a run's row is read when it is opened: the lock modes of [`Lock`], and a worker's claim.
+enum RunRow<'a> {
+    Wait,
+    SkipLocked,
+    /// [`RUN_FOR_CLAIM`], with the activities the session serves.
+    Claim(&'a [String]),
+}
+
+/// The run of a candidate a poll read a moment ago, for a root claim: not locked by another
+/// transaction, and still with a ready root step of an activity the session serves (`$3`). A root
+/// claim leases nothing else: it takes only ready root activity steps whose activity is one the
+/// session advertised, and a step row's `activity` is the one the candidate scan matched it by. The
+/// condition only ever makes a claim give up on a run, as a lock held by another poller does, and a
+/// run it gives up on is found again by a later poll if such a step is ready then; what is leased is
+/// still decided from the step rows read under the lock.
+const RUN_FOR_CLAIM: &str = run_columns_sql!(
+    " AND EXISTS (SELECT 1 FROM steps s WHERE s.tenant_id = runs.tenant_id \
+        AND s.run_id = runs.id AND s.status = 'READY' \
+        AND cardinality(s.instance_path_nodes) = 0 AND s.activity = ANY($3::text[])) \
+        FOR UPDATE SKIP LOCKED"
+);
 
 /// The same read without a lock, for the bounded snapshot of a scope transition (D523).
 pub(crate) const RUN_SNAPSHOT: &str = run_columns_sql!("");
@@ -3511,6 +3657,38 @@ fn scope_owner_instance(row: &PgRow) -> Result<ExecutionInstanceId, StoreError> 
     ))
 }
 
+/// The check behind the loads a definition lets a command skip: a run has no row of a kind its
+/// definition excludes. `verify_run` always makes it; a store asked to
+/// ([`PgRunStore::with_skipped_load_verification`]) makes it for every command.
+async fn verify_excluded_projections(
+    tx: &mut Transaction<'static, Postgres>,
+    tenant: TenantId,
+    run: RunId,
+    kinds: sagat_domain::workflow::ProjectedState,
+) -> Result<(), StoreError> {
+    let (sagas, scope_sagas, collections, loops): (bool, bool, bool, bool) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM run_sagas WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM scope_sagas WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM iteration_scopes WHERE tenant_id = $1 AND run_id = $2) \
+                  OR EXISTS (SELECT 1 FROM collection_iterations WHERE tenant_id = $1 AND run_id = $2), \
+                EXISTS (SELECT 1 FROM loop_scopes WHERE tenant_id = $1 AND run_id = $2) \
+                  OR EXISTS (SELECT 1 FROM loop_iterations WHERE tenant_id = $1 AND run_id = $2)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if (sagas && !kinds.sagas)
+        || (scope_sagas && !kinds.scope_sagas())
+        || (collections && !kinds.collections)
+        || (loops && !kinds.loops)
+    {
+        return Err(corrupt("a projection its definition excludes"));
+    }
+    Ok(())
+}
+
 /// The sagas of a run, rebuilt from their rows.
 async fn load_sagas(
     tx: &mut Transaction<'static, Postgres>,
@@ -3609,6 +3787,9 @@ pub struct PgRunTx {
     /// "insert or update" is decided here, not by `ON CONFLICT` (which checks constraints on the
     /// proposed row before it takes the update path).
     stored: BTreeSet<ExecutionInstanceId>,
+    /// The kind each step row held when the run was loaded under its row lock. Nothing else writes a
+    /// kind while that lock is held, so a row whose kind is already the definition's needs no write.
+    stored_kinds: BTreeMap<ExecutionInstanceId, String>,
     timer_read_states: BTreeMap<ExecutionInstanceId, TimerReadState>,
     event_wait_read_states: BTreeMap<ExecutionInstanceId, EventWaitReadState>,
     breaker: BreakerPolicy,
@@ -3686,6 +3867,15 @@ impl PgRunTx {
         instance: &ExecutionInstanceId,
         node_kind: &str,
     ) -> Result<(), StoreError> {
+        // The kind is immutable. A row read with the definition's kind is left alone; any other is
+        // put to the statement below, which upgrades a legacy row and refuses everything else.
+        if self
+            .stored_kinds
+            .get(instance)
+            .is_some_and(|stored| stored == node_kind)
+        {
+            return Ok(());
+        }
         let (path_nodes, path_indices) = stored_path_parts(instance.path());
         let updated = sqlx::query(
             "UPDATE steps SET node_kind=$6 \
@@ -3705,6 +3895,8 @@ impl PgRunTx {
         if updated.rows_affected() != 1 {
             return Err(corrupt("immutable step node kind"));
         }
+        self.stored_kinds
+            .insert(instance.clone(), node_kind.to_owned());
         Ok(())
     }
 
@@ -4372,6 +4564,12 @@ impl RunTx for PgRunTx {
         node: &NodeId,
     ) -> Result<sagat_application::database::LakeLeaseFacts, StoreError> {
         self.lake_facts(node).await
+    }
+    async fn lake_probe_facts(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<sagat_application::database::ProbeLeaseFacts, StoreError> {
+        self.lake_probe_facts(node).await
     }
     async fn lake_record_blobs(
         &mut self,

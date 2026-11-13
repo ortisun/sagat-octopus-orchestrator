@@ -104,7 +104,7 @@ def line(stub: Catalog, *, file_warehouse: bool = False, uri: str | None = None,
     return json.dumps({**document, **changes}, separators=(",", ":")).encode()
 
 
-def plain_opener(connection_document: Any, request_timeout: float) -> PyIcebergCatalog:
+def plain_opener(connection_document: Any, request_timeout: float, development: bool = False) -> PyIcebergCatalog:
     """The stub as a plain REST catalog: the success path writes to files, never to S3."""
     del request_timeout
     return RestCatalog("plain", uri=connection_document["catalog"]["rest"]["uri"])
@@ -114,7 +114,7 @@ def converse(
     request_line: bytes,
     *,
     records: bytes = b'{"id": 1}\n{"id": 2}\n',
-    opener: Callable[[Any, float], PyIcebergCatalog] | None = None,
+    opener: Callable[[Any, float, bool], PyIcebergCatalog] | None = None,
     interval: float = 1.0,
     request_timeout: float = 5.0,
 ) -> Conversation:
@@ -286,7 +286,7 @@ def test_no_credential_reaches_the_result_or_the_standard_streams(
 def test_a_failure_that_no_one_expected_is_a_worker_error_with_only_its_class_on_stderr(
     stub: Catalog, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    def explode(connection_document: Any, request_timeout: float) -> PyIcebergCatalog:
+    def explode(connection_document: Any, request_timeout: float, development: bool = False) -> PyIcebergCatalog:
         raise RuntimeError(f"secret {CANARY}")
 
     conversation = converse(line(stub, file_warehouse=True), opener=explode)
@@ -298,7 +298,7 @@ def test_a_failure_that_no_one_expected_is_a_worker_error_with_only_its_class_on
 
 
 def test_a_failure_of_the_closed_set_that_the_opener_raises_is_passed_on(stub: Catalog) -> None:
-    def refuses(connection_document: Any, request_timeout: float) -> PyIcebergCatalog:
+    def refuses(connection_document: Any, request_timeout: float, development: bool = False) -> PyIcebergCatalog:
         raise Failure("DATABASE_CREDENTIAL_UNAVAILABLE")
 
     conversation = converse(line(stub, file_warehouse=True), opener=refuses)
@@ -306,9 +306,9 @@ def test_a_failure_of_the_closed_set_that_the_opener_raises_is_passed_on(stub: C
 
 
 # ------------------------------------------------------------------------------------------------------- the entry
-def test_the_host_serves_this_operation_and_no_other_yet() -> None:
+def test_the_host_serves_the_write_and_the_probe_and_no_other_yet() -> None:
     operations = operations_for(pathlib.Path("/tmp/nowhere"))
-    assert set(operations) == {"icebergWrite"}
+    assert set(operations) == {"icebergWrite", "probe"}
 
 
 def test_the_entry_point_builds_its_operations_for_the_attempt_directory(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -321,4 +321,4 @@ def test_the_entry_point_builds_its_operations_for_the_attempt_directory(monkeyp
 
     monkeypatch.setattr(host, "run", fake_run)
     assert host.main(["--attempt-dir", "/tmp/somewhere"]) == 0
-    assert seen == {"attempt_dir": pathlib.Path("/tmp/somewhere"), "operations": ["icebergWrite"]}
+    assert seen == {"attempt_dir": pathlib.Path("/tmp/somewhere"), "operations": ["icebergWrite", "probe"]}

@@ -20,6 +20,9 @@ docker compose -f infra/docker/compose.yaml -f infra/docker/compose.database.yam
 
 ## Scenario 1 — connection and probe (US01, SC-035-001)
 
+> **2026-11-10: step 1 cannot run as written.** `http://iceberg-rest:8181` is not the loopback, and the platform refuses a plain-`http` address that is not (`PLAIN_HTTP_OUTSIDE_LOOPBACK`, at save). A development runner reads the
+> catalog, the S3 endpoint and the token endpoint over `http` **on the loopback**, so the fixtures are reached on a loopback port (G035-095, O035-010 answered: option b).
+
 1. Create a namespace secret and an Iceberg connection `lake` (REST catalog
    `http://iceberg-rest:8181`, storage `s3` at the RustFS endpoint, `warehouseLocations: ["s3://lake/"]`,
    `allowedModes: [append, overwrite, upsert]`, `egressCeiling: internal`).

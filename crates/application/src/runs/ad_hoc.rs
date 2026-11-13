@@ -100,7 +100,89 @@ impl RetainedDefinition {
 pub struct ConnectionProbe {
     pub run: RunRecord,
     pub revision: u32,
+    /// What went wrong, for a reader that knows no checks: the step's own code, or for an Iceberg probe the code of the first failed check.
     pub failure_code: Option<String>,
+    /// Whether the probe is the probe of an Iceberg connection (its step is on the probe activity), which is the only kind with checks.
+    pub lake: bool,
+    /// What the store kept as the output of an Iceberg probe: the server's own writing of its result. Read by the service and not passed
+    /// on; `None` once it has been.
+    pub output: Option<Vec<u8>>,
+    /// The checks of an Iceberg probe whose result could be read; `None` for any other probe and for one whose result cannot be.
+    pub result: Option<sagat_domain::database::ProbeResult>,
+}
+
+/// What the store gave, for [`probe_view`].
+#[derive(Debug, Clone)]
+pub struct ProbeViewInput<'a> {
+    pub lake: bool,
+    /// Whether the step of the probe succeeded (a failed check is the answer and the step has succeeded).
+    pub succeeded: bool,
+    /// The code the step failed with, already one of the closed codes.
+    pub stored_failure: Option<String>,
+    pub output: Option<&'a [u8]>,
+    /// The connection the probe was admitted with, which its result must be about.
+    pub connection: &'a str,
+    pub revision: u32,
+}
+
+/// What a reader of the latest probe sees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeView {
+    pub result: Option<sagat_domain::database::ProbeResult>,
+    pub failure_code: Option<String>,
+}
+
+/// What a reader of a connection's latest probe sees (D035-150). The probe of an Iceberg connection **succeeds** when a check failed, because a
+/// failed check is the answer and not a fault of the platform, and every reader of the probe that existed reads `failureCode` and nothing of
+/// any check. So: the step's own code is kept and wins; otherwise the code of the first failed check is the failure code; and a connection is
+/// never read as healthy for lack of a result: an Iceberg probe that succeeded and whose result cannot be read (purged, not the probe's, or no
+/// codec to read it with) says `DATABASE_RESULT_UNAVAILABLE`. A probe that has not ended says nothing yet. Any other probe is read as it always was.
+#[must_use]
+pub fn probe_view(
+    input: &ProbeViewInput<'_>,
+    codec: Option<&dyn crate::database::LakeProbeCodec>,
+) -> ProbeView {
+    if !input.lake {
+        return ProbeView {
+            result: None,
+            failure_code: input.stored_failure.clone(),
+        };
+    }
+    let result = input
+        .output
+        .zip(codec)
+        .and_then(|(bytes, codec)| {
+            codec
+                .rebuild(
+                    bytes,
+                    &crate::database::ExpectedProbe {
+                        connection: input.connection,
+                        revision: input.revision,
+                    },
+                )
+                .ok()
+        })
+        .map(|rebuilt| rebuilt.result);
+    let failure_code = input
+        .stored_failure
+        .clone()
+        .or_else(|| {
+            result
+                .as_ref()
+                .and_then(sagat_domain::database::ProbeResult::first_failure)
+                .map(|code| code.code().to_owned())
+        })
+        .or_else(|| {
+            (input.succeeded && result.is_none()).then(|| {
+                sagat_domain::database::DatabaseFailure::ResultUnavailable
+                    .code()
+                    .to_owned()
+            })
+        });
+    ProbeView {
+        result,
+        failure_code,
+    }
 }
 
 impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService<S, C, E> {
@@ -116,6 +198,15 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
     }
 
     #[tracing::instrument(skip_all, name = "database.probe.start", fields(tenant_id = %principal.tenant_id(), namespace_id = %namespace, run_id = tracing::field::Empty))]
+    /// The probe of a connection, **chosen by the kind of the connection** (D035-150): the probe of an Iceberg connection is
+    /// [`Self::start_lake_probe`], and anything else, a SQL connection or one that is not there, is the fixed `SELECT 1`, which admission
+    /// refuses for a connection that is not a SQL one with the answer it has always given. The kind is read **before** the permissions are
+    /// looked at, for the tenant of the caller only, and says nothing to the caller: it chooses a document, and the start that follows is
+    /// authorised and admitted as any other.
+    ///
+    /// # Errors
+    /// The refusals of any ad hoc start, and for an Iceberg connection also `StateConflict` while a probe of the same connection and
+    /// revision is in flight.
     pub async fn probe_connection(
         &self,
         principal: &Principal,
@@ -124,7 +215,55 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         key: &str,
         ctx: &RequestContext,
     ) -> Result<RunRecord, AppError> {
+        if self
+            .store
+            .is_lake_connection(
+                principal.tenant_id(),
+                namespace,
+                &connection.name,
+                connection.revision,
+            )
+            .await?
+        {
+            return self
+                .start_lake_probe(principal, namespace, connection, key, ctx)
+                .await;
+        }
         let document = probe_document(connection);
+        self.start_private(
+            principal,
+            &StartDatabaseExecution {
+                namespace,
+                mode: AdHocMode::Step,
+                document: &document,
+                input: b"{}",
+                timeout_ms: Some(30_000),
+                key,
+            },
+            RunOrigin::ConnectionProbe,
+            None,
+            ctx,
+        )
+        .await
+    }
+
+    /// The probe of an Iceberg connection (D035-150, ADR-0080): a private run whose one node the platform writes. [`Self::probe_connection`]
+    /// calls it for an Iceberg connection, which is how the REST probe reaches it.
+    ///
+    /// # Errors
+    /// `NotFound` for a connection that is not an Iceberg connection of the namespace, whatever the reason (missing, deleted, a SQL one),
+    /// `StateConflict` while a probe of the same connection and revision is in flight (a replay of the key that started it is that
+    /// run, not a conflict), and the refusals of any ad hoc start: permissions, a connection that cannot be admitted, the lake being off.
+    #[tracing::instrument(skip_all, name = "database.lake_probe.start", fields(tenant_id = %principal.tenant_id(), namespace_id = %namespace, run_id = tracing::field::Empty))]
+    pub async fn start_lake_probe(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        connection: &ConnectionRef,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<RunRecord, AppError> {
+        let document = lake_probe_document(connection);
         self.start_private(
             principal,
             &StartDatabaseExecution {
@@ -152,10 +291,27 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         principal.authorize(Permission::NamespaceRead)?;
         principal.authorize(Permission::RunRead)?;
         require_namespace(&self.store, &self.clock, principal, namespace, ctx).await?;
-        self.store
+        let mut probe = self
+            .store
             .latest_connection_probe(principal.tenant_id(), namespace, name)
-            .await
-            .map_err(Into::into)
+            .await?;
+        if let Some(found) = &mut probe {
+            let output = found.output.take();
+            let view = probe_view(
+                &ProbeViewInput {
+                    lake: found.lake,
+                    succeeded: found.run.status == sagat_domain::execution::RunStatus::Succeeded,
+                    stored_failure: found.failure_code.take(),
+                    output: output.as_deref(),
+                    connection: name.as_str(),
+                    revision: found.revision,
+                },
+                self.lake_probes.as_deref(),
+            );
+            found.result = view.result;
+            found.failure_code = view.failure_code;
+        }
+        Ok(probe)
     }
 
     pub(super) async fn rerun_private(
@@ -239,27 +395,32 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         {
             return Err(AppError::NotAllowed("invalid Idempotency-Key"));
         }
-        let parsed = self
-            .cache
-            .parse_document(request.document)
-            .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
+        // The platform's own probe documents are the only ones that may carry a private node (ADR-0080): they are parsed by the private
+        // entry, whose grammar is the public one plus the private node types. Every other origin is parsed by the public one.
+        let parsed = if origin == RunOrigin::ConnectionProbe {
+            self.cache.parse_private_document(request.document)
+        } else {
+            self.cache.parse_document(request.document)
+        }
+        .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
         validate_definition(&parsed.definition, origin)?;
         if origin == RunOrigin::ConnectionProbe {
-            let reference = &parsed
-                .definition
-                .nodes()
-                .next()
-                .and_then(|n| n.database_operation())
-                .ok_or(AppError::Internal)?
-                .connection;
+            let node = parsed.definition.nodes().next().ok_or(AppError::Internal)?;
+            let fixed_document = match (node.database_operation(), node.lake_probe_target()) {
+                (Some(operation), None) => probe_document(&operation.connection),
+                (None, Some(probe)) => lake_probe_document(probe.connection()),
+                _ => return Err(AppError::Internal),
+            };
             let fixed = self
                 .cache
-                .parse_document(&probe_document(reference))
+                .parse_private_document(&fixed_document)
                 .map_err(|_| AppError::Internal)?;
             if parsed.canonical != fixed.canonical || request.input != b"{}" || timeout_ms != 30_000
             {
                 return Err(AppError::NotAllowed("invalid connection probe"));
             }
+            // What makes the connection not an Iceberg connection of this namespace (missing, deleted, another tenant's, a SQL one) is
+            // refused by admission, which answers all of them alike and records the denial as it does for a SQL probe.
         }
         if parsed
             .definition
@@ -386,14 +547,21 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
 
 fn validate_definition(def: &WorkflowDefinition, origin: RunOrigin) -> Result<(), AppError> {
     let nodes: Vec<_> = def.nodes().collect();
+    // The probe of an Iceberg connection is the platform's own node: only a connection probe is one, and it is one node (ADR-0080).
+    let is_probe = |node: &&sagat_domain::workflow::Node| node.lake_probe_target().is_some();
     if !def.triggers().is_empty()
         || nodes.is_empty()
         || nodes.len() > 64
-        || !nodes.iter().any(|n| n.database_operation().is_some())
+        || (origin != RunOrigin::ConnectionProbe && nodes.iter().any(is_probe))
+        || !nodes
+            .iter()
+            .any(|n| n.database_operation().is_some() || is_probe(n))
         || (origin != RunOrigin::AdHocWorkflow
-            && (nodes.len() != 1 || nodes[0].database_operation().is_none()))
+            && (nodes.len() != 1
+                || (nodes[0].database_operation().is_none() && !is_probe(&nodes[0]))))
         || nodes.iter().any(|n| {
             n.database_operation().is_none()
+                && !is_probe(n)
                 && !matches!(
                     n.kind(),
                     NodeKind::Timer { .. }
@@ -415,6 +583,19 @@ fn probe_document(connection: &ConnectionRef) -> Vec<u8> {
         .revision
         .map_or_else(String::new, |r| format!(",\"revision\":{r}"));
     format!(r#"{{"apiVersion":"sagat-octopus-orchestrator.io/v1","kind":"Workflow","metadata":{{"name":"database-probe"}},"entrypoint":"probe","nodes":[{{"id":"probe","type":"database","connectionRef":{{"name":"{}"{revision}}},"operation":"query","statement":"SELECT 1::bigint","limits":{{"maxRows":1,"maxResultBytes":4096,"timeoutMs":5000,"connectTimeoutMs":5000}},"timeoutMs":10000}}]}}"#, connection.name.as_str()).into_bytes()
+}
+
+/// The platform's own definition of the probe of an Iceberg connection (D035-150, ADR-0080): one private node that tests the connection
+/// and nothing else. A caller never supplies it, and the start path compares what it is handed with it, as it does for the SQL probe.
+/// The attempt's own budget is 25 s inside the run's 30 s, so that a typed answer arrives before the deadline.
+///
+/// The only interpolation is a validated slug and a nonzero revision; neither can introduce JSON syntax.
+#[must_use]
+pub fn lake_probe_document(connection: &ConnectionRef) -> Vec<u8> {
+    let revision = connection
+        .revision
+        .map_or_else(String::new, |r| format!(",\"revision\":{r}"));
+    format!(r#"{{"apiVersion":"sagat-octopus-orchestrator.io/v1","kind":"Workflow","metadata":{{"name":"lake-probe"}},"entrypoint":"probe","nodes":[{{"id":"probe","type":"icebergProbe","connectionRef":{{"name":"{}"{revision}}},"timeoutMs":25000}}]}}"#, connection.name.as_str()).into_bytes()
 }
 
 /// A bounded namespace denial record, without definition/input/connection/provider content.

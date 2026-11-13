@@ -130,6 +130,21 @@ curl -X PUT "$SAGAT/namespaces/$NAMESPACE_ID/worker-bindings/$RUNNER_SUBJECT" \
   -d '{"activities": ["sagat.database.iceberg.write"], "profile": "lake"}'
 ```
 
+What a person who connects a catalog does and sees is in [the guide](../guides/iceberg-connections.md).
+
+**A development runner and plain `http`** (O035-010, option b). Every runner refuses an S3 endpoint and an OAuth2 token endpoint that are not `https`; the catalog's address may be `http` on the loopback. A runner
+that is a **development** one (its `development` setting, which the relay already reads to open the loopback) also accepts the S3 endpoint and the token endpoint over `http` **on the loopback**, so that
+the fixtures of `infra/docker/compose.lake.yaml` can be reached; it tells the host so on every request line, and a runner that is not a development one never does. Never set it in production: the server
+lets only a development namespace save such a connection, and the runner is the second place that decides.
+
+A lake runner that has a probe to run (a runner of the version that serves the probe of an Iceberg connection) offers it beside its write,
+and its binding covers both: `"activities": ["sagat.database.iceberg.write", "sagat.database.lake.probe"]`. **Roll it out in this order: the
+server, then the binding, then the runner.** A step is handed only to a session that offers its own activity, so a runner that offers the
+write alone is never handed a probe, and a probe waits for a runner that offers it, until the 30 seconds of its run are over (it ends as the run does when none is registered). A probe has a budget
+of its own, one in flight in a namespace and four in a tenant, so it neither waits for a write nor makes one wait. **The REST start refuses a second probe of the
+same connection and revision with a `409` while one is in flight** (a retry of the key that started it is that run), and a probe that is never leased ends at its
+30 seconds like any run, by the sweep of the scheduler: a connection whose probe stays in flight is a scheduler that is not running.
+
 A binding made without `profile` is `database`, which is what every SQL runner has always been; a replacement that leaves
 `profile` out keeps the one in force, and an identity has **one profile in the whole tenant**: binding it with another profile in a second
 namespace is refused (409) until its bindings elsewhere are removed. Removing the last binding of an identity forgets its profile, so bind it again
@@ -154,6 +169,33 @@ runner for the SQL activity, of both, or of an ordinary activity beside either, 
   code and whether the step may be tried again; a cancel the control plane asked for is `DATABASE_CANCELLED` before the host has the
   request and `OUTCOME_UNKNOWN` after; a lease that is lost is reported as nothing at all. A completion the control plane
   refuses as not the step's is failed as `LAKE_HOST_PROTOCOL`.
+- *It probes a connection* (D035-150, slice S6b). It offers the write and the probe **in one session**, and a probe is run as an
+  attempt like a write, in a container with a slot of its own and the same relay, but it stages nothing, has no effect key and writes
+  nothing, so it is never counted as a write and its end is never unknown. The lease names the time of one check; the attempt gets
+  three of them and a margin of three seconds, **at most 22 seconds**, counted **from the moment the lease was taken** (a connection
+  that took long to resolve has used some of it), and a connection whose own `timeoutMs` is lower lowers it further. The host is told
+  the time that fits what is left, a third of it after the margin and never more than the lease names, so that a check that runs out is
+  answered as a check that timed out (a result) and not as a step that ran out of time. A probe starts a container for a connection a
+  tenant chose, so **probes hold at most half of the slots** (one, on a node with one): a write always finds a slot that probes could
+  not take, and a probe that finds none fails as `LAKE_SANDBOX_UNAVAILABLE`, which may be tried again. It reports the host's result
+  inline as typed fields, and only when it is the result of the connection and the revision that were leased (the answer to
+  `ResolveDatabase` is held to the same name and revision before it is read, and its secrets are cleared either way); anything else is
+  `LAKE_HOST_PROTOCOL`. A cancel is `DATABASE_CANCELLED` and the deadline `DATABASE_TIMEOUT` **whether or not the host had the
+  request**; a host killed by its memory limit is `WORKER_ERROR`, not `ICEBERG_LIMIT_EXCEEDED` (no write failed to fit). A host that
+  fails a probe with a code only a write raises (a commit conflict, an unknown outcome) is a host that does not keep the protocol:
+  `LAKE_HOST_PROTOCOL`. **A connection that does not work is not a failure of the step**: the host answers with the checks that
+  failed, and that is the result. A completion the control plane refuses as not the step's is counted on its own,
+  `database_runner_lake_probe_reports_total{outcome="refused"}`, since a probe has no write to count it as.
+- *A binding that does not cover the probe leaves a runner that serves the writes.* If the service refuses the offer of both
+  activities with `PERMISSION_DENIED` (`NOT_BOUND`: the binding is older than the runner), the runner offers the write alone, at once
+  and in the same session, and counts it: `database_runner_lake_probe_offer_total{outcome="not_bound"}` for the refusal and
+  `write_only` for the session that was left (`offered` when it got both). The state that stays is the gauge
+  `database_runner_lake_probe_offered` (1 when the runner offers the probe, 0 when it serves the writes alone): **a runner that is
+  write-only is silent about it otherwise**, so alert on the gauge after a rollout, not on a counter that went up once. A probe is then
+  handed to no one and waits for the 30 seconds of its run. **Widening the binding does not change a session that is in force: restart
+  the runner after it** (each refusal is audited as a denied registration, so a runner that falls back leaves one such row, and a
+  binding that covers neither activity leaves two for every attempt to register). Any other refusal (an outage, a rate limit) is not a binding and the same offer is made again. A binding that
+  covers neither activity is refused for both, and the runner tries again as it always has.
 - *Stopping it is not cancelling it.* On `SIGTERM` it stops polling, lets the attempts that are running finish for 30 seconds,
   and then gives their leases up as lost (the containers are killed and nothing is reported); the control plane's lease expiry
   decides what happens to the step, and the next attempt finds a commit that was made by its key. **Set the pod's
@@ -165,7 +207,9 @@ runner for the SQL activity, of both, or of an ordinary activity beside either, 
   leaves is removed only by the next process, after about an hour.
 - *Metrics* (closed labels, nothing of a table, a connection or a run): `lake_writes_total` (mode, catalog and storage kind,
   outcome), `lake_sandbox_exits_total` and `lake_relay_denials_total` (reason), and, from the runner,
-  `database_runner_lake_directories_total` (removed or failed by the sweep). Not yet: the phase histograms, the effect-key
+  `database_runner_lake_directories_total` (removed or failed by the sweep). **From the control plane, not the runner:** `lake_probe_checks_total{check,outcome,code}`, once per check of a probe result the server kept
+  (`check` is `CATALOG_AUTH`, `WAREHOUSE` or `STORAGE_ACCESS`; `outcome` `PASSED`, `FAILED` or `SKIPPED`; `code` the closed code of a failure, `none` otherwise; never a connection, a run or a tenant). A failed check is a result and not a
+  fault of the platform, so a rising `FAILED` with `STORAGE_UNAVAILABLE` or `DATABASE_AUTHENTICATION_FAILED` is the customers' catalogs and stores, while a probe that fails as a step is the platform's and counts here as nothing. Not yet: the phase histograms, the effect-key
   lookup counter, and the audit of what the relay refused (the protocol has no call for it: G035-078).
 
 **The credentials of a lake step** (D035-141). A lake runner that has leased its step asks `ResolveDatabase` for the connection and

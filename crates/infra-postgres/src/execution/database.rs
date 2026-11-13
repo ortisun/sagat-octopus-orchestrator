@@ -12,6 +12,10 @@ use sagat_domain::{
 /// Concurrent lake attempts a tenant and a namespace may hold until the quota rows exist (T035-055, the ceilings of plan.md).
 const LAKE_TENANT_CONCURRENCY: i64 = 32;
 const LAKE_NAMESPACE_CONCURRENCY: i64 = 8;
+/// The probe of an Iceberg connection has a budget of its own (D035-150): one in flight in a namespace and a few in a tenant, so that a
+/// flood of probes can neither starve the writes nor be starved by them, and a probe costs a container and two secret reads.
+const LAKE_PROBE_TENANT_CONCURRENCY: i64 = 4;
+const LAKE_PROBE_NAMESPACE_CONCURRENCY: i64 = 1;
 
 impl PgRunTx {
     pub(super) async fn database_role(&mut self, subject: &str) -> Result<bool, StoreError> {
@@ -140,18 +144,37 @@ impl PgRunTx {
         {
             return Ok(false);
         }
-        // The budgets of one kind are its own: a lake attempt does not use up the concurrency of the SQL steps (G035-074).
+        // The budgets of one kind are its own: a lake attempt does not use up the concurrency of the SQL steps (G035-074), and a probe uses up
+        // neither of them (D035-150). The kind of a step in flight is its activity, which is `kind.activity()` for each of the three.
+        let category = |activity: &str| {
+            if activity == sagat_domain::database::ICEBERG_WRITE_ACTIVITY {
+                "lake"
+            } else if activity == sagat_domain::database::ICEBERG_PROBE_ACTIVITY {
+                "probe"
+            } else {
+                "sql"
+            }
+        };
         let (tenant, namespace, pool): (i64,i64,i64) = sqlx::query_as(
             "SELECT count(*), count(*) FILTER (WHERE b.namespace_id=$2),
                     count(*) FILTER (WHERE b.namespace_id=$2 AND b.connection_id=$3)
              FROM steps s JOIN run_database_connections b ON b.tenant_id=s.tenant_id AND b.run_id=s.run_id AND b.node_id=s.node
              WHERE s.tenant_id=$1 AND cardinality(s.instance_path_nodes)=0 AND cardinality(s.instance_path_indices)=0 AND s.status IN ('LEASED','RUNNING')
-               AND (COALESCE(s.activity,'') = $4) = $5")
+               AND (CASE COALESCE(s.activity,'') WHEN $4 THEN 'lake' WHEN $5 THEN 'probe' ELSE 'sql' END) = $6")
             .bind(self.info.tenant_id.as_uuid()).bind(self.info.namespace_id.as_uuid()).bind(connection.id.as_uuid())
-            .bind(sagat_domain::database::ICEBERG_WRITE_ACTIVITY).bind(kind == ManagedKind::Lake)
+            .bind(sagat_domain::database::ICEBERG_WRITE_ACTIVITY).bind(sagat_domain::database::ICEBERG_PROBE_ACTIVITY).bind(category(kind.activity()))
             .fetch_one(&mut *self.tx).await.map_err(store_error)?;
-        if kind == ManagedKind::Lake {
-            return Ok(tenant < LAKE_TENANT_CONCURRENCY && namespace < LAKE_NAMESPACE_CONCURRENCY);
+        match kind {
+            ManagedKind::Lake => {
+                return Ok(
+                    tenant < LAKE_TENANT_CONCURRENCY && namespace < LAKE_NAMESPACE_CONCURRENCY
+                );
+            }
+            ManagedKind::LakeProbe => {
+                return Ok(tenant < LAKE_PROBE_TENANT_CONCURRENCY
+                    && namespace < LAKE_PROBE_NAMESPACE_CONCURRENCY);
+            }
+            ManagedKind::Sql => {}
         }
         let requested = self
             .def
@@ -171,6 +194,23 @@ impl PgRunTx {
         Ok(tenant < i64::from(policy.tenant_concurrency)
             && namespace < i64::from(policy.namespace_concurrency)
             && pool < i64::from(effective.pool_size))
+    }
+
+    /// What the lease of an Iceberg probe needs, read in the lease transaction (D035-150): the connection it tests, by the name and the revision
+    /// it was admitted with (the binding of the node, not the connection as it is now).
+    pub(super) async fn lake_probe_facts(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<sagat_application::database::ProbeLeaseFacts, StoreError> {
+        let connection = self.database_connection(node).await?;
+        // a probe is only ever of an Iceberg connection
+        if connection.config.as_iceberg().is_none() {
+            return Err(StoreError::DatabaseUnavailable);
+        }
+        Ok(sagat_application::database::ProbeLeaseFacts {
+            connection: connection.name.as_str().to_owned(),
+            revision: connection.revision,
+        })
     }
 
     /// What the lease of an Iceberg write needs, read in the lease transaction (D035-138): the limits of the connection at the revision the
@@ -375,7 +415,8 @@ impl PgRunTx {
             .node(node)
             .and_then(Node::managed_kind)
             .ok_or(StoreError::DatabaseUnavailable)?;
-        if kind == ManagedKind::Lake {
+        if matches!(kind, ManagedKind::Lake | ManagedKind::LakeProbe) {
+            // A probe tests the whole connection: it is handed the connection and the two secrets a write is, read and pinned the same way.
             return self.lake_snapshot(node, subject, connection).await;
         }
         if crate::secrets::pool_refusal(

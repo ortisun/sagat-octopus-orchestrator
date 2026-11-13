@@ -1,0 +1,1 @@
+{"kind":"probe","connection":{"name":"lake-main","revision":3},"checks":[{"check":"CATALOG_AUTH","outcome":"FAILED","code":"CANARY: connection refused by 10.0.0.7"},{"check":"WAREHOUSE","outcome":"SKIPPED"},{"check":"STORAGE_ACCESS","outcome":"SKIPPED"}]}

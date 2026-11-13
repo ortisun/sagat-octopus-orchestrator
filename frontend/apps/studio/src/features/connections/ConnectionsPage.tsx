@@ -28,6 +28,9 @@ function ConnectionList({ namespace, development }: { namespace: string; develop
   const [probing, setProbing] = useState<Connection | null>(null);
   const [deleting, setDeleting] = useState<Connection | null>(null);
   const list = useQuery({ queryKey: ['connections', namespace], queryFn: ({ signal }) => connectionsApi(api, namespace).list(signal) });
+  // The deployment lists Iceberg only when it runs it (`lake.enabled`); a probe of an Iceberg connection needs that, and the Studio never guesses.
+  const drivers = useQuery({ queryKey: ['database-drivers', namespace], retry: false, queryFn: ({ signal }) => connectionsApi(api, namespace).drivers(signal) });
+  const lakeOffered = drivers.data?.items.some(driver => driver.id === 'iceberg') ?? false;
   return <section aria-labelledby="connections-title">
     <div className="namespaces-heading"><h1 id="connections-title">Connections</h1>{canManage ? <Button variant="primary" onClick={() => setEditing('new')}>New connection</Button> : null}</div>
     {canAdHoc ? <p><Link className="btn" to="/database-executions">Run ad hoc database work</Link></p> : null}
@@ -40,7 +43,7 @@ function ConnectionList({ namespace, development }: { namespace: string; develop
       // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard scrolling for a wide table
       <div className="namespaces-table" role="region" aria-label="Database connections" tabIndex={0}>
         <table className="data"><caption className="visually-hidden">Database connections of this namespace</caption><thead><tr><th scope="col">Name</th><th scope="col">Database</th><th scope="col">Revision</th><th scope="col">Status</th><th scope="col">Credentials</th><th scope="col">Actions</th></tr></thead>
-          <tbody>{list.data.items.map(item => { const postgres = postgresOf(item); const iceberg = icebergOf(item); const editable = !!postgres || !!editableIcebergOf(item); return <tr key={item.id}><th scope="row">{item.name}</th><td>{postgres ? `${postgres.host}:${postgres.port} / ${postgres.database}` : item.config.driver}</td><td>{item.revision}</td><td>{item.status === 'ACTIVE' ? 'Active' : 'Paused'}</td><td>{postgres ? postgres.secretName : iceberg?.catalogSecret ?? '—'}</td><td>{canManage ? <>{editable ? <Button aria-label={`Edit connection ${item.name}`} onClick={() => setEditing(item)}>Edit</Button> : null}<Button aria-label={`Delete connection ${item.name}`} onClick={() => setDeleting(item)}>Delete</Button></> : 'Read only'}{canReadRuns && postgres ? <Button aria-label={`Probe connection ${item.name}`} onClick={() => setProbing(item)}>Probe / status</Button> : null}</td></tr>; })}</tbody>
+          <tbody>{list.data.items.map(item => { const postgres = postgresOf(item); const iceberg = icebergOf(item); const editable = !!postgres || !!editableIcebergOf(item); return <tr key={item.id}><th scope="row">{item.name}</th><td>{postgres ? `${postgres.host}:${postgres.port} / ${postgres.database}` : item.config.driver}</td><td>{item.revision}</td><td>{item.status === 'ACTIVE' ? 'Active' : 'Paused'}</td><td>{postgres ? postgres.secretName : iceberg?.catalogSecret ?? '—'}</td><td>{canManage ? <>{editable ? <Button aria-label={`Edit connection ${item.name}`} onClick={() => setEditing(item)}>Edit</Button> : null}<Button aria-label={`Delete connection ${item.name}`} onClick={() => setDeleting(item)}>Delete</Button></> : 'Read only'}{canReadRuns && (postgres || (lakeOffered && editableIcebergOf(item))) ? <Button aria-label={`Probe connection ${item.name}`} onClick={() => setProbing(item)}>Probe / status</Button> : null}</td></tr>; })}</tbody>
         </table>
       </div>
     ) : null}

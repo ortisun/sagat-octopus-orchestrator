@@ -278,6 +278,22 @@ groups:
           summary: A process has not been able to tell the instance registry that it is alive for more than thirty seconds.
           runbook: docs/runbooks/instance-registry.md#3-while-it-runs
 
+      - alert: SagatSchedulerTickSlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(scheduler_tick_seconds_bucket[5m]))) > 0.5
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: A scheduler tick takes longer than the 500 ms interval, so the passes fall behind.
+          runbook: docs/runbooks/scaling.md#scheduler-tick-slow
+
+      - alert: SagatSchedulerWaitsPerReplica
+        expr: max(scheduler_waits_per_replica) > 16000
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: More than 16,000 timers, event waits and approvals wait per scheduler replica (ceiling 20,000).
+          runbook: docs/runbooks/scaling.md#scheduler-waits-per-replica
+
       - alert: SagatShardFencing
         expr: sum(rate(scheduler_fenced_total[5m])) > 0
         for: 10m

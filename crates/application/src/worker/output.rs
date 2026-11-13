@@ -164,6 +164,26 @@ where
         self.ensure_bound(principal, &mut tx, task).await?;
         let mut database_secret_in_output = None;
         let managed = Self::managed_kind(&mut tx, task);
+        // A probe reports its result inline, as a receipt. It is read into typed fields that accept only closed words, numbers and the
+        // connection's own name, checked against the probe, and written again; the run keeps that, and nothing of the bytes that were sent
+        // (D035-150). A failed check is the answer, so the step has succeeded: only a fault of the platform fails it.
+        let probe_result = if managed == Some(sagat_domain::database::ManagedKind::LakeProbe) {
+            if blob.is_some() {
+                return Err(AppError::NotAllowed("a probe reports its result inline"));
+            }
+            match self.lake_probe_result(&mut tx, task, output).await {
+                Ok(result) => Some(result),
+                Err(error) => {
+                    drop(tx);
+                    if matches!(error, AppError::NotAllowed(_)) {
+                        self.audit_lake_probe_refusal(principal, task).await;
+                    }
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
         // A lake step reports a small receipt inline. It is read into typed fields and written again; the run keeps that, and
         // nothing of the bytes that were sent. (A receipt has no member that can hold text the server did not supply, which is
         // why it is not scanned for the secrets of the step as a SQL result is: D035-142.)
@@ -226,7 +246,13 @@ where
         }
         let output = lake_receipt
             .as_ref()
-            .map_or(output, |receipt| receipt.canonical.as_slice());
+            .map(|receipt| receipt.canonical.as_slice())
+            .or_else(|| {
+                probe_result
+                    .as_ref()
+                    .map(|probe| probe.canonical.as_slice())
+            })
+            .unwrap_or(output);
         if blob.is_some() {
             if !task.instance.path().is_root() {
                 return Err(AppError::NotAllowed(
@@ -357,8 +383,16 @@ where
                 Err(error)
             }
         };
-        self.recover_success_storage_quota(principal, task, idempotency, write_audit, result)
-            .await
+        let applied = self
+            .recover_success_storage_quota(principal, task, idempotency, write_audit, result)
+            .await;
+        // What each check said is counted when the result was kept, once: a refusal and a replay never get here.
+        if applied.is_ok()
+            && let Some(probe) = &probe_result
+        {
+            lake_complete::count_probe_checks(&probe.result);
+        }
+        applied
     }
 
     pub(super) async fn reject_secret_output(

@@ -261,3 +261,37 @@ The load levels of the specification (FR-010-006), against the best closed-loop 
 - 5000 transitions/s: **not reached** (best measured 1513/s)
 
 `transitions/s` is measured from the start of the workers to the last completion. The workers, the API replicas and the database share the machine.
+
+## Step transitions per second, again on 2026-11-12 (design 038)
+
+The transitions scenario alone, run again by `tests/performance/scalability-ha/run.sh` with
+`SAGAT_PERF_SCENARIOS=step_transitions_per_second`, after the changes of design 038 (pull requests 203 and 205 to 215).
+The sections above are left as they were measured.
+
+- CPU: Apple M3 Max (16 logical cores), 48 GiB of memory; OS: Darwin 25.3.0 arm64
+- Load average when the scenario began: 26.10 16.18 13.81, and 26.89 when it ended (12.02 for the October section):
+  other work was running, so this is not a like-for-like run and the October figure is not shown to be passed or not
+- Build profile: release; commit `1e28a138`
+- PostgreSQL 18.6 (Homebrew), the same configuration as the October section (`fsync=on`, `synchronous_commit=on`)
+- Topology: PostgreSQL and the services on one machine; 3,000 runs of three chained activities per configuration
+
+| API replicas | Workers | Transitions/s, 2026-10-11 (`9092aa1`) | Transitions/s, 2026-11-11 (`ed11d044`) | Transitions/s, now | Complete p50 / p95 / p99 | What the active backends of the database were doing |
+|---:|---:|---:|---:|---:|---|---|
+| 1 | 4 | 1,444 | 363 | 820 | 3 / 4 / 6 ms | CPU:running 60%, Client:ClientRead 33%, IO:WalWrite 4% |
+| 1 | 16 | 1,513 | 368 | 1,026 | 7 / 9 / 11 ms | Client:ClientRead 48%, CPU:running 47%, IO:WalWrite 3% |
+| 1 | 64 | 1,014 | 302 | 774 | 12 / 15 / 19 ms | CPU:running 54%, Client:ClientRead 43%, IO:WalWrite 2% |
+| 1 | 128 | 829 | 288 | 702 | 13 / 18 / 26 ms | CPU:running 56%, Client:ClientRead 41%, IO:WalWrite 2% |
+| 2 | 64 | 907 | 230 | 730 | 19 / 22 / 31 ms | CPU:running 49%, Client:ClientRead 46%, LWLock:LockManager 2% |
+| 2 | 128 | 663 | 272 | 637 | 21 / 26 / 34 ms | CPU:running 52%, Client:ClientRead 44%, LWLock:LockManager 2% |
+| 4 | 64 | 746 | 358 | 678 | 29 / 33 / 46 ms | Client:ClientRead 49%, CPU:running 43%, LWLock:LockManager 6% |
+| 4 | 128 | 696 | 200 | 577 | 38 / 43 / 54 ms | CPU:running 48%, Client:ClientRead 46%, LWLock:LockManager 4% |
+| 8 | 128 | 514 | 171 | 474 | 54 / 70 / 103 ms | Client:ClientRead 47%, CPU:running 40%, LWLock:LockManager 11% |
+
+- 1,000 transitions per second is reached again (1,026 at best); 5,000 is not.
+- The fall of November is gone in the rows with many workers: 128 workers on two replicas is 96% of October's figure and
+  on eight replicas 92%. With 4 and 16 workers on one replica the figure is 57% and 68% of October's: there the cost is
+  what each command runs, about twice October's statements (`specs/038-claim-transition-efficiency/research.md`).
+- No backend waits on an advisory lock. With four and eight replicas `LWLock:LockManager` reaches 4 to 11%: polls in
+  different replicas still meet on the same candidates (the turn of design 038 is per process).
+- Not measured: a quiet machine, a network between the services and the database, a synchronous standby.
+

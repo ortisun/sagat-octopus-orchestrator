@@ -87,6 +87,21 @@ pub fn converted() -> Converted {
     convert(&mut message()).unwrap()
 }
 
+/// The connection of [`converted`] over an S3-compatible store at `endpoint`, addressed by path.
+pub fn converted_with_store(endpoint: &str) -> Converted {
+    let mut connection = message();
+    connection.storage = Some(pb::LakeStorage {
+        kind: Some(Kind::S3(pb::LakeS3Storage {
+            region: "eu-west-1".into(),
+            endpoint: endpoint.into(),
+            path_style: true,
+            ..pb::LakeS3Storage::default()
+        })),
+        vended_credentials: false,
+    });
+    convert(&mut connection).unwrap()
+}
+
 /// The document that `tests/contract/iceberg-writes/fixtures/attempt-input/cases.json` is built on.
 pub fn base() -> Value {
     let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -98,6 +113,16 @@ pub fn base() -> Value {
 /// The text of the base document after `edit`.
 pub fn input_json(edit: impl FnOnce(&mut Value)) -> Vec<u8> {
     let mut document = base();
+    edit(&mut document);
+    serde_json::to_vec(&document).unwrap()
+}
+
+/// The lease of a probe as the server writes it (`fixtures/probe-input/probe.json`) after `edit`.
+pub fn probe_input_json(edit: impl FnOnce(&mut Value)) -> Vec<u8> {
+    let path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/contract/iceberg-writes/fixtures/probe-input/probe.json");
+    let mut document: Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     edit(&mut document);
     serde_json::to_vec(&document).unwrap()
 }

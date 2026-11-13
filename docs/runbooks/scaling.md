@@ -46,7 +46,9 @@ Nothing is lost while a shard waits: timers are rows, the passes catch up as soo
 
 The generic default uses the existing quota endpoints (`PUT /quotas/activity_concurrency` or `PUT /namespaces/{namespaceId}/quotas/activity_concurrency`). Activity overrides use `GET /namespaces/{namespaceId}/activity-quotas` and `PUT`/`DELETE /namespaces/{namespaceId}/activity-quotas/{activity}` with the same `{"limit": n}` body as other quotas. Reads need `quota:read`; changes need `quota:manage`, are ceiling checked and audited. The list contains explicit overrides; the answer to a delete has `overridden: false` and shows the inherited generic limit.
 
-Admission is exact across engine replicas: the claim and the count of unexpired `LEASED`/`RUNNING` steps commit under the activity's database lock. When the limit is full, the candidate remains ready and the poll continues through its bounded scan for other activities. A crashed worker stops consuming the budget when its lease expires. Watch `quota_exceeded_total{limit="activity_concurrency"}` and the ready/lag gauges of the affected pool; the metric deliberately carries no tenant, namespace or activity label. If an unrelated activity behind a very large capped backlog waits to be discovered, poll again or separate the worker bindings so its session searches a smaller queue set.
+Admission is exact across engine replicas. Every claim shares the activity's fence, so a change of the limit waits for the claims in flight and they all read one limit. When that limit is below the maximum (1,000,000,000, which is also the default and means no limit), the claim and the count of unexpired `LEASED`/`RUNNING` steps commit under the activity's count lock, one claim at a time. With no limit set, claims of one activity neither count nor wait for each other; setting any lower limit on a hot activity therefore serialises its leases, which is the price of the exact count. When the limit is full, the candidate remains ready and the poll continues through its bounded scan for other activities. A crashed worker stops consuming the budget when its lease expires. Watch `quota_exceeded_total{limit="activity_concurrency"}` and the ready/lag gauges of the affected pool; the metric deliberately carries no tenant, namespace or activity label. If an unrelated activity behind a very large capped backlog waits to be discovered, poll again or separate the worker bindings so its session searches a smaller queue set.
+
+**What a lease costs.** `worker_claim_candidates_total{stage}` counts, per poll, the candidates the scan `fetched`, the ones a claim transaction was begun for (`probed`), the runs that were locked and loaded (`opened`) and the tasks `leased`. The stage is its only label. `probed` over `leased` is how many candidates workers try for each task they get: it grows when many workers poll one activity, because they read the same oldest candidates and most find the run held by another. `opened` over `leased` should stay near one; well above it, runs are being loaded to find nothing to lease. Polls of a namespace in flight together in one API replica start at different points of their candidates, so `probed` over `leased` grows with the number of replicas more than with the number of workers of one replica.
 
 **Fairness between tenants.** A pass takes up to `batch` candidates, not the `batch` oldest: it shares them between the tenants that have work due by weighted max-min fairness, so a tenant with a burst of ten thousand timers does not hold back a tenant with five. A tenant that has less than its share gets all it has; the rest go to the others in proportion to their weights; a lone tenant gets the whole batch. Weights are 1 to 16, default 1, and are set by the platform operator:
 
@@ -149,6 +151,23 @@ helm install sagat infra/helm -f my-values.yaml          # after the migrations 
 - **Likely causes:** shards unowned (the alert above); a burst of due items larger than the passes take (`SAGAT_SCHEDULER_BATCH` per pass per tick, `SAGAT_SCHEDULER_CONCURRENCY` at a time); a slow database; fewer replicas than the peak needs.
 - **Do:** with shards unowned, that section. With a burst, wait for the backlog to drain: fairness gives every tenant its share meanwhile (`scheduler_fairness_limited_total`). If it does not drain, add replicas (up to 64) or raise the concurrency, and look at the database first.
 - **Over when:** every pass's lag is under the threshold.
+
+## scheduler-tick-slow
+
+**`SagatSchedulerTickSlow`.** The 95th percentile of `scheduler_tick_seconds` has been above 0.5 seconds (the default `SAGAT_SCHEDULER_INTERVAL_MS`) for ten minutes: one tick of a replica's passes takes longer than the interval between ticks, so what is due waits for the next one. The release 0.3 ceiling of pending waits per replica (OD-2026-11-04-6) holds only while ticks fit the interval.
+
+- **Confirm:** `scheduler_tick_seconds` by `instance` (one replica or all?); `scheduler_waits_per_replica`; `scheduler_lag_seconds` by `pass`; `db_pool_connections{state="in_use"}` against the pool size; the database's slow queries.
+- **Likely causes:** more pending waits than a replica handles (the next alert); a slow database; a replica starved of CPU.
+- **Do:** add replicas (up to 64), give the pods the CPU they ask for, and look at the database first. Lengthening the interval only hides it.
+- **Over when:** the percentile is under the interval.
+
+## scheduler-waits-per-replica
+
+**`SagatSchedulerWaitsPerReplica`.** `scheduler_waits_per_replica` (timers, event waits and approvals that wait, over the scheduler replicas alive) has been above 16,000 for fifteen minutes, 80% of the release 0.3 ceiling of 20,000 per replica at the default interval (OD-2026-11-04-6). Nothing is late yet; it is the warning before ticks grow slow.
+
+- **Confirm:** `scheduler_pending_waits`; `scheduler_members` (are replicas missing?); `scheduler_tick_seconds`.
+- **Do:** add scheduler replicas (up to 64) so the waits per replica fall under 16,000; if a replica is missing, find why (the keeper alert). A tenant that opens waits without bound is limited by its quotas, not here.
+- **Over when:** the gauge is under 16,000.
 
 ## shard-fencing
 

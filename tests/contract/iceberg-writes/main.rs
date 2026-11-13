@@ -16,6 +16,8 @@ mod ir;
 mod lake_lease_document;
 mod lake_result_records;
 mod openapi;
+mod probe_input;
+mod probe_results;
 mod proto;
 mod receipts;
 

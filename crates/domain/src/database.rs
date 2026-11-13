@@ -19,7 +19,10 @@ pub use iceberg_write::{
     IcebergWriteError, IcebergWriteParts, MAX_MAPPED_COLUMNS, MAX_MAPPING_DEPTH, MAX_RECORD_BLOBS,
     MAX_RECORD_INPUT_BYTES, RecordSource, TableIdentifier, WriteIntent,
 };
-pub use lake_probe::{ICEBERG_PROBE_ACTIVITY, LakeProbe};
+pub use lake_probe::{
+    ICEBERG_PROBE_ACTIVITY, LakeProbe, ProbeCheck, ProbeCheckResult, ProbeOutcome, ProbeResult,
+    ProbeResultError,
+};
 
 use crate::{
     classification::EgressCeiling, identity::Slug, secrets::SecretName, workflow::Expression,
@@ -218,8 +221,22 @@ impl ConnectionConfig {
         config.validate()?;
         Ok(config)
     }
-    /// An Iceberg connection, checked against every rule of `data-model.md` section 1.
+    /// An Iceberg connection **being saved**, checked against every rule of `data-model.md` section 1, including that a plain `http` address
+    /// names the loopback (O035-010).
+    ///
+    /// # Errors
+    /// [`DatabaseError::Lake`] with the rule that does not hold.
     pub fn iceberg(config: IcebergConfig) -> Result<Self, DatabaseError> {
+        config.validate_saved()?;
+        Ok(Self::Iceberg(Box::new(config)))
+    }
+
+    /// An Iceberg connection **read back from the store**: every rule a build of any age enforced, and none that came later about what
+    /// may be saved. A revision stays readable after the rules of saving tighten.
+    ///
+    /// # Errors
+    /// [`DatabaseError::Lake`] with the rule that does not hold.
+    pub fn iceberg_stored(config: IcebergConfig) -> Result<Self, DatabaseError> {
         config.validate()?;
         Ok(Self::Iceberg(Box::new(config)))
     }
@@ -435,6 +452,18 @@ pub enum ManagedKind {
 }
 
 impl ManagedKind {
+    /// The reserved activity a runner offers for this kind, and the one its steps carry. A runner is handed a step of a kind only when it
+    /// offers that activity, and not merely when it is of the kind's profile (D035-150): a lake runner that has no probe to run offers the
+    /// write alone and is never handed a probe.
+    #[must_use]
+    pub const fn activity(self) -> &'static str {
+        match self {
+            Self::Sql => MANAGED_DATABASE_ACTIVITY,
+            Self::Lake => ICEBERG_WRITE_ACTIVITY,
+            Self::LakeProbe => ICEBERG_PROBE_ACTIVITY,
+        }
+    }
+
     /// The profile of the runner that executes this kind: a runner of another profile is never handed the step, and never
     /// handed its credentials.
     #[must_use]

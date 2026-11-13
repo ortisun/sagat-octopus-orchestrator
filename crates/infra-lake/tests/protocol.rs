@@ -97,6 +97,42 @@ fn the_request_is_one_line_that_ends_with_a_newline() {
 }
 
 #[test]
+fn the_request_of_a_development_runner_says_so_and_no_other_request_has_the_member() {
+    let members = json!({"table": {"namespace": ["sales"], "name": "orders"}, "mode": "append"});
+    let parsed = |request: &Request| -> Value {
+        let encoded = encode_request(request).unwrap();
+        serde_json::from_slice(&encoded[..encoded.len() - 1]).unwrap()
+    };
+
+    let ordinary = parsed(&request(members.clone()));
+    assert!(
+        ordinary.get("development").is_none(),
+        "the line of every other runner is the one it always was: {ordinary}"
+    );
+    let explicit = parsed(&request(members.clone()).with_development(false));
+    assert!(explicit.get("development").is_none(), "{explicit}");
+    let development = parsed(&request(members).with_development(true));
+    assert_eq!(development["development"], json!(true));
+    // everything else of the line is unchanged
+    let mut stripped = development.as_object().unwrap().clone();
+    stripped.remove("development");
+    assert_eq!(Value::Object(stripped), ordinary);
+}
+
+#[test]
+fn a_probe_of_a_development_runner_says_so_too() {
+    let probe = Request::probe(
+        RelayAccess::new("/work/a1/relay.sock", RelayToken::new(TOKEN).unwrap()),
+        body(json!({"probe": {"connection": {"name": "lake-main", "revision": 3}}})),
+    );
+    let encoded = encode_request(&probe.with_development(true)).unwrap();
+    let parsed: Value = serde_json::from_slice(&encoded[..encoded.len() - 1]).unwrap();
+    assert_eq!(parsed["development"], json!(true));
+    assert_eq!(parsed["operation"], "probe");
+    assert!(parsed.get("effectKey").is_none());
+}
+
+#[test]
 fn every_operation_has_the_name_the_contract_gives_it() {
     let names: Vec<(Operation, &str)> = vec![
         (Operation::IcebergWrite, "icebergWrite"),
@@ -106,14 +142,14 @@ fn every_operation_has_the_name_the_contract_gives_it() {
         (Operation::Browse, "browse"),
     ];
     for (operation, name) in names {
-        let encoded = encode_request(&Request::new(
-            operation,
-            "k",
-            "2026-11-05T10:00:00Z",
-            RelayAccess::new("/work/a/relay.sock", RelayToken::new(TOKEN).unwrap()),
-            Map::new(),
-        ))
-        .unwrap();
+        let relay = RelayAccess::new("/work/a/relay.sock", RelayToken::new(TOKEN).unwrap());
+        // a probe writes nothing: its line has neither an effect key nor an instant, and the host refuses one that has
+        let request = if operation == Operation::Probe {
+            Request::probe(relay, Map::new())
+        } else {
+            Request::new(operation, "k", "2026-11-05T10:00:00Z", relay, Map::new())
+        };
+        let encoded = encode_request(&request).unwrap();
         let parsed: Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(parsed["operation"], name);
     }
@@ -127,6 +163,7 @@ fn a_body_cannot_replace_a_member_of_the_envelope() {
         "effectKey",
         "firstAttemptStartedAt",
         "relay",
+        "development",
     ] {
         let mut members = Map::new();
         members.insert(reserved.to_owned(), json!("x"));
@@ -723,6 +760,14 @@ fn every_code_the_python_host_raises_is_one_the_runner_reads() {
 
     let mut raised = std::collections::BTreeSet::new();
     for file in files {
+        // The codes a check of a probe may fail with are a result and not a failure line, so the one file that holds
+        // them is not read here; the test below holds it to the domain's table instead.
+        if file
+            .file_name()
+            .is_some_and(|name| name == "probe_codes.py")
+        {
+            continue;
+        }
         let text = std::fs::read_to_string(file).unwrap();
         for failure in DatabaseFailure::ALL {
             if text.contains(&format!("\"{}\"", failure.code())) {
@@ -736,6 +781,61 @@ fn every_code_the_python_host_raises_is_one_the_runner_reads() {
             HOST_MAY_REPORT.contains(&code),
             "the host raises {code} and the runner would refuse it as LAKE_HOST_PROTOCOL"
         );
+    }
+}
+
+/// What each check of a probe may fail with, as the Python host writes it (`probe_codes.py`), is what the domain says
+/// (`ProbeCheck::allows`), in both directions: a code the host could report that the server would refuse as a result,
+/// and a code the domain allows that the host can never say. That file is the only one the scan above skips, and no
+/// code is written anywhere else in the probe (`test_probe_operation.py`).
+#[test]
+fn the_codes_a_probe_check_may_fail_with_in_the_host_are_the_domains() {
+    let sources = root().join("runners/lake/sagat_lake");
+    let table = std::fs::read_to_string(sources.join("probe_codes.py")).unwrap();
+    let hygiene = std::fs::read_to_string(sources.join("config_hygiene.py")).unwrap();
+
+    // `NAME = "CODE"` lines of the table, and the one code it imports from the hygiene
+    let mut constants = std::collections::BTreeMap::new();
+    for source in [&table, &hygiene] {
+        for line in source.lines() {
+            if let Some((name, code)) = line.split_once(" = ")
+                && name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+                && let Some(code) = code.strip_prefix('"').and_then(|c| c.strip_suffix('"'))
+            {
+                constants.insert(name.to_owned(), code.to_owned());
+            }
+        }
+    }
+    assert!(
+        constants.contains_key("LOCATION_NOT_ALLOWED"),
+        "{constants:?}"
+    );
+
+    for check in sagat_domain::database::ProbeCheck::ALL {
+        let name = check.as_str();
+        let row = table
+            .split(&format!("    {name}: frozenset({{"))
+            .nth(1)
+            .and_then(|rest| rest.split("})").next())
+            .unwrap_or_else(|| panic!("the host has no row for {name}"));
+        let host: std::collections::BTreeSet<&str> = row
+            .split(',')
+            .map(str::trim)
+            .filter(|constant| !constant.is_empty())
+            .map(|constant| {
+                constants
+                    .get(constant)
+                    .unwrap_or_else(|| panic!("{constant} is not a code of the table"))
+                    .as_str()
+            })
+            .collect();
+        let domain: std::collections::BTreeSet<&str> = DatabaseFailure::ALL
+            .iter()
+            .copied()
+            .filter(|failure| check.allows(*failure))
+            .map(DatabaseFailure::code)
+            .collect();
+        assert_eq!(host, domain, "the codes of {name}");
     }
 }
 
@@ -946,7 +1046,7 @@ fn a_generated_token_is_64_hex_digits_valid_and_never_repeats() {
 
     assert_ne!(first, second);
     let encoded = encode_request(&Request::new(
-        Operation::Probe,
+        Operation::IcebergWrite,
         "k",
         "2026-11-05T10:00:00Z",
         RelayAccess::new("/work/a/relay.sock", first),

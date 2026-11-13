@@ -460,7 +460,10 @@ impl MonitorStore for PgRunStore {
             "SELECT (SELECT count(*) FROM inbox_events WHERE status = 'DEAD') AS events, \
                     (SELECT count(*) FROM webhook_deliveries WHERE status = 'DEAD') AS deliveries, \
                     (SELECT count(*) FROM connector_dead_letters) AS letters, \
-                    (SELECT count(*) FROM worker_sessions WHERE expires_at > now()) AS workers",
+                    (SELECT count(*) FROM worker_sessions WHERE expires_at > now()) AS workers, \
+                    (SELECT count(*) FROM steps WHERE status = 'WAITING' \
+                       AND waiting_kind IN ('TIMER', 'EVENT', 'APPROVAL')) AS pending_waits, \
+                    (SELECT count(*) FROM scheduler_members WHERE expires_at > now()) AS scheduler_replicas",
         )
         .fetch_one(pool)
         .await
@@ -542,6 +545,8 @@ impl MonitorStore for PgRunStore {
             runs_by_status,
             compensating_runs,
             workers: to_u64(&dead, "workers")?,
+            pending_waits: to_u64(&dead, "pending_waits")?,
+            scheduler_replicas: to_u64(&dead, "scheduler_replicas")?,
             overdue: sagat_application::operations::Overdue {
                 timers: late("timers")?,
                 wait_deadlines: late("waits")?,

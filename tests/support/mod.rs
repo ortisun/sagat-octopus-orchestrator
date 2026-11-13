@@ -130,7 +130,7 @@ async fn start_server() -> Server {
             "-c",
             "pg_stat_statements.track=all",
             "-c",
-            "pg_stat_statements.max=10000",
+            "pg_stat_statements.max=100000",
         ])
         .start();
     let container = bounded::within(

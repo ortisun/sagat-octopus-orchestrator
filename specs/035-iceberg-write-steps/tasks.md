@@ -928,6 +928,14 @@ test to every catalog and storage type.
   `egressCeiling` is open on both kinds) and the reason `CREDENTIAL_IN_URI` with the other thirteen, each with advice.
   Not done: `GET /database-drivers` listing `iceberg` (with the probe, T035-045) and `UNKNOWN_CONNECTION_KIND`, which
   belongs to the publication that meets a connection of a kind it cannot use.
+
+  *2026-11-09, `GET /database-drivers`:* lists `iceberg` when the deployment has `lake.enabled` (catalog `rest`, storage `s3`, mode `append`, formats `parquet` and `ndjson`: what is served end to end), tested in the lifecycle scenario
+  and in the real `serve` (`the_lake_switch_reaches_the_services_that_publish`), 9 hand mutations killed. **Not done, so the task stays unticked:** the reason `UNKNOWN_CONNECTION_KIND`, which belongs to the publication that meets a
+  connection of a kind it cannot use.
+
+  *2026-11-09, slice S6c (the start of the probe; this task stayed unticked for the listing, which is done above):* `POST …/connections/{name}/probe` starts the probe of an Iceberg connection (chosen by the kind at the revision asked for), at most one
+  in flight for a connection and a revision (`409`), a retry of the key is the run; `integration_database_connections` 7 (also as the runtime role), 16 hand mutations (13 killed, 3 equivalent), reviewed (research.md, S6c note,
+  G035-093). **Not done:** `GET /database-drivers` listing `iceberg`.
 - [x] T035-044 [US01] Resolve the Iceberg connection. `ResolvedDatabase.iceberg` is built in
   `crates/api-grpc/src/service.rs` and `crates/application/src/worker/database.rs`. `catalogSecret` and
   `storageSecret` are each compared, pinned and audited separately (017 two-phase), and only the lake
@@ -951,7 +959,24 @@ test to every catalog and storage type.
   T035-039 and T035-040 pass. Refs: FR-035-006, G035-021.
 
   *2026-11-09, amended (D035-150):* "try one write outside the prefix" is not part of this probe; the order of work is slices S0 to S8 of D035-150, and S0 to S4 come before the host.
-- [ ] T035-046 [P] [US01] Add the Iceberg connection to the Studio, in
+
+  *2026-11-09, slice S5 (partly done, not ticked):* **done** — the host operation, `runners/lake/sagat_lake/probe.py` with `probe_codes.py` and `request.py::parse_probe`, with pytest (`test_probe_request.py` 66,
+  `test_probe_operation.py` 49, `test_probe_storage.py` 38 against the real S3 client, 7 new in `test_rest_catalog.py`; the host suite 1 323 passed, 1 skipped; an independent security and correctness review before the push, whose findings are fixed: research.md, S5), held to the server's corpus and to `ProbeCheck::allows` from both sides. **Not done** — the
+  runner wiring in `apps/database-runner/src/lake.rs` (both lake activities in one session, the sandbox request, `ResolveDatabase`, the inline result), the REST start, the listing in `GET /database-drivers` (T035-043),
+  and the S3 route inside the sandbox (G035-088, T035-031). T035-040's integration test is not written.
+
+  *2026-11-09, slice S6a (partly done, not ticked):* **done** — the probe on the runner's wire, in `crates/infra-lake` and with no change to `apps/`: `ProbeInput::read` (the strict reader of the lease, 47 refused documents in
+  `fixtures/probe-input/refused.json`), `ProbeBody` and `Request::probe` (the line the host reads, `fixtures/requests/probe.json`, held on both sides), `Outcome::Probe(ProbeReport)` (the result, held to the server's corpus) and
+  `dispose_probe` (how a probe ends); `tests/probe_wire.rs` 29, `runners/lake/tests/test_wire_probe.py` 7, 27 hand mutations killed. **Not done** — S6b, the runner (`prepare_probe`, the driver, `serves()`, both activities in
+  one session with a write-only fallback, the probe's deadline) and S6c, the REST start and `GET /database-drivers`.
+
+  *2026-11-09, slice S6b (partly done, not ticked):* **done** — the runner serves the probe (`apps/database-runner`): `prepare_probe` and the time of a probe (three checks and a margin, at most 22 s, counted from the admission,
+  and the host told the time that fits what is left), `admit_probe` (probes hold at most half of the slots) and the driver's probe path with its answer held to the connection and the revision leased, the lease-to-report path
+  with the result inline and a probe never counted as a write, and one session offering the write and the probe with a write-only fallback on `PERMISSION_DENIED`, seen in a counter and a gauge; reviewed by the security and the
+  correctness reviewer, whose findings are in research.md (S6b note) and fixed except G035-092 (O035-009); the runner's library suite is 186 (141 before the slice), `probe_wire` 32, 33 hand mutations of the review batch
+  (31 killed, 1 survived, 1 equivalent), the runbook updated. **Not done** — S6c, the REST start of an Iceberg probe and `GET /database-drivers` (T035-043); a real container's run of a probe (S8's canary); a test of the relay's
+  deadline of a probe (the survivor); a re-offer of the probe when a binding is widened (the runner is restarted).
+- [x] T035-046 [P] [US01] Add the Iceberg connection to the Studio, in
   `frontend/apps/studio/src/features/connections/{ConnectionForm.tsx,ConnectionProbe.tsx,api.ts}`:
   - an Iceberg form with REST and S3 sections;
   - 017's inline OpenBao secret create and select;
@@ -971,6 +996,11 @@ test to every catalog and storage type.
   mutations all caught; `npm run lint`, `typecheck`, `check:api`, `npm test` (87 files, 1,217 tests) and `npm run build` pass.
   **Not done:** the per-check probe results (they need T035-045 and a field in the contract), the other catalog and storage
   shapes (T035-078), and the server listing `iceberg` in `GET .../database-drivers` (T035-036, T035-043).
+
+  *2026-11-09, ticked (slice S7):* the per-check probe results are in `ConnectionProbe.tsx`, and the page offers the probe of an Iceberg connection the deployment lists and a runner opens. A connection is confirmed only when a probe that ended tested the
+  current revision and every check passed; a failed or skipped check, a platform failure, a result that cannot be read and an older revision are not. Evidence: `ConnectionsPage.test.tsx` (43 passed; the 13 new are the describe
+  "The probe of an Iceberg connection", 11 of 12 seen failing first), 15 hand mutations killed, `npm audit` 0, `lint`, `typecheck`, `npm test` 87 files / 1,230 tests, `build`, `check:api`. The list the form depends on is served (`GET …/database-drivers`,
+  S6c) and the probe is started by the REST probe (S6c). **Not tried in a browser** and the browser journey of an Iceberg write (T035-074) is not written; the journeys that exist (`e2e_workflow_studio`, `e2e_database_connections`) pass: the first real look is S8's canary.
 
 **Checkpoint**: US01 on REST + S3 works and is tested on its own.
 
@@ -1230,6 +1260,9 @@ one commit carries the key.
 - [ ] T035-062 [US02] Add the example `examples/iceberg/orders-append.workflow.json` and the e2e test
   `tests/e2e/iceberg-writes/append.rs` (happy path and a recovered crash, quickstart scenario 2).
   Refs: FR-035-032, SC-035-003.
+
+  *2026-11-10, unblocked by the owner's answer (OD-2026-11-10-1, option b): the host and the runner honour a development allowance for plain-`http` endpoints on the loopback, then the test; before that it was blocked:* the real end to end needs the host to reach the fixtures, and the host, the runner's policy and the server disagree about a plain-`http` storage or token endpoint (G035-095, owner question
+  O035-010). Until that is decided the test cannot be built without a test PKI, and the quickstart's scenario 1 cannot run as written.
 
 **Checkpoint**: the MVP. An append on REST + S3 is exactly-once-or-unknown, proven with the
 independent reader.

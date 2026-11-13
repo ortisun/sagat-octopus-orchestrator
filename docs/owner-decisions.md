@@ -4,6 +4,140 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-13 — Feature 018: the open questions, the audit of business-id conflicts and ADR-0081 to ADR-0083
+
+The assistant put the decisions that held pull requests 91 and 98 to the owner in three questions, each with a
+recommendation. The owner chose the recommended answer of each.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-13-2 | "Aceitar todas": O1950 (a), only a holder of `run:operate` may write a `CANCEL_OTHER` schedule (as built, D1953); O1951 (b), the effect on a run and the record of its batch item become one transaction, through a hook into the single-run use cases, before the feature is switched on (ADR-0050 decision 2, G1961); O1952 (a), T018-074 closes on the journeys it has, with the four states it cannot show covered by `ResetRun.test.tsx` and the REST suites (G2034, G2035); O1953 (a), a batch job survives ten failed selection rounds, about 25 minutes, before it ends `SELECTION_FAILED` (D2197) | owner | Decided; O1951 not built | specs/018-schedules-bulk-operations/research.md |
+| OD-2026-11-13-3 | "Nova ação de audit": business-id conflicts are audited (G2086). An audit action `business_id.conflict` is written where the refusal is decided (the `409` of a person's start, and the decision of a schedule that finds the id held), with a closed reason and without the id; FR-018-044 stands as written | owner | Decided; not built | specs/018-schedules-bulk-operations/spec.md FR-018-044 |
+| OD-2026-11-13-4 | "Aceitar os três": ADR-0081 (the cancel source of a reset is switched on per process, engine first, until the capability registry exists), ADR-0082 (the instance registry: only the schema owner records requirements, a refused process stays up with a closed gate) and ADR-0083 (the cron triggers are handed to the schedule pass once, and only when they have converged) are accepted | owner | Decided | docs/adr/ADR-0081-*.md, docs/adr/ADR-0082-*.md, docs/adr/ADR-0083-*.md |
+
+## 2026-11-13 — Release 0.3.0 ships with the fallback ceilings
+
+The assistant reported that the T014-042 acceptance method (OD-2026-11-04-7: release build, runtime role, a separate
+database host, two repetitions) cannot run on the shared laptop, which has no separate database host, and offered two
+paths: provide a host, or ship 0.3.0 with the fallback ceilings of OD-2026-11-04-5. The owner answered "publicar a 0.3",
+then "Vamos seguir com todo restante das tasks que ainda faltam".
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-13-1 | "publicar a 0.3": release 0.3.0 publishes `maxItems` 1,000 and `maxIterations` 1,000, the fallback values of OD-2026-11-04-5, without the T014-042 acceptance run. Validation keeps accepting up to 10,000, and the tenant quota still bounds a collection. The 20,000 pending waits per replica of OD-2026-11-04-6 is published with its metrics and alerts. Raising the published ceilings to 10,000 needs the acceptance run on a separate database host and is deferred to a later release. This supersedes OD-2026-11-04-7 for 0.3.0 only. | owner | Decided | specs/014-workflow-primitives/tasks.md T014-042; docs/runbooks/workflow-primitives.md; docs/releases/0.3.0.md |
+
+## 2026-11-12 — Feature 014 closes on root collections; nesting becomes feature 039
+
+On the owner's "Vamos terminar as primitivas", the assistant mapped the eight open tasks of feature 014. Root
+collections, loops, approval, switch, declared operations and the restricted continue-as-new are built; what holds the
+eight tasks open is general **nesting** (a collection inside a collection or beside a loop or an approval), which the
+codec refuses on purpose and which needs the whole capacity program first: the owner's acceptance of ADR-0078 and of
+its open items (the creator, `SCOPED_PATH`, sweeper coverage), then the sweeper, the creator with its migration, G715,
+G724 and G725, the barrier proofs and an activation flag. It recommended (A) closing 014 on what is built and moving
+nesting to a feature of its own, over (B) keeping the original criteria. The owner answered "Siga as recomendacoes".
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-12-6 | "Siga as recomendacoes": feature 014 closes on root (unnested) collections, loops and the other built primitives; general nesting, the capacity program it needs and the nested acceptance criteria move to feature 039 | owner | Decided; not built | specs/014-workflow-primitives/tasks.md T014-014..017, T014-040, T014-042..044; docs/designs/039-nested-collections.md |
+
+What changes, as the recommendation said it:
+
+- This narrows row 1 of 2026-10-26 ("the eight remaining feature-014 tasks … with their original acceptance criteria"):
+  each of the eight tasks keeps its criteria for what feature 014 ships and hands its nested part to feature 039.
+- OD-2026-11-04-7 kept the nested 100,000-instance workload in T014-042; it moves to feature 039 with the rest of
+  nesting. Its other criteria stay in T014-042.
+- Unchanged: OD-2026-11-04-3 (the ChildRoot guard stays off), OD-2026-11-04-4 (ADR-0078 before any production caller),
+  OD-2026-11-04-5/6 (ceilings), OD-2026-11-04-8 (one release-candidate commit for T014-040, T014-042 and T014-043).
+- The codec keeps refusing nesting; nothing that is refused today is enabled by this decision.
+
+## 2026-11-12 — Merge the rest of the design 038 stack
+
+OD-2026-11-12-2 covered pull requests 203 and 205 to 210. The assistant then built the remaining tasks of design 038 in
+pull requests 211 to 215 (the budget suite in CI with constitution 4.4.0, the window order, the scoped kind check, the
+claim's session filter, the K-poller test and the dated report section), said that merging them needed the owner's word,
+and asked "Integro os PRs 211 a 215 no develop quando o CI de cada passar?". The owner answered in the Claude session.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-12-5 | "Sim, integrar": merge pull requests 211, 212, 213, 214 and 215 into `develop`, one at a time, each after its CI | owner | Decided; merged 2026-11-12 | pull requests 211-215, constitution 4.4.0 |
+
+Merging 211 adopts constitution 4.4.0, whose Sync Impact Report named OD-2026-11-12-4 as the decision it rests on.
+
+## 2026-11-12 — Merge the hot-path stack, let polls try their window in their own order, budget the hot path in CI
+
+The assistant had stopped its loop with seven pull requests stacked and three questions open, and on the owner's
+question "O que prciso decidir?" set out each with options and a recommendation: (1) merge pull requests 203 and 205
+to 210 into `develop` one at a time once 210's CI passed (recommended); (2) let each poll try the shared candidate window
+from its own starting point, no candidate removed, a lone worker still served in `ready_at` order and the oldest step
+always in the window, with the SDK conformance scenario that states the order narrowed to a lone worker (recommended);
+(3) run the budget target on a pull request that changes the hot-path files, about a minute and a half of CI on those
+(recommended). The owner answered in the Claude session.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-12-2 | "Seguir as recomendações": merge pull requests 203, 205, 206, 207, 208, 209 and 210 into `develop`, one at a time, each after its CI | owner | Decided | pull requests 203, 205-210 |
+| OD-2026-11-12-3 | "Seguir as recomendações": a poll tries its window from a per-session starting point within FR-038-004's limits; the conformance scenario's ordering holds for a lone worker | owner | Decided; not built | docs/designs/038-claim-transition-efficiency.md T038-8, FR-038-004 |
+| OD-2026-11-12-4 | "Seguir as recomendações": the budget target runs on a pull request that changes the hot-path files | owner | Decided; not built | docs/designs/038-claim-transition-efficiency.md T038-10, FR-038-008 |
+
+One sentence answered three questions; each row is the recommendation it accepted, as it was put to the owner. It
+widens the 2026-11-04 rule that a suite runs on a pull request only when its own files change, for one target, and
+does not change that rule otherwise.
+
+## 2026-11-12 — Design 038 (claim and transition efficiency) accepted for implementation
+
+The assistant measured the transitions scenario on `develop` (368 transitions per second against 1,513 on 2026-10-11),
+removed two advisory-lock mutexes (pull request 203, 763 afterwards on a busy machine) and profiled what remains: 34 probe
+transactions and 7.5 full run loads per lease. It drafted [038-claim-transition-efficiency.md](designs/038-claim-transition-efficiency.md)
+(pull request 204), said it was new scope and asked "Aceita o desenho 038 (PR 204) para implementação?".
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-12-1 | "Aceito, implementar" | owner | Decided; not built | docs/designs/038-claim-transition-efficiency.md |
+
+Read as the answer to the question asked and no more. It does not answer the design's second owner question, whether a
+bounded departure from oldest-first claiming is acceptable: the task that needs it waits (T038-8 and FR-038-004 in the
+second draft, which renumbered them after the reviews; it also asks whether the budget target may run on pull requests
+that change the hot path, T038-10). It does not
+make the design `Approved` either: `egm-review` and the architecture, security and correctness reviews still have to end
+with no Blocker or Major finding open.
+## 2026-11-11 — Drafts 019 to 032 and 036 approved for implementation
+
+The assistant had presented an assessment of the distance to Temporal and Windmill
+([roadmap-assessment-2026-11-11.md](roadmap-assessment-2026-11-11.md)) and said that drafts 019 to 032 and 036 needed the
+owner's explicit approval before anything of theirs was built. The owner answered in the Claude session.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-11-1 | "Aprovo os rascunhos 019–032 e 036, pode implementar" | owner | Decided; not built | specs/019-worker-deployments-dispatch to specs/032-multi-region-failover, specs/036-elastic-scaling, docs/roadmap.md |
+
+Read narrowly, which is the assistant's reading and the owner can widen it: the fifteen specifications may be implemented,
+in the order the assessment recommends unless the owner names another. The sentence does not by itself:
+
+- accept the proposed ADRs of those features (ADR-0051 to ADR-0068, ADR-0072 to ADR-0074): the ADR rules say a person
+  accepts each one, and the assistant asks when the first task that depends on one is reached;
+- answer the open owner questions of each feature (among them O1081 on `pii` leaving the platform, O1360 on the app
+  builder, O1700 to O1702, O1704 and O1710 of 036), which keep their recommended default as a proposal until answered;
+- amend the constitution, which 032 needs (O1560: the Delivery Constraints fix a single region) and 020 needs for
+  retention under principle I;
+- tick the `checklists/*.md` items of a feature, which block its implementation until the owner accepts them
+  (OD-2026-11-03-33).
+
+It unblocks the 018 tasks that waited for 019, 020 and 022 to be approved (T018-037's permit, T018-051, T018-053's permit,
+T018-055, T018-077, T018-079) as far as approval was what held them; they still need those features built.
+
+## 2026-11-10 — A plain-`http` storage or token endpoint is a development allowance that the host and the runner honour (O035-010)
+
+The assistant asked the owner in the Claude session which layer owns the allowance, with three options (specs/035-iceberg-write-steps/research.md, G035-095): (a) a TLS front for the fixtures and a CA the host
+trusts, (b) the host and the runner accept an `http` storage or token endpoint on the loopback only when the runner is a development one, (c) the server refuses a plain-`http` endpoint at save. The owner answered with one letter.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-10-1 | "B" | owner | Decided; the host, the runner and the server's refusal built | specs/035-iceberg-write-steps/research.md (G035-095, O035-010), tasks.md T035-062 |
+
+Read as the assistant recommended it with the option: the host and the runner accept `http` for the S3 endpoint and the OAuth2 token endpoint **on the loopback, and only when the runner says it is a development
+one** (a flag the runner sets and the connection can never set), which makes true what the server already says of a development namespace; **and the server also refuses, at save, an `http` host that is not the
+loopback**, since nothing could run it. The second half is the assistant's reading of "B" together with its recommendation, and is built as a separate change so that the owner can correct it (built 2026-11-10: `PLAIN_HTTP_OUTSIDE_LOOPBACK`). It unblocks T035-062.
+
 ## 2026-11-08 — A reset that waits for its source expires, and the CI scope pull request was merged
 
 Feature 018. The assistant asked the owner two things that were theirs: to merge pull request 120 (a shared file selects no
@@ -195,7 +329,6 @@ Not asked, because neither blocks I0–I1: O035-002 (priority of ORC/Avro and Ke
 for a later delivery; and developers may **not** publish writes, which keeps D035-066 (admin-only
 `database:write`) and ADR-0036 decision 5 unchanged. Either can be reopened by the owner.
 
-
 ## 2026-11-01 — Feature 037 delivery, B01 split and upgrade compatibility
 
 The owner answered three questions in the Claude session that took over Codex's work. The answers
@@ -351,7 +484,6 @@ qualification exceptions disabled. This approves T037-001..031 and T037-034. US0
 qualification, deployment, merge and release remain outside this implementation approval.
 Implementation uses feature/037-compensation-safety derived from develop, with the approved
 uncommitted documentation copied and byte-verified. The original develop checkout remains intact.
-
 
 ## 2026-11-01 — Feature 037 delivery 1 preserves the feature-009 secret-output contract
 

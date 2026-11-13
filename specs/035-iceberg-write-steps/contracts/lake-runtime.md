@@ -68,6 +68,7 @@ the metadata service and the engine socket all fail (G035-022).
   "connection": {"catalog": {…pinned settings…}, "storage": {…}, "warehouseLocations": ["s3://lake/"],
                  "credentials": {…resolved values…}},
   "relay": {"socket": "/work/<attempt-id>/relay.sock", "token": "…"},
+  "development": true,
   "table": {"namespace": ["sales"], "name": "orders"}, "ref": "main",
   "mode": "append", "overwrite": null, "upsert": null,
   "inputs": [{"file": "in/blob-0.parquet", "format": "parquet"}],
@@ -77,6 +78,11 @@ the metadata service and the engine socket all fail (G035-022).
 }
 ```
 
+   **`development`** (optional, written only when true, for `icebergWrite` and `probe`; O035-010, option b, built 2026-11-10) says that the **runner is a development one**.
+   It is a member of the envelope that a body cannot name, set from the runner's own settings and never from the connection. Only then does the host read a storage
+   endpoint or an OAuth2 token endpoint over plain `http`, and then on the loopback alone (`localhost`, `127.0.0.1`, `::1`), as it reads the catalog's address everywhere;
+   the runner's endpoint policy makes the same allowance and the relay opens the loopback in the same case. Without it (every production runner) such an address is
+   `LAKE_HOST_PROTOCOL`, as it was, and an `http` address that is not the loopback is refused in either case. `fixtures/requests/probe-development.json` is the golden line.
 5. The host writes **progress lines** (`{"heartbeat": true}`, at most one per second) and exactly
    **one result line** on the same socket, then exits 0:
    `{"receipt": {…}, "relayDenials": 0}` or
@@ -149,5 +155,25 @@ next attempt's lookup resolves whatever it already sent (D035-030).
   storage, run the double-create check and try one write outside the prefix, warning if it is allowed
   (G035-021). Returns per-check results only.
   For an Iceberg connection the probe is read-only (D035-150): it does not try the write, and its input is its own schema, `sagat.lake.probe-input.v1`.
+  **What the host does for it** (built in slice S5, `runners/lake/sagat_lake/probe.py`, pinned by `tests/test_probe_*.py`):
+  - *The request line* is `{"protocol":"sagat.lake.v1","operation":"probe","connection":{…pinned, with the resolved secrets…},"probe":{"connection":{"name","revision"},"checks":[…],"checkTimeoutMs":N}}`
+    (`relay` optional, as for a write). `probe` is the lease's members, nested because the lease's `connection` is a name and the line's is a document. The checks must be the three, once each, in order,
+    and nothing else is served; the name is a slug (3-63), the revision is 1 to 2^32-1 and `checkTimeoutMs` is 100 to 60 000. Anything else is `LAKE_HOST_PROTOCOL`.
+  - *`CATALOG_AUTH`* builds the catalog client, which authenticates (OAuth2 gets its token) and reads `/v1/config`. *`WAREHOUSE`* asks for **one** page of namespaces (`pageSize=1`, never followed: PyIceberg's own
+    `list_namespaces` follows `next-page-token` for ever) and passes when the catalog does not say it lists namespaces; the configuration the catalog gave placing the warehouse outside the declared
+    locations is a `WAREHOUSE` failure with `ICEBERG_LOCATION_NOT_ALLOWED`, and the first check has passed by then, since the catalog authenticated the client and answered. *`STORAGE_ACCESS`*, for **each**
+    declared location, with the S3 client the writes use: one `HEAD` of the location and, when that finds no object, one list with `max-keys=1`. Nothing there is a pass (the credentials got there) **only in a bucket that
+    exists**: the client says "not found" for a bucket that is not there too, so when nothing is found the bucket is asked about, and one that is not there fails (`STORAGE_UNAVAILABLE`); a bucket the credentials may not ask
+    about (they can be scoped to a prefix) does not. `SKIPPED` on vended credentials. It stops at the first location that fails. A location the S3 client refuses (an empty path segment) is `STORAGE_UNAVAILABLE` too.
+  - *Time.* Every request of both clients has `checkTimeoutMs` (the OAuth2 token request included: the limit is on the session before the manager asks for the token), and so does each check as a whole, **all the
+    declared locations together** (the S3 client retries a 5xx and a timeout a few times, which would stretch it): a check that runs out is `DATABASE_TIMEOUT`. A check that runs out is abandoned and not stopped; its thread
+    is a daemon, so it does not keep the host alive after the answer, and the storage check stops it at the next location. The configuration and the first page of namespaces are read as the client decodes them, at most
+    1 MiB each (`CATALOG_UNAVAILABLE` beyond it).
+  - *Codes* are the table of `connections.md`, written once in `probe_codes.py` and held equal to the domain's `ProbeCheck::allows` by a test on each side. The `WAREHOUSE` check never says TLS or a refused
+    destination (those are what the first check says about the same host); there, they are `CATALOG_UNAVAILABLE`. A refused `CONNECT` (403 from the relay) is `DATABASE_DESTINATION_DENIED`, an untrusted
+    certificate `DATABASE_TLS_FAILED`, a 401/403 `DATABASE_AUTHENTICATION_FAILED`, anything else that stops a catalog or a store `CATALOG_UNAVAILABLE` or `STORAGE_UNAVAILABLE`.
+  - *The answer.* A check that fails is the answer: `{"receipt":{"kind":"probe","connection":{"name","revision"},"checks":[…]}}` (the connection echoed), the checks after it `SKIPPED`. What the connection cannot tell is
+    a `failure` line as for a write: `DATABASE_CREDENTIAL_UNAVAILABLE` for a static secret that is missing, `ICEBERG_LOCATION_NOT_ALLOWED` for a pinned warehouse that is itself outside the declared locations (the
+    connection is wrong before any request: G035-090), `LAKE_HOST_PROTOCOL`, `WORKER_ERROR`.
 - **Browse**: one bounded page of namespaces or tables, or one table's schema, partition spec,
   identifier fields, refs and format version. Never data or file locations.

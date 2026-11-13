@@ -8,12 +8,15 @@
 //! [`AppError::StaleAttempt`] and changes nothing, although the external effect it describes may
 //! have happened (hence idempotency keys).
 
+mod claim_counters;
 mod database;
 mod lake_complete;
 pub mod lake_input;
 pub mod lake_lease;
+pub mod lake_probe_input;
 pub mod lake_result;
 mod output;
+mod poll_order;
 mod scoped;
 mod scoped_capabilities;
 mod scoped_claims;
@@ -21,7 +24,9 @@ mod scoped_output_refusal;
 mod scoped_reports;
 mod secret_resolution;
 mod secrets;
+use claim_counters::{ClaimProgress, count_claim};
 pub use output::BlobOutput;
+use poll_order::{PollsInFlight, start_past};
 use secrets::SecretReport;
 
 use std::future::Future;
@@ -94,8 +99,8 @@ pub const STREAM_PROTOCOL_MINOR: u32 = 4;
 /// D035-135): the SQL profile is `sagat.database.postgresql`, the lake profile is `sagat.database.iceberg.write`. The two
 /// are never mixed and an ordinary activity is never offered beside them; the patterns of the runner's binding decide
 /// which of the two it may register, as they decide every other registration. An activity the server does not serve yet
-/// (the revert, the destinations, the probe and the browse) is refused here, so that a runner is not left waiting for
-/// work that cannot come.
+/// (the revert, the destinations and the browse) is refused here, so that a runner is not left waiting for work that cannot
+/// come; the probe of an Iceberg connection is served, and a lake runner offers it beside its write (D035-150).
 #[must_use]
 pub fn managed_capabilities_allowed(role: Role, activities: &[String], minor: u32) -> bool {
     use sagat_domain::database::MANAGED_DATABASE_PREFIX;
@@ -120,21 +125,29 @@ pub fn profile_fence(
     bindings: &[BindingProfile],
 ) -> bool {
     managed_profile(offered) == Some(kind.profile())
+        && offered.iter().any(|activity| activity == kind.activity())
         && !bindings.is_empty()
         && bindings.iter().all(|profile| *profile == kind.profile())
 }
 
-/// The profile a registration is for: `database` when it offers `sagat.database.postgresql` alone, `lake` when it offers
-/// `sagat.database.iceberg.write` alone, and `None` for anything else (an empty list, a mix, an ordinary activity, an
-/// activity the server does not serve yet). The binding of the identity must carry the same profile (D035-057).
+/// The profile a registration is for: `database` when it offers `sagat.database.postgresql` alone, `lake` when it offers the Iceberg
+/// write, the Iceberg probe or both (`sagat.database.iceberg.write`, `sagat.database.lake.probe`; a lake runner that has a probe to run
+/// offers it beside its write, and the offer is what tells the server it may be handed one, D035-150), and `None` for anything else (an
+/// empty list, a mix of profiles, an ordinary activity, an activity the server does not serve yet). The binding of the identity must
+/// carry the same profile (D035-057).
 #[must_use]
 pub fn managed_profile(activities: &[String]) -> Option<BindingProfile> {
-    use sagat_domain::database::{ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY};
+    use sagat_domain::database::{
+        ICEBERG_PROBE_ACTIVITY, ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY,
+    };
     if activities.is_empty() {
         None
     } else if activities.iter().all(|a| a == MANAGED_DATABASE_ACTIVITY) {
         Some(BindingProfile::Database)
-    } else if activities.iter().all(|a| a == ICEBERG_WRITE_ACTIVITY) {
+    } else if activities
+        .iter()
+        .all(|a| a == ICEBERG_WRITE_ACTIVITY || a == ICEBERG_PROBE_ACTIVITY)
+    {
         Some(BindingProfile::Lake)
     } else {
         None
@@ -575,6 +588,9 @@ pub struct WorkerService<S, C, E, R> {
     database_results: Option<Arc<dyn crate::database::DatabaseResultValidator>>,
     /// Rebuilds the receipt of a lake step; without it a lake step cannot be completed (feature 035, D035-142).
     lake_receipts: Option<Arc<dyn crate::database::LakeReceiptCodec>>,
+    lake_probes: Option<Arc<dyn crate::database::LakeProbeCodec>>,
+    /// The polls of each namespace in flight in this process, shared by every clone (design 038).
+    polls_in_flight: Arc<PollsInFlight>,
 }
 
 impl<S, C, E, R> std::fmt::Debug for WorkerService<S, C, E, R> {
@@ -590,7 +606,7 @@ where
     E: ExpressionEvaluator,
     R: Entropy,
 {
-    pub const fn new(
+    pub fn new(
         store: S,
         clock: C,
         engine: Engine<E>,
@@ -608,6 +624,8 @@ where
             database_credentials: None,
             database_results: None,
             lake_receipts: None,
+            lake_probes: None,
+            polls_in_flight: Arc::default(),
         }
     }
 
@@ -639,6 +657,14 @@ where
         receipts: Arc<dyn crate::database::LakeReceiptCodec>,
     ) -> Self {
         self.lake_receipts = Some(receipts);
+        self
+    }
+
+    /// The codec that rebuilds the result of the probe of an Iceberg connection (D035-150). Without it the completion of a probe is refused:
+    /// the server stores a result it built, never the bytes a runner sent.
+    #[must_use]
+    pub fn with_lake_probes(mut self, probes: Arc<dyn crate::database::LakeProbeCodec>) -> Self {
+        self.lake_probes = Some(probes);
         self
     }
 
@@ -948,6 +974,13 @@ where
                 },
             )
             .await?;
+        // Polls of the namespace in flight together start at different points of the window; a poll
+        // alone keeps the scan's order. Only the eligible candidates turn: the ineligible sample stays
+        // behind every one of them (ADR-0075 activation condition d). The turn ends with the poll.
+        let turn = self
+            .polls_in_flight
+            .enter(session.tenant_id, session.namespace_id);
+        start_past(&mut candidates, turn.ahead, wanted as usize);
         if self.child_root_capacity_guard {
             // Behind every eligible candidate, never ahead of one (ADR-0075 activation condition d).
             let refused = self
@@ -1005,11 +1038,19 @@ where
         let mut bytes = 0usize;
         let mut failures = 0u8;
         let mut first_error = None;
+        // Set by a claim that found, under the locks a drain and a session replacement wait for,
+        // that this session can take nothing more. The rest of the window would find the same,
+        // each candidate at the cost of loading its run.
+        let mut progress = ClaimProgress::default();
+        let fetched = candidates.len() as u64;
+        let already = claimed.len();
+        let mut probed = 0u64;
         for (run, path) in candidates {
             let remaining = wanted - claimed.len();
             if remaining == 0 || bytes >= byte_budget {
                 break;
             }
+            probed += 1;
             match self
                 .claim_run(
                     principal,
@@ -1021,10 +1062,16 @@ where
                     byte_budget,
                     trace_id,
                     &mut bytes,
+                    &mut progress,
                 )
                 .await
             {
-                Ok(tasks) => claimed.extend(tasks),
+                Ok(tasks) => {
+                    claimed.extend(tasks);
+                    if progress.session_full {
+                        break;
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(%error, %run, "leasing the steps of a run failed");
                     let down = matches!(error, AppError::Unavailable);
@@ -1036,6 +1083,12 @@ where
                 }
             }
         }
+        count_claim(
+            fetched,
+            probed,
+            progress.opened,
+            (claimed.len() - already) as u64,
+        );
         match first_error {
             Some(error) if claimed.is_empty() => Err(error),
             _ => Ok(()),
@@ -1054,17 +1107,19 @@ where
         byte_budget: usize,
         trace_id: Option<&str>,
         bytes: &mut usize,
+        progress: &mut ClaimProgress,
     ) -> Result<Vec<ClaimedTask>, AppError>
     where
         S: PathExecutionStore,
     {
         let mut tx = match self
             .store
-            .begin(session.tenant_id, run, Lock::SkipLocked)
+            .begin_claim(session.tenant_id, run, &session.activities)
             .await
         {
             Ok(Some(tx)) => tx,
-            Ok(None) => return Ok(Vec::new()), // locked by someone else, or gone
+            // Locked by someone else, gone, or without a ready step by now.
+            Ok(None) => return Ok(Vec::new()),
             // A run pinned to a definition this build cannot read (a rolled-back build meeting a
             // newer run) is not this poll's to serve and is not damaged. It is skipped for this
             // poll, counted and logged, and does not use up the failures the poll tolerates, so
@@ -1080,10 +1135,12 @@ where
             }
             Err(error) => return Err(error.into()),
         };
+        progress.opened += 1;
         // The identity may have been drained after the poll looked at its session: the check is
         // made again here, under the lock a drain waits for, so a drain that has returned has
         // stopped every poll that had not leased yet.
         if tx.worker_drained(&session.subject).await? {
+            progress.session_full = true;
             return Ok(Vec::new());
         }
         let room = tx
@@ -1091,6 +1148,9 @@ where
             .await?;
         let remaining = remaining.min(room as usize);
         if remaining == 0 {
+            // The session holds all it declared (or is gone): decided under its row lock, and true
+            // of every other candidate of this poll.
+            progress.session_full = true;
             return Ok(Vec::new());
         }
         // Candidate selection is only a bounded hint. Recheck catalog-backed capability needs
@@ -1251,25 +1311,50 @@ where
             // The attempt input of an Iceberg write is made from the run's own data, after the claim was admitted, so
             // that a runner which fails the role, pool or concurrency checks cannot cause a permanent failure. What cannot
             // be made is a permanent failure of the step, with a closed code, and no lease (D035-138).
-            let (input, record_blobs) = if kind == Some(sagat_domain::database::ManagedKind::Lake) {
-                match self.lake_lease_input(&mut tx, &instance).await? {
-                    Ok(leased) => leased,
-                    Err(failure) => {
-                        let code =
-                            FailureCode::parse(failure.code()).map_err(|_| AppError::Internal)?;
-                        match self
-                            .reject_input(&mut tx, session, &instance, code, "lake_input", trace_id)
-                            .await
-                        {
-                            Ok(()) | Err(AppError::StateConflict(_)) => break,
-                            Err(other) => return Err(other),
+            let (input, record_blobs) = match kind {
+                Some(sagat_domain::database::ManagedKind::Lake) => {
+                    match self.lake_lease_input(&mut tx, &instance).await? {
+                        Ok(leased) => leased,
+                        Err(failure) => {
+                            let code = FailureCode::parse(failure.code())
+                                .map_err(|_| AppError::Internal)?;
+                            match self
+                                .reject_input(
+                                    &mut tx,
+                                    session,
+                                    &instance,
+                                    code,
+                                    "lake_input",
+                                    trace_id,
+                                )
+                                .await
+                            {
+                                Ok(()) | Err(AppError::StateConflict(_)) => break,
+                                Err(other) => return Err(other),
+                            }
                         }
                     }
                 }
-            } else {
-                (input, Vec::new())
+                // A probe's lease says which connection it tests, by the name and the revision it was admitted with, and nothing the run
+                // holds: it reads no record and no blob (D035-150).
+                Some(sagat_domain::database::ManagedKind::LakeProbe) => {
+                    let facts = tx.lake_probe_facts(instance.node()).await?;
+                    let document =
+                        lake_probe_input::lake_probe_input(&lake_probe_input::ProbeFacts {
+                            connection: &facts.connection,
+                            revision: facts.revision,
+                        });
+                    (document, Vec::new())
+                }
+                Some(sagat_domain::database::ManagedKind::Sql) | None => (input, Vec::new()),
             };
-            if kind == Some(sagat_domain::database::ManagedKind::Lake) {
+            if matches!(
+                kind,
+                Some(
+                    sagat_domain::database::ManagedKind::Lake
+                        | sagat_domain::database::ManagedKind::LakeProbe
+                )
+            ) {
                 if input.len() > MAX_TASK_INPUT_BYTES {
                     match self
                         .reject_large_input(&mut tx, session, &instance, trace_id)
@@ -1283,9 +1368,10 @@ where
                     break;
                 }
             }
-            // The quota decision and READY -> LEASED transition share this run transaction. Its
-            // activity-scoped lock makes concurrent pollers exact; a full activity stays ready so
-            // this bounded candidate scan can still serve another activity.
+            // The quota decision and READY -> LEASED transition share this run transaction. A
+            // reachable limit is counted under the activity's count lock, which makes concurrent
+            // pollers exact; a full activity stays ready so this bounded candidate scan can still
+            // serve another activity. The default limit is not counted.
             if !tx.activity_admitted(&activity).await? {
                 metrics::counter!(
                     "quota_exceeded_total",

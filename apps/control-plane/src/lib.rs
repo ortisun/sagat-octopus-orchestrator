@@ -461,6 +461,7 @@ pub fn run_service(
         .with_reset_cancel_source(serve.reset_cancel_source_enabled)
         // Update-with-Start applies a declared Update in the transaction that creates the run
         .with_declared_updates(Arc::new(JsonDeclaredOperationEvaluator))
+        .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec))
 }
 
 /// Runs the HTTP API on `listener` until `shutdown` completes, then drains in-flight requests.
@@ -692,10 +693,10 @@ pub async fn serve_with_admin(
         )
         .with_redis_callbacks(serve.redis_callbacks),
     );
-    governance = governance.with_connections(sagat_application::database::ConnectionService::new(
-        executions.clone(),
-        SystemClock,
-    ));
+    governance = governance.with_connections(
+        sagat_application::database::ConnectionService::new(executions.clone(), SystemClock)
+            .with_lake_enabled(serve.lake_enabled),
+    );
     if let (Some(settings), Some(provider)) = (&serve.openbao, provider) {
         let key = settings.intent_key().await.map_err(|_| {
             RunError::Refused("OpenBao management requires a 32-byte SAGAT_OPENBAO_INTENT_KEY_FILE")

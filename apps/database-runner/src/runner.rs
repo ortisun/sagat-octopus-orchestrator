@@ -7,7 +7,7 @@ use crate::{
 };
 use sagat_api_grpc::pb;
 use sagat_domain::{
-    database::{ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY},
+    database::{ICEBERG_PROBE_ACTIVITY, ICEBERG_WRITE_ACTIVITY, MANAGED_DATABASE_ACTIVITY},
     identity::NamespaceId,
 };
 use std::{
@@ -237,6 +237,18 @@ impl Runner {
         activity: &str,
         max_inflight: i32,
     ) -> Result<Session, RunnerError> {
+        self.register_activities(index, &[activity], max_inflight)
+            .await
+            .map_err(|refused| refused.error)
+    }
+
+    /// One session per namespace for these activities, and the status the service refused with when it did.
+    async fn register_activities(
+        &self,
+        index: usize,
+        activities: &[&str],
+        max_inflight: i32,
+    ) -> Result<Session, Refused> {
         let namespace = &self.config.namespaces[index];
         let request = self
             .rpc
@@ -244,7 +256,10 @@ impl Runner {
                 worker_name: format!("{}/{}", self.config.name, namespace.slug),
                 namespace: namespace.slug.clone(),
                 capabilities: Some(pb::WorkerCapabilities {
-                    activities: vec![activity.into()],
+                    activities: activities
+                        .iter()
+                        .map(|activity| (*activity).into())
+                        .collect(),
                     languages: vec![],
                     pools: vec![],
                     max_inflight,
@@ -252,26 +267,83 @@ impl Runner {
                 }),
             })
             .await
-            .map_err(|_| RunnerError::Credentials)?;
+            .map_err(|_| Refused::of(RunnerError::Credentials))?;
         let response = self
             .rpc
             .client
             .clone()
             .register_worker(request)
             .await
-            .map_err(|_| RunnerError::Transport)?
+            .map_err(|status| Refused {
+                error: RunnerError::Transport,
+                status: Some(status.code()),
+            })?
             .into_inner();
         if response.accepted_protocol_version != "1.6"
             || response.worker_id.parse::<uuid::Uuid>().is_err()
             || response.session_token.is_empty()
             || response.session_token.len() > 256
         {
-            return Err(RunnerError::Capability);
+            return Err(Refused::of(RunnerError::Capability));
         }
         Ok(Session {
             id: response.worker_id,
             token: Zeroizing::new(response.session_token),
         })
+    }
+
+    /// The session of the lake profile: its two activities, the writes and the probe of a connection (D035-150), in **one**
+    /// session. A service that refuses with `PERMISSION_DENIED` (`NOT_BOUND`) is saying that the worker's binding does not cover
+    /// an activity it offered, and the binding may be older than the runner (the order of a rollout is the server, the
+    /// bindings, then the runners): the writes are what the runner was for and must not stop for it, so it offers them alone.
+    /// Any other refusal is not a binding, and is not a reason to offer less.
+    async fn register_lake(&self, index: usize, max_inflight: i32) -> Result<Session, RunnerError> {
+        let both = [ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY];
+        match self.register_activities(index, &both, max_inflight).await {
+            Ok(session) => {
+                metrics::counter!("database_runner_lake_probe_offer_total","outcome"=>"offered")
+                    .increment(1);
+                // a gauge too: a counter that went up once, at registration, cannot say for days that a runner still serves
+                // the writes alone, and it is a state that stays until the runner registers again
+                metrics::gauge!("database_runner_lake_probe_offered").set(1.0);
+                Ok(session)
+            }
+            Err(Refused {
+                status: Some(tonic::Code::PermissionDenied),
+                ..
+            }) => {
+                // seen whether or not the fallback works: a binding that covers neither is refused twice, and the second refusal
+                // says only that a registration was refused
+                metrics::counter!("database_runner_lake_probe_offer_total","outcome"=>"not_bound")
+                    .increment(1);
+                let session = self
+                    .register_activities(index, &[ICEBERG_WRITE_ACTIVITY], max_inflight)
+                    .await
+                    .map_err(|refused| refused.error)?;
+                // the runner serves the writes and not the probes: that is worth seeing, because it is silent otherwise, and
+                // it stays so until the runner registers again (a widened binding does not close a session that is in force)
+                metrics::counter!("database_runner_lake_probe_offer_total","outcome"=>"write_only")
+                    .increment(1);
+                metrics::gauge!("database_runner_lake_probe_offered").set(0.0);
+                Ok(session)
+            }
+            Err(refused) => Err(refused.error),
+        }
+    }
+}
+
+/// Why a registration did not make a session: what the runner makes of it, and the status of the service when it said no.
+struct Refused {
+    error: RunnerError,
+    status: Option<tonic::Code>,
+}
+
+impl Refused {
+    const fn of(error: RunnerError) -> Self {
+        Self {
+            error,
+            status: None,
+        }
     }
 }
 
@@ -337,10 +409,7 @@ impl Runner {
                         continue;
                     }
                     let max_inflight = i32::try_from(capacity).unwrap_or(i32::MAX);
-                    match self
-                        .register(index, ICEBERG_WRITE_ACTIVITY, max_inflight)
-                        .await
-                    {
+                    match self.register_lake(index, max_inflight).await {
                         Ok(session) => sessions[index] = Some(session),
                         Err(_) => {
                             metrics::counter!("database_runner_registration_total","outcome"=>"refused").increment(1);
@@ -520,7 +589,7 @@ mod tests {
         fixtures::{input_json, resolved_database},
     };
     use crate::testing::{NAMESPACE_ID, epoch_ms_in};
-    use sagat_domain::database::ICEBERG_WRITE_ACTIVITY;
+    use sagat_domain::database::{ICEBERG_PROBE_ACTIVITY, ICEBERG_WRITE_ACTIVITY};
 
     fn lake_lease(task: &str) -> pb::TaskLease {
         pb::TaskLease {
@@ -538,7 +607,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_lake_runner_offers_the_lake_activity_alone_and_no_more_attempts_than_it_has_slots() {
+    async fn a_lake_runner_offers_both_lake_activities_in_one_session_and_no_more_attempts_than_it_has_slots()
+     {
         let fake = Fake::default();
         let server = serve_fake(fake.clone()).await;
         let home = home(&server, None);
@@ -557,12 +627,210 @@ mod tests {
         stop.cancel();
         ended(serving).await;
         fake.with(|script| {
+            assert_eq!(
+                script.registered.len(),
+                1,
+                "one session for both activities, not one each"
+            );
             let capabilities = script.registered[0].capabilities.as_ref().unwrap();
-            assert_eq!(capabilities.activities, [ICEBERG_WRITE_ACTIVITY]);
+            assert_eq!(
+                capabilities.activities,
+                [ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY]
+            );
             assert_eq!(capabilities.max_inflight, 2, "the slots, not maxConcurrent");
             assert_eq!(capabilities.protocol_version, "1.6");
             assert_eq!(script.polled[0].max_tasks, 2);
         });
+    }
+
+    /// A lake runner whose service refuses the first registrations with `statuses`, until it has polled: what it offered each
+    /// time, and the worker the first poll was made as (each registration the service accepts is the next worker, from 7).
+    async fn lake_registrations_refused_with(
+        statuses: Vec<tonic::Status>,
+    ) -> (Vec<Vec<String>>, String) {
+        let fake = Fake::default();
+        fake.with(|script| script.register_errors = statuses.into());
+        let server = serve_fake(fake.clone()).await;
+        let home = home(&server, None);
+        let world = world();
+        let runner = Runner::start_with(
+            home.config.clone(),
+            TestLaunch::new(&world, Script::NeverConnects, 2),
+        )
+        .await
+        .unwrap();
+        let stop = CancellationToken::new();
+        let serving = tokio::spawn(runner.serve(stop.clone()));
+        fake.until("a poll", |script| !script.polled.is_empty())
+            .await;
+        stop.cancel();
+        ended(serving).await;
+        fake.with(|script| {
+            let offered = script
+                .registered
+                .iter()
+                .map(|registration| {
+                    registration
+                        .capabilities
+                        .as_ref()
+                        .unwrap()
+                        .activities
+                        .clone()
+                })
+                .collect();
+            (offered, script.polled[0].worker_id.clone())
+        })
+    }
+
+    fn worker(number: u128) -> String {
+        uuid::Uuid::from_u128(number).to_string()
+    }
+
+    #[tokio::test]
+    async fn a_binding_that_does_not_cover_the_probe_leaves_a_runner_that_serves_the_writes() {
+        // the server refuses an activity the worker is not bound to with `PERMISSION_DENIED` (`NOT_BOUND`): the binding of the
+        // runner may be older than the runner (the rollout order is the server, the binding, then the runners), and the
+        // writes must not stop for it
+        let (offered, polled_as) =
+            lake_registrations_refused_with(vec![tonic::Status::permission_denied("NOT_BOUND")])
+                .await;
+
+        assert_eq!(
+            offered,
+            [
+                vec![ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY],
+                vec![ICEBERG_WRITE_ACTIVITY],
+            ]
+        );
+        // the session that polls is the one of the registration that was accepted: the second, and not the refused first
+        assert_eq!(polled_as, worker(8));
+    }
+
+    #[tokio::test]
+    async fn a_service_that_cannot_answer_is_not_a_reason_to_stop_offering_the_probe() {
+        // an outage is not a binding: the same offer is made again, and the runner does not fall back to the writes alone
+        let (offered, polled_as) =
+            lake_registrations_refused_with(vec![tonic::Status::unavailable("down")]).await;
+
+        assert_eq!(
+            offered,
+            [
+                vec![ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY],
+                vec![ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY],
+            ]
+        );
+        assert_eq!(polled_as, worker(8));
+    }
+
+    #[tokio::test]
+    async fn a_binding_that_covers_neither_activity_is_refused_for_both_and_is_not_a_session() {
+        // the fallback is one more try with the writes alone, and a refusal of that too is a refusal, not a session: the runner
+        // goes on as it always did after one (it tries again, with the offer it has), and does not stay on the writes alone
+        let (offered, polled_as) = lake_registrations_refused_with(vec![
+            tonic::Status::permission_denied("NOT_BOUND"),
+            tonic::Status::permission_denied("NOT_BOUND"),
+        ])
+        .await;
+
+        assert_eq!(
+            offered,
+            [
+                vec![ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY],
+                vec![ICEBERG_WRITE_ACTIVITY],
+                vec![ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY],
+            ]
+        );
+        assert_eq!(polled_as, worker(9));
+    }
+
+    /// What the metrics saw while a lake runner registered and polled, its service refusing the first registrations with
+    /// `statuses`. The registration is async and the reader of the metrics is a thread-local one: the runtime is a current-thread
+    /// runtime run inside it, so that every task of the runner is polled on the thread the reader is on.
+    fn metrics_of_lake_registrations_refused_with(
+        statuses: Vec<tonic::Status>,
+    ) -> crate::testing::Recorded {
+        crate::testing::recorded(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(lake_registrations_refused_with(statuses));
+        })
+    }
+
+    /// How many times the offer of the probe ended as `outcome` (`offered`, `not_bound` or `write_only`).
+    fn offers(recorded: &crate::testing::Recorded, outcome: &str) -> u64 {
+        recorded
+            .counters
+            .iter()
+            .filter(|(name, labels, _)| {
+                name == "database_runner_lake_probe_offer_total"
+                    && labels.contains(&("outcome".to_owned(), outcome.to_owned()))
+            })
+            .map(|(_, _, amount)| amount)
+            .sum()
+    }
+
+    /// Every value the gauge of the probe was set to, in order.
+    fn offered_gauge(recorded: &crate::testing::Recorded) -> Vec<f64> {
+        recorded
+            .gauges
+            .iter()
+            .filter(|(name, _)| name == "database_runner_lake_probe_offered")
+            .map(|(_, value)| *value)
+            .collect()
+    }
+
+    #[test]
+    fn a_runner_that_is_offering_the_probe_says_so_in_a_counter_and_a_gauge() {
+        let recorded = metrics_of_lake_registrations_refused_with(vec![]);
+
+        assert_eq!(offers(&recorded, "offered"), 1);
+        assert_eq!(offers(&recorded, "not_bound"), 0);
+        assert_eq!(offers(&recorded, "write_only"), 0);
+        assert_eq!(offered_gauge(&recorded), [1.0]);
+    }
+
+    #[test]
+    fn a_runner_left_with_the_writes_alone_says_so_in_the_counters_and_the_gauge_stays_down() {
+        // the gauge is what an alert reads for days after the one registration that counted: it is down while the runner serves
+        // the writes alone, and it is not set up by the offer that was refused
+        let recorded =
+            metrics_of_lake_registrations_refused_with(vec![tonic::Status::permission_denied(
+                "NOT_BOUND",
+            )]);
+
+        assert_eq!(offers(&recorded, "not_bound"), 1);
+        assert_eq!(offers(&recorded, "write_only"), 1);
+        assert_eq!(offers(&recorded, "offered"), 0);
+        assert_eq!(offered_gauge(&recorded), [0.0]);
+    }
+
+    #[test]
+    fn a_refusal_that_is_not_a_binding_is_not_counted_as_one_and_the_gauge_is_not_set_down() {
+        let recorded =
+            metrics_of_lake_registrations_refused_with(vec![tonic::Status::unavailable("down")]);
+
+        assert_eq!(offers(&recorded, "not_bound"), 0);
+        assert_eq!(offers(&recorded, "write_only"), 0);
+        assert_eq!(offers(&recorded, "offered"), 1);
+        assert_eq!(offered_gauge(&recorded), [1.0]);
+    }
+
+    #[test]
+    fn a_binding_that_covers_neither_activity_counts_the_refusal_and_is_not_a_runner_that_serves_the_writes()
+     {
+        // the writes alone were refused too: nothing was left standing, so it is not `write_only`, and the gauge is not set down
+        // for a session that does not exist; the offer that the runner makes again is the one that is accepted
+        let recorded = metrics_of_lake_registrations_refused_with(vec![
+            tonic::Status::permission_denied("NOT_BOUND"),
+            tonic::Status::permission_denied("NOT_BOUND"),
+        ]);
+
+        assert_eq!(offers(&recorded, "not_bound"), 1);
+        assert_eq!(offers(&recorded, "write_only"), 0);
+        assert_eq!(offers(&recorded, "offered"), 1);
+        assert_eq!(offered_gauge(&recorded), [1.0]);
     }
 
     #[tokio::test]
@@ -589,7 +857,10 @@ mod tests {
         ended(serving).await;
         fake.with(|script| {
             let capabilities = script.registered[0].capabilities.as_ref().unwrap();
-            assert_eq!(capabilities.activities, [ICEBERG_WRITE_ACTIVITY]);
+            assert_eq!(
+                capabilities.activities,
+                [ICEBERG_WRITE_ACTIVITY, ICEBERG_PROBE_ACTIVITY]
+            );
             assert_eq!(capabilities.max_inflight, 2);
         });
         // and a lake section that is not valid stops the runner: it is not served as a SQL runner

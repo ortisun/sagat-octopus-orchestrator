@@ -15,6 +15,9 @@ used before anyone looked at it:
   the vended credentials keep only the keys of the declared storage;
 * every request of the session has a time limit (``request_timeout``) unless the caller gives its own.
 
+It has one method of its own, ``probe_namespaces``, for the ``WAREHOUSE`` check of a probe (``probe.py``): one request
+for the first page of namespaces, where PyIceberg's own listing follows the pages for as long as the catalog gives one.
+
 ``_fetch_config`` is a copy of PyIceberg 0.12.0's with the filtering, and ``_response_to_table`` and ``_create_session``
 are extended: the version is pinned in ``requirements.lock``, and ``tests/test_rest_catalog.py`` shows the client of
 PyIceberg following a lying catalog, so an upgrade that changes either is noticed.
@@ -34,21 +37,34 @@ from pyiceberg.catalog.rest import (
     VIEW_ENDPOINTS,
     VIEW_ENDPOINTS_SUPPORTED,
     VIEW_ENDPOINTS_SUPPORTED_DEFAULT,
+    Capability,
     ConfigResponse,
     Endpoints,
+    ListNamespaceResponse,
     RestCatalog,
 )
+from pyiceberg.catalog.rest.auth import AuthManager
 from pyiceberg.catalog.rest.response import _handle_non_200_response
 from pyiceberg.catalog.rest.scan_planning import StorageCredential
+from pyiceberg.exceptions import NoSuchNamespaceError
 from pyiceberg.utils.properties import property_as_bool
-from requests import HTTPError
+from requests import HTTPError, RequestException
 
 from .config_hygiene import Hygiene
 
 if TYPE_CHECKING:
     from pyiceberg.catalog.rest import TableResponse
     from pyiceberg.table import Table
-    from requests import Session
+    from requests import Response, Session
+
+# What a catalog may answer the two requests the host makes of its own accord (the configuration and the first page of
+# namespaces) with: a configuration lists a few endpoints and properties, and a page of one namespace is a line.
+_MAX_BODY = 1024 * 1024
+_CHUNK = 64 * 1024
+
+
+class ResponseTooLarge(RequestException):
+    """A catalog answered with more than any catalog has to say; the rest of it was not read."""
 
 
 class LakeRestCatalog(RestCatalog):
@@ -60,6 +76,12 @@ class LakeRestCatalog(RestCatalog):
         self._hygiene = hygiene
         self._request_timeout = request_timeout
         super().__init__(name, **properties)
+
+    def _create_legacy_oauth2_auth_manager(self, session: Session) -> AuthManager:
+        # PyIceberg's manager asks the token endpoint for a token as it is built, with the session it is given, and
+        # `_create_session` bounds the session only when it returns: the limit has to be there before the manager is
+        _bound(session, self._request_timeout)
+        return super()._create_legacy_oauth2_auth_manager(session)
 
     def _create_session(self) -> Session:
         session = super()._create_session()
@@ -81,12 +103,12 @@ class LakeRestCatalog(RestCatalog):
             params[WAREHOUSE_LOCATION] = warehouse_location
 
         with self._create_session() as session:
-            response = session.get(self.url(Endpoints.get_config, prefixed=False), params=params)
+            response = _bounded(session.get(self.url(Endpoints.get_config, prefixed=False), params=params, stream=True))
         try:
             response.raise_for_status()
         except HTTPError as exc:
             _handle_non_200_response(exc, {})
-        config_response = ConfigResponse.model_validate_json(response.text)
+        config_response = ConfigResponse.model_validate_json(response.content)
 
         # PyIceberg does `config = defaults; config.update(self.properties); config.update(overrides)`, so the catalog's
         # overrides win over the client's own properties
@@ -109,6 +131,27 @@ class LakeRestCatalog(RestCatalog):
             raise ValueError("Namespace separator cannot be an empty string")
         self._namespace_separator = unquote(separator_from_properties)
 
+    def probe_namespaces(self) -> None:
+        """One request for the first page of namespaces, and nothing after it (D035-150, the ``WAREHOUSE`` check).
+
+        PyIceberg's ``list_namespaces`` follows ``next-page-token`` until the catalog stops giving one, which a catalog
+        that never does would turn into a request that never ends, and the probe asks whether the warehouse answers, not
+        for what is in it. So this is the one request, read for its status and for being a page of namespaces. A
+        catalog that does not say it lists namespaces is not asked to: the configuration it gave is all there is.
+        """
+        try:
+            self._check_endpoint(Capability.V1_LIST_NAMESPACES)
+        except NotImplementedError:
+            return
+        response = _bounded(
+            self._session.get(self.url(Endpoints.list_namespaces), params={"pageSize": "1"}, stream=True)
+        )
+        try:
+            response.raise_for_status()
+        except HTTPError as exc:
+            _handle_non_200_response(exc, {404: NoSuchNamespaceError})
+        ListNamespaceResponse.model_validate_json(response.content)
+
     def _response_to_table(self, identifier_tuple: tuple[str, ...], table_response: TableResponse) -> Table:
         document = table_response.model_dump(mode="json", by_alias=True, exclude_none=True)
         accepted = self._hygiene.accept_table(document)
@@ -128,6 +171,29 @@ class LakeRestCatalog(RestCatalog):
             }
         )
         return super()._response_to_table(identifier_tuple, filtered)
+
+
+def _bounded(response: Response) -> Response:
+    """The answer to a request made with ``stream=True``, with its body read and no more than ``_MAX_BODY`` of it.
+
+    The size is counted as the client decodes it, so a body that is small on the wire and large once inflated is
+    refused as it passes the limit, and what is read is kept as the body of the response, which PyIceberg then reads
+    as it always does (also the text of a failed answer, which says what failed). JSON is UTF-8: saying so spares the
+    client from guessing the encoding of a megabyte.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    for chunk in response.iter_content(chunk_size=_CHUNK):
+        size += len(chunk)
+        if size > _MAX_BODY:
+            response.close()
+            raise ResponseTooLarge("the body of the answer is larger than any catalog sends")
+        chunks.append(chunk)
+    # `Response.content` reads the body once and keeps it in these two attributes, which is what this does by hand
+    response._content = b"".join(chunks)
+    response._content_consumed = True
+    response.encoding = "utf-8"
+    return response
 
 
 def _bound(session: Session, seconds: float) -> None:

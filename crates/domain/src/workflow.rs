@@ -1236,6 +1236,26 @@ pub struct WorkflowDefinition {
     triggers: Vec<Trigger>,
 }
 
+/// Which kinds of projected state a definition's runs can have ([`WorkflowDefinition::projected_state`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProjectedState {
+    /// A `saga` node exists: a run can have saga state.
+    pub sagas: bool,
+    /// A `forEach` node exists: a run can have iteration scopes and their iterations.
+    pub collections: bool,
+    /// A `while` or `repeatUntil` node exists: a run can have loop scopes and their iterations.
+    pub loops: bool,
+}
+
+impl ProjectedState {
+    /// Whether a run can have the compensation state of a scope: its owner is always an iteration
+    /// or a loop scope, with or without a `saga` node in the definition.
+    #[must_use]
+    pub const fn scope_sagas(self) -> bool {
+        self.collections || self.loops
+    }
+}
+
 /// A region of the graph that decides what a failure inside it means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
@@ -1431,6 +1451,39 @@ impl WorkflowDefinition {
 
     pub fn bodies(&self) -> impl Iterator<Item = &BodyDefinition> {
         self.bodies.values()
+    }
+
+    /// The kinds of projected state a run of this definition can ever have. Each kind is created
+    /// only by a transition of a node of its kind, in the root graph or in a body: a saga by a `saga`
+    /// node, an iteration scope by a `forEach`, a loop scope by a `while` or a `repeatUntil`. A
+    /// definition without such a node has no such state, whatever commands the run receives. The
+    /// compensation state of a scope needs no `saga` node: a `forEach`, `while` or `repeatUntil`
+    /// whose body compensates is its own saga, so it follows the scope kinds
+    /// ([`ProjectedState::scope_sagas`]).
+    ///
+    /// The match names every kind: a new one must say here what state it can create.
+    #[must_use]
+    pub fn projected_state(&self) -> ProjectedState {
+        let mut kinds = ProjectedState::default();
+        for node in self.graphs().flat_map(|graph| graph.nodes.values()) {
+            match node.kind() {
+                NodeKind::Saga { .. } => kinds.sagas = true,
+                NodeKind::ForEach { .. } => kinds.collections = true,
+                NodeKind::While { .. } | NodeKind::RepeatUntil { .. } => kinds.loops = true,
+                NodeKind::Activity { .. }
+                | NodeKind::Timer { .. }
+                | NodeKind::WaitEvent { .. }
+                | NodeKind::Condition { .. }
+                | NodeKind::Switch { .. }
+                | NodeKind::Approval { .. }
+                | NodeKind::Parallel { .. }
+                | NodeKind::Child { .. }
+                | NodeKind::Return { .. }
+                | NodeKind::ContinueAsNew { .. }
+                | NodeKind::End { .. } => {}
+            }
+        }
+        kinds
     }
 
     fn graphs(&self) -> impl Iterator<Item = &DefinitionGraph> {
