@@ -658,30 +658,73 @@ async fn an_operator_decision_that_cannot_be_audited_changes_nothing_and_can_be_
 
 // -------------------------------------------------------------------- a cancellation racing a stop
 
+/// Backends of this database waiting for a lock while `holder`, the test's own transaction, holds
+/// the run. Only the first is blocked by the holder itself: the second queues behind the first, which
+/// holds the row's tuple lock while it waits, so it is counted by its wait and not by its blocker.
+async fn blocked_behind(flow: &Flow, holder: i32) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+           AND pid <> $1 AND wait_event_type = 'Lock' \
+           AND cardinality(pg_blocking_pids(pid)) > 0",
+    )
+    .bind(holder)
+    .fetch_one(&flow.api.db.pool)
+    .await
+    .expect("observe the waiters")
+}
+
+/// Who stops the run first is decided by a lock, not by timing: the test holds the run's row, lets
+/// the first command queue behind it, then the second, and releases. PostgreSQL grants the row to
+/// them in the order they queued, so the first command commits before the second reads the run.
+async fn race(flow: &Flow, cancel_first: bool) -> ((StatusCode, Value), sagat_scheduler::Report) {
+    let mut held = flow.api.db.pool.begin().await.expect("barrier");
+    sqlx::query("SELECT 1 FROM runs WHERE id = $1 FOR UPDATE")
+        .bind(flow.run.as_uuid())
+        .execute(&mut *held)
+        .await
+        .expect("hold the run");
+    let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *held)
+        .await
+        .expect("barrier backend");
+    let queued = |n: i64| {
+        crate::support::eventually(
+            "the command queues behind the held run",
+            move || async move { (blocked_behind(flow, holder).await >= n).then_some(()) },
+        )
+    };
+    let cancel = async {
+        if !cancel_first {
+            queued(1).await;
+        }
+        flow.operate(json!({"action": "CANCEL", "reason": "cancel while it is declined"}))
+            .await
+    };
+    let tick = async {
+        if cancel_first {
+            queued(1).await;
+        }
+        flow.scheduler.tick().await
+    };
+    let release = async {
+        queued(2).await;
+        held.commit().await.expect("release the run");
+    };
+    let (cancelled, ticked, ()) = tokio::join!(cancel, tick, release);
+    (cancelled, ticked)
+}
+
 #[tokio::test]
 async fn a_cancellation_racing_the_scheduler_that_stops_the_scope_for_a_failure_ends_consistently()
 {
     // The run is stopped by whichever commits first: the scheduler's drain for the declined charge,
-    // or the operator's cancellation. Neither order may lose what completed or undo it twice.
-    let mut outcomes = std::collections::BTreeSet::new();
-    for attempt in 0..6 {
-        let name = format!("scope-race-{attempt}-{}", Uuid::now_v7());
+    // or the operator's cancellation. Neither order may lose what completed or undo it twice. Both
+    // orders are forced, each once.
+    for cancel_first in [true, false] {
+        let name = format!("scope-race-{cancel_first}-{}", Uuid::now_v7());
         let flow = declined(&name).await;
-        let cancel =
-            flow.operate(json!({"action": "CANCEL", "reason": "cancel while it is declined"}));
-        let tick = async {
-            for _ in 0..attempt {
-                tokio::task::yield_now().await;
-            }
-            flow.scheduler.tick().await
-        };
-        let (cancelled, ticked) = tokio::join!(cancel, tick);
+        let (cancelled, ticked) = race(&flow, cancel_first).await;
         assert_eq!(ticked.failed, 0, "{ticked:?}");
-        assert!(
-            cancelled.0 == StatusCode::ACCEPTED || cancelled.0.is_client_error(),
-            "{:?}",
-            cancelled.0
-        );
         for _ in 0..8 {
             flow.drive().await;
             for task in flow.poll().await {
@@ -690,16 +733,21 @@ async fn a_cancellation_racing_the_scheduler_that_stops_the_scope_for_a_failure_
         }
         flow.drive().await;
         let status = flow.run_status().await;
-        assert!(
-            status == "COMPENSATED" || status == "CANCELLED",
-            "the run ends as what stopped it first, not as something else: {status}"
-        );
-        assert_eq!(
-            (cancelled.0 == StatusCode::ACCEPTED),
-            (status == "CANCELLED"),
-            "the cancel was accepted exactly when it stopped the run first"
-        );
-        outcomes.insert(status);
+        if cancel_first {
+            assert_eq!(cancelled.0, StatusCode::ACCEPTED, "{:?}", cancelled.1);
+            assert_eq!(
+                status, "CANCELLED",
+                "the cancellation stopped the run first"
+            );
+        } else {
+            assert!(
+                cancelled.0.is_client_error(),
+                "a cancellation after the drain began is refused: {:?} {:?}",
+                cancelled.0,
+                cancelled.1
+            );
+            assert_eq!(status, "COMPENSATED", "the drain stopped the run first");
+        }
         assert_eq!(
             completions_of_compensations(&flow).await,
             vec![
@@ -710,7 +758,6 @@ async fn a_cancellation_racing_the_scheduler_that_stops_the_scope_for_a_failure_
         );
         flow.verify().await;
     }
-    assert!(!outcomes.is_empty());
 }
 
 // --------------------------------------------------------------------------------------- restart
