@@ -4,6 +4,17 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-13 — Release 0.3.0 ships with the fallback ceilings
+
+The assistant reported that the T014-042 acceptance method (OD-2026-11-04-7: release build, runtime role, a separate
+database host, two repetitions) cannot run on the shared laptop, which has no separate database host, and offered two
+paths: provide a host, or ship 0.3.0 with the fallback ceilings of OD-2026-11-04-5. The owner answered "publicar a 0.3",
+then "Vamos seguir com todo restante das tasks que ainda faltam".
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-13-1 | "publicar a 0.3": release 0.3.0 publishes `maxItems` 1,000 and `maxIterations` 1,000, the fallback values of OD-2026-11-04-5, without the T014-042 acceptance run. Validation keeps accepting up to 10,000, and the tenant quota still bounds a collection. The 20,000 pending waits per replica of OD-2026-11-04-6 is published with its metrics and alerts. Raising the published ceilings to 10,000 needs the acceptance run on a separate database host and is deferred to a later release. This supersedes OD-2026-11-04-7 for 0.3.0 only. | owner | Decided | specs/014-workflow-primitives/tasks.md T014-042; docs/runbooks/workflow-primitives.md; docs/releases/0.3.0.md |
+
 ## 2026-11-12 — Feature 014 closes on root collections; nesting becomes feature 039
 
 On the owner's "Vamos terminar as primitivas", the assistant mapped the eight open tasks of feature 014. Root

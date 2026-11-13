@@ -4383,3 +4383,64 @@ Tests without a replay comparison:
 
 These still read the rows their claim is about. Whether each one also needs a replay comparison is
 decided case by case under T014-040; none is added or credited by this inventory alone.
+
+## Release-gate matrix on root collections — 2026-11-12/13 (T014-040)
+
+Scope: what feature 014 ships after OD-2026-11-12-6, meaning root (unnested) collections, loops, approval, switch, declared
+operations and the restricted continuation. Nesting and its capacity program moved to feature 039, so no nested case is
+claimed here.
+
+Commit under test: `cd0ca0cf` (`develop` `2a1bdf92` + the cancel/drain race in both orders + the scheduler wait metrics).
+After the rebase onto `develop` `0b8655f6` it became `1fcbcae6`. `git diff cd0ca0cf 1fcbcae6` touches only
+`docs/` and `specs/`, so no code differs. The environment was PostgreSQL 18.6, local, `fsync=off`, freshly initialised
+for the run; rustc 1.98.0; `RUST_TEST_THREADS=2`; macOS on a shared 16-core laptop with a load of about 16. CI uses
+PostgreSQL 16. Started 2026-11-13T01:54:48Z, finished 02:13:17Z.
+
+| Command | Result | Time |
+|---|---|---:|
+| `cargo test -p sagat-tests --test fault_workflow_primitives --locked --no-fail-fast` | 92 passed, 0 failed, 0 ignored | 181 s |
+| `SAGAT_TEST_AS_RUNTIME_ROLE=1` + the same | 92 passed, 0 failed (every service as `sagat_app`) | 97 s |
+| `cargo test -p sagat-tests --test integration_workflow_primitives --locked --no-fail-fast` | 762 passed, 0 failed, 22 ignored | 699 s |
+| `cargo test -p sagat-tests --test contract_workflow_primitives --locked` | 49 passed | 0.6 s |
+| `cargo test -p sagat-tests --test e2e_workflow_primitives --locked` | 1 passed | 1 s |
+| `cargo audit --file sdks/rust/Cargo.lock --deny warnings` | passed | |
+| `cargo audit --deny warnings` (root) | **failed**: RUSTSEC-2026-0459 (`libsqlite3-sys`, never built) and RUSTSEC-2026-0486 (`rustix` 1.1.5). Both are also on `develop`; fixed by the dependency pull request #217 (gap G707 of feature 001) | |
+
+The 92 fault tests, by file: approvals 13, approval combinations 8, chains 23, collection sources 5, collections 2, loops 16,
+declared operations 14, scope compensation 8, switch 3. Between them they cover the categories the task names:
+
+- barriers and races, each forced in both orders with a held row lock and a `pg_stat_activity` wait count (never a
+  sleep): cancel against the drain (`scope_compensation::a_cancellation_racing_the_scheduler_that_stops_the_scope_for_a_failure_ends_consistently`, both orders since 2026-11-12), signal,
+  Update and parent cancel against a hand-off, and timer delivery against cancel, signal or Update;
+- duplicates: duplicate hand-offs, duplicate timer fires, two attempts to enter the same collection, replayed Update
+  receipts;
+- lost broker delivery: lost hand-off and parent-wake hints, recovered by restart;
+- failed compensation: unknown and failed compensation, with reverse topological order inside an iteration;
+- restart: dropped connections before commit, outbox and audit failures that roll back the whole checkpoint;
+- tenant and secret: tenant opacity of chains and operations, resolved secrets and secret-shaped text kept out of
+  operation responses and evidence, quotas lowered while a hand-off waits.
+
+None of these tests is randomised, so there are no seeds to keep: every interleaving is forced by a barrier and every
+fault is injected at a named point. The oracle inventory of 2026-11-01 above still applies. Of the 92 tests, 54 compare
+a replay and 38 assert persisted state directly; no replay check was added or credited by this run.
+
+The 22 ignored integration tests are the 10,000-item end-to-end case (run separately, below), two private subprocess
+probes started by their parent tests, and 19 released-source upgrade profiles that need the immutable v0.2 builds of
+`scripts/test-legacy-*`/`release_upgrade*`. Those profiles run in the CI job "released v0.2 upgrade compatibility" of a
+release run (OD-2026-11-04-8) and are not claimed here.
+
+The ignored 10,000-item case was stale. It built a `Worker` principal without granting the role, and registration has since
+started checking the grant in the store, so it failed at `register: NotBound` before any workload ran. The test now grants
+the role (a test-only change) and was run on its own at the same head:
+
+```sh
+cargo test -p sagat-tests --test integration_workflow_primitives --locked -- --ignored --nocapture collection_10k::
+```
+
+Result: passed in 744 s. 10,000 completions and 20,002 collection transitions in 704 s (14.2 items/s), aggregated in
+order, peak active 256 (the `maxConcurrency`), peak RSS 132 MiB. This is a debug build on the shared laptop with an
+owner-role connection, so it is a diagnostic and not the T014-042 acceptance method. For comparison, the full-length run
+of 2026-10-17, before G461 was fixed, took 6,815 s.
+
+Not covered by this run, and left to the release-candidate dispatch on `develop` (OD-2026-11-04-8): the Compose smoke
+test and the rest of the stack (T014-043), plus the T014-042 acceptance measurement, which needs a separate database host.

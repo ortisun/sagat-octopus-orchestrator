@@ -174,6 +174,8 @@ async fn ten_thousand_items_are_admitted_concurrently_aggregated_in_order_and_bo
         WorkerSettings::default(),
     );
     let principal = Principal::new(p.tenant, subject("coll-10k-worker"), Role::Worker);
+    // Registration checks the role grant in the store too, not only the binding.
+    p.grant(p.tenant, "coll-10k-worker", Role::Worker).await;
     p.bind_everything("coll-10k-worker").await;
     let registered = workers
         .register(
