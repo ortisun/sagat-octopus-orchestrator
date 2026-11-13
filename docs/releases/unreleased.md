@@ -35,6 +35,13 @@ business id and says nothing: [schedules runbook](../runbooks/schedules.md#11-th
 a `422 SCHEDULE_SPEC_INVALID`** where it was accepted and dropped. Schedules that waited under a `remainingActions` limit for a manual action and were left with no next
 time by an older build are not repaired by the upgrade: pause and resume them (G2092).
 
+## Audit: business-id conflicts (feature 018)
+
+A start refused `409` because its business id is held (`BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`), and the decision of a schedule
+that finds its id held, now write the audit action `business_id.conflict` with that closed reason and never the id
+([business-ids runbook](../runbooks/business-ids.md#5-reading-the-refusals)). A consumer of the audit trail that lists the actions it knows
+meets one more.
+
 ## Batch operations: a selection that keeps failing ends the job (feature 018)
 
 A batch job whose selection round fails (a statement over its ten-second timeout on a selector that reaches most of a namespace, a deadlock, a

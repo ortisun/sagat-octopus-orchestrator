@@ -82,7 +82,7 @@ Open the schedule in the Studio (`/schedules`), or read its decisions and descri
 | `scheduler_fenced_total{kind="schedule"}` and `{kind="backfill"}` | steps another replica or a lost lease took away |
 | `scheduler_fairness_limited_total{pass="schedules"}` | tenants given less than they showed, because another had a backlog |
 
-No label is a tenant, a schedule or a run. The audit trail records `schedule.created`, `updated`, `deleted`, `paused`, `resumed`, `auto_paused`, `triggered`, `backfill_requested` and `backfill_cancelled` in the transaction of the change, never the input and never a note (a pause or resume note, who wrote it and when are on the schedule: `note`, `noteBy`, `noteAt`).
+No label is a tenant, a schedule or a run. The audit trail records `schedule.created`, `updated`, `deleted`, `paused`, `resumed`, `auto_paused`, `triggered`, `backfill_requested` and `backfill_cancelled` in the transaction of the change, and `business_id.conflict` (by the schedule, with the closed reason and never the id) in the transaction of a decision that found its id held, never the input and never a note (a pause or resume note, who wrote it and when are on the schedule: `note`, `noteBy`, `noteAt`).
 
 ### 4.1 Capacity: how many schedules can be due together
 

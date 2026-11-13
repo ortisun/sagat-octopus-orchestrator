@@ -106,6 +106,7 @@ fn the_audit_actions_have_the_names_of_the_plan() {
         (AuditAction::BatchFinished, "batch.finished"),
         (AuditAction::RunReset, "run.reset"),
         (AuditAction::RunResetRequested, "run.reset_requested"),
+        (AuditAction::BusinessIdConflict, "business_id.conflict"),
     ];
     let unique: BTreeSet<_> = named.iter().map(|(_, name)| *name).collect();
     assert_eq!(unique.len(), named.len());

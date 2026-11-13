@@ -86,6 +86,14 @@ of the identifier, creating the run first if none is open. It needs `run:start` 
 | `409` | `IDEMPOTENCY_KEY_REUSED` | the same key, another request (also another delay) |
 | `404` | | the identifier is unbound, forgotten, impossible, or another tenant's |
 
+Each `409` of the first two rows is audited as `business_id.conflict` (`GET /audit?action=business_id.conflict`): the person who asked,
+the workflow they asked to start (`resourceType` `workflow`) and the closed reason, `BUSINESS_ID_IN_USE` or `BUSINESS_ID_REUSE_REJECTED`.
+**The identifier is not in the record** (it is customer text). The record is written after the refused start rolled back, in a
+transaction of its own, so nothing of the start commits with it; a failure to write it is logged (`failed to record audit entry`) and
+the answer is the same `409`. The decision of a schedule that finds its id held is audited the same way, by the schedule
+(`system:schedule:<id>`, `resourceType` `schedule`), in the transaction of its decision. `USE_EXISTING`, which answers with the holder,
+is no conflict and writes no such record (G2086, D2218).
+
 ## 6. The identifiers a schedule makes, and selecting runs by prefix
 
 **A schedule's action may name a prefix** (`businessIdPrefix`, 1 to 160 characters, with `businessIdConflictPolicy` and

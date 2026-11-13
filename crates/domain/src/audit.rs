@@ -232,6 +232,10 @@ pub enum AuditAction {
     /// waiting for its source to end.
     RunReset,
     RunResetRequested,
+    /// A start or a schedule's action was refused because its business identifier is held: an open execution holds it
+    /// (`BUSINESS_ID_IN_USE`) or the reuse policy refuses a remembered one (`BUSINESS_ID_REUSE_REJECTED`). The reason is
+    /// that closed word; the identifier is customer text and is never written (`FR-018-044`, `G2086`).
+    BusinessIdConflict,
 }
 
 impl AuditAction {
@@ -426,6 +430,7 @@ impl AuditAction {
             Self::BatchFinished => "batch.finished",
             Self::RunReset => "run.reset",
             Self::RunResetRequested => "run.reset_requested",
+            Self::BusinessIdConflict => "business_id.conflict",
         }
     }
 }

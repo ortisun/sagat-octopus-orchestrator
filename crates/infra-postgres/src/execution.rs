@@ -2008,6 +2008,12 @@ impl RunStore for PgRunStore {
         use sagat_application::identity::IdentityStore;
         self.identity.record_denial(audit).await
     }
+
+    async fn record_refusal(&self, audit: &AuditRecord) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        crate::identity::insert_audit(&mut tx, audit).await?;
+        tx.commit().await.map_err(store_error)
+    }
 }
 
 /// Pins the effective instance and depth ceilings of a run that was just inserted.

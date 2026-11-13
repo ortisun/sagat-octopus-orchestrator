@@ -824,13 +824,14 @@ pub trait ScheduleStore: Send + Sync {
         namespace: NamespaceId,
     ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
 
-    /// Records a decision that starts no run, with the new state of the schedule and, when given,
-    /// an audit record, in one transaction under the fence and the compare-and-swap. A change in
-    /// between, or a lost lease, is a `StateConflict` and commits nothing.
+    /// Records a decision that starts no run, with the new state of the schedule and its audit
+    /// records (none, the request of a trigger-now, the conflict of a held business id), in one
+    /// transaction under the fence and the compare-and-swap. A change in between, or a lost lease,
+    /// is a `StateConflict` and commits nothing.
     fn record_decision(
         &self,
         decision: &ScheduleDecision,
-        audit: Option<&AuditRecord>,
+        audits: &[&AuditRecord],
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// The oldest cancellation the schedule still owes, if any.

@@ -1575,7 +1575,7 @@ impl ScheduleStore for PgScheduleStore {
     async fn record_decision(
         &self,
         decision: &ScheduleDecision,
-        audit: Option<&AuditRecord>,
+        audits: &[&AuditRecord],
     ) -> Result<(), StoreError> {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         // a manual action works on a paused schedule too, and is not the time that is owed
@@ -1722,7 +1722,7 @@ impl ScheduleStore for PgScheduleStore {
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;
-        if let Some(audit) = audit {
+        for audit in audits {
             insert_audit(&mut tx, audit).await?;
         }
         tx.commit().await.map_err(store_error)

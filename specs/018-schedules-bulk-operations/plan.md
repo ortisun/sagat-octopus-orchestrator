@@ -274,7 +274,8 @@ run's trace.
 `schedule.deleted`, `schedule.paused`, `schedule.resumed`, `schedule.auto_paused`,
 `schedule.triggered`, `schedule.backfill_requested`, `schedule.backfill_cancelled`,
 `schedule.input_disclosed`, `batch.created`, `batch.cancelled`, `batch.finished`, `run.reset`,
-`run.reset_requested`. Runs started by a schedule, with-start, rerun and reset reuse `run.started`
+`run.reset_requested`, `business_id.conflict` (OD-2026-11-13-3, D2218: a start's `409` in a transaction of its own after the
+refused one rolled back, a schedule's decision in the decision's transaction; the closed reason, never the id). Runs started by a schedule, with-start, rerun and reset reuse `run.started`
 and `run.rerun`; batch item effects reuse the single action's audit (`run.cancel_requested`,
 `run.signalled`, `run.updated`, `run.paused`, `run.resumed`, `run.marked_for_review`,
 `saga.step_retried`, `run.rerun`) with the job id in the bounded reason. Audit reasons never carry

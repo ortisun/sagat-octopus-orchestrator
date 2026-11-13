@@ -338,6 +338,9 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   reaches runs are compared at the edges of the range; the batch selector's prefix has its privacy canary; the Studio refuses spaces alone as a prefix (D2195).
   Not built: a bound on a selection round that always fails (a migration: D2192, G2093); an audit action for a held id (the owner's: G2086); a registry gate
   for the first prefixed schedule (G2091).
+  *Added 2026-11-13 (OD-2026-11-13-3, D2218, G2086 closed):* the audit action for a held id is built, `business_id.conflict` with the closed reason and no
+  id, for a person's `409` (its own transaction after the rollback) and a schedule's decision (in the decision's transaction). Evidence:
+  `integration_schedules_bulk_operations business_id_audit::` 4 passed, 3 red first (no record); `sagat-domain --test schedule_permissions` (17 actions).
   *Added 2026-11-11 (D2197 to D2202, G2093 closed, G2094 to G2098 registered; the task stays as it was):* the bound that the line above says was not built is built,
   for every selector: `batch_jobs.selection_failures` (migration `20270116000000`), the wait in `next_slot_at`, the eleventh failed round in a row ends the job
   `SELECTION_FAILED` (`verification.md` (k)).

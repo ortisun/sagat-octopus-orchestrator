@@ -590,6 +590,14 @@ pub trait RunStore:
         &self,
         audit: &AuditRecord,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Writes `audit` in a transaction of its own, before it returns: the record of a refusal whose own transaction rolled
+    /// back, so nothing of the refused request committed with it (a business-id conflict of a start, `G2086`). It locks
+    /// nothing and is written once per call.
+    fn record_refusal(
+        &self,
+        audit: &AuditRecord,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
 /// What an operator may ask of a run.
@@ -1672,6 +1680,11 @@ where
             Err(error) => {
                 self.audit_database_denial(principal, workflow.id(), &error, ctx)
                     .await;
+                // the action of a schedule records its conflict with its decision, in the decision's transaction
+                if !scheduled_start {
+                    self.audit_business_id_conflict(principal, workflow.id(), &error, ctx)
+                        .await;
+                }
                 return Err(store_failure(pending_completion, error));
             }
         };
@@ -2032,6 +2045,34 @@ where
         };
         tx.commit().await?;
         Ok((applied, served))
+    }
+
+    /// The record of a start refused because its business identifier is held (`FR-018-044`, `G2086`): written where the
+    /// refusal is decided, after the transaction of the start rolled back (nothing of the start may commit with it), in one
+    /// of its own. It names the person, the workflow and the closed reason; the identifier is customer text and is not
+    /// written. A failure to write it is logged and does not change the answer: the refusal stands either way.
+    async fn audit_business_id_conflict(
+        &self,
+        principal: &Principal,
+        workflow: WorkflowId,
+        error: &StoreError,
+        ctx: &RequestContext,
+    ) {
+        let StoreError::BusinessIdHeld { reason, .. } = error else {
+            return;
+        };
+        let audit = AuditRecord::by(
+            principal,
+            AuditAction::BusinessIdConflict,
+            ResourceType::Workflow,
+            workflow.to_string(),
+            ctx.trace_id.clone(),
+            self.clock.now(),
+        )
+        .with_reason(*reason);
+        if let Err(error) = self.store.record_refusal(&audit).await {
+            tracing::error!(%error, action = %audit.action(), "failed to record audit entry");
+        }
     }
 
     async fn audit_database_denial(

@@ -18,6 +18,7 @@ mod batch_pass;
 mod batch_security;
 mod batch_selection_failures;
 mod batch_selection_failures_migration;
+mod business_id_audit;
 mod business_id_lookup;
 mod business_id_rerun;
 mod business_ids;

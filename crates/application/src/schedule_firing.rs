@@ -361,7 +361,7 @@ where
                     backfill: None,
                     obligations,
                 };
-                self.commit_decision(&decision, Some(&audit)).await?;
+                self.commit_decision(&decision, &[&audit]).await?;
                 self.committed_action(caller, idempotency).await
             }
         }
@@ -479,10 +479,7 @@ where
         let Some(&time) = next.first() else {
             // no time is left in the range
             let done = progress(backfill.cursor.unwrap_or(backfill.start), None, true);
-            return self.committed(
-                self.commit_decision(&decision(Vec::new(), done), None)
-                    .await,
-            );
+            return self.committed(self.commit_decision(&decision(Vec::new(), done), &[]).await);
         };
         // A time the schedule acted on, or one the legacy cron pass started under feature 004's key (that pass leaves no
         // action row, only the run), is acted on already: the backfill counts it and goes on.
@@ -508,10 +505,7 @@ where
                 .await?
         {
             let seen = progress(time, Some("ALREADY_ACTED"), false);
-            return self.committed(
-                self.commit_decision(&decision(Vec::new(), seen), None)
-                    .await,
-            );
+            return self.committed(self.commit_decision(&decision(Vec::new(), seen), &[]).await);
         }
         let standing = Standing {
             open_runs: self.open_runs(&record).await?,
@@ -591,7 +585,7 @@ where
                 if matches!(other, Decision::Buffer { cancel_open: true }) {
                     owing.obligations = self.obligations_for(&record, time).await?;
                 }
-                self.committed(self.commit_decision(&owing, None).await)
+                self.committed(self.commit_decision(&owing, &[]).await)
             }
         }
     }
@@ -1087,7 +1081,7 @@ where
             backfill: None,
             obligations,
         };
-        self.committed(self.commit_decision(&decision, None).await)
+        self.committed(self.commit_decision(&decision, &[]).await)
     }
 
     /// The cancellations the action that waits at `nominal` owes the runs that are still open.
@@ -1386,8 +1380,26 @@ where
             }),
             obligations: Vec::new(),
         };
-        let audit = admission.manual.as_ref().map(|m| &m.audit);
-        self.commit_decision(&decision, audit)
+        // A conflict is audited with the decision that found it (`FR-018-044`, `G2086`): by the schedule, on the schedule,
+        // with the closed reason; the business id is customer text and is not written. `USE_EXISTING` answers with the
+        // holder and is no conflict. The request of a trigger-now commits its own record beside it.
+        let conflict = (outcome == Outcome::BusinessIdConflict).then(|| {
+            self.audit(
+                record,
+                &Subject::schedule(record.id.as_uuid()),
+                AuditAction::BusinessIdConflict,
+                reason,
+                now,
+            )
+        });
+        let audits: Vec<&AuditRecord> = admission
+            .manual
+            .as_ref()
+            .map(|m| &m.audit)
+            .into_iter()
+            .chain(conflict.as_ref())
+            .collect();
+        self.commit_decision(&decision, &audits)
             .await
             .map_err(AppError::from)
     }
@@ -1461,7 +1473,7 @@ where
             "authority revoked",
             now,
         );
-        self.committed(self.commit_decision(&decision, Some(&audit)).await)
+        self.committed(self.commit_decision(&decision, &[&audit]).await)
     }
 
     /// Commits a decision that starts no run, and counts what it decided once it is committed: a
@@ -1469,9 +1481,9 @@ where
     async fn commit_decision(
         &self,
         decision: &ScheduleDecision,
-        audit: Option<&AuditRecord>,
+        audits: &[&AuditRecord],
     ) -> Result<(), StoreError> {
-        let result = self.store.record_decision(decision, audit).await;
+        let result = self.store.record_decision(decision, audits).await;
         if result.is_ok() {
             for action in &decision.actions {
                 count_action(action.kind, action.outcome.as_str());

@@ -788,6 +788,18 @@ pass of G2102 was seen on the engine the first build made, and the fix on the en
 changed in this pass (the two Rust changes are in the batch executor; no SQL, contract, golden, SDK, Studio or CLI file changed). The maintainer reruns the full set (rule 17). (6) The Studio was read in a real browser, by the page's text and one
 screenshot looked at and not kept; the layout of its pages was not reviewed. (7) The stack was not a clean one for the whole page (it stayed up for about 45 minutes and the engine and the control plane were stopped and recreated on purpose). (8) The suites of the gates table ran on the tree with the two Rust changes; the images were built from the same tree, except that the control plane and the dev provider stayed on the first build, which has neither change.
 
+## (m) Business-id conflicts audited (2026-11-13, OD-2026-11-13-3, G2086, D2218)
+
+| Claim | Test | Red first |
+| --- | --- | --- |
+| a person's start refused `BUSINESS_ID_IN_USE` writes one `business_id.conflict` by the person, on the workflow, with the closed reason, and no audit record carries the id | `business_id_audit::a_start_refused_because_an_open_execution_holds_the_id_is_audited_without_the_id` | `left: []` (no record) |
+| the reuse policy's refusal is audited with its own reason | `business_id_audit::a_start_the_reuse_policy_refuses_is_audited_with_its_own_reason` | `left: []` |
+| a schedule's decision of a held id commits one record by the schedule, on the schedule, and the second pass adds none | `business_id_audit::a_schedule_that_finds_its_id_held_audits_the_conflict_with_its_decision` | `left: []` |
+| `USE_EXISTING` is no conflict | `business_id_audit::a_held_id_that_answers_with_its_holder_is_no_conflict_and_is_not_audited_as_one` | green at once (characterizes) |
+
+`cargo test -p sagat-tests --test integration_schedules_bulk_operations business_id`: 90 passed (the new 4 and every business-id test of the suite);
+`cargo test -p sagat-domain --test schedule_permissions`: 7 passed. The whole-suite gates are in (n).
+
 ## Appendix: the 257 waits of step 6.8
 
 ```sh
