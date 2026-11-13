@@ -379,6 +379,10 @@ D1080–D1119 are all in use, so these take the next free numbers of the shared 
   later feature adds ClickHouse to the catalog, sinks should reference that connection instead.
   *2026-10-27:* feature 035 proposes a `clickhouse` (and an `object_storage`) 017 connection kind; whether
   the `CLICKHOUSE` and `OBJECT_STORAGE` sinks switch to them is owner question O035-005 of feature 035.
+- **G1618** — *2026-11-13 (feature 041, G041-004):* the step-log tables (`step_log_streams`, `step_log_lines`,
+  `run_log_usage`) have no foreign key to `runs`, so that log ingest never locks a run row. When this feature
+  deletes or archives a run, it MUST delete that run's step-log rows in the same purge, and the content-store
+  registry MUST list them; nothing else does it.
 
 ## 5. Owner questions (recommended defaults are what the plan assumes)
 

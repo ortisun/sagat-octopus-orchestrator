@@ -21,6 +21,21 @@ The owner questions these rest on were all answered as recommended (OD-2026-11-1
 | D041-010 | 2026-11-13 | The Rust SDK gains an activity logger in this feature | `sdks/SPEC.md` §6.3 promises one and capture needs it |
 | D041-011 | 2026-11-13 | Sequences at and above 2^62 belong to the server's markers | A marker then never collides with a worker's record |
 | D041-012 | 2026-11-13 | The streams' counters are served by a route of their own, not added to `/attempts` | The OpenAPI digest pins existing operations byte for byte |
+| D041-013 | 2026-11-13 | The ingest does not take the tenant's `tenant_retained_usage` row before its commit unless usage plus the batch is within 2 MiB of the limit; then it takes it as the last statement before the insert, under a 200 ms lock timeout. Refines how D041-003's transaction treats quota | `sagat_quota_lock_log_usage` holds the row a completion with output needs to commit; the commit-time finalizer already enforces the limit exactly (review: architecture B1, correctness M3, security M2) |
+| D041-014 | 2026-11-13 | Capture lives in the per-attempt logger object of each SDK; nothing is attached to a shared logger. Redaction uses the union of the secret values held by every attempt in flight in the process | Python's `_TaskLog` adapts the worker-wide logger, so a handler there sees every attempt (review: security B1, architecture M4) |
+| D041-015 | 2026-11-13 | The ingest makes every check a report makes short of the run lock: `worker:execute`, not the database-runner or runner role, membership, activity binding, session (subject and minor, through a session token added to the request) and a lease that is `LEASED` or `RUNNING`, unexpired, on a run neither finished nor stopping. Extends D041-003 | A lease-token match alone survives revocation (review: security M1, N1) |
+| D041-016 | 2026-11-13 | The server scrubs in the application, before sizing, with both existing scrubbers (`sagat_domain::scripts` and `sagat_telemetry::redact` shapes, without its 2,048-character cut) and one placeholder `[REDACTED]`; the SDK redacts keys, numbers, exceptions and language context as well as messages. Extends D041-008 | Review: security M3, M4, architecture N1 |
+| D041-017 | 2026-11-13 | Order within a batch: lock the stream, drop known sequences, fold `DROPPED` ranges, then the attempt, run and tenant allowances, insert with `RETURNING`, counters from the returned rows. Fields are stored as canonical JSON `text` so that the size computed in Rust equals what `sagat_quota_measure` measures | Review: correctness M2, security N7 |
+| D041-018 | 2026-11-13 | A `DROPPED` marker names the first and last sequence it covers and carries no count; the server counts the unseen sequences of the range, saturating and clamped at the attempt ceiling. `last_sequence` (worker range) and `next_marker_sequence` (server range, from 2^62) are separate columns. Markers hold no log-classified bytes. Run-ceiling and tenant-quota drops are recorded only on the stream row. Batches after `final` are refused. Refines D041-011 | Review: security M7, correctness M5, N1, N6, N7 |
+| D041-019 | 2026-11-13 | The ingest's first statement assigns its transaction id; the tail ends only when the snapshot horizon has passed the `xmax` seen at the first terminal poll and a further page is empty. The horizon is computed in the statement that reads, on `xid8`. Refines D041-006 | Otherwise a batch that saw the lease live can commit after `end` (review: correctness M1, architecture M1, correctness N3) |
+| D041-020 | 2026-11-13 | One lock order for step-log writers: secrets lock and membership, stream, run usage, content fence, log fence, tenant usage row. The script marker locks only its own `source = script` stream and does not charge `run_log_usage` | Review: correctness M4, architecture M2 |
+| D041-021 | 2026-11-13 | The script marker takes its generation from the `step.leased` event `record_execution` already reads; generation and instance path are nullable for `source = script` | `record_execution` finds the step by (tenant, run, node) and has no instance path (review: architecture M3) |
+| D041-022 | 2026-11-13 | Ordinary SDKs offer 1.7, which carries 1.6's `ResolveDatabase` on the wire; the server refuses it without `database:execute`, and `sdks/SPEC.md` §7.1 says so | Review: architecture M5 |
+| D041-023 | 2026-11-13 | The lock and no-foreign-key tests live in `tests/integration/claim-transition-efficiency/`, which the selector picks for every `crates/infra-postgres/` change | Review: architecture M6, correctness M6 |
+| D041-024 | 2026-11-13 | Alerts fire on shedding and purge backlog only; ceiling drops are the customer's code and are shown on the run | Review: architecture M7 |
+| D041-025 | 2026-11-13 | An admin-only, audited `DELETE /runs/{runId}/logs` (`run:logs:delete`, `run.logs_purged`); expiry is computed at purge time from the last line and the retention in force | Review: security M8 |
+| D041-026 | 2026-11-13 | In a namespace whose published versions carry a classification annotation (`namespaces.has_classified_schemas`, set at publication and backfilled), reading step logs also needs the PII reveal grant; a script execution's `log` is read under the same rule | Owner, OD-2026-11-13-18 (O041-012, O041-013) |
+| D041-027 | 2026-11-13 | `AppendStepLogs` has its own admission class and permits with a per-tenant sub-cap; capture defaults to off until the purge pass is merged; a separate switch turns the read routes off | Review: architecture B1, N8, security N8 |
 
 ## Gaps
 
@@ -32,6 +47,7 @@ The owner questions these rest on were all answered as recommended (OD-2026-11-1
 | G041-004 | 2026-11-13 | With no foreign key to `runs`, feature 020 must delete a run's log streams and usage row when it deletes the run | Open; owned by feature 020 |
 | G041-005 | 2026-11-13 | A deployment whose protocol ceiling is held below 1.6 by a missing store proof captures no step logs | Open |
 | G041-006 | 2026-11-13 | SC-041-007 is measured on one machine on one day | Open |
+| G041-007 | 2026-11-13 | `record_execution` matches a script report by (tenant, run, node); a script step inside a collection or loop may get a marker without its iteration identity | Open |
 
 ## Owner questions
 
@@ -51,3 +67,12 @@ on 2026-11-13 ("Aceitar todas"), recorded as OD-2026-11-13-14.
 | O041-009 | 2026-11-13 | Script steps in the first delivery | A marker that points to the script execution | Answered 2026-11-13, option (a), as recommended: OD-2026-11-13-14 |
 | O041-010 | 2026-11-13 | What "in 0.3.0" requires | Server, six SDKs, routes and Studio together | Answered 2026-11-13, option (a), as recommended: OD-2026-11-13-14 |
 | O041-011 | 2026-11-13 | The limit of redaction (G041-001) | Accept it as stated, with ADR-0085 | Answered 2026-11-13, the limit accepted as stated, as recommended: OD-2026-11-13-14 |
+| O041-012 | 2026-11-13 | Do step logs need the PII reveal grant in a namespace with classified schemas? | Asked after review | Answered 2026-11-13, "Exigir a concessão PII": yes, `run:logs:read` plus the grant there: OD-2026-11-13-18 |
+| O041-013 | 2026-11-13 | Is the `log` of a script execution closed to viewers too? | Asked after review | Answered 2026-11-13, "Fechar ao viewer": yes, it needs `run:logs:read`; release notes say so: OD-2026-11-13-18 |
+
+## Review of 2026-11-13
+
+The architecture, security and correctness reviews of commit `2e90dbb8` are recorded in
+`docs/designs/041-step-logs.reviews/2026-11-13/`. Their findings are answered by D041-013 to D041-027, G041-007,
+the owner's OD-2026-11-13-18 (O041-012, O041-013) and the revised text of the design, ADR-0084 and ADR-0085.
+The duty of G041-004 is registered in feature 020's research as G1618.
