@@ -281,7 +281,7 @@ None is answered. Tasks that depend on one say so in their text; the `Owner-gate
 - **O042-009 A new key beyond `maxKeys`.** (a) Fail the delivery, retry, then dead-letter (visible, replayable).
   (b) Start a run per event as if there were no chain. (c) Drop. *Recommendation: (a).* (b) turns a ceiling into the
   flood the chain was declared to prevent; (c) loses events silently.
-- **ADR-0084 and ADR-0085** (proposed below) to accept, and this design to accept for implementation after review.
+- **ADR-0086 and ADR-0087** (proposed below) to accept, and this design to accept for implementation after review.
 
 ## Critical User Journeys (CUJs)
 
@@ -513,10 +513,10 @@ publication and keeps the pass running until open windows drain.
 
 ### 11. Decisions to record
 
-- **ADR-0084 (proposed): operator chains are declared data applied by the engine; their state is PostgreSQL rows per
+- **ADR-0086 (proposed): operator chains are declared data applied by the engine; their state is PostgreSQL rows per
   chain and key; time is the database clock at admission; a window is sealed by a fenced pass and starts one run by its
   identity.** It records the arrival-time base, the backlog rule, the position order, and that chains never pace runs.
-- **ADR-0085 (proposed): collection operators are applied once at scope entry and the snapshot is the record.**
+- **ADR-0087 (proposed): collection operators are applied once at scope entry and the snapshot is the record.**
 
 The numbers are the next free on `origin/develop` and the other `origin` branches on 2026-11-13 (0081 to 0083 are
 taken); three sibling drafts are being written today, so they are confirmed when this branch merges.
@@ -612,7 +612,7 @@ the question; the gate line is added with the row.
 - [ ] T042-3 Reconcile with the feature 022 draft: one paragraph in each text on who paces a start, and no operator here
   that 022 specifies.
   Refs: FR-042-022
-- [ ] T042-4 Write ADR-0084 and ADR-0085 as proposed, after re-checking the free numbers.
+- [ ] T042-4 Write ADR-0086 and ADR-0087 as proposed, after re-checking the free numbers.
   Refs: FR-042-003, FR-042-010
 - [ ] T042-5 Add `OperatorChain` and `Operator` to the domain with the order, "can emit", surface and ceiling rules, and
   property tests of the rules.
