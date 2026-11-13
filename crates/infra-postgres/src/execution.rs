@@ -262,22 +262,38 @@ impl PgRunStore {
 
     pub(crate) async fn begin_in_transaction(
         &self,
-        mut tx: Transaction<'static, Postgres>,
+        tx: Transaction<'static, Postgres>,
         tenant: TenantId,
         run: RunId,
         lock: Lock,
         chain_lock: Option<LockedChainHead>,
     ) -> Result<Option<PgRunTx>, StoreError> {
         let row = match lock {
-            Lock::Wait => sqlx::query(RUN_FOR_UPDATE)
+            Lock::Wait => RunRow::Wait,
+            Lock::SkipLocked => RunRow::SkipLocked,
+        };
+        self.begin_row(tx, tenant, run, row, chain_lock).await
+    }
+
+    async fn begin_row(
+        &self,
+        mut tx: Transaction<'static, Postgres>,
+        tenant: TenantId,
+        run: RunId,
+        row: RunRow<'_>,
+        chain_lock: Option<LockedChainHead>,
+    ) -> Result<Option<PgRunTx>, StoreError> {
+        let row = match row {
+            RunRow::Wait => sqlx::query(RUN_FOR_UPDATE)
                 .bind(tenant.as_uuid())
                 .bind(run.as_uuid()),
-            Lock::SkipLocked => sqlx::query(RUN_FOR_UPDATE_SKIP_LOCKED)
+            RunRow::SkipLocked => sqlx::query(RUN_FOR_UPDATE_SKIP_LOCKED)
                 .bind(tenant.as_uuid())
                 .bind(run.as_uuid()),
-            Lock::Claim => sqlx::query(RUN_FOR_CLAIM)
+            RunRow::Claim(activities) => sqlx::query(RUN_FOR_CLAIM)
                 .bind(tenant.as_uuid())
-                .bind(run.as_uuid()),
+                .bind(run.as_uuid())
+                .bind(activities),
         }
         .fetch_optional(&mut *tx)
         .await
@@ -451,7 +467,7 @@ impl PgRunStore {
                 "SELECT namespace_id,current_run_id,revision,cancel_requested,final_outcome \
                            FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 FOR UPDATE"
             }
-            Lock::SkipLocked | Lock::Claim => {
+            Lock::SkipLocked => {
                 "SELECT namespace_id,current_run_id,revision,cancel_requested,final_outcome \
                                  FROM execution_chains WHERE tenant_id=$1 AND chain_id=$2 \
                                  FOR UPDATE SKIP LOCKED"
@@ -466,7 +482,7 @@ impl PgRunStore {
         let Some(row) = row else {
             return match lock {
                 Lock::Wait => Err(corrupt("chain membership without chain")),
-                Lock::SkipLocked | Lock::Claim => Ok(RunChainLock::Contended),
+                Lock::SkipLocked => Ok(RunChainLock::Contended),
             };
         };
         Ok(RunChainLock::Locked(LockedChainHead::restore(
@@ -764,7 +780,7 @@ async fn lock_path_revision(
 ) -> Result<Option<u64>, StoreError> {
     let query = match lock {
         Lock::Wait => "SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
-        Lock::SkipLocked | Lock::Claim => {
+        Lock::SkipLocked => {
             "SELECT run_version FROM runs WHERE tenant_id=$1 AND id=$2 FOR UPDATE SKIP LOCKED"
         }
     };
@@ -1435,6 +1451,25 @@ impl RunStore for PgRunStore {
             .await
     }
 
+    async fn begin_claim(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        activities: &[String],
+    ) -> Result<Option<PgRunTx>, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        let chain_lock = match self
+            .lock_chain_for_run(&mut tx, tenant, run, Lock::SkipLocked)
+            .await?
+        {
+            RunChainLock::NotMember => None,
+            RunChainLock::Locked(chain) => Some(chain),
+            RunChainLock::Contended => return Ok(None),
+        };
+        self.begin_row(tx, tenant, run, RunRow::Claim(activities), chain_lock)
+            .await
+    }
+
     async fn get(&self, tenant: TenantId, run: RunId) -> Result<Option<RunRecord>, StoreError> {
         sqlx::query(RUN_SELECT)
             .bind(tenant.as_uuid())
@@ -1919,13 +1954,26 @@ const RUN_FOR_UPDATE: &str = run_columns_sql!(" FOR UPDATE");
 
 const RUN_FOR_UPDATE_SKIP_LOCKED: &str = run_columns_sql!(" FOR UPDATE SKIP LOCKED");
 
-/// The run of a candidate a poll read a moment ago, for a claim: not locked by another transaction,
-/// and still with a ready step. The condition only ever makes a claim give up on a run, as a lock
-/// held by another poller does, and a run it gives up on is found again by a later poll if a step of
-/// it is ready then; what is leased is still decided from the step rows read under the lock.
+/// How a run's row is read when it is opened: the lock modes of [`Lock`], and a worker's claim.
+enum RunRow<'a> {
+    Wait,
+    SkipLocked,
+    /// [`RUN_FOR_CLAIM`], with the activities the session serves.
+    Claim(&'a [String]),
+}
+
+/// The run of a candidate a poll read a moment ago, for a root claim: not locked by another
+/// transaction, and still with a ready root step of an activity the session serves (`$3`). A root
+/// claim leases nothing else: it takes only ready root activity steps whose activity is one the
+/// session advertised, and a step row's `activity` is the one the candidate scan matched it by. The
+/// condition only ever makes a claim give up on a run, as a lock held by another poller does, and a
+/// run it gives up on is found again by a later poll if such a step is ready then; what is leased is
+/// still decided from the step rows read under the lock.
 const RUN_FOR_CLAIM: &str = run_columns_sql!(
     " AND EXISTS (SELECT 1 FROM steps s WHERE s.tenant_id = runs.tenant_id \
-        AND s.run_id = runs.id AND s.status = 'READY') FOR UPDATE SKIP LOCKED"
+        AND s.run_id = runs.id AND s.status = 'READY' \
+        AND cardinality(s.instance_path_nodes) = 0 AND s.activity = ANY($3::text[])) \
+        FOR UPDATE SKIP LOCKED"
 );
 
 /// The same read without a lock, for the bounded snapshot of a scope transition (D523).

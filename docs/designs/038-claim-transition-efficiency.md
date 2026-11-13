@@ -181,7 +181,9 @@ where it adds a statement (FR-038-002), as ADR-0078's open item asks.
    asserts the counters' worst case, first at today's values.
 5. **Stop at capacity** (FR-038-003). The claim tells "the run is locked" from "the session can take
    nothing more"; the poll ends on the second.
-6. **Cheap drop** (FR-038-002). After the run lock and before the load, one indexed `EXISTS` for a ready
+6. **Cheap drop** (FR-038-002). Built as the claim's run read (`RunStore::begin_claim`): the row is returned only with a
+   ready root step of an activity the session serves, so a run with nothing for the session is dropped without loading.
+   A scoped candidate is still opened to find out. The plan was: After the run lock and before the load, one indexed `EXISTS` for a ready
    step of the session's activities in that run. The step rows are read again under the lock as today.
 7. **`node_kind`** (FR-038-006). The kind is already read with the step rows (`stored_node_kind`); the
    write is skipped when it equals the definition's, in `ensure_node_kind` and `ensure_path_node_kind`.

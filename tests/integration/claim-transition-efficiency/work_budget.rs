@@ -406,7 +406,7 @@ async fn a_candidate_with_no_ready_step_is_dropped_before_its_run_is_loaded_once
     // Once before measuring, so that the statements are prepared.
     assert!(
         w.store
-            .begin(tenant, taken, Lock::Claim)
+            .begin_claim(tenant, taken, &["act.a".to_owned()])
             .await
             .expect("opened")
             .is_none()
@@ -414,7 +414,7 @@ async fn a_candidate_with_no_ready_step_is_dropped_before_its_run_is_loaded_once
     let before = reading(&w).await;
     let opened = w
         .store
-        .begin(tenant, taken, Lock::Claim)
+        .begin_claim(tenant, taken, &["act.a".to_owned()])
         .await
         .expect("opened");
     let cost = spent(&w, before).await?;
@@ -429,7 +429,7 @@ async fn a_candidate_with_no_ready_step_is_dropped_before_its_run_is_loaded_once
     );
     assert!(
         w.store
-            .begin(tenant, ready, Lock::Claim)
+            .begin_claim(tenant, ready, &["act.a".to_owned()])
             .await
             .expect("opened")
             .is_some(),
@@ -576,11 +576,11 @@ async fn emptied_meanwhile(telemetry: &sagat_telemetry::Metrics) {
     );
 }
 
-/// What the drop does not cover: any ready step keeps the run open, also one that is not for
-/// this worker. The run is loaded and nothing is leased, as before.
+/// A run whose only ready step is for an activity the session does not serve is dropped for that
+/// session's claim as unloaded as one with nothing ready, and still opens for a session that serves it.
 #[tokio::test]
-async fn a_run_whose_ready_step_is_for_another_activity_is_still_opened() {
-    use sagat_application::runs::{Lock, RunStore};
+async fn a_run_whose_ready_step_is_for_another_activity_is_dropped_for_this_session() {
+    use sagat_application::runs::RunStore;
     let w = world().await;
     let (workflow, _) = w
         .publish(document(
@@ -602,11 +602,19 @@ async fn a_run_whose_ready_step_is_for_another_activity_is_still_opened() {
     );
     assert!(
         w.store
-            .begin(w.admin.tenant_id(), run, Lock::Claim)
+            .begin_claim(w.admin.tenant_id(), run, &["act.a".to_owned()])
+            .await
+            .expect("opened")
+            .is_none(),
+        "a ready step of another activity does not open the run for this session"
+    );
+    assert!(
+        w.store
+            .begin_claim(w.admin.tenant_id(), run, &["act.b".to_owned()])
             .await
             .expect("opened")
             .is_some(),
-        "a ready step of another activity keeps the run open for a claim"
+        "and does for a session that serves it"
     );
     assert!(
         w.poll(&only_a, 2).await.is_empty(),
@@ -618,7 +626,7 @@ async fn a_run_whose_ready_step_is_for_another_activity_is_still_opened() {
 /// is there once it has.
 #[tokio::test]
 async fn a_claim_sees_a_ready_step_only_once_it_is_committed() {
-    use sagat_application::runs::{Lock, RunStore};
+    use sagat_application::runs::RunStore;
     let w = world().await;
     let workflow = one_activity(&w, "ready-uncommitted").await;
     let session = w.session(&["act.a"]).await;
@@ -638,7 +646,7 @@ async fn a_claim_sees_a_ready_step_only_once_it_is_committed() {
         .expect("make the step ready, uncommitted");
     assert!(
         w.store
-            .begin(tenant, run, Lock::Claim)
+            .begin_claim(tenant, run, &["act.a".to_owned()])
             .await
             .expect("opened")
             .is_none(),
@@ -647,7 +655,7 @@ async fn a_claim_sees_a_ready_step_only_once_it_is_committed() {
     writer.commit().await.expect("committed");
     assert!(
         w.store
-            .begin(tenant, run, Lock::Claim)
+            .begin_claim(tenant, run, &["act.a".to_owned()])
             .await
             .expect("opened")
             .is_some(),

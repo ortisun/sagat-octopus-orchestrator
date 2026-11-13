@@ -50,14 +50,8 @@ pub const NO_PUBLISHED_VERSION: &str = "the workflow has no published version";
 pub enum Lock {
     /// Wait for the run's row lock (API commands, timers).
     Wait,
-    /// Give up at once when another transaction holds it.
+    /// Give up at once when another transaction holds it (workers polling for tasks).
     SkipLocked,
-    /// A worker's claim: give up at once when another transaction holds the run, and also when the
-    /// run has no ready step, which a candidate read a moment ago may no longer have. Nothing is
-    /// loaded for either. Any ready step keeps the run open, whatever its activity or path, so a
-    /// run whose ready steps are not for this worker is still loaded to find that out. A scoped
-    /// path is opened as with [`Lock::SkipLocked`].
-    Claim,
 }
 
 /// A run about to be created.
@@ -255,13 +249,24 @@ pub trait RunStore:
         revision: Option<u32>,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
-    /// Opens a run for a command. `None` when it does not exist, when another transaction holds it
-    /// ([`Lock::SkipLocked`], [`Lock::Claim`]) or when it has no ready step ([`Lock::Claim`]).
+    /// Opens a run for a command. `None` when it does not exist (or, with
+    /// [`Lock::SkipLocked`], when another transaction holds it).
     fn begin(
         &self,
         tenant: TenantId,
         run: RunId,
         lock: Lock,
+    ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
+
+    /// Opens a run for a worker's claim, giving up at once as [`Lock::SkipLocked`] does. `None` also
+    /// when the run has no ready root step of one of `activities` (the activities the session
+    /// serves): a candidate a poll read a moment ago may no longer have one, and is then dropped
+    /// without loading anything. What is leased is still decided from the rows read under the lock.
+    fn begin_claim(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        activities: &[String],
     ) -> impl Future<Output = Result<Option<Self::Tx>, StoreError>> + Send;
 
     fn get(
