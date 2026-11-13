@@ -566,8 +566,9 @@ async fn emptied_meanwhile(telemetry: &sagat_telemetry::Metrics) {
         "A leases the run it held and nothing else"
     );
     assert_ne!(taken_by_a[0].run_id, taken_by_b[0].run_id);
-    // A probes its two candidates and B its two (the run A holds, then the other).
-    assert_eq!(claim_stage(telemetry, "probed") - probed, 4);
+    // A probes its two candidates. B, in flight with A, starts past what A asked for and probes the
+    // other run only (`window_order.rs`), where tried in A's order it would probe A's held run first.
+    assert_eq!(claim_stage(telemetry, "probed") - probed, 3);
     assert_eq!(
         claim_stage(telemetry, "opened") - opened,
         2,
