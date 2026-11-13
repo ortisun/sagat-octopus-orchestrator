@@ -423,7 +423,7 @@ struct Counters {
 
 /// A count that stops at the maximum instead of starting again from zero.
 fn increment(counter: &AtomicU32) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
         Some(count.saturating_add(1))
     });
 }

@@ -4,7 +4,7 @@
 
 The native Tokio SDK uses the same public REST and worker gRPC contracts as the other official
 SDKs. It does not connect to PostgreSQL, NATS, Redis or OpenBao directly. The server owns durable
-workflow execution and scoped secret authorization. Rust 1.98 is the initially tested toolchain;
+workflow execution and scoped secret authorization. Rust 1.98 is the declared minimum (checked to build) and 1.100 the tested toolchain;
 the package is MIT licensed.
 
 This is an implementation candidate tracked by feature 034. The current increment provides
