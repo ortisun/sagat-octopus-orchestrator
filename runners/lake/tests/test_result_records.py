@@ -1,9 +1,10 @@
-"""The records of a lake write that takes a SQL result, against the host that reads them (feature 035: D035-145, FR-035-010).
+"""The records of a lake write that takes a SQL result, against the host that reads them.
 
-The server turns each cell of the typed result a SQL step retains into a value of a record, and the host (``mapping.py``) stores that
-value or refuses it. ``tests/contract/iceberg-writes/fixtures/result-records/cells.json`` is the one list of cells both sides are held
-to: the Rust test of the lease (``lake_result_records.rs``) holds the value each cell becomes, and this test holds what the host does
-with that value for each type of column. A change to one side that the other does not follow fails one of them.
+Feature 035: D035-145, FR-035-010. The server turns each cell of the typed result a SQL step retains into a value of a
+record, and the host (``mapping.py``) stores that value or refuses it.
+``tests/contract/iceberg-writes/fixtures/result-records/cells.json`` is the one list of cells both sides are held to:
+the Rust test of the lease (``lake_result_records.rs``) holds the value each cell becomes, and this test holds what the host
+does with that value for each type of column. A change to one side that the other does not follow fails one of them.
 """
 
 from __future__ import annotations
