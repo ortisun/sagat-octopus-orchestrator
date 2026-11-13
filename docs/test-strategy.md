@@ -30,7 +30,9 @@ merges a pull request would prove again what the pull request proved):
   changed. A changed package does not select a suite because the suite uses it, or uses what depends on it: the suites are
   expensive and the release runs all of them. The browser
   suites when `frontend/e2e` or `examples/` changes; the SDK suites when `sdks/<language>/conformance` changes; the lake
-  suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes.
+  suites (`integration`, `fault`, `e2e` and `performance` of `iceberg-writes`) when `runners/lake/` changes; the budget of the
+  hot path (`integration_claim_transition_efficiency`, design 038) when a file of `crates/infra-postgres/` or of the worker,
+  execution and run modules of `crates/application` changes (constitution 4.4.0, OD-2026-11-12-4).
   What is shared selects no suite: `tests/support`, `tests/fixtures`, any other `runners/` directory, a contract file
   under `specs/`, a dependency of `tests/Cargo.toml` and `Cargo.lock` (which does select the unit tests of every package)
   are used by suites nobody changed, and the release runs those (OD-2026-11-06-2). The log of the selector says
