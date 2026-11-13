@@ -4,6 +4,16 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-13 — OCSF as the standard for security and audit events (feature 040)
+
+The owner asked in the Claude session for one more specification. The assistant opened feature 040 as a Draft design
+and read the request as: the security and audit events the platform hands out take the OCSF shape, as a projection of
+the native record. That reading and the open questions O040-001 to O040-007 are the owner's to confirm.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-13-6 | "Adicione mais uma especificacao de ter o https://schema.ocsf.io/ como padrao": a specification that adopts OCSF as the standard is added as feature 040 | owner | Decided; Draft design, not built | docs/designs/040-ocsf-event-standard.md |
+
 ## 2026-11-13 — Release 0.3.0 ships with the fallback ceilings
 
 The assistant reported that the T014-042 acceptance method (OD-2026-11-04-7: release build, runtime role, a separate
