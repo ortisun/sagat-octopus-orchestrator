@@ -4,6 +4,30 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-12 — Feature 014 closes on root collections; nesting becomes feature 039
+
+On the owner's "Vamos terminar as primitivas", the assistant mapped the eight open tasks of feature 014. Root
+collections, loops, approval, switch, declared operations and the restricted continue-as-new are built; what holds the
+eight tasks open is general **nesting** (a collection inside a collection or beside a loop or an approval), which the
+codec refuses on purpose and which needs the whole capacity program first: the owner's acceptance of ADR-0078 and of
+its open items (the creator, `SCOPED_PATH`, sweeper coverage), then the sweeper, the creator with its migration, G715,
+G724 and G725, the barrier proofs and an activation flag. It recommended (A) closing 014 on what is built and moving
+nesting to a feature of its own, over (B) keeping the original criteria. The owner answered "Siga as recomendacoes".
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-12-6 | "Siga as recomendacoes": feature 014 closes on root (unnested) collections, loops and the other built primitives; general nesting, the capacity program it needs and the nested acceptance criteria move to feature 039 | owner | Decided; not built | specs/014-workflow-primitives/tasks.md T014-014..017, T014-040, T014-042..044; docs/designs/039-nested-collections.md |
+
+What changes, as the recommendation said it:
+
+- This narrows row 1 of 2026-10-26 ("the eight remaining feature-014 tasks … with their original acceptance criteria"):
+  each of the eight tasks keeps its criteria for what feature 014 ships and hands its nested part to feature 039.
+- OD-2026-11-04-7 kept the nested 100,000-instance workload in T014-042; it moves to feature 039 with the rest of
+  nesting. Its other criteria stay in T014-042.
+- Unchanged: OD-2026-11-04-3 (the ChildRoot guard stays off), OD-2026-11-04-4 (ADR-0078 before any production caller),
+  OD-2026-11-04-5/6 (ceilings), OD-2026-11-04-8 (one release-candidate commit for T014-040, T014-042 and T014-043).
+- The codec keeps refusing nesting; nothing that is refused today is enabled by this decision.
+
 ## 2026-11-12 — Merge the rest of the design 038 stack
 
 OD-2026-11-12-2 covered pull requests 203 and 205 to 210. The assistant then built the remaining tasks of design 038 in
