@@ -60,6 +60,13 @@ and the complete shared collection conformance matrix; evidence is in `validatio
 **Independent test**: 17 items, concurrency 3, reverse completion, restart, empty/oversized input and
 permanent failure; one ordered result per index, no fourth active iteration and correct saga drain.
 
+> **Scope narrowed (2026-11-12, OD-2026-11-12-6).** Feature 014 closes on root (unnested) collections, loops and
+> the other built primitives. General nesting, the capacity program it needs and every nested acceptance criterion
+> below (descendant admission, joins, reservations, reduce-to-zero, the broader body families, the nested fault and
+> released-source profiles, the nested 100,000-instance workload) move to feature 039
+> (`docs/designs/039-nested-collections.md`). Each open task below closes on what 014 ships; its nested part is not
+> evidence this feature owes. The codec keeps refusing nesting.
+
 > **Current frontier (2026-11-01, EGM REV-003).** The unchecked boxes below are *not* proof that the
 > collection machinery is missing: root collections with local activity/control/timer/event bodies,
 > captured inline/blob sources, ordered aggregation, fail-fast drain, Applied quota/drain/ordered
