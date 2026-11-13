@@ -649,9 +649,9 @@ export interface paths {
         put?: never;
         /**
          * Cancel, pause or resume a run, decide on a step, hold a step, or start a run again
-         * @description CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`, and `saga:override` for a step whose outcome may have happened, such as a lost lease or a lookup that could not say; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409.
+         * @description CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). Feature 037: a step whose last outcome is unknown (a lost lease, a timeout, OUTCOME_UNKNOWN, a lookup that could not say or said `not_applied`) is never retried by anyone, administrators included: RETRY_STEP is refused with 409 and `details.reason` `OUTCOME_UNRESOLVED`; settle it with RESOLVE_STEP after checking with the provider. SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409.
          *
-         *     Feature 008 adds: RETRY_STEP also asks for the attempt of a step that is only waiting out the delay of a retry, now and not when the delay ends (needs `run:operate`; the scheduler's own retry and the operator's cannot both start an attempt: the first to commit wins and the second is refused with 409). MARK_MANUAL_REVIEW holds a step that has not started (ready, or waiting out a retry delay) for a person to decide (needs `run:operate` and `stepId`; the run becomes MANUAL_REVIEW when no other step is still running, nothing more happens to the step until someone retries it or settles it, and what is known about its last attempt (a lost lease, a timeout) is kept, so a saga that is stopped later still undoes it; refused with 409 for a step in flight, one that already waits for a person or one that is done, and for a lookup, which is held by holding the step it is for). RERUN_AS_NEW starts a new run of the same version with the same input and correlation id from a run that ended (needs `run:operate` and `run:start`, takes no `stepId`; refused with 409 for a run that has not ended; the answer names the run in `newRunId`, which says where it came from in `rerunOf`). All of them need a justification in `reason` and are audited with it; the old attempts and the old run stay as they were.
+         *     Feature 008 adds: RETRY_STEP also asks for the attempt of a step that is only waiting out the delay of a retry, now and not when the delay ends (needs `run:operate`; the scheduler's own retry and the operator's cannot both start an attempt: the first to commit wins and the second is refused with 409). MARK_MANUAL_REVIEW holds a step that has not started (ready, or waiting out a retry delay) for a person to decide (needs `run:operate` and `stepId`; the run becomes MANUAL_REVIEW when no other step is still running, nothing more happens to the step until someone retries it or settles it, and what is known about its last attempt (a lost lease, a timeout) is kept, so a run that is stopped later keeps it for review instead of undoing it (feature 037); refused with 409 for a step in flight, one that already waits for a person or one that is done, and for a lookup, which is held by holding the step it is for). RERUN_AS_NEW starts a new run of the same version with the same input and correlation id from a run that ended (needs `run:operate` and `run:start`, takes no `stepId`; refused with 409 for a run that has not ended; the answer names the run in `newRunId`, which says where it came from in `rerunOf`). All of them need a justification in `reason` and are audited with it; the old attempts and the old run stay as they were.
          */
         post: operations["operateRun"];
         delete?: never;
@@ -1118,6 +1118,58 @@ export interface paths {
          * @description Uses current ad hoc permissions and secret ACL. A paused connection is refused. Only durable SUCCEEDED is evidence of connectivity, for the run's pinned revision. SQL and parameters cannot be supplied.
          */
         post: operations["probeDatabaseConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/connections/{connectionName}/catalog-browse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start browsing the catalog of an Iceberg connection
+         * @description Needs `database:browse`. Browsing needs I/O in the managed executor, so it is admitted like the connection probe
+         *     (a fixed, platform-defined operation as an ad hoc run with the origin `CATALOG_BROWSE`) and answered later by
+         *     `getCatalogBrowse`. A replay with the same idempotency key, tenant, namespace and actor returns the same
+         *     `browseId`. Every browse is audited without naming tables beyond the requested level. Another tenant's
+         *     connection is a `404`.
+         */
+        post: operations["startCatalogBrowse"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/catalog-browses/{browseId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                browseId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Read a catalog browse
+         * @description Needs `database:browse`, and only the actor who started the browse can read it: anyone else gets the same
+         *     `404` as for a missing browse. A page holds at most 200 entries. The result expires 10 minutes after the browse
+         *     completes. Browse runs are left out of run lists and run reads for every role.
+         */
+        get: operations["getCatalogBrowse"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2204,7 +2256,7 @@ export interface paths {
         put?: never;
         /**
          * Write a script
-         * @description Needs `script:write`. A script is a draft that can be tried (`createScriptTestRun`) and published (`publishScriptVersion`). TypeScript (`typescript`) and Python (`python`) are built; `csharp`, `go` and `java` are named by the workflow schema and refused with `details.reason` `LANGUAGE_NOT_BUILT`.
+         * @description Needs `script:write`. A script is a draft that can be tried (`createScriptTestRun`) and published (`publishScriptVersion`). All five languages the workflow schema names (`typescript`, `python`, `csharp`, `go`, `java`) are accepted for authoring; a build or test run needs the matching runner image and toolchain to be configured (`docs/runbooks/scripts.md`). A language the platform has no builder for is refused with `details.reason` `LANGUAGE_NOT_BUILT`.
          *     A TypeScript script exports a default function `(input, octopus) => result`; a Python script defines `run(input, octopus)`. `octopus.fetch(url, init)` asks the platform for an HTTP request (under the egress policy of the namespace, and only if the script's `policy.egress` is `namespace`), `octopus.secret(name)` asks for a secret the step declared, `octopus.log(...)` writes to the log. The script has no network of its own, no filesystem but a small scratch area, and no secrets it was not given.
          *     In a workflow the script receives the step document (`{run, node, input, steps}`); a test run receives exactly the input it is given.
          *     `inputSchema` and `outputSchema` are JSON Schemas (no references outside the document): the input is checked before the script runs and the result after. They are part of the artifact. Limits that are left out are the platform's defaults; asking for more than the platform allows is refused with `details.reason` `ABOVE_CEILING`. A `lockfile` that pins a package is refused when the version is built (installing packages is not available yet); one that pins nothing is part of the build.
@@ -2637,6 +2689,164 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/namespaces/{namespaceId}/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the schedules of a namespace, newest first
+         * @description Needs `schedule:read`. Never returns the input of the runs, only its digest.
+         */
+        get: operations["listSchedules"];
+        put?: never;
+        /**
+         * Create a schedule
+         * @description Needs `schedule:write` and `run:start`; the caller becomes `authorizedBy`, the subject whose `run:start` every action of the schedule is checked against. The spec is validated (the zone, the bounds, at least one occurrence, the minimum spacing over the next 1,000 occurrences) and the input must be an object of at most 64 KiB. It counts against the namespace's `schedules` quota. A name is unique among the schedules of a namespace that have not been deleted.
+         *     A refusal names `details.reason` (`SCHEDULE_SPEC_INVALID`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_INPUT_INVALID`) and, where it can, `details.field` as a JSON pointer. A request sent again after a lost answer is told what the first one did (409 for a name in use), it is never applied twice.
+         */
+        post: operations["createSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Describe a schedule with its next times and what it has done
+         * @description Needs `schedule:read`. `nextActions` are the next times it will act on (none while it is paused or has ended); `recentActions` its latest decisions, newest first; `openRuns` the runs it started that are still open; `counters` how many of each outcome it has had.
+         */
+        get: operations["getSchedule"];
+        /**
+         * Replace the spec, the policies and the action as a new revision
+         * @description Needs `schedule:write` and `run:start`; the caller becomes `authorizedBy`. `expectedRevision` is required: a stale one is `409` with `details.reason` `REVISION_CONFLICT` and `details.currentRevision`. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_OWNED`. The input is always sent whole. The next time is the first one strictly after the update.
+         */
+        put: operations["updateSchedule"];
+        post?: never;
+        /**
+         * Delete a schedule; the runs it started are not touched
+         * @description Needs `schedule:write` and `run:start`. `expectedRevision` is required and checked in the transaction that deletes: a stale one is `409` `REVISION_CONFLICT`. The actions that were waiting are dropped (`DROPPED_DELETED`), the name is free, and the history stays.
+         */
+        delete: operations["deleteSchedule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause a schedule with a note
+         * @description Needs `schedule:operate`. No time is acted on while it is paused, and none is caught up afterwards. Pausing a paused schedule replaces the note. Audited, without the note. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+         */
+        post: operations["pauseSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resume a schedule with a note; it continues from the first time after now
+         * @description Needs `schedule:operate` and `run:start`; the caller becomes `authorizedBy`. The times that passed while it was paused are not caught up. Audited, without the note. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+         */
+        post: operations["resumeSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/trigger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Act on a schedule now, also while it is paused
+         * @description Needs `schedule:operate` and `run:start`. One `TRIGGERED` action at the time of the request (`origin` `MANUAL`: it never shares an identity with a scheduled time, even at the same instant), with the overlap rule of the schedule unless the body names another for this action only. It does not use up a remaining action, is not limited by the catch-up window and leaves a time that is owed alone. The run is the schedule's (`startedBy` is `system:schedule:<id>`) under the role of the caller. The answer says what became of the action: a run `STARTED`, or `BUFFERED`, `SKIPPED_OVERLAP`, `DROPPED_BUFFER_FULL`.
+         *     The same `Idempotency-Key` and request give the same action; the same key with another request is `409` `IDEMPOTENCY_KEY_REUSED`. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+         */
+        post: operations["triggerSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/backfills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The backfills of a schedule, newest first
+         * @description Needs `schedule:read`. At most the latest 100.
+         */
+        get: operations["listScheduleBackfills"];
+        put?: never;
+        /**
+         * Act on every nominal time of a past range that has no action yet
+         * @description Needs `schedule:operate` and `run:start`; the runs are the schedule's, under the role of the caller. `start` is in the range and `end` is not, and `end` must not be after now (`422` `BACKFILL_RANGE_INVALID`). The range may hold at most 1,000 nominal times (`422` `BACKFILL_LIMIT`). The overlap rule is `BUFFER_ALL` unless the body names another; a backfill never drops a time that does not fit: it waits for room. A time that already has an action is counted `ALREADY_ACTED` and never gets a second run. One backfill runs at a time on a schedule and a namespace has the number its `schedule_backfills` quota says (`429`). It works while the schedule is paused, and its times take no remaining action.
+         */
+        post: operations["createScheduleBackfill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/namespaces/{namespaceId}/schedules/{scheduleId}/backfills/{backfillId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop a backfill; the times it acted on stay acted on
+         * @description Needs `schedule:operate`. Stopping a backfill that has ended changes nothing and is not audited again.
+         */
+        post: operations["cancelScheduleBackfill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2843,7 +3053,7 @@ export interface components {
             requestId?: string;
             /** @description What can be done about it, in a sentence from a closed table: the same for every error of a `code`, refined by `details.reason` when that changes what to do. It never carries a payload, a secret or another tenant's data. Absent from the errors of a platform older than feature 008. */
             remediation?: string;
-            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
+            /** @description Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the reason `ROUTE_NOT_FOUND` (an unknown path) or `BAD_REQUEST` with `METHOD_NOT_ALLOWED` (a known path, another method): an SDK newer than the server tells that from a resource that does not exist, which is `NOT_FOUND` without those reasons. Structured workflow capabilities refine existing codes with `INVALID_SCOPE`, `INVALID_OPERATION_STATE`, `NOT_ELIGIBLE`, `INITIATOR_CANNOT_DECIDE`, `CHAIN_HEAD_CHANGED`, `RUN_NOT_MUTABLE`, `RUN_CONTINUED`, `INVALID_ARGUMENTS`, `INVALID_UPDATE_KEY`, `INVALID_DECISION_KEY`, `INVALID_REASON_CODE`, `REVISION_CONFLICT` and `UPDATE_REJECTED`; payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`, `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`; compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another attempt was asked of a step whose last outcome is unknown); Iceberg writes and step-output destinations (feature 035) refine `VALIDATION_FAILED` with `ICEBERG_NODE_NOT_ROOT`, `DESTINATION_NOT_ROOT`, `MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`, `UNKNOWN_CONNECTION_KIND`, `BROKER_SOURCE_NOT_INLINE`, `FILTER_TOO_DEEP` (more than 8 levels or 64 comparisons), `LAKE_DISABLED` (the deployment's lake switch is off) and `CREDENTIAL_IN_URI` (a connection URI that carries user information or query credentials); they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`. */
             details?: {
                 [key: string]: unknown;
             };
@@ -3015,10 +3225,33 @@ export interface components {
         ProbeDatabaseConnectionRequest: {
             revision?: number;
         };
+        /**
+         * @description The latest probe of a connection. `run.status` says that the probe ran; what it found is `failureCode` and, for the probe of an Iceberg
+         *     connection, `checks`. A failed check is the answer and not a fault of the platform, so the run of such a probe is `SUCCEEDED` and
+         *     `failureCode` is the code of its first failed check: a reader that knows no checks still sees that something is wrong. An Iceberg probe
+         *     that succeeded and whose result can no longer be read says `DATABASE_RESULT_UNAVAILABLE`: no checks never means a healthy connection.
+         *     A connection is confirmed only when every check is `PASSED`.
+         */
         DatabaseConnectionProbe: {
             run: components["schemas"]["Run"];
             revision: number;
             failureCode: string | null;
+            /** @description The checks of the probe of an Iceberg connection, in the order they ran. Absent for any other probe, and for an Iceberg probe whose result cannot be read. */
+            checks?: components["schemas"]["DatabaseConnectionProbeCheck"][];
+        };
+        DatabaseConnectionProbeCheck: {
+            /** @enum {string} */
+            check: "CATALOG_AUTH" | "WAREHOUSE" | "STORAGE_ACCESS";
+            /**
+             * @description A `SKIPPED` check did not run (an earlier one failed, or the connection vends its credentials). It is not confirmed, and is never `PASSED`.
+             * @enum {string}
+             */
+            outcome: "PASSED" | "FAILED" | "SKIPPED";
+            /**
+             * @description Why a `FAILED` check failed. Only a failed check has one.
+             * @enum {string}
+             */
+            code?: "DATABASE_AUTHENTICATION_FAILED" | "DATABASE_TLS_FAILED" | "DATABASE_DESTINATION_DENIED" | "DATABASE_TIMEOUT" | "CATALOG_UNAVAILABLE" | "STORAGE_UNAVAILABLE" | "ICEBERG_LOCATION_NOT_ALLOWED";
         };
         Run: {
             /** @description Present only for retained private managed executions. */
@@ -3580,6 +3813,11 @@ export interface components {
             subject: string;
             /** @description Activity names, `<prefix>.*` or `*`. */
             activities: string[];
+            /**
+             * @description What kind of managed work a dedicated runner (`database-runner`) may register for: `database` serves SQL steps, `lake` serves Iceberg writes. A runner registers only for the managed activities of its profile, whatever its patterns cover. It means nothing to an ordinary worker. Bindings made before profiles existed read as `database`.
+             * @enum {string}
+             */
+            profile: "database" | "lake";
             /** @description The worker pools the identity was granted in this namespace; a secret that lists pools is delivered only to identities that hold one of them. */
             pools?: string[];
             revoked?: components["schemas"]["RevokedWorkers"];
@@ -3591,6 +3829,11 @@ export interface components {
             activities: string[];
             /** @description Replaces the pools the identity is granted. Absent leaves them as they are; an empty list takes them all away. Removing the binding removes them too. */
             pools?: string[];
+            /**
+             * @description Sets the profile of a dedicated runner. Absent keeps the one it has (`database` for a new binding). A runner whose session offers the managed activities of another profile is closed when the profile changes.
+             * @enum {string}
+             */
+            profile?: "database" | "lake";
         };
         Secret: {
             name: string;
@@ -3721,7 +3964,10 @@ export interface components {
             mode: "development-plaintext";
         };
         PostgresConnectionConfig: {
-            /** @constant */
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
             driver: "postgresql";
             /** @description Bare DNS hostname or IP, never a URL or credentials */
             host: string;
@@ -3730,7 +3976,192 @@ export interface components {
             tls: components["schemas"]["DatabaseTls"];
             secretName: string;
             limits?: components["schemas"]["DatabaseLimits"];
+            egressCeiling?: components["schemas"]["EgressCeiling"];
         };
+        /**
+         * @description The highest classification level a step may write to this connection or subscription. `secret` is never a value. A revision without the field reads as `internal`. Setting `pii` needs the payload-disclosure reveal grant for the namespace.
+         * @default internal
+         * @enum {string}
+         */
+        EgressCeiling: "public" | "internal" | "pii";
+        /** @description Ceilings for one write. The effective value is the minimum of the platform, namespace, connection and step values, and zero is not unlimited. */
+        LakeLimits: {
+            maxRecordBytes?: number;
+            maxRecords?: number;
+            timeoutMs?: number;
+        };
+        /** @description A URI that carries user information or query credentials is refused with `VALIDATION_FAILED` and the reason `CREDENTIAL_IN_URI`. HTTPS is required outside development. */
+        IcebergRestCatalog: {
+            /** Format: uri */
+            uri: string;
+            warehouse: string;
+            prefix?: string;
+            auth: {
+                /** @constant */
+                type: "oauth2";
+                /** Format: uri */
+                tokenUri: string;
+                scope?: string;
+            } | {
+                /** @constant */
+                type: "bearer";
+            } | {
+                /** @constant */
+                type: "sigv4";
+                region: string;
+                signingName: string;
+            };
+            /**
+             * @default none
+             * @enum {string}
+             */
+            accessDelegation: "none" | "vended-credentials";
+            /** @default false */
+            remoteSigning: boolean;
+        };
+        /** @description The member that matches `type` is required and no other is allowed. */
+        IcebergCatalog: {
+            /** @enum {string} */
+            type: "rest" | "glue" | "hive" | "jdbc";
+            rest?: components["schemas"]["IcebergRestCatalog"];
+            glue?: {
+                region: string;
+                catalogId: string;
+                roleArn?: string;
+                externalId?: string;
+            };
+            hive?: {
+                uris: string[];
+                /**
+                 * @description `none` is accepted only when the deployment sets `allowUnauthenticatedMetastore`.
+                 * @enum {string}
+                 */
+                tls: "required" | "none";
+            };
+            jdbc?: {
+                host: string;
+                port: number;
+                database: string;
+                tls: components["schemas"]["DatabaseTls"];
+                /** @enum {string} */
+                engine: "postgresql";
+            };
+        } & ({
+            /** @constant */
+            type?: "rest";
+        } | {
+            /** @constant */
+            type?: "glue";
+        } | {
+            /** @constant */
+            type?: "hive";
+        } | {
+            /** @constant */
+            type?: "jdbc";
+        });
+        /** @description The member that matches `type` is required and no other is allowed. `vended` credentials are valid only with a REST catalog that delegates access. */
+        LakeStorage: {
+            /** @enum {string} */
+            type: "s3" | "gcs" | "adls";
+            s3?: {
+                region: string;
+                /** Format: uri */
+                endpoint?: string;
+                /** @default false */
+                pathStyle: boolean;
+                roleArn?: string;
+                externalId?: string;
+            };
+            gcs?: {
+                project?: string;
+                /**
+                 * Format: uri
+                 * @description An emulator; development only.
+                 */
+                endpoint?: string;
+            };
+            adls?: {
+                account: string;
+                endpointSuffix?: string;
+            };
+            /**
+             * @default static
+             * @enum {string}
+             */
+            credentials: "static" | "vended";
+        } & ({
+            /** @constant */
+            type?: "s3";
+        } | {
+            /** @constant */
+            type?: "gcs";
+        } | {
+            /** @constant */
+            type?: "adls";
+        });
+        /** @description Every table, data, delete and metadata location must start with one of `warehouseLocations`. The platform never creates a bucket, a namespace or a table. */
+        IcebergConnectionConfig: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            driver: "iceberg";
+            catalog: components["schemas"]["IcebergCatalog"];
+            storage: components["schemas"]["LakeStorage"];
+            warehouseLocations: string[];
+            /**
+             * @default [
+             *       "append"
+             *     ]
+             */
+            allowedModes: ("append" | "overwrite" | "upsert")[];
+            catalogSecret?: string;
+            /** @description Absent when the storage credentials are `vended`. */
+            storageSecret?: string;
+            egressCeiling?: components["schemas"]["EgressCeiling"];
+            limits?: components["schemas"]["LakeLimits"];
+        };
+        ObjectStorageConnectionConfig: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            driver: "object_storage";
+            storage: components["schemas"]["LakeStorage"];
+            /** @description One URI prefix, without `..`. */
+            prefix: string;
+            storageSecret?: string;
+            formats: ("parquet" | "ndjson")[];
+            /** @description Found by the probe and recorded with its result; never authored. */
+            readonly conditionalCreate?: boolean | "unknown";
+            egressCeiling?: components["schemas"]["EgressCeiling"];
+            limits?: components["schemas"]["LakeLimits"];
+        };
+        /** @description The database named here is the only one a destination may target. */
+        ClickHouseConnectionConfig: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            driver: "clickhouse";
+            /**
+             * Format: uri
+             * @description HTTPS; plain HTTP only in development.
+             */
+            url: string;
+            database: string;
+            tls: {
+                /** @constant */
+                mode: "verify-full";
+                /** @description Optional public CA certificates, never a private key */
+                caPem?: string;
+            };
+            secret: string;
+            egressCeiling?: components["schemas"]["EgressCeiling"];
+            limits?: components["schemas"]["LakeLimits"];
+        };
+        /** @description The configuration of a connection, discriminated by `driver`. Every variant is closed. */
+        DatabaseConnectionConfig: components["schemas"]["PostgresConnectionConfig"] | components["schemas"]["IcebergConnectionConfig"] | components["schemas"]["ObjectStorageConnectionConfig"] | components["schemas"]["ClickHouseConnectionConfig"];
         DatabaseConnection: {
             /** Format: uuid */
             id: string;
@@ -3740,21 +4171,80 @@ export interface components {
             revision: number;
             /** @enum {string} */
             status: "ACTIVE" | "PAUSED" | "DELETED";
-            config: components["schemas"]["PostgresConnectionConfig"];
+            config: components["schemas"]["DatabaseConnectionConfig"];
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
         };
+        CatalogTableIdentifier: {
+            namespace: string[];
+            name: string;
+        };
+        /** @description `NAMESPACES` and `TABLES` list the entries under `parent` (the root when absent); `TABLE` reads one table and needs `table`. */
+        CatalogBrowseRequest: {
+            /** @enum {string} */
+            level: "NAMESPACES" | "TABLES" | "TABLE";
+            parent?: string[];
+            table?: components["schemas"]["CatalogTableIdentifier"];
+            pageToken?: string;
+        };
+        CatalogBrowseAccepted: {
+            /** Format: uuid */
+            browseId: string;
+        };
+        CatalogBrowse: {
+            /** Format: uuid */
+            browseId: string;
+            /** @enum {string} */
+            state: "PENDING" | "DONE" | "FAILED";
+            page?: {
+                items: {
+                    namespace: string[];
+                    /** @description Present for a table, absent for a namespace. */
+                    name?: string;
+                }[];
+                nextPageToken?: string;
+            };
+            table?: {
+                schema: {
+                    [key: string]: unknown;
+                };
+                partitionSpec: {
+                    [key: string]: unknown;
+                };
+                identifierFields: string[];
+                refs: {
+                    [key: string]: {
+                        [key: string]: unknown;
+                    };
+                };
+                formatVersion: number;
+            };
+            failure?: {
+                /** @description A code of the typed failure set of the lake (docs/reference). */
+                code: string;
+            };
+        };
         DatabaseDriverList: {
-            items: {
-                /** @enum {string} */
-                id: "postgresql";
-                operations: ("query" | "execute")[];
-                parameterTypes: ("null" | "boolean" | "integer" | "decimal" | "float" | "text" | "timestamp" | "date" | "binary" | "json")[];
-                defaultLimits: components["schemas"]["DatabaseLimits"];
-                maximumLimits: components["schemas"]["DatabaseLimits"];
-            }[];
+            items: (components["schemas"]["DatabaseDriver"] | components["schemas"]["LakeDatabaseDriver"])[];
+        };
+        DatabaseDriver: {
+            /** @enum {string} */
+            id: "postgresql";
+            operations: ("query" | "execute")[];
+            parameterTypes: ("null" | "boolean" | "integer" | "decimal" | "float" | "text" | "timestamp" | "date" | "binary" | "json")[];
+            defaultLimits: components["schemas"]["DatabaseLimits"];
+            maximumLimits: components["schemas"]["DatabaseLimits"];
+        };
+        /** @description A driver of the lake deployment (feature 035), so the Studio and the SDKs never hard-code the list. */
+        LakeDatabaseDriver: {
+            /** @enum {string} */
+            id: "iceberg" | "object_storage" | "clickhouse";
+            catalogTypes?: ("rest" | "glue" | "hive" | "jdbc")[];
+            storageTypes?: ("s3" | "gcs" | "adls")[];
+            modes?: ("append" | "overwrite" | "upsert")[];
+            formats?: ("parquet" | "ndjson")[];
         };
         DatabaseConnectionList: {
             items: components["schemas"]["DatabaseConnection"][];
@@ -3763,7 +4253,7 @@ export interface components {
             /** Format: uuid */
             requestId: string;
             expectedRevision: number;
-            config: components["schemas"]["PostgresConnectionConfig"];
+            config: components["schemas"]["DatabaseConnectionConfig"];
             /** @enum {string} */
             status: "ACTIVE" | "PAUSED";
         };
@@ -3796,9 +4286,10 @@ export interface components {
          *     api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
          *     fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
          *     script_retention_days is 0..365 days. iteration_concurrency is tenant-wide; its explicit
-         *     value is 1..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
-         *     cleared, structured iteration admission is disabled. Zero disables new admission for
-         *     resources that accept it.
+         *     value is 0..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
+         *     cleared, structured iteration admission is disabled. An explicit zero policy blocks
+         *     new iteration admissions without pausing already admitted work; its source is tenant.
+         *     Zero disables new admission for other resources that accept it.
          *     Database operation ceilings are positive:
          *     database_statement_bytes <= 65536, database_parameters <= 256,
          *     database_parameter_bytes <= 262144, database_rows <= 10000,
@@ -3808,12 +4299,14 @@ export interface components {
          *     operation and connection defaults remain smaller. Count ceilings default/max are
          *     database_connections 100/1000 (including paused), database_concurrency 16/64,
          *     tenant_database_concurrency 64/256, secret_provider_operations 32/128.
+         *     Schedules (feature 018) are schedules 200/10000, counting active and paused ones, and
+         *     schedule_backfills 4/16, counting backfills that have not finished.
          *     Zero disables new admission for count/rate/retention resources, never means unlimited.
          *     Lowering a limit does not erase retained content or rewrite existing expiry.
          */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills";
             /** Format: int64 */
             limit: number;
             /**
@@ -4089,7 +4582,7 @@ export interface components {
             namespaceId: string;
             name: string;
             /** @enum {string} */
-            kind: "NATS" | "KAFKA" | "SQS";
+            kind: "NATS" | "KAFKA" | "SQS" | "REDIS";
             settings: components["schemas"]["OutboundBrokerSettings"];
             /** @description Optional namespace secret containing the broker credentials JSON. */
             secretName?: string;
@@ -4111,7 +4604,7 @@ export interface components {
         CreateBrokerSubscriptionRequest: {
             name: string;
             /** @enum {string} */
-            kind: "NATS" | "KAFKA" | "SQS";
+            kind: "NATS" | "KAFKA" | "SQS" | "REDIS";
             settings: components["schemas"]["OutboundBrokerSettings"];
             secretName?: string;
             events: ("run.finished" | "ops.alert.fired" | "ops.alert.resolved")[];
@@ -4130,7 +4623,7 @@ export interface components {
              * @description Must remain the subscription kind set at creation.
              * @enum {string}
              */
-            kind: "NATS" | "KAFKA" | "SQS";
+            kind: "NATS" | "KAFKA" | "SQS" | "REDIS";
             settings: components["schemas"]["OutboundBrokerSettings"];
             secretName?: string;
             events: ("run.finished" | "ops.alert.fired" | "ops.alert.resolved")[];
@@ -4144,7 +4637,7 @@ export interface components {
              */
             status: "ACTIVE" | "PAUSED";
         };
-        OutboundBrokerSettings: components["schemas"]["OutboundNatsSettings"] | components["schemas"]["OutboundKafkaSettings"] | components["schemas"]["OutboundSqsSettings"];
+        OutboundBrokerSettings: components["schemas"]["OutboundNatsSettings"] | components["schemas"]["OutboundKafkaSettings"] | components["schemas"]["OutboundSqsSettings"] | components["schemas"]["OutboundRedisSettings"];
         OutboundNatsSettings: {
             servers: string[];
             subject: string;
@@ -4156,6 +4649,14 @@ export interface components {
         OutboundSqsSettings: {
             queueUrl: string;
             region: string;
+        };
+        /** @description Redis Streams outbound callback. Requires operator activation after a cold upgrade. Credentials belong in the namespace secret named by secretName; use TLS for authentication. No Cluster/Sentinel or automatic trimming. */
+        OutboundRedisSettings: {
+            /** @description Host and explicit port; no credentials or database path. rediss enables certificate and hostname verification. */
+            server: string;
+            stream: string;
+            /** @default 0 */
+            database: number;
         };
         OutboundSubscriptionHealth: {
             consecutiveDead: number;
@@ -4182,6 +4683,13 @@ export interface components {
              * @enum {string}
              */
             status: "ACTIVE" | "PAUSED" | "DISABLED";
+            /**
+             * @description Absent on a platform older than feature 035, which means `RUN_EVENTS`.
+             * @enum {string}
+             */
+            purpose?: "RUN_EVENTS" | "STEP_OUTPUT";
+            /** @description Carried by `STEP_OUTPUT` subscriptions only. */
+            egressCeiling?: components["schemas"]["EgressCeiling"];
             health: {
                 consecutiveDead: number;
                 /** Format: date-time */
@@ -4213,6 +4721,14 @@ export interface components {
              * @enum {string}
              */
             status: "ACTIVE" | "PAUSED";
+            /**
+             * @description A `STEP_OUTPUT` subscription is the target of a broker-stream destination and selects no run-event kinds.
+             * @default RUN_EVENTS
+             * @enum {string}
+             */
+            purpose: "RUN_EVENTS" | "STEP_OUTPUT";
+            /** @description Carried by `STEP_OUTPUT` subscriptions only. `pii` needs the payload-disclosure reveal grant. */
+            egressCeiling?: components["schemas"]["EgressCeiling"];
         };
         UpdateWebhookSubscriptionRequest: {
             url: string;
@@ -4583,7 +5099,7 @@ export interface components {
         };
         CreateScriptRequest: {
             name: string;
-            /** @description typescript or python; csharp, go and java are refused until they are built. */
+            /** @description typescript, python, csharp, go or java; a language without a builder is refused with LANGUAGE_NOT_BUILT. */
             language: string;
             source: string;
             lockfile?: string;
@@ -5087,6 +5603,264 @@ export interface components {
             request?: components["schemas"]["PublicationRequest"] | null;
             activeVersion?: number | null;
         };
+        ScheduleRange: {
+            start: number;
+            /** @description Inclusive; equals start when absent. */
+            end?: number;
+            /** @default 1 */
+            step: number;
+        };
+        /** @description Union of ranges. The server checks each bound against the domain of the field. */
+        ScheduleField: components["schemas"]["ScheduleRange"][];
+        /** @description A structured calendar. `second`, `minute` and `hour` default to `[{start: 0}]`; `dayOfMonth`, `month`, `year` and `dayOfWeek` default to every value. Domains: second 0-59, minute 0-59, hour 0-23, dayOfMonth 1-31, month 1-12, year 2000-2200, dayOfWeek 0-6 (0 is Sunday). A day matches when both `dayOfMonth` and `dayOfWeek` match. */
+        ScheduleCalendarSpec: {
+            second?: components["schemas"]["ScheduleField"];
+            minute?: components["schemas"]["ScheduleField"];
+            hour?: components["schemas"]["ScheduleField"];
+            dayOfMonth?: components["schemas"]["ScheduleField"];
+            month?: components["schemas"]["ScheduleField"];
+            year?: components["schemas"]["ScheduleField"];
+            dayOfWeek?: components["schemas"]["ScheduleField"];
+            comment?: string;
+        };
+        /** @description The grammar of a cron trigger (feature 004): five fields (minute, hour, day of month, month, day of week), evaluated with the same calendar library. */
+        ScheduleCronString: string;
+        ScheduleIntervalSpec: {
+            everyMs: number;
+            /**
+             * @description Phase from the Unix epoch; less than everyMs.
+             * @default 0
+             */
+            offsetMs: number;
+        };
+        ScheduleDstPolicy: {
+            /**
+             * @description A local time that does not exist: no action, or the first valid instant after the gap.
+             * @default SKIP
+             * @enum {string}
+             */
+            gap: "SKIP" | "SHIFT_FORWARD";
+            /**
+             * @description A local time that happens twice: the earlier instant only, or both.
+             * @default ONCE_EARLIER
+             * @enum {string}
+             */
+            ambiguous: "ONCE_EARLIER" | "TWICE";
+        };
+        /** @description When a schedule acts. At least one of `calendars`, `cron` and `intervals`. The server also enforces: the entries together are at most the effective ceiling (default 10, hard 32); at least one occurrence falls inside `[startAt, endAt)`; no two of the next 1,000 occurrences are closer than the effective minimum spacing (default 60 s, floor 10 s); `jitterMs` is at most 24 hours. */
+        ScheduleSpec: {
+            calendars?: components["schemas"]["ScheduleCalendarSpec"][];
+            cron?: components["schemas"]["ScheduleCronString"][];
+            intervals?: components["schemas"]["ScheduleIntervalSpec"][];
+            /** @description A nominal time matched by any exclusion is not an occurrence. */
+            exclusions?: components["schemas"]["ScheduleCalendarSpec"][];
+            /** Format: date-time */
+            startAt?: string;
+            /**
+             * Format: date-time
+             * @description Exclusive. No action is taken at or after it, jitter included.
+             */
+            endAt?: string;
+            /**
+             * @description An IANA name; the calendars and cron strings are evaluated in it, the intervals are not.
+             * @default UTC
+             */
+            timezone: string;
+            /**
+             * @description A deterministic offset in [0, jitterMs) per schedule and nominal time, bounded by the gap to the next nominal time.
+             * @default 0
+             */
+            jitterMs: number;
+            dst?: components["schemas"]["ScheduleDstPolicy"];
+        } | unknown | unknown | unknown;
+        /**
+         * @description What a time does while a run the schedule started is still open. There is no terminate variant.
+         * @default SKIP
+         * @enum {string}
+         */
+        ScheduleOverlapPolicy: "SKIP" | "BUFFER_ONE" | "BUFFER_ALL" | "CANCEL_OTHER" | "ALLOW_ALL";
+        SchedulePolicies: {
+            overlap?: components["schemas"]["ScheduleOverlapPolicy"];
+            /** @default 31622400000 */
+            catchupWindowMs: number;
+            /**
+             * @default ONE
+             * @enum {string}
+             */
+            catchupMode: "ONE" | "ALL";
+            /** @default false */
+            pauseOnFailure: boolean;
+            /**
+             * @description BUFFER_ALL only; clamped to the ceiling of the namespace.
+             * @default 100
+             */
+            bufferLimit: number;
+        };
+        ScheduleAction: {
+            /** Format: uuid */
+            workflowId: string;
+            /**
+             * @default ACTIVE
+             * @enum {string}
+             */
+            versionPolicy: "ACTIVE" | "PINNED";
+            /**
+             * Format: uuid
+             * @description Required with PINNED, refused otherwise.
+             */
+            versionId?: string;
+            /** @description The input of every run, at most 64 KiB; never returned. */
+            input: Record<string, never>;
+            /** @description A top-level input property set to the nominal time of the action (RFC 3339, UTC). */
+            nominalTimeField?: string;
+            runTimeoutMs?: number;
+        };
+        ScheduleFields: {
+            name: string;
+            spec: components["schemas"]["ScheduleSpec"];
+            policies?: components["schemas"]["SchedulePolicies"];
+            action: components["schemas"]["ScheduleAction"];
+            /** @default false */
+            paused: boolean;
+            note?: string;
+            remainingActions?: number;
+        };
+        ScheduleWrite: components["schemas"]["ScheduleFields"];
+        ScheduleUpdate: components["schemas"]["ScheduleFields"] & {
+            expectedRevision: number;
+        };
+        ScheduleTriggerRequest: {
+            overlap?: components["schemas"]["ScheduleOverlapPolicy"];
+        };
+        ScheduleBackfillRequest: {
+            /** Format: date-time */
+            start: string;
+            /**
+             * Format: date-time
+             * @description Exclusive; not after now.
+             */
+            end: string;
+            overlap?: components["schemas"]["ScheduleOverlapPolicy"];
+        };
+        ScheduleBackfill: {
+            /** Format: uuid */
+            backfillId: string;
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            end: string;
+            /**
+             * Format: date-time
+             * @description The last nominal time acted on or found already acted on.
+             */
+            cursor?: string | null;
+            /** @enum {string} */
+            state: "PENDING" | "RUNNING" | "COMPLETED" | "CANCELLED";
+            overlap: components["schemas"]["ScheduleOverlapPolicy"];
+            /** @description How many times of each outcome, ALREADY_ACTED included. */
+            counts: {
+                [key: string]: number;
+            };
+        };
+        ScheduleBackfillList: {
+            items: components["schemas"]["ScheduleBackfill"][];
+        };
+        ScheduleNote: {
+            note: string;
+        };
+        Schedule: {
+            /** Format: uuid */
+            scheduleId: string;
+            name: string;
+            /** @enum {string} */
+            origin: "API" | "TRIGGER";
+            /**
+             * Format: uuid
+             * @description TRIGGER only.
+             */
+            triggerId?: string;
+            /** @enum {string} */
+            state: "ACTIVE" | "PAUSED";
+            /** @description `remainingActions` reached zero. */
+            exhausted?: boolean;
+            revision: number;
+            spec?: components["schemas"]["ScheduleSpec"];
+            policies?: components["schemas"]["SchedulePolicies"];
+            /** @description The action without its input; `inputDigest` (SHA-256, hex) describes the input. */
+            action?: {
+                /** Format: uuid */
+                workflowId?: string;
+                /** @enum {string} */
+                versionPolicy?: "ACTIVE" | "PINNED";
+                /** Format: uuid */
+                versionId?: string;
+                inputDigest?: string;
+                nominalTimeField?: string;
+                runTimeoutMs?: number;
+            };
+            note?: string | null;
+            noteBy?: string | null;
+            /** Format: date-time */
+            noteAt?: string | null;
+            authorizedBy?: string;
+            remainingActions?: number | null;
+            /** Format: date-time */
+            nextActionAt?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        ScheduleDescription: components["schemas"]["Schedule"] & {
+            nextActions: {
+                /** Format: date-time */
+                nominalTime: string;
+                /** Format: date-time */
+                actualTime: string;
+            }[];
+            recentActions: components["schemas"]["ScheduleActionRecord"][];
+            openRuns: string[];
+            bufferedCount: number;
+            counters: {
+                [key: string]: number;
+            };
+        };
+        SchedulePage: {
+            items: components["schemas"]["Schedule"][];
+            nextCursor?: string | null;
+        };
+        /**
+         * @description The set only grows; a client treats an unknown value as another outcome.
+         * @enum {string}
+         */
+        ScheduleActionOutcome: "STARTED" | "BUFFERED" | "SKIPPED_OVERLAP" | "DROPPED_BUFFER_FULL" | "DROPPED_DELETED" | "COALESCED" | "MISSED_CATCHUP_WINDOW" | "ALREADY_ACTED" | "AUTHORITY_REVOKED" | "BUSINESS_ID_CONFLICT";
+        ScheduleActionRecord: {
+            /** Format: date-time */
+            nominalTime: string;
+            /** Format: date-time */
+            actualTime?: string | null;
+            /** @enum {string} */
+            kind: "SCHEDULED" | "TRIGGERED" | "BACKFILL";
+            /**
+             * @description The identity of the time: SPEC (scheduled and backfill actions share the nominal times of the spec) or MANUAL (trigger-now).
+             * @enum {string}
+             */
+            origin?: "SPEC" | "MANUAL";
+            revision: number;
+            outcome: components["schemas"]["ScheduleActionOutcome"];
+            /** @description A closed code, for example TRACKING_LIMIT. */
+            reason?: string | null;
+            /** Format: uuid */
+            runId?: string | null;
+            /** Format: uuid */
+            backfillId?: string | null;
+            /** @description How many times a COALESCED or MISSED_CATCHUP_WINDOW summary stands for. */
+            summaryCount?: number | null;
+            /** Format: date-time */
+            summaryLastNominalTime?: string | null;
+            /** Format: date-time */
+            decidedAt: string;
+        };
     };
     responses: {
         /** @description The body is larger than this endpoint takes */
@@ -5162,6 +5936,15 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description A limit of the tenant or the namespace is reached (details.limit names it): free capacity or ask an administrator. A request budget that is used up is the same status with a Retry-After header */
+        QuotaExceeded: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description A dependency is temporarily unavailable; retry later */
         Unavailable: {
             headers: {
@@ -5192,6 +5975,7 @@ export interface components {
         Cursor: string;
         /** @description Page size; values outside 1..200 are clamped. */
         Limit: number;
+        ScheduleId: string;
         /** @description The identity (the `sub` of its token), URL-encoded. */
         WorkerSubject: string;
         /** @description The namespace member identity (the `sub` of its token), URL-encoded. */
@@ -5203,7 +5987,7 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills";
         ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;
@@ -7422,6 +8206,79 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    startCatalogBrowse: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                connectionName: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CatalogBrowseRequest"];
+            };
+        };
+        responses: {
+            /** @description The browse is admitted */
+            202: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogBrowseAccepted"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getCatalogBrowse: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                browseId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The browse */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogBrowse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
@@ -10732,6 +11589,418 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listSchedules: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `nextCursor` by the previous page. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Page size; values outside 1..200 are clamped. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of schedules */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SchedulePage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    createSchedule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleWrite"];
+            };
+        };
+        responses: {
+            /** @description The schedule */
+            201: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["QuotaExceeded"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    getSchedule: {
+        parameters: {
+            query?: {
+                nextCount?: number;
+                recentCount?: number;
+            };
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The schedule */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleDescription"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    updateSchedule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleUpdate"];
+            };
+        };
+        responses: {
+            /** @description The new revision */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    deleteSchedule: {
+        parameters: {
+            query: {
+                expectedRevision: number;
+            };
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    pauseSchedule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleNote"];
+            };
+        };
+        responses: {
+            /** @description The paused schedule */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    resumeSchedule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleNote"];
+            };
+        };
+        responses: {
+            /** @description The resumed schedule */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    triggerSchedule: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ScheduleTriggerRequest"];
+            };
+        };
+        responses: {
+            /** @description What became of the action */
+            202: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleActionRecord"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["QuotaExceeded"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    listScheduleBackfills: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The backfills */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleBackfillList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    createScheduleBackfill: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleBackfillRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleBackfill"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["ValidationError"];
+            429: components["responses"]["QuotaExceeded"];
+            503: components["responses"]["Unavailable"];
+            default: components["responses"]["InternalError"];
+        };
+    };
+    cancelScheduleBackfill: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                namespaceId: components["parameters"]["NamespaceId"];
+                scheduleId: components["parameters"]["ScheduleId"];
+                backfillId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The backfill */
+            200: {
+                headers: {
+                    "X-Trace-Id": components["headers"]["TraceId"];
+                    "X-Request-Id": components["headers"]["HttpRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleBackfill"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];

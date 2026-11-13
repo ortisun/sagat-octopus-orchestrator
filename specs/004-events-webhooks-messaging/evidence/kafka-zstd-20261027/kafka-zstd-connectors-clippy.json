@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "-p",
+    "sagat-infra-connectors",
+    "--all-targets",
+    "--locked",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 51.72,
+  "wall_seconds": 51.72,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-27T21:25:56.273393+00:00",
+  "finished_utc": "2026-10-27T21:26:47.997861+00:00",
+  "log": "kafka-zstd-connectors-clippy.txt"
+}

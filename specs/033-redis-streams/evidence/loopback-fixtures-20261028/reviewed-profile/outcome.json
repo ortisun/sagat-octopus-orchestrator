@@ -1,0 +1,7 @@
+{
+  "scenario": "redis-callback-cutover",
+  "resultPath": "outcome-ec_pgqsi/result.json",
+  "resultSha256": "dedbbfa0b22df4233e4ef7a6648f5fdf4879cccf306684166c663632e2eb340a",
+  "buildSha256": "7231222146d9941408a706c68c637e4647544df84fc888393a661ef53b4e39f4",
+  "transcriptSha256": "00b512ae54ffc0fc5cb2e1eac443217782de155523c80b489137b9750abec11a"
+}

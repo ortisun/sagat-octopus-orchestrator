@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_redis_streams",
+    "--locked",
+    "--",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 92.36,
+  "wall_seconds": 92.36,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T12:01:21.758765+00:00",
+  "finished_utc": "2026-10-28T12:02:54.116327+00:00",
+  "log": "redis-loopback-native-green-v2.txt"
+}

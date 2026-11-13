@@ -47,6 +47,65 @@ fn defaults_listen_on_loopback_and_publish_nothing() {
 }
 
 #[test]
+fn schedules_are_stored_but_fire_nowhere_until_the_flag_is_set() {
+    let config = parse(&[]).expect("config");
+    assert!(!config.schedules_enabled, "off by default");
+    assert_eq!(config.schedules.batch, 100);
+    assert_eq!(config.schedules.round_actions, 100);
+    assert_eq!(config.schedule_poll, Duration::from_secs(1));
+
+    let on = parse(&[
+        ("SAGAT_SCHEDULES_ENABLED", "true"),
+        ("SAGAT_SCHEDULES_BATCH", "250"),
+        ("SAGAT_SCHEDULES_ROUND_ACTIONS", "1000"),
+        ("SAGAT_SCHEDULES_POLL_MS", "400"),
+    ])
+    .expect("config");
+    assert!(on.schedules_enabled);
+    assert_eq!(on.schedules.batch, 250);
+    assert_eq!(on.schedules.round_actions, 1000);
+    assert_eq!(on.schedule_poll, Duration::from_millis(400));
+}
+
+#[test]
+fn a_run_may_carry_an_iceberg_write_only_when_the_lake_flag_is_set() {
+    assert!(!parse(&[]).expect("config").lake_enabled, "off by default");
+    assert!(
+        parse(&[("SAGAT_LAKE_ENABLED", "true")])
+            .expect("config")
+            .lake_enabled
+    );
+    assert!(
+        !parse(&[("SAGAT_LAKE_ENABLED", "false")])
+            .expect("config")
+            .lake_enabled
+    );
+    assert!(
+        parse(&[("SAGAT_LAKE_ENABLED", "maybe")]).is_err(),
+        "a mistyped switch is refused, not guessed"
+    );
+}
+
+#[test]
+fn a_mistyped_schedule_setting_is_refused_not_guessed() {
+    for (name, value) in [
+        ("SAGAT_SCHEDULES_ENABLED", "maybe"),
+        ("SAGAT_SCHEDULES_BATCH", "0"),
+        ("SAGAT_SCHEDULES_BATCH", "5001"),
+        ("SAGAT_SCHEDULES_ROUND_ACTIONS", "0"),
+        ("SAGAT_SCHEDULES_ROUND_ACTIONS", "1001"),
+        ("SAGAT_SCHEDULES_POLL_MS", "0"),
+        ("SAGAT_SCHEDULES_POLL_MS", "soon"),
+    ] {
+        let error = parse(&[(name, value)]).expect_err("refused");
+        assert!(
+            error.to_string().contains(name),
+            "{name}={value} was refused without naming the variable: {error}"
+        );
+    }
+}
+
+#[test]
 fn worker_budgets_are_larger_than_the_rest_api_s_but_finite() {
     let config = parse(&[]).expect("config");
     assert!(config.rate_limit.per_second >= 1000.0 && config.rate_limit.per_second.is_finite());
@@ -683,4 +742,75 @@ fn openbao_workers_require_secret_transport_without_a_local_keyring() {
     .expect("TLS terminated at ingress");
     assert!(configured.openbao.is_some());
     assert!(configured.secrets.is_none());
+}
+
+#[test]
+fn redis_selection_does_not_publish_to_the_legacy_nats_destination() {
+    let config = parse(&[
+        ("SAGAT_EVENT_TRANSPORT", "redis"),
+        ("SAGAT_REDIS_URL", "rediss://redis.example:6379/0"),
+        ("SAGAT_NATS_URL", "nats://legacy.example:4222"),
+    ])
+    .expect("explicit Redis selection");
+    assert!(
+        config.nats.is_none(),
+        "Redis selection must not start a NATS publisher"
+    );
+    let redis = config
+        .redis
+        .expect("selected Redis publisher configuration");
+    assert_eq!(redis.stream, "sagat:v1:events");
+    assert_eq!(redis.max_len, 100_000);
+}
+
+#[test]
+fn redis_selection_requires_its_endpoint() {
+    assert!(
+        parse(&[("SAGAT_EVENT_TRANSPORT", "redis")]).is_err(),
+        "a selected transport without an endpoint is a configuration error"
+    );
+}
+
+#[test]
+fn redis_unknown_transport_selection_is_refused() {
+    assert!(
+        parse(&[("SAGAT_EVENT_TRANSPORT", "redsi")]).is_err(),
+        "a misspelled selector must not silently disable publishing"
+    );
+}
+
+#[test]
+fn redis_selection_is_explicit_and_disabled_transport_keeps_both_publishers_off() {
+    assert!(parse(&[("SAGAT_REDIS_URL", "rediss://redis.example:6379/0")]).is_err());
+    let disabled = parse(&[
+        ("SAGAT_EVENT_TRANSPORT", "none"),
+        ("SAGAT_NATS_URL", "nats://legacy:4222"),
+        ("SAGAT_REDIS_URL", "redis://inactive:6379/0"),
+    ])
+    .expect("disabled");
+    assert!(disabled.nats.is_none() && disabled.redis.is_none());
+    assert!(parse(&[("SAGAT_EVENT_TRANSPORT", "nats")]).is_err());
+}
+
+#[test]
+fn redis_settings_refuse_plaintext_production_and_invalid_bounds() {
+    for extra in [
+        vec![("SAGAT_REDIS_URL", "redis://redis.example:6379/0")],
+        vec![
+            ("SAGAT_REDIS_URL", "rediss://redis.example:6379/0"),
+            ("SAGAT_REDIS_STREAM_MAXLEN", "0"),
+        ],
+        vec![
+            ("SAGAT_REDIS_URL", "rediss://redis.example:6379/0"),
+            ("SAGAT_REDIS_STREAM", "bad key"),
+        ],
+        vec![
+            ("SAGAT_REDIS_URL", "rediss://redis.example:6379/0"),
+            ("SAGAT_REDIS_TIMEOUT_SECS", "31"),
+        ],
+    ] {
+        let mut config = vec![("SAGAT_EVENT_TRANSPORT", "redis")];
+        config.extend(extra);
+        assert!(parse(&config).is_err());
+    }
 }

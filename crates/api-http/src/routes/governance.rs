@@ -229,14 +229,24 @@ pub async fn bind_worker<B: Governance>(
 ) -> Result<Json<BindingBody>, ApiError> {
     let namespace =
         admitted_namespace(&state, &caller, &namespace, ApiOperation::WorkerBind).await?;
+    let profile = body
+        .profile
+        .as_deref()
+        .map(|text| {
+            sagat_domain::binding::BindingProfile::parse(text).ok_or(
+                sagat_application::error::AppError::NotAllowed("a profile is `database` or `lake`"),
+            )
+        })
+        .transpose()?;
     let view = state
         .bindings()
-        .bind_with_pools(
+        .bind_with_profile(
             &caller.session.principal,
             namespace,
             &subject,
             &body.activities,
             body.pools.as_deref(),
+            profile,
             &caller.ctx,
         )
         .await?;

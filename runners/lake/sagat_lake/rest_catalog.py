@@ -1,0 +1,208 @@
+"""The REST catalog of the host (feature 035: T035-018, D035-050, D035-094, G035-041, G035-043).
+
+PyIceberg's client trusts what the catalog says. It merges the ``defaults`` and ``overrides`` of ``/v1/config`` over its
+own properties, which lets a catalog name the class that builds the file IO, move the endpoint, the proxy and the
+signer, and change the ``uri`` the client talks to. And it builds the file IO of a table from the table's own properties
+overridden by the config and the storage credentials of the response. It also sends every request without a time limit.
+
+``LakeRestCatalog`` is PyIceberg's client with three changes, each at the one place where an answer would otherwise be
+used before anyone looked at it:
+
+* ``/v1/config`` is read through ``Hygiene.catalog_config`` (only ``warehouse`` and ``prefix`` are taken) and the result
+  is overridden by what the connection declares, with the file IO pinned (``Hygiene.properties``);
+* a table's response is read through ``Hygiene.accept_table`` and ``storage_credentials`` before ``_response_to_table``
+  builds its file IO: the locations must lie in the warehouse, the table's properties pass the allowlist, the config and
+  the vended credentials keep only the keys of the declared storage;
+* every request of the session has a time limit (``request_timeout``) unless the caller gives its own.
+
+It has one method of its own, ``probe_namespaces``, for the ``WAREHOUSE`` check of a probe (``probe.py``): one request
+for the first page of namespaces, where PyIceberg's own listing follows the pages for as long as the catalog gives one.
+
+``_fetch_config`` is a copy of PyIceberg 0.12.0's with the filtering, and ``_response_to_table`` and ``_create_session``
+are extended: the version is pinned in ``requirements.lock``, and ``tests/test_rest_catalog.py`` shows the client of
+PyIceberg following a lying catalog, so an upgrade that changes either is noticed.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import unquote
+
+from pyiceberg.catalog import URI, WAREHOUSE_LOCATION
+from pyiceberg.catalog.rest import (
+    DEFAULT_ENDPOINTS,
+    DEFAULT_NAMESPACE_SEPARATOR,
+    NAMESPACE_SEPARATOR_PROPERTY,
+    VIEW_ENDPOINTS,
+    VIEW_ENDPOINTS_SUPPORTED,
+    VIEW_ENDPOINTS_SUPPORTED_DEFAULT,
+    Capability,
+    ConfigResponse,
+    Endpoints,
+    ListNamespaceResponse,
+    RestCatalog,
+)
+from pyiceberg.catalog.rest.auth import AuthManager
+from pyiceberg.catalog.rest.response import _handle_non_200_response
+from pyiceberg.catalog.rest.scan_planning import StorageCredential
+from pyiceberg.exceptions import NoSuchNamespaceError
+from pyiceberg.utils.properties import property_as_bool
+from requests import HTTPError, RequestException
+
+from .config_hygiene import Hygiene
+
+if TYPE_CHECKING:
+    from pyiceberg.catalog.rest import TableResponse
+    from pyiceberg.table import Table
+    from requests import Response, Session
+
+# What a catalog may answer the two requests the host makes of its own accord (the configuration and the first page of
+# namespaces) with: a configuration lists a few endpoints and properties, and a page of one namespace is a line.
+_MAX_BODY = 1024 * 1024
+_CHUNK = 64 * 1024
+
+
+class ResponseTooLarge(RequestException):
+    """A catalog answered with more than any catalog has to say; the rest of it was not read."""
+
+
+class LakeRestCatalog(RestCatalog):
+    """PyIceberg's REST client that believes nothing the catalog says about itself, its tables or its credentials."""
+
+    def __init__(self, name: str, *, hygiene: Hygiene, request_timeout: float, **properties: str) -> None:
+        if not request_timeout > 0:
+            raise ValueError("a request timeout is positive")
+        self._hygiene = hygiene
+        self._request_timeout = request_timeout
+        super().__init__(name, **properties)
+
+    def _create_legacy_oauth2_auth_manager(self, session: Session) -> AuthManager:
+        # PyIceberg's manager asks the token endpoint for a token as it is built, with the session it is given, and
+        # `_create_session` bounds the session only when it returns: the limit has to be there before the manager is
+        _bound(session, self._request_timeout)
+        return super()._create_legacy_oauth2_auth_manager(session)
+
+    def _create_session(self) -> Session:
+        session = super()._create_session()
+        _bound(session, self._request_timeout)
+        return session
+
+    def _config_headers(self, session: Session) -> None:
+        super()._config_headers(session)
+        # PyIceberg sets `vended-credentials` when nobody did, and lets a `header.` property say anything. The
+        # connection decides what the catalog is asked to delegate.
+        if (delegation := self._hygiene.access_delegation) is None:
+            session.headers.pop("X-Iceberg-Access-Delegation", None)
+        else:
+            session.headers["X-Iceberg-Access-Delegation"] = delegation
+
+    def _fetch_config(self) -> None:
+        params = {}
+        if warehouse_location := self.properties.get(WAREHOUSE_LOCATION):
+            params[WAREHOUSE_LOCATION] = warehouse_location
+
+        with self._create_session() as session:
+            response = _bounded(session.get(self.url(Endpoints.get_config, prefixed=False), params=params, stream=True))
+        try:
+            response.raise_for_status()
+        except HTTPError as exc:
+            _handle_non_200_response(exc, {})
+        config_response = ConfigResponse.model_validate_json(response.content)
+
+        # PyIceberg does `config = defaults; config.update(self.properties); config.update(overrides)`, so the catalog's
+        # overrides win over the client's own properties
+        defaults, overrides = config_response.defaults or {}, config_response.overrides or {}
+        accepted = self._hygiene.catalog_config(defaults, overrides)
+        config = self._hygiene.properties(self.properties, accepted)
+        self.properties = config
+        self.uri = config[URI]
+
+        endpoints = config_response.endpoints
+        if endpoints:
+            self._supported_endpoints = set(endpoints)
+        else:
+            self._supported_endpoints = set(DEFAULT_ENDPOINTS)
+            if property_as_bool(self.properties, VIEW_ENDPOINTS_SUPPORTED, VIEW_ENDPOINTS_SUPPORTED_DEFAULT):
+                self._supported_endpoints.update(VIEW_ENDPOINTS)
+
+        separator_from_properties = self.properties.get(NAMESPACE_SEPARATOR_PROPERTY, DEFAULT_NAMESPACE_SEPARATOR)
+        if not separator_from_properties:
+            raise ValueError("Namespace separator cannot be an empty string")
+        self._namespace_separator = unquote(separator_from_properties)
+
+    def probe_namespaces(self) -> None:
+        """One request for the first page of namespaces, and nothing after it (D035-150, the ``WAREHOUSE`` check).
+
+        PyIceberg's ``list_namespaces`` follows ``next-page-token`` until the catalog stops giving one, which a catalog
+        that never does would turn into a request that never ends, and the probe asks whether the warehouse answers, not
+        for what is in it. So this is the one request, read for its status and for being a page of namespaces. A
+        catalog that does not say it lists namespaces is not asked to: the configuration it gave is all there is.
+        """
+        try:
+            self._check_endpoint(Capability.V1_LIST_NAMESPACES)
+        except NotImplementedError:
+            return
+        response = _bounded(
+            self._session.get(self.url(Endpoints.list_namespaces), params={"pageSize": "1"}, stream=True)
+        )
+        try:
+            response.raise_for_status()
+        except HTTPError as exc:
+            _handle_non_200_response(exc, {404: NoSuchNamespaceError})
+        ListNamespaceResponse.model_validate_json(response.content)
+
+    def _response_to_table(self, identifier_tuple: tuple[str, ...], table_response: TableResponse) -> Table:
+        document = table_response.model_dump(mode="json", by_alias=True, exclude_none=True)
+        accepted = self._hygiene.accept_table(document)
+        offered = [
+            {"prefix": credential.prefix, "config": credential.config}
+            for credential in table_response.storage_credentials
+        ]
+        credentials = [
+            StorageCredential(prefix=cast(str, entry["prefix"]), config=cast(dict[str, str], entry["config"]))
+            for entry in self._hygiene.storage_credentials(offered)
+        ]
+        filtered = table_response.model_copy(
+            update={
+                "config": accepted.config,
+                "storage_credentials": credentials,
+                "metadata": table_response.metadata.model_copy(update={"properties": accepted.properties}),
+            }
+        )
+        return super()._response_to_table(identifier_tuple, filtered)
+
+
+def _bounded(response: Response) -> Response:
+    """The answer to a request made with ``stream=True``, with its body read and no more than ``_MAX_BODY`` of it.
+
+    The size is counted as the client decodes it, so a body that is small on the wire and large once inflated is
+    refused as it passes the limit, and what is read is kept as the body of the response, which PyIceberg then reads
+    as it always does (also the text of a failed answer, which says what failed). JSON is UTF-8: saying so spares the
+    client from guessing the encoding of a megabyte.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    for chunk in response.iter_content(chunk_size=_CHUNK):
+        size += len(chunk)
+        if size > _MAX_BODY:
+            response.close()
+            raise ResponseTooLarge("the body of the answer is larger than any catalog sends")
+        chunks.append(chunk)
+    # `Response.content` reads the body once and keeps it in these two attributes, which is what this does by hand
+    response._content = b"".join(chunks)
+    response._content_consumed = True
+    response.encoding = "utf-8"
+    return response
+
+
+def _bound(session: Session, seconds: float) -> None:
+    """Gives every request of ``session`` a time limit, unless the caller names one."""
+    send: Callable[..., Any] = session.request
+
+    def request(method: str, url: str, **kwargs: Any) -> Any:
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = seconds
+        return send(method, url, **kwargs)
+
+    setattr(session, "request", request)  # noqa: B010

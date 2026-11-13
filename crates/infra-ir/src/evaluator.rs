@@ -147,6 +147,20 @@ impl ExpressionEvaluator for JsonEvaluator {
         compiled.eval_bool(&env).map_err(failure)
     }
 
+    fn condition_instance(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<bool, ExpressionFailure> {
+        if instance.path().is_root() {
+            return self.condition(expression, data);
+        }
+        let compiled = Compiled::compile(expression.as_str()).map_err(failure)?;
+        let env = environment(&compiled.variables(), data, Some(instance))?;
+        compiled.eval_bool(&env).map_err(failure)
+    }
+
     fn correlation_key(
         &self,
         expression: &Expression,
@@ -154,6 +168,21 @@ impl ExpressionEvaluator for JsonEvaluator {
     ) -> Result<CorrelationKey, ExpressionFailure> {
         let compiled = Compiled::compile(expression.as_str()).map_err(failure)?;
         let env = environment(&compiled.variables(), data, None)?;
+        let key = compiled.eval_key(&env).map_err(failure)?;
+        CorrelationKey::parse(&key).map_err(failure)
+    }
+
+    fn correlation_key_instance(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+        instance: &ExecutionInstanceId,
+    ) -> Result<CorrelationKey, ExpressionFailure> {
+        if instance.path().is_root() {
+            return self.correlation_key(expression, data);
+        }
+        let compiled = Compiled::compile(expression.as_str()).map_err(failure)?;
+        let env = environment(&compiled.variables(), data, Some(instance))?;
         let key = compiled.eval_key(&env).map_err(failure)?;
         CorrelationKey::parse(&key).map_err(failure)
     }
@@ -414,20 +443,7 @@ impl ExpressionEvaluator for JsonEvaluator {
     }
 
     fn event_document(&self, event: &EventView<'_>) -> Vec<u8> {
-        let data = parse(event.data).unwrap_or(Value::Null);
-        let document = json!({
-            "event": {
-                "id": event.id,
-                "source": event.source,
-                "type": event.event_type,
-                "subject": event.subject,
-                "correlationKey": event.correlation_key,
-                "occurredAt": event.occurred_at,
-                "receivedAt": event.received_at,
-            },
-            "data": data,
-        });
-        serde_json::to_vec(&document).unwrap_or_default()
+        sagat_application::dispatch::event_document(event)
     }
 
     fn event_filter(

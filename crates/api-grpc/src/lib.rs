@@ -6,7 +6,9 @@
 //! classification, and delegates every rule to `sagat_application::worker::WorkerService`.
 
 mod blobs;
-mod database;
+/// The wire answer to a managed database or lake step (`response`).
+pub mod database;
+pub mod lake_connection;
 mod limits;
 mod request;
 mod server;
@@ -44,6 +46,37 @@ pub use status::{ERROR_METADATA, RETRY_AFTER_METADATA, to_status};
 impl std::fmt::Debug for pb::ResolvedDatabase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ResolvedDatabase { <redacted> }")
+    }
+}
+/// A lake connection prints the names of its credentials and never their values.
+fn debug_connection(
+    f: &mut std::fmt::Formatter<'_>,
+    name: &str,
+    credentials: &std::collections::HashMap<String, Vec<u8>>,
+) -> std::fmt::Result {
+    let mut names: Vec<&String> = credentials.keys().collect();
+    names.sort();
+    let redacted: Vec<String> = names
+        .into_iter()
+        .map(|key| format!("{key}: <redacted>"))
+        .collect();
+    f.debug_struct(name)
+        .field("credentials", &redacted)
+        .finish_non_exhaustive()
+}
+impl std::fmt::Debug for pb::IcebergConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_connection(f, "IcebergConnection", &self.credentials)
+    }
+}
+impl std::fmt::Debug for pb::ObjectStorageConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_connection(f, "ObjectStorageConnection", &self.credentials)
+    }
+}
+impl std::fmt::Debug for pb::ClickHouseConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_connection(f, "ClickHouseConnection", &self.credentials)
     }
 }
 impl std::fmt::Debug for pb::DatabaseValue {

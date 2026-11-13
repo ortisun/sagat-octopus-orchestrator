@@ -558,6 +558,10 @@ pub async fn http(api: &crate::support::api::TestApi, ns: &str, mut connection: 
         metadata["run"]["status"], "SUCCEEDED",
         "admission is not successful connectivity"
     );
+    assert!(
+        metadata.get("checks").is_none(),
+        "a SQL probe has no checks: the member is the probe of an Iceberg connection's"
+    );
     contract
         .validate_body(
             "GET",

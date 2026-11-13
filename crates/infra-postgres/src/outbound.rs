@@ -143,6 +143,15 @@ fn destination_from_row(row: &PgRow) -> Result<OutboundDestination, StoreError> 
             }
             .map_err(|_| corrupt("subscription destination settings"))?
         }
+        "REDIS" => {
+            let database = settings
+                .get("database")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u8::try_from(n).ok())
+                .ok_or_else(|| corrupt("subscription destination settings"))?;
+            BrokerDestination::redis(text("server")?, text("stream")?, database)
+                .map_err(|_| corrupt("subscription destination settings"))?
+        }
         "SQS" => BrokerDestination::sqs(text("queueUrl")?, text("region")?)
             .map_err(|_| corrupt("subscription destination settings"))?,
         _ => return Err(corrupt("subscription destination kind")),
@@ -171,6 +180,13 @@ fn destination_columns(
             credentials_secret,
         } => {
             let value = match settings {
+                BrokerDestination::Redis {
+                    server,
+                    stream,
+                    database,
+                } => serde_json::json!({
+                    "server": sagat_domain::outbound::redis_endpoint(server), "stream": stream, "database": database,
+                }),
                 BrokerDestination::Nats { servers, subject } => serde_json::json!({
                     "servers": servers.iter().map(sagat_domain::connectors::Server::configured_address).collect::<Vec<_>>(),
                     "subject": subject,

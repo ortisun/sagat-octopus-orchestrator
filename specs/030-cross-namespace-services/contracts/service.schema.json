@@ -1,0 +1,402 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sagat-octopus-orchestrator.example/schemas/service/v1.json",
+  "title": "Sagat Octopus Orchestrator Service contract v1 (DRAFT, feature 030)",
+  "description": "DRAFT fragment of feature 030, not a canonical contract. The canonical copy is created at specs/001-platform-foundation/contracts/service.schema.json by T030-005. A contract is published into its handler namespace as an immutable revision identified by number and canonical digest (RFC 8785). Publication additionally enforces the semantic rules of FR-030-002 that JSON Schema cannot express: canonical equality with the bound handler versions (FR-030-005), the classification rules of FR-016-003/004 inside inputSchema and outputSchema, no secret level in an outputSchema, reserved error-code prefixes and the byte ceilings. Encoded values do not cross namespaces in v1: x-sagat-encoding is refused in both operation schemas (D1661).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "operations"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "sagat-octopus-orchestrator.io/v1"
+    },
+    "kind": {
+      "const": "Service"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{2,63}$"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/operation"
+      }
+    }
+  },
+  "$defs": {
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "mode",
+        "inputSchema",
+        "outputSchema",
+        "timeouts",
+        "disclosure"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-zA-Z0-9-]{0,63}$"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "mode": {
+          "enum": [
+            "async",
+            "sync"
+          ],
+          "description": "async: backed by a handler run that may wait; completion comes back as a durable message. sync: a contract class for a pinned, flat handler run with a timeout of at most 60 s; it is not a blocking call."
+        },
+        "inputSchema": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "JSON Schema of the operation input; must equal the bound handler version's inputSchema canonically (FR-030-005). May carry x-sagat-classification (feature 016). Publication refuses x-sagat-encoding anywhere in it (ENCODING_NOT_APPLICABLE; D1661, 031 D1667)."
+        },
+        "outputSchema": {
+          "$ref": "#/$defs/classifiedResultSchema"
+        },
+        "errors": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "description": "Failure codes of the handler run that may cross the boundary verbatim. Any other code reaches the caller as OPERATION_FAILED. Codes starting with OPERATION_ or CHILD_ and platform failure codes are refused at publication.",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$"
+          }
+        },
+        "timeouts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maxMs"
+          ],
+          "properties": {
+            "defaultMs": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Used when a caller node omits timeoutMs. When absent: 10000 for a sync operation, 86400000 (24 h) for an async one. Must not exceed maxMs."
+            },
+            "maxMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5184000000,
+              "description": "At most 60000 for a sync operation and 5184000000 (60 days) for an async operation; defaultMs <= maxMs."
+            }
+          }
+        },
+        "disclosure": {
+          "const": "declared-service-result-v1",
+          "description": "The handler publisher authorizes the validated result value to leave the handler namespace for allow-listed caller namespaces (FR-030-020). Required; never inferred."
+        }
+      }
+    },
+    "level": {
+      "enum": [
+        "public",
+        "internal",
+        "pii"
+      ],
+      "description": "secret is not allowed in a service result (FR-030-002). The FR-016-003 rules apply: an unannotated root is pii, a descendant never loosens its parent, and an unannotated declared descendant inherits its parent's level, so a root that is not pii must be annotated."
+    },
+    "classifiedResultSchema": {
+      "description": "A closed, bounded result schema (the ADR-0031 resultSchema rules) that also accepts the feature 016 classification annotation. Depth at most 16 and serialized result at most 256 KiB are checked by publication. It refuses feature 031's x-sagat-encoding (ENCODING_NOT_APPLICABLE): encoded values do not cross namespaces in v1 (D1661, 031 D1667).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "properties",
+            "additionalProperties"
+          ],
+          "properties": {
+            "type": {
+              "const": "object"
+            },
+            "properties": {
+              "type": "object",
+              "maxProperties": 256,
+              "additionalProperties": {
+                "$ref": "#/$defs/classifiedResultSchema"
+              }
+            },
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 256,
+              "uniqueItems": true
+            },
+            "additionalProperties": {
+              "const": false
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "x-sagat-classification": {
+              "$ref": "#/$defs/level"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "items",
+            "maxItems"
+          ],
+          "properties": {
+            "type": {
+              "const": "array"
+            },
+            "items": {
+              "$ref": "#/$defs/classifiedResultSchema"
+            },
+            "minItems": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "maxItems": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "x-sagat-classification": {
+              "$ref": "#/$defs/level"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "maxLength"
+          ],
+          "properties": {
+            "type": {
+              "const": "string"
+            },
+            "minLength": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 262144
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 262144
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "x-sagat-classification": {
+              "$ref": "#/$defs/level"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "integer",
+                "number"
+              ]
+            },
+            "minimum": {
+              "type": "number"
+            },
+            "maximum": {
+              "type": "number"
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "x-sagat-classification": {
+              "$ref": "#/$defs/level"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "boolean",
+                "null"
+              ]
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "x-sagat-classification": {
+              "$ref": "#/$defs/level"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "examples": [
+    {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "payments",
+        "description": "Card payments owned by the payments team."
+      },
+      "operations": [
+        {
+          "name": "charge",
+          "mode": "async",
+          "inputSchema": {
+            "type": "object",
+            "x-sagat-classification": "public",
+            "required": [
+              "orderId",
+              "amount",
+              "currency"
+            ],
+            "properties": {
+              "orderId": {
+                "type": "string",
+                "x-sagat-classification": "internal"
+              },
+              "amount": {
+                "type": "string",
+                "x-sagat-classification": "internal"
+              },
+              "currency": {
+                "type": "string"
+              },
+              "cardToken": {
+                "type": "string",
+                "x-sagat-classification": "pii"
+              }
+            }
+          },
+          "outputSchema": {
+            "type": "object",
+            "x-sagat-classification": "public",
+            "additionalProperties": false,
+            "required": [
+              "receiptId",
+              "status"
+            ],
+            "properties": {
+              "receiptId": {
+                "type": "string",
+                "maxLength": 64,
+                "x-sagat-classification": "internal"
+              },
+              "status": {
+                "type": "string",
+                "maxLength": 16
+              },
+              "cardLast4": {
+                "type": "string",
+                "maxLength": 4,
+                "x-sagat-classification": "internal"
+              },
+              "holder": {
+                "type": "string",
+                "maxLength": 128,
+                "x-sagat-classification": "pii"
+              }
+            }
+          },
+          "errors": [
+            "CARD_DECLINED",
+            "INSUFFICIENT_FUNDS"
+          ],
+          "timeouts": {
+            "defaultMs": 3600000,
+            "maxMs": 86400000
+          },
+          "disclosure": "declared-service-result-v1"
+        },
+        {
+          "name": "quote",
+          "mode": "sync",
+          "inputSchema": {
+            "type": "object",
+            "x-sagat-classification": "internal",
+            "required": [
+              "amount"
+            ],
+            "properties": {
+              "amount": {
+                "type": "string"
+              }
+            }
+          },
+          "outputSchema": {
+            "type": "object",
+            "x-sagat-classification": "public",
+            "additionalProperties": false,
+            "required": [
+              "fee"
+            ],
+            "properties": {
+              "fee": {
+                "type": "string",
+                "maxLength": 32
+              }
+            }
+          },
+          "timeouts": {
+            "defaultMs": 10000,
+            "maxMs": 60000
+          },
+          "disclosure": "declared-service-result-v1"
+        }
+      ]
+    }
+  ]
+}

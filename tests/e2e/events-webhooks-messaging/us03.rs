@@ -72,7 +72,7 @@ async fn us03_kafka_redelivery_poison_messages_and_a_lost_offset_commit_leave_on
         )
     };
     kafka
-        .produce(
+        .produce_compressed(
             "orders",
             0,
             vec![
@@ -80,6 +80,7 @@ async fn us03_kafka_redelivery_poison_messages_and_a_lost_offset_commit_leave_on
                 ok("o-1", "ord-1"),
                 record(&[("eventType", "order.created")], "this is not json"),
             ],
+            rskafka::client::partition::Compression::Zstd,
         )
         .await;
     kafka

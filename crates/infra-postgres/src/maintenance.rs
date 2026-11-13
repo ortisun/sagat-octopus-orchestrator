@@ -270,7 +270,7 @@ impl MaintenanceStore for PgRunStore {
                          WHERE member.tenant_id=scope.tenant_id \
                            AND member.run_id=scope.run_id AND member.scope_id=scope.scope_id \
                            AND member.lifecycle='ADMITTED' \
-                           AND returned.status IN ('PENDING','FAILED')))) \
+                           AND (returned.status IN ('PENDING','FAILED') OR (returned.status='SUCCEEDED' AND NOT returned.routed))))) \
                    ) \
                ) work ORDER BY work.updated_at LIMIT $1 \
              ) candidate ORDER BY candidate.updated_at LIMIT $1",
@@ -291,11 +291,10 @@ impl MaintenanceStore for PgRunStore {
     async fn due_timers(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+            "SELECT t.tenant_id, t.run_id, t.node,t.instance_path_nodes,t.instance_path_indices FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 SELECT tenant_id, run_id, node, due_at FROM steps \
+                 SELECT tenant_id, run_id, node, due_at,instance_path_nodes,instance_path_indices FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'TIMER' \
-                   AND cardinality(instance_path_nodes) = 0 \
                    AND due_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY due_at LIMIT $1) t \
              ORDER BY t.due_at LIMIT $1",
@@ -307,18 +306,17 @@ impl MaintenanceStore for PgRunStore {
         .await
         .map_err(store_error)?
         .iter()
-        .map(step_ref)
+        .map(addressed_step_ref)
         .collect()
     }
 
     async fn due_wait_deadlines(&self, window: &Window) -> Result<Vec<StepRef>, StoreError> {
         let (limit, shards, exclude) = window_params(window);
         sqlx::query(
-            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+            "SELECT t.tenant_id, t.run_id, t.node,t.instance_path_nodes,t.instance_path_indices FROM unnest($2::smallint[]) AS sh(s) \
              CROSS JOIN LATERAL ( \
-                 SELECT tenant_id, run_id, node, due_at FROM steps \
+                 SELECT tenant_id, run_id, node, due_at,instance_path_nodes,instance_path_indices FROM steps \
                  WHERE run_shard(run_id) = sh.s AND status = 'WAITING' AND waiting_kind = 'EVENT' \
-                   AND cardinality(instance_path_nodes) = 0 \
                    AND due_at <= now() AND tenant_id <> ALL($3::uuid[]) \
                  ORDER BY due_at LIMIT $1) t \
              ORDER BY t.due_at LIMIT $1",
@@ -330,7 +328,7 @@ impl MaintenanceStore for PgRunStore {
         .await
         .map_err(store_error)?
         .iter()
-        .map(step_ref)
+        .map(addressed_step_ref)
         .collect()
     }
 
@@ -682,6 +680,18 @@ impl MaintenanceStore for PgRunStore {
 
     async fn purge_script_records(&self, limit: u32) -> Result<u64, StoreError> {
         self.purge_script_records_impl(limit).await
+    }
+
+    async fn purge_schedule_actions(&self, schedules: u32, rows: u32) -> Result<u64, StoreError> {
+        // the runtime role may not delete an action; it may run this bounded function, which keeps the
+        // last 1,000 and the last 30 days of each schedule and never a waiting action
+        let removed: i64 = sqlx::query_scalar("SELECT schedule_purge_actions($1, $2)")
+            .bind(i32::try_from(schedules).unwrap_or(i32::MAX))
+            .bind(i32::try_from(rows).unwrap_or(i32::MAX))
+            .fetch_one(self.pool())
+            .await
+            .map_err(store_error)?;
+        Ok(u64::try_from(removed).unwrap_or(0))
     }
 
     async fn purge_sessions(&self) -> Result<u64, StoreError> {

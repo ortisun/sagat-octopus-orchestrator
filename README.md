@@ -5,14 +5,15 @@
 # Sagat Octopus Orchestrator
 
 A self-hosted platform for durable workflows, sagas and event-driven automation. Build workflows in
-Studio or with TypeScript, Go, Python, C# and Java SDKs; run activities in your workers and inline
+Studio or with TypeScript, Go, Python, C#, Java and Rust SDKs; run activities in your workers and inline
 scripts in isolated containers. Inspect execution history, retries and compensations in the same UI.
 
-PostgreSQL is the source of truth. NATS JetStream transports notifications; Kafka, NATS and SQS
+PostgreSQL is the source of truth. Notifications use NATS JetStream by default or the configured
+Redis Streams alternative ([transport setup](docs/runbooks/events.md#redis-streams-v03)); Kafka, NATS and SQS
 connectors integrate external systems. External effects are **at-least-once**: use idempotency keys
 and reconciliation for operations such as payments.
 
-**Version:** [0.2.0](docs/releases/0.2.0.md). **License:** [MIT](LICENSE). **Implementation and validation status:**
+**Version:** [0.3.0](docs/releases/0.3.0.md). **License:** [MIT](LICENSE). **Implementation and validation status:**
 [requirement traceability](docs/traceability.md). This README documents the source checkout; it does
 not assume that application images, CLI binaries or SDK packages have been published to a registry.
 Studio labels and project documentation are in English.
@@ -154,7 +155,7 @@ arbitrary variable to `.env` does not automatically inject it into a container.
 | Script artifacts | `SAGAT_SCRIPT_SIGNING_KEY` | Persistent Ed25519 signing key on every control-plane replica |
 | Trace links | `SAGAT_STUDIO_TRACE_URL` | Public URL template, e.g. `http://127.0.0.1:16686/trace/{traceId}`; HTTPS required outside loopback |
 | Studio files | `SAGAT_STUDIO_DIR` | `/srv/studio` in the image; an absolute path to `frontend/apps/studio/dist` natively |
-| Internal broker | `SAGAT_NATS_URL`, `SAGAT_NATS_REQUIRE_TLS`, `SAGAT_NATS_CREDENTIALS_FILE` | Native/deployment configuration; Compose uses its local `nats` service |
+| Internal broker | `SAGAT_EVENT_TRANSPORT`; NATS: `SAGAT_NATS_URL`, `SAGAT_NATS_REQUIRE_TLS`, `SAGAT_NATS_CREDENTIALS_FILE`; Redis: `SAGAT_REDIS_URL` and bounded stream settings | Compose defaults to NATS; explicit Redis selection, credentials/TLS and cutover are in the [events runbook](docs/runbooks/events.md#redis-streams-v03) |
 | Telemetry | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `SAGAT_LOG_FORMAT` | Point each process at the collector it can reach |
 | Sandbox | `SAGAT_RUNNER_*`, container engine access | Separate runner identity, token, namespace bindings and language images |
 
@@ -275,7 +276,7 @@ configuration state, not proof of connectivity.** Check runtime errors and messa
 credential rotation, pause and resume the connector so its reader reloads the credentials.
 
 This menu manages **inbound connectors**. Outbound broker subscriptions use the separate API
-explained in [the events runbook](docs/runbooks/events.md). The platform's **internal NATS** is a
+explained in [the events runbook](docs/runbooks/events.md). The platform's **selected internal NATS/Redis transport** is a
 deployment setting, separate from customer integrations. Custom broker CA/client-certificate upload
 is not part of the current form or adapter contract.
 
@@ -317,8 +318,10 @@ source filename. A published workflow version is immutable.
 
 See [script operations](docs/runbooks/scripts.md), [C# runner](runners/dotnet/README.md),
 [Go runner](runners/go/README.md) and [Java runner](runners/java/README.md) for exact interfaces and
-supported imports. CLI `script test/publish` accepts TypeScript and Python; use Studio/the script
-API for the other language workflows. Five SDK languages do not imply arbitrary inline dependencies.
+supported imports. Entry points differ by language: the CLI `script test/publish` accepts TypeScript
+and Python; Studio creates TypeScript, Python and C# scripts (Go and Java are shown but disabled); the
+script API accepts all five languages, subject to the runner image and toolchain you have configured
+(`docs/runbooks/scripts.md`). SDK language support does not imply arbitrary inline dependencies.
 
 ### Start the sandbox runner
 
@@ -401,7 +404,7 @@ backend, database, worker or runner.
 ### What the chart installs
 
 [infra/helm](infra/helm) installs the control plane/Studio, execution engine and optional SDK worker
-pools, with services, disruption budgets and NetworkPolicies. PostgreSQL, NATS, OIDC, certificates,
+pools, with services, disruption budgets and NetworkPolicies. PostgreSQL, the selected NATS/Redis service, OIDC, certificates,
 Prometheus, KEDA and the sandbox runner's container-engine infrastructure are **not installed by the
 chart**. Database migrations are also an explicit operator step.
 
@@ -446,14 +449,15 @@ have the owner/runtime roles and runtime grants; the development initialization 
 | `database.existingSecret` | `DATABASE_URL` | Runtime `sagat_app` database URL; provision the role and grants separately |
 | Migration Job secret, operator-managed | `DATABASE_URL` | Database owner URL, used only for migrations |
 | `secrets.existingSecret`, if enabled | `SAGAT_SECRETS_KEYS` | Shared API/engine encryption key ring |
-| `nats.credentialsSecret`, if used | `nats.creds` | Internal NATS authentication |
+| `nats.credentialsSecret`, if used | `nats.creds` | Selected internal NATS authentication |
+| `redis.urlSecret`, when Redis is selected | `redis.urlKey` (default `url`) | Internal `rediss://` connection URL; keep credentials out of values files |
 | `engine.grpc.tlsSecret`, if native TLS | `tls.crt`, `tls.key` | Worker API TLS |
 | `controlPlane.nativeTls.tlsSecret` and `.clientCaSecret`, if native TLS | `tls.crt`, `tls.key`; `ca.crt` | Public API TLS and verified webhook client identity |
 
 The HA example names an ingress TLS-termination setup, an engine TLS Secret and a sample worker
 image/token. Supply those dependencies or adapt/remove the corresponding settings. Configure
 `oidc.*`, database URLs, image registry/tag, worker activity bindings and all network peers for your
-actual installation. NetworkPolicies fail closed: DNS, PostgreSQL, OIDC and configured NATS peers
+actual installation. NetworkPolicies fail closed: DNS, PostgreSQL, OIDC and selected NATS/Redis peers
 must be explicit. Global allow-all peers are refused. An application-level egress rule does not
 replace Kubernetes network authorization.
 
@@ -660,7 +664,7 @@ apps/                         Rust binaries: control-plane, execution-engine, sa
 crates/                       Domain, application services, adapters, scheduling and telemetry
 frontend/apps/studio/          React/TypeScript application
 frontend/e2e/                 Real-browser Playwright journeys
-sdks/                         TypeScript, Go, Python, C# and Java worker/client SDKs
+sdks/                         TypeScript, Go, Python, C#, Java and Rust worker/client SDKs
 runners/                      Trusted language shims, builders and sandbox runtime images
 templates/                    Starter workflows, script source and development mocks
 examples/                     SDK examples and workflow documents
@@ -670,11 +674,12 @@ infra/helm/                   Kubernetes chart and deployment values
 infra/observability/           Collector, Prometheus, Grafana and alert configuration
 infra/dr/                     Disaster-recovery drill and journal verification
 scripts/                      Repository validation and SDK packaging tools
-specs/NNN-slug/               Feature specifications, plans, tasks, contracts and evidence (Spec Kit)
+specs/NNN-slug/               Contracts, evidence and registers of each feature (and the spec, plan and tasks of features not yet converted)
+docs/designs/                 Design docs (EGM): plan, tasks and approval record of a feature or a cross-cutting change
 docs/                         Architecture, ADRs, engineering guide, references, quickstarts and runbooks
 .claude/                      Agent skills, read-only reviewer subagents, hooks and shared settings
 AGENTS.md, CLAUDE.md          Rules and commands for coding agents (CLAUDE.md imports AGENTS.md)
-.specify/memory/constitution.md Architecture and delivery principles
+docs/constitution.md          Architecture and delivery principles
 ```
 
 | Script | Purpose and side effects |
@@ -714,7 +719,7 @@ Start with [architecture](docs/architecture/overview.md),
 [execution semantics](docs/architecture/execution-semantics.md), [ADRs](docs/adr) and
 [AGENTS.md](AGENTS.md). Contributions use **Gitflow** and **Conventional Commits**: work on feature or
 bugfix branches from `develop`, never commit directly to `main`/`develop`, and include real validation
-evidence. Read the [constitution](.specify/memory/constitution.md) and the active feature's spec, plan
-and tasks before implementation. Spec Kit resolves the active feature through `.specify/feature.json`
-or `SPECIFY_FEATURE_DIRECTORY`; feature numbers are shared by every branch, so check `git branch -a` before taking the next one.
+evidence. Read the [constitution](docs/constitution.md) and the active feature's design doc (or, for a feature not yet
+converted, its spec, plan and tasks) before implementation. Feature numbers are shared by every branch: take the next
+one from `python3 scripts/next-feature-id.py`. The design cycle is in [AGENTS.md](AGENTS.md).
 How the project uses specification-driven development, records architecture decisions and directs coding agents is in the [engineering guide](docs/engineering/README.md).

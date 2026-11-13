@@ -1,0 +1,17 @@
+
+running 1 test
+
+thread 'telemetry::compensations_reconciliations_and_decisions_are_counted_without_naming_anyone' (788384698) panicked at tests/e2e/sagas-compensations/../../support/worker.rs:406:9:
+assertion `left == right` failed: expected exactly one task
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test telemetry::compensations_reconciliations_and_decisions_are_counted_without_naming_anyone ... FAILED
+
+failures:
+
+failures:
+    telemetry::compensations_reconciliations_and_decisions_are_counted_without_naming_anyone
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 3.20s
+

@@ -4,10 +4,16 @@ The public workflow document remains additive `sagat-octopus-orchestrator.io/v1`
 `switch`, run-addressed declared Query/Update and a bounded root human approval are available
 with the existing basic root nodes. A public collection workflow may start with ordinary source
 activities followed by a chain of `forEach` nodes ending at `end`; each referenced body contains a
-chain of one to eight activities followed by one `return`.
+bounded acyclic graph with an activity/condition/switch/timer/event-wait entry, one to eight executable nodes
+(activities, conditions, switches, timers, event waits) and one `return`. In the 0.3 increment, local `onError` routes and
+recorded decisions may select a branch; a recovery failure drains with its own
+code. Unselected branches retain their lifetime charge as retired reservations, while actual
+completed/unknown effects keep the compensation capacity they require.
 The restricted public loop shape uses an activity followed by a return in its body; a loop's
-`onError` edge may lead to an `end` or to recovery activities that end at an `end`. Nested
-collections, triggers, structured-primitive combinations and broader body graphs remain closed.
+`onError` edge may lead to an `end` or to recovery activities that end at an `end`. Event waits
+inside collection bodies are open (see "Public collection event waits"). Nested collections, triggers and broader
+structured combinations remain closed: feature 014 ships unnested collections, and general nesting with the capacity
+program it needs is feature 039 (OD-2026-11-12-6).
 The public continuation subset accepts an activity followed by `continueAsNew`, including exact
 declared-state transfer, or an activity and condition that select the same continuation or `end`.
 An approval combines with declared state and with a continuation chain (an entry activity, then an
@@ -24,11 +30,11 @@ curl -X PUT "$API/v1/quotas/iteration_concurrency" \
   -d '{"limit": 32}'
 ```
 
-The value is 1..1,000,000,000, is ceiling checked and audited, and applies to collection and loop
+The value is 0..1,000,000,000, is ceiling checked and audited, and applies to collection and loop
 iterations across all namespaces of the tenant. The default operator ceiling is 1,024; a higher
-setting requires an explicit operator grant. Clearing the tenant setting disables new structured
-iteration admission. Reducing it below current use preserves admitted work and blocks further
-admission until use falls below the new value.
+setting requires an explicit operator grant. An explicit tenant limit of `0` and clearing the setting both block
+new structured admission, with source=tenant and source=default respectively. Reducing it below
+current use preserves admitted work and blocks further admission until use falls below the new value.
 
 The scheduler discovers and advances published collections through the durable collection port.
 The worker protocol negotiates minor 1.5 for scoped work while workers requesting 1.4 retain their
@@ -308,6 +314,56 @@ trace, with the closed `approved`/`rejected`/`expired` outcome), `workflow_primi
 `workflow_primitive_rejections_total{kind="approval",code}`. The earlier `workflow_approval_http_*` counters
 were removed (D446).
 
+## Local collection decisions (0.3 increment)
+
+For a body decision, use the qualified journal address (`lines[0]/choose`, for example).
+`condition.evaluated`/`switch.evaluated` and the following `step.routed` explain the chosen
+branch. The decision and selected task/outbox share one commit. `EXPRESSION_ERROR` either
+takes a condition's local error route or starts the ordinary collection drain and compensation.
+
+The operator questions and their evidence are:
+
+- Which branch ran: the qualified choice and route in the journal and runtime graph.
+- Why progress waited: `scheduler_actions_total{kind="collection",outcome="skipped"}`
+  versus `outcome="fenced"`; inspect the Run revision/paused state and scheduler ownership.
+- Where a control transaction waited: the `scheduler.action` span with
+  `kind="collection_control"`, its run/tenant/instance and expected revision, correlated to
+  the Run's trace and parent span. Items, outputs and expression text are absent from it.
+
+The real PostgreSQL cases cover a pause committed ahead of a prepared answer, native outbox
+rollback, malformed controls and orphan timer/lease metadata in full/path/frontier reads and
+prepared writes. An invalid projection is an integrity error; do not invent a choice or reset
+its metadata manually. Preserve the journal and compare it with the projection using
+`verify_run` before attempting recovery.
+
+```sh
+RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_control_transactions:: collection_controls::
+SAGAT_SDK_SCENARIO=collection-control-routing cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+```
+
+The published body has an activity/condition/switch entry, up to eight executable activity/condition/switch
+nodes and one Return. Conditions, switches, timers and event waits may be scheduler-owned entries. Children, approvals and nesting remain gated (nesting is feature 039). The existing
+wire fields and worker minor1.5 are unchanged; a full release-wide compatibility matrix
+remains required before shipping.
+
+## Limits and ceilings (0.3)
+
+These are the ceilings decided for release 0.3 (`docs/owner-decisions.md`). Two are decided by delegation and stay
+reversible until the owner confirms them.
+
+| Limit | Value | Source |
+|---|---|---|
+| `maxItems` of one collection | Validation accepts 1 to 10,000. Published 1,000 in 0.3.0 | OD-2026-11-04-5, OD-2026-11-13-1 (owner) |
+| `maxIterations` of one loop | Validation accepts 1 to 10,000. Published 1,000 in 0.3.0 | OD-2026-11-04-5, OD-2026-11-13-1 (owner) |
+| `maxConcurrency` of one collection | 1 to 256, and bounded by the tenant's `iteration_concurrency` quota | `crates/domain/src/workflow.rs` |
+| Pending waits (approvals, timers, event waits) | 20,000 per scheduler replica at the default 500 ms interval | OD-2026-11-04-6 (delegate) |
+
+The pending-waits ceiling is watched by `scheduler_waits_per_replica` (the monitor's count of waiting timers, event waits
+and approvals over the live scheduler replicas) and `scheduler_tick_seconds` (how long each tick takes), with the alerts
+`SagatSchedulerWaitsPerReplica` (above 16,000) and `SagatSchedulerTickSlow` (95th percentile above the 500 ms interval);
+both are in `docs/runbooks/scaling.md`. A collection's real
+bound is the smaller of its `maxItems` and what the tenant's quotas leave: raise a quota, not the published ceiling.
+
 ## Rollback and compatibility
 
 Disable publication and starts of any newly enabled primitive before rolling back its writer.
@@ -564,3 +620,157 @@ Reproduce with runtime option and external DB unset:
 Existing script_incidents_total/log mappings remain after commit; port tests do not assert counters.
 Exact source, review and regression limits: tasks/project-completion/evidence/incident-lock-order-20261018/.
 Complete B0/group and release gates remain open.
+
+
+### Control entry admission on the 0.3 development branch
+
+A PENDING condition/switch entry is scheduler-owned: no activity, ready hint, worker lease
+or task.ready outbox belongs to its admission. Inspect the qualified admission journal,
+collection membership and scheduler.action spans; durable collection candidates provide
+recovery after a lost hint or cold cache. Existing collection admission/checkpoint counters
+remain applicable. An explicit iteration_concurrency policy accepts zero. Reducing it to or
+below current use blocks new slots while accepted controls, timers, checkpoints and reserved
+drain still progress.
+
+Migration 20261221000000 distinguishes ACTIVITY/SCHEDULER membership. Downgrade refuses any
+retained SCHEDULER admission, including terminal history and an immutable journal marker
+whose projection was subsequently relabeled. Do not edit that evidence to force rollback.
+Older schedulers cannot execute the new shapes: fence/drain their shard authority before
+admitting new 0.3 definitions. A compatible0.3 reader is required for retained new runs.
+Released-profile upgrade/active-run evidence and the complete release gates remain pending.
+
+Reproduce `collection_control_entry::`, `collection_control_admission::` and common SDK case
+`collection-control-entry`. Frozen OrdinaryLeafV1 certification still rejects both control
+entry kinds, separately from public runtime support.
+
+
+### 0.3 scoped timer diagnosis
+
+A collection Timer is PENDING until its clocked scheduler transaction records timer.started.
+WAITING owns waiting_kind=TIMER/due_at and no worker capability. A due timer may record firing
+while paused; SUCCEEDED/unrouted is durable deferred work discovered on resume. Cancellation
+clears a validated waiting timer in the member drain transaction, without compensation for
+the timer itself. scheduler.action spans correlate tenant/run/qualified instance without item
+data; existing finite timer action counters retain their labels. Do not repair malformed
+timer projections by bypassing validation: readers/writers refuse them.
+
+Reproduce collection_timers:: and collection_timer_transactions::, plus SDK collection-timers.
+The native tests age test deadlines explicitly and order cancellation/fire with held locks.
+This development capability requires compatible0.3 authority; released-profile and complete
+regression/resource gates remain open. Frozen OrdinaryLeafV1 remains activity-only.
+
+
+## Verify the released-v0.2 active-data upgrade
+
+From the repository root, with Docker reachable and the pinned toolchain installed:
+
+```sh
+CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> \
+  python3 scripts/test-release-upgrade-profile.py
+```
+
+The runner verifies an immutable released-source archive, uses separate build targets, owns
+a disposable PostgreSQL and checks old public production → current migration/completion →
+released REST/native reading. It refuses an externally supplied test database and records
+source/executable hashes and phase results in a private artifact directory. Allow at least
+8 GiB free before building. No production database or credentials are required.
+
+This profile covers old admitted READY/unleased activities and root event waits. It does not
+authorize old execution processes against newly enabled scoped waits. The separate `scoped-event-cutover` profile now proves the old dispatcher credential fence,
+stop/join and public scoped delivery. A successful root-wait upgrade alone is still insufficient.
+Before enabling these workflows in production, revoke every old deployment login, terminate
+its established database sessions and stop/join every old control-plane/engine process; use
+distinct runtime logins per deployment generation. A shared unchanged database login does not
+provide that credential fence. Workers using the supported old protocol may reconnect to
+current services; this does not authorize old control-plane or engine binaries.
+See the [bounded contract](../../specs/014-workflow-primitives/release-upgrade-profile.md) and
+[actual evidence](../../specs/014-workflow-primitives/evidence/released-v02-20261027/README.md).
+
+
+For a genuine old worker's already-leased scoped task, use the separate in-flight profile:
+
+```sh
+CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> \
+  python3 scripts/test-release-upgrade-profile.py --scenario inflight-worker
+```
+
+It keeps the original task capability in the old process, refreshes subject authentication
+through an anonymous inherited channel and verifies first completion/exact duplicate against
+current services, one durable receipt/accounting charge and current scheduler finalization.
+The lease remains live with an explicit checked margin. This is released-source FORWARD
+compatibility, not an expired-task or Applied/reconciliation guarantee. It does not replace
+the old-dispatcher stop/join/credential barrier required before scoped-event publication.
+
+
+For a genuine old uncertain forward followed by its Applied reconciliation lookup:
+
+```sh
+CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> \
+  python3 scripts/test-release-upgrade-profile.py --scenario applied-lookup
+```
+
+The old worker produces the uncertainty/lookup, then reports and replays Applied to current
+services with the original live capability. After current finalization, the same old binary
+runs a second REST/native reader and rechecks the original prefix. The report retains only
+the nested forward result, with one fingerprinted receipt and logical-output charge before
+aggregation. This proves released-source compatibility for that shape; quota/drain/frontier
+compensation, dispatcher cutover, public scoped events and full release readiness remain open.
+
+
+### Public collection event waits (v0.3)
+
+A bounded collection body may start at `waitEvent`, or route to it after its own activities,
+conditions, switches or timers. Correlation reads the captured `item`, `index` and local step
+outputs. `lookbackMs` permits an earlier namespace event; each wait has its own durable receipt.
+`onTimeout` is a local body edge; an unhandled timeout drains the collection and compensates
+known completed effects. A suspended wait has no worker lease. Run/chain signals retain their
+existing root addressing; publish a namespace event to satisfy a scoped event wait.
+
+Run the current public/SDK checks and the actual old-process cutover fixture:
+
+```sh
+SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_events::
+SAGAT_SDK_SCENARIO=collection-events cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+CARGO_TARGET_DIR=<owned-absolute-target-outside-repository> python3 scripts/test-release-upgrade-profile.py --scenario scoped-event-cutover
+```
+
+The common scenario uses concurrency 1 to compare a deterministic journal. The native tests
+use concurrency 2 and independently inspect correlation, retained values, ordered results,
+receipts, replay and slot release. Do not roll back to an old execution binary while unsupported
+new records remain; use a compatible current reader and roll forward to recover.
+
+### Dormant ChildRoot capacity Vacate (v0.3 implementation increment)
+
+The native Vacate adapter has no scheduler or public call site. It changes capacity metadata only;
+it cannot pause a worker or permit a new claim. Do not manually manufacture receipts or use a
+replayed epoch as permission. Retain the entire original command on `CommitOutcomeUnknown` or
+cancellation and reconcile with the same key; a renewed scheduler lease is allowed, changed identity
+or expected counters are a fingerprint conflict. `Busy` requires a fresh transaction.
+
+A current final head belongs to Finish. Leased or running steps, including expired leases, refuse
+Vacate. A worker claim that advances the run first makes a retained command stale before the
+lease refusal is evaluated. Migration 26 down is an operator-only rollback after services are
+quiesced; retained transfer receipts refuse rollback. The sweeper, acquisition, claim guards and
+receipt retention policy remain activation prerequisites. See
+[the protocol/evidence ledger](../../specs/014-workflow-primitives/capacity-vacate-acquire.md).
+
+### ChildRoot worker guard validation
+
+The internal worker possession guard defaults off and has no operator environment switch.
+Do not enable it in production before coordinator, creator, quota/backfill, retention and
+mixed-version fencing acceptance. Existing binaries bypass this guard; deploying new storage
+alone is not a safe activation procedure. Do not change the header or invent receipts to
+unstick a group.
+
+In the gated harness, `worker_claim_skipped_total` records closed `capacity_*` reasons and
+`worker.capacity.check` traces the tenant/run without payloads. `capacity_group_busy` means a
+poll skipped G without waiting; `capacity_not_holder` means the current selected member cannot
+receive a new lease. Ambiguous memberships and unsupported scopes require investigation of the
+creator/data invariant, not selecting an arbitrary group. FINISHED history is never a legacy
+exemption. An existing lease must still renew/report under its original authority while G is busy.
+An internal input-limit failure may advance the journal without delivering an external task.
+
+Reproduce the bounded regression with a private target and
+`SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test -p sagat-tests --test integration_workflow_primitives --locked -- capacity_finish::worker_leases::`.
+All databases/locks belong to the test fixtures. [The coordinator ledger](../../specs/014-workflow-primitives/capacity-coordinator.md)
+states actual results; these tests do not establish the remaining sweeper or public nesting gates.

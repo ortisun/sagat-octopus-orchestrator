@@ -158,7 +158,7 @@ where
         let activity = {
             let snapshot = tx.snapshot();
             let node = snapshot.definition.node_for_instance(task.instance);
-            if node.is_some_and(|node| node.database_operation().is_some()) {
+            if node.is_some_and(|node| node.managed_kind().is_some()) {
                 return Err(AppError::NotAllowed(
                     "scoped managed database tasks are not enabled",
                 ));

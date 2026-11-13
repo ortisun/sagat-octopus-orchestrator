@@ -1,6 +1,6 @@
 [package]
 name = "sagat-tests"
-description = "Cross-crate integration, fault, contract and end-to-end test suites (paths follow specs/*/plan.md)."
+description = "Cross-crate integration, fault, contract and end-to-end test suites (paths follow docs/designs/*.md or, for a feature not yet converted, specs/*/plan.md)."
 version.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -18,10 +18,19 @@ tokio-stream.workspace = true
 bytes.workspace = true
 sagat-infra-blobstore.workspace = true
 async-nats.workspace = true
+redis = {workspace = true, features = ["streams"]}
 axum.workspace = true
 base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 rskafka = { version = "0.6", default-features = false }
+# Feature 035 independent reader (D035-026, D035-072): test-only, enforced by scripts/check-architecture.py.
+# Writes run in the Python lake runtime, never through these crates. S3 only for now; the GCS and ADLS
+# features join with the tests that read those storages. Advisories: G035-024, .cargo/audit.toml.
+iceberg = "=0.10.1"
+iceberg-storage-opendal = { version = "=0.10.1", default-features = false, features = ["opendal-s3"] }
+# Row values of the independent reader, as the Arrow version the iceberg crate already resolves (no new crate in the lock).
+arrow-array = "58"
+arrow-cast = "58"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jsonschema = { version = "0.58", default-features = false }
 hmac = "0.13"
@@ -38,11 +47,13 @@ sagat-application.workspace = true
 sagat-cli.workspace = true
 sagat-dev-idp.workspace = true
 sagat-control-plane.workspace = true
+sagat-database-runner.workspace = true
 sagat-domain.workspace = true
 sagat-execution-engine.workspace = true
 sagat-infra-connectors = { workspace = true, features = ["unguarded-for-tests"] }
 sagat-infra-egress.workspace = true
 sagat-infra-ir.workspace = true
+sagat-infra-lake.workspace = true
 sagat-infra-nats.workspace = true
 sagat-infra-postgres.workspace = true
 sagat-infra-sandbox.workspace = true
@@ -53,7 +64,7 @@ sagat-scheduler.workspace = true
 sagat-telemetry.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
-serde-saphyr = "1.3"
+serde-saphyr = "2.0"
 sqlx.workspace = true
 testcontainers-modules.workspace = true
 time.workspace = true
@@ -93,6 +104,10 @@ path = "performance/platform-foundation/main.rs"
 [[test]]
 name = "integration_durable_execution"
 path = "integration/durable-execution/main.rs"
+
+[[test]]
+name = "integration_claim_transition_efficiency"
+path = "integration/claim-transition-efficiency/main.rs"
 
 [[test]]
 name = "contract_rest_durable_execution"
@@ -378,3 +393,55 @@ path = "integration/database-runner/main.rs"
 [[test]]
 name = "e2e_database_connections"
 path = "e2e/database-connections/main.rs"
+
+[[test]]
+name = "integration_redis_streams"
+path = "integration/redis-streams/main.rs"
+
+[[test]]
+name = "integration_schedules_bulk_operations"
+path = "integration/schedules-bulk-operations/main.rs"
+
+[[test]]
+name = "fault_schedules_bulk_operations"
+path = "fault/schedules-bulk-operations/main.rs"
+
+[[test]]
+name = "contract_schedules_bulk_operations"
+path = "contract/schedules-bulk-operations/main.rs"
+
+[[test]]
+name = "e2e_schedules_bulk_operations"
+path = "e2e/schedules-bulk-operations/main.rs"
+
+[[test]]
+name = "contract_iceberg_writes"
+path = "contract/iceberg-writes/main.rs"
+
+[[test]]
+name = "integration_iceberg_writes"
+path = "integration/iceberg-writes/main.rs"
+
+[[test]]
+name = "fault_iceberg_writes"
+path = "fault/iceberg-writes/main.rs"
+
+[[test]]
+name = "e2e_iceberg_writes"
+path = "e2e/iceberg-writes/main.rs"
+
+[[test]]
+name = "perf_iceberg_writes"
+path = "performance/iceberg-writes/main.rs"
+
+[[test]]
+name = "integration_step_destinations"
+path = "integration/step-destinations/main.rs"
+
+[[test]]
+name = "fault_step_destinations"
+path = "fault/step-destinations/main.rs"
+
+[[test]]
+name = "e2e_step_destinations"
+path = "e2e/step-destinations/main.rs"

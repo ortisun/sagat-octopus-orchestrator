@@ -1,0 +1,17 @@
+{
+  "name": "minimatch",
+  "version": "11.0.1+sagat.1",
+  "private": true,
+  "description": "Tooling-only legacy import bridge to the pinned patched minimatch",
+  "main": "index.cjs",
+  "exports": {
+    ".": "./index.cjs",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "minimatch-upstream": "npm:minimatch@11.0.1"
+  },
+  "engines": {
+    "node": "18 || 20 || >=22"
+  }
+}

@@ -48,6 +48,7 @@ import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
 import dev.sagatoctopusorchestrator.sdk.workflow.LoopOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.QueryDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.DatabaseOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.IcebergWriteOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.RetryOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.SagaOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.ScriptOptions;
@@ -231,11 +232,75 @@ public final class Runner {
         }
     }
 
+    private static SagatException icebergInvalid() {
+        return SagatException.invalid("invalid iceberg write");
+    }
+
+    private static String icebergText(JsonNode node) {
+        if (!node.isTextual()) throw icebergInvalid();
+        return node.textValue();
+    }
+
+    private static long icebergLong(JsonNode node) {
+        if (!node.isIntegralNumber() || !node.canConvertToLong()) throw icebergInvalid();
+        return node.longValue();
+    }
+
+    private static IcebergWriteOptions icebergOptionsOf(JsonNode node) {
+        try {
+            JsonNode ref = node.path("connectionRef");
+            JsonNode table = node.path("table");
+            if (!table.path("namespace").isArray()) throw icebergInvalid();
+            List<String> namespace = new ArrayList<>();
+            for (JsonNode level : table.path("namespace")) namespace.add(icebergText(level));
+            JsonNode records = node.path("records");
+            if (!records.isObject() || records.size() != 1) throw icebergInvalid();
+            IcebergWriteOptions.Records source;
+            if (records.has("inline")) source = IcebergWriteOptions.Records.inline(icebergText(records.get("inline")));
+            else if (records.has("blobs")) source = IcebergWriteOptions.Records.blobs(icebergText(records.get("blobs")));
+            else if (records.has("databaseResult")) source = IcebergWriteOptions.Records.databaseResult(icebergText(records.get("databaseResult")));
+            else throw icebergInvalid();
+            if (ref.has("revision") && (!ref.get("revision").isIntegralNumber() || !ref.get("revision").canConvertToInt())) throw icebergInvalid();
+            IcebergWriteOptions options = IcebergWriteOptions.create(
+                new DatabaseOptions.ConnectionRef(icebergText(ref.path("name")), ref.has("revision") ? ref.get("revision").intValue() : null),
+                new IcebergWriteOptions.Table(namespace, icebergText(table.path("name"))), source);
+            if (node.has("ref")) options.ref(icebergText(node.get("ref")));
+            if (node.has("mapping")) {
+                if (!node.path("mapping").isArray()) throw icebergInvalid();
+                List<IcebergWriteOptions.Mapping> rows = new ArrayList<>();
+                for (JsonNode row : node.path("mapping")) rows.add(new IcebergWriteOptions.Mapping(icebergText(row.path("field")), icebergText(row.path("column"))));
+                options.mapping(rows);
+            }
+            if (node.has("ignoreUnknownFields")) {
+                if (!node.get("ignoreUnknownFields").isBoolean()) throw icebergInvalid();
+                options.ignoreUnknownFields(node.get("ignoreUnknownFields").booleanValue());
+            }
+            if (node.has("limits")) {
+                JsonNode bounds = node.get("limits");
+                if (!bounds.isObject()) throw icebergInvalid();
+                IcebergWriteOptions.Limits limits = new IcebergWriteOptions.Limits();
+                if (bounds.has("maxRecordBytes")) limits.maxRecordBytes(icebergLong(bounds.get("maxRecordBytes")));
+                if (bounds.has("maxRecords")) limits.maxRecords(icebergLong(bounds.get("maxRecords")));
+                if (bounds.has("timeoutMs")) limits.timeoutMs(icebergLong(bounds.get("timeoutMs")));
+                options.limits(limits);
+            }
+            if (node.has("compensation")) {
+                if (!"revert".equals(icebergText(node.get("compensation")))) throw icebergInvalid();
+                options.compensation(IcebergWriteOptions.Compensation.REVERT);
+            }
+            if (node.has("onError")) options.onError(icebergText(node.get("onError")));
+            return options;
+        } catch (IllegalArgumentException error) {
+            throw icebergInvalid();
+        }
+    }
+
     private static void apply(Flow target, JsonNode ops) {
         for (JsonNode op : ops) {
             String id = op.path("id").asText(null);
             switch (op.path("op").asText()) {
                 case "database" -> target.database(id, databaseOptionsOf(op.path("options")));
+                case "icebergWrite" -> target.icebergWrite(id, icebergOptionsOf(op.path("options")));
                 case "step" -> target.step(id, op.path("activity").asText(null), stepOptionsOf(op.get("options")));
                 case "script" -> {
                     JsonNode o = op.path("options");

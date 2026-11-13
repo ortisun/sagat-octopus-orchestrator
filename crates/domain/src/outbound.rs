@@ -10,7 +10,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use crate::connectors::{ConnectorError, ConnectorKind, Server, name, parse_servers};
+use crate::connectors::{ConnectorError, Server, name, parse_servers};
 use crate::egress::Destination;
 use crate::secrets::SecretName;
 
@@ -53,10 +53,78 @@ pub enum OutboundError {
     InvalidTimeout,
 }
 
+/// Broker destinations are independent of inbound connector capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrokerKind {
+    Nats,
+    Kafka,
+    Sqs,
+    Redis,
+}
+impl BrokerKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Nats => "NATS",
+            Self::Kafka => "KAFKA",
+            Self::Sqs => "SQS",
+            Self::Redis => "REDIS",
+        }
+    }
+}
+impl std::str::FromStr for BrokerKind {
+    type Err = ();
+    fn from_str(value: &str) -> Result<Self, ()> {
+        match value {
+            "NATS" => Ok(Self::Nats),
+            "KAFKA" => Ok(Self::Kafka),
+            "SQS" => Ok(Self::Sqs),
+            "REDIS" => Ok(Self::Redis),
+            _ => Err(()),
+        }
+    }
+}
+impl fmt::Display for BrokerKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Bounded stream keys accepted on the wire and by both Redis adapters.
+#[must_use]
+pub fn valid_redis_stream(stream: &str) -> bool {
+    !stream.is_empty()
+        && stream.len() <= 512
+        && stream.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b':' | b'.' | b'_' | b'-' | b'{' | b'}')
+        })
+}
+
+/// Canonical endpoint retains the original TLS hostname (including bracketed IPv6).
+#[must_use]
+pub fn redis_endpoint(server: &Server) -> String {
+    let host = if server.host().contains(':') {
+        format!("[{}]", server.host())
+    } else {
+        server.host().to_owned()
+    };
+    format!(
+        "{}://{}:{}",
+        if server.tls() { "rediss" } else { "redis" },
+        host,
+        server.port()
+    )
+}
+
 /// A broker destination for an outbound subscription. Credentials are named separately and never
 /// live in these settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrokerDestination {
+    Redis {
+        server: Server,
+        stream: String,
+        database: u8,
+    },
     Nats {
         servers: Vec<Server>,
         subject: String,
@@ -72,6 +140,47 @@ pub enum BrokerDestination {
 }
 
 impl BrokerDestination {
+    pub fn redis(endpoint: &str, stream: &str, database: u8) -> Result<Self, ConnectorError> {
+        let (scheme, authority) = endpoint
+            .split_once("://")
+            .ok_or(ConnectorError::InvalidServer)?;
+        if endpoint.len() > 280
+            || !matches!(scheme, "redis" | "rediss")
+            || authority.contains(['/', '?', '#', '@'])
+        {
+            return Err(ConnectorError::InvalidServer);
+        }
+        let (host, port) = authority
+            .rsplit_once(':')
+            .ok_or(ConnectorError::InvalidServer)?;
+        if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(ConnectorError::InvalidServer);
+        }
+        if host.starts_with('[') {
+            host.strip_prefix('[')
+                .and_then(|host| host.strip_suffix(']'))
+                .and_then(|host| host.parse::<std::net::Ipv6Addr>().ok())
+                .ok_or(ConnectorError::InvalidServer)?;
+        } else if host.contains(['[', ']', ':']) {
+            return Err(ConnectorError::InvalidServer);
+        }
+        let server = Server::parse(&format!(
+            "{}://{authority}",
+            if scheme == "rediss" { "tls" } else { "nats" }
+        ))?;
+        if !valid_redis_stream(stream) {
+            return Err(ConnectorError::InvalidName);
+        }
+        if database > 15 {
+            return Err(ConnectorError::InvalidDatabase);
+        }
+        Ok(Self::Redis {
+            server,
+            stream: stream.to_owned(),
+            database,
+        })
+    }
+
     pub fn nats(servers: &[String], subject: &str) -> Result<Self, ConnectorError> {
         Ok(Self::Nats {
             servers: parse_servers(servers)?,
@@ -99,17 +208,19 @@ impl BrokerDestination {
     }
 
     #[must_use]
-    pub const fn kind(&self) -> ConnectorKind {
+    pub const fn kind(&self) -> BrokerKind {
         match self {
-            Self::Nats { .. } => ConnectorKind::Nats,
-            Self::Kafka { .. } => ConnectorKind::Kafka,
-            Self::Sqs { .. } => ConnectorKind::Sqs,
+            Self::Nats { .. } => BrokerKind::Nats,
+            Self::Kafka { .. } => BrokerKind::Kafka,
+            Self::Sqs { .. } => BrokerKind::Sqs,
+            Self::Redis { .. } => BrokerKind::Redis,
         }
     }
 
     #[must_use]
     pub fn servers(&self) -> Vec<Server> {
         match self {
+            Self::Redis { server, .. } => vec![server.clone()],
             Self::Nats { servers, .. } | Self::Kafka { servers, .. } => servers.clone(),
             Self::Sqs { queue_url, .. } => {
                 let d = queue_url.destination();

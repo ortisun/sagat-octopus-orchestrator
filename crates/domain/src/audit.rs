@@ -33,6 +33,10 @@ pub enum AuditAction {
     RunFinished,
     /// A current member settled its capacity membership from the evidence required by its kind.
     CapacityMemberFinished,
+    /// A quiescent ChildRoot retained membership but vacated possession.
+    CapacityMemberVacated,
+    /// An active ChildRoot acquired vacant group possession, without leasing work.
+    CapacityMemberAcquired,
     /// An immutable ordinary leaf-path success fact was certified from committed source evidence.
     LeafCollectionSuccessCertified,
     /// Retained workflow content exceeded the tenant storage ceiling and forced the run to stop.
@@ -88,6 +92,16 @@ pub enum AuditAction {
     DatabaseConnectionChanged,
     DatabaseDenied,
     DatabaseResultRead,
+    /// A catalog was browsed (feature 035). It names the connection and the level asked for, never a table. Every
+    /// browse is one row: it does not collapse repeats (D035-075).
+    DatabaseCatalogBrowsed,
+    /// An operator retried, skipped or resolved a destination step (feature 035).
+    DestinationDecided,
+    /// Someone asked for the commit of an Iceberg write to be reverted (feature 035).
+    IcebergRevertRequested,
+    /// An Iceberg write committed a snapshot (feature 035, FR-035-030): one record for each committed write, naming the node, the
+    /// connection, the table and the snapshot, and never a value, a partition value or a location.
+    IcebergWriteCommitted,
     SecretDeleted,
     /// Someone was allowed to reference a secret from workflows, or no longer is.
     SecretAccessGranted,
@@ -193,6 +207,32 @@ pub enum AuditAction {
     BlobUploaded,
     BlobRead,
     BlobDeleted,
+    /// A schedule (feature 018) was created, changed or deleted.
+    ScheduleCreated,
+    ScheduleUpdated,
+    ScheduleDeleted,
+    /// An operator paused or resumed a schedule, with a note.
+    SchedulePaused,
+    ScheduleResumed,
+    /// The platform paused a schedule: its authorizing subject lost access, or a run failed and the
+    /// schedule asks to pause on failure.
+    ScheduleAutoPaused,
+    /// A schedule was run by hand, outside its spec.
+    ScheduleTriggered,
+    ScheduleBackfillRequested,
+    ScheduleBackfillCancelled,
+    /// The input of a schedule was shown to a reader, at the level their grants allow.
+    ScheduleInputDisclosed,
+    /// An operator handed the cron triggers over to the schedule pass (`FR-018-017`).
+    ScheduleTriggerHandover,
+    /// A batch job was created, cancelled, or finished by itself.
+    BatchCreated,
+    BatchCancelled,
+    BatchFinished,
+    /// A new run was built from the journal prefix of another, or such a reset was requested and is
+    /// waiting for its source to end.
+    RunReset,
+    RunResetRequested,
 }
 
 impl AuditAction {
@@ -226,6 +266,7 @@ impl AuditAction {
                 | Self::PayloadRevealDenied
                 | Self::RunQueried
                 | Self::ApprovalDenied
+                | Self::ScheduleInputDisclosed
         )
     }
 
@@ -243,7 +284,8 @@ impl AuditAction {
             | Self::PayloadInspectionDenied
             | Self::PayloadDisclosed
             | Self::PayloadRevealDenied
-            | Self::RunQueried => Some(std::time::Duration::from_secs(300)),
+            | Self::RunQueried
+            | Self::ScheduleInputDisclosed => Some(std::time::Duration::from_secs(300)),
             Self::ApprovalDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
@@ -274,6 +316,8 @@ impl AuditAction {
             Self::RunContinued => "run.continued",
             Self::RunFinished => "run.finished",
             Self::CapacityMemberFinished => "capacity.member.finished",
+            Self::CapacityMemberVacated => "capacity.member.vacated",
+            Self::CapacityMemberAcquired => "capacity.member.acquired",
             Self::LeafCollectionSuccessCertified => "collection.leaf_success_certified",
             Self::RunStorageQuotaExceeded => "run.storage_quota_exceeded",
             Self::RunDataLimitExceeded => "run.data_limit_exceeded",
@@ -304,6 +348,10 @@ impl AuditAction {
             Self::SecretAttemptPinsReleased => "secret.attempt_pins_released",
             Self::DatabaseConnectionChanged => "database.connection_changed",
             Self::DatabaseResultRead => "database.result_read",
+            Self::DatabaseCatalogBrowsed => "database.catalog_browsed",
+            Self::DestinationDecided => "destination.decided",
+            Self::IcebergRevertRequested => "iceberg.revert_requested",
+            Self::IcebergWriteCommitted => "iceberg.write_committed",
             Self::DatabaseDenied => "database.denied",
             Self::SecretDeleted => "secret.deleted",
             Self::SecretAccessGranted => "secret.access_granted",
@@ -364,6 +412,22 @@ impl AuditAction {
             Self::BlobUploaded => "blob.uploaded",
             Self::BlobRead => "blob.read",
             Self::BlobDeleted => "blob.deleted",
+            Self::ScheduleCreated => "schedule.created",
+            Self::ScheduleUpdated => "schedule.updated",
+            Self::ScheduleDeleted => "schedule.deleted",
+            Self::SchedulePaused => "schedule.paused",
+            Self::ScheduleResumed => "schedule.resumed",
+            Self::ScheduleAutoPaused => "schedule.auto_paused",
+            Self::ScheduleTriggered => "schedule.triggered",
+            Self::ScheduleBackfillRequested => "schedule.backfill_requested",
+            Self::ScheduleBackfillCancelled => "schedule.backfill_cancelled",
+            Self::ScheduleInputDisclosed => "schedule.input_disclosed",
+            Self::ScheduleTriggerHandover => "schedule.trigger_handover",
+            Self::BatchCreated => "batch.created",
+            Self::BatchCancelled => "batch.cancelled",
+            Self::BatchFinished => "batch.finished",
+            Self::RunReset => "run.reset",
+            Self::RunResetRequested => "run.reset_requested",
         }
     }
 }
@@ -437,6 +501,10 @@ pub enum ResourceType {
     WebhookSubscription,
     BrokerSubscription,
     Connector,
+    /// A schedule of feature 018.
+    Schedule,
+    /// A batch job of feature 018.
+    BatchJob,
     Script,
     /// A version of a script, as `script-id/number`.
     ScriptVersion,
@@ -476,6 +544,8 @@ impl ResourceType {
             Self::WebhookSubscription => "webhook_subscription",
             Self::BrokerSubscription => "broker_subscription",
             Self::Connector => "connector",
+            Self::Schedule => "schedule",
+            Self::BatchJob => "batch_job",
             Self::Script => "script",
             Self::ScriptVersion => "script_version",
             Self::PublicationRequest => "publication_request",

@@ -238,3 +238,80 @@ This particular run does not establish the cause of historical Linux failures.
 `cargo clippy --workspace --all-targets --locked -- -D warnings` also passed on
 that integrated tree in **88.86 s**. The full current-head CI gates remain
 mandatory; these local results do not replace them.
+
+## Final integrated checkpoint — 2026-10-26
+
+The final candidate `769a7d1d7717f0bc0afeb3731da9328066e3f36a` passed:
+
+- [CI 40259828158](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40259828158):
+  all 11 jobs succeeded, including locked workspace formatting/Clippy/tests,
+  architecture, contracts, dependency advisories, five SDKs, Studio/browser,
+  complete Compose, native runners and scale/recovery.
+- [Independent SDK packaging 40259828175](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40259828175):
+  all five clean consumers passed.
+- [Release preflight 40259828227](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40259828227):
+  version agreement, all three native CLI builds, SDK consumers and the full
+  recovery-objective drill passed. Publication was correctly skipped on the PR.
+
+The actual final Linux Rust job passed 538 workflow-primitives tests, zero failed,
+16 explicitly ignored (1,789.33 s), and all 16 client/integrity tests, zero failed,
+seven separately scripted scenarios ignored (15.04 s). The original nine scale
+configurations and their integrity checks passed in 51.52 s. The full managed
+Compose scenario passed TLS, OpenBao, probe/result/replay, coordinated restore,
+restart, retirement fence and outage-without-fallback assertions. This does not
+identify either discarded historical startup or private driver failure causes.
+Redundant same-head PUSH jobs were cancelled only after the PR replacements
+existed; no failing required test was waived.
+
+Actual Gitflow integration:
+
+| PR | Destination | Actual merge |
+|---|---|---|
+| 45 | develop | `95b5a238367cc4c491dd23e8a4538d8f4b1ec9e3` |
+| 47 | develop | `ca18e33ccc3287e85ef70131c75ad332bf642ba5` |
+| 50 | develop | `23976ef230fce421346c0bc454ed982b2a895cc6` |
+| 51 | main | `bfda342073db71e84f30bdc79ccf3fbc97a7153c` |
+
+Root fetched and compared each feature merge tree with its approved head. The
+actual main merge tree equals the tested candidate. Both annotated remote tags,
+`v0.2.0` and `sdks/go/v0.2.0`, dereference that same actual main merge. No ref was
+overwritten; both tags were pushed atomically.
+
+The back-merge prepared from `develop` integrates that actual main commit. Root
+verified its tree before documentation changes equals main, then reran all script
+tests with the real controlled Compose case enabled: **43 passed, zero failed,
+zero skipped, 2.235 s**. Architecture passed (24 crates, no cycles), agent
+configuration passed, and version agreement returned `0.2.0`. The follow-up
+changes only task/status/evidence documentation; it closes T016-001 and T016-054
+and leaves all eight feature-014 tasks open under ADR-0040.
+
+### Published artifact verification
+
+[Release v0.2.0](https://github.com/ortisun/sagat-octopus-orchestrator/releases/tag/v0.2.0)
+was published at `2026-10-26T04:35:04Z` by
+[tag workflow 40268722763](https://github.com/ortisun/sagat-octopus-orchestrator/actions/runs/40268722763),
+with all seven jobs successful at source commit `bfda3420`. It is a stable,
+non-draft release and was confirmed as the latest release.
+
+Root downloaded every actual attached asset: **15 files**, comprising the three
+native CLI archives, all five SDK distributions and their supporting files, SDK
+release notes, and `SHA256SUMS`. The 14 artifact entries exactly cover the
+downloaded files other than the manifest; all 14 checksums and all 15 GitHub
+metadata digests matched. The manifest's SHA-256 is
+`d37a7734e43958975aedb39a543bb0afc268f340d71bd6a647b0b8f853229eb3`.
+
+Root ran `gh attestation verify` against **all 15 downloaded files**, including
+the manifest: **15 exit codes 0**. Every invocation pinned the repository,
+release workflow, actual main merge and tag, and refused self-hosted runners:
+
+```sh
+gh attestation verify "$FILE" \
+  --repo ortisun/sagat-octopus-orchestrator \
+  --signer-workflow ortisun/sagat-octopus-orchestrator/.github/workflows/release.yml \
+  --source-digest bfda342073db71e84f30bdc79ccf3fbc97a7153c \
+  --source-ref refs/tags/v0.2.0 \
+  --deny-self-hosted-runners --format json
+```
+
+`FILE` denotes each downloaded asset. Distribution used GitHub Releases only;
+no package registry was published and no environment was deployed.

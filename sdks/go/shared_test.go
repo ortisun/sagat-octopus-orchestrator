@@ -104,6 +104,31 @@ func TestEveryErrorHasARemediationADefaultAndACodeOfItsOwn(t *testing.T) {
 		CodeValidationFailed: true, CodeRateLimited: true, CodeQuotaExceeded: true, CodeUnavailable: true, CodeInternal: true,
 		CodeStaleAttempt: true, CodeIdempotencyKeyReused: true, CodeNotBound: true, CodeSecretNotUsable: true,
 		CodeUnsupportedProtocol: true, CodeTransport: true, CodeCancelled: true, CodeProtocol: true, CodePayloadTooLarge: true,
+		CodeIcebergTableNotFound:                 true,
+		CodeIcebergUnsupportedTable:              true,
+		CodeIcebergLocationNotAllowed:            true,
+		CodeIcebergSchemaMismatch:                true,
+		CodeIcebergDuplicateKey:                  true,
+		CodeIcebergScopeViolation:                true,
+		CodeIcebergCommitConflict:                true,
+		CodeIcebergRevertBlocked:                 true,
+		CodeIcebergLimitExceeded:                 true,
+		CodeCatalogUnavailable:                   true,
+		CodeStorageUnavailable:                   true,
+		CodeDestinationKeyConstraintMissing:      true,
+		CodeDestinationSchemaMismatch:            true,
+		CodeDestinationDeduplicationNotConfirmed: true,
+		CodeDestinationObjectConflict:            true,
+		CodeDestinationDeliveryBoundExceeded:     true,
+		CodeDestinationSubscriptionShared:        true,
+		CodeDestinationAuthFailed:                true,
+		CodeDestinationUnavailable:               true,
+		CodeDestinationSubscriptionUnusable:      true,
+		CodeDestinationFailed:                    true,
+		CodeLakeHostProtocol:                     true,
+		CodeLakeSandboxUnavailable:               true,
+		CodeClassificationEgressRefused:          true,
+		CodeOutcomeUnknown:                       true,
 	}
 	if len(catalogEntries) != len(known) {
 		t.Fatalf("the catalog has %d codes and the SDK %d constants", len(catalogEntries), len(known))
@@ -255,7 +280,7 @@ func TestRetryPolicyKeepsDefaultsForZeroFields(t *testing.T) {
 }
 
 func TestVersionConstants(t *testing.T) {
-	if Version != "0.2.0" || ProtocolVersion != "1.5" || Language != "go" {
+	if Version != "0.3.0" || ProtocolVersion != "1.5" || Language != "go" {
 		t.Errorf("%s %s %s", Version, ProtocolVersion, Language)
 	}
 	var file struct {

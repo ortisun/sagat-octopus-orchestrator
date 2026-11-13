@@ -1,0 +1,156 @@
+{
+  "about": "A cell of the typed result a SQL step retains (feature 017), the value it becomes in the records of a lake write (D035-145), and what the lake host does with that value for each type of column it may be written to (runners/lake/sagat_lake/mapping.py). Read by the Rust test of the lease (tests/contract/iceberg-writes/lake_result_records.rs, which holds `record`) and by the Python test of the host (runners/lake/tests/test_result_records.py, which holds `host`): a change to either side that the other does not follow fails one of them. `outcome` is `ok` or the reason the host refuses with; `stored` is what it stores, where JSON can say it.",
+  "cells": [
+    {
+      "name": "an integer",
+      "cell": {"type": "integer", "value": "42"},
+      "record": "42",
+      "host": [
+        {"column": "long", "outcome": "ok", "stored": 42},
+        {"column": "int", "outcome": "ok", "stored": 42},
+        {"column": "decimal(12,0)", "outcome": "ok"},
+        {"column": "double", "outcome": "TYPE"},
+        {"column": "string", "outcome": "ok", "stored": "42"},
+        {"column": "boolean", "outcome": "TYPE"}
+      ]
+    },
+    {
+      "name": "an integer a JSON number cannot hold",
+      "cell": {"type": "integer", "value": "9007199254740993"},
+      "record": "9007199254740993",
+      "host": [
+        {"column": "long", "outcome": "ok", "stored": 9007199254740993},
+        {"column": "int", "outcome": "OVERFLOW"}
+      ]
+    },
+    {
+      "name": "a decimal",
+      "cell": {"type": "decimal", "value": "12.50"},
+      "record": "12.50",
+      "host": [
+        {"column": "decimal(12,2)", "outcome": "ok"},
+        {"column": "decimal(12,1)", "outcome": "ok"},
+        {"column": "long", "outcome": "TYPE"},
+        {"column": "double", "outcome": "TYPE"}
+      ]
+    },
+    {
+      "name": "a decimal with a digit the column would round away",
+      "cell": {"type": "decimal", "value": "12.55"},
+      "record": "12.55",
+      "host": [
+        {"column": "decimal(12,2)", "outcome": "ok"},
+        {"column": "decimal(12,1)", "outcome": "SCALE_OVERFLOW"}
+      ]
+    },
+    {
+      "name": "a float",
+      "cell": {"type": "float", "value": 0.5},
+      "record": 0.5,
+      "host": [
+        {"column": "double", "outcome": "ok", "stored": 0.5},
+        {"column": "float", "outcome": "ok", "stored": 0.5},
+        {"column": "long", "outcome": "TYPE"},
+        {"column": "string", "outcome": "TYPE"}
+      ]
+    },
+    {
+      "name": "a text",
+      "cell": {"type": "text", "value": "hello"},
+      "record": "hello",
+      "host": [
+        {"column": "string", "outcome": "ok", "stored": "hello"},
+        {"column": "uuid", "outcome": "TYPE"},
+        {"column": "long", "outcome": "TYPE"},
+        {"column": "boolean", "outcome": "TYPE"}
+      ]
+    },
+    {
+      "name": "a text that is a UUID",
+      "cell": {"type": "text", "value": "123e4567-e89b-12d3-a456-426614174000"},
+      "record": "123e4567-e89b-12d3-a456-426614174000",
+      "host": [
+        {"column": "uuid", "outcome": "ok"},
+        {"column": "string", "outcome": "ok", "stored": "123e4567-e89b-12d3-a456-426614174000"}
+      ]
+    },
+    {
+      "name": "a boolean",
+      "cell": {"type": "boolean", "value": true},
+      "record": true,
+      "host": [
+        {"column": "boolean", "outcome": "ok", "stored": true},
+        {"column": "string", "outcome": "TYPE"},
+        {"column": "long", "outcome": "TYPE"}
+      ]
+    },
+    {
+      "name": "a timestamp (the SQL runner keeps only `timestamptz`, always with its offset)",
+      "cell": {"type": "timestamp", "value": "2026-11-08T10:00:00Z"},
+      "record": "2026-11-08T10:00:00Z",
+      "host": [
+        {"column": "timestamptz", "outcome": "ok"},
+        {"column": "timestamp", "outcome": "ZONE"},
+        {"column": "date", "outcome": "TYPE"},
+        {"column": "string", "outcome": "ok", "stored": "2026-11-08T10:00:00Z"}
+      ]
+    },
+    {
+      "name": "a timestamp with an offset",
+      "cell": {"type": "timestamp", "value": "2026-11-08T10:00:01+01:00"},
+      "record": "2026-11-08T10:00:01+01:00",
+      "host": [
+        {"column": "timestamptz", "outcome": "ok"},
+        {"column": "timestamp", "outcome": "ZONE"}
+      ]
+    },
+    {
+      "name": "a date",
+      "cell": {"type": "date", "value": "2026-11-08"},
+      "record": "2026-11-08",
+      "host": [
+        {"column": "date", "outcome": "ok"},
+        {"column": "string", "outcome": "ok", "stored": "2026-11-08"},
+        {"column": "timestamptz", "outcome": "TYPE"}
+      ]
+    },
+    {
+      "name": "a binary, which stays the typed cell the host reads for a binary column",
+      "cell": {"type": "binary", "value": "AAEC"},
+      "record": {"type": "binary", "value": "AAEC"},
+      "host": [
+        {"column": "binary", "outcome": "ok"},
+        {"column": "fixed(3)", "outcome": "ok"},
+        {"column": "fixed(4)", "outcome": "TYPE"},
+        {"column": "string", "outcome": "TYPE"}
+      ]
+    },
+    {
+      "name": "a JSON object: a string column does not take structure, and says so",
+      "cell": {"type": "json", "value": {"k": [1, 2]}},
+      "record": {"k": [1, 2]},
+      "host": [
+        {"column": "string", "outcome": "TYPE"},
+        {"column": "long", "outcome": "TYPE"}
+      ]
+    },
+    {
+      "name": "a JSON string is a string",
+      "cell": {"type": "json", "value": "abc"},
+      "record": "abc",
+      "host": [
+        {"column": "string", "outcome": "ok", "stored": "abc"}
+      ]
+    },
+    {
+      "name": "a SQL NULL, and a JSON null, are the same null: an optional column takes it, a required one does not",
+      "cell": {"type": "null", "value": null},
+      "record": null,
+      "host": [
+        {"column": "string", "outcome": "ok", "stored": null},
+        {"column": "long", "outcome": "ok", "stored": null},
+        {"column": "required string", "outcome": "NULL_IN_REQUIRED"}
+      ]
+    }
+  ]
+}

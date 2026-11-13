@@ -1,0 +1,364 @@
+   Compiling sagat-infra-postgres v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/crates/infra-postgres)
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling sagat-control-plane v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/apps/control-plane)
+   Compiling sagat-execution-engine v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/apps/execution-engine)
+   Compiling sagat-sandbox-runner v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/apps/sandbox-runner)
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-compensation-safety/tests)
+    Finished `test` profile [unoptimized] target(s) in 1m 10s
+     Running contract/sagas-compensations/grpc/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/contract_grpc_sagas_compensations-4df35a295b50caca)
+
+running 7 tests
+test protocol::a_code_that_is_not_a_code_is_recorded_as_a_worker_error_and_never_as_a_reserved_one ... ok
+test protocol::a_compensation_arrives_as_a_task_that_says_what_it_undoes ... ok
+test protocol::a_worker_built_before_sagas_decodes_every_lease_and_ignores_what_it_does_not_know ... ok
+test protocol::a_lookup_arrives_as_a_task_and_is_answered_with_a_verdict ... ok
+test protocol::an_unknown_lookup_verdict_remains_review_over_grpc ... ok
+test protocol::an_expired_compensation_waits_for_review_and_fences_late_reports ... ok
+test protocol::cancelling_a_run_does_not_cancel_the_compensation_that_is_undoing_it ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.61s
+
+     Running contract/sagas-compensations/rest/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/contract_rest_sagas_compensations-ec3ea4a8e3a51341)
+
+running 4 tests
+test conformance::every_way_a_run_can_end_is_in_the_run_finished_event_contract ... ok
+test conformance::every_run_status_the_engine_can_produce_is_documented ... ok
+test conformance::the_saga_operations_conform_to_the_contract_on_their_normal_and_error_paths ... ok
+test conformance::uncertain_effect_operations_fail_closed_and_read_through_the_rest_contract ... FAILED
+
+failures:
+
+---- conformance::uncertain_effect_operations_fail_closed_and_read_through_the_rest_contract stdout ----
+
+thread 'conformance::uncertain_effect_operations_fail_closed_and_read_through_the_rest_contract' (782538157) panicked at tests/contract/sagas-compensations/rest/conformance.rs:382:9:
+assertion `left == right` failed: integrationQualification must remain undeclared: {"activeVersion":null,"createdAt":"2026-11-01T14:08:58.22819Z","draftRevision":1,"id":"01a19771-2974-7255-bd2c-1ee0be392801","ir":{"apiVersion":"sagat-octopus-orchestrator.io/v1","entrypoint":"tx","kind":"Workflow","metadata":{"name":"undeclared-qualification"},"nodes":[{"begin":"reserve","id":"tx","type":"saga"},{"activity":"limit.reserve","compensateWith":"limit.release","compensationRetry":{"initialDelayMs":100,"jitter":false,"maxAttempts":1,"maxDelayMs":100,"strategy":"fixed"},"id":"reserve","integrationQualification":"provider-v1","next":"submit","type":"activity"},{"activity":"payment.submit","compensateWith":"payment.return","id":"submit","reconcileWith":"payment.lookup","type":"activity"}]},"name":"undeclared-qualification","updatedAt":"2026-11-01T14:08:58.22819Z"}
+  left: 201
+ right: 422
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    conformance::uncertain_effect_operations_fail_closed_and_read_through_the_rest_contract
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.17s
+
+error: test failed, to rerun pass `-p sagat-tests --test contract_rest_sagas_compensations`
+     Running fault/sagas-compensations/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/fault_sagas_compensations-6cc0517c219a091c)
+
+running 14 tests
+test crashes::a_crash_after_the_provider_released_and_before_the_report_releases_once ... FAILED
+test crashes::a_failure_that_is_never_committed_does_not_start_a_compensation ... ok
+test crashes::a_restart_between_the_plan_and_the_lease_loses_nothing ... ok
+test chaos::connection_kills_while_sagas_succeed_and_compensate_lose_nothing_and_duplicate_nothing ... ok
+test crashes::a_run_waiting_for_a_person_is_still_waiting_after_every_process_restarted ... ok
+test crashes::a_worker_that_dies_during_the_lookup_is_replaced_and_its_late_answer_is_refused ... ok
+test crashes::duplicate_reports_of_a_lookup_and_of_a_compensation_commit_once ... ok
+test provider::a_provider_that_accepts_before_it_times_out_is_asked_instead_of_paid_again ... ok
+test provider::a_release_delivered_twice_is_performed_once_and_the_duplicate_is_said_so ... FAILED
+test provider::failed_required_review_audit_dispatches_nothing_and_retry_commits_once_after_restart ... ok
+test provider::negative_provider_lookup_requires_human_finality_and_never_pays_again ... ok
+test races::a_signal_and_a_timeout_arriving_together_decide_the_saga_exactly_one_way ... ok
+test races::schedulers_that_notice_the_same_lost_lease_at_once_request_one_reconciliation ... ok
+test races::a_lease_that_runs_out_while_the_answer_arrives_is_decided_once ... ok
+
+failures:
+
+---- crashes::a_crash_after_the_provider_released_and_before_the_report_releases_once stdout ----
+
+thread 'crashes::a_crash_after_the_provider_released_and_before_the_report_releases_once' (782542589) panicked at tests/fault/sagas-compensations/../../support/engine.rs:840:9:
+assertion `left == right` failed: expected exactly one task, got 0
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- provider::a_release_delivered_twice_is_performed_once_and_the_duplicate_is_said_so stdout ----
+
+thread 'provider::a_release_delivered_twice_is_performed_once_and_the_duplicate_is_said_so' (782556233) panicked at tests/fault/sagas-compensations/../../support/engine.rs:840:9:
+assertion `left == right` failed: expected exactly one task, got 0
+  left: 0
+ right: 1
+
+
+failures:
+    crashes::a_crash_after_the_provider_released_and_before_the_report_releases_once
+    provider::a_release_delivered_twice_is_performed_once_and_the_duplicate_is_said_so
+
+test result: FAILED. 12 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 51.96s
+
+error: test failed, to rerun pass `-p sagat-tests --test fault_sagas_compensations`
+     Running integration/sagas-compensations/main.rs (/var/folders/60/bf6rmfzx6zq67nrbzb3m0p480000gn/T/sagat-037-target-q0fwz2gu/debug/deps/integration_sagas_compensations-9e5e3427efe63851)
+
+running 81 tests
+test breaker::a_compensation_held_back_does_not_take_the_place_of_one_that_can_run ... ok
+test breaker::a_forward_step_named_like_a_held_back_compensation_is_neither_held_back_nor_counted ... ok
+test breaker::a_probe_that_fails_reopens_the_breaker_for_longer ... ok
+test breaker::after_the_window_exactly_one_probe_is_leased_and_its_success_closes_the_breaker ... ok
+test breaker::an_attempt_that_runs_out_of_time_counts_like_one_that_failed ... ok
+test breaker::an_operators_decision_is_not_a_failure_of_the_provider ... ok
+test breaker::consecutive_failures_open_the_breaker_and_other_runs_wait_without_losing_anything ... ok
+test breaker::failures_of_attempts_that_were_already_running_do_not_extend_the_window ... ok
+test breaker::forward_work_and_other_providers_are_not_held_back ... ok
+test breaker::the_breaker_belongs_to_one_tenant ... ok
+test breaker::pollers_that_find_the_breaker_half_open_at_once_lease_exactly_one_probe ... ok
+test breaker::the_breaker_of_one_namespace_does_not_hold_back_the_same_activity_in_another ... ok
+test breaker::the_window_never_exceeds_its_ceiling_however_long_the_provider_is_down ... ok
+test breaker::with_the_breaker_off_nothing_is_ever_held_back ... ok
+test children::a_child_that_ended_compensated_fails_its_parents_step_instead_of_keeping_it_waiting ... ok
+test breaker::the_claim_does_not_walk_the_compensations_an_open_breaker_holds_back ... ok
+test children::a_child_that_fails_inside_a_parent_saga_makes_the_parent_undo_what_it_did_before ... ok
+test children::a_deadline_of_the_parent_reaches_the_child_saga_which_undoes_its_work ... ok
+test children::a_detached_child_saga_is_left_alone ... ok
+test children::a_propagating_parent_finishes_at_once_and_the_child_still_undoes_its_work ... ok
+test children::cancelling_the_parent_makes_the_child_saga_undo_its_work_before_the_parent_is_done ... ok
+test children::children_that_ended_compensated_do_not_hold_up_the_report_of_the_others ... ok
+test children::the_parent_can_route_on_a_child_that_was_compensated ... ok
+test compensation::a_compensation_that_fails_is_retried_with_its_own_budget ... ok
+test compensation::a_failure_inside_the_saga_that_something_handles_does_not_compensate ... ok
+test compensation::a_compensation_that_answers_with_a_large_output_does_not_fail_because_the_run_is_full ... ok
+test compensation::a_permanent_failure_after_a_reservation_compensates_it_and_the_run_ends_compensated ... ok
+test compensation::a_poll_for_one_task_returns_one_even_when_a_run_has_several_ready ... ok
+test compensation::a_saga_that_completes_just_continues ... ok
+test compensation::another_tenant_cannot_see_the_compensation_of_a_run ... ok
+test compensation::compensations_run_in_reverse_order_and_each_waits_for_the_one_after_it ... ok
+test compensation::independent_branches_are_compensated_at_the_same_time ... ok
+test compensation::terminal_failure_waits_for_independent_compensation ... ok
+test compensation::the_derived_steps_are_stored_with_their_kind_and_the_database_agrees ... ok
+test compensation::the_end_of_a_compensated_run_is_announced_with_its_status ... ok
+test compensation::unknown_compensation_overrides_fail ... ok
+test plan::a_new_version_gets_a_plan_and_ids_of_its_own ... ok
+test plan::a_plan_cannot_point_into_another_tenants_version ... ok
+test plan::a_stored_plan_can_be_neither_changed_nor_removed_by_anyone ... ok
+test plan::a_workflow_without_a_saga_has_no_plan ... ok
+test plan::publishing_a_saga_records_its_plan_with_durable_compensation_ids ... ok
+test plan::publishing_the_same_draft_again_does_not_duplicate_the_plan ... ok
+test plan::the_stored_plan_is_exactly_what_the_definition_derives ... ok
+test reconcile::a_lost_response_is_reconciled_before_any_second_attempt ... ok
+test reconcile::a_provider_that_cannot_say_is_never_assumed_either_way ... ok
+test reconcile::a_worker_can_say_it_does_not_know_what_happened ... ok
+test reconcile::an_answer_that_is_not_a_verdict_fails_the_lookup_for_good_and_a_human_decides ... ok
+test reconcile::an_ordinary_failure_is_not_reconciled ... ok
+test reconcile::an_answer_that_would_take_the_run_over_what_it_may_retain_fails_the_lookup_for_good ... ok
+test reconcile::negative_lookup_never_leases_second_attempt_and_fences_the_stale_report ... ok
+test reconcile::negative_lookup_with_no_attempt_left_still_requires_review ... ok
+test reconcile::the_provider_says_the_payment_happened_so_the_step_succeeds_without_a_second_attempt ... ok
+test reconcile::unknown_activity_without_a_lookup_reviews_regardless_of_high_risk_metadata ... ok
+test review::a_compensation_that_ran_out_of_attempts_waits_for_an_operator_and_nothing_else_moves ... ok
+test review::a_decision_without_a_justification_is_refused ... ok
+test review::a_justification_is_counted_after_it_is_trimmed ... ok
+test review::an_operator_can_declare_that_the_effect_did_not_happen_and_the_saga_compensates ... ok
+test review::an_operator_may_retry_but_only_an_administrator_may_skip_or_resolve ... ok
+test review::an_operator_settles_an_unknown_outcome_the_platform_could_not ... ok
+test review::another_tenant_cannot_decide_on_a_run_it_cannot_see ... ok
+test review::declaring_a_compensation_done_outside_the_platform_ends_the_saga_compensated ... ok
+test review::held_run_lock_makes_two_decisions_and_cancel_leave_one_durable_human_outcome ... ok
+test review::ordinary_unknown_reviews_remain_idle_at_one_one_hundred_and_one_thousand ... ignored, measurement: run explicitly with --ignored --nocapture
+test review::only_a_compensation_can_be_skipped_and_only_a_step_that_waits_can_be_decided ... ok
+test review::skipping_a_compensation_ends_the_saga_partial_and_is_audited_with_its_reason ... ok
+test review::the_audit_of_a_declared_outcome_says_which_outcome_was_declared ... ok
+test review::the_operator_retries_the_compensation_and_the_old_attempt_stays_in_the_journal ... ok
+test review::the_same_idempotency_key_replays_a_decision_instead_of_repeating_it ... ok
+test review::the_second_of_two_commands_on_the_same_step_is_refused_and_changes_nothing ... ok
+test review::unknown_effect_retry_requires_resolution_for_compensation_even_for_admin ... ok
+test review::unknown_effect_retry_requires_resolution_for_original_even_for_admin ... ok
+test review::with_the_fail_policy_a_failed_compensation_ends_the_run_without_waiting_for_anyone ... ok
+test stopping::a_deadline_compensates_and_the_run_times_out_only_when_that_is_done ... ok
+test stopping::aborting_without_compensation_just_stops ... ok
+test stopping::cancellation_before_compensation_failure_preserves_the_later_review ... ok
+test stopping::cancelling_a_paused_run_still_undoes_what_it_did ... ok
+test stopping::cancelling_stops_what_is_in_flight_and_compensates_what_completed ... ok
+test stopping::cancelling_after_review_preserves_the_unknown_effect_until_a_human_resolves_it ... ok
+test stopping::deadline_before_compensation_failure_preserves_the_later_review ... ok
+test stopping::deadline_after_review_preserves_the_unknown_effect ... ok
+test stopping::waiting_for_what_is_in_flight_then_compensating_everything_that_completed ... ok
+
+test result: ok. 80 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 87.20s
+
+error: 2 targets failed:
+    `-p sagat-tests --test contract_rest_sagas_compensations`
+    `-p sagat-tests --test fault_sagas_compensations`

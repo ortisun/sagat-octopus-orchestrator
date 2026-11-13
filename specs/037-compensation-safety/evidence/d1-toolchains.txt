@@ -1,0 +1,26 @@
+git rev-parse HEAD
+6b6f0fa4bb7b622c960e9d149a4b78785ad0647b
+git branch --show-current
+feature/037-compensation-safety
+rustc --version
+rustc 1.98.0 (88d9e12ae 2026-08-18)
+cargo --version
+cargo 1.98.0 (797e8a9bc 2026-08-05)
+node --version
+v26.12.0
+npm --version
+11.20.0
+python3 --version
+Python 3.15.0
+sdks/python/.venv/bin/python --version
+Python 3.15.0
+go version
+go version go1.24.2 darwin/arm64
+dotnet --version
+10.0.401
+java -version
+openjdk version "23.0.2" 2025-01-21
+OpenJDK Runtime Environment (build 23.0.2+7-58)
+OpenJDK 64-Bit Server VM (build 23.0.2+7-58, mixed mode, sharing)
+docker version --format "{{.Client.Version}} / {{.Server.Version}}"
+29.9.2 / 29.9.2

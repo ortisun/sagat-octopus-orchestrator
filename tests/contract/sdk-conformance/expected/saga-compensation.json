@@ -340,6 +340,42 @@
       }
     },
     {
+      "id": "not-applied-concluded",
+      "ok": true,
+      "op": "awaitJournal"
+    },
+    {
+      "id": "not-applied-state",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:7>",
+        "startedBy": "alice",
+        "status": "MANUAL_REVIEW",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:8>",
+        "workflowId": "<uuid:9>"
+      }
+    },
+    {
+      "id": "not-applied-resolved",
+      "ok": true,
+      "op": "operate",
+      "result": {
+        "accepted": true,
+        "runStatus": "SUCCEEDED"
+      }
+    },
+    {
       "id": "not-applied-done",
       "ok": true,
       "op": "waitForCompletion",
@@ -415,17 +451,7 @@
           {
             "attempt": null,
             "stepId": "pay2",
-            "type": "step.retry_due"
-          },
-          {
-            "attempt": 2,
-            "stepId": "pay2",
-            "type": "step.leased"
-          },
-          {
-            "attempt": 2,
-            "stepId": "pay2",
-            "type": "step.completed"
+            "type": "step.resolved"
           },
           {
             "attempt": null,
@@ -549,6 +575,13 @@
       }
     }
   ],
+  "reviewEvidence": [
+    {
+      "action": "saga.step_resolved",
+      "actor": "alice",
+      "reason": "declared SUCCEEDED: simulated human assertion of final success; no provider verification is claimed"
+    }
+  ],
   "serverState": [
     {
       "nodes": [
@@ -582,9 +615,9 @@
     {
       "nodes": [
         {
-          "attempt": 2,
+          "attempt": 1,
           "cancelRequested": false,
-          "failureCode": "RECONCILED_NOT_APPLIED",
+          "failureCode": null,
           "forward": null,
           "id": "pay2",
           "kind": "FORWARD",
@@ -951,25 +984,6 @@
         "targetIdempotencyKey": "<uuid:7>:pay2",
         "targetNode": "pay2",
         "taskKind": "RECONCILIATION",
-        "traceId": "<trace:3>",
-        "traceparentPresent": true
-      },
-      {
-        "abortedReason": null,
-        "activity": "saga.pay2",
-        "attempt": 2,
-        "deadlineAhead": true,
-        "idempotencyKey": "<uuid:7>:pay2",
-        "input": {
-          "order": "o-na"
-        },
-        "kind": "activity",
-        "node": "pay2",
-        "outcome": "returned",
-        "steps": {},
-        "targetIdempotencyKey": "",
-        "targetNode": "",
-        "taskKind": "FORWARD",
         "traceId": "<trace:3>",
         "traceparentPresent": true
       },

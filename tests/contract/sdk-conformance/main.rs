@@ -10,7 +10,7 @@ mod support;
 mod harness;
 
 #[test]
-#[ignore = "needs Node, Python, Go, .NET and a JDK: the sdks job of CI runs it with --ignored"]
+#[ignore = "needs the six SDK toolchains and Docker: the sdks job of CI runs it with --ignored"]
 fn every_sdk_conforms_to_every_scenario() {
     harness::block_on(async {
         harness::conform(&harness::Selection::from_env())
@@ -96,4 +96,47 @@ fn every_scenario_declares_phases_with_reviewed_expected_documents() {
         count += 1;
     }
     assert!(count > 0, "the registry must not be empty");
+}
+
+#[test]
+fn compensation_safety_scenario_covers_the_shared_delivery_contract() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("contract/sdk-conformance");
+    let read = |name: &str| -> serde_json::Value {
+        serde_json::from_slice(
+            &std::fs::read(root.join("scenarios").join(name)).expect("scenario bytes"),
+        )
+        .expect("scenario JSON")
+    };
+    let scenario = read("compensation-safety.json");
+    assert_eq!(scenario["reviewEvidence"], true);
+    let steps = scenario["steps"].as_array().expect("steps");
+    for (action, expected) in [
+        ("RETRY_STEP", 2),
+        ("RETRY_COMPENSATION", 1),
+        ("RESOLVE_STEP", 3),
+    ] {
+        assert_eq!(
+            steps.iter().filter(|step| step["action"] == action).count(),
+            expected,
+            "{action} coverage"
+        );
+    }
+    assert!(steps.iter().any(|step| step["op"] == "cancel"));
+    assert_eq!(
+        scenario["workflows"]["known-compensation-failure"]["program"][0]["options"]["onCompensationFailure"],
+        "fail"
+    );
+
+    let legacy = read("saga-compensation.json");
+    assert!(
+        legacy["workers"]["w1"]["activities"]["saga.pay2"]["behavior"]["failsUntilAttempt"]
+            .is_null()
+    );
+    assert!(legacy["steps"].as_array().is_some_and(|steps| {
+        steps.iter().any(|step| {
+            step["id"] == "not-applied-resolved"
+                && step["action"] == "RESOLVE_STEP"
+                && step["outcome"] == "SUCCEEDED"
+        })
+    }));
 }

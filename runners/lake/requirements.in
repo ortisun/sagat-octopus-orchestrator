@@ -1,0 +1,1 @@
+pyiceberg[pyarrow,pyiceberg-core,s3fs,gcsfs,adlfs,hive,glue,sql-postgres]==0.12.0

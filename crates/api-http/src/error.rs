@@ -98,6 +98,51 @@ impl ErrorCode {
             (Self::ValidationFailed, "INVALID_ARGUMENTS") => {
                 "Send arguments that match the argument schema the operation declares."
             }
+            (Self::ValidationFailed, "INVALID_URI") => {
+                "Send an http or https address with a host, and no space or control character."
+            }
+            (Self::ValidationFailed, "PLAIN_HTTP_OUTSIDE_LOOPBACK") => {
+                "Use an https address. Plain http is only for a development fixture on the same machine, named localhost, 127.0.0.1 or ::1: no other http address can run."
+            }
+            (Self::ValidationFailed, "CREDENTIAL_IN_URI") => {
+                "Remove the user name, the password and the query from the address: a credential belongs in a secret, which the connection refers to by name."
+            }
+            (Self::ValidationFailed, "INVALID_CATALOG") => {
+                "Check the catalog settings: the REST warehouse and prefix, the Glue region and catalog id, 1 to 4 thrift:// addresses for Hive, or the JDBC target."
+            }
+            (Self::ValidationFailed, "INVALID_STORAGE") => {
+                "Check the storage settings: the region, the account name and the endpoint of the storage type."
+            }
+            (Self::ValidationFailed, "VENDED_NEEDS_DELEGATION") => {
+                "Vended credentials need a REST catalog whose accessDelegation is vended-credentials; otherwise use static credentials."
+            }
+            (Self::ValidationFailed, "STORAGE_SECRET_WITH_VENDED") => {
+                "Remove the storage secret: with vended credentials the catalog supplies them and the platform never holds them."
+            }
+            (Self::ValidationFailed, "STORAGE_SECRET_REQUIRED") => {
+                "Name the secret that holds the storage credentials, or use vended credentials with a REST catalog that delegates access."
+            }
+            (Self::ValidationFailed, "CATALOG_SECRET_REQUIRED") => {
+                "Name the secret that holds the catalog credentials."
+            }
+            (Self::ValidationFailed, "CATALOG_SECRET_FORBIDDEN") => {
+                "Remove the catalog secret: a Hive metastore has no credentials."
+            }
+            (Self::ValidationFailed, "INVALID_LOCATIONS") => {
+                "Send 1 to 16 distinct warehouse locations, each without a query, a fragment, user information or a .. segment."
+            }
+            (Self::ValidationFailed, "LOCATION_SCHEME_MISMATCH") => {
+                "Use the scheme of the storage type for every warehouse location: s3:// for S3, gs:// for GCS, abfss:// for ADLS."
+            }
+            (Self::ValidationFailed, "INVALID_MODES") => {
+                "Allow at least one of append, overwrite and upsert, each once."
+            }
+            (Self::ValidationFailed, "INVALID_LIMITS") => {
+                "Keep each limit inside its range, or leave it out; zero does not mean unlimited."
+            }
+            (Self::ValidationFailed, "UNAUTHENTICATED_METASTORE_NOT_ALLOWED") => {
+                "This deployment does not allow a Hive metastore without TLS: use tls required, or ask the operator to allow it."
+            }
             (Self::ValidationFailed, "INVALID_UPDATE_KEY") => {
                 "Use an update key of 1 to 128 printable ASCII characters without spaces, and keep it for retries."
             }
@@ -564,6 +609,7 @@ impl ApiError {
                     }
                     ConflictKind::ConnectorSlug => "a connector with this slug already exists",
                     ConflictKind::ScriptName => "a script with this name already exists",
+                    ConflictKind::ScheduleName => "a schedule with this name already exists",
                     ConflictKind::RequestNotApproved => {
                         "the request is not approved with what the namespace asks for now"
                     }
@@ -573,7 +619,8 @@ impl ApiError {
                     ConflictKind::WorkflowName
                     | ConflictKind::WebhookSubscriptionName
                     | ConflictKind::BrokerSubscriptionName
-                    | ConflictKind::ScriptName => {
+                    | ConflictKind::ScriptName
+                    | ConflictKind::ScheduleName => {
                         json!({ "field": "name" })
                     }
                     ConflictKind::EventIdReused => json!({ "reason": "EVENT_ID_REUSED" }),
@@ -634,6 +681,39 @@ impl ApiError {
             AppError::StateConflict(message) => {
                 let mut e = Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message);
                 e.parts.details = Some(json!({ "reason": "STATE_CONFLICT" }));
+                e
+            }
+            AppError::InvalidConnection { reason } => {
+                let mut e = Self::validation(format!(
+                    "the connection settings are not acceptable: {reason}"
+                ));
+                e.parts.details = Some(json!({ "reason": reason }));
+                e
+            }
+            AppError::InvalidSchedule { reason, field } => {
+                let mut e = Self::validation(format!("the schedule is not acceptable: {reason}"));
+                e.parts.details = Some(match field {
+                    Some(field) => json!({ "reason": reason, "field": field }),
+                    None => json!({ "reason": reason }),
+                });
+                e
+            }
+            AppError::ScheduleConflict { reason } => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the schedule is in a state that cannot take this request",
+                );
+                e.parts.details = Some(json!({ "reason": reason }));
+                e
+            }
+            AppError::OutcomeUnresolved => {
+                let mut e = Self::new(
+                    StatusCode::CONFLICT,
+                    ErrorCode::Conflict,
+                    "the step's last outcome is unknown: settle it before it is repeated",
+                );
+                e.parts.details = Some(json!({ "reason": "OUTCOME_UNRESOLVED" }));
                 e
             }
             AppError::Invalid(inner) => Self::validation(inner.to_string()),
@@ -799,6 +879,47 @@ const fn script_reason(error: ScriptError) -> &'static str {
     }
 }
 
+/// The most refused fields one answer lists; the count of the rest is in `omitted`.
+const MAX_REFUSED_FIELDS: usize = 20;
+
+/// `details` of a refused Apache Iceberg write: the reason, the node, and the mode or the paths and classes of the
+/// fields, never a value (FR-035-025).
+fn lake_refusal_details(node: &str, refusal: &sagat_domain::database::LakeRefusal) -> Value {
+    use sagat_domain::database::{EgressRefusal, LakeRefusal};
+    match refusal {
+        LakeRefusal::ModeNotAllowed(mode) => {
+            json!({ "reason": "MODE_NOT_ALLOWED", "node": node, "mode": mode.as_str() })
+        }
+        LakeRefusal::Egress(refusals) => {
+            let fields: Vec<Value> = refusals
+                .iter()
+                .filter_map(|each| match each {
+                    EgressRefusal::Field { path, level } => {
+                        Some(json!({ "path": path, "level": level.as_str() }))
+                    }
+                    EgressRefusal::NotComputed => None,
+                })
+                .collect();
+            let unclassified = refusals
+                .iter()
+                .any(|each| matches!(each, EgressRefusal::NotComputed));
+            let omitted = fields.len().saturating_sub(MAX_REFUSED_FIELDS);
+            let mut details = json!({
+                "reason": "CLASSIFICATION_EGRESS_REFUSED",
+                "node": node,
+                "fields": fields.into_iter().take(MAX_REFUSED_FIELDS).collect::<Vec<_>>(),
+            });
+            if unclassified {
+                details["unclassified"] = json!(true);
+            }
+            if omitted > 0 {
+                details["omitted"] = json!(omitted);
+            }
+            details
+        }
+    }
+}
+
 /// Structured detail for a rejected workflow document: paths and node ids, never document values
 /// beyond the clipped fragments the codec already limited.
 fn definition_details(error: &IrError) -> Value {
@@ -849,6 +970,8 @@ fn definition_details(error: &IrError) -> Value {
         IrError::Expression { node, field, .. } => {
             json!({ "reason": "EXPRESSION", "node": node, "field": field })
         }
+        IrError::LakeDisabled { node } => json!({ "reason": "LAKE_DISABLED", "node": node }),
+        IrError::LakeWriteRefused { node, refusal } => lake_refusal_details(node, refusal),
         IrError::NameMismatch { .. } => json!({ "reason": "NAME_MISMATCH" }),
         IrError::UnknownScript { digest } => {
             json!({ "reason": "UNKNOWN_SCRIPT", "artifactDigest": digest })
@@ -857,6 +980,12 @@ fn definition_details(error: &IrError) -> Value {
         IrError::Malformed => json!({ "reason": "MALFORMED" }),
         IrError::EscapingBodyEdge { body, from, .. } => {
             json!({ "reason": "INVALID_SCOPE", "body": body.as_str(), "node": from.as_str() })
+        }
+        IrError::Invalid(WorkflowError::IcebergNodeNotRoot) => {
+            json!({ "reason": "ICEBERG_NODE_NOT_ROOT" })
+        }
+        IrError::Invalid(WorkflowError::InvalidIcebergNode) => {
+            json!({ "reason": "INVALID_ICEBERG_NODE" })
         }
         IrError::Invalid(WorkflowError::ExpressionByteLimit { node, limit }) => {
             json!({ "reason": "EXPRESSION", "node": node.as_str(), "limit": limit })

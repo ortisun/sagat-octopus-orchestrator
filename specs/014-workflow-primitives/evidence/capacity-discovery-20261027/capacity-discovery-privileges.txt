@@ -1,0 +1,237 @@
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:291:9
+    |
+278 | pub struct CreateTopicsResponse {
+    |            -------------------- field in this struct
+...
+291 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `name`, `value`, `read_only`, `config_source`, `is_sensitive`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:321:9
+    |
+319 | pub struct CreateTopicResponseConfig {
+    |            ------------------------- fields in this struct
+320 |     /// The configuration name.
+321 |     pub name: CompactString,
+    |         ^^^^
+...
+324 |     pub value: CompactNullableString,
+    |         ^^^^^
+...
+327 |     pub read_only: Boolean,
+    |         ^^^^^^^^^
+...
+330 |     pub config_source: Int8,
+    |         ^^^^^^^^^^^^^
+...
+333 |     pub is_sensitive: Boolean,
+    |         ^^^^^^^^^^^^
+...
+336 |     pub tagged_fields: TaggedFields,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponseConfig` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `num_partitions`, `replication_factor`, `configs`, and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/create_topics.rs:374:9
+    |
+359 | pub struct CreateTopicResponse {
+    |            ------------------- fields in this struct
+...
+374 |     pub num_partitions: Option<Int32>,
+    |         ^^^^^^^^^^^^^^
+...
+379 |     pub replication_factor: Option<Int16>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+384 |     pub configs: Vec<CreateTopicResponseConfig>,
+    |         ^^^^^^^
+...
+389 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `CreateTopicResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `low_watermark` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:182:9
+    |
+177 | pub struct DeleteResponsePartition {
+    |            ----------------------- fields in this struct
+...
+182 |     pub low_watermark: Int64,
+    |         ^^^^^^^^^^^^^
+...
+190 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:226:9
+    |
+216 | pub struct DeleteResponseTopic {
+    |            ------------------- field in this struct
+...
+226 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_records.rs:269:9
+    |
+258 | pub struct DeleteRecordsResponse {
+    |            --------------------- field in this struct
+...
+269 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteRecordsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:101:9
+    |
+ 88 | pub struct DeleteTopicsResponse {
+    |            -------------------- field in this struct
+...
+101 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `tagged_fields` is never read
+   --> vendor/rskafka/src/protocol/messages/delete_topics.rs:144:9
+    |
+129 | pub struct DeleteTopicsResponseTopic {
+    |            ------------------------- field in this struct
+...
+144 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `DeleteTopicsResponseTopic` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `producer_id` and `first_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:170:9
+    |
+168 | pub struct FetchResponseAbortedTransaction {
+    |            ------------------------------- fields in this struct
+169 |     /// The producer id associated with the aborted transaction.
+170 |     pub producer_id: Int64,
+    |         ^^^^^^^^^^^
+...
+173 |     pub first_offset: Int64,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `FetchResponseAbortedTransaction` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `aborted_transactions` is never read
+   --> vendor/rskafka/src/protocol/messages/fetch.rs:213:9
+    |
+192 | pub struct FetchResponsePartition {
+    |            ---------------------- field in this struct
+...
+213 |     pub aborted_transactions: Vec<FetchResponseAbortedTransaction>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `FetchResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `timestamp` is never read
+   --> vendor/rskafka/src/protocol/messages/list_offsets.rs:184:9
+    |
+169 | pub struct ListOffsetsResponsePartition {
+    |            ---------------------------- field in this struct
+...
+184 |     pub timestamp: Option<Int64>,
+    |         ^^^^^^^^^
+    |
+    = note: `ListOffsetsResponsePartition` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `log_append_time_ms` and `log_start_offset` are never read
+   --> vendor/rskafka/src/protocol/messages/produce.rs:148:9
+    |
+132 | pub struct ProduceResponsePartitionResponse {
+    |            -------------------------------- fields in this struct
+...
+148 |     pub log_append_time_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+153 |     pub log_start_offset: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: `ProduceResponsePartitionResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `session_lifetime_ms` and `tagged_fields` are never read
+   --> vendor/rskafka/src/protocol/messages/sasl_msg.rs:198:9
+    |
+181 | pub struct SaslAuthenticateResponse {
+    |            ------------------------ fields in this struct
+...
+198 |     pub session_lifetime_ms: Option<Int64>,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+203 |     pub tagged_fields: Option<TaggedFields>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `SaslAuthenticateResponse` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompactArray` is never constructed
+   --> vendor/rskafka/src/protocol/primitives.rs:725:12
+    |
+725 | pub struct CompactArray<T>(pub Option<Vec<T>>);
+    |            ^^^^^^^^^^^^
+
+warning: `rskafka` (lib) generated 14 warnings
+   Compiling sagat-tests v0.2.0 (/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/tests)
+    Finished `test` profile [unoptimized] target(s) in 27.35s
+     Running integration/platform-foundation/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/integration_platform_foundation-b6297634e58c7ecb)
+
+running 42 tests
+test runtime_privileges::every_statement_the_stores_issue_is_within_the_runtime_roles_privileges ... runtime privilege audit: 1093 statements in 58 files, 675 distinct needs checked, 638 probed as sagat_app, 9 statements read from non-definer triggers, 74 SECURITY DEFINER trigger(s) not followed
+ok
+test runtime_privileges::no_literal_outside_a_statement_carries_a_lock_clause_or_a_write ... ok
+test runtime_privileges::rust_source::tests::a_const_named_in_a_template_is_substituted ... ok
+test runtime_privileges::rust_source::tests::a_continued_literal_is_one_statement_without_the_indentation ... ok
+test runtime_privileges::rust_source::tests::a_direct_unknown_sql_macro_retains_its_actual_caller_line ... ok
+test runtime_privileges::rust_source::tests::a_fixed_security_predicate_inside_a_query_template_is_not_omitted ... ok
+test runtime_privileges::rust_source::tests::a_lock_clause_outside_a_statement_is_reported_as_a_fragment ... ok
+test runtime_privileges::rust_source::tests::a_macro_template_is_expanded_where_it_is_invoked ... ok
+test runtime_privileges::rust_source::tests::a_macro_without_an_argument_is_expanded_to_its_text ... ok
+test runtime_privileges::rust_source::tests::a_raw_literal_keeps_quotes_and_backslashes ... ok
+test runtime_privileges::rust_source::tests::an_unknown_module_cannot_borrow_an_inherited_predicate_basename ... ok
+test runtime_privileges::rust_source::tests::an_unknown_nested_fixed_macro_is_unresolved_instead_of_omitted ... ok
+test runtime_privileges::rust_source::tests::comments_and_lifetimes_and_chars_hide_nothing_and_invent_nothing ... ok
+test runtime_privileges::rust_source::tests::inherited_predicates_keep_caller_lines_and_exclude_parent_statements ... ok
+test runtime_privileges::rust_source::tests::local_shadowing_does_not_replace_a_qualified_execution_predicate ... ok
+test runtime_privileges::rust_source::tests::ordinary_non_sql_wrappers_and_concat_are_not_sql_failures ... ok
+test runtime_privileges::rust_source::tests::prose_that_starts_with_a_verb_is_not_a_statement ... ok
+test runtime_privileges::rust_source::tests::qualified_fixed_predicates_preserve_nested_privilege_requirements ... ok
+test runtime_privileges::rust_source::tests::statements_the_audit_does_not_model_are_reported_not_ignored ... ok
+test runtime_privileges::rust_source::tests::unqualified_parent_predicates_require_lexical_scope_or_an_explicit_import ... ok
+test runtime_privileges::rust_source::tests::unresolved_macros_cannot_be_erased_by_consts_or_hidden_before_a_sql_verb ... ok
+test runtime_privileges::sql_needs::tests::a_comma_join_and_a_function_in_from_are_told_apart ... ok
+test runtime_privileges::sql_needs::tests::a_data_modifying_cte_is_found_and_its_name_is_not_a_table ... ok
+test runtime_privileges::sql_needs::tests::a_lock_in_a_subquery_binds_to_the_subquery_tables_only ... ok
+test runtime_privileges::sql_needs::tests::a_lock_restricted_with_of_covers_only_that_alias ... ok
+test runtime_privileges::sql_needs::tests::a_placeholder_that_is_a_parameter_number_is_not_unresolved ... ok
+test runtime_privileges::sql_needs::tests::a_placeholder_where_a_table_belongs_is_unresolved_not_dropped ... ok
+test runtime_privileges::sql_needs::tests::a_schema_qualified_relation_keeps_its_schema_unless_it_is_public ... ok
+test runtime_privileges::sql_needs::tests::a_share_lock_is_a_row_lock_of_the_table_it_names ... ok
+test runtime_privileges::sql_needs::tests::an_insert_from_a_select_without_a_column_list_needs_the_whole_table ... ok
+test runtime_privileges::sql_needs::tests::an_insert_lists_its_columns_and_an_upsert_adds_the_updated_ones ... ok
+test runtime_privileges::sql_needs::tests::braces_inside_a_sql_string_are_json_not_placeholders ... ok
+test runtime_privileges::sql_needs::tests::commas_inside_an_assignment_do_not_split_it ... ok
+test runtime_privileges::sql_needs::tests::extract_from_and_distinct_from_are_not_relations ... ok
+test runtime_privileges::sql_needs::tests::function_calls_are_reported_for_the_catalog_to_resolve ... ok
+test runtime_privileges::sql_needs::tests::lateral_preserves_function_and_nested_relation_privilege_checks ... ok
+test runtime_privileges::sql_needs::tests::plpgsql_control_flow_is_not_a_function_call ... ok
+test runtime_privileges::sql_needs::tests::update_inside_a_lock_clause_is_not_an_update_statement ... ok
+test runtime_privileges::the_audit_accepts_statements_the_role_is_meant_to_run ... ok
+test runtime_privileges::the_audit_flags_the_defects_it_exists_to_catch ... ok
+test runtime_privileges::the_extractor_finds_every_kind_of_statement_in_the_real_sources ... ok
+test runtime_privileges::the_sweep_switch_connects_the_services_as_the_runtime_role_and_only_then ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 58 filtered out; finished in 12.82s

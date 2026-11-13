@@ -1,0 +1,713 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sagat:draft:025:agent-node",
+  "title": "Draft fragment: additive `agent` node of Workflow IR v1",
+  "description": "Draft for feature 025, not part of the canonical contract. T025-002 merges these $defs into specs/001-platform-foundation/contracts/workflow.schema.json and adds {\"$ref\": \"#/$defs/agent\"} to node.oneOf. References to #/$defs/nodeId, #/$defs/expression, #/$defs/approvalPolicy, #/$defs/retry, #/$defs/name and #/$defs/duration resolve to the existing canonical definitions. Publication additionally checks: root graph only, no chainPolicy in the definition, enabled agent capability, model in the pinned provider revision, tool name uniqueness, closed and bounded schemas (byte and depth limits of plan.md), classification of referenced carrier paths against the provider's maxPromptClassification, and every effective limit against namespace and deployment ceilings.",
+  "$defs": {
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "model",
+        "instructions",
+        "prompt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,53}$",
+          "description": "At most 54 characters so that every derived id (<id>~m<turn>, <id>~t<turn>.<call> and its ~c/~r compensation and reconciliation, at most ten extra characters) fits the 64-character node id bound."
+        },
+        "type": {
+          "const": "agent"
+        },
+        "model": {
+          "$ref": "#/$defs/agentModel"
+        },
+        "instructions": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 131072,
+          "description": "Literal operator instructions (system prompt), pinned with the version. No interpolation."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 131072,
+          "description": "Literal first user message. Run data is added only through context."
+        },
+        "context": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": {
+            "pattern": "^[a-z][a-zA-Z0-9_]{0,63}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/expression"
+          },
+          "description": "Named expressions over input, state and completed step outputs, evaluated by the server and appended as canonical JSON in named, delimited blocks. Each expression is a feature-031 inspection position (ENCODING_READ_BY_EXPRESSION)."
+        },
+        "tools": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/agentTool"
+          }
+        },
+        "outputSchema": {
+          "$ref": "#/$defs/agentClosedSchema",
+          "description": "Closed bounded schema of the final answer and classification carrier of output.result. Every field's effective level is at least the node's transcript level (the strictest level that can enter the transcript: internal for literals and tool descriptions, every referenced context carrier path, every tool result carrier); a looser x-sagat-classification annotation is refused at publication (CLASSIFICATION_LOOSENED); unannotated means pii. It cannot declare a feature-031 encoded location (ENCODING_NOT_PRODUCIBLE)."
+        },
+        "budgets": {
+          "$ref": "#/$defs/agentBudgets"
+        },
+        "modelOptions": {
+          "$ref": "#/$defs/agentModelOptions"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry",
+          "description": "Retry policy of each model call. Defaults: 5 attempts, exponential 2 s to 60 s, honouring retry-after within the attempt deadline."
+        },
+        "attemptTimeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 900000
+        },
+        "stream": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "tokens": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "description": "Requires the feature-026 Workflow Streams capability; refused at publication otherwise."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 86400000,
+          "description": "Agent wall time including approval waits."
+        },
+        "next": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "onError": {
+          "$ref": "#/$defs/nodeId"
+        }
+      }
+    },
+    "agentModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "id"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{2,63}$",
+          "description": "Logical provider resource name in the run's namespace."
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647,
+          "description": "Optional explicit revision; otherwise the current revision is pinned at admission."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._:/@-]+$",
+          "description": "Model id or alias from the provider revision's allowlist, e.g. claude-sonnet-5-5."
+        }
+      }
+    },
+    "agentModelOptions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "description": "Mapped per provider; refused at publication when the model entry does not declare support."
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        }
+      }
+    },
+    "agentBudgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxTurns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "maxToolCalls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "maxParallelToolCalls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "maxRepairTurns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "maxInputTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "maxCost": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "amountMicros",
+            "currency"
+          ],
+          "properties": {
+            "amountMicros": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,17}$",
+              "description": "Estimated cost ceiling in millionths of the currency unit, as a decimal string."
+            },
+            "currency": {
+              "type": "string",
+              "pattern": "^[A-Z]{3}$"
+            }
+          },
+          "description": "Requires declared prices in the same currency for the pinned model (UNPRICED_MODEL otherwise)."
+        }
+      }
+    },
+    "agentTool": {
+      "type": "object",
+      "required": [
+        "name",
+        "description",
+        "kind"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "kind": {
+          "enum": [
+            "activity",
+            "script",
+            "database",
+            "operation",
+            "child",
+            "mcp"
+          ]
+        },
+        "effect": {
+          "enum": [
+            "read",
+            "write"
+          ],
+          "default": "write",
+          "description": "write (the default) requires approval or approval: \"none\"."
+        },
+        "inputSchema": {
+          "$ref": "#/$defs/agentClosedSchema",
+          "description": "Closed bounded schema of the tool arguments the model writes. It is the classification carrier of the approval view only; every field is at least the transcript level (a looser annotation is refused). For child tools the child version's inputSchema is checked the same way."
+        },
+        "result": {
+          "$ref": "#/$defs/expression",
+          "description": "Projection over `output` of what returns to the model; default the whole output. Its referenced carrier paths are classification-checked."
+        },
+        "approval": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/agentToolApproval"
+            },
+            {
+              "const": "none",
+              "description": "Explicit acknowledgement that this write tool runs without a person's approval. Refused for operation tools; a version containing it cannot be exposed through MCP or a feature-026 public link (UNATTENDED_WRITE_TOOL)."
+            }
+          ],
+          "description": "Required for effect: write (a policy or the string \"none\"); optional for read tools."
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        },
+        "outputSchema": {
+          "$ref": "#/$defs/agentClosedSchema",
+          "description": "Closed carrier of the tool's result when the target declares none (MCP, database, operation tools); unannotated means pii. A result that does not validate is not sent to the model (TOOL_FAILED)."
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "activity"
+            },
+            "activity": {
+              "$ref": "#/$defs/name"
+            },
+            "compensateWith": {
+              "$ref": "#/$defs/name"
+            },
+            "reconcileWith": {
+              "$ref": "#/$defs/name"
+            },
+            "secrets": {
+              "type": "array",
+              "maxItems": 16,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+              }
+            }
+          },
+          "required": [
+            "activity",
+            "inputSchema"
+          ]
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "script"
+            },
+            "artifactDigest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "artifactDigest"
+          ]
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "database"
+            },
+            "connectionRef": {
+              "type": "object"
+            },
+            "operation": {
+              "enum": [
+                "query",
+                "execute"
+              ]
+            },
+            "statement": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "parameters": {
+              "type": "array",
+              "maxItems": 256
+            }
+          },
+          "required": [
+            "connectionRef",
+            "operation",
+            "statement",
+            "inputSchema"
+          ],
+          "description": "Feature-017 operation; parameters bind only from tool arguments (expression context `args`). execute requires approval."
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "operation"
+            },
+            "resource": {
+              "type": "object",
+              "description": "Feature-021 resourceRef {name, revision?} (ADR-0055)."
+            },
+            "operation": {
+              "type": "string",
+              "maxLength": 64,
+              "description": "A feature-021 operation name, e.g. http.request."
+            },
+            "request": {
+              "type": "object",
+              "description": "The feature-021 operation body (http, graphql, s3, smtp or slack object) whose dynamic values are expressions over the tool arguments `args`."
+            }
+          },
+          "required": [
+            "resource",
+            "operation",
+            "request",
+            "inputSchema"
+          ],
+          "description": "Feature-021 resourceOperation executed by its integration runner; refused while 021 is unavailable. effect follows the operation's safe/effect class and cannot be declared looser. Always requires an approval policy (G1293)."
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "child"
+            },
+            "workflow": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "cancellation": {
+              "enum": [
+                "cancel",
+                "abandon"
+              ]
+            }
+          },
+          "required": [
+            "workflow"
+          ]
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "mcp"
+            },
+            "server": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{2,63}$"
+            },
+            "tool": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "server",
+            "tool"
+          ],
+          "description": "Allow-listed tool of the server's snapshot pinned at publication; inputSchema comes from the snapshot and must be closed. Refused at publication when the server revision's maxArgumentClassification is below the node's transcript level (MCP_ARGUMENT_CLASSIFICATION_EXCEEDED)."
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "effect": {
+                "const": "write"
+              }
+            },
+            "required": [
+              "effect"
+            ]
+          },
+          "then": {
+            "required": [
+              "approval"
+            ]
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "required": [
+                "effect"
+              ]
+            }
+          },
+          "then": {
+            "required": [
+              "approval"
+            ]
+          }
+        }
+      ]
+    },
+    "agentToolApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "timeoutMs"
+      ],
+      "properties": {
+        "policy": {
+          "$ref": "#/$defs/approvalPolicy"
+        },
+        "timeoutMs": {
+          "$ref": "#/$defs/duration",
+          "description": "Clamped to the remaining agent wall time when the approval opens."
+        },
+        "onReject": {
+          "enum": [
+            "refuse",
+            "fail"
+          ],
+          "default": "refuse"
+        },
+        "onExpire": {
+          "enum": [
+            "refuse",
+            "fail"
+          ],
+          "default": "fail"
+        }
+      }
+    },
+    "agentClosedSchema": {
+      "description": "Closed bounded vocabulary (ADR-0031 initial result vocabulary): one explicit type per schema; objects declare properties and additionalProperties:false with optional required; arrays declare items and maxItems; strings declare maxLength; optional enum, numeric bounds, description and x-sagat-classification. No $ref, combinators or open objects. Byte and depth bounds are checked by the adapter.",
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "object",
+            "array",
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "null"
+          ]
+        },
+        "properties": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": {
+            "$ref": "#/$defs/agentClosedSchema"
+          }
+        },
+        "additionalProperties": {
+          "const": false
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "items": {
+          "$ref": "#/$defs/agentClosedSchema"
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536
+        },
+        "enum": {
+          "type": "array",
+          "maxItems": 64
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "x-sagat-classification": {
+          "enum": [
+            "public",
+            "internal",
+            "pii",
+            "secret"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "examples": [
+    {
+      "id": "triage",
+      "type": "agent",
+      "model": {
+        "provider": "anthropic-prod",
+        "id": "claude-sonnet-5-5"
+      },
+      "instructions": "You triage support tickets. Use lookup_order when the ticket names an order. Answer with the requested JSON only.",
+      "prompt": "Classify the ticket in the context block.",
+      "context": {
+        "ticket": "input.ticket"
+      },
+      "tools": [
+        {
+          "name": "lookup_order",
+          "description": "Read an order by id.",
+          "kind": "activity",
+          "activity": "orders.lookup",
+          "effect": "read",
+          "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "orderId"
+            ],
+            "properties": {
+              "orderId": {
+                "type": "string",
+                "maxLength": 64
+              }
+            }
+          },
+          "outputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "maxLength": 32,
+                "x-sagat-classification": "internal"
+              },
+              "amountCents": {
+                "type": "integer",
+                "minimum": 0,
+                "x-sagat-classification": "internal"
+              }
+            }
+          }
+        },
+        {
+          "name": "issue_refund",
+          "description": "Refund an order.",
+          "kind": "activity",
+          "activity": "payments.refund",
+          "effect": "write",
+          "reconcileWith": "payments.refundStatus",
+          "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "orderId",
+              "amountCents"
+            ],
+            "properties": {
+              "orderId": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "amountCents": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000
+              }
+            }
+          },
+          "approval": {
+            "policy": {
+              "roles": [
+                "operator"
+              ]
+            },
+            "timeoutMs": 3600000,
+            "onReject": "refuse",
+            "onExpire": "fail"
+          },
+          "outputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "refundId"
+            ],
+            "properties": {
+              "refundId": {
+                "type": "string",
+                "maxLength": 64,
+                "x-sagat-classification": "internal"
+              }
+            }
+          }
+        }
+      ],
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "category",
+          "priority"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "billing",
+              "shipping",
+              "other"
+            ],
+            "x-sagat-classification": "internal"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4,
+            "x-sagat-classification": "internal"
+          }
+        }
+      },
+      "budgets": {
+        "maxTurns": 8,
+        "maxToolCalls": 8,
+        "maxInputTokens": 100000,
+        "maxOutputTokens": 8192,
+        "maxCost": {
+          "amountMicros": "500000",
+          "currency": "USD"
+        }
+      },
+      "modelOptions": {
+        "effort": "medium",
+        "maxOutputTokens": 2048
+      },
+      "timeoutMs": 7200000,
+      "next": "route",
+      "onError": "escalate"
+    }
+  ],
+  "$comment": "The example assumes a provider revision with maxPromptClassification internal and a workflow inputSchema that classifies ticket as internal; both tools declare internal output carriers, otherwise their results would count as pii and publication would refuse them."
+}

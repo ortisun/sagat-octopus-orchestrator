@@ -67,6 +67,169 @@ and workload-auth bootstrap are documented in [OpenBao deployment](openbao.md).
 `SAGAT_DATABASE_RUNNER_NAME` can override the configured name with the stable pod name;
 the same length/character and namespace constraints apply.
 
+### The lake profile (feature 035)
+
+An optional `lake` section turns on the runner's lake profile. **Absent means off.** Present, it is validated whole when
+the runner starts, and a value outside its bounds stops the runner: nothing is defaulted that is a decision about security.
+**A configuration with a `lake` section makes a lake runner: it serves the lake activity and no SQL**, and one without it is
+the SQL runner it has always been (D035-143). The runner's own side is built: it polls, resolves the connection, runs the attempt
+in the sandbox and reports. What is not built is the rest of the stack around it (compose and Helm, the container end to end, a
+database result kept as a blob as the source of records), so do not rely on it to write to a table yet.
+
+**The result of a SQL step as records** (D035-145). A write that names the node of a SQL step takes the result that step retained: the server turns its rows into
+records (one object a row, keyed by the column, each value as the cell holds it; a binary cell stays the typed cell) when it leases the write, so the runner sees inline
+records and nothing else. The lease is audited as a read of the result (`database.result_read`, for the run, naming the node and no value). A statement that selects no
+column, or two columns of one name, fails the write for good (`DATABASE_CONFIGURATION_INVALID`); a node that produced no result, `DATABASE_RESULT_UNAVAILABLE`; a result kept as
+a blob (above 256 KiB) is refused by name (`DATABASE_CAPABILITY_UNAVAILABLE`, G035-067). The connection the rows came from is asked again when they are written: paused, or with its
+secret taken from the actors since the statement ran, it makes the write wait (the refusal is audited) until it is resumed. Owners: the initiator is asked for no `database:result:read` (O035-008).
+
+**Record blobs** (D035-144). A step whose records are blobs is leased only when every blob is a committed output of a step of the same run and
+the descriptor in the run's data is the catalog's; the lease pins them to the attempt it grants, and the runner's `ReadBlob` reads exactly those, while
+the run is live. A step that names a blob that is not the run's, or lies about its size or digest, fails for good (`DATABASE_RESULT_UNAVAILABLE`) and is
+never leased. A runner that asks for any other blob is answered as if it did not exist, and one `database.denied` record names the run (never the blob):
+seeing it means a runner asked for something its lease did not name, which a correct runner never does. The lease is checked when a read starts: a
+download already under way is not cut when the run is cancelled, and a runner is not limited in how often it asks (G035-081). The pins are released
+with the retention of the terminal run (D035-148): the job that releases the credential pins deletes them a day after the run ended, in the same
+transaction, and a pin of an attempt that has ended authorizes nothing in the meantime. Rolling back the migration that makes them is closed while a
+pin exists, as for the credential pins: wait for the job, or delete the pins of attempts that are over as the owner (`DELETE FROM step_lease_blobs`,
+once no lake attempt is in flight); the reads they allowed are in the audit trail (`blob.read`), and the release itself is not audited.
+
+```json
+"lake": {
+  "workRoot": "/work",
+  "sandboxSocket": "/run/sagat/lake-sandbox.sock",
+  "sandboxUid": 10002,
+  "slots": 8,
+  "relayAllowCidrs": ["0.0.0.0/0", "::/0"],
+  "relayDenyCidrs": ["10.96.0.0/12", "10.244.0.0/16"]
+}
+```
+
+- `workRoot` and `sandboxSocket` are absolute paths (no `..`). `sandboxUid` is the user the sandbox runner runs as: the
+  runner believes only a socket whose other end is that user. It is neither root nor one of the containers' users
+  (`40000` to `44095`).
+- `slots` is how many containers' users there are, 1 to 4096; the lake runner picks the slot of an attempt.
+- `relayAllowCidrs` are the ranges the relay may connect to for a destination's catalog and storage. **An empty list
+  reaches nothing and is refused**, except with `developmentLoopback`.
+- `relayDenyCidrs` are the ranges it may never connect to, and a deny range wins over an allow range. **The relay itself
+  refuses loopback, link-local, metadata and other special-use addresses, and no private network.** A tenant declares the endpoints of its connection, so the
+  platform's own state (PostgreSQL, the broker, the secret store, the Kubernetes API) and your pod and service networks must
+  be listed here, exactly as `denyCidrs` is for the SQL runner. It is required and non-empty, except with
+  `developmentLoopback`.
+- Optional, with the defaults of the contract: `maxBytes` (1 GiB, staged input of one attempt), `maxRecords` (10 million),
+  `maxCommitRetries` (4, at most 16), `maxDecodedBytes` (16 GiB), `maxMetadataBytes` (64 MiB), `hostStartSecs` (30),
+  `killLimitSecs` (20) and `largeAboveBytes` (none).
+
+**The identity of a lake runner carries the profile `lake`** (D035-136). A dedicated runner registers only for the managed
+activities of the profile its binding carries, whatever its patterns cover, so a runner bound to `*` is still of one profile
+and a stolen lake token cannot register as a SQL runner. Bind it with the profile named, and with the activity it serves:
+
+```sh
+curl -X PUT "$SAGAT/namespaces/$NAMESPACE_ID/worker-bindings/$RUNNER_SUBJECT" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"activities": ["sagat.database.iceberg.write"], "profile": "lake"}'
+```
+
+What a person who connects a catalog does and sees is in [the guide](../guides/iceberg-connections.md).
+
+**A development runner and plain `http`** (O035-010, option b). Every runner refuses an S3 endpoint and an OAuth2 token endpoint that are not `https`; the catalog's address may be `http` on the loopback. A runner
+that is a **development** one (its `development` setting, which the relay already reads to open the loopback) also accepts the S3 endpoint and the token endpoint over `http` **on the loopback**, so that
+the fixtures of `infra/docker/compose.lake.yaml` can be reached; it tells the host so on every request line, and a runner that is not a development one never does. Never set it in production: the server
+lets only a development namespace save such a connection, and the runner is the second place that decides.
+
+A lake runner that has a probe to run (a runner of the version that serves the probe of an Iceberg connection) offers it beside its write,
+and its binding covers both: `"activities": ["sagat.database.iceberg.write", "sagat.database.lake.probe"]`. **Roll it out in this order: the
+server, then the binding, then the runner.** A step is handed only to a session that offers its own activity, so a runner that offers the
+write alone is never handed a probe, and a probe waits for a runner that offers it, until the 30 seconds of its run are over (it ends as the run does when none is registered). A probe has a budget
+of its own, one in flight in a namespace and four in a tenant, so it neither waits for a write nor makes one wait. **The REST start refuses a second probe of the
+same connection and revision with a `409` while one is in flight** (a retry of the key that started it is that run), and a probe that is never leased ends at its
+30 seconds like any run, by the sweep of the scheduler: a connection whose probe stays in flight is a scheduler that is not running.
+
+A binding made without `profile` is `database`, which is what every SQL runner has always been; a replacement that leaves
+`profile` out keeps the one in force, and an identity has **one profile in the whole tenant**: binding it with another profile in a second
+namespace is refused (409) until its bindings elsewhere are removed. Removing the last binding of an identity forgets its profile, so bind it again
+with the profile named: the audit record of every binding says which profile came to be in force. During a rolling upgrade an older replica
+ignores the profile, so bind a lake runner to the exact activity, as above, and not to `*`, until every replica has the profile. Changing the profile closes the sessions of the identity that offer the other profile's
+activity (the answer counts them in `revoked`). The registration of a `database` runner for the lake activity, of a `lake`
+runner for the SQL activity, of both, or of an ordinary activity beside either, is refused as not bound.
+
+**What a lake runner does** (D035-143).
+
+- *It holds as many attempts as it has slots.* It registers with `min(maxConcurrent, slots)` as what it can hold, asks each poll for
+  at most the slots nobody holds (at most four), and neither registers nor polls while there is none. A slot whose container may
+  still be running is held back until the container's own deadline has passed, so a full node can be a node with a slot held back.
+- *The connection is asked for after a slot is taken.* Asking discloses and audits the secrets, so a full node, or a lease
+  input that is not one, costs no disclosure: the step fails with `LAKE_SANDBOX_UNAVAILABLE` (retryable) or
+  `DATABASE_CONFIGURATION_INVALID`.
+- *A heartbeat that fails for a moment does not kill a write.* The heartbeats of a lake lease are tried again until the lease expires when
+  they fail in a way a retry may mend; a lease that is refused, or that runs out, is given up as lost. A cancel the control plane asks for
+  is signalled once and the lease keeps being renewed, so the report of an unknown outcome is not lost to a slow kill. And a control plane
+  that cannot answer `ResolveDatabase` does not fail the step: nothing was written, so the lease is given up, expires and is leased again.
+- *It reports a closed code and the flag of the contract.* A receipt completes the step; a failure of the host is reported with its
+  code and whether the step may be tried again; a cancel the control plane asked for is `DATABASE_CANCELLED` before the host has the
+  request and `OUTCOME_UNKNOWN` after; a lease that is lost is reported as nothing at all. A completion the control plane
+  refuses as not the step's is failed as `LAKE_HOST_PROTOCOL`.
+- *It probes a connection* (D035-150, slice S6b). It offers the write and the probe **in one session**, and a probe is run as an
+  attempt like a write, in a container with a slot of its own and the same relay, but it stages nothing, has no effect key and writes
+  nothing, so it is never counted as a write and its end is never unknown. The lease names the time of one check; the attempt gets
+  three of them and a margin of three seconds, **at most 22 seconds**, counted **from the moment the lease was taken** (a connection
+  that took long to resolve has used some of it), and a connection whose own `timeoutMs` is lower lowers it further. The host is told
+  the time that fits what is left, a third of it after the margin and never more than the lease names, so that a check that runs out is
+  answered as a check that timed out (a result) and not as a step that ran out of time. A probe starts a container for a connection a
+  tenant chose, so **probes hold at most half of the slots** (one, on a node with one): a write always finds a slot that probes could
+  not take, and a probe that finds none fails as `LAKE_SANDBOX_UNAVAILABLE`, which may be tried again. It reports the host's result
+  inline as typed fields, and only when it is the result of the connection and the revision that were leased (the answer to
+  `ResolveDatabase` is held to the same name and revision before it is read, and its secrets are cleared either way); anything else is
+  `LAKE_HOST_PROTOCOL`. A cancel is `DATABASE_CANCELLED` and the deadline `DATABASE_TIMEOUT` **whether or not the host had the
+  request**; a host killed by its memory limit is `WORKER_ERROR`, not `ICEBERG_LIMIT_EXCEEDED` (no write failed to fit). A host that
+  fails a probe with a code only a write raises (a commit conflict, an unknown outcome) is a host that does not keep the protocol:
+  `LAKE_HOST_PROTOCOL`. **A connection that does not work is not a failure of the step**: the host answers with the checks that
+  failed, and that is the result. A completion the control plane refuses as not the step's is counted on its own,
+  `database_runner_lake_probe_reports_total{outcome="refused"}`, since a probe has no write to count it as.
+- *A binding that does not cover the probe leaves a runner that serves the writes.* If the service refuses the offer of both
+  activities with `PERMISSION_DENIED` (`NOT_BOUND`: the binding is older than the runner), the runner offers the write alone, at once
+  and in the same session, and counts it: `database_runner_lake_probe_offer_total{outcome="not_bound"}` for the refusal and
+  `write_only` for the session that was left (`offered` when it got both). The state that stays is the gauge
+  `database_runner_lake_probe_offered` (1 when the runner offers the probe, 0 when it serves the writes alone): **a runner that is
+  write-only is silent about it otherwise**, so alert on the gauge after a rollout, not on a counter that went up once. A probe is then
+  handed to no one and waits for the 30 seconds of its run. **Widening the binding does not change a session that is in force: restart
+  the runner after it** (each refusal is audited as a denied registration, so a runner that falls back leaves one such row, and a
+  binding that covers neither activity leaves two for every attempt to register). Any other refusal (an outage, a rate limit) is not a binding and the same offer is made again. A binding that
+  covers neither activity is refused for both, and the runner tries again as it always has.
+- *Stopping it is not cancelling it.* On `SIGTERM` it stops polling, lets the attempts that are running finish for 30 seconds,
+  and then gives their leases up as lost (the containers are killed and nothing is reported); the control plane's lease expiry
+  decides what happens to the step, and the next attempt finds a commit that was made by its key. **Set the pod's
+  termination grace to more than 60 seconds** (30 for the attempts, up to 30 for the kills), or the kill will come first.
+  A cancel would have reported every write that was under way as unknown on every rollout.
+- *It sweeps.* Every minute, the attempt directories under `workRoot` that no attempt owns any more (older than the longest
+  step, the hold-back of a slot and a margin) are removed. `workRoot` has to be a directory that exists when the runner starts, **dedicated to the
+  runner and not persistent (an `emptyDir`)**: the sweep removes by the shape of a name and by age, and what an attempt that was aborted at a drain
+  leaves is removed only by the next process, after about an hour.
+- *Metrics* (closed labels, nothing of a table, a connection or a run): `lake_writes_total` (mode, catalog and storage kind,
+  outcome), `lake_sandbox_exits_total` and `lake_relay_denials_total` (reason), and, from the runner,
+  `database_runner_lake_directories_total` (removed or failed by the sweep). **From the control plane, not the runner:** `lake_probe_checks_total{check,outcome,code}`, once per check of a probe result the server kept
+  (`check` is `CATALOG_AUTH`, `WAREHOUSE` or `STORAGE_ACCESS`; `outcome` `PASSED`, `FAILED` or `SKIPPED`; `code` the closed code of a failure, `none` otherwise; never a connection, a run or a tenant). A failed check is a result and not a
+  fault of the platform, so a rising `FAILED` with `STORAGE_UNAVAILABLE` or `DATABASE_AUTHENTICATION_FAILED` is the customers' catalogs and stores, while a probe that fails as a step is the platform's and counts here as nothing. Not yet: the phase histograms, the effect-key
+  lookup counter, and the audit of what the relay refused (the protocol has no call for it: G035-078).
+
+**The credentials of a lake step** (D035-141). A lake runner that has leased its step asks `ResolveDatabase` for the connection and
+its secrets. Nothing is resolved unless the session offers the lake activity **and** its binding is of the profile `lake` alone
+(the same check the lease makes, repeated where the secret leaves). The answer carries the stored connection in `iceberg` and a
+`credentials` map with `catalog` and `storage`: only the ones the connection names (a catalog that delegates the storage credentials
+sends no `storage`), and nothing of SQL. The server reads the two secrets from OpenBao one after the other, catalog then storage, and
+hands them over only if neither changed while it read the other; then it pins each version under its role for the attempt, and
+writes one audit record `secret.resolved` for each (`... generation 1: catalog <name> v<n>` and `... storage <name> v<n>`),
+never the value. A second attempt reads what is in force then; the same attempt, asked again, gets the versions it pinned. The pins go with the
+terminal retention of the run, all roles together. **The process that serves the worker gRPC needs `SAGAT_LAKE_ENABLED=true`** too:
+without it the step is not found, as any lake node is on a process that has the lake off. The runner that carries out the attempt
+is not built yet, so a deployment should not rely on this to write to a table.
+
+**The completion of a lake step** (D035-142). The runner reports `CompleteStep` with the receipt of the write. The server reads it into typed fields, holds it to the step (the
+effect key, the ref, the mode, that a commit has a snapshot and that an empty batch is not accepted), and keeps the receipt it wrote again: never the bytes the runner sent. A completion
+that no resolve preceded, or a receipt that is not the step's, is refused (`INVALID_ARGUMENT`), leaves the step as it was and is audited once for the run; a lake step cannot upload a
+blob. A step whose lease lapsed waits for an operator (`LEASE_EXPIRED`), and a commit whose receipt the run has no room to keep waits with an unknown outcome. **Rotating a secret does not
+cut an attempt that is in flight**: the attempt keeps the version it pinned until its lease ends.
+
 ## Observe and recover
 
 - Standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `http/json` configure traces.

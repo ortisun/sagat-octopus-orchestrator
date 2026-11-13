@@ -17,6 +17,7 @@ use sagat_application::operations::{AlertReader, AuditStore, OperationsService, 
 use sagat_application::outbound::{OutboundService, OutboundStore};
 use sagat_application::quotas::{QuotaService, QuotaStore};
 use sagat_application::reveal_grants::{RevealGrantService, RevealGrantStore};
+use sagat_application::schedules::ScheduleUseCase;
 use sagat_application::scripts::{RunnerService, RunnerStore, ScriptService, ScriptStore};
 use sagat_application::secrets::{SecretService, SecretStore};
 
@@ -57,6 +58,11 @@ pub trait Governance: Core + Admission {
     fn event_payloads(&self) -> Option<&Arc<dyn EventPayloadUseCase>> {
         None
     }
+    /// `None` when the instance does not serve schedules: the schedule routes are then not served at
+    /// all.
+    fn schedules(&self) -> Option<&Arc<dyn ScheduleUseCase>> {
+        None
+    }
     /// `None` when the instance has no key ring (deliveries are signed): the subscription routes are
     /// then not served at all.
     fn outbound(&self) -> Option<&OutboundService<Self::Store, Self::Clock>>;
@@ -86,6 +92,7 @@ pub struct GovState<S, C, G> {
     connections: Option<Arc<ConnectionService<G, C>>>,
     events: Option<Arc<EventService<G, C>>>,
     event_payloads: Option<Arc<dyn EventPayloadUseCase>>,
+    schedules: Option<Arc<dyn ScheduleUseCase>>,
     outbound: Option<Arc<OutboundService<G, C>>>,
     connectors: Option<Arc<ConnectorService<G, C>>>,
     scripts: Option<Arc<ScriptService<G, C>>>,
@@ -115,6 +122,7 @@ impl<S, C, G> GovState<S, C, G> {
             connections: None,
             events: None,
             event_payloads: None,
+            schedules: None,
             outbound: None,
             connectors: None,
             scripts: None,
@@ -181,6 +189,13 @@ impl<S, C, G> GovState<S, C, G> {
         self
     }
 
+    /// Serves the schedule routes, backed by `schedules`.
+    #[must_use]
+    pub fn with_schedules(mut self, schedules: Arc<dyn ScheduleUseCase>) -> Self {
+        self.schedules = Some(schedules);
+        self
+    }
+
     /// Serves the event routes (endpoints, publishing, the public webhook URL), backed by `events`.
     #[must_use]
     pub fn with_events(mut self, events: EventService<G, C>) -> Self {
@@ -203,6 +218,7 @@ impl<S, C, G> Clone for GovState<S, C, G> {
             connections: self.connections.clone(),
             events: self.events.clone(),
             event_payloads: self.event_payloads.clone(),
+            schedules: self.schedules.clone(),
             outbound: self.outbound.clone(),
             connectors: self.connectors.clone(),
             scripts: self.scripts.clone(),
@@ -323,6 +339,10 @@ where
 
     fn event_payloads(&self) -> Option<&Arc<dyn EventPayloadUseCase>> {
         self.event_payloads.as_ref()
+    }
+
+    fn schedules(&self) -> Option<&Arc<dyn ScheduleUseCase>> {
+        self.schedules.as_ref()
     }
 
     fn outbound(&self) -> Option<&OutboundService<G, C>> {

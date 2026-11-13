@@ -1,0 +1,15 @@
+{
+  "command": [
+    "python3",
+    "-m",
+    "unittest",
+    "scripts/tests/test_released_v02_profile.py"
+  ],
+  "exit_code": 0,
+  "seconds": 0.25,
+  "wall_seconds": 0.25,
+  "wall_minus_monotonic_seconds": -0.0,
+  "started_utc": "2026-10-27T22:35:19.561316+00:00",
+  "finished_utc": "2026-10-27T22:35:19.806994+00:00",
+  "log": "quota-final-python.txt"
+}

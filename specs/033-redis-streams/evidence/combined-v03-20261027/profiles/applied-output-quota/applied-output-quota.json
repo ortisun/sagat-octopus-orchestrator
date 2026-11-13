@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/private/tmp/sagat-v03-20261026/released-v02-al_pw2ho/current-phase",
+    "released_v02_inflight::a_released_applied_report_refuses_output_and_compensates_original_effects_over_quota",
+    "--ignored",
+    "--exact",
+    "--nocapture"
+  ],
+  "exitCode": 0,
+  "seconds": 15.56
+}

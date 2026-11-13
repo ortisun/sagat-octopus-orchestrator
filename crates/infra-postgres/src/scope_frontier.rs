@@ -25,21 +25,33 @@ use uuid::Uuid;
 
 use crate::collection_outputs;
 use crate::execution::{
-    PgRunStore, RUN_SNAPSHOT, instance_path, run_record, step_instance_path, step_state,
+    PgRunStore, RUN_SNAPSHOT, instance_path, run_record, scoped_control_metadata_empty,
+    scoped_event_metadata_valid, scoped_timer_metadata_valid, step_instance_path, step_state,
+    validate_collection_entry_dispatch, validate_scoped_control_row,
+    validate_scoped_event_identity,
 };
 use crate::identity::{col, corrupt, store_error};
 use crate::pool::BeginSafely;
 
 /// The columns of a step that `step_state` reads, plus the identity and the retained output.
-const MEMBER_STEPS: &str = "SELECT s.node, s.instance_path_nodes, s.instance_path_indices, \
+const MEMBER_STEPS: &str = concat!(
+    "SELECT s.node, s.instance_path_nodes, s.instance_path_indices, s.namespace_id, s.step_id, \
         s.status, s.attempt, s.generation, s.cancel_requested, s.routed, s.condition, \
         s.switch_case_id, s.timed_out, s.failure_code, s.next_attempt_at, s.waiting_kind, \
-        s.due_at, s.correlation_key, s.child_run_id, s.approval_request_id, p.content AS output \
+        s.due_at, s.correlation_key, s.event_type, s.event_since, s.child_run_id, s.approval_request_id, p.content AS output, \
+        s.node_kind AS stored_node_kind, (",
+    scoped_control_metadata_empty!(),
+    ") AS control_metadata_empty, (",
+    scoped_timer_metadata_valid!(),
+    ") AS timer_metadata_valid, (",
+    scoped_event_metadata_valid!(),
+    ") AS event_metadata_valid \
      FROM unnest($4::int[]) AS member(last_index) \
      JOIN steps s ON s.tenant_id = $1 AND s.run_id = $2 \
       AND s.instance_path_nodes = $3 \
       AND s.instance_path_indices = array_append($5::int[], member.last_index) \
-     LEFT JOIN payloads p ON p.tenant_id = s.tenant_id AND p.digest = s.output_digest";
+     LEFT JOIN payloads p ON p.tenant_id = s.tenant_id AND p.digest = s.output_digest"
+);
 
 /// A snapshot read: one consistent view, no row lock, nothing written.
 async fn snapshot(store: &PgRunStore) -> Result<Transaction<'static, Postgres>, StoreError> {
@@ -165,8 +177,7 @@ async fn base_data(
 /// `last_indices`, all under the same `base` path of an owner. The outputs go into `data`.
 async fn member_steps(
     conn: &mut PgConnection,
-    tenant: TenantId,
-    run: RunId,
+    scope_run: &ScopeRun,
     nodes: &[String],
     base_indices: &[i32],
     last_indices: &[i32],
@@ -177,8 +188,8 @@ async fn member_steps(
         return Ok(by_member);
     }
     let rows: Vec<PgRow> = sqlx::query(MEMBER_STEPS)
-        .bind(tenant.as_uuid())
-        .bind(run.as_uuid())
+        .bind(scope_run.info.tenant_id.as_uuid())
+        .bind(scope_run.info.run_id.as_uuid())
         .bind(nodes)
         .bind(last_indices)
         .bind(base_indices)
@@ -196,10 +207,23 @@ async fn member_steps(
         if let Some(output) = col::<Option<Vec<u8>>>(row, "output")? {
             data.insert_output(instance.clone(), output);
         }
-        by_member
-            .entry(last)
-            .or_default()
-            .insert(instance, step_state(row)?);
+        let step = step_state(row)?;
+        validate_scoped_control_row(
+            scope_run.definition.node_for_instance(&instance),
+            &step,
+            row,
+        )?;
+        validate_scoped_event_identity(
+            scope_run.definition.node_for_instance(&instance),
+            scope_run.info.namespace_id,
+            sagat_application::execution::instance_step_id(
+                scope_run.info.version_id,
+                scope_run.info.run_id,
+                &instance,
+            ),
+            row,
+        )?;
+        by_member.entry(last).or_default().insert(instance, step);
     }
     Ok(by_member)
 }
@@ -297,8 +321,11 @@ impl ScopeFrontierStore for PgRunStore {
         let mut data = base_data(&mut tx, tenant_id, run_id, &header.input_digest).await?;
         let rows = sqlx::query(
             "SELECT i.iteration_index, i.entry_path_nodes, i.entry_path_indices, i.entry_node, \
-                    p.content AS item \
+                    p.content AS item, i.entry_dispatch,i.activity,i.outbox_id, \
+                    admission.detail->>'entry_dispatch' AS journal_dispatch \
              FROM collection_iterations i \
+             LEFT JOIN run_events admission ON admission.tenant_id=i.tenant_id AND admission.run_id=i.run_id \
+              AND admission.seq=i.admitted_sequence AND admission.event_type='collection.iteration_admitted' \
              JOIN payloads p ON p.tenant_id = i.tenant_id AND p.digest = i.item_digest \
              WHERE i.tenant_id = $1 AND i.run_id = $2 AND i.scope_id = $3 AND i.slot_held \
              ORDER BY i.iteration_index",
@@ -338,6 +365,7 @@ impl ScopeFrontierStore for PgRunStore {
                 instance_path(nodes, full, "collection entry path")?,
                 NodeId::parse_stored(&node).map_err(|_| corrupt("collection entry node"))?,
             );
+            validate_collection_entry_dispatch(&header.run.definition, &entry, row)?;
             data.scope_inputs.insert(
                 entry.path().clone(),
                 ScopeInput::Collection {
@@ -350,7 +378,7 @@ impl ScopeFrontierStore for PgRunStore {
         }
         let mut by_member = match &common {
             Some((nodes, base)) => {
-                member_steps(&mut tx, tenant_id, run_id, nodes, base, &lasts, &mut data).await?
+                member_steps(&mut tx, &header.run, nodes, base, &lasts, &mut data).await?
             }
             None => BTreeMap::new(),
         };
@@ -479,16 +507,8 @@ impl ScopeFrontierStore for PgRunStore {
                     },
                 );
             }
-            let mut by_member = member_steps(
-                &mut tx,
-                tenant_id,
-                run_id,
-                &nodes,
-                &base,
-                &[last],
-                &mut data,
-            )
-            .await?;
+            let mut by_member =
+                member_steps(&mut tx, &header.run, &nodes, &base, &[last], &mut data).await?;
             member = Some(ScopeMember {
                 index,
                 steps: by_member.remove(&last).unwrap_or_default(),

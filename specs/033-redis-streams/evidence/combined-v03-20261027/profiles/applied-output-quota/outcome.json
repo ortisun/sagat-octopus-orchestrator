@@ -1,0 +1,7 @@
+{
+  "scenario": "applied-output-quota",
+  "resultPath": "outcome-rcop55s9/result.json",
+  "resultSha256": "93fc8cbd67c405cee22ac9b1309f9fccffb58c7d7b2a3ba647ad97c83b825031",
+  "buildSha256": "3cde7f821729f737b9eb4de79101f2517c15f512ea98da7169d40f39252c10cb",
+  "transcriptSha256": "102fd94166115bef9612b8aa003ecafa59cd8370added70bc41f52a4ef6694a3"
+}

@@ -1,0 +1,22 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "capacity_finish::scoped_binding::downgrade::downgrade_waits_on_original_run_then_observes_committed_scoped_member",
+    "--locked",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 61.24,
+  "wall_seconds": 61.24,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T01:59:31.323037+00:00",
+  "finished_utc": "2026-10-28T02:00:32.566646+00:00",
+  "log": "capacity-discovery-downgrade-barrier-green.txt"
+}

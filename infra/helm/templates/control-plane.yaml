@@ -53,6 +53,7 @@ spec:
           env:
             {{- include "sagat.oidcEnv" . | nindent 12 }}
             {{- include "sagat.openbao.env" $ctx | nindent 12 }}
+            - {name: SAGAT_REDIS_CALLBACKS_ENABLED, value: {{ .Values.redis.callbacksEnabled | quote }}}
             - {name: SAGAT_BIND_ADDR, value: "0.0.0.0:8080"}
             # Metrics: unauthenticated, so the NetworkPolicy keeps them to the monitoring namespace. The probes are
             # the API's own, on its port: /v1/health touches nothing (a database outage must not restart pods) and

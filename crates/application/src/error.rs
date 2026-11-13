@@ -1,5 +1,6 @@
 //! Typed errors of the application layer and of its storage port (AGENTS.md rule 10).
 
+use sagat_domain::database::LakeRefusal;
 use sagat_domain::identity::{IdentityError, Permission};
 use sagat_domain::scripts::ScriptError;
 use sagat_domain::versioning::{RequestId, VersioningError};
@@ -26,6 +27,8 @@ pub enum ConflictKind {
     ConnectorSlug,
     /// A script with that name already exists in the namespace.
     ScriptName,
+    /// A schedule with that name already exists in the namespace.
+    ScheduleName,
     /// A request to publish was published without the approvals it needs.
     RequestNotApproved,
 }
@@ -61,6 +64,14 @@ pub enum StoreError {
     DatabaseUnavailable,
     #[error("database operation exceeds connection limits")]
     DatabaseLimit,
+    /// The write sets a `pii` egress ceiling and the actor does not hold the namespace's reveal grant (FR-035-005).
+    /// It is a refusal of the actor, not of the resource: the actor does manage connections, so nothing is hidden.
+    #[error("setting the pii egress ceiling needs the payload reveal grant")]
+    RevealGrantRequired,
+    /// The settings of an Apache Iceberg connection refuse a step: a mode it does not allow, or fields above its ceiling
+    /// (FR-035-005, FR-035-025). The step's author may use the connection, so nothing is hidden by saying which node.
+    #[error("an Apache Iceberg write is refused by the settings of its connection")]
+    LakeRefused { node: String, refusal: LakeRefusal },
     #[error("conflict with the current state: {0}")]
     StateConflict(&'static str),
     #[error("uniqueness conflict")]
@@ -129,6 +140,25 @@ pub enum AppError {
     /// A request the *current state* of the resource cannot accept (cancelling a finished run).
     #[error("conflict with the current state: {0}")]
     StateConflict(&'static str),
+    /// A connection (feature 035) whose settings are not acceptable: `reason` is the closed `details.reason` of the
+    /// contract (`CREDENTIAL_IN_URI`, ...). It names a rule and never a value of the request.
+    #[error("the connection settings are not acceptable: {reason}")]
+    InvalidConnection { reason: &'static str },
+    /// A schedule (feature 018) that is not acceptable: `reason` is the closed `details.reason`
+    /// of the contract and `field` the place of the request it concerns. Never a payload.
+    #[error("invalid schedule: {reason}")]
+    InvalidSchedule {
+        reason: &'static str,
+        field: Option<String>,
+    },
+    /// A schedule that is in a state the request cannot be taken in (`details.reason` of the
+    /// contract): owned by a cron trigger, or waiting for the trigger handover.
+    #[error("schedule conflict: {reason}")]
+    ScheduleConflict { reason: &'static str },
+    /// Another attempt was asked of a step whose last outcome is unknown; it must be settled
+    /// (`RESOLVE_STEP`) before anything is repeated, by any role (feature 037).
+    #[error("the step's last outcome is unknown and must be settled first")]
+    OutcomeUnresolved,
     /// The request was well-formed but violates a domain rule.
     #[error("invalid input: {0}")]
     Invalid(IdentityError),
@@ -223,6 +253,12 @@ impl From<StoreError> for AppError {
             StoreError::DatabaseUnavailable => Self::NotFound,
             StoreError::DatabaseLimit => {
                 Self::NotAllowed("database operation exceeds connection limits")
+            }
+            StoreError::RevealGrantRequired => Self::Forbidden {
+                permission: Permission::PayloadRevealPii,
+            },
+            StoreError::LakeRefused { node, refusal } => {
+                Self::InvalidDefinition(Box::new(IrError::LakeWriteRefused { node, refusal }))
             }
             StoreError::StateConflict(reason) => Self::StateConflict(reason),
             StoreError::Conflict(kind) => Self::Conflict(kind),

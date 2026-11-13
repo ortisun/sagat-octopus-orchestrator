@@ -1,0 +1,15 @@
+
+running 1 test
+
+thread 'capacity_finish::acquire::acquire_exports_closed_outcomes_and_counts_only_acknowledged_first_transitions' (790326713) panicked at tests/integration/workflow-primitives/../../support/collector.rs:267:18:
+install the test tracing registry: SetGlobalDefaultError("a global default trace dispatcher has already been set")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test capacity_finish::acquire::acquire_exports_closed_outcomes_and_counts_only_acknowledged_first_transitions ... FAILED
+
+failures:
+
+failures:
+    capacity_finish::acquire::acquire_exports_closed_outcomes_and_counts_only_acknowledged_first_transitions
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 771 filtered out; finished in 4.17s
+

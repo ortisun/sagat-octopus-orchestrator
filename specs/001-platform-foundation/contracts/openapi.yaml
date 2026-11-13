@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Sagat Octopus Orchestrator Control & Execution API
-  version: 0.2.0
+  version: 0.3.0
   license:
     name: MIT
     identifier: MIT
@@ -42,6 +42,8 @@ tags:
     description: Operator inspection, reconciliation, audit, and platform operations.
   - name: Governance
     description: Quotas, worker bindings, secrets and egress policy of a tenant or namespace (feature 009).
+  - name: Schedules
+    description: Schedules that start runs at calendar, cron and interval times, with overlap, catch-up and pause policies (feature 018).
   - name: Versions
     description: Approvals before a publication, the active version of a workflow and its history, and promotion between environments (feature 011).
 paths:
@@ -860,9 +862,9 @@ paths:
       x-extended: '003'
       x-extended-again: '008'
       description: |
-        CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`, and `saga:override` for a step whose outcome may have happened, such as a lost lease or a lookup that could not say; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409.
+        CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). Feature 037: a step whose last outcome is unknown (a lost lease, a timeout, OUTCOME_UNKNOWN, a lookup that could not say or said `not_applied`) is never retried by anyone, administrators included: RETRY_STEP is refused with 409 and `details.reason` `OUTCOME_UNRESOLVED`; settle it with RESOLVE_STEP after checking with the provider. SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409.
 
-        Feature 008 adds: RETRY_STEP also asks for the attempt of a step that is only waiting out the delay of a retry, now and not when the delay ends (needs `run:operate`; the scheduler's own retry and the operator's cannot both start an attempt: the first to commit wins and the second is refused with 409). MARK_MANUAL_REVIEW holds a step that has not started (ready, or waiting out a retry delay) for a person to decide (needs `run:operate` and `stepId`; the run becomes MANUAL_REVIEW when no other step is still running, nothing more happens to the step until someone retries it or settles it, and what is known about its last attempt (a lost lease, a timeout) is kept, so a saga that is stopped later still undoes it; refused with 409 for a step in flight, one that already waits for a person or one that is done, and for a lookup, which is held by holding the step it is for). RERUN_AS_NEW starts a new run of the same version with the same input and correlation id from a run that ended (needs `run:operate` and `run:start`, takes no `stepId`; refused with 409 for a run that has not ended; the answer names the run in `newRunId`, which says where it came from in `rerunOf`). All of them need a justification in `reason` and are audited with it; the old attempts and the old run stay as they were.
+        Feature 008 adds: RETRY_STEP also asks for the attempt of a step that is only waiting out the delay of a retry, now and not when the delay ends (needs `run:operate`; the scheduler's own retry and the operator's cannot both start an attempt: the first to commit wins and the second is refused with 409). MARK_MANUAL_REVIEW holds a step that has not started (ready, or waiting out a retry delay) for a person to decide (needs `run:operate` and `stepId`; the run becomes MANUAL_REVIEW when no other step is still running, nothing more happens to the step until someone retries it or settles it, and what is known about its last attempt (a lost lease, a timeout) is kept, so a run that is stopped later keeps it for review instead of undoing it (feature 037); refused with 409 for a step in flight, one that already waits for a person or one that is done, and for a lookup, which is held by holding the step it is for). RERUN_AS_NEW starts a new run of the same version with the same input and correlation id from a run that ended (needs `run:operate` and `run:start`, takes no `stepId`; refused with 409 for a run that has not ended; the answer names the run in `newRunId`, which says where it came from in `rerunOf`). All of them need a justification in `reason` and are audited with it; the old attempts and the old run stay as they were.
       parameters:
         - {$ref: '#/components/parameters/RunId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -1550,6 +1552,58 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
         '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/connections/{connectionName}/catalog-browse:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: connectionName, in: path, required: true, schema: {type: string, minLength: 3, maxLength: 63, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}}
+    post:
+      operationId: startCatalogBrowse
+      summary: Start browsing the catalog of an Iceberg connection
+      description: |
+        Needs `database:browse`. Browsing needs I/O in the managed executor, so it is admitted like the connection probe
+        (a fixed, platform-defined operation as an ad hoc run with the origin `CATALOG_BROWSE`) and answered later by
+        `getCatalogBrowse`. A replay with the same idempotency key, tenant, namespace and actor returns the same
+        `browseId`. Every browse is audited without naming tables beyond the requested level. Another tenant's
+        connection is a `404`.
+      tags: [Runs]
+      x-planned: '035'
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CatalogBrowseRequest'}}}
+      responses:
+        '202': {description: 'The browse is admitted', headers: {Cache-Control: {schema: {type: string, const: no-store}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CatalogBrowseAccepted'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/catalog-browses/{browseId}:
+    parameters:
+      - {$ref: '#/components/parameters/NamespaceId'}
+      - {name: browseId, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getCatalogBrowse
+      summary: Read a catalog browse
+      description: |
+        Needs `database:browse`, and only the actor who started the browse can read it: anyone else gets the same
+        `404` as for a missing browse. A page holds at most 200 entries. The result expires 10 minutes after the browse
+        completes. Browse runs are left out of run lists and run reads for every role.
+      tags: [Runs]
+      x-planned: '035'
+      responses:
+        '200': {description: 'The browse', headers: {Cache-Control: {schema: {type: string, const: no-store}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/CatalogBrowse'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -3135,7 +3189,7 @@ paths:
       tags: [Scripts]
       x-implemented: '005'
       description: |
-        Needs `script:write`. A script is a draft that can be tried (`createScriptTestRun`) and published (`publishScriptVersion`). TypeScript (`typescript`) and Python (`python`) are built; `csharp`, `go` and `java` are named by the workflow schema and refused with `details.reason` `LANGUAGE_NOT_BUILT`.
+        Needs `script:write`. A script is a draft that can be tried (`createScriptTestRun`) and published (`publishScriptVersion`). All five languages the workflow schema names (`typescript`, `python`, `csharp`, `go`, `java`) are accepted for authoring; a build or test run needs the matching runner image and toolchain to be configured (`docs/runbooks/scripts.md`). A language the platform has no builder for is refused with `details.reason` `LANGUAGE_NOT_BUILT`.
         A TypeScript script exports a default function `(input, octopus) => result`; a Python script defines `run(input, octopus)`. `octopus.fetch(url, init)` asks the platform for an HTTP request (under the egress policy of the namespace, and only if the script's `policy.egress` is `namespace`), `octopus.secret(name)` asks for a secret the step declared, `octopus.log(...)` writes to the log. The script has no network of its own, no filesystem but a small scratch area, and no secrets it was not given.
         In a workflow the script receives the step document (`{run, node, input, steps}`); a test run receives exactly the input it is given.
         `inputSchema` and `outputSchema` are JSON Schemas (no references outside the document): the input is checked before the script runs and the result after. They are part of the artifact. Limits that are left out are the platform's defaults; asking for more than the platform allows is refused with `details.reason` `ABOVE_CEILING`. A `lockfile` that pins a package is refused when the version is built (installing packages is not available yet); one that pins nothing is part of the build.
@@ -3680,6 +3734,279 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules:
+    get:
+      operationId: listSchedules
+      summary: List the schedules of a namespace, newest first
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:read`. Never returns the input of the runs, only its digest.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {description: 'A page of schedules', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/SchedulePage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createSchedule
+      summary: Create a schedule
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:write` and `run:start`; the caller becomes `authorizedBy`, the subject whose `run:start` every action of the schedule is checked against. The spec is validated (the zone, the bounds, at least one occurrence, the minimum spacing over the next 1,000 occurrences) and the input must be an object of at most 64 KiB. It counts against the namespace's `schedules` quota. A name is unique among the schedules of a namespace that have not been deleted.
+        A refusal names `details.reason` (`SCHEDULE_SPEC_INVALID`, `SCHEDULE_ZONE_UNKNOWN`, `SCHEDULE_NEVER_FIRES`, `SCHEDULE_TOO_FREQUENT`, `SCHEDULE_INPUT_INVALID`) and, where it can, `details.field` as a JSON pointer. A request sent again after a lost answer is told what the first one did (409 for a name in use), it is never applied twice.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleWrite'}
+      responses:
+        '201': {description: 'The schedule', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/QuotaExceeded'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}:
+    get:
+      operationId: getSchedule
+      summary: Describe a schedule with its next times and what it has done
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:read`. `nextActions` are the next times it will act on (none while it is paused or has ended); `recentActions` its latest decisions, newest first; `openRuns` the runs it started that are still open; `counters` how many of each outcome it has had.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {name: nextCount, in: query, schema: {type: integer, minimum: 0, maximum: 100, default: 10}}
+        - {name: recentCount, in: query, schema: {type: integer, minimum: 0, maximum: 100, default: 10}}
+      responses:
+        '200': {description: 'The schedule', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleDescription'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    put:
+      operationId: updateSchedule
+      summary: Replace the spec, the policies and the action as a new revision
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:write` and `run:start`; the caller becomes `authorizedBy`. `expectedRevision` is required: a stale one is `409` with `details.reason` `REVISION_CONFLICT` and `details.currentRevision`. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_OWNED`. The input is always sent whole. The next time is the first one strictly after the update.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleUpdate'}
+      responses:
+        '200': {description: 'The new revision', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteSchedule
+      summary: Delete a schedule; the runs it started are not touched
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:write` and `run:start`. `expectedRevision` is required and checked in the transaction that deletes: a stale one is `409` `REVISION_CONFLICT`. The actions that were waiting are dropped (`DROPPED_DELETED`), the name is free, and the history stays.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {name: expectedRevision, in: query, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/pause:
+    post:
+      operationId: pauseSchedule
+      summary: Pause a schedule with a note
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:operate`. No time is acted on while it is paused, and none is caught up afterwards. Pausing a paused schedule replaces the note. Audited, without the note. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleNote'}
+      responses:
+        '200': {description: 'The paused schedule', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/resume:
+    post:
+      operationId: resumeSchedule
+      summary: Resume a schedule with a note; it continues from the first time after now
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:operate` and `run:start`; the caller becomes `authorizedBy`. The times that passed while it was paused are not caught up. Audited, without the note. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleNote'}
+      responses:
+        '200': {description: 'The resumed schedule', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Schedule'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/trigger:
+    post:
+      operationId: triggerSchedule
+      summary: Act on a schedule now, also while it is paused
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:operate` and `run:start`. One `TRIGGERED` action at the time of the request (`origin` `MANUAL`: it never shares an identity with a scheduled time, even at the same instant), with the overlap rule of the schedule unless the body names another for this action only. It does not use up a remaining action, is not limited by the catch-up window and leaves a time that is owed alone. The run is the schedule's (`startedBy` is `system:schedule:<id>`) under the role of the caller. The answer says what became of the action: a run `STARTED`, or `BUFFERED`, `SKIPPED_OVERLAP`, `DROPPED_BUFFER_FULL`.
+        The same `Idempotency-Key` and request give the same action; the same key with another request is `409` `IDEMPOTENCY_KEY_REUSED`. A schedule a cron trigger owns is `409` `SCHEDULE_TRIGGER_HANDOVER_PENDING` until the operator hands the triggers over.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleTriggerRequest'}
+      responses:
+        '202': {description: 'What became of the action', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleActionRecord'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/QuotaExceeded'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/backfills:
+    get:
+      operationId: listScheduleBackfills
+      summary: The backfills of a schedule, newest first
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:read`. At most the latest 100.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+      responses:
+        '200': {description: 'The backfills', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleBackfillList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    post:
+      operationId: createScheduleBackfill
+      summary: Act on every nominal time of a past range that has no action yet
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:operate` and `run:start`; the runs are the schedule's, under the role of the caller. `start` is in the range and `end` is not, and `end` must not be after now (`422` `BACKFILL_RANGE_INVALID`). The range may hold at most 1,000 nominal times (`422` `BACKFILL_LIMIT`). The overlap rule is `BUFFER_ALL` unless the body names another; a backfill never drops a time that does not fit: it waits for room. A time that already has an action is counted `ALREADY_ACTED` and never gets a second run. One backfill runs at a time on a schedule and a namespace has the number its `schedule_backfills` quota says (`429`). It works while the schedule is paused, and its times take no remaining action.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ScheduleBackfillRequest'}
+      responses:
+        '202': {description: 'Accepted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleBackfill'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/QuotaExceeded'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/schedules/{scheduleId}/backfills/{backfillId}/cancel:
+    post:
+      operationId: cancelScheduleBackfill
+      summary: Stop a backfill; the times it acted on stay acted on
+      tags: [Schedules]
+      x-implemented: '018'
+      description: |
+        Needs `schedule:operate`. Stopping a backfill that has ended changes nothing and is not audited again.
+      parameters:
+        - {$ref: '#/components/parameters/NamespaceId'}
+        - {$ref: '#/components/parameters/ScheduleId'}
+        - {name: backfillId, in: path, required: true, schema: {type: string, format: uuid}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '200': {description: 'The backfill', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleBackfill'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
 components:
   securitySchemes:
     webhookHmac: {type: apiKey, in: header, name: X-Octopus-Signature, description: 'Required only for endpoints configured with the HMAC profile.'}
@@ -3726,6 +4053,11 @@ components:
       in: query
       description: Page size; values outside 1..200 are clamped.
       schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+    ScheduleId:
+      name: scheduleId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
     WorkerSubject:
       name: subject
       in: path
@@ -3777,7 +4109,7 @@ components:
       name: resource
       in: path
       required: true
-      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations]}
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations, schedules, schedule_backfills]}
     ActivityName:
       name: activity
       in: path
@@ -4122,6 +4454,13 @@ components:
             `UPDATE_REJECTED`;
             payload classification refines existing codes with `PII_REVEAL_NOT_GRANTED`,
             `CLASSIFICATION`, `UNKNOWN_SUBJECT`, `ROLE_CANNOT_REVEAL` and `GRANT_LIMIT`;
+            compensation safety (feature 037) refines `CONFLICT` with `OUTCOME_UNRESOLVED` (another
+            attempt was asked of a step whose last outcome is unknown);
+            Iceberg writes and step-output destinations (feature 035) refine `VALIDATION_FAILED` with
+            `ICEBERG_NODE_NOT_ROOT`, `DESTINATION_NOT_ROOT`, `MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`,
+            `UNKNOWN_CONNECTION_KIND`, `BROKER_SOURCE_NOT_INLINE`, `FILTER_TOO_DEEP` (more than 8 levels or 64
+            comparisons), `LAKE_DISABLED` (the deployment's lake switch is off) and `CREDENTIAL_IN_URI` (a connection
+            URI that carries user information or query credentials);
             they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts
             but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist
             first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`.
@@ -4316,10 +4655,38 @@ components:
       type: object
       required: [run, revision, failureCode]
       additionalProperties: false
+      description: |
+        The latest probe of a connection. `run.status` says that the probe ran; what it found is `failureCode` and, for the probe of an Iceberg
+        connection, `checks`. A failed check is the answer and not a fault of the platform, so the run of such a probe is `SUCCEEDED` and
+        `failureCode` is the code of its first failed check: a reader that knows no checks still sees that something is wrong. An Iceberg probe
+        that succeeded and whose result can no longer be read says `DATABASE_RESULT_UNAVAILABLE`: no checks never means a healthy connection.
+        A connection is confirmed only when every check is `PASSED`.
       properties:
         run: {$ref: '#/components/schemas/Run'}
         revision: {type: integer, minimum: 1, maximum: 2147483646}
         failureCode: {type: [string, 'null']}
+        checks:
+          type: array
+          description: |
+            The checks of the probe of an Iceberg connection, in the order they ran. Absent for any other probe, and for an Iceberg probe whose result cannot be read.
+          items: {$ref: '#/components/schemas/DatabaseConnectionProbeCheck'}
+    DatabaseConnectionProbeCheck:
+      type: object
+      required: [check, outcome]
+      additionalProperties: false
+      properties:
+        check:
+          type: string
+          enum: [CATALOG_AUTH, WAREHOUSE, STORAGE_ACCESS]
+        outcome:
+          type: string
+          enum: [PASSED, FAILED, SKIPPED]
+          description: |
+            A `SKIPPED` check did not run (an earlier one failed, or the connection vends its credentials). It is not confirmed, and is never `PASSED`.
+        code:
+          type: string
+          enum: [DATABASE_AUTHENTICATION_FAILED, DATABASE_TLS_FAILED, DATABASE_DESTINATION_DENIED, DATABASE_TIMEOUT, CATALOG_UNAVAILABLE, STORAGE_UNAVAILABLE, ICEBERG_LOCATION_NOT_ALLOWED]
+          description: Why a `FAILED` check failed. Only a failed check has one.
     Run:
       type: object
       required: [runId, workflowId, versionId, status, version, createdAt]
@@ -4809,10 +5176,11 @@ components:
         leasesReleased: {type: integer, minimum: 0}
     WorkerBinding:
       type: object
-      required: [subject, activities]
+      required: [subject, activities, profile]
       properties:
         subject: {type: string}
         activities: {type: array, items: {type: string}, description: 'Activity names, `<prefix>.*` or `*`.'}
+        profile: {type: string, enum: [database, lake], description: 'What kind of managed work a dedicated runner (`database-runner`) may register for: `database` serves SQL steps, `lake` serves Iceberg writes. A runner registers only for the managed activities of its profile, whatever its patterns cover. It means nothing to an ordinary worker. Bindings made before profiles existed read as `database`.'}
         pools: {type: array, items: {type: string}, description: 'The worker pools the identity was granted in this namespace; a secret that lists pools is delivered only to identities that hold one of them.'}
         revoked: {$ref: '#/components/schemas/RevokedWorkers'}
     WorkerBindingList:
@@ -4827,6 +5195,7 @@ components:
       properties:
         activities: {type: array, minItems: 1, maxItems: 64, items: {type: string, minLength: 1, maxLength: 130}}
         pools: {type: array, maxItems: 16, items: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9._:+-]+$'}, description: 'Replaces the pools the identity is granted. Absent leaves them as they are; an empty list takes them all away. Removing the binding removes them too.'}
+        profile: {type: string, enum: [database, lake], description: 'Sets the profile of a dedicated runner. Absent keeps the one it has (`database` for a new binding). A runner whose session offers the managed activities of another profile is closed when the profile changes.'}
     Secret:
       type: object
       required: [name, version, keyId, createdBy, updatedAt]
@@ -5136,6 +5505,190 @@ components:
         tls: {$ref: '#/components/schemas/DatabaseTls'}
         secretName: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
         limits: {$ref: '#/components/schemas/DatabaseLimits'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
+    EgressCeiling:
+      type: string
+      enum: [public, internal, pii]
+      default: internal
+      description: The highest classification level a step may write to this connection or subscription. `secret` is never a value. A revision without the field reads as `internal`. Setting `pii` needs the payload-disclosure reveal grant for the namespace.
+    LakeLimits:
+      type: object
+      additionalProperties: false
+      description: Ceilings for one write. The effective value is the minimum of the platform, namespace, connection and step values, and zero is not unlimited.
+      properties:
+        maxRecordBytes: {type: integer, minimum: 1024, maximum: 2147483648}
+        maxRecords: {type: integer, minimum: 1, maximum: 100000000}
+        timeoutMs: {type: integer, minimum: 1000, maximum: 3600000}
+    IcebergRestCatalog:
+      type: object
+      additionalProperties: false
+      required: [uri, warehouse, auth]
+      description: A URI that carries user information or query credentials is refused with `VALIDATION_FAILED` and the reason `CREDENTIAL_IN_URI`. HTTPS is required outside development.
+      properties:
+        uri: {type: string, format: uri, maxLength: 2048}
+        warehouse: {type: string, minLength: 1, maxLength: 1024}
+        prefix: {type: string, maxLength: 255}
+        auth:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [type, tokenUri]
+              properties:
+                type: {type: string, const: oauth2}
+                tokenUri: {type: string, format: uri, maxLength: 2048}
+                scope: {type: string, maxLength: 1024}
+            - type: object
+              additionalProperties: false
+              required: [type]
+              properties:
+                type: {type: string, const: bearer}
+            - type: object
+              additionalProperties: false
+              required: [type, region, signingName]
+              properties:
+                type: {type: string, const: sigv4}
+                region: {type: string, minLength: 1, maxLength: 63}
+                signingName: {type: string, minLength: 1, maxLength: 63}
+        accessDelegation: {type: string, enum: [none, vended-credentials], default: none}
+        remoteSigning: {type: boolean, default: false}
+    IcebergCatalog:
+      type: object
+      additionalProperties: false
+      required: [type]
+      description: The member that matches `type` is required and no other is allowed.
+      properties:
+        type: {type: string, enum: [rest, glue, hive, jdbc]}
+        rest: {$ref: '#/components/schemas/IcebergRestCatalog'}
+        glue:
+          type: object
+          additionalProperties: false
+          required: [region, catalogId]
+          properties:
+            region: {type: string, minLength: 1, maxLength: 63}
+            catalogId: {type: string, minLength: 1, maxLength: 255}
+            roleArn: {type: string, maxLength: 2048}
+            externalId: {type: string, maxLength: 1224}
+        hive:
+          type: object
+          additionalProperties: false
+          required: [uris, tls]
+          properties:
+            uris: {type: array, minItems: 1, maxItems: 4, items: {type: string, pattern: '^thrift://[^@/?#\s]+:[0-9]{1,5}$'}}
+            tls: {type: string, enum: [required, none], description: '`none` is accepted only when the deployment sets `allowUnauthenticatedMetastore`.'}
+        jdbc:
+          type: object
+          additionalProperties: false
+          required: [host, port, database, tls, engine]
+          properties:
+            host: {type: string, minLength: 1, maxLength: 253}
+            port: {type: integer, minimum: 1, maximum: 65535}
+            database: {type: string, minLength: 1, maxLength: 63}
+            tls: {$ref: '#/components/schemas/DatabaseTls'}
+            engine: {type: string, enum: [postgresql]}
+      oneOf:
+        - {required: [rest], properties: {type: {const: rest}}}
+        - {required: [glue], properties: {type: {const: glue}}}
+        - {required: [hive], properties: {type: {const: hive}}}
+        - {required: [jdbc], properties: {type: {const: jdbc}}}
+    LakeStorage:
+      type: object
+      additionalProperties: false
+      required: [type]
+      description: The member that matches `type` is required and no other is allowed. `vended` credentials are valid only with a REST catalog that delegates access.
+      properties:
+        type: {type: string, enum: [s3, gcs, adls]}
+        s3:
+          type: object
+          additionalProperties: false
+          required: [region]
+          properties:
+            region: {type: string, minLength: 1, maxLength: 63}
+            endpoint: {type: string, format: uri, maxLength: 2048}
+            pathStyle: {type: boolean, default: false}
+            roleArn: {type: string, maxLength: 2048}
+            externalId: {type: string, maxLength: 1224}
+        gcs:
+          type: object
+          additionalProperties: false
+          properties:
+            project: {type: string, maxLength: 255}
+            endpoint: {type: string, format: uri, maxLength: 2048, description: 'An emulator; development only.'}
+        adls:
+          type: object
+          additionalProperties: false
+          required: [account]
+          properties:
+            account: {type: string, minLength: 3, maxLength: 24}
+            endpointSuffix: {type: string, maxLength: 255}
+        credentials: {type: string, enum: [static, vended], default: static}
+      oneOf:
+        - {required: [s3], properties: {type: {const: s3}}}
+        - {required: [gcs], properties: {type: {const: gcs}}}
+        - {required: [adls], properties: {type: {const: adls}}}
+    IcebergConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, catalog, storage, warehouseLocations]
+      description: Every table, data, delete and metadata location must start with one of `warehouseLocations`. The platform never creates a bucket, a namespace or a table.
+      properties:
+        driver: {type: string, const: iceberg}
+        catalog: {$ref: '#/components/schemas/IcebergCatalog'}
+        storage: {$ref: '#/components/schemas/LakeStorage'}
+        warehouseLocations: {type: array, minItems: 1, maxItems: 16, uniqueItems: true, items: {type: string, maxLength: 1024, pattern: '^(s3|gs|abfss)://[^?#@\s]+$'}}
+        allowedModes: {type: array, minItems: 1, uniqueItems: true, items: {type: string, enum: [append, overwrite, upsert]}, default: [append]}
+        catalogSecret: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        storageSecret: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$', description: 'Absent when the storage credentials are `vended`.'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
+        limits: {$ref: '#/components/schemas/LakeLimits'}
+    ObjectStorageConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, storage, prefix, formats]
+      properties:
+        driver: {type: string, const: object_storage}
+        storage: {$ref: '#/components/schemas/LakeStorage'}
+        prefix: {type: string, minLength: 1, maxLength: 1024, pattern: '^(s3|gs|abfss)://[^?#@\s]+$', not: {pattern: '\.\.'}, description: 'One URI prefix, without `..`.'}
+        storageSecret: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        formats: {type: array, minItems: 1, uniqueItems: true, items: {type: string, enum: [parquet, ndjson]}}
+        conditionalCreate:
+          readOnly: true
+          description: Found by the probe and recorded with its result; never authored.
+          oneOf: [{type: boolean}, {type: string, const: unknown}]
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
+        limits: {$ref: '#/components/schemas/LakeLimits'}
+    ClickHouseConnectionConfig:
+      type: object
+      additionalProperties: false
+      required: [driver, url, database, tls, secret]
+      description: The database named here is the only one a destination may target.
+      properties:
+        driver: {type: string, const: clickhouse}
+        url: {type: string, format: uri, maxLength: 2048, description: 'HTTPS; plain HTTP only in development.'}
+        database: {type: string, minLength: 1, maxLength: 255}
+        tls:
+          type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: {type: string, const: verify-full}
+            caPem: {type: string, maxLength: 65536, description: 'Optional public CA certificates, never a private key'}
+        secret: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling'}
+        limits: {$ref: '#/components/schemas/LakeLimits'}
+    DatabaseConnectionConfig:
+      description: The configuration of a connection, discriminated by `driver`. Every variant is closed.
+      oneOf:
+        - {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        - {$ref: '#/components/schemas/IcebergConnectionConfig'}
+        - {$ref: '#/components/schemas/ObjectStorageConnectionConfig'}
+        - {$ref: '#/components/schemas/ClickHouseConnectionConfig'}
+      discriminator:
+        propertyName: driver
+        mapping:
+          postgresql: '#/components/schemas/PostgresConnectionConfig'
+          iceberg: '#/components/schemas/IcebergConnectionConfig'
+          object_storage: '#/components/schemas/ObjectStorageConnectionConfig'
+          clickhouse: '#/components/schemas/ClickHouseConnectionConfig'
     DatabaseConnection:
       type: object
       additionalProperties: false
@@ -5146,9 +5699,74 @@ components:
         name: {type: string}
         revision: {type: integer, minimum: 1}
         status: {type: string, enum: [ACTIVE, PAUSED, DELETED]}
-        config: {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        config: {$ref: '#/components/schemas/DatabaseConnectionConfig'}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
+    CatalogTableIdentifier:
+      type: object
+      additionalProperties: false
+      required: [namespace, name]
+      properties:
+        namespace: {type: array, minItems: 1, maxItems: 8, items: {type: string, minLength: 1, maxLength: 255}}
+        name: {type: string, minLength: 1, maxLength: 255}
+    CatalogBrowseRequest:
+      type: object
+      additionalProperties: false
+      required: [level]
+      description: '`NAMESPACES` and `TABLES` list the entries under `parent` (the root when absent); `TABLE` reads one table and needs `table`.'
+      properties:
+        level: {type: string, enum: [NAMESPACES, TABLES, TABLE]}
+        parent: {type: array, maxItems: 8, items: {type: string, minLength: 1, maxLength: 255}}
+        table: {$ref: '#/components/schemas/CatalogTableIdentifier'}
+        pageToken: {type: string, maxLength: 1024}
+      if: {required: [level], properties: {level: {const: TABLE}}}
+      then: {required: [table]}
+      else: {not: {required: [table]}}
+    CatalogBrowseAccepted:
+      type: object
+      additionalProperties: false
+      required: [browseId]
+      properties:
+        browseId: {type: string, format: uuid}
+    CatalogBrowse:
+      type: object
+      additionalProperties: false
+      required: [browseId, state]
+      properties:
+        browseId: {type: string, format: uuid}
+        state: {type: string, enum: [PENDING, DONE, FAILED]}
+        page:
+          type: object
+          additionalProperties: false
+          required: [items]
+          properties:
+            items:
+              type: array
+              maxItems: 200
+              items:
+                type: object
+                additionalProperties: false
+                required: [namespace]
+                properties:
+                  namespace: {type: array, minItems: 1, maxItems: 8, items: {type: string}}
+                  name: {type: string, description: 'Present for a table, absent for a namespace.'}
+            nextPageToken: {type: string, maxLength: 1024}
+        table:
+          type: object
+          additionalProperties: false
+          required: [schema, partitionSpec, identifierFields, refs, formatVersion]
+          properties:
+            schema: {type: object, additionalProperties: true}
+            partitionSpec: {type: object, additionalProperties: true}
+            identifierFields: {type: array, items: {type: string}}
+            refs: {type: object, additionalProperties: {type: object, additionalProperties: true}}
+            formatVersion: {type: integer, minimum: 1}
+        failure:
+          type: object
+          additionalProperties: false
+          required: [code]
+          properties:
+            code: {type: string, description: 'A code of the typed failure set of the lake (docs/reference).'}
     DatabaseDriverList:
       type: object
       additionalProperties: false
@@ -5156,17 +5774,32 @@ components:
       properties:
         items:
           type: array
-          maxItems: 1
+          maxItems: 4
           items:
-            type: object
-            additionalProperties: false
-            required: [id, operations, parameterTypes, defaultLimits, maximumLimits]
-            properties:
-              id: {type: string, enum: [postgresql]}
-              operations: {type: array, items: {type: string, enum: [query, execute]}}
-              parameterTypes: {type: array, items: {type: string, enum: ["null", boolean, integer, decimal, float, text, timestamp, date, binary, json]}}
-              defaultLimits: {$ref: '#/components/schemas/DatabaseLimits'}
-              maximumLimits: {$ref: '#/components/schemas/DatabaseLimits'}
+            oneOf:
+              - {$ref: '#/components/schemas/DatabaseDriver'}
+              - {$ref: '#/components/schemas/LakeDatabaseDriver'}
+    DatabaseDriver:
+      type: object
+      additionalProperties: false
+      required: [id, operations, parameterTypes, defaultLimits, maximumLimits]
+      properties:
+        id: {type: string, enum: [postgresql]}
+        operations: {type: array, items: {type: string, enum: [query, execute]}}
+        parameterTypes: {type: array, items: {type: string, enum: ["null", boolean, integer, decimal, float, text, timestamp, date, binary, json]}}
+        defaultLimits: {$ref: '#/components/schemas/DatabaseLimits'}
+        maximumLimits: {$ref: '#/components/schemas/DatabaseLimits'}
+    LakeDatabaseDriver:
+      type: object
+      additionalProperties: false
+      required: [id]
+      description: A driver of the lake deployment (feature 035), so the Studio and the SDKs never hard-code the list.
+      properties:
+        id: {type: string, enum: [iceberg, object_storage, clickhouse]}
+        catalogTypes: {type: array, items: {type: string, enum: [rest, glue, hive, jdbc]}}
+        storageTypes: {type: array, items: {type: string, enum: [s3, gcs, adls]}}
+        modes: {type: array, items: {type: string, enum: [append, overwrite, upsert]}}
+        formats: {type: array, items: {type: string, enum: [parquet, ndjson]}}
     DatabaseConnectionList:
       type: object
       additionalProperties: false
@@ -5180,7 +5813,7 @@ components:
       properties:
         requestId: {type: string, format: uuid}
         expectedRevision: {type: integer, minimum: 0, maximum: 2147483646}
-        config: {$ref: '#/components/schemas/PostgresConnectionConfig'}
+        config: {$ref: '#/components/schemas/DatabaseConnectionConfig'}
         status: {type: string, enum: [ACTIVE, PAUSED]}
     DeleteDatabaseConnectionRequest:
       type: object
@@ -5218,9 +5851,10 @@ components:
         api_requests_per_second and events_per_second are requests/second (maximum 1,000,000,
         fixed two-second burst); event_retention_seconds is 0 or 60..2,592,000 seconds;
         script_retention_days is 0..365 days. iteration_concurrency is tenant-wide; its explicit
-        value is 1..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
-        cleared, structured iteration admission is disabled. Zero disables new admission for
-        resources that accept it.
+        value is 0..1,000,000,000, its default operator ceiling is 1,024 and, while absent or
+        cleared, structured iteration admission is disabled. An explicit zero policy blocks
+        new iteration admissions without pausing already admitted work; its source is tenant.
+        Zero disables new admission for other resources that accept it.
         Database operation ceilings are positive:
         database_statement_bytes <= 65536, database_parameters <= 256,
         database_parameter_bytes <= 262144, database_rows <= 10000,
@@ -5230,12 +5864,14 @@ components:
         operation and connection defaults remain smaller. Count ceilings default/max are
         database_connections 100/1000 (including paused), database_concurrency 16/64,
         tenant_database_concurrency 64/256, secret_provider_operations 32/128.
+        Schedules (feature 018) are schedules 200/10000, counting active and paused ones, and
+        schedule_backfills 4/16, counting backfills that have not finished.
         Zero disables new admission for count/rate/retention resources, never means unlimited.
         Lowering a limit does not erase retained content or rewrite existing expiry.
       type: object
       required: [resource, limit, source, ceiling]
       properties:
-        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations]}
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations, schedules, schedule_backfills]}
         limit: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624}
         source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing; iteration_concurrency then remains disabled, while other resources use their platform default up to the ceiling.'}
         ceiling: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
@@ -5494,7 +6130,7 @@ components:
         id: {type: string, format: uuid}
         namespaceId: {type: string, format: uuid}
         name: {type: string}
-        kind: {type: string, enum: [NATS, KAFKA, SQS]}
+        kind: {type: string, enum: [NATS, KAFKA, SQS, REDIS]}
         settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
         secretName: {type: string, description: 'Optional namespace secret containing the broker credentials JSON.'}
         events: {type: array, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
@@ -5516,7 +6152,7 @@ components:
       required: [name, kind, settings, events]
       properties:
         name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
-        kind: {type: string, enum: [NATS, KAFKA, SQS]}
+        kind: {type: string, enum: [NATS, KAFKA, SQS, REDIS]}
         settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
         secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
         events: {type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
@@ -5528,7 +6164,7 @@ components:
       additionalProperties: false
       required: [kind, settings, events]
       properties:
-        kind: {type: string, enum: [NATS, KAFKA, SQS], description: 'Must remain the subscription kind set at creation.'}
+        kind: {type: string, enum: [NATS, KAFKA, SQS, REDIS], description: 'Must remain the subscription kind set at creation.'}
         settings: {$ref: '#/components/schemas/OutboundBrokerSettings'}
         secretName: {type: string, pattern: '^[a-z][a-z0-9._-]{0,63}$'}
         events: {type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: {type: string, enum: [run.finished, ops.alert.fired, ops.alert.resolved]}}
@@ -5540,6 +6176,7 @@ components:
         - {$ref: '#/components/schemas/OutboundNatsSettings'}
         - {$ref: '#/components/schemas/OutboundKafkaSettings'}
         - {$ref: '#/components/schemas/OutboundSqsSettings'}
+        - {$ref: '#/components/schemas/OutboundRedisSettings'}
     OutboundNatsSettings:
       type: object
       additionalProperties: false
@@ -5561,6 +6198,15 @@ components:
       properties:
         queueUrl: {type: string, maxLength: 2048}
         region: {type: string}
+    OutboundRedisSettings:
+      type: object
+      additionalProperties: false
+      required: [server, stream]
+      description: 'Redis Streams outbound callback. Requires operator activation after a cold upgrade. Credentials belong in the namespace secret named by secretName; use TLS for authentication. No Cluster/Sentinel or automatic trimming.'
+      properties:
+        server: {type: string, maxLength: 280, pattern: '^rediss?://[^/@?#]+:[0-9]+$', description: 'Host and explicit port; no credentials or database path. rediss enables certificate and hostname verification.'}
+        stream: {type: string, minLength: 1, maxLength: 512, pattern: '^[a-zA-Z0-9:._{}-]+$'}
+        database: {type: integer, minimum: 0, maximum: 15, default: 0}
     OutboundSubscriptionHealth:
       type: object
       required: [consecutiveDead]
@@ -5582,6 +6228,8 @@ components:
         ratePerSecond: {type: integer}
         timeoutMs: {type: integer}
         status: {type: string, enum: [ACTIVE, PAUSED, DISABLED], description: 'DISABLED is set by the platform after 20 deliveries in a row were set aside; set ACTIVE to turn it back on.'}
+        purpose: {type: string, enum: [RUN_EVENTS, STEP_OUTPUT], description: 'Absent on a platform older than feature 035, which means `RUN_EVENTS`.'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling', description: 'Carried by `STEP_OUTPUT` subscriptions only.'}
         health:
           type: object
           required: [consecutiveDead]
@@ -5610,6 +6258,8 @@ components:
         ratePerSecond: {type: integer, minimum: 1, maximum: 100, default: 10}
         timeoutMs: {type: integer, minimum: 1000, maximum: 30000, default: 10000}
         status: {type: string, enum: [ACTIVE, PAUSED], default: ACTIVE}
+        purpose: {type: string, enum: [RUN_EVENTS, STEP_OUTPUT], default: RUN_EVENTS, description: 'A `STEP_OUTPUT` subscription is the target of a broker-stream destination and selects no run-event kinds.'}
+        egressCeiling: {$ref: '#/components/schemas/EgressCeiling', description: 'Carried by `STEP_OUTPUT` subscriptions only. `pii` needs the payload-disclosure reveal grant.'}
     UpdateWebhookSubscriptionRequest:
       type: object
       additionalProperties: false
@@ -5942,7 +6592,7 @@ components:
       required: [name, language, source]
       properties:
         name: {type: string, pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'}
-        language: {type: string, description: 'typescript or python; csharp, go and java are refused until they are built.'}
+        language: {type: string, description: 'typescript, python, csharp, go or java; a language without a builder is refused with LANGUAGE_NOT_BUILT.'}
         source: {type: string, minLength: 1, maxLength: 262144}
         lockfile: {type: string, maxLength: 262144}
         inputSchema: {type: object}
@@ -6431,6 +7081,238 @@ components:
         version: {oneOf: [{$ref: '#/components/schemas/WorkflowVersion'}, {type: 'null'}]}
         request: {oneOf: [{$ref: '#/components/schemas/PublicationRequest'}, {type: 'null'}]}
         activeVersion: {type: [integer, 'null'], minimum: 1}
+    ScheduleRange:
+      type: object
+      additionalProperties: false
+      required: [start]
+      properties:
+        start: {type: integer, minimum: 0}
+        end: {type: integer, minimum: 0, description: 'Inclusive; equals start when absent.'}
+        step: {type: integer, minimum: 1, default: 1}
+    ScheduleField:
+      type: array
+      minItems: 1
+      maxItems: 32
+      items: {$ref: '#/components/schemas/ScheduleRange'}
+      description: Union of ranges. The server checks each bound against the domain of the field.
+    ScheduleCalendarSpec:
+      type: object
+      additionalProperties: false
+      description: >-
+        A structured calendar. `second`, `minute` and `hour` default to `[{start: 0}]`; `dayOfMonth`, `month`,
+        `year` and `dayOfWeek` default to every value. Domains: second 0-59, minute 0-59, hour 0-23,
+        dayOfMonth 1-31, month 1-12, year 2000-2200, dayOfWeek 0-6 (0 is Sunday). A day matches when both
+        `dayOfMonth` and `dayOfWeek` match.
+      properties:
+        second: {$ref: '#/components/schemas/ScheduleField'}
+        minute: {$ref: '#/components/schemas/ScheduleField'}
+        hour: {$ref: '#/components/schemas/ScheduleField'}
+        dayOfMonth: {$ref: '#/components/schemas/ScheduleField'}
+        month: {$ref: '#/components/schemas/ScheduleField'}
+        year: {$ref: '#/components/schemas/ScheduleField'}
+        dayOfWeek: {$ref: '#/components/schemas/ScheduleField'}
+        comment: {type: string, maxLength: 128}
+    ScheduleCronString:
+      type: string
+      maxLength: 120
+      pattern: '^[A-Za-z0-9*/,?\- ]+$'
+      description: >-
+        The grammar of a cron trigger (feature 004): five fields (minute, hour, day of month, month, day of
+        week), evaluated with the same calendar library.
+    ScheduleIntervalSpec:
+      type: object
+      additionalProperties: false
+      required: [everyMs]
+      properties:
+        everyMs: {type: integer, minimum: 10000, maximum: 31622400000}
+        offsetMs: {type: integer, minimum: 0, default: 0, description: 'Phase from the Unix epoch; less than everyMs.'}
+    ScheduleDstPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        gap: {type: string, enum: [SKIP, SHIFT_FORWARD], default: SKIP, description: 'A local time that does not exist: no action, or the first valid instant after the gap.'}
+        ambiguous: {type: string, enum: [ONCE_EARLIER, TWICE], default: ONCE_EARLIER, description: 'A local time that happens twice: the earlier instant only, or both.'}
+    ScheduleSpec:
+      type: object
+      additionalProperties: false
+      description: >-
+        When a schedule acts. At least one of `calendars`, `cron` and `intervals`. The server also
+        enforces: the entries together are at most the effective ceiling (default 10, hard 32); at least
+        one occurrence falls inside `[startAt, endAt)`; no two of the next 1,000 occurrences are closer than
+        the effective minimum spacing (default 60 s, floor 10 s); `jitterMs` is at most 24 hours.
+      properties:
+        calendars: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ScheduleCalendarSpec'}}
+        cron: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ScheduleCronString'}}
+        intervals: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ScheduleIntervalSpec'}}
+        exclusions: {type: array, maxItems: 32, items: {$ref: '#/components/schemas/ScheduleCalendarSpec'}, description: A nominal time matched by any exclusion is not an occurrence.}
+        startAt: {type: string, format: date-time}
+        endAt: {type: string, format: date-time, description: 'Exclusive. No action is taken at or after it, jitter included.'}
+        timezone: {type: string, minLength: 1, maxLength: 64, default: UTC, description: 'An IANA name; the calendars and cron strings are evaluated in it, the intervals are not.'}
+        jitterMs: {type: integer, minimum: 0, maximum: 86400000, default: 0, description: 'A deterministic offset in [0, jitterMs) per schedule and nominal time, bounded by the gap to the next nominal time.'}
+        dst: {$ref: '#/components/schemas/ScheduleDstPolicy'}
+      anyOf:
+        - {required: [calendars]}
+        - {required: [cron]}
+        - {required: [intervals]}
+    ScheduleOverlapPolicy:
+      type: string
+      enum: [SKIP, BUFFER_ONE, BUFFER_ALL, CANCEL_OTHER, ALLOW_ALL]
+      default: SKIP
+      description: What a time does while a run the schedule started is still open. There is no terminate variant.
+    SchedulePolicies:
+      type: object
+      additionalProperties: false
+      properties:
+        overlap: {$ref: '#/components/schemas/ScheduleOverlapPolicy'}
+        catchupWindowMs: {type: integer, minimum: 10000, maximum: 31622400000, default: 31622400000}
+        catchupMode: {type: string, enum: [ONE, ALL], default: ONE}
+        pauseOnFailure: {type: boolean, default: false}
+        bufferLimit: {type: integer, minimum: 1, maximum: 1000, default: 100, description: 'BUFFER_ALL only; clamped to the ceiling of the namespace.'}
+    ScheduleAction:
+      type: object
+      additionalProperties: false
+      required: [workflowId, input]
+      properties:
+        workflowId: {type: string, format: uuid}
+        versionPolicy: {type: string, enum: [ACTIVE, PINNED], default: ACTIVE}
+        versionId: {type: string, format: uuid, description: 'Required with PINNED, refused otherwise.'}
+        input: {type: object, description: 'The input of every run, at most 64 KiB; never returned.'}
+        nominalTimeField: {type: string, pattern: '^[A-Za-z_][A-Za-z0-9_]{0,63}$', description: 'A top-level input property set to the nominal time of the action (RFC 3339, UTC).'}
+        runTimeoutMs: {type: integer, minimum: 1000, maximum: 31622400000}
+    ScheduleFields:
+      type: object
+      required: [name, spec, action]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128, pattern: '^[a-z0-9][a-z0-9-]*$'}
+        spec: {$ref: '#/components/schemas/ScheduleSpec'}
+        policies: {$ref: '#/components/schemas/SchedulePolicies'}
+        action: {$ref: '#/components/schemas/ScheduleAction'}
+        paused: {type: boolean, default: false}
+        note: {type: string, maxLength: 512}
+        remainingActions: {type: integer, minimum: 1, maximum: 1000000}
+    ScheduleWrite:
+      allOf:
+        - {$ref: '#/components/schemas/ScheduleFields'}
+      unevaluatedProperties: false
+    ScheduleUpdate:
+      allOf:
+        - {$ref: '#/components/schemas/ScheduleFields'}
+        - type: object
+          required: [expectedRevision]
+          properties:
+            expectedRevision: {type: integer, minimum: 1}
+      unevaluatedProperties: false
+    ScheduleTriggerRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        overlap: {$ref: '#/components/schemas/ScheduleOverlapPolicy'}
+    ScheduleBackfillRequest:
+      type: object
+      additionalProperties: false
+      required: [start, end]
+      properties:
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time, description: 'Exclusive; not after now.'}
+        overlap: {$ref: '#/components/schemas/ScheduleOverlapPolicy'}
+    ScheduleBackfill:
+      type: object
+      required: [backfillId, start, end, state, overlap, counts]
+      properties:
+        backfillId: {type: string, format: uuid}
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time}
+        cursor: {type: [string, 'null'], format: date-time, description: 'The last nominal time acted on or found already acted on.'}
+        state: {type: string, enum: [PENDING, RUNNING, COMPLETED, CANCELLED]}
+        overlap: {$ref: '#/components/schemas/ScheduleOverlapPolicy'}
+        counts: {type: object, additionalProperties: {type: integer, minimum: 0}, description: 'How many times of each outcome, ALREADY_ACTED included.'}
+    ScheduleBackfillList:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/ScheduleBackfill'}}
+    ScheduleNote:
+      type: object
+      additionalProperties: false
+      required: [note]
+      properties:
+        note: {type: string, minLength: 1, maxLength: 512}
+    Schedule:
+      type: object
+      required: [scheduleId, name, origin, state, revision, createdAt]
+      properties:
+        scheduleId: {type: string, format: uuid}
+        name: {type: string}
+        origin: {type: string, enum: [API, TRIGGER]}
+        triggerId: {type: string, format: uuid, description: TRIGGER only.}
+        state: {type: string, enum: [ACTIVE, PAUSED]}
+        exhausted: {type: boolean, description: '`remainingActions` reached zero.'}
+        revision: {type: integer, minimum: 1}
+        spec: {$ref: '#/components/schemas/ScheduleSpec'}
+        policies: {$ref: '#/components/schemas/SchedulePolicies'}
+        action:
+          type: object
+          description: The action without its input; `inputDigest` (SHA-256, hex) describes the input.
+          properties:
+            workflowId: {type: string, format: uuid}
+            versionPolicy: {type: string, enum: [ACTIVE, PINNED]}
+            versionId: {type: string, format: uuid}
+            inputDigest: {type: string, pattern: '^[0-9a-f]{64}$'}
+            nominalTimeField: {type: string}
+            runTimeoutMs: {type: integer}
+        note: {type: [string, 'null']}
+        noteBy: {type: [string, 'null']}
+        noteAt: {type: [string, 'null'], format: date-time}
+        authorizedBy: {type: string}
+        remainingActions: {type: [integer, 'null']}
+        nextActionAt: {type: [string, 'null'], format: date-time}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ScheduleDescription:
+      allOf:
+        - {$ref: '#/components/schemas/Schedule'}
+        - type: object
+          required: [nextActions, recentActions, openRuns, bufferedCount, counters]
+          properties:
+            nextActions:
+              type: array
+              maxItems: 100
+              items:
+                type: object
+                required: [nominalTime, actualTime]
+                properties:
+                  nominalTime: {type: string, format: date-time}
+                  actualTime: {type: string, format: date-time}
+            recentActions: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/ScheduleActionRecord'}}
+            openRuns: {type: array, maxItems: 1000, items: {type: string, format: uuid}}
+            bufferedCount: {type: integer, minimum: 0}
+            counters: {type: object, additionalProperties: {type: integer, minimum: 0}}
+    SchedulePage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Schedule'}}
+        nextCursor: {type: [string, 'null']}
+    ScheduleActionOutcome:
+      type: string
+      enum: [STARTED, BUFFERED, SKIPPED_OVERLAP, DROPPED_BUFFER_FULL, DROPPED_DELETED, COALESCED, MISSED_CATCHUP_WINDOW, ALREADY_ACTED, AUTHORITY_REVOKED, BUSINESS_ID_CONFLICT]
+      description: The set only grows; a client treats an unknown value as another outcome.
+    ScheduleActionRecord:
+      type: object
+      required: [nominalTime, kind, revision, outcome, decidedAt]
+      properties:
+        nominalTime: {type: string, format: date-time}
+        actualTime: {type: [string, 'null'], format: date-time}
+        kind: {type: string, enum: [SCHEDULED, TRIGGERED, BACKFILL]}
+        origin: {type: string, enum: [SPEC, MANUAL], description: 'The identity of the time: SPEC (scheduled and backfill actions share the nominal times of the spec) or MANUAL (trigger-now).'}
+        revision: {type: integer, minimum: 1}
+        outcome: {$ref: '#/components/schemas/ScheduleActionOutcome'}
+        reason: {type: [string, 'null'], description: 'A closed code, for example TRACKING_LIMIT.'}
+        runId: {type: [string, 'null'], format: uuid}
+        backfillId: {type: [string, 'null'], format: uuid}
+        summaryCount: {type: [integer, 'null'], minimum: 1, description: 'How many times a COALESCED or MISSED_CATCHUP_WINDOW summary stands for.'}
+        summaryLastNominalTime: {type: [string, 'null'], format: date-time}
+        decidedAt: {type: string, format: date-time}
   responses:
     PayloadTooLarge: {description: 'The body is larger than this endpoint takes', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     BadRequest: {description: 'A required header is missing or the body is not valid JSON', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
@@ -6440,5 +7322,6 @@ components:
     Conflict: {description: Conflict or stale version, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     ValidationError: {description: Invalid input/schema/graph, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     TooManyRequests: {description: 'The caller exceeded its request budget (per token subject, checked before any database lookup, or per tenant); retry after the delay in Retry-After', headers: {Retry-After: {schema: {type: integer, minimum: 1}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    QuotaExceeded: {description: 'A limit of the tenant or the namespace is reached (details.limit names it): free capacity or ask an administrator. A request budget that is used up is the same status with a Retry-After header', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     Unavailable: {description: A dependency is temporarily unavailable; retry later, headers: {Retry-After: {schema: {type: integer, minimum: 0}}}, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
     InternalError: {description: "Any other failure: 500 for an unexpected error, 408 when the request timed out. Same envelope.", content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}

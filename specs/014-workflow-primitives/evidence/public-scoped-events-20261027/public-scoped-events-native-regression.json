@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "sagat-tests",
+    "--test",
+    "integration_workflow_primitives",
+    "--locked",
+    "--",
+    "scoped_event_storage::"
+  ],
+  "exit_code": 0,
+  "seconds": 351.6,
+  "wall_seconds": 351.6,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-27T21:37:05.767368+00:00",
+  "finished_utc": "2026-10-27T21:42:57.369982+00:00",
+  "log": "public-scoped-events-native-regression.txt"
+}

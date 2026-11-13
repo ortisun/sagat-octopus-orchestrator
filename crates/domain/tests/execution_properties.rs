@@ -22,7 +22,7 @@ use sagat_domain::execution::{
 };
 use sagat_domain::saga::{EffectPolicy, OnCompensationFailure, ReconcileVerdict, SagaCancelPolicy};
 use sagat_domain::workflow::{
-    CancelPolicy, JoinPolicy, NodeId, NodeKind, RetryPolicy, WorkflowDefinition,
+    CancelPolicy, JoinPolicy, NodeId, NodeKind, RetryPolicy, Scope, WorkflowDefinition,
 };
 
 fn shapes() -> Vec<WorkflowDefinition> {
@@ -384,6 +384,55 @@ fn perform(h: &mut Harness, action: &Action) -> Result<(), ExecutionError> {
     }
 }
 
+/// The narrow set of branch work that a completed join must retain because stopping it would
+/// discard evidence or a decision about an external effect.
+fn is_recovery_obligation(
+    h: &Harness,
+    node: &NodeId,
+    step: &sagat_domain::execution::StepState,
+) -> bool {
+    if matches!(step.waiting_on(), Some(WaitingOn::Reconciliation)) {
+        return true;
+    }
+    if matches!(step.waiting_on(), Some(WaitingOn::Operator { .. }))
+        && (node.is_compensation()
+            || step
+                .failure()
+                .is_some_and(FailureCode::leaves_outcome_unknown))
+    {
+        return true;
+    }
+    node.is_reconciliation()
+        && !step.status().is_terminal()
+        && node
+            .forward()
+            .and_then(|forward| h.state.step(&forward))
+            .is_some_and(|original| {
+                matches!(original.waiting_on(), Some(WaitingOn::Reconciliation))
+            })
+}
+
+/// An internally aborting saga retains an ordinary operator decision that was already requested.
+/// An external cancel/deadline gives up that non-recovery hold, matching `sagas::wind_down`.
+fn is_retained_aborting_saga_review(
+    h: &Harness,
+    node: &NodeId,
+    step: &sagat_domain::execution::StepState,
+) -> bool {
+    matches!(step.waiting_on(), Some(WaitingOn::Operator { .. }))
+        && !matches!(
+            h.state.stop_reason(),
+            Some(StopReason::Cancelled | StopReason::TimedOut)
+        )
+        && h.def.scope_chain(node).any(|scope| match scope {
+            Scope::Saga(saga) => h
+                .state
+                .saga(saga)
+                .is_some_and(|state| state.phase() == SagaPhase::Aborting),
+            Scope::Parallel(_) => false,
+        })
+}
+
 /// Everything that must be true after any sequence of commands.
 fn check(h: &Harness, terminal_seen: &mut BTreeMap<NodeId, StepStatus>) {
     h.assert_replays();
@@ -531,19 +580,17 @@ fn check(h: &Harness, terminal_seen: &mut BTreeMap<NodeId, StepStatus>) {
                         })
                     )
                 });
-                // A saga compensates, and waits for an answer it needs, after its branch was lost.
-                let owned_by_saga = matches!(
-                    step.waiting_on(),
-                    Some(WaitingOn::Saga | WaitingOn::Reconciliation | WaitingOn::Operator { .. })
-                ) && (matches!(
-                    h.def.node(member).map(sagat_domain::workflow::Node::kind),
-                    Some(NodeKind::Saga { .. })
-                ) || h
-                    .def
-                    .scope_chain(member)
-                    .any(|scope| matches!(scope, sagat_domain::workflow::Scope::Saga(_))));
+                // The saga control may still be winding down. Outside that control, only proven
+                // recovery obligations may survive a join; an arbitrary held sibling may not.
+                let saga_control = matches!(step.waiting_on(), Some(WaitingOn::Saga))
+                    && matches!(
+                        h.def.node(member).map(sagat_domain::workflow::Node::kind),
+                        Some(NodeKind::Saga { .. })
+                    );
                 let winding_down = step.status().is_terminal()
-                    || owned_by_saga
+                    || saga_control
+                    || is_recovery_obligation(h, member, step)
+                    || is_retained_aborting_saga_review(h, member, step)
                     || (step.status().is_leased() && (step.cancel_requested() || waited_for));
                 assert!(
                     winding_down || h.state.is_finished() || h.state.is_paused(),
@@ -599,6 +646,12 @@ fn check(h: &Harness, terminal_seen: &mut BTreeMap<NodeId, StepStatus>) {
                 h.state.steps().all(|(_, s)| s.status().is_terminal()),
                 "a finished run has no live step"
             );
+            assert!(
+                !h.state
+                    .steps()
+                    .any(|(node, step)| { node.is_compensation() && !step.status().is_terminal() }),
+                "a terminal run has no active, runnable, retrying, or review-waiting compensation"
+            );
             assert!(!h.state.is_paused() || h.state.stop_reason().is_none() || true);
         }
         _ => {}
@@ -614,6 +667,25 @@ fn check(h: &Harness, terminal_seen: &mut BTreeMap<NodeId, StepStatus>) {
 
 /// What must hold for every saga, whatever happened.
 fn check_sagas(h: &Harness) {
+    // A kind of projected state exists only for a definition that says it can: the store leaves the
+    // others unread on that word (`WorkflowDefinition::projected_state`).
+    let kinds = h.def.projected_state();
+    assert!(
+        kinds.sagas || h.state.sagas().next().is_none(),
+        "saga state without a saga node"
+    );
+    assert!(
+        kinds.collections || h.state.collections().next().is_none(),
+        "collection state without a forEach node"
+    );
+    assert!(
+        kinds.loops || h.state.loops().next().is_none(),
+        "loop state without a while or repeatUntil node"
+    );
+    assert!(
+        kinds.scope_sagas() || h.state.scope_sagas().next().is_none(),
+        "scope compensation state without a scope"
+    );
     for (saga_node, saga) in h.state.sagas() {
         let step = h.state.step(saga_node).expect("a saga has a step");
         match saga.phase() {
@@ -647,6 +719,13 @@ fn check_sagas(h: &Harness) {
             }
         }
         // A compensation never starts before everything it waits for has finished.
+        for forward in saga.entries().keys().chain(saga.irreversible()) {
+            assert_eq!(
+                h.state.step(forward).map(|step| step.status()),
+                Some(StepStatus::Succeeded),
+                "{forward}: only a succeeded original effect may enter a compensation plan"
+            );
+        }
         for (forward, after) in saga.entries() {
             let companion = h
                 .state

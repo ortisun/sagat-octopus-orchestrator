@@ -90,6 +90,8 @@ def apply(target: Flow, ops: list[Obj]) -> None:
             target.step(op["id"], op["activity"], **snake(op.get("options")))
         elif kind == "database":
             target.database(op["id"], **snake(op["options"]))
+        elif kind == "icebergWrite":
+            target.iceberg_write(op["id"], **snake(op["options"]))
         elif kind == "script":
             target.script(op["id"], op["artifactDigest"], **snake(op.get("options")))
         elif kind == "sleep":

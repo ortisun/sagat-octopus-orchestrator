@@ -1,0 +1,23 @@
+{
+  "active-data": {
+    "replacedSha256": "06f3ecbde1094e597727ea8fef9318d1851781c1960bc4a26af4e654c0e5c324",
+    "originalResultPath": "/tmp/sagat-v03-20261026/released-v02-al_pw2ho/profile-0SNrnO/result.json",
+    "originalResultMtimeUtc": "2026-10-27T18:38:16.296943-03:00",
+    "correctSha256": "7d94d8f6efca66e994a9471c64b4f9d33069265cd5b42409bd5a77a9a57e60f8",
+    "selection": "unique result created inside the recorded successful runner time window"
+  },
+  "inflight-worker": {
+    "replacedSha256": "06f3ecbde1094e597727ea8fef9318d1851781c1960bc4a26af4e654c0e5c324",
+    "originalResultPath": "/tmp/sagat-v03-20261026/released-v02-al_pw2ho/inflight-result-oh2cAa/result.json",
+    "originalResultMtimeUtc": "2026-10-27T18:38:24.736936-03:00",
+    "correctSha256": "dab17c5046f4c640832648734c5a1fbcb8989ff12bb52fcf1a097b22b788183e",
+    "selection": "unique result created inside the recorded successful runner time window"
+  },
+  "applied-lookup": {
+    "replacedSha256": "06f3ecbde1094e597727ea8fef9318d1851781c1960bc4a26af4e654c0e5c324",
+    "originalResultPath": "/tmp/sagat-v03-20261026/released-v02-al_pw2ho/applied-result-UzSUEw/result.json",
+    "originalResultMtimeUtc": "2026-10-27T18:38:33.192613-03:00",
+    "correctSha256": "f1fe13a9244c2b684ac50e2975588f6b31237a63e383521e36485e6cc7366c88",
+    "selection": "unique result created inside the recorded successful runner time window"
+  }
+}

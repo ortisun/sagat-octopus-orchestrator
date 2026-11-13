@@ -8,10 +8,13 @@ use sagat_application::{
     clock::SystemClock,
     error::AppError,
     managed_secrets::{ManagedSecretService, ManagedSecretWrite},
-    runs::RunOperation,
+    runs::{ReviewAction, RunOperation},
     secret_provider::{ProviderError, ProviderFuture, ProviderReference, SecretProvider},
 };
-use sagat_domain::secrets::SecretValue;
+use sagat_domain::{
+    execution::{FailureCode, ReviewOutcome},
+    secrets::SecretValue,
+};
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
@@ -338,6 +341,37 @@ async fn derived_during_cancellation(provider: Arc<dyn SecretProvider>) {
             w.answer_reconciliation(&session, &recovery, "not_applied", None)
                 .await
                 .unwrap();
+            assert_eq!(w.run_status(run).await.as_str(), "MANUAL_REVIEW");
+            let retained: (String, Option<String>, Option<String>, i32) = sqlx::query_as(
+                "SELECT status, waiting_kind, failure_code, attempt FROM steps \
+                 WHERE run_id=$1 AND node='a'",
+            )
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                retained,
+                (
+                    "WAITING".into(),
+                    Some("OPERATOR".into()),
+                    Some("RECONCILIATION_NOT_FINAL".into()),
+                    1,
+                ),
+                "cancellation cannot turn a point-in-time absence into finality"
+            );
+            assert!(w.poll(&session, 4).await.is_empty());
+            w.assert_consistent(run).await;
+            w.review(
+                run,
+                "a",
+                ReviewAction::Resolve(ReviewOutcome::Failed(
+                    FailureCode::parse("OPERATOR_CONFIRMED_NOT_APPLIED").unwrap(),
+                )),
+                "the provider confirmed the operation cannot apply later",
+            )
+            .await
+            .unwrap();
         } else {
             w.complete(&session, &recovery, &json!({})).await.unwrap();
         }

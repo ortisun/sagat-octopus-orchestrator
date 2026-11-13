@@ -199,13 +199,36 @@ async fn an_update_cut_off_at_every_await_point_commits_whole_or_not_at_all() {
         cut_rounds >= 8,
         "only {cut_rounds} cut points: the test proves little"
     );
-    // The late cuts landed after the commit (the response was lost), the early ones before it:
-    // both sides of the commit point were exercised.
-    assert!(committed_when_cut >= 1, "no cut landed after the commit");
+    // The early cuts landed before the commit. How many cuts land after it is not the test's to say: it is the number
+    // of awaits after the commit that return pending, which the scheduler decides (for instance, whether a cut
+    // connection has already been handed back to the pool; which await it was is not established). It measured 10 of 34
+    // on a laptop and none in one run on a loaded CI runner, so a guard on it failed for a reason that is not a defect.
+    // The late side is the next round instead, which does not depend on where a poll falls.
     assert!(
         committed_when_cut < cut_rounds,
         "no cut landed before the commit"
     );
+
+    // The response lost after the commit: the update runs to its end and its answer is dropped, as a client that hung
+    // up. The state stands at the whole update, and the restarted store answers the retry from the receipt.
+    let run = fixture.w.start(workflow, &input(10)).await;
+    let command = cut_store.update_command(
+        run,
+        "balance.replace",
+        "lost-response",
+        &replace(41),
+        Some(0),
+    );
+    let answer = cut_store.apply(&command).await.expect("the update commits");
+    drop(answer);
+    let what = "the response lost after the commit";
+    assert_no_open_transaction(&fixture, &pool, what).await;
+    assert_eq!(
+        assert_whole_or_nothing(&fixture, run, what).await,
+        1,
+        "{what}"
+    );
+    restart_and_replay(&fixture, run, "lost-response", true, what).await;
 }
 
 /// A connection killed while the update waits for the run lock.

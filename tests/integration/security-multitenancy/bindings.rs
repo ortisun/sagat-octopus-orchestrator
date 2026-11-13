@@ -2,8 +2,9 @@
 //! in the namespace it names; removing or narrowing a binding takes effect at once.
 
 use sagat_application::error::AppError;
+use sagat_application::runs::ReviewAction;
 use sagat_application::worker::Capabilities;
-use sagat_domain::execution::StepStatus;
+use sagat_domain::execution::{ReviewOutcome, RunStatus, StepStatus};
 use sagat_domain::identity::{NamespaceId, Principal, Role};
 use serde_json::json;
 
@@ -239,7 +240,7 @@ async fn each_binding_operation_audits_a_probe_of_a_foreign_namespace_on_its_own
 // ------------------------------------------------------------- revocation
 
 #[tokio::test]
-async fn removing_a_binding_closes_the_session_releases_the_lease_and_stops_the_worker() {
+async fn removing_a_binding_closes_the_session_and_preserves_the_revoked_effect_for_review() {
     let w = world().await;
     let (wf, _) = w
         .publish(document(
@@ -299,23 +300,53 @@ async fn removing_a_binding_closes_the_session_releases_the_lease_and_stops_the_
         .await;
     assert_eq!(done.map(|_| ()), Err(AppError::NotBound));
 
-    // The scheduler reclaims the released attempt and a bound worker takes it over.
+    // Revocation does not establish whether the old worker already charged the provider.
     let report = w.scheduler.tick().await;
     assert_eq!(report.leases_expired, 1, "{report:?}");
-    w.age_retry(run, "c").await;
-    w.scheduler.tick().await;
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
+    assert_eq!(w.step_status(run, "c").await, Some(StepStatus::Waiting));
+    assert_eq!(w.scheduler.tick().await.retries_released, 0);
     let session = w.session(&["payments.charge"]).await;
-    let again = w.one_task(&session).await;
-    assert_eq!(again.run_id, run);
     assert!(
-        again.fence.generation > task.fence.generation,
-        "a new grant"
+        w.poll(&session, 4).await.is_empty(),
+        "a bound worker cannot repeat the unresolved charge"
     );
-    w.complete(&session, &again, &json!({"ok": true}))
-        .await
-        .expect("the work is finished by a bound worker");
+
+    w.review(
+        run,
+        "c",
+        ReviewAction::Resolve(ReviewOutcome::Succeeded),
+        "provider evidence confirms the original charge",
+    )
+    .await
+    .expect("an authorized human records the known outcome");
+    assert_eq!(w.run_status(run).await, RunStatus::Succeeded);
     assert_eq!(w.step_status(run, "c").await, Some(StepStatus::Succeeded));
+    let journal = w.journal(run).await;
+    assert_eq!(
+        journal.iter().filter(|kind| *kind == "step.leased").count(),
+        1
+    );
+    assert_eq!(
+        journal
+            .iter()
+            .filter(|kind| *kind == "step.resolved")
+            .count(),
+        1
+    );
     w.assert_consistent(run).await;
+
+    // The surviving authority can execute a separate new run, without replaying the old effect.
+    let fresh_run = w.start(wf, &json!({})).await;
+    let fresh = w.one_task(&session).await;
+    assert_eq!(fresh.run_id, fresh_run);
+    assert_ne!(fresh.run_id, run);
+    assert_eq!(fresh.fence.attempt, 1);
+    w.complete(&session, &fresh, &json!({"ok": true}))
+        .await
+        .expect("new work is finished by a bound worker");
+    assert_eq!(w.run_status(fresh_run).await, RunStatus::Succeeded);
+    w.assert_consistent(fresh_run).await;
 }
 
 #[tokio::test]
@@ -520,7 +551,7 @@ async fn a_binding_change_is_audited_with_what_it_grants() {
         vec![
             (
                 "worker.bound".to_owned(),
-                "audited: payments.*, audit.log".to_owned()
+                "audited: payments.*, audit.log; profile: database".to_owned()
             ),
             ("worker.unbound".to_owned(), "audited".to_owned()),
         ]
@@ -691,6 +722,10 @@ async fn releasing_the_leases_of_closed_sessions_is_an_index_lookup_and_not_a_sc
         .execute(&mut *tx)
         .await
         .expect("leave the lease index as the only candidate");
+    sqlx::query("DROP INDEX steps_run_capacity_lease_idx")
+        .execute(&mut *tx)
+        .await
+        .expect("withhold the capacity lease-probe index for this isolated availability check");
     let plan: Vec<String> = sqlx::query_scalar(
         "EXPLAIN UPDATE steps SET lease_expires_at = clock_timestamp() \
          WHERE tenant_id = $1 AND status IN ('LEASED', 'RUNNING') AND leased_by = ANY($2)",

@@ -1,0 +1,2 @@
+11 delivery documents, 70 local path targets checked; anchors not validated
+PASS

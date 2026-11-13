@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--locked",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit_code": 0,
+  "seconds": 187.06,
+  "wall_seconds": 187.06,
+  "wall_minus_monotonic_seconds": 0.0,
+  "started_utc": "2026-10-28T01:55:32.729763+00:00",
+  "finished_utc": "2026-10-28T01:58:39.788479+00:00",
+  "log": "capacity-discovery-workspace-clippy.txt"
+}

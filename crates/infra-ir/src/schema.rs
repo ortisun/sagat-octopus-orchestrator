@@ -14,17 +14,86 @@ const SCHEMA: &str =
 const MAX_ISSUES: usize = 20;
 const MAX_MESSAGE: usize = 200;
 
-fn validator() -> Option<&'static Validator> {
-    static VALIDATOR: OnceLock<Option<Validator>> = OnceLock::new();
-    VALIDATOR
-        .get_or_init(|| {
-            let schema: Value = serde_json::from_str(SCHEMA).ok()?;
-            jsonschema::options()
-                .should_validate_formats(true)
-                .build(&schema)
-                .ok()
-        })
-        .as_ref()
+/// Which grammar a document is validated against (ADR-0080): the **public** one, which is the contract, or the **private** one, which is
+/// the same contract plus the node types only the platform may write. The private grammar is derived from the public one when it is
+/// first used and is never kept as a second copy; a test holds that the two differ by exactly the private node types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Public,
+    Private,
+}
+
+/// The node types only the platform may write. None of them is in `workflow.schema.json`.
+const PRIVATE_NODE_TYPES: &[&str] = &["icebergProbe"];
+
+/// The probe of an Iceberg connection (D035-150): the connection to test, where to go next and how long the attempt may take, and
+/// nothing else (no table, mapping or records).
+fn probe_node_schema() -> Value {
+    json!({
+        "description": "The probe of an Iceberg connection. Private: only the platform writes it (ADR-0080), and it is not part of the public contract.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "connectionRef"],
+        "properties": {
+            "id": {"type": "string"},
+            "type": {"const": "icebergProbe"},
+            "connectionRef": {"$ref": "#/$defs/lakeConnectionRef"},
+            "next": {"type": "string"},
+            "timeoutMs": {"type": "integer", "minimum": 1}
+        }
+    })
+}
+
+/// The schema of a mode: the embedded public one, and for the private mode that one with the private node types added, one definition
+/// each and one member of the root `node` list. The bodies of a structured workflow are untouched: a private node is root-only.
+fn schema_of(mode: Mode) -> Option<Value> {
+    let mut schema: Value = serde_json::from_str(SCHEMA).ok()?;
+    if mode == Mode::Private {
+        let definitions = schema.get_mut("$defs")?.as_object_mut()?;
+        for kind in PRIVATE_NODE_TYPES {
+            definitions.insert((*kind).to_owned(), probe_node_schema());
+        }
+        let members = definitions
+            .get_mut("node")?
+            .get_mut("oneOf")?
+            .as_array_mut()?;
+        for kind in PRIVATE_NODE_TYPES {
+            members.push(json!({"$ref": format!("#/$defs/{kind}")}));
+        }
+    }
+    Some(schema)
+}
+
+fn validator(mode: Mode) -> Option<&'static Validator> {
+    static PUBLIC: OnceLock<Option<Validator>> = OnceLock::new();
+    static PRIVATE: OnceLock<Option<Validator>> = OnceLock::new();
+    let cell = match mode {
+        Mode::Public => &PUBLIC,
+        Mode::Private => &PRIVATE,
+    };
+    cell.get_or_init(|| {
+        let schema = schema_of(mode)?;
+        jsonschema::options()
+            .should_validate_formats(true)
+            .build(&schema)
+            .ok()
+    })
+    .as_ref()
+}
+
+/// The root node types a mode knows, in the order of its schema.
+fn root_node_types(mode: Mode) -> &'static [&'static str] {
+    static PRIVATE: OnceLock<Vec<&'static str>> = OnceLock::new();
+    match mode {
+        Mode::Public => ROOT_NODE_TYPES,
+        Mode::Private => PRIVATE.get_or_init(|| {
+            ROOT_NODE_TYPES
+                .iter()
+                .chain(PRIVATE_NODE_TYPES)
+                .copied()
+                .collect()
+        }),
+    }
 }
 
 fn clip(text: &str) -> String {
@@ -41,6 +110,7 @@ fn clip(text: &str) -> String {
 const ROOT_NODE_TYPES: &[&str] = &[
     "activity",
     "database",
+    "icebergWrite",
     "timer",
     "waitEvent",
     "condition",
@@ -78,14 +148,19 @@ const BODY_NODE_TYPES: &[&str] = &[
 ];
 
 /// One validator per node type, to say what is wrong with a node against the type it claims.
-fn node_validators() -> &'static HashMap<&'static str, Validator> {
-    static VALIDATORS: OnceLock<HashMap<&'static str, Validator>> = OnceLock::new();
-    VALIDATORS.get_or_init(|| {
-        let Ok(schema) = serde_json::from_str::<Value>(SCHEMA) else {
+fn node_validators(mode: Mode) -> &'static HashMap<&'static str, Validator> {
+    static PUBLIC: OnceLock<HashMap<&'static str, Validator>> = OnceLock::new();
+    static PRIVATE: OnceLock<HashMap<&'static str, Validator>> = OnceLock::new();
+    let cell = match mode {
+        Mode::Public => &PUBLIC,
+        Mode::Private => &PRIVATE,
+    };
+    cell.get_or_init(|| {
+        let Some(schema) = schema_of(mode) else {
             return HashMap::new();
         };
         let definitions = schema.get("$defs").cloned().unwrap_or(Value::Null);
-        ROOT_NODE_TYPES
+        root_node_types(mode)
             .iter()
             .chain(BODY_NODE_TYPES.iter())
             .filter_map(|kind| {
@@ -101,12 +176,12 @@ fn node_validators() -> &'static HashMap<&'static str, Validator> {
 }
 
 /// The allowed node kinds at a failed `oneOf` path.
-fn node_types(path: &str) -> Option<&'static [&'static str]> {
+fn node_types(path: &str, mode: Mode) -> Option<&'static [&'static str]> {
     if path
         .strip_prefix("/nodes/")
         .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
     {
-        return Some(ROOT_NODE_TYPES);
+        return Some(root_node_types(mode));
     }
     let mut parts = path.split('/');
     match (
@@ -130,7 +205,7 @@ fn node_types(path: &str) -> Option<&'static [&'static str]> {
 
 /// What is wrong with `node`, said against the type it claims to be (the generic answer of a
 /// `oneOf`, "is not valid under any of the schemas", tells an author nothing).
-fn node_issues(node: &Value, path: &str, expected: &[&str]) -> Vec<IrIssue> {
+fn node_issues(node: &Value, path: &str, expected: &[&str], mode: Mode) -> Vec<IrIssue> {
     let issue = |path: String, message: String| IrIssue {
         path,
         message: clip(&message),
@@ -143,7 +218,7 @@ fn node_issues(node: &Value, path: &str, expected: &[&str]) -> Vec<IrIssue> {
     };
     let Some(validator) = expected
         .contains(&kind)
-        .then(|| node_validators().get(kind))
+        .then(|| node_validators(mode).get(kind))
         .flatten()
     else {
         return vec![issue(
@@ -167,6 +242,15 @@ fn node_issues(node: &Value, path: &str, expected: &[&str]) -> Vec<IrIssue> {
                     "invalid database node fields or limits".into(),
                 );
             }
+            if kind == "icebergWrite" {
+                return issue(
+                    path.to_owned(),
+                    "invalid icebergWrite node fields or limits".into(),
+                );
+            }
+            if PRIVATE_NODE_TYPES.contains(&kind) {
+                return issue(path.to_owned(), format!("invalid {kind} node fields"));
+            }
             issue(
                 format!("{path}{}", error.instance_path()),
                 error.to_string(),
@@ -176,8 +260,8 @@ fn node_issues(node: &Value, path: &str, expected: &[&str]) -> Vec<IrIssue> {
 }
 
 /// The schema problems of `document`, empty when it conforms.
-pub(crate) fn issues(document: &Value) -> Vec<IrIssue> {
-    let Some(validator) = validator() else {
+pub(crate) fn issues(document: &Value, mode: Mode) -> Vec<IrIssue> {
+    let Some(validator) = validator(mode) else {
         // The embedded schema is part of the build; failing to compile it is a build defect, and
         // refusing every document is the safe response.
         return vec![IrIssue {
@@ -190,10 +274,10 @@ pub(crate) fn issues(document: &Value) -> Vec<IrIssue> {
         let path = error.instance_path().to_string();
         let failed_one_of = format!("{:?}", error.kind()).starts_with("OneOf");
         if failed_one_of
-            && let Some(expected) = node_types(&path)
+            && let Some(expected) = node_types(&path, mode)
             && let Some(node) = document.pointer(&path)
         {
-            let precise = node_issues(node, &path, expected);
+            let precise = node_issues(node, &path, expected, mode);
             if !precise.is_empty() {
                 found.extend(precise);
                 continue;
@@ -230,5 +314,45 @@ mod embedded_contract_tests {
         )
         .expect("canonical workflow schema");
         assert_eq!(super::SCHEMA.as_bytes(), canonical);
+    }
+
+    /// ADR-0080: the private grammar is the public one and nothing else but the private node types. Take the additions away and what is
+    /// left is the public schema, byte for byte; and the additions are exactly one definition and one member of the root list for each
+    /// private node type, none of which the public schema has.
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn the_private_schema_is_the_public_schema_plus_the_private_node_types_and_nothing_else() {
+        use super::{Mode, PRIVATE_NODE_TYPES, schema_of};
+        let public = schema_of(Mode::Public).expect("the public schema");
+        let mut private = schema_of(Mode::Private).expect("the private schema");
+        assert_ne!(public, private, "the private grammar adds something");
+        let definitions = private["$defs"].as_object_mut().expect("definitions");
+        for kind in PRIVATE_NODE_TYPES {
+            assert!(
+                public["$defs"].get(*kind).is_none(),
+                "{kind} is not in the public schema"
+            );
+            assert!(definitions.remove(*kind).is_some(), "{kind} is defined");
+        }
+        let members = definitions["node"]["oneOf"]
+            .as_array_mut()
+            .expect("the node list");
+        let added = members.split_off(members.len() - PRIVATE_NODE_TYPES.len());
+        let expected: Vec<serde_json::Value> = PRIVATE_NODE_TYPES
+            .iter()
+            .map(|kind| serde_json::json!({"$ref": format!("#/$defs/{kind}")}))
+            .collect();
+        assert_eq!(added, expected, "one member of the root list for each");
+        assert_eq!(private, public, "and nothing else");
+    }
+
+    #[test]
+    fn no_private_node_type_is_in_the_text_of_the_public_contract() {
+        for kind in super::PRIVATE_NODE_TYPES {
+            assert!(
+                !super::SCHEMA.contains(kind),
+                "{kind} must not be in workflow.schema.json"
+            );
+        }
     }
 }

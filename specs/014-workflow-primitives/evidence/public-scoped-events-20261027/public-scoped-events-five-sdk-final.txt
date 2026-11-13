@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized] target(s) in 0.23s
+     Running contract/sdk-conformance/main.rs (/Users/marcelo/.cache/sagat-v03-nodebug-5xlu3ufs/debug/deps/sdk_conformance-8294f626eed04892)
+
+running 1 test
+test every_sdk_conforms_to_every_scenario ... --- collection-events (5 languages)
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 28.12s

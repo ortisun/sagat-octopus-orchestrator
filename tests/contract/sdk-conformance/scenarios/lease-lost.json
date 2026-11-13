@@ -1,8 +1,8 @@
 {
   "name": "lease-lost",
-  "description": "US02/edge: a worker that goes silent loses its lease; when its heartbeat finds out, its activity is cancelled with the reason lease-lost and its result is dropped, not reported. The retry waits for its delay (10 min, moved by the control endpoint); a second worker is given the step and the run completes once, on the second attempt. The first worker is stopped before the second is started and the delay elapsed, so that it cannot be the one to take the retry.",
+  "description": "A worker that loses its lease cancels its handler without reporting a known failure. The expired original activity remains under review at attempt one, and direct retry is refused. A simulated human assertion of final success releases a distinct successor to the second worker; it is not provider verification and never authorizes an automatic repeat of the unknown activity. The lease is explicitly aged by control.expireLease; the 120-second TTL protects unrelated work on a slow host.",
   "server": {
-    "leaseTtlSeconds": 3
+    "leaseTtlSeconds": 120
   },
   "workflows": {
     "work": {
@@ -21,6 +21,11 @@
               "jitter": false
             }
           }
+        },
+        {
+          "op": "step",
+          "id": "after",
+          "activity": "lease.after"
         }
       ]
     }
@@ -44,12 +49,19 @@
       "protocolVersion": "1.4",
       "maxInflight": 1,
       "autostart": false,
-      "heartbeatIntervalMs": 150,
+      "heartbeatIntervalMs": 60000,
       "activities": {
         "lease.work": {
           "behavior": {
             "returns": {
               "second": true
+            }
+          }
+        },
+        "lease.after": {
+          "behavior": {
+            "returns": {
+              "continued": true
             }
           }
         }
@@ -98,11 +110,39 @@
       "worker": "w2"
     },
     {
-      "id": "retry",
-      "op": "control",
-      "action": "elapseRetryDelay",
+      "id": "review-ready",
+      "op": "awaitJournal",
       "run": "start",
-      "node": "work"
+      "eventType": "step.needs_review",
+      "stepId": "work",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "review-state",
+      "op": "get",
+      "run": "start"
+    },
+    {
+      "id": "retry-refused",
+      "op": "operate",
+      "run": "start",
+      "action": "RETRY_STEP",
+      "stepId": "work",
+      "reason": "an expired lease does not establish the original outcome"
+    },
+    {
+      "id": "review-journal",
+      "op": "events",
+      "run": "start"
+    },
+    {
+      "id": "human-resolution",
+      "op": "operate",
+      "run": "start",
+      "action": "RESOLVE_STEP",
+      "stepId": "work",
+      "outcome": "SUCCEEDED",
+      "reason": "simulated human assertion of final success; no provider verification is claimed"
     },
     {
       "id": "done",
@@ -115,5 +155,6 @@
       "op": "events",
       "run": "start"
     }
-  ]
+  ],
+  "reviewEvidence": true
 }

@@ -374,17 +374,26 @@ impl CollectionEntry {
     }
 }
 
-/// One bounded activity-body admission and its durable task notification.
+/// Who advances a newly admitted member. Only an activity owns a worker notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionEntryDispatch {
+    Activity {
+        activity: ActivityName,
+        outbox_id: Uuid,
+    },
+    Scheduler,
+}
+
+/// One bounded body admission, including its dispatch obligation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CollectionAdmission {
     pub transition: CollectionTransition,
     pub scope_id: CollectionScopeId,
     pub index: u32,
     pub entry: ExecutionInstanceId,
-    pub activity: ActivityName,
+    pub dispatch: CollectionEntryDispatch,
     pub item_digest: Digest,
     pub reserved_instances: u16,
-    pub outbox_id: Uuid,
     item_content: Option<Vec<u8>>,
 }
 
@@ -405,6 +414,29 @@ impl CollectionAdmission {
         reserved_instances: u16,
         outbox_id: Uuid,
     ) -> Result<Self, PrimitiveInputError> {
+        Self::with_dispatch(
+            transition,
+            scope_id,
+            index,
+            entry,
+            CollectionEntryDispatch::Activity {
+                activity,
+                outbox_id,
+            },
+            item_digest,
+            reserved_instances,
+        )
+    }
+
+    fn with_dispatch(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        index: u32,
+        entry: ExecutionInstanceId,
+        dispatch: CollectionEntryDispatch,
+        item_digest: Digest,
+        reserved_instances: u16,
+    ) -> Result<Self, PrimitiveInputError> {
         let expected_path = transition
             .owner()
             .path()
@@ -421,10 +453,9 @@ impl CollectionAdmission {
             scope_id,
             index,
             entry,
-            activity,
+            dispatch,
             item_digest,
             reserved_instances,
-            outbox_id,
             item_content: None,
         })
     }
@@ -462,6 +493,53 @@ impl CollectionAdmission {
     #[must_use]
     pub fn item_content(&self) -> Option<&[u8]> {
         self.item_content.as_deref()
+    }
+
+    /// Admits a scheduler-owned control without a worker task or notification identity.
+    ///
+    /// # Errors
+    /// Returns [`PrimitiveInputError`] for an invalid path or missing return reservation.
+    pub fn scheduler(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        index: u32,
+        entry: ExecutionInstanceId,
+        item_digest: Digest,
+        reserved_instances: u16,
+    ) -> Result<Self, PrimitiveInputError> {
+        Self::with_dispatch(
+            transition,
+            scope_id,
+            index,
+            entry,
+            CollectionEntryDispatch::Scheduler,
+            item_digest,
+            reserved_instances,
+        )
+    }
+
+    /// Retains the captured item with a scheduler-owned admission.
+    ///
+    /// # Errors
+    /// Returns [`PrimitiveInputError`] for an invalid path or missing return reservation.
+    pub fn scheduler_from_item(
+        transition: CollectionTransition,
+        scope_id: CollectionScopeId,
+        index: u32,
+        entry: ExecutionInstanceId,
+        item_content: Vec<u8>,
+        reserved_instances: u16,
+    ) -> Result<Self, PrimitiveInputError> {
+        let mut admission = Self::scheduler(
+            transition,
+            scope_id,
+            index,
+            entry,
+            digest(&item_content),
+            reserved_instances,
+        )?;
+        admission.item_content = Some(item_content);
+        Ok(admission)
     }
 }
 
@@ -963,6 +1041,23 @@ pub trait CollectionStore: Send + Sync {
         &self,
         admission: &CollectionAdmission,
     ) -> impl Future<Output = Result<PrimitiveWrite, PrimitiveStoreError>> + Send;
+
+    /// Admits either dispatch kind; adapters without control admission fail closed.
+    fn admit_collection_member(
+        &self,
+        admission: &CollectionAdmission,
+    ) -> impl Future<Output = Result<PrimitiveWrite, PrimitiveStoreError>> + Send {
+        async {
+            match &admission.dispatch {
+                CollectionEntryDispatch::Activity { .. } => {
+                    self.admit_collection_activity(admission).await
+                }
+                CollectionEntryDispatch::Scheduler => {
+                    Err(PrimitiveStoreError::RuntimeNotIntegrated)
+                }
+            }
+        }
+    }
 
     fn checkpoint_collection_iteration(
         &self,

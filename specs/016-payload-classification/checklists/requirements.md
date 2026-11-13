@@ -34,14 +34,14 @@
 ## Open implementation gates
 
 - [x] The owner answers P1 (grant mechanism), P2 (event inbox), P3 (two readings of ADR-0033) and P4 (self-grant); T016-002. _Answered 2026-10-17; recorded in `research.md`, `docs/owner-decisions.md` and the ADR-0033 addendum._
-- [x] Canonical schema/OpenAPI and generated Studio types are implemented and locally verified (T016-005..008; 18 contract tests and generated-client/reference checks). Remote CI is not claimed.
+- [x] Canonical schema/OpenAPI and generated Studio types are implemented and locally verified (T016-005..008; 18 contract tests and generated-client/reference checks); final remote CI is linked below.
 - [x] Domain, publication, pinning, disclosure, reveal and grants have executed unit/real-PG/REST/fault evidence (Phases 2..5; see tasks and integration notes).
 - [x] Event values are restricted and the response break documented (US08): original event gates 2 contract / 11 e2e / 111 integration tests, plus reveal/audit/200-letter/tenant-boundary cases.
 - [x] Canary boundaries, actual CLI/Chromium, transaction/process faults, tenant isolation, frozen-server byte compatibility and five-SDK builder/released-client evidence passed (T016-042, 049..052; manifests and limits in integration notes).
 - [x] Registered benchmark passed with environment, response sizes, allocations/cache policy and limits recorded; runbook delivered (T016-053, 055).
 - [x] G21 result/child carriers are integrated and actual worker/script/child/rerun/retry/blob/result scenarios passed (T016-031).
-- [ ] Complete the integrated workspace/architecture/Clippy/contracts/advisory/Compose release gates (T016-054 and shared feature-014 gates).
+- [x] Complete the integrated workspace/architecture/Clippy/contracts/advisory/Compose release gates (T016-054). _Final candidate `769a7d1d` passed CI 40259828158 (11/11), independent packages and all six release-preflight jobs. Shared technical checks do not close the eight broader feature-014 tasks; see ADR-0040 and the checked-in release-gate record._
 
 Content/readiness items above validate the written design. Implementation marks cite actual local
-execution in tasks.md and the integration notes; the remaining release gate is still open. Nothing
-here claims remote CI, deployment or human visual acceptance.
+execution in tasks.md and the integration notes. Final remote CI is recorded in
+`release-gates-2026-10-25.md`; deployment and human visual acceptance are not claimed.

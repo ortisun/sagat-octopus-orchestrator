@@ -1,0 +1,297 @@
+{
+  "name": "collection-events",
+  "description": "Public collection event entry, activity to event with durable lookback, and handled event deadlines. Distinct correlation keys and scoped receipts preserve input order; the event waits own no activity lease.",
+  "server": {
+    "iterationConcurrency": 4
+  },
+  "scopeEvidence": "ordered",
+  "workflows": {
+    "entry": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-events-entry",
+      "limits": {
+        "maxInstances": 6,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "waitForEvent",
+              "id": "confirmed",
+              "options": {
+                "eventType": "payment.confirmed",
+                "correlationExpr": "item.sku",
+                "timeoutMs": 60000,
+                "lookbackMs": 60000,
+                "onTimeout": "returned"
+              }
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "item.sku"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    },
+    "activity": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-events-activity",
+      "limits": {
+        "maxInstances": 8,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "step",
+              "id": "selected",
+              "activity": "event.notify"
+            },
+            {
+              "op": "waitForEvent",
+              "id": "confirmed",
+              "options": {
+                "eventType": "payment.confirmed",
+                "correlationExpr": "item.sku",
+                "timeoutMs": 60000,
+                "lookbackMs": 60000,
+                "onTimeout": "returned"
+              }
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "item.sku"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    },
+    "timeout": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-events-timeout",
+      "limits": {
+        "maxInstances": 6,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "waitForEvent",
+              "id": "confirmed",
+              "options": {
+                "eventType": "payment.confirmed",
+                "correlationExpr": "item.sku",
+                "timeoutMs": 1,
+                "lookbackMs": 60000,
+                "onTimeout": "returned"
+              }
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "item.sku"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "collection-events",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 2,
+      "autostart": false,
+      "activities": {
+        "event.notify": {
+          "behavior": {
+            "returns": {
+              "selected": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "event-second",
+      "op": "publishEvent",
+      "type": "payment.confirmed",
+      "eventId": "evt-second-{{unique}}",
+      "correlationKey": "second-{{unique}}",
+      "data": {
+        "accepted": "second"
+      }
+    },
+    {
+      "id": "event-first",
+      "op": "publishEvent",
+      "type": "payment.confirmed",
+      "eventId": "evt-first-{{unique}}",
+      "correlationKey": "first-{{unique}}",
+      "data": {
+        "accepted": "first"
+      }
+    },
+    {
+      "id": "duplicate-event",
+      "op": "publishEvent",
+      "type": "payment.confirmed",
+      "eventId": "evt-second-{{unique}}",
+      "correlationKey": "second-{{unique}}",
+      "data": {
+        "accepted": "second"
+      }
+    },
+    {
+      "id": "entry",
+      "op": "start",
+      "workflow": "entry",
+      "input": {
+        "items": [
+          {
+            "sku": "first-{{unique}}"
+          },
+          {
+            "sku": "second-{{unique}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "entry-done",
+      "op": "waitForCompletion",
+      "run": "entry",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "entry-journal",
+      "op": "events",
+      "run": "entry"
+    },
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "activity",
+      "op": "start",
+      "workflow": "activity",
+      "input": {
+        "items": [
+          {
+            "sku": "first-{{unique}}"
+          },
+          {
+            "sku": "second-{{unique}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "activity-done",
+      "op": "waitForCompletion",
+      "run": "activity",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "activity-journal",
+      "op": "events",
+      "run": "activity"
+    },
+    {
+      "id": "timeout",
+      "op": "start",
+      "workflow": "timeout",
+      "input": {
+        "items": [
+          {
+            "sku": "timeout-first-{{unique}}"
+          },
+          {
+            "sku": "timeout-second-{{unique}}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "timeout-done",
+      "op": "waitForCompletion",
+      "run": "timeout",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "timeout-journal",
+      "op": "events",
+      "run": "timeout"
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "w1"
+    }
+  ]
+}

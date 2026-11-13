@@ -1,6 +1,8 @@
 # SagatOctopusOrchestrator.Sdk (C# / .NET)
 
-The .NET SDK of the Sagat Octopus Orchestrator, version **0.2.0**. It is three things in one package and nothing else
+> Documentation status: the contract sections below describe the inspected source. Existing runtime, test-count and advisory records are historical developer notes; this documentation update did not rerun or revalidate those records.
+
+The .NET SDK of the Sagat Octopus Orchestrator, version **0.3.0**. It is three things in one package and nothing else
 (`sdks/SPEC.md`):
 
 1. a **client** for the REST API: start, read, list, operate, cancel and signal runs, publish events, wait for a run;
@@ -16,7 +18,7 @@ every state and every retry decision. It integrates with `Microsoft.Extensions.D
 ## Install
 
 ```text
-dotnet add package SagatOctopusOrchestrator.Sdk --version 0.2.0
+dotnet add package SagatOctopusOrchestrator.Sdk --version 0.3.0
 ```
 
 The package is not published to a feed yet. `dotnet pack src/SagatOctopusOrchestrator.Sdk -c Release -o ./nupkg` makes it
@@ -143,9 +145,9 @@ var document = Workflow.Create("order-flow")
 ```
 
 The builders are pure: no I/O, no clock, no randomness. `ToJson()` is the canonical text of RFC 8785 (keys sorted by UTF-16
-code unit, numbers as ECMAScript writes them, no whitespace), byte-identical to the one the other four SDKs write for the same
-program. What the builder can see the server would refuse (a duplicate id, a `Parallel` with fewer than two branches, an empty
-`Saga`, `Irreversible` with `CompensateWith`, a bad name, a reference to a node that does not exist) is a
+code unit, numbers as ECMAScript writes them, no whitespace), byte-identical to the one the five peer SDKs write for the same
+program. A locally visible invalid authoring input (a duplicate id, a `Parallel` with fewer than two branches, an empty
+`Saga`, `Irreversible` with `CompensateWith`, a bad name, a reference to a node that does not exist) raises a
 `SagatException` with `ValidationFailed` when the node is added (or at `Build()` for a reference). A flow joined into another (a `Parallel`
 branch, the body of a `Saga`) is read at `Build()`, not when it was joined: a step added to it afterwards is in the document, and an `End` added to
 a saga body afterwards is refused at `Build()`.
@@ -185,7 +187,7 @@ answer with more tasks than the host asked for runs the first ones and leaves th
 | `Token` / `TokenProvider` | a bearer token, or a provider called before every request | one is required |
 | `Timeout` | deadline of one REST call or unary RPC | 30 s |
 | `Retry` | `MaxAttempts`, `InitialDelay`, `MaxDelay` | 4, 200 ms, 5 s |
-| `UserAgent` | suffix appended to `sagat-sdk-csharp/0.2.0` | none |
+| `UserAgent` | suffix appended to `sagat-sdk-csharp/0.3.0` | none |
 | `Tls` | `TrustedRoots`, `ServerName`, `ClientCertificate` | system roots, the host of the URL, no client certificate |
 | `Json` | `JsonSerializerOptions` for typed payloads | camel case, case-insensitive on read |
 | `HttpMessageHandler` | the transport of the client (a proxy, a test, fault injection); the caller owns it and must turn redirects off | a pooled `SocketsHttpHandler` |
@@ -302,7 +304,7 @@ OpenTelemetry plus its in-memory exporter 1.19.0 for integration tests only.
 
 ```text
 bash scripts/sync-shared.sh      # copies worker.proto and error-catalog.json from the repository (a test fails when a copy is behind)
-dotnet test                      # 410 unit tests; offline after the first restore (NuGet's vulnerability audit, NU1900, is a warning, not an error)
+dotnet test                      # configured unit tests; offline after the first restore (NuGet's vulnerability audit, NU1900, is a warning, not an error)
 dotnet format --verify-no-changes
 bash conformance/prepare.sh      # builds the runner; the harness calls it, and conformance/run.sh
 ```
@@ -330,3 +332,31 @@ Use the database builder with a logical connection created in Sagat. See the
 [five-language guide](../../docs/guides/managed-database-sdk.md) for typed parameters,
 result consumption, permissions and the shared real-service scenario. Credentials
 are resolved by the separate managed executor.
+
+<!-- EGM directory contract -->
+
+## Interface
+
+- SagatOctopusOrchestrator.Sdk 0.3.0 targets net8.0/net10.0 and packages its README/license plus an embedded error catalog; protocol client types are internal. [src/SagatOctopusOrchestrator.Sdk/SagatOctopusOrchestrator.Sdk.csproj:Version] [src/SagatOctopusOrchestrator.Sdk/SagatOctopusOrchestrator.Sdk.csproj:TargetFrameworks] [src/SagatOctopusOrchestrator.Sdk/SagatOctopusOrchestrator.Sdk.csproj:PackageReadmeFile]
+
+- [proto](./proto/README.md) — component contract.
+- [scripts](./scripts/README.md) — component contract.
+- [src](./src/README.md) — component contract.
+
+## Invariants
+
+- Build configuration treats warnings as errors, enables analyzers/style enforcement and deterministic outputs; dependency versions are centrally managed. [Directory.Build.props:TreatWarningsAsErrors] [Directory.Build.props:Deterministic] [Directory.Packages.props:ManagePackageVersionsCentrally]
+
+## Side Effects
+
+- None
+
+## Verification
+
+Run from the repository root:
+
+```sh
+cd sdks/dotnet && dotnet test && dotnet format --verify-no-changes
+```
+
+These commands are documented from the existing build configuration; they were not executed during this documentation update.

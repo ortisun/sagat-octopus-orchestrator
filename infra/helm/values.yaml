@@ -90,6 +90,18 @@ databaseRunner:
     egress: []                  # explicit collector peers/ports when the endpoint is configured
 
 # JetStream. Empty: hints are not published, workers poll, and the outbox accumulates.
+# Empty preserves legacy optional nats.url. Explicit nats/redis/none selects one publisher.
+eventTransport: ""
+redis:
+  # Existing Kubernetes Secret holding a rediss:// URL; never put credentials in chart values.
+  urlSecret: ""
+  urlKey: url
+  stream: sagat:v1:events
+  streamMaxlen: 100000
+  timeoutSecs: 5
+  # Set only after all old control planes/engines have been stopped and upgraded.
+  callbacksEnabled: false
+
 nats:
   url: ""
   requireTls: true
@@ -229,6 +241,9 @@ networkPolicy:
     # Required only when nats.url is nonempty.
     nats:
       port: 4222
+      to: []
+    redis:
+      port: 6379
       to: []
     # Optional complete NetworkPolicy egress rules for deployment-specific dependencies. Rules with
     # missing peers or ports, named ports, unsupported protocols or global peers are refused.

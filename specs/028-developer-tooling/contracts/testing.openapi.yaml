@@ -1,0 +1,196 @@
+openapi: 3.1.0
+info:
+  title: Sagat Octopus Orchestrator — test server API (draft, feature 028)
+  version: 0.1.0-draft
+  description: >-
+    Served only by `sagat-test-server` (a test deployment, SAGAT_ENV=dev, one tenant). Production deployments do not
+    serve any of these paths and answer `404` with `details.reason = ROUTE_NOT_FOUND`. To be merged at implementation
+    as `specs/001-platform-foundation/contracts/testing.openapi.yaml`, separate from the canonical `openapi.yaml`, so
+    the production REST conformance and tenant battery are not asked to serve it. Shared components (errors, headers,
+    namespace parameter) are those of the canonical document.
+servers:
+  - url: http://127.0.0.1:18080/v1
+paths:
+  /testing/clock:
+    get:
+      operationId: getTestClock
+      summary: Read the virtual workflow clock of this test deployment
+      tags: [Testing]
+      x-implemented: 'no (028)'
+      description: >-
+        Requires the test server's `testing:clock` check (admin or developer of the test tenant; not a production
+        permission). Real time is the database's; workflow time is real time plus the offset.
+      responses:
+        '200': {description: The clock, headers: {Cache-Control: {schema: {const: no-store}}}, content: {application/json: {schema: {$ref: '#/components/schemas/TestClock'}}}}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+  /testing/clock/advance:
+    post:
+      operationId: advanceTestClock
+      summary: Move workflow time forward by a duration or to an instant
+      tags: [Testing]
+      x-implemented: 'no (028)'
+      description: >-
+        Requires `testing:clock`. `STEP` mode stops at every workflow-due instant up to the target and waits for
+        quiescence after each stop; `JUMP` makes one change. The clock never moves backward. A refusal leaves the clock
+        unchanged. Progress made before a limit is committed and reported in a `200`.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdvanceRequest'}
+      responses:
+        '200': {description: Advanced (possibly partially), content: {application/json: {schema: {$ref: '#/components/schemas/SkipReport'}}}}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '409': {description: 'CONFLICT with reason TIME_ADVANCE_BLOCKED (no stop made, details.blockedBy) or CLOCK_EPOCH_CHANGED', content: {application/json: {schema: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/Error'}}}}
+        '422': {description: 'VALIDATION_FAILED with reason CLOCK_CEILING, NON_POSITIVE_DURATION or TARGET_IN_PAST', content: {application/json: {schema: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/Error'}}}}
+        '429': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/TooManyRequests'}
+  /testing/clock/skip:
+    post:
+      operationId: skipTestClock
+      summary: Skip time until a target is reached, nothing more is due, or a limit
+      tags: [Testing]
+      x-implemented: 'no (028)'
+      description: >-
+        Requires `testing:clock`, and `run:read` when the target is a run or a chain. Always `STEP` mode. When the
+        deployment is quiescent, nothing is due and the target is not reached, the outcome is `WAITING_EXTERNAL` and the
+        clock does not move.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SkipRequest'}
+      responses:
+        '200': {description: Report, content: {application/json: {schema: {$ref: '#/components/schemas/SkipReport'}}}}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        '409': {description: 'CONFLICT with reason TIME_ADVANCE_BLOCKED or CLOCK_EPOCH_CHANGED', content: {application/json: {schema: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/schemas/Error'}}}}
+  /testing/quiescence:
+    get:
+      operationId: getTestQuiescence
+      summary: Say whether the deployment is quiescent and what is pending
+      tags: [Testing]
+      x-implemented: 'no (028)'
+      responses:
+        '200': {description: Verdict, content: {application/json: {schema: {$ref: '#/components/schemas/Quiescence'}}}}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+  /testing/history-replays:
+    post:
+      operationId: replayHistory
+      summary: Decode and fold an exported run history with this build's codec and reducer
+      tags: [Testing]
+      x-implemented: 'no (028; blocked on the history format of feature 020)'
+      description: >-
+        Requires `definition:read`. Stores nothing but an audit record. The body is the history document of feature 020
+        (see `history-replay.md`), at most 8 MiB by default (32 MiB ceiling).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, description: 'The exported history document (feature 020).'}
+      responses:
+        '200': {description: Report, content: {application/json: {schema: {$ref: '#/components/schemas/ReplayReport'}}}}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '413': {description: 'BAD_REQUEST (HTTP 413) with reason HISTORY_TOO_LARGE, as feature 020 answers an oversized export'}
+        '422': {description: 'VALIDATION_FAILED with reason HISTORY_SEQUENCE_GAP, HISTORY_UNKNOWN_EVENT, HISTORY_UNSUPPORTED_SCHEMA or HISTORY_MALFORMED; details.seq names the first offending event'}
+components:
+  schemas:
+    TestClock:
+      type: object
+      additionalProperties: false
+      required: [workflowNow, realNow, offsetMs, epoch]
+      properties:
+        workflowNow: {type: string, format: date-time, description: 'UTC, with Z.'}
+        realNow: {type: string, format: date-time}
+        offsetMs: {type: integer, format: int64, minimum: 0}
+        epoch: {type: integer, format: int64, minimum: 0}
+    AdvanceRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        by: {type: string, description: 'ISO 8601 duration, positive, at most P3660D.', examples: [P30D, PT90M]}
+        to: {type: string, format: date-time, description: 'Target workflow instant; exactly one of by/to.'}
+        mode: {type: string, enum: [STEP, JUMP], default: STEP}
+        requireQuiescence: {type: boolean, default: true, description: 'May be false only with JUMP.'}
+        quiescenceTimeoutMs: {type: integer, minimum: 100, maximum: 60000, default: 10000}
+        maxStops: {type: integer, minimum: 1, maximum: 10000, default: 1000}
+        expectedEpoch: {type: integer, format: int64, minimum: 0}
+      oneOf:
+        - required: [by]
+        - required: [to]
+    SkipRequest:
+      type: object
+      additionalProperties: false
+      required: [until]
+      properties:
+        until:
+          oneOf:
+            - {type: object, additionalProperties: false, required: [instant], properties: {instant: {type: string, format: date-time}}}
+            - {type: object, additionalProperties: false, required: [duration], properties: {duration: {type: string}}}
+            - {type: object, additionalProperties: false, required: [nextDue], properties: {nextDue: {const: true}}}
+            - {type: object, additionalProperties: false, required: [runTerminal], properties: {runTerminal: {type: string, format: uuid}}}
+            - {type: object, additionalProperties: false, required: [chainTerminal], properties: {chainTerminal: {type: string, format: uuid}, namespaceId: {type: string, format: uuid}}}
+        quiescenceTimeoutMs: {type: integer, minimum: 100, maximum: 60000, default: 10000}
+        maxStops: {type: integer, minimum: 1, maximum: 10000, default: 1000}
+        wallTimeMs: {type: integer, minimum: 1000, maximum: 600000, default: 120000}
+        expectedEpoch: {type: integer, format: int64, minimum: 0}
+    SkipReport:
+      type: object
+      additionalProperties: false
+      required: [outcome, stops, clock]
+      properties:
+        outcome: {type: string, enum: [REACHED, RUN_TERMINAL, NOTHING_DUE, WAITING_EXTERNAL, STOP_LIMIT, WALL_TIME_LIMIT, BLOCKED]}
+        stops: {type: integer, minimum: 0}
+        clock: {$ref: '#/components/schemas/TestClock'}
+        waitingFor:
+          type: array
+          description: 'For WAITING_EXTERNAL: what the target run waits for. Closed kinds; no payload.'
+          items: {type: string, enum: [EVENT, SIGNAL, APPROVAL, UPDATE, CHILD, WORKER, MANUAL_REVIEW, PAUSED]}
+        blockedBy: {$ref: '#/components/schemas/Pending'}
+    Quiescence:
+      type: object
+      additionalProperties: false
+      required: [quiescent, pending]
+      properties:
+        quiescent: {type: boolean}
+        pending: {$ref: '#/components/schemas/Pending'}
+        nextDue: {type: [string, 'null'], format: date-time}
+    Pending:
+      type: object
+      additionalProperties: false
+      description: Counts per closed kind. No identifiers of other runs.
+      properties:
+        readySteps: {type: integer, minimum: 0}
+        leasedSteps: {type: integer, minimum: 0}
+        dueUnprocessed: {type: integer, minimum: 0}
+        undispatchedEvents: {type: integer, minimum: 0}
+        pendingAdmissions: {type: integer, minimum: 0}
+    ReplayReport:
+      type: object
+      additionalProperties: false
+      required: [compatible, events, divergences, unsupportedCapabilities, producer, replayer]
+      properties:
+        compatible: {type: boolean}
+        events: {type: integer, minimum: 0}
+        producer: {type: object, description: 'Build and event-schema version recorded in the history.', properties: {version: {type: string}, eventSchemaVersion: {type: integer}}}
+        replayer: {type: object, properties: {version: {type: string}, eventSchemaVersion: {type: integer}}}
+        unsupportedCapabilities: {type: array, items: {type: string}, maxItems: 64}
+        divergences:
+          type: array
+          maxItems: 1000
+          items:
+            type: object
+            additionalProperties: false
+            required: [kind, path]
+            properties:
+              seq: {type: [integer, 'null'], format: int64}
+              kind: {type: string, enum: [RUN_STATUS, RUN_STOP, STEP_STATUS, STEP_ATTEMPTS, ROUTE, CHAIN_LINK, OUTPUT_DIGEST, EVENT_REJECTED]}
+              path: {type: string, description: 'Instance path and node, e.g. /steps/notify or /collections/lines/3/steps/ship.'}
+              expected: {type: [string, 'null'], description: 'A closed status, code, count or digest; never a payload value.'}
+              actual: {type: [string, 'null']}

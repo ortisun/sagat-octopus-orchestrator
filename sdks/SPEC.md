@@ -1,7 +1,7 @@
 # SDK specification (v1)
 
 The normative description of what every Sagat Octopus Orchestrator SDK does — TypeScript, Go, Python,
-C#/.NET and Java — so that the five behave the same where it matters and differ only in idiom
+C#/.NET, Java and Rust — so that the six behave the same where it matters and differ only in idiom
 (`FR-006-001..008`, ADR-0015). A statement with **MUST** is checked by the conformance suite
 (`tests/contract/sdk-conformance/`) unless it says otherwise. Naming below is language neutral; each
 SDK uses its own conventions (`startRun` / `StartRun` / `start_run` / `StartAsync`).
@@ -74,7 +74,12 @@ file. Codes:
   `UNSUPPORTED_PROTOCOL` (registration refused the version);
 - raised by the SDK itself: `TRANSPORT` (no answer: connection refused, reset, timed out),
   `CANCELLED` (the caller's own cancellation), `PROTOCOL` (an answer that does not match the
-  contract), `PAYLOAD_TOO_LARGE` (an output over 256 KiB, before it is sent).
+  contract), `PAYLOAD_TOO_LARGE` (an output over 256 KiB, before it is sent);
+- reported by the database runner for a managed step (feature 035, `contracts/errors.md`): `ICEBERG_*`,
+  `CATALOG_UNAVAILABLE`, `STORAGE_UNAVAILABLE`, `DESTINATION_*`, `LAKE_HOST_PROTOCOL`, `LAKE_SANDBOX_UNAVAILABLE`,
+  `CLASSIFICATION_EGRESS_REFUSED` and `OUTCOME_UNKNOWN` (25 codes, origin `worker`, no HTTP status). They arrive as
+  the code of a failed step; `ICEBERG_COMMIT_CONFLICT`, `CATALOG_UNAVAILABLE`, `STORAGE_UNAVAILABLE`,
+  `DESTINATION_UNAVAILABLE`, `LAKE_HOST_PROTOCOL` and `LAKE_SANDBOX_UNAVAILABLE` are retryable by default.
 
 gRPC mapping (the trailer `x-sagat-error` wins when present): `UNAUTHENTICATED` → `UNAUTHENTICATED`;
 `PERMISSION_DENIED` → `NOT_BOUND` / `SECRET_NOT_USABLE` / `FORBIDDEN`; `INVALID_ARGUMENT` →
@@ -219,7 +224,7 @@ policy (the node's `retry`).
 `register` sends `RegisterWorkerRequest{worker_name, namespace, capabilities{languages, activities,
 pools, max_inflight, protocol_version}}`:
 
-- `languages`: one entry naming the SDK's language (`typescript`, `go`, `python`, `csharp`, `java`).
+- `languages`: one entry naming the SDK's language (`typescript`, `go`, `python`, `csharp`, `java`, `rust`).
 - `activities`: every activity name with a handler (forward, compensation and reconciliation alike),
   1 to 256.
 - `max_inflight`: the host's concurrency limit, 1 to 1000 (default 10).
@@ -321,8 +326,9 @@ A handler's input type that cannot be built from the document is not a crash: th
   for it, so a handler that raises its cancellation error is reported as `CANCELLED` (above) and one that
   returns is reported as what it returned. `lease-lost`: nothing is reported. `shutdown` (the host is
   stopping, §6.8): a handler that then raises its cancellation error is **not reported** — the lease lapses and
-  the platform leases the step again; failing a step for good because a deploy stopped its worker would be
-  wrong. A handler that returns a value, or fails with another error, after `shutdown` is reported as usual.
+  the platform applies its unknown-outcome recovery rules. The SDK does not promise a replacement lease;
+  failing a step for good because a deploy stopped its worker would be wrong. A handler that returns a value,
+  or fails with another error, after `shutdown` is reported as usual.
 - `ABORTED` (`STALE_ATTEMPT`) or `FAILED_PRECONDITION` from a heartbeat → the lease is lost: the token is
   cancelled with the reason `lease-lost` and the eventual result is dropped.
 - A heartbeat that fails with a transport error is retried on the next beat; the lease is still ours until
@@ -334,6 +340,10 @@ A handler's input type that cannot be built from the document is not a crash: th
   "done-<task_id>", output_json, traceparent}`. `output_json` is the JSON of the handler's result (`null` →
   `"null"`; no result → empty string means "no value"). More than 256 KiB: not sent;
   `FailStep(error_code = "PAYLOAD_TOO_LARGE", retryable = false)` instead.
+  `CompleteStep` is the handler's final-domain-result assertion, not proof that the SDK, platform or
+  provider independently established finality. Accepted, queued or pending provider responses are
+  reported as `OUTCOME_UNKNOWN`, including for compensation; `retryable = true` cannot make such a
+  result a known failure.
 - Protocol 1.3 exposes `ctx.writeBlob(onePassSource, options)` and `ctx.readBlob(descriptor)` only while
   the handler is active. Upload sends one header followed by chunks no larger than 256 KiB, measures the
   source once, and accepts the returned descriptor only when its size and SHA-256 match locally. Read requires
@@ -344,7 +354,7 @@ A handler's input type that cannot be built from the document is not a crash: th
 - Failure: `FailStep{..., idempotency_key = "failed-<task_id>", error_code, safe_message, retryable,
   traceparent}`. A handler fails by raising an **`ActivityFailure(code, message, retryable)`**; helpers:
   `retryable(code, message)`, `permanent(code, message)` (non-retryable), `outcomeUnknown(message)`
-  (`OUTCOME_UNKNOWN`, non-retryable, reserved: the platform reconciles instead of retrying blindly).
+  (`OUTCOME_UNKNOWN`, non-retryable, reserved: the platform reconciles or reviews instead of retrying blindly).
   Any other raised error is reported as `error_code = "ACTIVITY_ERROR"`, `retryable = true`, and the
   `safe_message` is only its type name — never its text, which may hold the data it was handed.
   `safe_message` is cut to 512 Unicode code points (never inside a surrogate pair, and a lone surrogate becomes
@@ -358,15 +368,18 @@ A handler's input type that cannot be built from the document is not a crash: th
 - `registerCompensation(name, handler)` and `registerReconciler(name, handler)` are `registerActivity`
   with the same lease handling; they differ in the context (`taskKind`) and in what the host does with
   the result.
-- A **compensation** handler undoes the effect of `ctx.targetNode`; its `idempotencyKey` is the key of
-  *this* compensation and `targetIdempotencyKey` the key that identifies the original effect at the
-  provider (send the latter to the provider). It **MUST** be idempotent and tolerate an effect that never
-  happened (the platform compensates a step whose outcome stayed unknown). Its output is discarded by
-  the server.
+- A **compensation** handler attempts to undo the known-applied effect of `ctx.targetNode`; its
+  `idempotencyKey` is the key of *this* compensation and `targetIdempotencyKey` the key that identifies
+  the original effect at the provider (send the latter to the provider). It **MUST** be idempotent.
+  Delivery 1 does not defensively compensate an unknown original, and declarations/stable keys do not
+  prove absent-effect tolerance or safe repetition. Its output is discarded by the server.
 - A **reconciler** answers a verdict: `applied(output?)`, `notApplied()` or `unknown()`. The host
   completes the task with exactly `{"effect": "applied" | "not_applied" | "unknown", "output": …}`
   (`output` only for `applied`) and nothing else. A handler of another shape is a programming error
   reported as `FailStep(error_code = "RECONCILIATION_ANSWER_INVALID", retryable = false)`.
+  `applied` is the handler's final-result assertion. `notApplied` is an observation, not proof of
+  permanent absence, and the server holds the original for review as `RECONCILIATION_NOT_FINAL`;
+  `unknown` also reviews. Neither verdict authorizes the SDK to repeat the original itself.
 - The three kinds are told apart at run time by `task_kind` (protocol 1.2); a server at 1.0 or 1.1 never
   sends the others.
 
@@ -383,8 +396,9 @@ raises `UNSUPPORTED_PROTOCOL` instead of calling.
 
 `start()` registers and begins the loop and returns once registered; `stop(timeout)` stops polling,
 cancels nothing, waits for the tasks in flight up to `timeout` (default 30 s), then cancels their tokens
-with the reason `shutdown` and returns. A task that did not finish keeps its lease until it lapses (the
-server leases it again). The host is restartable. Metrics hooks (counters for tasks taken, completed,
+with the reason `shutdown` and returns. A task that did not finish keeps its lease until it lapses; the
+server then reconciles or holds review according to task kind and available evidence. The host is
+restartable. Metrics hooks (counters for tasks taken, completed,
 failed, stale, heartbeats, polls, reconnects; a histogram of activity duration) are optional callbacks
 or the ecosystem's standard (C#: `System.Diagnostics.Metrics`).
 
@@ -393,7 +407,7 @@ or the ecosystem's standard (C#: `System.Diagnostics.Metrics`).
 Pure, deterministic constructors of the IR. `build()` returns the document (the language's JSON value)
 and `toJson()` the canonical text: **RFC 8785** (JSON Canonicalization Scheme) — UTF-8, no insignificant
 whitespace, the keys of every object sorted by their **UTF-16 code units**, numbers as ECMAScript prints them
-(`1.0` is `1`, `600000` stays `600000`, never `6e5`). The same program in the five languages **MUST** produce
+(`1.0` is `1`, `600000` stays `600000`, never `6e5`). The same program in the six languages **MUST** produce
 byte-identical canonical text. (Keys that differ only above U+FFFF sort differently by code point than by UTF-16
 code unit; the rule is the UTF-16 one.)
 
@@ -402,6 +416,7 @@ workflow(name).description(text).label(key, value)
   .step(id, activity, {retry, timeoutMs, compensateWith, reconcileWith, idempotencyTemplate, secrets,
                        compensationRetry, compensationTimeoutMs, irreversible, highRisk, onError})
   .database(id, {connectionRef, operation, statement, parameters?, limits?, timeoutMs?, onError?})
+  .icebergWrite(id, {connectionRef, table, records, ref?, mapping?, ignoreUnknownFields?, limits?, compensation?, onError?})
   .sleep(id, durationMs)
   .waitForEvent(id, {eventType, correlationExpr, timeoutMs, onTimeout?, lookbackMs?})
   .invokeChild(id, workflow, {version?, input?, cancelPolicy?})
@@ -436,7 +451,7 @@ Linking (the whole algorithm — it is why the output is the same everywhere):
 
 ### 7.1 Managed database operations (feature 017)
 
-All five SDKs emit the same canonical `type: database` node. `connectionRef` is
+All six SDKs emit the same canonical `type: database` node. `connectionRef` is
 `{name, revision?}` within the workflow namespace, never a DSN, password or provider
 path. `operation` is `query` or `execute`. Parameters are either
 `{literal: {type, value}}` or `{type, expression}`. Tags are `null`, `boolean`,
@@ -462,6 +477,28 @@ auto-expand them, and database expressions cannot read blob contents. Interactiv
 requires the dedicated result permission. See
 [the five-language guide](../docs/guides/managed-database-sdk.md) and the shared
 `database-connections` conformance scenario.
+
+### 7.2 Iceberg append (feature 035)
+
+All six SDKs emit the same canonical `type: icebergWrite` node, always with `mode: append`: overwrite and
+upsert are not built yet, so no SDK accepts a mode. `connectionRef` is the same `{name, revision?}` as
+for a database node and never carries a catalog, bucket, credential or secret. `table` is
+`{namespace, name}` with 1 to 8 namespace levels. `records` holds exactly one of `inline` (an expression
+that evaluates to a list of objects), `blobs` (one that evaluates to 1 to 32 blob descriptors) or
+`databaseResult` (the id of an earlier root-level database step; the lake runner does not read that source
+yet, gap G035-067). `mapping` is a list of `{field, column}` rows whose field is a JSON pointer
+(`/customer/name`, at most 16 segments, escapes `~0` and `~1`); a field or a column used twice is refused.
+`limits` may tighten `maxRecordBytes` (1024 to 2147483648), `maxRecords` (1 to 100000000) and `timeoutMs`
+(1000 to 3600000). `compensation` is `revert` or absent.
+
+The builder snapshots the supplied values when the node is added, validates the shapes and the contract
+bounds, and raises `VALIDATION_FAILED` with the fixed message `invalid iceberg write`, which names no
+value. A supplied empty `mapping` or `limits` is kept as `[]` or `{}`; an option that is absent is omitted.
+Whether the connection exists, the table is writable and the classification allows the write are server
+responsibilities. The shared scenario holds no refusal for an unknown member, because the typed builders cannot
+express one uniformly (the conformance runners of Go, Java and C# ignore it when they read the options; the Rust
+options type refuses it when decoded).
+The shared scenario is `iceberg-write-builders` (build only: it claims neither publication nor execution).
 
 ## 8. Serialization
 
@@ -541,3 +578,33 @@ The stream has a five-second server lifetime; clients additionally bound receivi
 seconds or their shorter configured call timeout. A normal underfilled window ends with a
 positive empty retry hint. An unexpected underfilled EOF MUST wait before reconnecting.
 Protocol version changes do not themselves change package SemVer.
+
+
+## Approved Rust extension (release 0.3)
+
+[Feature 034](../specs/034-rust-sdk/spec.md) adds Rust as the sixth official SDK under this same
+contract. Historical five-language results remain historical; Rust/six-language acceptance needs
+new named conformance, fault and packaging results. Rust uses Tokio/tonic, native typed values,
+lossless JSON and idiomatic Result/cancellation APIs. Its public crate is independent of backend
+workspaces and contains its own checked canonical protocol/catalog for clean consumers.
+
+## Feature 037 delivery 1 — implementation in verification
+
+The delivery uses the existing wire shapes and treats every leased `Activity` as external-capable,
+regardless of `highRisk`. Unknown outcomes take precedence over retry, cancellation and explicit
+failure. The server will not directly retry an unknown original or compensation, even for a caller
+with `SagaOverride`; an authorized outcome-bearing resolution must atomically retain actor and
+reason first, and no new in-place attempt after resolution is promised. Refused conflicts create no
+success audit, scheduling outbox or idempotency success. A known failed, retry-eligible operation
+continues to use the existing retry command.
+
+Human success resolution can allow a saga to report `COMPENSATED`, but that result retains human
+provenance and is not provider confirmation. No provider/capability, SDK handler or plugin is
+qualified by delivery 1, and no qualification registry or exception path exists; US04 remains open.
+The historical behavior and rationale remain in features
+[003](../specs/003-sagas-compensations/spec.md) and
+[014](../specs/014-workflow-primitives/spec.md). The proposed direction is recorded in
+[ADR-0076](../docs/adr/ADR-0076-compensation-failure-and-uncertain-effects.md), whose status remains
+**PROPOSED**. Consult the feature-037
+[validation report](../specs/037-compensation-safety/validation-report.md) before claiming
+implementation acceptance; SDK conformance proves protocol behavior, not a real provider guarantee.

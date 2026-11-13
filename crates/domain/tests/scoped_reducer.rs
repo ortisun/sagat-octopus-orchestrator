@@ -167,7 +167,7 @@ fn addressed_cancellation_replays_only_for_the_leased_instance() {
 }
 
 #[test]
-fn unsupported_scoped_condition_is_rejected_without_mutation() {
+fn a_scoped_condition_cannot_complete_a_ready_worker_step() {
     let mut state = state_with_two_iterations();
     let before = state.clone();
     let event = AddressedRunEvent::in_path(
@@ -181,9 +181,11 @@ fn unsupported_scoped_condition_is_rejected_without_mutation() {
 
     assert_eq!(
         state.apply_addressed(&event),
-        Err(ExecutionError::UnsupportedScopedEvent(
-            "condition.evaluated"
-        ))
+        Err(ExecutionError::IllegalInstanceTransition {
+            instance: instance(0),
+            status: StepStatus::Ready,
+            event: "condition.evaluated",
+        })
     );
     assert_eq!(state, before);
 }

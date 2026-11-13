@@ -247,7 +247,7 @@ pub async fn run(provider: Arc<dyn SecretProvider>) {
         .await
         .unwrap();
     assert_eq!(
-        resolved.operation.limits,
+        crate::sql_grant(&resolved).0.limits,
         DatabaseLimits {
             max_statement_bytes: 8,
             max_parameters: 2,

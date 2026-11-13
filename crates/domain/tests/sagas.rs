@@ -22,7 +22,7 @@ use sagat_domain::saga::{
     compensation_plans,
 };
 use sagat_domain::workflow::{
-    ActivityName, BackoffStrategy, JoinPolicy, Node, NodeId, NodeKind, RetryPolicy, Scope,
+    ActivityName, BackoffStrategy, JoinPolicy, NodeId, NodeKind, RetryPolicy, Scope,
     WorkflowDefinition, WorkflowError,
 };
 
@@ -840,24 +840,23 @@ fn the_provider_says_the_effect_happened_so_the_step_succeeds_without_a_second_a
 }
 
 #[test]
-fn the_provider_says_the_effect_did_not_happen_so_the_step_is_tried_again() {
+fn a_negative_lookup_needs_human_resolution_instead_of_an_automatic_retry() {
     let mut run = reconciled_submit();
     lose_the_response(&mut run);
     let f = run.lease("submit~r");
     run.reconcile("submit~r", f, ReconcileVerdict::NotApplied)
-        .expect("not applied");
-    assert_eq!(run.status("submit"), StepStatus::RetryWait);
-    run.advance(Duration::from_secs(120));
-    run.retry_due("submit").expect("due");
-    let f = run.lease("submit");
-    assert_eq!(f.attempt, 2);
-    run.complete("submit", f).expect("works");
+        .expect("lookup");
+    assert_eq!(run.status("submit"), StepStatus::Waiting);
+    assert!(run.operator_retry("submit").is_err());
+    run.operator_resolve("submit", ReviewOutcome::Succeeded)
+        .expect("verified applied externally");
     assert_eq!(run.status("submit"), StepStatus::Succeeded);
+    assert_eq!(run.state.step(&id("submit")).expect("step").attempt(), 1);
     run.assert_replays();
 }
 
 #[test]
-fn when_the_effect_did_not_happen_and_no_attempt_is_left_the_saga_compensates() {
+fn negative_lookup_with_no_attempt_left_still_requires_resolution() {
     let mut run = Harness::start(build(
         "settlement",
         vec![
@@ -873,6 +872,14 @@ fn when_the_effect_did_not_happen_and_no_attempt_is_left_the_saga_compensates() 
     let f = run.lease("submit~r");
     run.reconcile("submit~r", f, ReconcileVerdict::NotApplied)
         .expect("not applied");
+    assert_eq!(run.status("submit"), StepStatus::Waiting);
+    run.operator_resolve(
+        "submit",
+        ReviewOutcome::Failed(
+            sagat_domain::execution::FailureCode::parse("VERIFIED_ABSENT").expect("code"),
+        ),
+    )
+    .expect("human confirms final absence");
     assert_eq!(run.status("submit"), StepStatus::Failed);
     assert_eq!(comp(&run, "settlement").phase(), SagaPhase::Compensating);
     assert_eq!(run.status("reserve~c"), StepStatus::Ready);
@@ -952,24 +959,20 @@ fn an_ordinary_failure_is_not_reconciled() {
 }
 
 #[test]
-fn a_reconciled_step_can_be_reconciled_again_after_a_retry() {
+fn a_negative_lookup_cannot_reopen_the_original_or_lookup_through_retry() {
     let mut run = reconciled_submit();
     lose_the_response(&mut run);
     let f = run.lease("submit~r");
     run.reconcile("submit~r", f, ReconcileVerdict::NotApplied)
-        .expect("not applied");
+        .expect("lookup");
     run.advance(Duration::from_secs(120));
-    run.retry_due("submit").expect("due");
-    let f = run.lease("submit");
-    run.expire("submit", f, Expiry::AttemptTimeout)
-        .expect("lost again");
-    // A second round reopens the same reconciliation.
-    assert_eq!(run.status("submit~r"), StepStatus::Ready);
-    let f = run.lease("submit~r");
-    assert_eq!(f.attempt, 2, "the attempts of the reconciliation go on");
-    run.reconcile("submit~r", f, ReconcileVerdict::Applied)
-        .expect("applied");
-    assert_eq!(run.status("submit"), StepStatus::Succeeded);
+    assert!(run.retry_due("submit").is_err());
+    assert!(run.operator_retry("submit").is_err());
+    assert_eq!(run.status("submit~r"), StepStatus::Succeeded);
+    assert_eq!(
+        run.state.step(&sid("submit~r")).expect("lookup").attempt(),
+        1
+    );
     run.assert_replays();
 }
 
@@ -1011,17 +1014,18 @@ fn a_high_risk_step_with_an_unknown_outcome_waits_for_an_operator_instead_of_ret
     assert_eq!(run.state.status(), RunStatus::Succeeded);
     run.assert_replays();
 
-    // An ordinary step with the same loss is retried blindly, as before.
+    // An absent risk flag has the same conservative outcome.
     let mut ordinary = Harness::start(build("pay", vec![flaky("pay", 5)]));
     let f = ordinary.lease("pay");
     ordinary
         .expire("pay", f, Expiry::LeaseExpired)
         .expect("lost");
-    assert_eq!(ordinary.status("pay"), StepStatus::RetryWait);
+    assert_eq!(ordinary.status("pay"), StepStatus::Waiting);
+    ordinary.assert_replays();
 }
 
 #[test]
-fn an_operator_can_have_a_step_that_waited_tried_again_or_failed() {
+fn an_operator_resolves_an_unknown_effect_without_repeating_it() {
     let high_risk = || {
         Harness::start(build(
             "pay",
@@ -1037,10 +1041,10 @@ fn an_operator_can_have_a_step_that_waited_tried_again_or_failed() {
     let mut run = high_risk();
     let f = run.lease("pay");
     run.expire("pay", f, Expiry::AttemptTimeout).expect("lost");
-    run.operator_retry("pay").expect("retry");
-    let f = run.lease("pay");
-    assert_eq!(f.attempt, 2);
-    run.complete("pay", f).expect("ok");
+    assert!(run.operator_retry("pay").is_err());
+    run.operator_resolve("pay", ReviewOutcome::Succeeded)
+        .expect("resolved");
+    assert_eq!(run.state.step(&id("pay")).expect("step").attempt(), 1);
     assert_eq!(run.state.status(), RunStatus::Succeeded);
 
     let mut run = high_risk();
@@ -1235,43 +1239,37 @@ fn a_cancellation_whose_compensation_fails_is_not_a_clean_cancellation() {
 }
 
 #[test]
-fn cancelling_a_run_that_waits_for_an_operator_gives_up_on_the_review() {
+fn cancelling_a_run_preserves_known_compensation_review() {
     let mut run = failing_settlement(1, OnCompensationFailure::ManualReview);
     let f = run.lease("reserve~c");
     run.fail_with("reserve~c", f, "PROVIDER_DOWN", true)
         .expect("fails");
-    assert_eq!(run.state.status(), RunStatus::ManualReview);
     run.stop(StopReason::Cancelled).expect("cancel");
-    assert_eq!(run.status("reserve~c"), StepStatus::Cancelled);
-    assert_eq!(
-        run.state.status(),
-        RunStatus::CompensationFailed,
-        "an effect was left in place"
-    );
+    assert_eq!(run.status("reserve~c"), StepStatus::Waiting);
+    assert_eq!(run.state.status(), RunStatus::ManualReview);
+    run.operator_resolve("reserve~c", ReviewOutcome::Succeeded)
+        .expect("human resolves");
+    assert_eq!(run.state.status(), RunStatus::Cancelled);
     run.assert_replays();
 }
 
 #[test]
-fn cancelling_a_run_whose_forward_step_waits_for_an_operator_gives_up_and_compensates_defensively()
-{
+fn cancelling_a_forward_review_requires_resolution_before_compensation() {
     let mut run = reconciled_submit();
     lose_the_response(&mut run);
     let f = run.lease("submit~r");
     run.reconcile("submit~r", f, ReconcileVerdict::Unknown)
         .expect("unknown");
-    assert_eq!(run.state.status(), RunStatus::ManualReview);
-
     run.stop(StopReason::Cancelled).expect("cancel");
-    // Nobody is going to decide it: the step is given up on, and because its outcome was unknown
-    // it is undone like what completed.
-    assert_eq!(run.status("submit"), StepStatus::Cancelled);
-    assert_eq!(run.status("submit~c"), StepStatus::Ready);
-    assert_eq!(run.status("reserve~c"), StepStatus::Pending);
-    assert_ne!(run.state.status(), RunStatus::ManualReview);
-    let f = run.lease("submit~c");
-    run.complete("submit~c", f).expect("undo submit");
-    let f = run.lease("reserve~c");
-    run.complete("reserve~c", f).expect("undo reserve");
+    assert_eq!(run.status("submit"), StepStatus::Waiting);
+    assert!(!run.has_step("submit~c"));
+    assert_eq!(run.state.status(), RunStatus::ManualReview);
+    run.operator_resolve("submit", ReviewOutcome::Succeeded)
+        .expect("human confirms original");
+    for node in ["submit~c", "reserve~c"] {
+        let f = run.lease(node);
+        run.complete(node, f).expect("undo confirmed effect");
+    }
     assert_eq!(run.state.status(), RunStatus::Cancelled);
     run.assert_replays();
 }
@@ -1337,9 +1335,8 @@ fn neither_a_lookup_nor_a_compensation_in_flight_is_asked_to_stop_when_the_run_i
 }
 
 #[test]
-fn an_effect_that_may_have_happened_is_compensated_defensively() {
-    // `submit` times out with no reconciliation: its outcome is unknown, the retry is cancelled,
-    // and the compensation is asked to undo an effect that may never have happened.
+fn an_effect_that_may_have_happened_requires_review_before_compensation() {
+    // No qualification: declaring compensation cannot authorize an unknown effect's undo.
     let mut run = Harness::start(build(
         "settlement",
         vec![
@@ -1352,17 +1349,18 @@ fn an_effect_that_may_have_happened_is_compensated_defensively() {
     run.complete("reserve", f).expect("reserve");
     let f = run.lease("submit");
     run.expire("submit", f, Expiry::LeaseExpired).expect("lost");
-    assert_eq!(run.status("submit"), StepStatus::RetryWait);
+    assert_eq!(run.status("submit"), StepStatus::Waiting);
     run.stop(StopReason::Cancelled).expect("cancel");
-    assert_eq!(run.status("submit"), StepStatus::Cancelled);
-    assert_eq!(run.status("submit~c"), StepStatus::Ready);
-    assert_eq!(run.status("reserve~c"), StepStatus::Pending);
+    assert_eq!(run.status("submit"), StepStatus::Waiting);
+    assert!(!run.has_step("submit~c"));
+    assert!(!run.has_step("reserve~c"));
+    run.assert_replays();
 }
 
 #[test]
-fn every_way_an_outcome_can_be_unknown_makes_the_effect_compensated_defensively() {
+fn every_attempt_ambiguity_preserves_review_instead_of_defensive_compensation() {
     // A lost lease, an attempt that ran out of time and a worker that says it does not know: none of
-    // them tells whether the effect happened, so none of them may leave it out of the plan.
+    // them tells whether the effect happened, so none authorizes a defensive plan.
     for cause in ["lease", "timeout", "worker"] {
         let mut run = Harness::start(build(
             "settlement",
@@ -1384,17 +1382,9 @@ fn every_way_an_outcome_can_be_unknown_makes_the_effect_compensated_defensively(
                 .fail_with("submit", f, "OUTCOME_UNKNOWN", false)
                 .expect("unknown"),
         }
-        assert_eq!(
-            comp(&run, "settlement").phase(),
-            SagaPhase::Compensating,
-            "{cause}"
-        );
-        assert_eq!(
-            run.status("submit~c"),
-            StepStatus::Ready,
-            "{cause}: the effect may have happened, so it is undone first"
-        );
-        assert_eq!(run.status("reserve~c"), StepStatus::Pending, "{cause}");
+        assert_eq!(run.state.status(), RunStatus::ManualReview, "{cause}");
+        assert_eq!(run.status("submit"), StepStatus::Waiting, "{cause}");
+        assert!(!run.has_step("submit~c"), "{cause}");
         run.assert_replays();
     }
 }
@@ -1443,8 +1433,18 @@ fn skipping_a_compensation_lets_the_ones_that_waited_for_it_go_on() {
 }
 
 #[test]
-fn an_unknown_outcome_only_makes_the_saga_partial_when_nothing_can_undo_what_may_have_happened() {
-    let unknown_then_cancel = |submit: Node| {
+fn unknown_outcomes_never_become_partial_or_compensated_from_risk_metadata() {
+    for submit in [
+        effect("submit", false),
+        activity("submit"),
+        with_effect(
+            activity("submit"),
+            EffectPolicy {
+                high_risk: true,
+                ..EffectPolicy::NONE
+            },
+        ),
+    ] {
         let mut run = Harness::start(build(
             "settlement",
             vec![
@@ -1458,50 +1458,12 @@ fn an_unknown_outcome_only_makes_the_saga_partial_when_nothing_can_undo_what_may
         let f = run.lease("submit");
         run.expire("submit", f, Expiry::LeaseExpired).expect("lost");
         run.stop(StopReason::Cancelled).expect("cancel");
-        run
-    };
-    let finish = |run: &mut Harness| {
-        while let Some(node) = ["submit~c", "reserve~c"]
-            .into_iter()
-            .find(|n| run.has_step(n) && run.status(n) == StepStatus::Ready)
-        {
-            let f = run.lease(node);
-            run.complete(node, f).expect("undo");
-        }
-    };
-    let high_risk = EffectPolicy {
-        high_risk: true,
-        ..EffectPolicy::NONE
-    };
-
-    // High risk and it can be undone: it is undone, and the saga is compensated, not partial.
-    let mut run = unknown_then_cancel(with_effect(effect("submit", false), high_risk));
-    assert_eq!(run.status("submit~c"), StepStatus::Ready);
-    finish(&mut run);
-    assert_eq!(
-        comp(&run, "settlement").outcome(),
-        Some(SagaOutcome::Compensated)
-    );
-    assert!(comp(&run, "settlement").irreversible().is_empty());
-
-    // An ordinary step with nothing to undo it, and no promise that it is safe to repeat: nothing
-    // is claimed about it.
-    let mut run = unknown_then_cancel(activity("submit"));
-    assert!(!run.has_step("submit~c"));
-    finish(&mut run);
-    assert_eq!(
-        comp(&run, "settlement").outcome(),
-        Some(SagaOutcome::Compensated)
-    );
-
-    // High risk and nothing to undo it with: the saga cannot claim to have undone everything.
-    let mut run = unknown_then_cancel(with_effect(activity("submit"), high_risk));
-    finish(&mut run);
-    assert_eq!(
-        comp(&run, "settlement").outcome(),
-        Some(SagaOutcome::Partial)
-    );
-    assert_eq!(comp(&run, "settlement").irreversible(), [id("submit")]);
+        assert_eq!(run.status("submit"), StepStatus::Waiting);
+        assert_eq!(run.state.status(), RunStatus::ManualReview);
+        assert_eq!(comp(&run, "settlement").outcome(), None);
+        assert!(!run.has_step("submit~c"));
+        run.assert_replays();
+    }
 }
 
 // ------------------------------------------------------------------ findings of the review
@@ -1776,7 +1738,7 @@ fn the_plan_is_the_same_as_the_one_worked_out_the_long_way() {
 }
 
 #[test]
-fn an_attempt_whose_outcome_became_unknown_while_the_run_was_being_cancelled_is_still_undone() {
+fn an_unknown_outcome_after_cancel_is_still_held_for_review() {
     // The run is cancelled while `submit` runs and its worker is asked to stop; then the worker
     // dies and the lease runs out. Whether the effect happened is unknown, whichever came first.
     let (mut run, submit) = mid_flight(SagaCancelPolicy::CompensateCompleted);
@@ -1790,31 +1752,24 @@ fn an_attempt_whose_outcome_became_unknown_while_the_run_was_being_cancelled_is_
     run.expire("submit", submit, Expiry::LeaseExpired)
         .expect("lost");
 
-    assert_eq!(run.status("submit"), StepStatus::Cancelled);
-    assert_eq!(
-        run.status("submit~c"),
-        StepStatus::Ready,
-        "the effect may have happened, so it is undone like when the lease ran out first"
-    );
+    assert_eq!(run.status("submit"), StepStatus::Waiting);
+    assert_eq!(run.state.status(), RunStatus::ManualReview);
+    assert!(!run.has_step("submit~c"));
     run.assert_replays();
 }
 
 #[test]
-fn a_lookup_that_found_nothing_leaves_the_step_known_not_to_have_happened() {
+fn a_negative_lookup_stays_unknown_when_the_run_is_cancelled() {
     let mut run = reconciled_submit();
     lose_the_response(&mut run);
     let f = run.lease("submit~r");
     run.reconcile("submit~r", f, ReconcileVerdict::NotApplied)
-        .expect("not applied");
-    assert_eq!(run.status("submit"), StepStatus::RetryWait);
-    // The saga is stopped while the step backs off: there is nothing to undo for `submit`.
+        .expect("lookup");
     run.stop(StopReason::Cancelled).expect("cancel");
-    assert_eq!(run.status("submit"), StepStatus::Cancelled);
-    assert!(
-        !run.has_step("submit~c"),
-        "the lookup said it did not happen"
-    );
-    assert!(comp(&run, "settlement").irreversible().is_empty());
+    assert_eq!(run.status("submit"), StepStatus::Waiting);
+    assert!(!run.has_step("submit~c"));
+    assert_eq!(comp(&run, "settlement").outcome(), None);
+    run.assert_replays();
 }
 
 #[test]
@@ -1849,9 +1804,9 @@ fn a_retry_is_refused_on_a_step_of_a_saga_that_stopped_going_forward() {
     assert!(
         matches!(
             run.operator_retry("x2"),
-            Err(ExecutionError::IllegalTransition { .. })
+            Err(ExecutionError::OutcomeUnresolved(_))
         ),
-        "a retry would be cancelled the moment it was granted"
+        "x2's outcome is unknown: nobody may repeat it, and a retry would be cancelled anyway"
     );
     // What the person can still do is say whether it happened: the saga undoes it, or not.
     run.operator_resolve("x2", ReviewOutcome::Succeeded)
@@ -1987,4 +1942,147 @@ fn nested_outcomes_are_not_hidden_by_the_outer_saga() {
     // what really happened.
     assert_eq!(comp(&run, "inner").outcome(), Some(SagaOutcome::Partial));
     assert_eq!(run.state.status(), RunStatus::Partial);
+}
+
+// Feature 037: conservative defaults do not depend on an author's risk label.
+#[test]
+fn unknown_activity_defaults_to_review() {
+    for high_risk in [false, true] {
+        let mut run = Harness::start(build(
+            "pay",
+            vec![with_effect(
+                flaky("pay", 5),
+                EffectPolicy {
+                    high_risk,
+                    ..EffectPolicy::NONE
+                },
+            )],
+        ));
+        let fence = run.lease("pay");
+        run.fail_with("pay", fence, "OUTCOME_UNKNOWN", true)
+            .expect("report accepted");
+        assert_eq!(run.status("pay"), StepStatus::Waiting);
+        assert_eq!(run.state.status(), RunStatus::ManualReview);
+        assert_eq!(run.state.step(&id("pay")).expect("step").attempt(), 1);
+        run.assert_replays();
+    }
+}
+
+#[test]
+fn negative_lookup_requires_finality() {
+    for retry in [RetryPolicy::no_retry(), RetryPolicy::DEFAULT] {
+        let mut run = Harness::start(build("pay", vec![effect_with("pay", true, retry)]));
+        let fence = run.lease("pay");
+        run.expire("pay", fence, Expiry::LeaseExpired)
+            .expect("lost response");
+        let lookup = run.lease("pay~r");
+        run.reconcile("pay~r", lookup, ReconcileVerdict::NotApplied)
+            .expect("lookup");
+        assert_eq!(run.status("pay"), StepStatus::Waiting);
+        assert!(
+            matches!(run.state.step(&id("pay")).expect("step").waiting_on(),
+            Some(WaitingOn::Operator { code }) if code.as_str() == "RECONCILIATION_NOT_FINAL")
+        );
+        run.assert_replays();
+    }
+}
+
+#[test]
+fn unknown_compensation_overrides_fail() {
+    for policy in [
+        OnCompensationFailure::ManualReview,
+        OnCompensationFailure::Fail,
+    ] {
+        for retryable in [false, true] {
+            let mut run = failing_settlement(3, policy);
+            let fence = run.lease("reserve~c");
+            run.fail_with("reserve~c", fence, "OUTCOME_UNKNOWN", retryable)
+                .expect("unknown");
+            assert_eq!(run.status("reserve~c"), StepStatus::Waiting);
+            assert_eq!(run.state.status(), RunStatus::ManualReview);
+            assert!(!run.state.is_finished());
+            run.assert_replays();
+        }
+    }
+}
+
+#[test]
+fn unknown_effect_is_not_a_compensation_candidate() {
+    use sagat_domain::execution::{FailureCode, PlannedEntry, RunEvent};
+    let mut run = Harness::start(build(
+        "settlement",
+        vec![saga("settlement", "pay"), effect("pay", false)],
+    ));
+    let fence = run.lease("pay");
+    run.fail_with("pay", fence, "OUTCOME_UNKNOWN", false)
+        .expect("unknown");
+    let mut state = run.state.clone();
+    state
+        .apply(&RunEvent::SagaAborting {
+            node: id("settlement"),
+            cause: FailureCode::outcome_unknown(),
+        })
+        .expect("abort begins");
+    let before = state.clone();
+    assert!(
+        state
+            .apply(&RunEvent::CompensationPlanned {
+                node: id("settlement"),
+                entries: vec![PlannedEntry {
+                    node: id("pay"),
+                    after: vec![]
+                }],
+                irreversible: vec![],
+            })
+            .is_err(),
+        "replay must refuse a forged defensive plan"
+    );
+    assert_eq!(state, before);
+}
+
+#[test]
+fn unknown_effect_retry_requires_resolution() {
+    for compensation in [false, true] {
+        let (mut run, node) = if compensation {
+            (
+                failing_settlement(3, OnCompensationFailure::ManualReview),
+                "reserve~c",
+            )
+        } else {
+            (Harness::start(build("pay", vec![activity("pay")])), "pay")
+        };
+        let fence = run.lease(node);
+        run.fail_with(node, fence, "OUTCOME_UNKNOWN", false)
+            .expect("unknown");
+        let before = run.state.clone();
+        assert!(run.operator_retry(node).is_err());
+        assert_eq!(run.state, before, "refusal changes no state");
+        run.operator_resolve(node, ReviewOutcome::Succeeded)
+            .expect("human resolution remains available");
+        run.assert_replays();
+    }
+}
+
+#[test]
+fn stop_preserves_recovery_obligation() {
+    for reason in [StopReason::Cancelled, StopReason::TimedOut] {
+        for compensation in [false, true] {
+            let (mut run, node) = if compensation {
+                (
+                    failing_settlement(1, OnCompensationFailure::ManualReview),
+                    "reserve~c",
+                )
+            } else {
+                (Harness::start(build("pay", vec![activity("pay")])), "pay")
+            };
+            let fence = run.lease(node);
+            run.fail_with(node, fence, "OUTCOME_UNKNOWN", false)
+                .expect("unknown");
+            run.stop(reason).expect("stop request");
+            assert_eq!(run.status(node), StepStatus::Waiting);
+            assert_eq!(run.state.status(), RunStatus::ManualReview);
+            assert!(!run.state.is_finished());
+            run.assert_replays();
+        }
+    }
 }

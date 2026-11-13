@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use sagat_application::error::AppError;
 use sagat_application::execution::MAX_RUN_OUTPUT_BYTES;
+use sagat_application::runs::ReviewAction;
 use sagat_application::worker::WorkerSettings;
 use sagat_domain::execution::{RunStatus, StepStatus};
 use sagat_domain::quota::QuotaResource;
@@ -113,24 +114,32 @@ async fn close_content_quota(w: &crate::support::engine::World) {
 }
 
 #[tokio::test]
-async fn successful_report_at_full_storage_stops_run_without_on_error_and_replays_original() {
+async fn successful_report_at_full_storage_retains_review_without_defensive_compensation() {
     let settings = WorkerSettings {
         lease_ttl: Duration::from_millis(5),
         ..WorkerSettings::default()
     };
     let w = world_with(settings).await;
+    let write = with(
+        effect_node("write", None, false),
+        "onError",
+        json!("would-grow"),
+    );
     let (workflow, _) = w
         .publish(document(
             "storage-terminal-fallback",
-            "write",
+            "saga",
             vec![
-                with(activity("write"), "onError", json!("would-grow")),
+                saga_node("saga", "write", None),
+                write,
                 activity("would-grow"),
             ],
         ))
         .await;
     let run = w.start(workflow, &json!({"input": true})).await;
-    let session = w.session(&["act.write", "act.would-grow"]).await;
+    let session = w
+        .session(&["act.write", "undo.write", "act.would-grow"])
+        .await;
     let task = w.one_task(&session).await;
     close_content_quota(&w).await;
     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -139,12 +148,13 @@ async fn successful_report_at_full_storage_stops_run_without_on_error_and_replay
     let ack = w
         .complete(&session, &task, &output)
         .await
-        .expect("quota fallback is an accepted terminal report");
-    assert_eq!(ack.step_status, StepStatus::Failed);
-    assert_eq!(ack.run_status, RunStatus::Failed);
+        .expect("quota fallback durably retains the ambiguous successful report");
+    assert_eq!(ack.step_status, StepStatus::Waiting);
+    assert_eq!(ack.run_status, RunStatus::ManualReview);
     assert!(!ack.already_applied);
-    assert_eq!(w.run_status(run).await, RunStatus::Failed);
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
     assert_eq!(w.step_status(run, "would-grow").await, None);
+    assert_eq!(w.step_status(run, "write~c").await, None);
     let code: Option<String> = sqlx::query_scalar(
         "SELECT failure_code FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='write'",
     )
@@ -154,6 +164,23 @@ async fn successful_report_at_full_storage_stops_run_without_on_error_and_replay
     .await
     .expect("failed step");
     assert_eq!(code.as_deref(), Some("STORAGE_QUOTA_EXCEEDED"));
+    assert!(w.poll(&session, 4).await.is_empty());
+    let journal = w.journal(run).await;
+    assert!(journal.contains(&"step.needs_review".to_owned()));
+    assert!(
+        matches!(
+            w.review(
+                run,
+                "write",
+                ReviewAction::Retry,
+                "storage refusal left the external outcome unknown",
+            )
+            .await,
+            Err(AppError::OutcomeUnresolved)
+        ),
+        "unknown successful output requires an outcome-bearing resolution"
+    );
+    assert_eq!(w.journal(run).await, journal, "refusal changes no journal");
 
     let replay = w
         .complete(&session, &task, &output)
@@ -286,8 +313,9 @@ async fn secret_output_quota_fallback_preserves_redacted_audit_and_success_effec
     let ack = w
         .complete(&session, &task, &json!({"echo": SECRET}))
         .await
-        .expect("secret rejection has a quota-safe terminal fallback");
-    assert_eq!(ack.step_status, StepStatus::Failed);
+        .expect("secret rejection retains an unresolved successful report");
+    assert_eq!(ack.step_status, StepStatus::Waiting);
+    assert_eq!(ack.run_status, RunStatus::ManualReview);
     assert_eq!(w.step_status(run, "would-grow").await, None);
     let code: Option<String> = sqlx::query_scalar(
         "SELECT failure_code FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='write'",
@@ -312,7 +340,16 @@ async fn secret_output_quota_fallback_preserves_redacted_audit_and_success_effec
 }
 
 #[tokio::test]
-async fn run_output_limit_rejection_uses_the_success_quota_fallback_when_routing_cannot_fit() {
+async fn run_output_limit_with_full_storage_preserves_review_without_error_routing() {
+    assert_run_output_limit_preserves_review(true).await;
+}
+
+#[tokio::test]
+async fn run_output_limit_alone_preserves_review_of_a_successful_external_effect() {
+    assert_run_output_limit_preserves_review(false).await;
+}
+
+async fn assert_run_output_limit_preserves_review(content_quota_closed: bool) {
     let w = world().await;
     w.publish(document(
         "limit-quota-child",
@@ -352,12 +389,15 @@ async fn run_output_limit_rejection_uses_the_success_quota_fallback_when_routing
             .expect("output fits run budget");
     }
     let crossing = w.one_task(&session).await;
-    close_content_quota(&w).await;
+    if content_quota_closed {
+        close_content_quota(&w).await;
+    }
     let ack = w
         .complete(&session, &crossing, &output)
         .await
-        .expect("run-limit rejection has a quota-safe fallback");
-    assert_eq!(ack.step_status, StepStatus::Failed);
+        .expect("run-limit rejection retains an unresolved successful report");
+    assert_eq!(ack.step_status, StepStatus::Waiting);
+    assert_eq!(ack.run_status, RunStatus::ManualReview);
     assert_eq!(w.step_status(run, "would-grow").await, None);
     let code: Option<String> = sqlx::query_scalar(
         "SELECT failure_code FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node=$3",
@@ -368,7 +408,22 @@ async fn run_output_limit_rejection_uses_the_success_quota_fallback_when_routing
     .fetch_one(&w.db.pool)
     .await
     .expect("storage failure code");
+    // The payload-free review fits even when tenant content is full; there is no error-route
+    // allocation to fail and no artificial tenant-quota fallback.
     assert_eq!(code.as_deref(), Some("STORAGE_QUOTA_EXCEEDED"));
+    assert!(w.poll(&session, 4).await.is_empty());
+    let journal = w.journal(run).await;
+    assert!(matches!(
+        w.review(
+            run,
+            crossing.instance.node().as_str(),
+            ReviewAction::Retry,
+            "the successful output could not be retained"
+        )
+        .await,
+        Err(AppError::OutcomeUnresolved)
+    ));
+    assert_eq!(w.journal(run).await, journal);
     let replay = w
         .complete(&session, &crossing, &output)
         .await
@@ -378,7 +433,7 @@ async fn run_output_limit_rejection_uses_the_success_quota_fallback_when_routing
 }
 
 #[tokio::test]
-async fn expired_lease_at_full_storage_stops_then_drains_without_child_error_route() {
+async fn expired_lease_at_full_storage_retains_review_without_allocating_a_child_error_route() {
     let w = world().await;
     w.publish(document(
         "expiry-quota-child",
@@ -406,21 +461,27 @@ async fn expired_lease_at_full_storage_stops_then_drains_without_child_error_rou
     close_content_quota(&w).await;
     w.age_lease(run, "write").await;
 
-    let stopped = w.scheduler.tick().await;
-    assert_eq!(stopped.quota_stops, 1, "{stopped:?}");
-    assert_eq!(stopped.leases_expired, 0, "the expiry rolled back");
-    assert_eq!(w.step_status(run, "write").await, Some(StepStatus::Leased));
+    // Review contains no retained payload. Unlike the old error route, it needs no new
+    // child input, so the real content ceiling does not cause a quota rejection or stop.
+    let reviewed = w.scheduler.tick().await;
+    assert_eq!(reviewed.quota_stops, 0, "{reviewed:?}");
+    assert_eq!(reviewed.leases_expired, 1, "{reviewed:?}");
+    let idle = w.scheduler.tick().await;
+    assert_eq!(idle.leases_expired, 0, "{idle:?}");
+    assert_eq!(idle.quota_stops, 0, "{idle:?}");
+    assert_eq!(w.step_status(run, "write").await, Some(StepStatus::Waiting));
     assert_eq!(w.step_status(run, "would-grow").await, None);
-
-    let drained = w.scheduler.tick().await;
-    assert_eq!(drained.leases_expired, 1, "{drained:?}");
-    assert_eq!(drained.quota_stops, 0, "{drained:?}");
-    assert_eq!(
-        w.step_status(run, "write").await,
-        Some(StepStatus::Cancelled)
-    );
-    assert_eq!(w.step_status(run, "would-grow").await, None);
-    assert_eq!(w.run_status(run).await, RunStatus::Failed);
+    assert_eq!(w.run_status(run).await, RunStatus::ManualReview);
+    assert!(w.poll(&session, 4).await.is_empty());
+    let step_code: Option<String> = sqlx::query_scalar(
+        "SELECT failure_code FROM steps WHERE tenant_id=$1 AND run_id=$2 AND node='write'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(run.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("unknown expired attempt code");
+    assert_eq!(step_code.as_deref(), Some("LEASE_EXPIRED"));
     let stop_code: Option<String> =
         sqlx::query_scalar("SELECT stop_code FROM runs WHERE tenant_id=$1 AND id=$2")
             .bind(w.admin.tenant_id().as_uuid())
@@ -428,7 +489,10 @@ async fn expired_lease_at_full_storage_stops_then_drains_without_child_error_rou
             .fetch_one(&w.db.pool)
             .await
             .expect("storage stop code");
-    assert_eq!(stop_code.as_deref(), Some("STORAGE_QUOTA_EXCEEDED"));
+    assert_eq!(
+        stop_code, None,
+        "review did not attempt to retain more content"
+    );
     w.assert_consistent(run).await;
 }
 

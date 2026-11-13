@@ -1,10 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/infra-database", "crates/infra-blobstore", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-connectors", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/infra-sandbox", "crates/infra-schema", "crates/scheduler", "apps/cli", "apps/control-plane", "apps/dev-idp", "apps/execution-engine", "apps/sandbox-runner", "apps/database-runner", "tests"]
+exclude = ["vendor/rskafka"]
+members = ["crates/domain", "crates/application", "crates/infra-postgres", "crates/infra-database", "crates/infra-lake", "crates/infra-blobstore", "crates/telemetry", "crates/api-http", "crates/api-grpc", "crates/infra-nats", "crates/infra-egress", "crates/infra-connectors", "crates/infra-secrets", "crates/infra-expr", "crates/infra-ir", "crates/infra-sandbox", "crates/infra-schema", "crates/scheduler", "apps/cli", "apps/control-plane", "apps/dev-idp", "apps/execution-engine", "apps/sandbox-runner", "apps/database-runner", "tests"]
 
 [workspace.package]
 license = "MIT"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.98"
 repository = "https://github.com/ortisun/sagat-octopus-orchestrator"
@@ -18,6 +19,7 @@ sagat-application = { path = "crates/application" }
 sagat-infra-blobstore = { path = "crates/infra-blobstore" }
 sagat-infra-postgres = { path = "crates/infra-postgres" }
 sagat-infra-database = { path = "crates/infra-database" }
+sagat-infra-lake = { path = "crates/infra-lake" }
 sagat-telemetry = { path = "crates/telemetry" }
 sagat-api-http = { path = "crates/api-http" }
 sagat-api-grpc = { path = "crates/api-grpc" }
@@ -58,6 +60,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 time = { version = "0.3", default-features = false, features = ["std"] }
 # gRPC (worker protocol). The .proto is compiled by `protox` (pure Rust) so builds need no `protoc`.
 # NATS JetStream (outbox hints). Only the JetStream client is needed.
+redis = { version = "=1.7.1", default-features = false, features = ["tokio-rustls-comp", "tls-rustls-webpki-roots"] }
 async-nats = { version = "0.50", default-features = false, features = ["jetstream", "ring", "nkeys", "server_2_10"] }
 tonic = { version = "0.14", features = ["tls-ring"] }
 tonic-prost = "0.14"
@@ -91,3 +94,7 @@ unimplemented = "warn"
 [profile.release]
 lto = "thin"
 strip = "symbols"
+
+# Temporary manifest-only override; see docs/engineering/dependency-overrides.md.
+[patch.crates-io]
+rskafka = { path = "vendor/rskafka" }

@@ -1,0 +1,108 @@
+{
+  "public-scoped-events-red.txt": {
+    "originalSHA256": "289a4bb2ab1667555099a3d9279fe4fea7485ad4d8f89bd92954b23fd514a19a",
+    "storedSHA256": "289a4bb2ab1667555099a3d9279fe4fea7485ad4d8f89bd92954b23fd514a19a",
+    "inputCopySHA256": "289a4bb2ab1667555099a3d9279fe4fea7485ad4d8f89bd92954b23fd514a19a"
+  },
+  "public-scoped-events-green.txt": {
+    "originalSHA256": "4dd92ad9646775343914fe45c32d032f44f9a26a882fa9583982f3063a8de2b7",
+    "storedSHA256": "4dd92ad9646775343914fe45c32d032f44f9a26a882fa9583982f3063a8de2b7",
+    "inputCopySHA256": "4dd92ad9646775343914fe45c32d032f44f9a26a882fa9583982f3063a8de2b7"
+  },
+  "public-scoped-events-timeout-field-green.txt": {
+    "originalSHA256": "e22ca1c0fece083223ead9348c9e2df8f11df0b192654e0d7db5fcb5e036e313",
+    "storedSHA256": "2dcd9c844e592530dc0b4e77ed7fb7a819eef988c9bfcff27e73902fd4bff5e9",
+    "inputCopySHA256": "2dcd9c844e592530dc0b4e77ed7fb7a819eef988c9bfcff27e73902fd4bff5e9"
+  },
+  "public-scoped-events-lifecycle.txt": {
+    "originalSHA256": "f0acc47da210326f66993805cbf951d48ac6936865662f32098470efcb9cae01",
+    "storedSHA256": "9f23b39cf2f9e795e8ab926208550348c709414800cc461a62ee4db0bc5b1d6f",
+    "inputCopySHA256": "9f23b39cf2f9e795e8ab926208550348c709414800cc461a62ee4db0bc5b1d6f"
+  },
+  "public-scoped-events-complete-lifecycle.txt": {
+    "originalSHA256": "024e062275dbd3dd4db5aacd87e5219476ed741be164f2bb881f9f50b32eded7",
+    "storedSHA256": "c1810fc513f70d30980b74107d368318b70df2d6eae16f2c23bfb904d1e3be60",
+    "inputCopySHA256": "c1810fc513f70d30980b74107d368318b70df2d6eae16f2c23bfb904d1e3be60"
+  },
+  "public-scoped-events-cutover-preflight.txt": {
+    "originalSHA256": "693aae8c9f948ba80e5d224b0a45c614330502a580ad56757e97290146e16206",
+    "storedSHA256": "693aae8c9f948ba80e5d224b0a45c614330502a580ad56757e97290146e16206",
+    "inputCopySHA256": "693aae8c9f948ba80e5d224b0a45c614330502a580ad56757e97290146e16206"
+  },
+  "public-scoped-events-cutover-final.txt": {
+    "originalSHA256": "c8e11daabf91af981f2edea7a2da4b910fb89b74d0dc4392a281bfb7863f1c1b",
+    "storedSHA256": "7f77a6bcd932975c4e1e6c309229b655ace18079772de3af80aa84b33860eaf2",
+    "inputCopySHA256": "be96df34235970255de71f1531a5ea66fb9945a61ccb043acaef1c1892a94eed"
+  },
+  "public-scoped-events-five-sdk-first.txt": {
+    "originalSHA256": "a9319ac81b5a34385e2e5b76b17c498a3dd3a763e62e3925c731c3ccc47df66b",
+    "storedSHA256": "a9319ac81b5a34385e2e5b76b17c498a3dd3a763e62e3925c731c3ccc47df66b",
+    "inputCopySHA256": "a9319ac81b5a34385e2e5b76b17c498a3dd3a763e62e3925c731c3ccc47df66b"
+  },
+  "public-scoped-events-five-sdk-deterministic.txt": {
+    "originalSHA256": "033a6923223bd5c00620e2416d92b10a8c9f1599fcf5487e3724ac3523e7ca4c",
+    "storedSHA256": "033a6923223bd5c00620e2416d92b10a8c9f1599fcf5487e3724ac3523e7ca4c",
+    "inputCopySHA256": "033a6923223bd5c00620e2416d92b10a8c9f1599fcf5487e3724ac3523e7ca4c"
+  },
+  "public-scoped-events-five-sdk-final.txt": {
+    "originalSHA256": "8882bf49ce309d944a4a205b31a17008acbcc3fafbd4b4aed9bb06435778854d",
+    "storedSHA256": "3af89c75cbcef380da652521f50a1d92bf5f11084577894c72a7bb26e3b51262",
+    "inputCopySHA256": "3af89c75cbcef380da652521f50a1d92bf5f11084577894c72a7bb26e3b51262"
+  },
+  "public-scoped-events-contracts.txt": {
+    "originalSHA256": "5695228f44bba842292392428fbb735298306256b8d6d9e8041466ec2feb03b9",
+    "storedSHA256": "cf9c0960f4f93c1d0dff21ce5215d1ac95cc12920e5e15bf6c44b4b26d95d728",
+    "inputCopySHA256": "cf9c0960f4f93c1d0dff21ce5215d1ac95cc12920e5e15bf6c44b4b26d95d728"
+  },
+  "public-scoped-events-ir-tests.txt": {
+    "originalSHA256": "91c3d2de8aaa526605146c05ad07a9270515f2d1b48389acd3e8d23ffaffc8c5",
+    "storedSHA256": "b37b67d5bfa3e1924b735cd5a91a89b6d4da495edbf687a52cb80ead0cd5a95f",
+    "inputCopySHA256": "b37b67d5bfa3e1924b735cd5a91a89b6d4da495edbf687a52cb80ead0cd5a95f"
+  },
+  "cutover-current-source.json": {
+    "uncompressedSHA256": "5d41e2d0f4a3fdcc84dd0cd1dc6fd9874a785058e1e564d8aa6780efeab492e6"
+  },
+  "cutover-phases.txt": {
+    "originalSHA256": "ab47c4c98d9b2537091839c5263f449421f814a567ff69fa2d31222950f0a7a7",
+    "storedSHA256": "25123f86a1ad1232b74ff1484d48506aaa9900b5f2877d5504a416cf3c3dbded",
+    "inputCopySHA256": "878e84574071add41a4c7b9e072508e21cdbff03561fc9d98b8228b409d04f4b"
+  },
+  "public-scoped-events-workspace-clippy.txt": {
+    "originalSHA256": "9f5ac55d0d9c9a823df0a43eb25a9bd530930422ebff5dc7cf8ecbd52cb62df8",
+    "storedSHA256": "9f5ac55d0d9c9a823df0a43eb25a9bd530930422ebff5dc7cf8ecbd52cb62df8",
+    "inputCopySHA256": "9f5ac55d0d9c9a823df0a43eb25a9bd530930422ebff5dc7cf8ecbd52cb62df8"
+  },
+  "public-scoped-events-workspace-clippy-final.txt": {
+    "originalSHA256": "03b878fedf5f79961607e589cf4223818037890096940a3a45db29f86a6baa76",
+    "storedSHA256": "03b878fedf5f79961607e589cf4223818037890096940a3a45db29f86a6baa76",
+    "inputCopySHA256": "03b878fedf5f79961607e589cf4223818037890096940a3a45db29f86a6baa76"
+  },
+  "public-scoped-events-native-regression.txt": {
+    "originalSHA256": "840aec9ff164a5b6048e4148dab839dc8c8eb354ba6bd42152b15b2f51d67d89",
+    "storedSHA256": "fce1140db06a1902392fc65817e7995748a5c7557d36c4ebd6ec490a2390df9c",
+    "inputCopySHA256": "fce1140db06a1902392fc65817e7995748a5c7557d36c4ebd6ec490a2390df9c"
+  },
+  "final-current-source.json": {
+    "uncompressedSHA256": "4e8dc32c1b89fd1923d118a22da707f8817aa3b9d129fd6525cd0625d5471fa5"
+  },
+  "wrapper-missing-target.txt": {
+    "inputCopySHA256": "b3a4cd15e4b4abe128e7eb5c8eb4c6c792148b9c121ebe211a43ed8e35dcc8de",
+    "storedSHA256": "b3a4cd15e4b4abe128e7eb5c8eb4c6c792148b9c121ebe211a43ed8e35dcc8de"
+  },
+  "final-inflight-worker/runner.txt": {
+    "inputCopySHA256": "a97b20b569c670f3c8e2757712802ae0fd06e25678dc9ca3da90c1ff966b9f71",
+    "storedSHA256": "a97b20b569c670f3c8e2757712802ae0fd06e25678dc9ca3da90c1ff966b9f71"
+  },
+  "final-active-data/runner.txt": {
+    "inputCopySHA256": "9783ddfdfc347b4cafcc50ef015a10914d2a29667947e4d89ed3f5cafc6de0c6",
+    "storedSHA256": "9783ddfdfc347b4cafcc50ef015a10914d2a29667947e4d89ed3f5cafc6de0c6"
+  },
+  "final-scoped-event-cutover/runner.txt": {
+    "inputCopySHA256": "0913dfd92edbe7f892fcb99776e1e5882d7e9e36937941903088ad258a5039cc",
+    "storedSHA256": "d1518a1a5c5746a320d551327c2524674e033c95398facff564f843352b83fc8"
+  },
+  "final-applied-lookup/runner.txt": {
+    "inputCopySHA256": "f1e4a43015fdfab65cf073c9e0d73fbb23d9d907a9f5d8d5f9806eb1502d6aff",
+    "storedSHA256": "f1e4a43015fdfab65cf073c9e0d73fbb23d9d907a9f5d8d5f9806eb1502d6aff"
+  }
+}

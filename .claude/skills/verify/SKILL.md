@@ -9,7 +9,7 @@ Evidence over assertion (AGENTS.md rules 12 and 17). Run what applies to the cha
 ## Always
 1. `cargo fmt --check`
 2. `cargo clippy --workspace --all-targets --locked -- -D warnings`
-3. `python3 scripts/check-architecture.py && python3 scripts/check-agent-config.py`
+3. `python3 scripts/check-architecture.py && python3 scripts/check-agent-config.py && python3 scripts/check-design-docs.py`
 4. The suites of every crate and feature you touched: `cargo test -p sagat-tests --test <kind>_<feature>`; also `integration_platform_foundation` (it holds the runtime-privilege audit) and `integration_security_multitenancy` when you touched SQL, permissions or an API.
 5. The same suites with `SAGAT_TEST_AS_RUNTIME_ROLE=1`. (Not `integration_scalability_ha`: it probes owner-only operations on purpose.)
 
@@ -22,7 +22,7 @@ Evidence over assertion (AGENTS.md rules 12 and 17). Run what applies to the cha
 - **A decision** hard to reverse: `/adr`.
 
 ## Whole workspace
-`RUST_TEST_THREADS=2 cargo test --workspace --locked --no-fail-fast` is what CI runs. On this machine run it with the Docker daemon of the project (`DOCKER_HOST=unix://$HOME/.colima/sagat-remaining/docker.sock`) or failures will be environmental; say so rather than trusting or ignoring them.
+`RUST_TEST_THREADS=2 cargo test --workspace --locked --no-fail-fast` runs every suite, and it is what a release runs in CI together with the lints and the other checks. A pull request runs in CI only the unit tests of the changed packages and of their dependents and the integration suites that were themselves changed (`python3 scripts/select-test-targets.py --base <sha>` prints which, and why), so nothing in CI covers the lints or a suite you did not touch: run the ones you affect yourself. A merge into `develop` starts no CI (OD-2026-11-05-1), so after you merge a stack, this checklist on the merged tree is the only check `develop` gets before a release. On this machine run it with the Docker daemon of the project (`DOCKER_HOST=unix://$HOME/.colima/sagat-remaining/docker.sock`) or failures will be environmental; say so rather than trusting or ignoring them.
 
 ## Report
-List: command, result (counts), anything skipped and why, anything flaky and its cause. Tick `tasks.md` only for what the output proves.
+List: command, result (counts), anything skipped and why, anything flaky and its cause. Tick a task in the design doc (or in `tasks.md` of a feature not yet converted) only for what the output proves.

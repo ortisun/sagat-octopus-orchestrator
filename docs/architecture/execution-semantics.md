@@ -11,7 +11,10 @@ To avoid promising perfect conversion, we support two modes:
 
 ## Run states
 
-`CREATED → READY → RUNNING → {WAITING, COMPENSATING, SUCCEEDED, FAILED, CANCELLING, CANCELLED, TIMED_OUT}`
+The original conceptual diagram was `CREATED → READY → RUNNING`. `CREATED` and `READY`
+are not persisted Run statuses: admission and initial scheduling commit atomically. The complete
+persisted status list is in the implementation section below and in
+[`RunStatus`](../../crates/domain/src/execution/state.rs); `READY` remains a step status.
 
 Substates: `WAITING_TIMER`, `WAITING_EVENT`, `WAITING_CHILD`, `WAITING_APPROVAL`; `COMPENSATING → COMPENSATED | COMPENSATION_FAILED`.
 
@@ -25,11 +28,13 @@ Substates: `WAITING_TIMER`, `WAITING_EVENT`, `WAITING_CHILD`, `WAITING_APPROVAL`
 
 ### Transactional invariants
 
-**Claim:** the scheduler selects READY with `FOR UPDATE SKIP LOCKED`, increments `generation`, writes `LEASED`, `expires_at` and an event in the journal; writes outbox `TaskAssigned` in the same commit.
+**Claim:** the Worker API grants READY work through `WorkerService::poll` and the root/scoped claim paths under the owning execution transaction and session/capacity fences. It persists the lease, generation and attempt before returning authority to the worker. The engine writes `task.ready` outbox hints when work becomes ready; a hint does not grant a lease. There is no separate scheduler `TaskAssigned` grant preceding the worker claim. See [worker admission](../../crates/application/src/worker.rs) and [scoped claims](../../crates/application/src/worker/scoped_claims.rs).
 
-**Commit:** the CompleteStep API requires `(run_id, step_id, attempt, lease_token, generation, expected_version, idempotency_key)`. The transaction validates token/fencing + non-terminal; persists output/digest, journal, step update and the following tasks/timers/subscriptions, outbox in the same commit. A duplicate response returns the original result; a stale token returns `409 STALE_ATTEMPT`.
+**Commit:** `CompleteStepRequest` carries task/run/step identity, attempt, generation, lease token, idempotency key, output fields and the protocol 1.5 execution `instance`. There is no `expected_version` request field. The transaction validates the attempt fence and current state, persists output/digest, journal, step update and following tasks/timers/subscriptions/outbox atomically. An identical repeated report returns its original result. gRPC rejects a stale attempt with `ABORTED` and the `STALE_ATTEMPT` trailer; HTTP status numbers are not the worker RPC contract. See [worker.proto](../../specs/001-platform-foundation/contracts/worker.proto).
 
-**Recovery:** expired leases return to READY, with a new generation and retry policy; pending outbox is republished. The same worker may try to complete with the old token → reject. The external operation may have already occurred; requires idempotency or reconciliation.
+**Recovery:** pending outbox is republished. An expired leased Activity records `LEASE_EXPIRED`;
+its old token is stale and the uncertain outcome enters reconciliation/review rather than returning
+automatically to `READY`. Only known-failed, retry-eligible work receives another attempt.
 
 **Persistence:** append-only journal with a monotonic per-Run sequence; snapshots are an optimization and can be regenerated from the journal of decisions and retained data.
 
@@ -64,9 +69,9 @@ Substates: `WAITING_TIMER`, `WAITING_EVENT`, `WAITING_CHILD`, `WAITING_APPROVAL`
 
 ```text
 BEGIN;
-  SELECT run_version, step_status, generation, lease_token FOR UPDATE;
+  LOCK owning run/session and resolve the reported execution instance;
   IF already_committed(idempotency_key): return prior_result;
-  ASSERT step is RUNNING and token/generation/version match;
+  ASSERT current state permits completion and task/instance/attempt/token/generation match;
   UPSERT output_blob_ref_and_hash;
   UPDATE step -> SUCCEEDED;
   INSERT journal(step.completed, ...) WITH run_seq++;
@@ -81,8 +86,8 @@ COMMIT;
 
 | Failure | Expected state | Handling |
 |---|---|---|
-| Worker dies before executing | LEASED expires | Requeue with fencing |
-| Worker dies after external action, before ack | Unknown result | Idempotency/reconciliation, safe retry |
+| Worker dies before a lease commits | READY / unexposed | A later claim is safe because no task authority was returned |
+| Worker dies after lease exposure | Unknown result | Fence the stale report; reconcile or review, and retry only after the outcome is known failed |
 | Database commits, broker goes down | Transition persists | Outbox republishes |
 | Broker delivers duplicate | One valid claim | Deduplicate and fencing |
 | Concurrent completes | Only 1 CAS | Other responds 409 or idempotent return |
@@ -98,7 +103,7 @@ Run statuses are `RUNNING`, `WAITING`, `PAUSED`, `CANCELLING`, `COMPENSATING`, `
 - **Order.** A saga that stops going forward first winds the body down (steps not yet started are cancelled; attempts in flight are asked to stop or left to finish, by policy; a step waiting for its lookup is left alone, because whether it happened decides what is undone), then records the plan (`compensation.planned`), then compensates, then ends (`saga.compensated`), and only then does the run finish.
 - **Crash points.** Each arrow above is a committed transaction. A process that dies before the commit has written nothing (`tests/fault/sagas-compensations/crashes.rs`), one that dies after leaves a state from which `advance` says the next thing, and a duplicate report, a second scheduler or a lease that runs out while the answer arrives is decided once by the run's row lock and the fence (`races.rs`).
 - **Timeouts racing signals.** A `waitEvent` inside a saga whose deadline and signal arrive together is decided by the first commit; if the timeout wins and nothing handles it, the saga compensates; if the signal wins it goes on (12 rounds in `races::a_signal_and_a_timeout_arriving_together...`).
-- **Not promised.** Exactly-once effects (ADR-0004): the platform asks at least once, with stable keys. A compensation that fails for good is a person's decision, not an automatic one.
+- **Not promised.** Exactly-once effects (ADR-0004): the platform asks at least once, with stable keys. The default compensation-failure policy waits for a person's decision; an explicit saga's terminal `fail` policy applies only to known permanent/non-retryable failure after independent work quiesces. See the delivery-1 [saga policies](sagas.md), which are implementation in verification.
 
 
 
@@ -106,7 +111,11 @@ Run statuses are `RUNNING`, `WAITING`, `PAUSED`, `CANCELLING`, `COMPENSATING`, `
 
 Unary polling and protocol 1.4 task streams use the same durable claim transaction. Its lock order
 is the run row, the shared worker-drain fence, the worker-session row, then the sorted activity
-policy/quota locks. The session row is held through commit while the transaction rechecks its
+policy/quota locks (per activity: the shared policy fences, the activity's shared fence, and its
+exclusive count lock when the effective limit is between 1 and the maximum). The authority check
+of an ordinary worker's report shares the namespace's secrets lock, which catalog mutations hold
+exclusively, before it locks its membership row; a transaction that shares it never asks for it
+exclusively afterwards (`crates/infra-postgres/src/quotas.rs`, `secrets_lock_rule`). The session row is held through commit while the transaction rechecks its
 current token hash, tenant, namespace, subject, expiry and `max_inflight`, counts durable active
 leases and checks the current activity bindings. Earlier claims in the same transaction consume
 capacity too. A prior standalone in-flight count is only an optimization.

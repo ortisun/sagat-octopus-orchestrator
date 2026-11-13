@@ -1,0 +1,233 @@
+{
+  "name": "collection-local-recovery",
+  "description": "WP-03/04 local activity onError routing: a known failure follows its recorded recovery and collection processing continues; a failed recovery drains with its own code and compensates the original reservation. All SDKs use the existing OnError builder option and protocol 1.5. Concurrency one pins only the ordering guaranteed inside each iteration. Native tests separately cover skipping an unselected recovery branch, sibling isolation and full/frontier parity.",
+  "server": {
+    "iterationConcurrency": 4
+  },
+  "scopeEvidence": "ordered",
+  "workflows": {
+    "recovered": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-local-recovery-recovered",
+      "limits": {
+        "maxInstances": 12,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "step",
+              "id": "reserve",
+              "activity": "recovery.reserve",
+              "options": {
+                "compensateWith": "recovery.release"
+              }
+            },
+            {
+              "op": "step",
+              "id": "charge",
+              "activity": "recovery.charge",
+              "options": {
+                "onError": "recover"
+              }
+            },
+            {
+              "op": "step",
+              "id": "recover",
+              "activity": "recovery.notify"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "item"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    },
+    "failed": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "name": "collection-local-recovery-failed",
+      "limits": {
+        "maxInstances": 12,
+        "maxDepth": 1
+      },
+      "bodies": {
+        "line": {
+          "program": [
+            {
+              "op": "step",
+              "id": "reserve",
+              "activity": "recovery.reserve",
+              "options": {
+                "compensateWith": "recovery.release"
+              }
+            },
+            {
+              "op": "step",
+              "id": "charge",
+              "activity": "recovery.charge",
+              "options": {
+                "onError": "recover"
+              }
+            },
+            {
+              "op": "step",
+              "id": "recover",
+              "activity": "recovery.broken"
+            },
+            {
+              "op": "return",
+              "id": "returned",
+              "result": "item"
+            }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "lines",
+          "items": "input.items",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 2,
+          "maxConcurrency": 1
+        },
+        {
+          "op": "end",
+          "id": "done",
+          "options": {
+            "outputExpr": "steps.lines.output"
+          }
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "collection-local-recovery",
+      "protocolVersion": "1.5",
+      "transport": "poll",
+      "maxInflight": 1,
+      "autostart": false,
+      "activities": {
+        "recovery.reserve": {
+          "behavior": {
+            "returns": {
+              "reserved": true
+            }
+          }
+        },
+        "recovery.charge": {
+          "behavior": {
+            "fails": {
+              "code": "PAYMENT_DECLINED",
+              "message": "declined",
+              "retryable": false
+            }
+          }
+        },
+        "recovery.notify": {
+          "behavior": {
+            "returns": {
+              "recovered": true
+            }
+          }
+        },
+        "recovery.broken": {
+          "behavior": {
+            "fails": {
+              "code": "RECOVERY_FAILED",
+              "message": "recovery failed",
+              "retryable": false
+            }
+          }
+        },
+        "recovery.release": {
+          "as": "compensation",
+          "behavior": {
+            "returns": {
+              "released": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "start-worker",
+      "op": "startWorker",
+      "worker": "w1"
+    },
+    {
+      "id": "recovered",
+      "op": "start",
+      "workflow": "recovered",
+      "input": {
+        "items": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "id": "recovered-done",
+      "op": "waitForCompletion",
+      "run": "recovered",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "recovered-journal",
+      "op": "events",
+      "run": "recovered"
+    },
+    {
+      "id": "failed",
+      "op": "start",
+      "workflow": "failed",
+      "input": {
+        "items": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "id": "failed-done",
+      "op": "waitForCompletion",
+      "run": "failed",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "failed-journal",
+      "op": "events",
+      "run": "failed"
+    },
+    {
+      "id": "stop-worker",
+      "op": "stopWorker",
+      "worker": "w1"
+    }
+  ]
+}

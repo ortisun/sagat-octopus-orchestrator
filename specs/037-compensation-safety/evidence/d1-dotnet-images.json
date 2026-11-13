@@ -1,0 +1,10 @@
+[
+  {
+    "command": "docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .",
+    "exit": 0
+  },
+  {
+    "command": "docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .",
+    "exit": 0
+  }
+]

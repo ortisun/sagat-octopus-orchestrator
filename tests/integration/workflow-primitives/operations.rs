@@ -210,6 +210,7 @@ async fn create_declared_run(
     let created = w
         .store
         .create(NewRun {
+            schedule: None,
             retained: None,
             limits: RunLimits::UNLIMITED,
             info: RunInfo {

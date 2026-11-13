@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/scripts/test-released-v02-profile.py", line 275, in <module>
+    main()
+    ~~~~^^
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/scripts/test-released-v02-profile.py", line 246, in main
+    run(command, repo, env, root / 'current-build.txt', 1200)
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/marcelo/Documents/Projects/sagat-octopus-v0.3-completion/scripts/test-released-v02-profile.py", line 120, in run
+    raise RuntimeError(f'phase failed with exit {code}; private diagnostics: {log}')
+RuntimeError: phase failed with exit 101; private diagnostics: /private/tmp/sagat-v03-20261026/released-v02-al_pw2ho/current-build.txt

@@ -189,8 +189,11 @@
     },
     {
       "id": "unknown-wait",
-      "op": "sleep",
-      "ms": 1500
+      "op": "awaitJournal",
+      "run": "unknown",
+      "eventType": "step.needs_review",
+      "stepId": "unknown",
+      "timeoutMs": 30000
     },
     {
       "id": "unknown-state",

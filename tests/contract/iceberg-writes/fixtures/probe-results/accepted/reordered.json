@@ -1,0 +1,2 @@
+{ "checks": [ {"outcome": "PASSED", "check": "CATALOG_AUTH"}, {"outcome": "PASSED", "check": "WAREHOUSE"}, {"outcome": "PASSED", "check": "STORAGE_ACCESS"} ],
+  "connection": {"revision": 3, "name": "lake-main"}, "kind": "probe" }
