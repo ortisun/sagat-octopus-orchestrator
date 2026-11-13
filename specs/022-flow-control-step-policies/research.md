@@ -207,7 +207,7 @@ O1163…), which still has room. Nothing above is renumbered.
   the closed set `second` | `minute` | `hour`. *Rejected:* a free `periodMs` (the retained window and the
   estimate would have no natural bound, and "per 37 seconds" has no user); nesting it in `concurrency`
   (two lifetimes in one object; either may be declared alone); a `burst` field (it belongs to a token
-  bucket, which D022-003 does not choose; O1163 keeps the option open).
+  bucket, which D022-003 does not choose; the owner confirmed no `burst` in O1163).
 - **D022-003 — The window is a durable sliding window of grants.** A key admits a grant when fewer than
   `limit` of its grants still count within the last `per` on the database clock; the grants that count
   are rows. It is strict (never more than `limit` in any window), lets the first `limit` start at once,
@@ -217,7 +217,7 @@ O1163…), which still has room. Nothing above is renumbered.
   per key whatever the declared rate, and a bucket large enough to keep up admits up to `limit + burst`
   in a window; a fixed window (twice the limit across a boundary, and every waiter granted at the
   boundary); an in-process limiter (lost on restart, one per replica). Proposed as ADR-0088; the owner
-  chooses the meaning in O1163.
+  chose this meaning in O1163 (OD-2026-11-13-16).
 - **D022-004 — The scheduler grants; the claim never does.** A slot becomes free because time passed, so
   something must wake without an event; that is a scheduler pass under the waiter's shard fence (ADR-0020,
   as ADR-0056 decision 5). A grant at claim time would add a row lock and a count to the claim and make
@@ -243,7 +243,7 @@ O1163…), which still has room. Nothing above is renumbered.
   an unbounded buffer (a stuck key would hold the namespace's active-run quota); dropping the oldest
   waiter (it loses admitted work).
 - **D022-008 — Every attempt takes a slot.** The downstream system is called again on a retry, so a retry
-  asks for a new slot when its backoff ends; the wait is not an attempt (O1166).
+  asks for a new slot when its backoff ends; the wait is not an attempt (O1166, answered yes).
 - **D022-009 — Each acquirer applies its own limit to the shared grants.** Definitions sharing a group may
   declare different `limit` and `per`; each counts the key's grants over its own `per` against its own
   `limit` (as D1181, and possible because the grants are rows with instants). Publication warns
@@ -253,7 +253,7 @@ O1163…), which still has room. Nothing above is renumbered.
   was already admitted once, so it never waits; without a free slot it is refused
   (`RATE_LIMIT_SLOT_UNAVAILABLE`, to be registered by 018). `rate_limit.queued` and `rate_limit.granted`
   are `REMATERIALIZE`, `rate_limit.wait_timed_out` and `rate_limit.dequeued` are `REFUSE` in 018's
-  registry (`contracts/journal-events.md`). The owner may prefer otherwise (O1168).
+  registry (`contracts/journal-events.md`). Confirmed by the owner (O1168).
 - **D022-011 — Root graph only, and not with `continueAsNew`.** A body node declaring `rateLimit` is
   refused (`SCOPED_RATE_LIMIT`, G1175) for the reason of G1160: body instances become ready in 014's
   exact-path transactions, which need their own evidence. `continueAsNew` is refused as for `concurrency`
@@ -275,13 +275,25 @@ O1163…), which still has room. Nothing above is renumbered.
   for more than one further pass. The price is a throughput ceiling per key (G1174).
 - **D022-016 — Six SDKs.** This feature was written before the Rust SDK (ADR-0070); the slice adds the
   Rust builders and runs the conformance scenarios in six languages (T022-067, T022-083, T022-084).
+- **D022-018 — Composition with stream operators (design 042).** An operator chain on a trigger decides
+  which events ask for a run and with what input; this feature decides when a requested run may start
+  (042 FR-042-022). No operator paces a start and nothing here gathers events: 042's `throttle` row
+  points to `rateLimit`, and `debounce` or `window` reduce how many starts are asked for before
+  admission sees them. A sealed window's start request is an event-trigger start through the one
+  admission port. When it is buffered a run exists (`WAITING`) under the window's key, so the window
+  stays sealed and a repeated request finds that run. A full buffer is not a refusal for good: like any
+  event start the request stays pending and is retried, and the window must not become `REFUSED` for it.
+  A key error creates the run and ends it `FAILED`/`EXPRESSION_ERROR` (D1180); the window started its
+  one run. A `forEach` with operators is still a collection: `rateLimit` on its body nodes stays refused
+  (G1175). Nothing in the slice contradicts 042; T042-3 on that side cites this entry.
 - **D022-017 — Timers and passes.** A queue deadline is an ordinary timer on the run or step, handled by
   the existing timer pass (as T12). Grants and lease recording are one new pass in
   `crates/scheduler/src/flow_control.rs` on the scheduler tick; no new process and no new hint is needed
   for correctness (a hint only shortens the wait).
 
 Numbers taken on 2026-11-13 after listing `docs/adr` on `origin/develop`, every `origin/*` branch and the
-sibling worktrees: ADR-0088 (ADR-0081..0083 are on `origin/feature/018-business-ids`); T022-066..090;
+sibling worktrees (first as ADR-0084, renumbered by the coordinator because designs 041 and 042 took
+ADR-0084..0087 the same day): ADR-0088 (ADR-0081..0083 are on `origin/feature/018-business-ids`); T022-066..090;
 FR-022-039..050; NFR-022-007..008; SC-022-017..023; G1174..1183; O1163..1168.
 
 ## Gaps
@@ -303,8 +315,8 @@ FR-022-039..050; NFR-022-007..008; SC-022-017..023; G1174..1183; O1163..1168.
 | G1172 | Whether erasure of a source run also removes the copies already delivered to consumer runs (hits, `fromRun` pins) is 020's erasure policy; this feature only exposes them by source. | Dependency (020) |
 | G1173 | A lower-limit waiter can starve behind higher-limit grants until its queue timeout (D1196). | Accepted; bounded by timeout |
 | G1174 | A buffered waiter is granted by a scheduler pass: up to one pass interval (500 ms by default) after its slot frees, plus a shard takeover; and a key gets a bounded number of grants per pass (D022-015), so a very high declared rate on one key is under-delivered. Neither figure is measured. | Open; benchmark T022-089 |
-| G1175 | `rateLimit` on a body node (a step inside `forEach`, `while`, `repeatUntil`) is refused (`SCOPED_RATE_LIMIT`); the fan-out case is served only by a body `child` node starting a rate-limited workflow. | Open; O1167 |
-| G1176 | A rate limit is a ceiling, not a throughput: with a busy key the grants arrive as `limit` at once and again as they age out; there is no smoothing and no `burst`. | Open; O1163 |
+| G1175 | `rateLimit` on a body node (a step inside `forEach`, `while`, `repeatUntil`) is refused (`SCOPED_RATE_LIMIT`); the fan-out case is served only by a body `child` node starting a rate-limited workflow. | Open; deferred past 0.3.0 by the owner (O1167, OD-2026-11-13-16) |
+| G1176 | A rate limit is a ceiling, not a throughput: with a busy key the grants arrive as `limit` at once and again as they age out; there is no smoothing and no `burst`. | Accepted by the owner (O1163, OD-2026-11-13-16) |
 | G1177 | `rateLimit` with `continueAsNew` is refused, as `concurrency` is. | Open |
 | G1178 | The cost of one hot key (one row lock per grant, the count of its live grants, one fenced transaction per waiter) with thousands of waiters is unmeasured. | Open; benchmark T022-089 |
 | G1179 | The estimated grant time is an estimate and is absent in the cases of D022-014. | Accepted |
@@ -329,6 +341,7 @@ default:** namespace secrets under the actor's current `secret:use` and access l
 audited per resolution. Alternative: none, forcing secret-declaring steps to be mocked.
 
 ### O1163 — What does "N per window" mean?
+**Answered 2026-11-13 (OD-2026-11-13-16, "Aceitar todas"): option (a), the strict sliding window, with no `burst` field.**
 The owner asked for N executions per second or minute per key with the excess buffered. Options:
 (a) **strict sliding window**: never more than N grants in any interval of the window; the first N start
 at once, the next when those age out; (b) **token bucket with `burst`**: grants are spread evenly and an
@@ -339,12 +352,14 @@ key; (c) **fixed window** aligned to the clock: cheapest, but up to 2N across a 
 load declares a shorter window (`10 per second` rather than `600 per minute`).
 
 ### O1164 — What order does the buffer guarantee?
+**Answered 2026-11-13 (OD-2026-11-13-16): as recommended — first in, first out within a key, with skip-ahead; no order between keys.**
 **Recommended:** first in, first out within one key, by the commit that buffered the work; no order
 between keys; a waiter that its own limit or its concurrency key refuses is skipped rather than blocking
 the ones behind it (it can then wait until its queue timeout, G1173). Alternative: strict order with
 head-of-line blocking (simpler to explain, but one blocked waiter stops its whole key).
 
 ### O1165 — What happens when the buffer is full?
+**Answered 2026-11-13 (OD-2026-11-13-16): option (a) — a synchronous start is refused with the typed error; event and cron starts stay pending.**
 The buffer is bounded per key (1,000 waiters by default, 10,000 at most) and per namespace (`queued_runs`).
 Options: (a) **refuse** a synchronous start with a typed error (`QUOTA_EXCEEDED`/`RATE_LIMIT_QUEUE_FULL`)
 before a run exists, and keep event and cron starts pending under their own retry; (b) make the caller
@@ -352,11 +367,13 @@ wait; (c) drop the oldest or the newest waiter. **Recommended: (a)**, the same b
 concurrency queue; (b) holds a request open without bound and (c) loses admitted work.
 
 ### O1166 — Does a retry of a rate-limited step take a new slot?
+**Answered 2026-11-13 (OD-2026-11-13-16): yes, every attempt takes a slot; the wait spends no attempt.**
 **Recommended: yes.** The limit exists to protect what the step calls, and a retry calls it again; the
 wait for the slot spends neither an attempt nor the retry budget. Alternative: only the first attempt
 counts (higher throughput under failures, but a failing provider is then called above its limit).
 
 ### O1167 — Rate limits on steps inside collections in release 0.3.0?
+**Answered 2026-11-13 (OD-2026-11-13-16): not in 0.3.0 — root graph and the body `child` shape; body nodes are the first follow-up (G1175 stays open).**
 The classic case is a `forEach` whose body calls a limited provider. The slice refuses `rateLimit` on body
 nodes (G1175) because body instances are scheduled by 014's exact-path transactions and need their own
 fault evidence; the case is served by a body `child` node whose workflow declares a top-level `rateLimit`,
@@ -365,6 +382,7 @@ and take body nodes as the first follow-up.** Alternative: hold the slice until 
 (larger; see the size estimate in the plan).
 
 ### O1168 — May a reset of a rate-limited run wait for a slot?
+**Answered 2026-11-13 (OD-2026-11-13-16): no — a reset takes a slot or is refused (`RATE_LIMIT_SLOT_UNAVAILABLE`).**
 018 says a reset never queues. **Recommended: the same for a rate slot** — the reset takes a slot when one
 is free and is refused otherwise (`RATE_LIMIT_SLOT_UNAVAILABLE`), so the limit holds for every start.
 Alternative: a reset bypasses the limit (an operator's action always proceeds, and the window can exceed
@@ -379,8 +397,9 @@ queue, which is US02 of this feature as specified (FR-022-017..022); and (2) a r
 with buffering (N executions per second or minute per key, the excess waits durably instead of failing),
 which this feature did not specify and which is added as US07. The other user stories (cache, early
 return, failure handlers, standalone steps, test mode) are not in the 0.3.0 slice. The feature itself was
-approved for implementation by OD-2026-11-11-1; ADR-0056 and ADR-0088 and O1163–O1168 are still the
-owner's to answer (T022-066).
+approved for implementation by OD-2026-11-11-1; O1163–O1168 were answered the same day, every
+recommendation accepted (OD-2026-11-13-16, "Aceitar todas", recorded on `develop` by the coordinator). ADR-0056 and
+ADR-0088 stay Proposed: the owner accepts ADRs separately (T022-066).
 
 ## External semantics for rate limits (not re-read on 2026-11-13)
 

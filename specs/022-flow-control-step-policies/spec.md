@@ -68,7 +68,9 @@ durable window of grants on the database clock and every grant to a buffered wai
 pass (proposed [ADR-0088](../../docs/adr/ADR-0088-rate-limits-are-a-durable-window-of-grants-on-the-database-clock-and-the-scheduler-grants-never-the-claim.md)).
 They are distinct from the tenant rate quotas of feature 009 (`api_requests_per_second`,
 `events_per_second`), which refuse a request and never buffer, and from 018's schedule overlap policies
-(`BUFFER_ONE`, `BUFFER_ALL`), which buffer a schedule's actions before a run exists.
+(`BUFFER_ONE`, `BUFFER_ALL`), which buffer a schedule's actions before a run exists. Stream operators
+(design 042) decide which events ask for a run; this feature decides when a requested run may start, and
+no operator paces a start (D022-018).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -532,7 +534,7 @@ Rate limits (US07):
   `SCOPED_RATE_LIMIT`) and `rateLimit` together with `continueAsNew` (`FLOW_CONTROL_COMBINATION`). The
   declaration is beside `concurrency`, not inside it; a definition may declare either or both.
 - **FR-022-040 — The window**: For every key, the number of grants an acquirer may see in any interval of
-  length `per`, measured on the database clock, MUST NOT exceed that acquirer's `limit` (O1163). A
+  length `per`, measured on the database clock, MUST NOT exceed that acquirer's `limit` (O1163, decided). A
   run-level grant counts from the instant of its grant. A step-level grant counts from the instant its
   attempt is leased, and counts without end while it is granted and not yet leased, so at most `limit`
   attempts of a key are leased in any window. The window MUST be PostgreSQL rows changed only in the
@@ -817,7 +819,7 @@ See [research.md](research.md#owner-questions): O1160 (test runs in `prod`), O11
 O1162 (secrets in draft test runs), each with a recommended default. For the 0.3.0 slice: O1163 (what "N per
 window" means), O1164 (what the buffer guarantees), O1165 (a full buffer), O1166 (whether a retry takes a
 slot), O1167 (rate limits inside collections), O1168 (whether a reset may wait), each with options and a
-recommendation.
+recommendation; the owner accepted all six recommendations on 2026-11-13 (OD-2026-11-13-16).
 
 ## Release 0.3.0 slice
 

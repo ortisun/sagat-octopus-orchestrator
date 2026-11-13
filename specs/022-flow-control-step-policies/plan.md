@@ -378,7 +378,7 @@ step with both node-level gates is granted its slot by T20 or T22 and takes its 
 
 The table "Run creators" above applies as written, with "acquire or queue" read as "grant or buffer, for
 each gate the definition declares, through the one port". Two rows differ: a **reset** (018) takes a slot
-or is refused with `RATE_LIMIT_SLOT_UNAVAILABLE` and never waits (D022-010, O1168); **Continue-As-New
+or is refused with `RATE_LIMIT_SLOT_UNAVAILABLE` and never waits (D022-010; O1168, decided); **Continue-As-New
 successors** are not applicable because `rateLimit` with `continueAsNew` is refused (G1177). A schedule
 firing (018) creates a run that may be buffered here; 018's overlap policy sees it as an open run.
 
@@ -482,7 +482,7 @@ grants are journal facts, and policy changes use the existing quota-policy audit
 
 ### Delivery sequence (the slice)
 
-1. Owner gate (T022-066): ADR-0056, ADR-0088, O1163–O1168.
+1. Owner gate (T022-066): O1163–O1168 answered (OD-2026-11-13-16); ADR-0056 and ADR-0088 still to be accepted.
 2. Foundations cut to the slice (T022-002..010, 012..014 as amended; T022-068..070).
 3. US02: T022-021..029, with ADR-0056's evidence.
 4. US07: T022-071..082, with ADR-0088's evidence; the hot-path budget (T022-076) before any call site in
@@ -497,4 +497,4 @@ grants are journal facts, and policy changes use the existing quota-policy audit
 reviewed pull request per slice of a trust boundary, a CI run of about two hours per push), this is an
 estimate of 20 to 26 pull requests: about 9 for US02 (the admission port touches every run creator), about
 10 for US07, the rest for SDKs, Studio and gates. It is the size of feature 018's foundations, not of a
-patch release item; O1167 (body nodes) would add to it. No date is implied.
+patch release item. Body nodes are out of 0.3.0 by the owner's answer to O1167. No date is implied.

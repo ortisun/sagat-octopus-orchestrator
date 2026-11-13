@@ -73,8 +73,8 @@ not read the amendment.
   (table above).
 - [x] Scope is bounded: what the slice leaves out is listed in spec.md, "Release 0.3.0 slice" and "Out of
   Scope"; gaps G1174–G1183 state what is not covered or not measured.
-- [ ] No [NEEDS CLARIFICATION] markers remain — six owner choices are open (O1163–O1168), each with
-  options and a recommendation; the requirements are written for the recommended answers.
+- [x] No [NEEDS CLARIFICATION] markers remain — the six owner choices O1163–O1168 were answered on
+  2026-11-13 (OD-2026-11-13-16, every recommendation accepted); the requirements were written for those answers.
 - [ ] Reviewed — not yet: no `egm-review`, `architecture-reviewer`, `security-reviewer` or
   `correctness-reviewer` pass has been run on US07 or ADR-0088.
 

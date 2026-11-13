@@ -1,7 +1,7 @@
 # ADR-0088: Rate limits are a durable window of grants on the database clock, buffered work is granted by its shard owner's scheduler pass, and a claim never reads the window
 
 **Status:** Proposed
-**Decided by:** agent proposal, pending owner acceptance (2026-11-13; the owner asked for the capability in OD-2026-11-13-11 and has not chosen the mechanism)
+**Decided by:** agent proposal, pending owner acceptance (2026-11-13; the owner asked for the capability in OD-2026-11-13-11 and chose the meaning of the window and of the buffer in OD-2026-11-13-16; the ADR itself is not yet accepted)
 **Refines / supersedes:** refines ADR-0056 (durable permits, one admission port, grant by the waiter's
 shard owner), ADR-0050 decision 7 (merged admission lock order, slot 8b), ADR-0020 (sharded, fenced
 scheduler) and ADR-0027 (rate and usage rows come last); builds on ADR-0002 and ADR-0003. Supersedes none.
@@ -35,8 +35,11 @@ ADR-0056) and a rate limit per time window, per key, where the excess waits dura
 - **A run may declare both a concurrency key and a rate limit.**
 
 Unknown: the cost of one hot key with thousands of waiters, and the grant lag under load (G1174, G1178).
-The meaning of "N per window" is a product choice put to the owner (O1163); this ADR records the
-mechanism for the recommended answer and says what changes with the other answers.
+The meaning of "N per window" was a product choice put to the owner, who chose on 2026-11-13
+(OD-2026-11-13-16, questions O1163–O1168 of feature 022): a strict sliding window with no burst; first
+in, first out within a key with skip-ahead; a full buffer refuses a synchronous start and keeps event and
+cron starts pending; every attempt takes a slot; no limit on collection body nodes in release 0.3.0; a
+reset takes a slot or is refused. This ADR records the mechanism for those answers.
 
 ## Decision
 
@@ -91,15 +94,15 @@ mechanism for the recommended answer and says what changes with the other answer
 ## Considered options
 
 1. **Strict sliding window of durable grant rows, granted by the shard owner's pass, lease-anchored for
-   steps** — chosen. It is the only option here that is exact under a 500 ms pass: the pass grants every
+   steps** — chosen, and the meaning the owner picked. It is the only option here that is exact under a 500 ms pass: the pass grants every
    free slot at once and the bound does not depend on when it runs. The first `limit` start immediately,
    which is what "N per minute" is read as. The claim path is untouched.
 2. **Token bucket with `burst`, one row per key** (the pattern of `quota_rate_buckets`) — rejected as the
    default. One row instead of up to `limit` rows, and a smoother load, but with a pass every 500 ms a
    strict bucket (capacity 1) cannot deliver more than two grants a second per key whatever the declared
-   rate, and a bucket deep enough to keep up admits up to `limit + burst` in one window. If the owner
-   prefers evenly spaced grants (O1163 option b), decisions 1 and 3 to 8 stand and decision 2 is replaced
-   by the bucket, with the bound restated honestly.
+   rate, and a bucket deep enough to keep up admits up to `limit + burst` in one window. The owner
+   chose the strict window (O1163 option a). Should evenly spaced grants be wanted later, decisions 1 and
+   3 to 8 stand and a new ADR replaces decision 2 by the bucket, with the bound restated honestly.
 3. **Fixed window aligned to the clock, one counter per key and window** — rejected: up to twice the limit
    across a boundary, and every waiter of a key granted at the boundary instant.
 4. **Grant at claim time** (as ADR-0056 does for step permits) — rejected: exact at the lease without

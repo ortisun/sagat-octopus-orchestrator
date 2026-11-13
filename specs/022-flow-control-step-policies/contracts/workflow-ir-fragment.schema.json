@@ -68,7 +68,7 @@
         "RATE_LIMIT_POLICY_INVALID: limit above the ceiling of its per, bad group or timeout, top-level key reading other data than input.",
         "Refused together with continueAsNew (FLOW_CONTROL_COMBINATION).",
         "Warning RATE_LIMIT_MISMATCH when an explicit group is declared elsewhere in the namespace with a different limit or per.",
-        "No burst field: the window is strict (research O1163).",
+        "No burst field: the window is strict (research O1163, decided by the owner).",
         "At most one top-level and 16 node-level declarations by default (64 ceiling)."
       ]
     },
