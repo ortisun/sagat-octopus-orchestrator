@@ -1015,32 +1015,6 @@ impl PgPathExecutionTx {
         Ok(())
     }
 
-    async fn ensure_path_node_kind(
-        &mut self,
-        instance: &ExecutionInstanceId,
-        node_kind: &str,
-    ) -> Result<(), StoreError> {
-        let (path_nodes, path_indices) = stored_path_parts(instance.path());
-        let updated = sqlx::query(
-            "UPDATE steps SET node_kind=$6 WHERE tenant_id=$1 AND run_id=$2 \
-               AND instance_path_nodes=$3 AND instance_path_indices=$4 AND node=$5 \
-               AND node_kind IN ('legacyControl',$6)",
-        )
-        .bind(self.snapshot.info.tenant_id.as_uuid())
-        .bind(self.snapshot.info.run_id.as_uuid())
-        .bind(path_nodes)
-        .bind(path_indices)
-        .bind(instance.node().as_str())
-        .bind(node_kind)
-        .execute(&mut *self.tx)
-        .await
-        .map_err(store_error)?;
-        if updated.rows_affected() != 1 {
-            return Err(corrupt("immutable step node kind"));
-        }
-        Ok(())
-    }
-
     async fn consume_path_reservation(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -1239,11 +1213,12 @@ impl PgPathExecutionTx {
             return Ok(());
         }
 
-        if !matches!(node_kind, "timer" | "waitEvent") {
-            self.ensure_path_node_kind(instance, node_kind).await?;
-        }
+        // The step's kind is checked by the write itself: a row whose kind is neither its
+        // definition's nor `legacyControl` matches no row and is refused below as corrupt, and a
+        // legacy row is given its kind. A row that already holds it is not rewritten (design 038).
         let updated = sqlx::query(concat!(
             "UPDATE steps AS s SET status=$6,attempt=$7,generation=$8,cancel_requested=$9,routed=$10, \
+                    node_kind=CASE WHEN s.node_kind='legacyControl' THEN $30 ELSE s.node_kind END, \
                     timed_out=$11,failure_code=$12,next_attempt_at=$13, \
                     ready_at=CASE WHEN $6='READY' \
                       THEN COALESCE(CASE WHEN status='READY' THEN ready_at END,$14) ELSE ready_at END, \
@@ -1269,6 +1244,7 @@ impl PgPathExecutionTx {
                     event_since=CASE WHEN $30='waitEvent' THEN $37 ELSE s.event_since END, \
                     event_scanned_at=CASE WHEN $30='waitEvent' THEN NULL ELSE s.event_scanned_at END \
              WHERE tenant_id=$1 AND run_id=$2 AND node=$3 AND step_id=$4 AND namespace_id=$5 \
+               AND s.node_kind IN ('legacyControl',$30) \
                AND instance_path_nodes=$17 AND instance_path_indices=$18 \
                AND (NOT $29 OR (s.node_kind=$30 AND (($30='timer' AND (",
             scoped_timer_metadata_valid!(),
