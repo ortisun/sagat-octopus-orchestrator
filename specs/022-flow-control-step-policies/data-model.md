@@ -253,7 +253,7 @@ decision 2 gives every path's order.
 
 ## Rate limits (release 0.3.0 slice, US07)
 
-Proposed on 2026-11-13 (D022-001..017, ADR-0084); nothing here exists yet. Created by their own additive
+Proposed on 2026-11-13 (D022-001..017, ADR-0088); nothing here exists yet. Created by their own additive
 migration (T022-070), tenant-keyed, granted to `sagat_app` with the privileges listed, every column
 protected (closed values, patterns, digests, instants) and entered in `storage-classification.json`.
 
@@ -329,7 +329,7 @@ and the cancellation remove both in one transaction.
 
 Windows, grants and waiters are live state: a waiter lives until its grant, timeout or dequeue; a grant
 row at most one hour after its lease; a window row until it is empty. Rows carry the digest
-`key_version`; a new version is not activated while any exist (ADR-0056 decision 7, extended by ADR-0084
+`key_version`; a new version is not activated while any exist (ADR-0056 decision 7, extended by ADR-0088
 decision 8). Nothing here is retained content, and nothing is copied from a run's payloads, so 020's
 erasure has nothing to register for these tables beyond the foreign keys to `runs`.
 

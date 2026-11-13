@@ -320,7 +320,7 @@ Added on 2026-11-13 for OD-2026-11-13-11 (research.md, Owner decision of 2026-11
 built. The slice is US02 (concurrency keys, above, unchanged) and US07 (rate limits with buffering,
 FR-022-039..050). Everything above this section stays the plan of the whole feature; this section says
 what the slice takes from it and what it adds. Rate limits follow the proposed
-[ADR-0084](../../docs/adr/ADR-0084-rate-limits-are-a-durable-window-of-grants-on-the-database-clock-and-the-scheduler-grants-never-the-claim.md);
+[ADR-0088](../../docs/adr/ADR-0088-rate-limits-are-a-durable-window-of-grants-on-the-database-clock-and-the-scheduler-grants-never-the-claim.md);
 the choices are D022-001..017 in [research.md](./research.md).
 
 ### What the slice takes from the plan above
@@ -482,10 +482,10 @@ grants are journal facts, and policy changes use the existing quota-policy audit
 
 ### Delivery sequence (the slice)
 
-1. Owner gate (T022-066): ADR-0056, ADR-0084, O1163–O1168.
+1. Owner gate (T022-066): ADR-0056, ADR-0088, O1163–O1168.
 2. Foundations cut to the slice (T022-002..010, 012..014 as amended; T022-068..070).
 3. US02: T022-021..029, with ADR-0056's evidence.
-4. US07: T022-071..082, with ADR-0084's evidence; the hot-path budget (T022-076) before any call site in
+4. US07: T022-071..082, with ADR-0088's evidence; the hot-path budget (T022-076) before any call site in
    a completion is merged.
 5. Surfaces and gates: SDKs (T022-048..052, 067, 083), conformance (T022-053, 084), Studio (T022-054..056
    cut, 085), creators (T022-064, 086), contracts (T022-060, 087), runbook (T022-061, 088), benchmark

@@ -1,4 +1,4 @@
-# ADR-0084: Rate limits are a durable window of grants on the database clock, buffered work is granted by its shard owner's scheduler pass, and a claim never reads the window
+# ADR-0088: Rate limits are a durable window of grants on the database clock, buffered work is granted by its shard owner's scheduler pass, and a claim never reads the window
 
 **Status:** Proposed
 **Decided by:** agent proposal, pending owner acceptance (2026-11-13; the owner asked for the capability in OD-2026-11-13-11 and has not chosen the mechanism)

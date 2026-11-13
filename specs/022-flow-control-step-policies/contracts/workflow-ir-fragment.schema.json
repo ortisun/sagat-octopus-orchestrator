@@ -53,7 +53,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["limit", "per"],
-      "description": "Release 0.3.0 slice, US07 (FR-022-039..050, ADR-0084). Merge instructions: add `rateLimit` to the properties of `activity` and `script` (root nodes only; body variants do NOT gain it: UNSUPPORTED_NODE with dependency SCOPED_RATE_LIMIT) and as a top-level property, beside `concurrency`. Gated by the capability rateLimits, separately from concurrencyKeys.",
+      "description": "Release 0.3.0 slice, US07 (FR-022-039..050, ADR-0088). Merge instructions: add `rateLimit` to the properties of `activity` and `script` (root nodes only; body variants do NOT gain it: UNSUPPORTED_NODE with dependency SCOPED_RATE_LIMIT) and as a top-level property, beside `concurrency`. Gated by the capability rateLimits, separately from concurrencyKeys.",
       "properties": {
         "limit": {"type": "integer", "minimum": 1, "maximum": 10000, "description": "At most this many grants of one key may count in any window of `per` on the database clock (the acquiring definition's value, clamped by policy). Ceiling by window: 100 per second, 6000 per minute, 10000 per hour."},
         "per": {"enum": ["second", "minute", "hour"], "description": "The length of the sliding window. Top level: a grant counts from the instant the run is granted. Node level: from the instant the attempt is leased, and without end while granted and not yet leased."},

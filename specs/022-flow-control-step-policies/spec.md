@@ -65,7 +65,7 @@ Rate limits (US07, added on 2026-11-13) reuse the same pieces as concurrency key
 keyed digest and its label, groups, the one admission port, the queue ceilings and the shard-fenced grant
 (ADR-0056). What differs is that a rate slot is freed by time, not by a holder finishing, so the count is a
 durable window of grants on the database clock and every grant to a buffered waiter is made by a scheduler
-pass (proposed [ADR-0084](../../docs/adr/ADR-0084-rate-limits-are-a-durable-window-of-grants-on-the-database-clock-and-the-scheduler-grants-never-the-claim.md)).
+pass (proposed [ADR-0088](../../docs/adr/ADR-0088-rate-limits-are-a-durable-window-of-grants-on-the-database-clock-and-the-scheduler-grants-never-the-claim.md)).
 They are distinct from the tenant rate quotas of feature 009 (`api_requests_per_second`,
 `events_per_second`), which refuse a request and never buffer, and from 018's schedule overlap policies
 (`BUFFER_ONE`, `BUFFER_ALL`), which buffer a schedule's actions before a run exists.
@@ -545,7 +545,7 @@ Rate limits (US07):
   evaluated when the delay elapses. A key error MUST end the new run `FAILED`/`EXPRESSION_ERROR` in that
   transaction. A grant to a buffered run MUST be made by the scheduler replica that owns the waiter's
   shard, under its fence, in a transaction that journals the grant, removes the waiter, cancels its timer
-  and creates the run's first tasks and outbox (ADR-0084). A **reset** run (018) MUST take a slot in its
+  and creates the run's first tasks and outbox (ADR-0088). A **reset** run (018) MUST take a slot in its
   reset admission transaction and MUST NOT be buffered: without a free slot the reset is refused
   (`RATE_LIMIT_SLOT_UNAVAILABLE`, to be registered in 018's contract), and `rate_limit.*` events copied
   from the source prefix are history (FR-022-038).

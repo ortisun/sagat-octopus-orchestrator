@@ -76,7 +76,7 @@ not read the amendment.
 - [ ] No [NEEDS CLARIFICATION] markers remain — six owner choices are open (O1163–O1168), each with
   options and a recommendation; the requirements are written for the recommended answers.
 - [ ] Reviewed — not yet: no `egm-review`, `architecture-reviewer`, `security-reviewer` or
-  `correctness-reviewer` pass has been run on US07 or ADR-0084.
+  `correctness-reviewer` pass has been run on US07 or ADR-0088.
 
 ## Notes
 

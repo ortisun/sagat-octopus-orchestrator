@@ -216,7 +216,7 @@ O1163…), which still has room. Nothing above is renumbered.
   `SAGAT_SCHEDULER_INTERVAL_MS`), so a strict bucket of capacity 1 delivers at most two grants a second
   per key whatever the declared rate, and a bucket large enough to keep up admits up to `limit + burst`
   in a window; a fixed window (twice the limit across a boundary, and every waiter granted at the
-  boundary); an in-process limiter (lost on restart, one per replica). Proposed as ADR-0084; the owner
+  boundary); an in-process limiter (lost on restart, one per replica). Proposed as ADR-0088; the owner
   chooses the meaning in O1163.
 - **D022-004 — The scheduler grants; the claim never does.** A slot becomes free because time passed, so
   something must wake without an event; that is a scheduler pass under the waiter's shard fence (ADR-0020,
@@ -281,7 +281,7 @@ O1163…), which still has room. Nothing above is renumbered.
   for correctness (a hint only shortens the wait).
 
 Numbers taken on 2026-11-13 after listing `docs/adr` on `origin/develop`, every `origin/*` branch and the
-sibling worktrees: ADR-0084 (ADR-0081..0083 are on `origin/feature/018-business-ids`); T022-066..090;
+sibling worktrees: ADR-0088 (ADR-0081..0083 are on `origin/feature/018-business-ids`); T022-066..090;
 FR-022-039..050; NFR-022-007..008; SC-022-017..023; G1174..1183; O1163..1168.
 
 ## Gaps
@@ -335,7 +335,7 @@ at once, the next when those age out; (b) **token bucket with `burst`**: grants 
 idle key may start `burst` at once; a window can then hold up to N + `burst`, and because buffered work
 is granted by a pass every 500 ms a bucket without burst cannot deliver more than two grants a second per
 key; (c) **fixed window** aligned to the clock: cheapest, but up to 2N across a boundary.
-**Recommended: (a)**, with no `burst` field in 0.3.0 (D022-003, ADR-0084). An author who wants a smoother
+**Recommended: (a)**, with no `burst` field in 0.3.0 (D022-003, ADR-0088). An author who wants a smoother
 load declares a shorter window (`10 per second` rather than `600 per minute`).
 
 ### O1164 — What order does the buffer guarantee?
@@ -379,7 +379,7 @@ queue, which is US02 of this feature as specified (FR-022-017..022); and (2) a r
 with buffering (N executions per second or minute per key, the excess waits durably instead of failing),
 which this feature did not specify and which is added as US07. The other user stories (cache, early
 return, failure handlers, standalone steps, test mode) are not in the 0.3.0 slice. The feature itself was
-approved for implementation by OD-2026-11-11-1; ADR-0056 and ADR-0084 and O1163–O1168 are still the
+approved for implementation by OD-2026-11-11-1; ADR-0056 and ADR-0088 and O1163–O1168 are still the
 owner's to answer (T022-066).
 
 ## External semantics for rate limits (not re-read on 2026-11-13)
