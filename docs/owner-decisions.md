@@ -4,6 +4,21 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-13 — What release 0.3.0 must contain: feature 018, schedules on by default, step logs per run
+
+Before the release pull request (219) was merged the owner asked whether anything else belonged in it. The assistant
+listed what was not built and recommended shipping as it was; the owner chose otherwise, then named the features the
+release must have ("Pause, Play, Replay, Sagas, Outbox, Inbox, Scheduler, Workflow, Logs"). The assistant mapped them:
+seven exist; schedules were off by default and there was no capture of step logs per run. It asked both, recommending
+the smaller option each time. The owner chose the larger. Release 0.3.0 is therefore not published until these are
+built and the release-candidate run is repeated on the commit that has them (OD-2026-11-04-8).
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-13-7 | "Incluir a 018": the rest of feature 018 (pull requests 91 and 98) is part of release 0.3.0 | owner | Decided | specs/018-schedules-bulk-operations/tasks.md, docs/releases/0.3.0.md |
+| OD-2026-11-13-8 | "Ligados por omissão": schedules are on by default in 0.3.0 (`SAGAT_SCHEDULES_ENABLED` defaults to true). The open tasks of 018 that justify it (benchmark, observability gates, runbooks, the cron-trigger handover) are closed first | owner | Decided; not built | crates and apps of feature 018, docs/runbooks/schedules.md |
+| OD-2026-11-13-9 | "Logs de passo por run na 0.3.0": the lines a step's code logs are captured per run, stored with retention and limits, and readable through a route and a Studio screen, in release 0.3.0. It is a new feature (041) with its own design | owner | Decided; not designed | docs/designs/041-step-logs.md (to be written) |
+
 ## 2026-11-13 — Feature 018: the open questions, the audit of business-id conflicts and ADR-0081 to ADR-0083
 
 The assistant put the decisions that held pull requests 91 and 98 to the owner in three questions, each with a
