@@ -61,6 +61,7 @@ unchecked item states why.
 | FR-022-037 | SC-022-016 | T022-016, 063 |
 | FR-022-038 | SC-022-015 | T022-008, 064 |
 | FR-022-039..050, NFR-022-007..008 (US07, release 0.3.0 slice, added 2026-11-13) | SC-022-017..023 | T022-066..090 |
+| FR-022-051..060 (review of 2026-11-13) | SC-022-024..029 | T022-091..107 |
 
 ## Release 0.3.0 slice (author, 2026-11-13)
 
@@ -75,8 +76,10 @@ not read the amendment.
   Scope"; gaps G1174–G1183 state what is not covered or not measured.
 - [x] No [NEEDS CLARIFICATION] markers remain — the six owner choices O1163–O1168 were answered on
   2026-11-13 (OD-2026-11-13-16, every recommendation accepted); the requirements were written for those answers.
-- [ ] Reviewed — not yet: no `egm-review`, `architecture-reviewer`, `security-reviewer` or
-  `correctness-reviewer` pass has been run on US07 or ADR-0088.
+- [x] Reviewed — the `architecture-reviewer`, `security-reviewer` and `correctness-reviewer` read the slice
+  at `1a21cbdc` on 2026-11-13 (B4 M28 N24 in all); the records and the answer to each relayed finding are in
+  `reviews/2026-11-13/`. The revision itself has not been reviewed again, and ADR-0089 and O1169 need the
+  owner.
 
 ## Notes
 

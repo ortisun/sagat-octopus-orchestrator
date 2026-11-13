@@ -153,3 +153,11 @@ run creator of decision 3, claim against attempt-end barriers, and the consisten
 `specs/022-flow-control-step-policies/spec.md` (FR-022-017..022); plan:
 `specs/022-flow-control-step-policies/plan.md`; research: D1178–D1182, D1196–D1198, D1600, D1602, G1165, G1167; reset rules:
 `specs/022-flow-control-step-policies/contracts/journal-events.md`.
+
+## Revision (2026-11-13)
+
+Accepted by the owner on 2026-11-13 (OD-2026-11-13-17); the "Decided by" line above predates the acceptance.
+The reviews of feature 022's release 0.3.0 slice found that decision 3's step permit at claim leaves
+permit-less steps `READY` in the claim's window and that decision 5's strict oldest-first per waiter shard
+limits throughput and starves dual-gated heads. [ADR-0089](ADR-0089-a-gated-step-waits-outside-ready-and-one-fenced-grant-routine-serves-every-waiter-by-key.md)
+(proposed) would supersede those two decisions; until the owner decides, they stand as accepted.

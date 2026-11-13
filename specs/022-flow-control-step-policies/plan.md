@@ -15,7 +15,7 @@ journal event committed with the transition it causes; shared cross-run state (c
 handler dispatches) is a set of tenant-keyed PostgreSQL rows changed in documented transactions, after
 each path's own locks and before deferred content usage (per-path orders below and in ADR-0056). Every run
 creator admits through one permit port (Run creators). No worker protocol change, no new `Error.code`, no new run
-status. Concurrency permits follow the proposed [ADR-0056](../../docs/adr/ADR-0056-concurrency-keys-are-durable-permits-granted-by-the-waiters-shard-owner.md);
+status. Concurrency permits follow the accepted [ADR-0056](../../docs/adr/ADR-0056-concurrency-keys-are-durable-permits-granted-by-the-waiters-shard-owner.md);
 the other choices are D1160–D1195 in [research.md](./research.md).
 
 ## Technical Context
@@ -94,10 +94,10 @@ transition rows ADR-0050 decision 7 lets this feature list (per-path orders in A
 | T8 | Handler ends / run finishes | existing terminal order → `runs` update → run semaphore → namespace handler policy (share) | `failure_handler.finished`, `run.finished`, run-finished deliveries, permit release (`concurrency.released`), dispatch row when due, outbox |
 | T9 | Handler dispatch | shard fence (share) → dispatch row (`SKIP LOCKED`) → source run identity `KEY SHARE` (ADR-0039 pattern) → ordinary admission locks | handler run (run, journal, tasks, outbox, audit), dispatch `ADMITTED` + `handler_run_id`; or attempts/`next_attempt_at`/`DEAD` in a separate transaction after a refused admission |
 | T10 | Admission with run permit (every run creator, see Run creators) | ADR-0050 merged admission order (C4): slots 1–5 (authority, receipt, aggregates, catalog heads, secrets) → slot 6 `runs` insert (with its `run_active_counts` trigger rows) → **slot 7 semaphore** (insert or update) → slot 8 quota and usage | run, holder or waiter row, `concurrency.acquired` or `concurrency.queued` + queue timer, counters, usage |
-| T11 | Grant to the oldest unpaused waiter whose own limit admits it (skip-ahead, no head-of-line blocking); with 019, by (019 priority 1 first, enqueue time asc) among those (D1602) | shard fence (share) → waiter run (`SKIP LOCKED`) → semaphore | holder row, waiter row removed, timer cancelled, `concurrency.acquired`, first ready tasks, outbox |
-| T12 | Queue timeout | timer path (`apply_if`) → run → `runs` update → semaphore | waiter removed, `concurrency.wait_timed_out`, run `FAILED` (`CONCURRENCY_WAIT_TIMEOUT`) directly as in T8 without a workflow handler phase (it never held a permit); namespace dispatch row when due |
-| T13 | Step claim with step permit | run → drain fence → session → sorted activity quota rows → sorted semaphores | lease, holder row, journal, outbox |
-| T14 | Attempt ends | existing completion/failure/expiry order (run → step) → semaphore | existing records + holder row removed, `concurrency.released` |
+| T11 | Grant to the oldest unpaused waiter whose own limit admits it (skip-ahead, no head-of-line blocking); with 019, by (019 priority 1 first, enqueue time asc) among those (D1602) | shard fence (share) → waiter run (`SKIP LOCKED`) → semaphore | holder row, waiter row removed, timer cancelled, `concurrency.acquired`, first ready tasks, outbox | *Revised 2026-11-13: replaced by T26 (ADR-0089, proposed).*
+| T12 | Queue timeout | timer path (`apply_if`) → run → `runs` update → semaphore | waiter removed, `concurrency.wait_timed_out`, run `FAILED` (`CONCURRENCY_WAIT_TIMEOUT`) directly as in T8 without a workflow handler phase (it never held a permit); namespace dispatch row when due | *Revised 2026-11-13: replaced by T27.*
+| T13 | Step claim with step permit | run → drain fence → session → sorted activity quota rows → sorted semaphores | lease, holder row, journal, outbox | *Revised 2026-11-13: removed by ADR-0089; a gated step is granted before it is `READY` (T26, T28) and the claim takes no semaphore.*
+| T14 | Attempt ends | existing completion/failure/expiry order (run → step) → semaphore | existing records + holder row removed, `concurrency.released` | *Revised 2026-11-13: also when a granted step leaves `READY` other than by its lease (T29).*
 | T15 | Standalone admission | existing ad hoc order (017 `RunStore::create`) | private definition (reuse or insert), run, receipt, audit, journal, tasks, outbox |
 | T16 | Draft test admission | workflow row (share, draft revision check) → existing ad hoc order | private definition, run (`DRAFT_TEST`), pin payloads, `step.mocked` for upstream pins, tasks for `startAt`, receipt, audit, NATS hint |
 | T17 | Namespace handler configuration | namespace policy fence (update) | handler row with revision CAS, audit |
@@ -319,7 +319,7 @@ Design checks, not implementation approval or test results.
 Added on 2026-11-13 for OD-2026-11-13-11 (research.md, Owner decision of 2026-11-13). Proposed; nothing is
 built. The slice is US02 (concurrency keys, above, unchanged) and US07 (rate limits with buffering,
 FR-022-039..050). Everything above this section stays the plan of the whole feature; this section says
-what the slice takes from it and what it adds. Rate limits follow the proposed
+what the slice takes from it and what it adds. Rate limits follow the accepted
 [ADR-0088](../../docs/adr/ADR-0088-rate-limits-are-a-durable-window-of-grants-on-the-database-clock-and-the-scheduler-grants-never-the-claim.md);
 the choices are D022-001..017 in [research.md](./research.md).
 
@@ -364,10 +364,10 @@ quota and usage rows. No transaction locks a run after a window row.
 | # | Transaction | Locks (in order) | Commits together |
 |---|---|---|---|
 | T19 | Admission of a run whose definition declares `rateLimit` (extends T10; every run creator) | ADR-0050 slots 1–6 → slot 7 semaphore when `concurrency` is also declared → window (insert or update) → quota and usage | run; either the grant row, `rate_limit.granted` (and `concurrency.acquired`) and the first tasks, or the waiter row(s), `rate_limit.queued` (and `concurrency.queued`), the queue timer and no task; counters |
-| T20 | Grant from the buffer, by the pass of the waiter's shard owner: the oldest unpaused waiter of the key that its own limit and its other gate admit | shard fence (share) → waiter run (`SKIP LOCKED`) → `runs` update → semaphore when declared → window | grant row, waiter row(s) removed, timer cancelled, `rate_limit.granted` (and `concurrency.acquired`); for a run its first ready tasks and outbox; for a step the step `READY` |
-| T21 | Queue deadline of a waiting run or step (existing timer pass, `apply_if`) | timer path → run → `runs` update → semaphore when declared → window | waiter removed, `rate_limit.wait_timed_out` (or `concurrency.wait_timed_out` when the permit is what is missing at the deadline); run `FAILED` directly as T12, or the step's failure route |
-| T22 | A step with node-level `rateLimit` would become ready (inside the readiness transaction: a worker completion, a scheduler pass, a retry timer or an admission) | the path's existing order → window | either grant row, `rate_limit.granted` and the step `READY`; or waiter row, `rate_limit.queued`, queue timer and the step `WAITING` (`RATE_LIMIT`); next to whatever the path already commits |
-| T23 | Lease recording, by the pass: a grant row of the shard with no lease instant whose step has been leased, or has ended without a lease | shard fence (share) → window → grant row | lease instant copied from the `step.leased` fact, or the grant row deleted (slot returned); no run row is locked or written |
+| T20 | Grant from the buffer, by the pass of the waiter's shard owner: the oldest unpaused waiter of the key that its own limit and its other gate admit | shard fence (share) → waiter run (`SKIP LOCKED`) → `runs` update → semaphore when declared → window | grant row, waiter row(s) removed, timer cancelled, `rate_limit.granted` (and `concurrency.acquired`); for a run its first ready tasks and outbox; for a step the step `READY` | *Revised 2026-11-13: replaced by T26.*
+| T21 | Queue deadline of a waiting run or step (existing timer pass, `apply_if`) | timer path → run → `runs` update → semaphore when declared → window | waiter removed, `rate_limit.wait_timed_out` (or `concurrency.wait_timed_out` when the permit is what is missing at the deadline); run `FAILED` directly as T12, or the step's failure route | *Revised 2026-11-13: replaced by T27.*
+| T22 | A step with node-level `rateLimit` would become ready (inside the readiness transaction: a worker completion, a scheduler pass, a retry timer or an admission) | the path's existing order → window | either grant row, `rate_limit.granted` and the step `READY`; or waiter row, `rate_limit.queued`, queue timer and the step `WAITING` (`RATE_LIMIT`); next to whatever the path already commits | *Revised 2026-11-13: generalized to every gate and readiness source by T28.*
+| T23 | Lease recording, by the pass: a grant row of the shard with no lease instant whose step has been leased, or has ended without a lease | shard fence (share) → window → grant row | lease instant copied from the `step.leased` fact, or the grant row deleted (slot returned); no run row is locked or written | *Revised 2026-11-13: locks the grant row only, no window (D022-021); accepts only the granted attempt's `step.leased` committed after the grant (D022-029).*
 | T24 | Cancellation, run deadline or other terminal transition of a waiter, or of a granted step never leased | the path's order (run → `runs` update → semaphore when declared) → window | waiter removed and `rate_limit.dequeued`, or the unleased grant row removed; with the path's own records |
 | T25 | Purge, in bounded batches | window → grant rows that no acquirer can count any more → the window row itself when it has no waiter and no grant | deletions only |
 
@@ -482,7 +482,9 @@ grants are journal facts, and policy changes use the existing quota-policy audit
 
 ### Delivery sequence (the slice)
 
-1. Owner gate (T022-066): O1163–O1168 answered (OD-2026-11-13-16); ADR-0056 and ADR-0088 still to be accepted.
+1. Owner gate: O1163–O1168 answered (OD-2026-11-13-16); ADR-0056 and ADR-0088 accepted (OD-2026-11-13-17);
+   ADR-0089 and O1169 still open (T022-107). The instance-capability registry of feature 018 (T018-080,
+   pull request 98) on `develop` (T022-094).
 2. Foundations cut to the slice (T022-002..010, 012..014 as amended; T022-068..070).
 3. US02: T022-021..029, with ADR-0056's evidence.
 4. US07: T022-071..082, with ADR-0088's evidence; the hot-path budget (T022-076) before any call site in
@@ -498,3 +500,119 @@ reviewed pull request per slice of a trust boundary, a CI run of about two hours
 estimate of 20 to 26 pull requests: about 9 for US02 (the admission port touches every run creator), about
 10 for US07, the rest for SDKs, Studio and gates. It is the size of feature 018's foundations, not of a
 patch release item. Body nodes are out of 0.3.0 by the owner's answer to O1167. No date is implied.
+
+## Revision after the reviews of 2026-11-13
+
+The architecture, security and correctness reviews of the slice at `1a21cbdc` are recorded in
+[reviews/2026-11-13/](reviews/2026-11-13/). This section answers them; where it and the sections above
+disagree, it wins, and the rows above that it replaces say so. Decisions D022-019..034 in
+[research.md](./research.md); ADR-0089 (proposed) for the change to accepted ADR-0056.
+
+### Code facts the revision rests on (checked on `origin/develop` at `a4f6e9db`)
+
+| Fact | Where |
+|---|---|
+| The claim reads per activity the oldest `READY` steps, at most `limit.min(64)` | `crates/infra-postgres/src/workers.rs` (`CLAIMABLE`, `CLAIMABLE_PATHS`, the bind of `$4`) |
+| `step.released` is emitted by the planner in every `settle` | `crates/domain/src/execution/plan.rs`, `command.rs` (`settle`, `apply_then_settle`) |
+| `step.retry_requested` sets a step `Ready` | `crates/domain/src/execution/state_effects.rs` |
+| The retry pass emits `step.retry_due` for `RETRY_WAIT` steps | `crates/infra-postgres/src/maintenance.rs` (`due_retries`) |
+| One function persists every transition and writes the task-ready hint for exactly those three events | `crates/infra-postgres/src/execution.rs` (`persist`) |
+| Runs are inserted only by `PgRunStore::create` and the continue-as-new successors | `crates/infra-postgres/src/execution.rs`, `chain_progress.rs` |
+| Schedule firing is on `develop` | `crates/application/src/schedule_firing.rs`, `runs.rs` |
+| Fleet activation goes through 018's registry; use before activation is refused with the feature's own reason | ADR-0050 decision 9; `specs/018-schedules-bulk-operations/data-model.md` rules 1–5; ADR-0082 |
+| Namespace counters are 16 slot rows maintained by a `SECURITY DEFINER` trigger, read-only to `sagat_app` | migration `20261017000100_active_run_counts` |
+| `runs` has `UNIQUE (tenant_id, namespace_id, id)` | migration `20261102000000_execution_chains` |
+| The budget selector covers `crates/infra-postgres/`, the worker and execution application files and `runs.rs` | `scripts/select-test-targets.py` (`HARNESSES`) |
+
+### Transactions added or replacing earlier rows
+
+| # | Transaction | Locks (in order) | Commits together |
+|---|---|---|---|
+| T26 | Grant routine (replaces T11 and T20): a key selected by the pass of its home shard; for one waiter, run or step, whatever its gates | key home-shard fence (share) → waiter run (`SKIP LOCKED`) → `runs` update → semaphore(s) → window(s) → `flow_control_counts` and usage | for every gate the waiter declares, the grant (`concurrency.acquired`, `rate_limit.granted` with the attempt for a step) or nothing; waiter rows removed; timer cancelled; a run's first tasks and outbox, or the step `READY`; the key's next-eligible hint |
+| T27 | Timeout routine (replaces T12 and T21), at the waiter's single deadline | timer path (`apply_if`) → run → `runs` update → semaphore(s) → window(s) → counts | the refusing gate's `wait_timed_out` (rate first) and the other's `dequeued`; run `FAILED` as T12 or the step's failure route |
+| T28 | Readiness gate at `persist` (generalizes T22 to every gate and every readiness source) | the path's own order → semaphore(s) → window(s) sorted → counts | for each gated step the reducer left `WAITING`: its grants (then `READY`) or its `*.queued` and timer; no task-ready hint for a waiting step |
+| T29 | Return of a granted, unleased step's slot and permit (pause, review, cancellation, run end; extends T14 and T24) | the path's own order → semaphore(s) → window(s) | `concurrency.released`, `rate_limit.returned`, holder and grant rows removed, step `WAITING` (pause) or ended |
+| T30 | Fleet activation (operator command of 018's registry) | 018's activation order | requirement rows for `flow-control-concurrency-v1` and `flow-control-rate-v1`, the feature's activation row, audit |
+
+The claim (T13) no longer touches a semaphore: a gated step is granted before it is `READY`. Lease
+recording (T23) locks only the grant row. The routine never locks a window before a semaphore and never
+locks a run after either.
+
+### The grant pass, by key
+
+- Semaphores and windows carry `key_shard` (a stable hash of the key's identity modulo the 64 shards),
+  `waiters` and `next_eligible_at`, all maintained under the key's lock; a partial index on
+  `(key_shard, next_eligible_at) WHERE waiters > 0` selects due keys.
+- `next_eligible_at` is a hint that may be early and is never late: a release (T8, T14, T29) sets it to now;
+  a grant that leaves the key full sets it to the instant the oldest counted grant ages out, or to now plus
+  the shortest period when an unleased grant holds a slot.
+- Keys are shared between tenants by `crates/scheduler/src/fairness.rs`. A pass visits at most 256 keys and
+  makes at most 256 grants per key (the existing per-key bound), each grant its own transaction.
+- Reservation rule (D022-021): on each gate, a waiter at eligible position `p` is granted only when counted
+  holders or grants plus `p` are below its own limit.
+
+### Counters (D022-026)
+
+`flow_control_counts (tenant_id, namespace_id, slot 0..15, queued_runs, live_keys)`, slot-8b usage rows, slot
+from the run shard (waiters) or the key shard (keys), maintained by `SECURITY DEFINER` triggers on the waiter,
+holder, grant and key rows; `sagat_app` has `SELECT` only. A dual-gated run counts once in `queued_runs`.
+Ceilings compare the sum of the 16 slots read after the transaction's own rows, as for `active_runs`.
+
+### Ceilings, revised
+
+| Resource | Default | Hard ceiling |
+|---|---:|---:|
+| Run waiters per key (concurrency and rate) | 100, and always below the effective `queued_runs` | 10,000 |
+| Step waiters per key | not bounded per key: one per run and gated node | `active_runs` × gated nodes |
+| `limit` per `second` until SC-022-029 meets its floor | 20 | 20 |
+| `limit` per `second` after it | declared | 100 |
+| Keys visited per grant pass | 256 | 256 |
+
+### Admission port and checks
+
+- The gate runs inside `PgRunStore::create`; the continue-as-new inserts of `chain_progress.rs` assert that
+  their definition has no run-level gate. `scripts/check-architecture.py` gains a rule that `INSERT INTO runs`
+  appears only in those two files (T022-093).
+- The hot-path budget gains a line for a plain admission in Phase 2, before T022-022 (T022-091); T022-076
+  moves to Phase 2; the selector also selects the budget suite for `crates/scheduler/`,
+  `crates/domain/src/execution/` and `crates/application/src/{concurrency,rate_limits,flow_control}.rs`
+  (T022-092).
+
+### Security additions
+
+- Keys: identity-only keys refused, `secret` keys refused, `pii` keys warned, labels `null` for callers who
+  may not disclose the key's source (FR-022-056, FR-022-057); per-key digest rotation with the version in
+  `flow_control_key_versions` (FR-022-053, FR-022-056).
+- Every foreign key to `runs` from a flow-control table is `(tenant_id, namespace_id, run_id)` →
+  `runs (tenant_id, namespace_id, id)`.
+- Position and estimate are computed only by the single-run read; the list filter `group` accepts both
+  explicit and derived group names.
+- A grant does not re-authorize the initiator (FR-022-060).
+
+### Failure and recovery, added
+
+| Failure | Expected state | Handling and test |
+|---|---|---|
+| 64+ steps of key A wait; one step of key B ready | B leased by the next poll | SC-022-024, T022-099 |
+| A readiness source not listed | The reducer still makes a gated step wait | One test per source; `verify_run` (T022-096) |
+| Dual-gated head refused by its other gate | Younger waiters granted only while room remains for it | T022-097 |
+| Dual-gated timeout | One `wait_timed_out`, one `dequeued` | T022-098 |
+| Waiter of a terminal run | Alert `flow_control_waiter_orphaned`, skipped | T022-097 |
+| An engine without the capability is live | Activation refused; use refused | SC-022-027, T022-094 |
+| Pause of a run with a granted, unleased step | Slot and permit returned; asked again on resume | T022-100 |
+| Database clock set back | No grant until it catches up | `libfaketime` in the test container (T022-080) |
+
+### Constitution Check (the revision)
+
+| Principle | Result | Evidence / future gate |
+|---|---|---|
+| I — durable atomic transitions | Pass | T26–T30; readiness, grant and journal in one commit; invariant 11 |
+| II — pure domain | Pass | The readiness mapping is a reducer rule; locks and the clock stay in the adapter |
+| IV — pinned versions | Pass | Registry activation (ADR-0050 decision 9); no mixed fleet runs a gate half |
+| V — tenant boundary | Pass | FKs include the namespace; classified keys; labels gated by disclosure |
+| VIII — failure tested, honest | Pass | The added failure rows; G1184..1186 |
+
+### Size, revised
+
+80 tasks: 38 existing, 25 added with the slice, 17 added by the review (T022-091..107). Estimate: 26 to 32
+pull requests, and the registry of feature 018 must be on `develop` first. No date is implied.

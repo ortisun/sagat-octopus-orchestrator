@@ -152,3 +152,12 @@ key with 10,000 waiters and 1,000 keys on a stated environment. Spec:
 plan: `specs/022-flow-control-step-policies/plan.md` (Release 0.3.0 slice); research: D022-001..017,
 G1174..G1183, O1163..O1168; journal events and reset rules:
 `specs/022-flow-control-step-policies/contracts/journal-events.md`.
+
+## Revision (2026-11-13)
+
+Accepted by the owner on 2026-11-13 (OD-2026-11-13-17); the "Decided by" line above predates the acceptance.
+The reviews of the slice refine decisions 3 and 7 (one grant routine and one timeout routine for both gates,
+driven by key, with a reservation rule instead of strict oldest-first) in
+[ADR-0089](ADR-0089-a-gated-step-waits-outside-ready-and-one-fenced-grant-routine-serves-every-waiter-by-key.md)
+(proposed). Decision 2's instant is read with `clock_timestamp()` after the window lock (feature 022
+NFR-022-008); this states what decision 2 already requires.

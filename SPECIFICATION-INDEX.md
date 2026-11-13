@@ -92,7 +92,7 @@ security and cross-feature consistency) and revised. Suggested order and gates: 
 | [019](specs/019-worker-deployments-dispatch/spec.md) | worker deployment versions, priority and fairness keys, checkpoints, task tokens, push dispatch, warm script containers | ADR-0051, ADR-0052 |
 | [020](specs/020-visibility-analytics-archival/spec.md) | search attributes and list queries, journal-derived analytics sinks, archival and retention | ADR-0053, ADR-0054 |
 | [021](specs/021-integration-resources-triggers/spec.md) | resources, managed operations, variables, new trigger kinds | ADR-0055 |
-| [022](specs/022-flow-control-step-policies/spec.md) | step cache, early return, failure handlers, concurrency keys, standalone steps, draft test mode; rate limits per window with buffering (US07, release 0.3.0 slice with US02) | ADR-0056, ADR-0088 |
+| [022](specs/022-flow-control-step-policies/spec.md) | step cache, early return, failure handlers, concurrency keys, standalone steps, draft test mode; rate limits per window with buffering (US07, release 0.3.0 slice with US02) | ADR-0056, ADR-0088, ADR-0089 (proposed) |
 | [023](specs/023-script-languages/spec.md) | Bash, PowerShell, PHP, Rust scripts; `python-data` runtime mechanism | ADR-0057 |
 | [024](specs/024-data-engines-pipelines/spec.md) | MySQL/MariaDB, SQL Server, BigQuery, Snowflake, DuckDB; data assets and pipelines | ADR-0058 |
 | [025](specs/025-ai-agents-mcp/spec.md) | durable agent step, MCP server and client | ADR-0059, ADR-0060 |

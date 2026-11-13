@@ -339,3 +339,64 @@ erasure has nothing to register for these tables beyond the foreign keys to `run
 group, key), then their grant and waiter rows** → quota and usage rows and the deferred content flush,
 always last. The window rows are rate rows of ADR-0050 slot 8b, which ADR-0056 decision 2 already allows
 after a semaphore. After a window row a transaction locks no run, count, activity-quota or semaphore row.
+
+## Revision after the reviews of 2026-11-13 (D022-019..034, ADR-0089 proposed)
+
+Where this section and the ones above disagree, this section wins.
+
+### Steps and their gates
+
+Step transitions, replacing the step lines of "Concurrency" and "Rate limits": for a node that declares
+`concurrency` or `rateLimit`, `step.released`, `step.retry_due` and `step.retry_requested` lead to
+`WAITING(RATE_LIMIT)` or `WAITING(CONCURRENCY)` (the first gate not yet granted, rate first), never to
+`READY`; the grant that completes the last declared gate leads to `READY`. A granted, unleased step that
+leaves `READY` other than by a lease returns its slot (`rate_limit.returned`) and permit
+(`concurrency.released`) and waits again (pause) or ends. `step_concurrency_requirements` is not built: a
+step waiting for a permit is a `concurrency_waiters` row with `permit_scope = 'STEP'` and its `node`, and a
+step holder is created at grant, not at claim.
+
+### Columns added
+
+| Table | Column | Notes |
+|---|---|---|
+| `concurrency_semaphores`, `rate_limit_windows` | `key_shard smallint` | stable hash of (tenant, namespace, pool, scope, group, key digest) modulo 64; the shard whose owner grants the key |
+| same | `next_eligible_at timestamptz null` | hint kept under the key's lock, early never late; partial index `(key_shard, next_eligible_at) WHERE waiters > 0` |
+| `rate_limit_windows` | `max_period_ms integer` | the longest period among its live grants and waiters; the purge keeps a grant for it plus one minute |
+| `concurrency_waiters` | `node text` (`''` for a run), PK `(tenant_id, run_id, node)`; `attempt integer` | step waiters |
+| `concurrency_holders` | `attempt integer` | the attempt a step permit was granted for (`attempt() + 1`) |
+| `rate_limit_grants` | `attempt` is the attempt the grant is for | lease recording accepts only that attempt's `step.leased` committed after the grant |
+
+Every foreign key to `runs` from a flow-control table is `(tenant_id, namespace_id, run_id)` →
+`runs (tenant_id, namespace_id, id)` (constraint `runs_tenant_namespace_id_uniq`).
+
+### `flow_control_counts`
+
+PK `(tenant_id, namespace_id, slot)`, `slot` 0..15; `queued_runs bigint`, `live_keys bigint`, both CHECK
+`>= 0`. Slot-8b usage rows (ADR-0050). Maintained only by `SECURITY DEFINER` triggers on the waiter rows
+(a run counts once whatever its waiter rows) and on the semaphore and window rows (a key counts once per
+row); `sagat_app` has `SELECT` only, as for `run_active_counts`.
+
+### `flow_control_key_versions`
+
+PK `version smallint`; `state` CHECK `IN ('ACTIVE','RETIRING','RETIRED')` with at most one `ACTIVE`; `activated_at`,
+`retired_at`. Deployment-wide, protected; the key material is configuration, never in a row. Read `FOR
+SHARE` in every deciding transaction; changed only by an audited operator command.
+
+### Grants and counters
+
+`waiters`, `holders` and `live_grants` on semaphore and window rows are maintained by `SECURITY DEFINER`
+triggers on the holder, waiter and grant rows; `sagat_app` may `UPDATE` only `next_eligible_at` and
+`updated_at` of those rows (enough for `SELECT ... FOR UPDATE`). The purge decrements `live_grants` by the
+rows it actually deleted.
+
+### Invariants, revised and added
+
+10. *(revised, D022-032)* For each grant `e` of a key with instant `t_e`, limit `limit_e` and period
+    `period_e` (run scope: `granted_at_us`; step scope: the instant of the matching `step.leased`), the
+    grants of that key whose instants lie in `(t_e − period_e, t_e]` number at most `limit_e`. Checked from
+    the journals alone.
+11. Every commit in which a step of a gated node leaves `RUNNING`/`RETRY_WAIT` towards readiness contains,
+    for that step, either the grants of all its gates or a `*.queued`; no gated step is `READY` without an
+    open grant for each declared gate.
+12. Every waiter row belongs to a run that is not terminal; a breach raises `flow_control_waiter_orphaned`.
+13. At no instant does a key have more granted, unleased steps than the smallest `limit` among them.

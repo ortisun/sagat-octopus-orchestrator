@@ -24,6 +24,8 @@ key value, a cached value, a pin, a payload or a secret. Every row needs a test 
 | Per-key rate-limit buffer full, or namespace `queued_runs` full, for a start that would be buffered (synchronous start; US07) | 429 | `QUOTA_EXCEEDED` | `RATE_LIMIT_QUEUE_FULL` | no |
 | Live rate-limit keys over the namespace ceiling (US07) | 429 | `QUOTA_EXCEEDED` | `FLOW_CONTROL_LIMIT` (`details.limit`) | no |
 | Reset (018) of a run whose workflow declares a run-level `rateLimit`, with no free slot (a reset never waits; US07) | per 018 | 018 contract | `RATE_LIMIT_SLOT_UNAVAILABLE` (to be registered by 018, G1181) | no |
+| Publication or start using `concurrency` or `rateLimit` before the operator activated the capability through 018's instance-capability registry (review 2026-11-13) | 422 | `VALIDATION_FAILED` | `FLOW_CONTROL_ACTIVATION_PENDING` | no |
+| Any call to a process that lacks a capability the registry requires (018's code, reused) | 503 | `UNAVAILABLE` | `BINARY_CAPABILITY_MISSING` | yes |
 | Reset (018) of a permit-holding source with no free permit (a reset never queues) | per 018 | 018 contract | `CONCURRENCY_PERMIT_UNAVAILABLE` | no |
 | Reset (018) to a point refused by a 022 reset rule (inside a handler phase, after a queue timeout or dequeue, while queued) | per 018 | 018 contract | 018's reset-point refusal reason | no |
 | Reset, rerun or batch (018) of a test-tree run | per 018 | 018 contract | `RESET_SOURCE_TEST_RUN` | no |
@@ -47,6 +49,9 @@ Existing reasons reused unchanged: `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`, `
 | `CONCURRENCY_LIMIT_MISMATCH` | warning | an explicit group is already declared by another published definition of the namespace with a different limit (grants then skip ahead, D1196) |
 | `RATE_LIMIT_POLICY_INVALID` | error | US07: bad `limit`, `per`, group or timeout, a `limit` above the ceiling of its `per`, a timeout above the run deadline, a top-level key that reads other data than `input`, or `rateLimit` on a kind other than activity/script |
 | `RATE_LIMIT_MISMATCH` | warning | US07: an explicit group is already declared by another published definition of the namespace with a different `limit` or `per` (each acquirer then applies its own, D022-009) |
+| `FLOW_CONTROL_KEY_UNBOUNDED` | error | a concurrency or rate-limit key reads only the run's identity (run id, business id, idempotency key) (FR-022-056) |
+| `FLOW_CONTROL_KEY_SECRET` | error | a key reads a location classified `secret` (FR-022-057) |
+| `FLOW_CONTROL_KEY_PII` | warning | a key reads a location classified `pii`; its label is shown only to callers who may disclose it (FR-022-057) |
 | `EARLY_RETURN_PLACEMENT` | error | placement rules of FR-022-008 |
 | `FAILURE_HANDLER_REGION` | error | region rules of FR-022-012 |
 | `FLOW_CONTROL_COMBINATION` | error | `earlyReturn`, `onFailure`, `concurrency` or (US07) `rateLimit` with `continueAsNew` |
@@ -63,6 +68,9 @@ Existing reasons reused unchanged: `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`, `
 |---|---|---|
 | `CONCURRENCY_WAIT_TIMEOUT` | run (queued) or step (ready) | the queue deadline passed before a permit; non-retryable for a run, ordinary failure route for a step |
 | `RATE_LIMIT_WAIT_TIMEOUT` | run (buffered) or step (waiting for a slot) | US07: the queue deadline passed before a slot; non-retryable for a run, ordinary failure route for a step; the wait spent no attempt |
+| `FLOW_CONTROL_KEY_INVALID` | step | a step-level key failed to evaluate or exceeds 256 bytes; failure route, no attempt spent, never granted (FR-022-054) |
+| `FLOW_CONTROL_LIMIT` | step | a step-level key would exceed the namespace's live-keys ceiling; failure route, no attempt spent (FR-022-054) |
+| `RATE_LIMIT_QUEUE_FULL`, `CONCURRENCY_QUEUE_FULL`, `FLOW_CONTROL_LIMIT` | child node | the child run's start was refused by a full buffer, `queued_runs` or the live-keys ceiling; retryable, through the node's retry policy and failure route; no child run exists (FR-022-055) |
 | `EXPRESSION_ERROR` | run | existing: an `earlyReturn.result` or a top-level concurrency or rate-limit key failed to evaluate |
 | `RUN_DATA_LIMIT` | run | existing: an early result over 256 KiB, or a cache-hit copy over the run's retained limit |
 | `STORAGE_QUOTA_EXCEEDED` | run | existing: the copy of a hit or an early result exceeded the tenant content quota (ADR-0027 path) |

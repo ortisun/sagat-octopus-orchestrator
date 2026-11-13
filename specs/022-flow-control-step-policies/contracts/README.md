@@ -25,3 +25,10 @@ the reasons and codes marked US07 in `errors.md`, and the scenario `flow-rate-li
 is still unchanged: a step waiting for a rate slot is not `READY`, so `PollTasks` never returns it and no
 protocol minor is negotiated. The AsyncAPI fragment has no rate-limit message. Only the concurrency and
 rate-limit parts merge into the canonical contracts for 0.3.0 (T022-060 narrowed, T022-087).
+
+**Revision after the review of 2026-11-13.** Error rows `FLOW_CONTROL_ACTIVATION_PENDING`,
+`FLOW_CONTROL_KEY_UNBOUNDED`, `FLOW_CONTROL_KEY_SECRET`, `FLOW_CONTROL_KEY_PII`, `FLOW_CONTROL_KEY_INVALID`
+and the child-node outcomes; the journal event `rate_limit.returned` and step-scope permit events with
+`attempt`; in the OpenAPI fragment, `keyLabel` may be `null` (FR-022-057), position and estimate are
+computed by the single-run read only, and the `group` filter accepts derived group names. The worker
+protocol stays unchanged: a step waiting for either gate is not `READY`.
