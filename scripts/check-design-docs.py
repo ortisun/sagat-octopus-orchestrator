@@ -714,12 +714,22 @@ class Checker:
                         self.fail("R6", f"specs/{name}", None, f"the number {match.group(1)} is used by a design doc with another slug")
 
     # R8 ---------------------------------------------------------------------------------
+    def amendment_base(self):
+        """The ref an amendment is compared with. A pull request into main (a release or a hotfix) carries amendments that
+        were each checked when they entered develop, while main holds an older constitution; it is compared with the point
+        where the branch left develop, so an amendment made on the branch itself still needs that text as its source."""
+        if self.base != "origin/main":
+            return self.base
+        code, out = self.git("merge-base", "HEAD", "origin/develop")
+        return out.strip() if code == 0 and out.strip() else self.base
+
     def base_constitution(self):
-        """(blob id, text) of the constitution at the base ref, wherever it lived, or (None, None)."""
+        """(blob id, text) of the constitution at the amendment base, wherever it lived, or (None, None)."""
+        base = self.amendment_base()
         for rel in ("docs/constitution.md", ".specify/memory/constitution.md"):
-            code, blob = self.git("rev-parse", "--verify", "--quiet", f"{self.base}:{rel}")
+            code, blob = self.git("rev-parse", "--verify", "--quiet", f"{base}:{rel}")
             if code == 0:
-                shown_code, body = self.git("show", f"{self.base}:{rel}")
+                shown_code, body = self.git("show", f"{base}:{rel}")
                 return blob.strip(), body if shown_code == 0 else None
         return None, None
 

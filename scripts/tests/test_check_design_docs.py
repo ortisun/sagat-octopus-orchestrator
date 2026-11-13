@@ -105,11 +105,11 @@ class Repo:
     def set_base(self):
         git(self.root, "update-ref", "refs/remotes/origin/develop", "HEAD")
 
-    def run(self, strict=False):
+    def run(self, strict=False, base="develop"):
         env = {k: v for k, v in GIT_ENV.items() if not k.startswith("GITHUB_")}
         if strict:
             env["GITHUB_EVENT_NAME"] = "pull_request"
-            env["GITHUB_BASE_REF"] = "develop"
+            env["GITHUB_BASE_REF"] = base
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--root", str(self.root)],
             capture_output=True, text=True, env=env,
@@ -167,16 +167,16 @@ class Base(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.repo = Repo(self._tmp.name)
 
-    def assertFails(self, rule, strict=False, contains=None):
-        code, out, err = self.repo.run(strict)
+    def assertFails(self, rule, strict=False, contains=None, base="develop"):
+        code, out, err = self.repo.run(strict, base)
         self.assertEqual(code, 1, out + err)
         self.assertRegex(out, rf"(?m)^{rule} ")
         if contains:
             self.assertIn(contains, out)
         return out
 
-    def assertPasses(self, strict=False):
-        code, out, err = self.repo.run(strict)
+    def assertPasses(self, strict=False, base="develop"):
+        code, out, err = self.repo.run(strict, base)
         self.assertEqual(code, 0, out + err)
         return out, err
 
@@ -913,6 +913,60 @@ class Amendment(Base):
         cells[3] = " " + "0" * 64 + " "
         self.repo.write(report, text.replace(row, "|".join(cells)))
         self.assertFails("R8")
+
+
+class ReleaseIntoMain(Base):
+    """A pull request into main (a release or a hotfix) carries amendments each checked when it entered develop.
+
+    main holds an old constitution, often several amendments behind; R8 compares the constitution with the point where the
+    branch left develop, so a release passes and a further amendment still needs that text as its Previous-source.
+    """
+
+    PRINCIPLES = Constitution.PRINCIPLES
+    constitution = Constitution.constitution
+    block = staticmethod(Constitution.block)
+    setup_pair = Constitution.setup_pair
+
+    def cut_release(self):
+        self.repo.write(".specify/memory/constitution.md", self.constitution("1.0.0"))
+        self.repo.commit("main at an old constitution")
+        git(self.repo.root, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.setup_pair()  # 4.0.0 against 3.0.0, an amendment checked on develop
+        self.repo.commit("constitution 4.0.0 on develop")
+        self.repo.set_base()  # origin/develop: the release branch is cut here
+
+    def amend_on_release(self, source):
+        develop_blob = git(self.repo.root, "hash-object", "docs/constitution.md")
+        previous = self.repo.read("docs/constitution.md")
+        new = self.constitution("5.0.0", {"III": "### III. Principle III\n\nChanged body.\n"})
+        self.repo.write("docs/constitution.md", new)
+        rows = "".join(
+            f"| {r} | {'REWRITE' if r == 'III' else 'KEEP'} | {self.block(previous, r)} | {self.block(new, r)} |\n"
+            for r in ROMAN)
+        chosen = develop_blob if source == "develop" else "0" * 40
+        self.repo.write("docs/governance/constitution-5.0.0-sync-impact.md",
+                        f"# Sync\n\nPrevious-source: {chosen}\n\n"
+                        "| Principle | Disposition | sha256 (previous) | sha256 (this version) |\n|---|---|---|---|\n" + rows)
+        self.repo.commit("constitution 5.0.0 on the release branch")
+
+    def test_a_release_into_main_is_checked_against_the_point_it_left_develop(self):
+        self.cut_release()
+        self.assertPasses(strict=True, base="main")
+
+    def test_an_amendment_made_on_the_release_branch_still_needs_its_source(self):
+        self.cut_release()
+        self.amend_on_release("develop")
+        self.assertPasses(strict=True, base="main")
+
+    def test_an_amendment_on_the_release_branch_with_another_source_fails(self):
+        self.cut_release()
+        self.amend_on_release("wrong")
+        self.assertFails("R8", strict=True, base="main")
+
+    def test_a_pull_request_into_develop_is_still_checked_against_develop(self):
+        self.cut_release()
+        git(self.repo.root, "update-ref", "refs/remotes/origin/develop", "HEAD~2")  # develop at the old 1.0.0
+        self.assertFails("R8", strict=True)
 
 
 class Accepted(Base):
