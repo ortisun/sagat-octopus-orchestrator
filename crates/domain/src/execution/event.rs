@@ -265,6 +265,13 @@ impl FailureCode {
         Self::system("BLOB_UNAVAILABLE")
     }
 
+    /// The collection declares `operators` and this release's scheduler does not apply a chain (design 042, T042-8): the
+    /// run fails at scope entry rather than run its body over the list `items` yields (G042-100).
+    #[must_use]
+    pub fn collection_operators_unsupported() -> Self {
+        Self::system("COLLECTION_OPERATORS_UNSUPPORTED")
+    }
+
     /// The bytes of a blob are not the bytes that were stored (size or digest differ).
     #[must_use]
     pub fn blob_corrupt() -> Self {

@@ -5,7 +5,9 @@
 //! definition service's decision (`collection-operators`, FR-042-003), never this module's.
 
 use sagat_application::definitions::{IrError, IrIssue, OperatorRefusal};
-use sagat_domain::operators::{Operator, OperatorChain, OperatorError, OperatorName, Surface};
+use sagat_domain::operators::{
+    MAX_EXPRESSION_BYTES, Operator, OperatorChain, OperatorError, OperatorName, Surface,
+};
 use sagat_domain::workflow::{Digest, Expression, NodeId};
 use sagat_infra_expr::Compiled;
 use serde_json::{Map, Value, json};
@@ -15,9 +17,6 @@ const STAGE_VARIABLES: [&str; 6] = ["element", "position", "input", "steps", "ru
 
 /// The names a stage may never read, kept free for the body and for an enclosing iteration (design 039).
 const RESERVED_VARIABLES: [&str; 5] = ["item", "index", "iteration", "carry", "bodyResult"];
-
-/// The structured expression ceiling, in UTF-8 bytes (the schema's `x-maxUtf8Bytes`).
-const MAX_EXPRESSION_BYTES: usize = 1024;
 
 /// Longest operator name an error repeats from the document.
 const MAX_NAME_ECHO: usize = 64;
@@ -42,9 +41,17 @@ fn refused(
     }
 }
 
-/// Refuses, before the schema is applied, a `forEach` stage that names an operator a collection does not have: one only
-/// a trigger has, or a name that is no operator. The closed schema would refuse both, but without saying which operator
-/// of which stage; this answer is typed (FR-042-001). Any other shape is left to the schema.
+/// Whether `name` has the character set of an operator name, so an error may repeat it.
+fn is_name(name: &str) -> bool {
+    name.len() <= MAX_NAME_ECHO
+        && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && name.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// Refuses, before the schema is applied, a `forEach` stage the schema would refuse without saying which operator of
+/// which stage (FR-042-001): a name that is no operator, one only a trigger has, or a count outside its range. Only a
+/// node whose id is a node id and a name of the operator character set are answered here, so an error never repeats
+/// other text of the document; any other shape is left to the schema.
 pub(crate) fn check_surfaces(document: &Value) -> Result<(), IrError> {
     let roots = document.get("nodes").and_then(Value::as_array);
     let bodies = document
@@ -60,26 +67,44 @@ pub(crate) fn check_surfaces(document: &Value) -> Result<(), IrError> {
         let Some(stages) = node.get("operators").and_then(Value::as_array) else {
             continue;
         };
-        let id = node.get("id").and_then(Value::as_str).unwrap_or_default();
+        let Some(id) = node
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| NodeId::parse(id).is_ok())
+        else {
+            continue;
+        };
         for (index, stage) in stages.iter().enumerate() {
-            let Some((name, _)) = single_property(stage) else {
+            let Some((name, params)) = single_property(stage).filter(|(name, _)| is_name(name))
+            else {
                 continue;
             };
-            match OperatorName::parse(name) {
-                None => {
-                    return Err(refused(
-                        id,
-                        index,
-                        name,
-                        OperatorRefusal::Unknown,
-                        "not an operator",
-                    ));
-                }
-                Some(operator) => {
-                    operator
-                        .require_on(Surface::Collection, index)
-                        .map_err(|error| chain_error(id, "", &error))?;
-                }
+            let Some(operator) = OperatorName::parse(name) else {
+                return Err(refused(
+                    id,
+                    index,
+                    name,
+                    OperatorRefusal::Unknown,
+                    "not an operator",
+                ));
+            };
+            operator
+                .require_on(Surface::Collection, index)
+                .map_err(|error| chain_error(id, "", &error))?;
+            let count = params
+                .get("count")
+                .and_then(Value::as_u64)
+                .map(|count| u32::try_from(count).unwrap_or(u32::MAX));
+            let counted = match (operator, count) {
+                (OperatorName::Skip, Some(count)) => Some(Operator::Skip { count }),
+                (OperatorName::Take, Some(count)) => Some(Operator::Take { count }),
+                (OperatorName::Window, Some(count)) => Some(Operator::Window { count }),
+                _ => None,
+            };
+            if let Some(counted) = counted {
+                counted
+                    .check_count(index)
+                    .map_err(|error| chain_error(id, "", &error))?;
             }
         }
     }

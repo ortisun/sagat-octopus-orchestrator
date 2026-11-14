@@ -16,6 +16,10 @@ pub const MAX_STAGES: usize = 8;
 /// The largest `count` of `skip`, `take` and `window` on a collection: the 0.3.0 collection ceiling (OD-2026-11-13-1).
 pub const MAX_COUNT: u32 = 1_000;
 
+/// The UTF-8 bytes of one stage expression: the ceiling of every structured expression (the schema's
+/// `x-maxUtf8Bytes`).
+pub const MAX_EXPRESSION_BYTES: usize = 1024;
+
 /// Where a chain is declared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Surface {
@@ -173,6 +177,24 @@ impl Operator {
         }
     }
 
+    /// # Errors
+    /// [`OperatorError::Count`], naming `stage`, when the count of `skip`, `take` or `window` is outside its range on a
+    /// collection.
+    pub fn check_count(&self, stage: usize) -> Result<(), OperatorError> {
+        match self.count() {
+            Some((count, min)) if !(min..=MAX_COUNT).contains(&count) => {
+                Err(OperatorError::Count {
+                    stage,
+                    operator: self.name(),
+                    count,
+                    min,
+                    max: MAX_COUNT,
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// The count and its accepted range on a collection, for the operators that take one.
     const fn count(&self) -> Option<(u32, u32)> {
         match self {
@@ -222,17 +244,7 @@ impl OperatorChain {
             return Err(OperatorError::Length(stages.len()));
         }
         for (stage, operator) in stages.iter().enumerate() {
-            if let Some((count, min)) = operator.count()
-                && !(min..=MAX_COUNT).contains(&count)
-            {
-                return Err(OperatorError::Count {
-                    stage,
-                    operator: operator.name(),
-                    count,
-                    min,
-                    max: MAX_COUNT,
-                });
-            }
+            operator.check_count(stage)?;
         }
         Ok(Self {
             surface: Surface::Collection,

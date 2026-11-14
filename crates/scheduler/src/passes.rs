@@ -206,6 +206,11 @@ pub enum CollectionAdvanceError {
     /// the store or catalog is unavailable). The run is left alone and the next pass tries again.
     #[error("the collection item source is not available")]
     SourceUnavailable,
+    /// The collection declares `operators`, which this release's scheduler does not apply (design 042, T042-8). The
+    /// run was stopped with `COLLECTION_OPERATORS_UNSUPPORTED` instead of running its body over the list `items`
+    /// yields (G042-100).
+    #[error("the collection declares operators, which this scheduler does not apply")]
+    OperatorsUnsupported,
 }
 
 /// One durable sequential-loop transition committed by the scheduler.
@@ -1051,8 +1056,7 @@ where
             result,
             max_items,
             max_concurrency,
-            // The chain is applied at entry by T042-8; until then publication keeps it off (G042-100).
-            operators: _,
+            operators,
         } = collection_node.kind()
         else {
             return Err(CollectionAdvanceError::NotCollection);
@@ -1078,6 +1082,29 @@ where
         let transition = |expected_run_version| audited(expected_run_version, None);
 
         let Some(collection) = state.collection(owner) else {
+            // Fail closed until the chain is applied at entry (T042-8, G042-100): a body over the list `items` yields
+            // is not what the author declared.
+            if operators.is_some() {
+                let version = state.version();
+                drop(tx);
+                return match self
+                    .stop_collection_for_source(
+                        view,
+                        &hold,
+                        tenant,
+                        run,
+                        version,
+                        FailureCode::collection_operators_unsupported(),
+                        "operators_unsupported",
+                    )
+                    .await?
+                {
+                    CollectionAdvance::LimitStopped => {
+                        Err(CollectionAdvanceError::OperatorsUnsupported)
+                    }
+                    other => Ok(other),
+                };
+            }
             let effective_output_bytes = tx.logical_output_bytes().await?;
             if retained_outputs_exceed_limit(effective_output_bytes) {
                 let version = state.version();
@@ -4280,7 +4307,8 @@ where
                         | CollectionAdvance::Finished,
                     ) => Outcome::Done,
                     Ok(CollectionAdvance::QuotaStopped) => Outcome::QuotaStopped,
-                    Ok(CollectionAdvance::LimitStopped) => Outcome::Done,
+                    Ok(CollectionAdvance::LimitStopped)
+                    | Err(CollectionAdvanceError::OperatorsUnsupported) => Outcome::Done,
                     Ok(CollectionAdvance::Waiting | CollectionAdvance::AlreadyFinished)
                     | Err(CollectionAdvanceError::NotCollection)
                     | Err(CollectionAdvanceError::Primitive(

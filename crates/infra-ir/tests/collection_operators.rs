@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 
 use proptest::prelude::*;
 use sagat_application::definitions::{IrCodec, IrError, OperatorRefusal, ParsedDefinition};
-use sagat_domain::operators::{Operator, OperatorChain};
+use sagat_domain::operators::{
+    MAX_COUNT, MAX_EXPRESSION_BYTES, MAX_STAGES, Operator, OperatorChain, OperatorName, Surface,
+};
 use sagat_domain::workflow::{NodeId, NodeKind, WorkflowDefinition};
 use sagat_infra_ir::{JsonIrCodec, canonical_chain, chain_digest};
 use serde_json::{Value, json};
@@ -73,7 +75,7 @@ fn for_each_nodes(definition: &WorkflowDefinition) -> Vec<&NodeKind> {
 fn every_earlier_document_still_decodes_and_encodes_byte_for_byte() {
     let directory = repository().join("tests/contract/sdk-conformance/expected");
     let mut checked = 0;
-    let mut refused = 0;
+    let mut refused: Vec<(String, String, &str)> = Vec::new();
     let mut collections = 0;
     let mut files: Vec<_> = std::fs::read_dir(&directory)
         .expect("goldens")
@@ -94,17 +96,15 @@ fn every_earlier_document_still_decodes_and_encodes_byte_for_byte() {
             let Some(expected) = canonical.get(name).and_then(Value::as_str) else {
                 continue;
             };
+            let file = path
+                .file_name()
+                .and_then(|f| f.to_str())
+                .expect("file name")
+                .to_owned();
             let parsed = match JsonIrCodec.parse_stored(&bytes(document)) {
                 Ok(parsed) => parsed,
-                // Some goldens are shapes the server keeps closed (an unproven continuation, say). They stay refused
-                // for their own reason, never for the new field.
-                Err(
-                    error @ (IrError::Schema(_)
-                    | IrError::Operator { .. }
-                    | IrError::CollectionOperatorsDisabled { .. }),
-                ) => panic!("{} {name} no longer decodes: {error}", path.display()),
-                Err(_) => {
-                    refused += 1;
+                Err(error) => {
+                    refused.push((file, name.clone(), variant(&error)));
                     continue;
                 }
             };
@@ -134,11 +134,66 @@ fn every_earlier_document_still_decodes_and_encodes_byte_for_byte() {
             checked += 1;
         }
     }
-    assert!(
-        checked >= 100,
-        "only {checked} documents checked ({refused} refused)"
-    );
-    assert!(collections >= 20, "only {collections} collections checked");
+    // Pinned: the goldens the server keeps closed, each for its own reason, none for the new field.
+    let refused: Vec<(&str, &str, &str)> = refused
+        .iter()
+        .map(|(file, name, kind)| (file.as_str(), name.as_str(), *kind))
+        .collect();
+    assert_eq!(refused, PINNED_REFUSALS);
+    assert_eq!((checked, collections), PINNED_COUNTS);
+}
+
+/// The goldens `parse_stored` refuses today, as (file, workflow, error variant), and none of them for an operator.
+const PINNED_REFUSALS: &[(&str, &str, &str)] = &[
+    (
+        "continuation-builders.workflows.json",
+        "input-and-state-maximum",
+        "Unsupported",
+    ),
+    (
+        "continuation-builders.workflows.json",
+        "input-only",
+        "Unsupported",
+    ),
+    (
+        "expression-limits.workflows.json",
+        "bytes-excess",
+        "Invalid",
+    ),
+    (
+        "expression-limits.workflows.json",
+        "literal-excess",
+        "Expression",
+    ),
+    (
+        "expression-limits.workflows.json",
+        "object-literal",
+        "Expression",
+    ),
+];
+
+/// (documents decoded, documents with a collection).
+const PINNED_COUNTS: (usize, usize) = (121, 27);
+
+const fn variant(error: &IrError) -> &'static str {
+    match error {
+        IrError::TooLarge => "TooLarge",
+        IrError::Malformed => "Malformed",
+        IrError::Schema(_) => "Schema",
+        IrError::Classification(_) => "Classification",
+        IrError::Unsupported { .. } => "Unsupported",
+        IrError::Pending { .. } => "Pending",
+        IrError::LakeDisabled { .. } => "LakeDisabled",
+        IrError::LakeWriteRefused { .. } => "LakeWriteRefused",
+        IrError::Operator { .. } => "Operator",
+        IrError::CollectionOperatorsDisabled { .. } => "CollectionOperatorsDisabled",
+        IrError::UnsupportedDeclaration { .. } => "UnsupportedDeclaration",
+        IrError::Invalid(_) => "Invalid",
+        IrError::EscapingBodyEdge { .. } => "EscapingBodyEdge",
+        IrError::Expression { .. } => "Expression",
+        IrError::NameMismatch { .. } => "NameMismatch",
+        IrError::UnknownScript { .. } => "UnknownScript",
+    }
 }
 
 /// The digest of a `forEach` without operators, pinned: the digest a stored version is identified by. The value is the
@@ -300,25 +355,126 @@ fn schema_issue_paths(document: &Value) -> Vec<String> {
     }
 }
 
+/// A count out of its range is refused with `RANGE`, naming the stage, before the schema's bound answers it untyped.
 #[test]
-fn parameters_out_of_range_and_malformed_chains_are_refused_by_the_schema() {
-    for operators in [
-        json!([{"window": {"count": 0}}]),
-        json!([{"window": {"count": 1001}}]),
-        json!([{"skip": {"count": 1001}}]),
-        json!([{"take": {"count": -1}}]),
-        json!([{"filter": {"where": "true", "extra": 1}}]),
-        json!([{"filter": {"where": "true"}, "map": {"select": "element"}}]),
-        json!([{"map": {}}]),
-        json!([]),
-        json!(vec![json!({"take": {"count": 1}}); 9]),
+fn counts_out_of_range_are_refused_with_range() {
+    for (operators, stage, operator) in [
+        (json!([{"window": {"count": 0}}]), 0, "window"),
+        (
+            json!([{"map": {"select": "element"}}, {"window": {"count": 1001}}]),
+            1,
+            "window",
+        ),
+        (json!([{"skip": {"count": 1001}}]), 0, "skip"),
+        (
+            json!([{"take": {"count": 2}}, {"take": {"count": 4_294_967_296_u64}}]),
+            1,
+            "take",
+        ),
+    ] {
+        let (_, index, named, kind, message) = refusal(&chained(operators.clone()));
+        assert_eq!(
+            (index, named.as_str(), kind),
+            (stage, operator, OperatorRefusal::Range),
+            "{operators}"
+        );
+        assert!(message.contains("1000"), "{message}");
+    }
+}
+
+/// A malformed chain is refused by the schema at the pointer of the chain or of the stage.
+#[test]
+fn malformed_chains_are_refused_by_the_schema_at_their_pointer() {
+    for (operators, path) in [
+        (json!([{"take": {"count": -1}}]), "/nodes/0/operators/0"),
+        (
+            json!([{"take": {"count": 1}}, {"filter": {"where": "true", "extra": 1}}]),
+            "/nodes/0/operators/1",
+        ),
+        (
+            json!([{"filter": {"where": "true"}, "map": {"select": "element"}}]),
+            "/nodes/0/operators/0",
+        ),
+        (
+            json!([{"take": {"count": 1}}, {"take": {"count": 1}}, {"map": {}}]),
+            "/nodes/0/operators/2",
+        ),
+        (json!([]), "/nodes/0/operators"),
+        (
+            json!(vec![json!({"take": {"count": 1}}); 9]),
+            "/nodes/0/operators",
+        ),
     ] {
         let paths = schema_issue_paths(&chained(operators.clone()));
-        assert!(
-            paths.iter().any(|p| p.starts_with("/nodes/0")),
-            "{operators}: {paths:?}"
-        );
+        assert_eq!(paths, [path], "{operators}");
     }
+}
+
+/// A node id or an operator name outside its character set is never repeated in a typed error: the schema refuses it.
+#[test]
+fn a_refusal_echoes_only_a_node_id_and_an_operator_name_of_their_character_sets() {
+    let mut document = chained(json!([{"debounce": {"quietMs": 1000, "maxWaitMs": 5000}}]));
+    document["nodes"][0]["id"] = json!("<script>");
+    assert!(matches!(
+        JsonIrCodec.parse(&bytes(&document)),
+        Err(IrError::Schema(_))
+    ));
+    let document = chained(json!([{"thr ottle<b>": {}}]));
+    assert!(matches!(
+        JsonIrCodec.parse(&bytes(&document)),
+        Err(IrError::Schema(_))
+    ));
+}
+
+/// Fitness: the published schema says what the domain and the codec enforce (design 042, section 1).
+#[test]
+fn the_schema_states_the_domain_rules() {
+    let schema: Value = serde_json::from_slice(
+        &std::fs::read(
+            repository().join("specs/001-platform-foundation/contracts/workflow.schema.json"),
+        )
+        .expect("schema"),
+    )
+    .expect("schema JSON");
+    let defs = &schema["$defs"];
+    assert_eq!(
+        defs["forEach"]["properties"]["operators"]["$ref"],
+        "#/$defs/collectionOperators"
+    );
+    let chain = &defs["collectionOperators"];
+    assert_eq!(chain["minItems"], 1);
+    assert_eq!(chain["maxItems"], MAX_STAGES);
+    let stages = defs["collectionOperatorStage"]["oneOf"]
+        .as_array()
+        .expect("one form per operator");
+    let names: Vec<&str> = stages
+        .iter()
+        .map(|stage| stage["required"][0].as_str().expect("the operator"))
+        .collect();
+    let collection: Vec<&str> = OperatorName::ALL
+        .into_iter()
+        .filter(|name| name.is_on(Surface::Collection))
+        .map(OperatorName::as_str)
+        .collect();
+    assert_eq!(names, collection);
+    for stage in stages {
+        let name = stage["required"][0].as_str().expect("the operator");
+        assert_eq!(stage["additionalProperties"], false, "{name}");
+        let params = &stage["properties"][name];
+        assert_eq!(params["additionalProperties"], false, "{name}");
+        if let Some(count) = params["properties"].get("count") {
+            assert_eq!(count["maximum"], MAX_COUNT, "{name}");
+            let minimum = if name == "window" { 1 } else { 0 };
+            assert_eq!(count["minimum"], minimum, "{name}");
+        }
+        for (field, value) in params["properties"].as_object().expect("parameters") {
+            if field != "count" {
+                assert_eq!(value["$ref"], "#/$defs/expression", "{name}.{field}");
+            }
+        }
+    }
+    assert_eq!(defs["expression"]["x-maxUtf8Bytes"], MAX_EXPRESSION_BYTES);
+    assert_eq!(defs["expression"]["maxLength"], MAX_EXPRESSION_BYTES);
 }
 
 // --- the canonical encoding -------------------------------------------------------------------------------------------
@@ -377,7 +533,28 @@ proptest! {
         a in proptest::collection::vec(any_stage(), 1..=8),
         b in proptest::collection::vec(any_stage(), 1..=8),
     ) {
+        let written = Value::Array(a.clone());
         let (a, b) = (decoded(Value::Array(a)), decoded(Value::Array(b)));
+        // The same chain written with other whitespace and the collection's keys in the reverse order is the same chain.
+        let mut document = chained(written);
+        let node = document["nodes"][0].take();
+        let node = node
+            .as_object()
+            .expect("node")
+            .iter()
+            .rev()
+            .map(|(key, value)| format!("\n  {}:  {}", Value::from(key.as_str()), value))
+            .collect::<Vec<_>>()
+            .join(" ,");
+        document["nodes"][0] = json!("NODE");
+        let pretty = serde_json::to_string_pretty(&document)
+            .expect("JSON")
+            .replacen("\"NODE\"", &format!("{{{node}\n}}"), 1)
+            .into_bytes();
+        let same = JsonIrCodec.parse(&pretty).expect("a valid chain");
+        let same = chain_of(&same.definition).expect("chain").clone();
+        prop_assert_eq!(&same, &a);
+        prop_assert_eq!(chain_digest(&same), chain_digest(&a));
         let again: Value = serde_json::from_slice(&canonical_chain(&a)).expect("JSON");
         prop_assert_eq!(&decoded(again), &a);
         prop_assert_eq!(chain_digest(&a) == chain_digest(&b), a == b);

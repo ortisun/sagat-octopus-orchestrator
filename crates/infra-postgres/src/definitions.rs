@@ -206,6 +206,15 @@ pub(crate) async fn verify_declared_operations(
 }
 
 impl DefinitionStore for PgDefinitionStore {
+    async fn replay_publication(
+        &self,
+        tenant: TenantId,
+        workflow: WorkflowId,
+        idempotency: &Idempotency,
+    ) -> Result<Option<VersionRecord>, StoreError> {
+        crate::versioning::replay_publication(self, tenant, workflow, idempotency).await
+    }
+
     async fn check_database_access(
         &self,
         principal: &Principal,

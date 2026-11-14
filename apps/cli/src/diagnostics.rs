@@ -56,7 +56,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ),
     (
         "COLLECTION_OPERATORS_DISABLED",
-        "This deployment has not enabled collection operators, so a forEach cannot declare operators. Ask the operator to turn on SAGAT_COLLECTION_OPERATORS_ENABLED, or shape the list in an activity before the collection.",
+        "This release does not publish a forEach that declares operators. Remove the operators and shape the list in an activity before the collection.",
     ),
     (
         "INVALID_OPERATOR",

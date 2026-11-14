@@ -99,11 +99,12 @@ the attempt is not built yet, so a deployment should not turn the lake on to wri
 
 ### COLLECTION_OPERATORS_DISABLED
 
-This deployment has not enabled collection operators, so a forEach cannot declare operators. Ask the operator to turn on SAGAT_COLLECTION_OPERATORS_ENABLED, or shape the list in an activity before the collection.
+This release does not publish a forEach that declares operators. Remove the operators and shape the list in an activity before the collection.
 
-Collection operators are off by default (design 042). The switch is read at publication only: a workflow published while it
-was on stays readable, and its runs restore, when it is turned off. Turn it on only when every replica runs a release that
-applies the chain at scope entry.
+Collection operators are not available in this release (design 042): the scheduler applies a chain at scope entry only
+from task T042-8, so the control plane refuses `SAGAT_COLLECTION_OPERATORS_ENABLED=true` at start. A run of a chained
+version published elsewhere fails at entry with `COLLECTION_OPERATORS_UNSUPPORTED` rather than run its body over the list
+`items` yields.
 
 ### INVALID_OPERATOR
 

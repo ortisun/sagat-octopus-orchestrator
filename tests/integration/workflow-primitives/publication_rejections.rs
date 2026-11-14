@@ -23,6 +23,11 @@ fn collection(name: &str) -> Value {
 }
 
 async fn assert_rejected(document: Value, expected_reason: &str) -> Value {
+    assert_rejected_with_body(document, expected_reason).await.0
+}
+
+/// As [`assert_rejected`], with the body of the refused publication as well.
+async fn assert_rejected_with_body(document: Value, expected_reason: &str) -> (Value, Value) {
     let api = start_with(Options {
         runtime_role: true,
         ..Options::default()
@@ -110,7 +115,7 @@ async fn assert_rejected(document: Value, expected_reason: &str) -> Value {
         "a rejected draft must not publish a version"
     );
     assert_eq!(body["details"]["reason"], expected_reason, "{body}");
-    validation
+    (validation, body)
 }
 
 #[tokio::test]
@@ -238,7 +243,12 @@ async fn a_trigger_operator_on_a_collection_is_refused_over_http() {
         {"take": {"count": 2}},
         {"debounce": {"quietMs": 1000, "maxWaitMs": 5000}}
     ]);
-    let validation = assert_rejected(document, "INVALID_OPERATOR").await;
+    let (validation, body) = assert_rejected_with_body(document, "INVALID_OPERATOR").await;
     assert_eq!(validation["problems"][0]["code"], "INVALID_OPERATOR");
     assert_eq!(validation["problems"][0]["nodeId"], "lines");
+    let details = &body["details"];
+    assert_eq!(details["node"], "lines", "{body}");
+    assert_eq!(details["stage"], 1, "{body}");
+    assert_eq!(details["operator"], "debounce", "{body}");
+    assert_eq!(details["refusal"], "SURFACE", "{body}");
 }

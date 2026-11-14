@@ -139,6 +139,24 @@ impl SecretAccessLookup for FakeStore {
 }
 
 impl DefinitionStore for FakeStore {
+    async fn replay_publication(
+        &self,
+        tenant: TenantId,
+        workflow: WorkflowId,
+        idempotency: &Idempotency,
+    ) -> Result<Option<VersionRecord>, StoreError> {
+        let number = self.with(|s| {
+            s.idempotency
+                .get(&(idempotency.scope.clone(), idempotency.key.clone()))
+                .filter(|(fingerprint, _)| *fingerprint == idempotency.fingerprint)
+                .and_then(|(_, number)| number.parse::<u32>().ok())
+        });
+        match number {
+            Some(number) => self.get_version(tenant, workflow, number).await,
+            None => Ok(None),
+        }
+    }
+
     async fn find_namespace_by_slug(
         &self,
         tenant: TenantId,
@@ -2260,4 +2278,36 @@ async fn a_definition_without_a_chain_does_not_care_whether_collection_operators
         .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
         .await
         .expect("published with the switch off");
+}
+
+/// D042-105: a publication asked again with its key after the switch was turned off is answered by the store's replay,
+/// before the switch is read.
+#[tokio::test]
+async fn a_publication_retried_with_its_key_after_collection_operators_are_off_is_replayed() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_chained_workflow(&f).await;
+    let first = f
+        .service
+        .clone()
+        .with_collection_operators_enabled(true)
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("published");
+    let again = f
+        .service
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("replayed with the switch off");
+    assert!(!again.created);
+    assert_eq!(again.version.id(), first.version.id());
+    let other = f
+        .service
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000002", &ctx())
+        .await;
+    assert!(
+        matches!(&other, Err(AppError::InvalidDefinition(error)) if matches!(**error, IrError::CollectionOperatorsDisabled { .. })),
+        "{other:?}"
+    );
+    assert_eq!(f.store.with(|s| s.versions.len()), 1);
 }

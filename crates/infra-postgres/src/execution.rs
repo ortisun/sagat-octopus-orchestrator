@@ -6910,6 +6910,17 @@ fn versioned_script_retention(
 
 /// The run store also serves definitions, so one value can back every service that needs both.
 impl DefinitionStore for PgRunStore {
+    async fn replay_publication(
+        &self,
+        tenant: TenantId,
+        workflow: WorkflowId,
+        idempotency: &sagat_application::definitions::Idempotency,
+    ) -> Result<Option<sagat_application::definitions::VersionRecord>, StoreError> {
+        self.definitions
+            .replay_publication(tenant, workflow, idempotency)
+            .await
+    }
+
     async fn check_database_access(
         &self,
         principal: &Principal,

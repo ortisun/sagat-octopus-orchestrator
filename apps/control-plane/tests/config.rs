@@ -989,9 +989,10 @@ fn the_lake_is_an_explicit_strict_operator_switch_and_off_by_default() {
     );
 }
 
-/// Design 042, T042-47: off by default, because the scheduler applies a chain only with slice S1 (G042-100).
+/// Design 042, T042-47: off, and it cannot be turned on in a build whose scheduler does not apply a chain (T042-8,
+/// G042-100); `false` and an absent value are accepted, anything else is refused.
 #[test]
-fn collection_operators_are_an_explicit_strict_operator_switch_and_off_by_default() {
+fn collection_operators_cannot_be_turned_on_before_the_scheduler_applies_chains() {
     assert!(
         !ServeConfig::from_lookup(&env(&OIDC))
             .expect("defaults")
@@ -999,12 +1000,22 @@ fn collection_operators_are_an_explicit_strict_operator_switch_and_off_by_defaul
         "a deployment that does not say so publishes no collection chain"
     );
     let mut values = OIDC.to_vec();
-    values.push(("SAGAT_COLLECTION_OPERATORS_ENABLED", "true"));
+    values.push(("SAGAT_COLLECTION_OPERATORS_ENABLED", "false"));
     assert!(
-        ServeConfig::from_lookup(&env(&values))
-            .expect("activated")
+        !ServeConfig::from_lookup(&env(&values))
+            .expect("stated off")
             .collection_operators_enabled
     );
+    values.pop();
+    values.push(("SAGAT_COLLECTION_OPERATORS_ENABLED", "true"));
+    let refused = ServeConfig::from_lookup(&env(&values))
+        .expect_err("not available until the scheduler applies chains")
+        .to_string();
+    assert!(
+        refused.contains("SAGAT_COLLECTION_OPERATORS_ENABLED"),
+        "{refused}"
+    );
+    assert!(refused.contains("T042-8"), "{refused}");
     values.pop();
     values.push(("SAGAT_COLLECTION_OPERATORS_ENABLED", "maybe"));
     assert!(

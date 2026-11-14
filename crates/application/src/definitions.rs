@@ -705,6 +705,15 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Sen
             }
         }
     }
+    /// Reads the committed result of a publication with the same key and fingerprint. Never
+    /// validates the current draft, moves the active pointer or writes another audit record.
+    fn replay_publication(
+        &self,
+        tenant: TenantId,
+        workflow: WorkflowId,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Option<VersionRecord>, StoreError>> + Send;
+
     /// Resolves a namespace by slug inside `tenant`.
     fn find_namespace_by_slug(
         &self,
@@ -1200,7 +1209,27 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
     ) -> Result<Published, AppError> {
         principal.authorize(Permission::DefinitionPublish)?;
         check_release_notes(release_notes)?;
-        let (_, parsed) = self.prepare(principal, id, draft_revision, ctx).await?;
+        let (_, parsed) = match self.prepare(principal, id, draft_revision, ctx).await {
+            Ok(prepared) => prepared,
+            // D042-105: a publication asked again with its own key after the switch was turned off is answered by
+            // the store's replay, as it would have been with the switch on; only a new publication reads the switch.
+            Err(AppError::InvalidDefinition(error))
+                if matches!(*error, IrError::CollectionOperatorsDisabled { .. }) =>
+            {
+                return self
+                    .replay_refused(
+                        principal,
+                        id,
+                        draft_revision,
+                        release_notes,
+                        key,
+                        ctx,
+                        error,
+                    )
+                    .await;
+            }
+            Err(error) => return Err(error),
+        };
         let declared_state = self
             .codec
             .declared_state_publication(&parsed.canonical)
@@ -1272,6 +1301,40 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 })
             }
             None => Err(self.missing(principal, id, ctx).await),
+        }
+    }
+
+    /// The answer to a publication the switch refused: the version an earlier publication with the same key and
+    /// fingerprint committed, or the refusal itself when there is none (D042-105).
+    #[allow(clippy::too_many_arguments)]
+    async fn replay_refused(
+        &self,
+        principal: &Principal,
+        id: WorkflowId,
+        draft_revision: u64,
+        release_notes: Option<&str>,
+        key: &str,
+        ctx: &RequestContext,
+        refusal: Box<IrError>,
+    ) -> Result<Published, AppError> {
+        let record = self.get_workflow(principal, id, ctx).await?;
+        let parsed = self
+            .codec
+            .parse(&record.draft)
+            .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
+        let idempotency =
+            publication_idempotency(id, draft_revision, parsed.digest, release_notes, key);
+        match self
+            .store
+            .replay_publication(principal.tenant_id(), id, &idempotency)
+            .await?
+        {
+            Some(stored) => Ok(Published {
+                version: stored.version,
+                created: false,
+                warnings: parsed.warnings,
+            }),
+            None => Err(AppError::InvalidDefinition(refusal)),
         }
     }
 
