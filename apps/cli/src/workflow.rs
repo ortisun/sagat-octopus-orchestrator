@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
-use crate::args::Common;
+use crate::args::{Common, StartOptions};
 use crate::client::{CallError, Client};
 use crate::diagnostics::Diagnostic;
 use crate::manifest::{self, DocumentError};
@@ -161,7 +161,7 @@ pub(crate) async fn publish(
 }
 
 /// The input of a run: JSON text, or `@path` for a file.
-fn input_of(env: &Env, input: Option<&str>) -> Result<Value, String> {
+pub(crate) fn input_of(env: &Env, input: Option<&str>) -> Result<Value, String> {
     let text = match input {
         None => return Ok(json!({})),
         Some(at) if at.starts_with('@') => {
@@ -200,23 +200,33 @@ pub(crate) async fn run(
         || crate::versions::nonce("run", &[&workflow.id]),
         str::to_owned,
     );
-    let (_, started) = client
-        .call(
-            "POST",
-            "/runs",
-            Some(&json!({ "workflowId": workflow.id, "input": input })),
-            Some(&key),
-        )
+    let mut body = json!({ "workflowId": workflow.id, "input": input });
+    start_options_into(&mut body, ask.options);
+    let (status, started) = client
+        .call("POST", "/runs", Some(&body), Some(&key))
         .await
         .map_err(|e| e.to_string())?;
     let run = started["runId"]
         .as_str()
         .ok_or("the platform's answer is not a run")?
         .to_owned();
-    io.say(format!(
-        "run {run} started: {} v{}",
-        ask.name, active.number
-    ));
+    if status == 200 {
+        // `--if-exists use-existing` found an open run that holds the identifier: nothing was created
+        io.say(format!(
+            "run {run} already holds that business id: nothing was started"
+        ));
+    } else {
+        io.say(format!(
+            "run {run} started: {} v{}",
+            ask.name, active.number
+        ));
+    }
+    if let Some(until) = started["startDelayedUntil"].as_str() {
+        io.say(format!(
+            "  its first step is held until {}",
+            crate::one_line(until)
+        ));
+    }
     if !ask.wait {
         io.say(format!("follow it with: sagat workflow inspect {run}"));
         return Ok(EXIT_DONE);
@@ -269,6 +279,24 @@ pub(crate) struct RunAsk<'a> {
     pub wait: bool,
     pub timeout: u64,
     pub key: Option<&'a str>,
+    pub options: &'a StartOptions,
+}
+
+/// Puts what a start says about the business identifier and the delay into the body of the request, in
+/// the names of the API. A delay is given in seconds and sent in milliseconds, once.
+pub(crate) fn start_options_into(body: &mut Value, options: &StartOptions) {
+    if let Some(id) = &options.business_id {
+        body["businessId"] = json!(id);
+    }
+    if let Some(policy) = options.if_exists {
+        body["businessIdConflictPolicy"] = json!(policy.api());
+    }
+    if let Some(policy) = options.reuse {
+        body["businessIdReusePolicy"] = json!(policy.api());
+    }
+    if let Some(seconds) = options.start_delay_secs {
+        body["startDelayMs"] = json!(seconds.saturating_mul(1000));
+    }
 }
 
 pub(crate) async fn runs(
@@ -603,6 +631,48 @@ async fn inspect_run(client: &Client, run: &str, io: &mut Io<'_>) -> Result<(), 
                 crate::one_line(at)
             ))
     ));
+    // Where the run came from, when it came from a schedule or a reset (feature 018): what the run resource says, in words.
+    if let Some(schedule) = body["schedule"].as_object() {
+        let field =
+            |key: &str| crate::one_line(schedule.get(key).and_then(Value::as_str).unwrap_or("-"));
+        let kind = field("kind");
+        // a kind this tool does not know is shown as the platform wrote it, clipped at forty characters as the Studio clips it
+        let clipped;
+        io.say(format!(
+            "  started by schedule {} ({}), nominal time {}, revision {}",
+            field("scheduleId"),
+            match kind.as_str() {
+                "SCHEDULED" => "scheduled",
+                "TRIGGERED" => "run now",
+                "BACKFILL" => "backfill",
+                other => {
+                    clipped = if other.chars().count() > 40 {
+                        format!("{}…", other.chars().take(40).collect::<String>())
+                    } else {
+                        other.to_owned()
+                    };
+                    clipped.as_str()
+                }
+            },
+            field("nominalTime"),
+            schedule
+                .get("revision")
+                .and_then(Value::as_u64)
+                .map_or_else(|| "-".to_owned(), |revision| revision.to_string()),
+        ));
+    }
+    if let Some(reset) = body["resetFrom"].as_object() {
+        let sequence = reset.get("sequence").and_then(Value::as_u64);
+        io.say(format!(
+            "  reset from run {}: it keeps the first {} of that run",
+            crate::one_line(reset.get("runId").and_then(Value::as_str).unwrap_or("-")),
+            match sequence {
+                Some(1) => "1 event".to_owned(),
+                Some(count) => format!("{count} events"),
+                None => "- events".to_owned(),
+            },
+        ));
+    }
     if let Some(trace) = body["traceId"].as_str() {
         io.say(format!("  trace {}", crate::one_line(trace)));
     }
@@ -649,7 +719,7 @@ async fn inspect_run(client: &Client, run: &str, io: &mut Io<'_>) -> Result<(), 
 }
 
 /// Every item of a listing the run's reads give, at most `most` of them.
-async fn pages(client: &Client, path: &str, most: usize) -> Result<Vec<Value>, String> {
+pub(crate) async fn pages(client: &Client, path: &str, most: usize) -> Result<Vec<Value>, String> {
     let mut items = Vec::new();
     let mut cursor: Option<String> = None;
     loop {

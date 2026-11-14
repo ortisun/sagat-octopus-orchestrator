@@ -15,7 +15,9 @@ use std::{
 };
 use testcontainers_modules::{
     postgres::Postgres,
-    testcontainers::{ContainerAsync, GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner},
+    testcontainers::{
+        ContainerAsync, GenericImage, Image, ImageExt, core::WaitFor, runners::AsyncRunner,
+    },
 };
 
 /// Image pull plus container start-up (including the wait for its ready message).
@@ -35,6 +37,28 @@ pub async fn within<T>(stage: impl Display, limit: Duration, work: impl Future<O
     match tokio::time::timeout(limit, work).await {
         Ok(value) => value,
         Err(_) => panic!("stage `{stage}` did not finish within {limit:?}"),
+    }
+}
+
+/// The host port Docker published for `internal` of `container`, waiting up to a minute for it to be published.
+///
+/// Right after a container starts, Docker Desktop can answer that the port is not exposed (`PortNotExposed`) and publish it a
+/// moment later. The shared PostgreSQL server of every suite took that answer as final: the first test panicked holding the
+/// lock of the server and the other 308 of the run failed with `PoisonError` (2026-11-11, the runtime-role run of the schedules
+/// suite; the 129 tests that failed at once on 2026-11-10 were probably the same). A port that never appears still ends in a
+/// panic that names the port and the last answer.
+pub async fn mapped_port<I: Image>(container: &ContainerAsync<I>, internal: u16) -> u16 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        match container.get_host_port_ipv4(internal).await {
+            Ok(port) => return port,
+            Err(_) if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(error) => panic!(
+                "the host port of container port {internal} was not published within 60 s: {error}"
+            ),
+        }
     }
 }
 

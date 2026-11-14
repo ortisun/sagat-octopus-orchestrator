@@ -1,7 +1,8 @@
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
-import { Route, Routes, useLocation } from 'react-router';
+import type { ReactNode } from 'react';
+import { Route, Routes, useLocation, useNavigate } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { fakePlatform, renderApp } from '../../../test/render';
 import type { Routes as FakeRoutes } from '../../../test/render';
@@ -63,7 +64,13 @@ function Where() {
   return <output data-testid="where">{`${pathname}${search}`}</output>;
 }
 
-async function open(runs: Run[], options: { size?: number; routes?: FakeRoutes; permissions?: string[]; namespace?: string | null; strict?: boolean; path?: string } = {}) {
+/** The back button of the browser, for a test that needs the address to change by itself. */
+function Back() {
+  const navigate = useNavigate();
+  return <button onClick={() => void navigate(-1)}>Go back</button>;
+}
+
+async function open(runs: Run[], options: { size?: number; routes?: FakeRoutes; permissions?: string[]; namespace?: string | null; strict?: boolean; path?: string; beside?: ReactNode } = {}) {
   const platform = runsPlatform(runs, options);
   const app = await signedInApp(platform.fetcher, options.permissions ?? OPERATOR);
   if (options.namespace === null) app.namespace.set(undefined);
@@ -75,6 +82,7 @@ async function open(runs: Run[], options: { size?: number; routes?: FakeRoutes; 
           <>
             <RunsPage />
             <Where />
+            {options.beside}
           </>
         }
       />
@@ -222,7 +230,7 @@ describe('the runs page', () => {
   it('shows the ids when the workflows cannot be listed, instead of failing', async () => {
     await open([run(1)], { routes: { 'GET /workflows': () => failure(403, 'FORBIDDEN', 'no') } });
     await screen.findByRole('table', { name: 'Runs, newest first' });
-    expect(within(rows()[0] as HTMLElement).getByText(`workflow ${WORKFLOW_ID.slice(0, 8)}`)).toBeInTheDocument();
+    expect(within(rows()[0] as HTMLElement).getByText(`workflow ${WORKFLOW_ID.slice(-8)}`)).toBeInTheDocument();
     expect(await screen.findByText(/The workflows could not be listed/)).toBeInTheDocument();
   });
 });
@@ -293,9 +301,9 @@ describe('the runs page: filters in the address', () => {
   const where = () => screen.getByTestId('where').textContent;
 
   it('takes only filters the page could have written: a status it knows, a workflow id that is one', () => {
-    expect(readFilters(new URLSearchParams(`status=FAILED&workflow=${OTHER_WORKFLOW}`))).toEqual({ status: 'FAILED', workflowId: OTHER_WORKFLOW });
-    expect(readFilters(new URLSearchParams('status=DROP%20TABLE&workflow=../../etc'))).toEqual({ status: '', workflowId: '' });
-    expect(readFilters(new URLSearchParams(''))).toEqual({ status: '', workflowId: '' });
+    expect(readFilters(new URLSearchParams(`status=FAILED&workflow=${OTHER_WORKFLOW}&business=order-`))).toEqual({ status: 'FAILED', workflowId: OTHER_WORKFLOW, business: 'order-' });
+    expect(readFilters(new URLSearchParams('status=DROP%20TABLE&workflow=../../etc&business=has%20space'))).toEqual({ status: '', workflowId: '', business: '' });
+    expect(readFilters(new URLSearchParams(''))).toEqual({ status: '', workflowId: '', business: '' });
   });
 
   it('opens with the filters of the link it was reached by, and asks the platform for them', async () => {
@@ -362,6 +370,102 @@ describe('the runs page: filters in the address', () => {
   });
 });
 
+describe('the runs page: business identifiers', () => {
+  const where = () => screen.getByTestId('where').textContent;
+  const field = () => screen.getByRole('searchbox', { name: 'Business id starts with' });
+  const asked = (platform: { requests: URLSearchParams[] }) => platform.requests.filter((query) => query.has('businessIdPrefix')).map((query) => query.get('businessIdPrefix'));
+  const rest = (ms: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+
+  it('shows the identifier of a run under its id, and nothing under a run without one', async () => {
+    await open([run(1, { businessId: 'order-1001' }), run(2)]);
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    const [without, withId] = rows() as [HTMLElement, HTMLElement];
+    expect(within(withId).getByText('order-1001')).toBeInTheDocument();
+    expect(withId).toHaveTextContent('Business id order-1001');
+    expect(without).not.toHaveTextContent('Business id');
+  });
+
+  it('asks for the start of an identifier once typing rests, not at every key, and keeps it in the address', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { platform } = await open([run(1), run(2)]);
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    fireEvent.change(field(), { target: { value: 'o' } });
+    await rest(100);
+    fireEvent.change(field(), { target: { value: 'order-' } });
+    await rest(100);
+    expect(asked(platform)).toEqual([]);
+    expect(where()).toBe('/runs');
+    await rest(250);
+    await waitFor(() => expect(asked(platform)).toEqual(['order-']));
+    expect(where()).toBe('/runs?business=order-');
+  });
+
+  it('opens with the identifier of the link, shows it in the field and asks the platform for it', async () => {
+    const { platform } = await open([run(1)], { path: '/runs?business=order-' });
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    expect(field()).toHaveValue('order-');
+    expect(platform.requests.at(-1)?.get('businessIdPrefix')).toBe('order-');
+    expect(screen.getByRole('button', { name: 'Clear filters' })).toBeInTheDocument();
+  });
+
+  it('takes no identifier from a link that could not have written it', async () => {
+    const { platform } = await open([run(1)], { path: '/runs?business=has%20space' });
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    expect(field()).toHaveValue('');
+    expect(asked(platform)).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument();
+  });
+
+  it('carries the prefix of the filter into the batch operation, which counts the runs with it and says so', async () => {
+    const NS = '019b5d6e-0000-7000-8000-0000000000a1';
+    const { platform, user } = await open([run(1, { status: 'FAILED' })], {
+      path: '/runs?business=order-&status=FAILED',
+      permissions: [...OPERATOR, 'run:batch'],
+      routes: {
+        'GET /namespaces': () => ({ items: [{ id: NS, workspaceId: NS, slug: 'dev', environment: 'dev', createdAt: '2026-11-04T10:00:00Z' }], nextCursor: null }),
+        [`POST /namespaces/${NS}/batch-operations/preview`]: () => ({ matched: 2, capped: false, sample: [] }),
+      },
+    });
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    await user.click(await screen.findByRole('button', { name: 'Batch operation…' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(await dialog.findByText(/applies one action to the runs with status failed and business id starting with "order-"/)).toBeVisible();
+    await user.click(dialog.getByRole('button', { name: 'Count the runs' }));
+    expect(await dialog.findByText(/2 runs match/)).toBeVisible();
+    const preview = platform.calls.find((call) => call.method === 'POST' && call.url.endsWith('/preview'));
+    expect(JSON.parse(preview!.init.body as string)).toEqual({ selector: { filter: { status: ['FAILED'], businessIdPrefix: 'order-' } } });
+  });
+
+  it('clears the identifier with the other filters', async () => {
+    const { platform, user } = await open([run(1, { status: 'FAILED' })], { path: '/runs?business=order-&status=FAILED' });
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(where()).toBe('/runs');
+    expect(field()).toHaveValue('');
+    await waitFor(() => expect(platform.requests.at(-1)?.has('businessIdPrefix')).toBe(false));
+  });
+
+  it('follows the address when it changes by itself, and does not write the text it had back into it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { platform, user } = await open([run(1)], { beside: <Back /> });
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    fireEvent.change(field(), { target: { value: 'order-' } });
+    await rest(400);
+    await waitFor(() => expect(where()).toBe('/runs?business=order-'));
+    const before = platform.requests.length;
+    await user.click(screen.getByRole('button', { name: 'Go back' }));
+    expect(where()).toBe('/runs');
+    expect(field()).toHaveValue('');
+    await rest(1000);
+    expect(where()).toBe('/runs');
+    expect(field()).toHaveValue('');
+    expect(platform.requests.slice(before).some((query) => query.has('businessIdPrefix'))).toBe(false);
+  });
+});
+
 describe('the runs page: narrow windows', () => {
   it('shows the runs as cards where a table of six columns would not fit, and as a table where it does', async () => {
     vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('max-width'), media: query, addEventListener: () => undefined, removeEventListener: () => undefined }));
@@ -374,5 +478,18 @@ describe('the runs page: narrow windows', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('the runs page: delayed starts', () => {
+  it('says under a waiting run when its entry is released, and says nothing under the others', async () => {
+    await open([
+      run(1, { status: 'WAITING', finishedAt: null, startDelayedUntil: '2026-10-12T09:00:00Z' }),
+      run(2, { status: 'WAITING', finishedAt: null }),
+    ]);
+    await screen.findByRole('table', { name: 'Runs, newest first' });
+    const [plain, delayed] = rows() as [HTMLElement, HTMLElement];
+    expect(delayed).toHaveTextContent(/Starts .*2026/);
+    expect(plain).not.toHaveTextContent(/Starts /);
   });
 });

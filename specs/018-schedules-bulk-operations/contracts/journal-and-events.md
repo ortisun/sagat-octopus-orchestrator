@@ -1,6 +1,6 @@
-# Journal, run fields, AsyncAPI and protocol — feature 018 (DRAFT)
+# Journal, run fields, AsyncAPI and protocol — feature 018 (DRAFT; the run fields and the AsyncAPI additions are as built, see their sections)
 
-Not implemented. T018-006 adds the domain events, T018-010 merges the AsyncAPI fragment and
+Mostly built; the sections "Run resource additions" and "AsyncAPI" say what is as built. T018-006 adds the domain events, T018-010 merges the AsyncAPI fragment and
 regenerates `specs/001-platform-foundation/contracts/events.baseline.json` on purpose
 (`docs/event-schema-evolution.md`). Journal `detail` shapes are closed and bounded; they carry
 identifiers, times and closed codes only, never payloads or business identifiers, so `run_events`
@@ -21,17 +21,22 @@ the source. `runs.reset_sequence = N` lets every reader tell restored sequences 
 
 | Event | Field | Values | Written by |
 | --- | --- | --- | --- |
-| `wait.satisfied` | `via` (optional) | `signal`, `event`, `signal_with_start` | API signal, chain signal, event dispatch, Signal-with-Start, reset reapply (`signal`). Older rows have no `via` and decode unchanged. |
-| `run.started` | `schedule` (optional) | `{"schedule_id", "nominal_at_us", "kind", "revision"}` | Schedule actions. |
-| `state.updated` | row `payload_digest` (opt-in) | digest of the canonical Update arguments, retained as a content-addressed payload | Only Updates declared `reapplyOnReset: true` (see `workflow-ir.fragment.schema.json`); others are `NOT_REAPPLIED` (`NOT_RETAINED`), older rows `LEGACY_EVENT`. |
+| `wait.satisfied` | `via` (optional) | `signal`, `event`, `signal_with_start` | API signal and chain signal (`signal`), event dispatch (`event`), Signal-with-Start whether it created the run or found it (`signal_with_start`), reset reapply (`signal`). Older rows have no `via` and decode unchanged; a name this version does not know decodes as none. **Written since T018-043 (D1975).** |
+| `run.started` | `schedule` (optional) | `{"schedule_id", "nominal_at_us", "kind", "revision"}` | **Not written, and not planned (D2147, 2026-11-10).** The schedule action that started a run is on the run record (`runs.schedule_id`, `schedule_nominal_at`, `schedule_action_kind`, `schedule_revision`, written in the creation transaction and immutable) and on the action row; the journal detail of `run.started` does not carry it (`RunStarted { entrypoint }`), so `verify_run` does not replay it. Why: a reset copies the journal verbatim and the provenance of the new run is not the source's, and a successor of a chain copies no schedule column (D2144), so a journal copy would claim what the record does not. What it would cost, if replay equality of the columns is wanted: a `RunEvent` detail, its codec, a rule for `RESTORE`/`REMATERIALIZE`, a replay test (G2068). |
+| `state.updated` | `retained` (optional) | `true`, `false` | Every Update applied since T018-043: `true` when its declaration opts in with `reapplyOnReset` and its arguments were kept, `false` when it does not. Older rows have none: a reset reports them `NOT_REAPPLIED` / `LEGACY_EVENT`, and an Update that did not opt in `NOT_REAPPLIED` / `NOT_RETAINED`. |
 | every re-emitted row | `restored` | `true` | Reset re-emission; the source rows are not changed. |
 | re-emitted `run.started` | `reset_of` | `{"source_run_id", "source_sequence"}` | Reset re-emission, so a reader knows from sequence 1. |
 | `run.started` | `delayed` (optional) | `true` | Starts with `startDelayMs`. |
 
 Detail keys are snake_case like the existing ones (`due_at_us`, `before_revision`). Decoders read fields
 by name (`crates/infra-postgres/src/event_codec.rs`), so older readers ignore the new optional ones.
-The retained Update arguments are charged to `tenant_content_bytes`; they are not a classification
-carrier (FR-016-004), so a journal disclosure of that sequence answers `NO_SCHEMA` as today.
+The retained Update arguments are the canonical arguments of the Update as a `payloads` row, charged to
+`tenant_content_bytes` like any payload and referenced by the **receipt** of the Update
+(`operation_update_receipts.arguments_digest`, migration `20270105000000`), not by the `payload_digest` of
+the journal row: that column of a `state.updated` row already references the new state (D1975). The receipt
+goes with the run, is written in the transaction of the row, and is found by `(resolved_run_id, run_version)`,
+the sequence of the row. They are not a classification carrier (FR-016-004), so a journal disclosure of that
+sequence answers `NO_SCHEMA` as today.
 
 ## Re-emitted prefix of a reset run
 
@@ -90,13 +95,13 @@ instance) applies in addition to these rules.
 | `condition.evaluated`, `switch.evaluated`, `parallel.forked`, `parallel.joined` | `COPY` | recorded choices are history; replay never re-evaluates |
 | `timer.started`, `timer.fired`, `wait.started`, `wait.satisfied`, `wait.timed_out` | `COPY` | an open timer or wait at the point makes it ineligible |
 | `approval.opened`, `approval.decided`, `approval.expired` | `COPY` | a decided approval is restored (preview lists it); an open one makes the point ineligible; 026 side rows below |
-| `collection.*`, `loop.*` (entered, iteration admitted/returned/checkpointed, drain started, iteration drained, finished; loop delay elapsed) | `COPY` | an active scope at the point makes it ineligible; points are only at `collection.finished`/`loop.finished` |
+| `collection.*`, `loop.*` (entered, iteration admitted/returned/checkpointed, drain started, iteration drained, finished; loop delay elapsed) | `COPY` | an active scope at the point makes it ineligible; points are only at `collection.finished`/`loop.finished`. *As built (D2156, G1980 (1)):* the entry of a collection, and every row below the root, make every later point ineligible, so no `COLLECTION_FINISHED` or `LOOP_FINISHED` point is offered until the side tables of a scope are restored |
 | `child.started`, `child.finished` | `COPY` | a child in flight makes the point ineligible; the reset run starts no child again for a restored one |
 | `saga.entered`, `saga.completed` | `COPY` | |
 | `saga.aborting`, `compensation.planned`, `saga.compensated`, `scope.compensation_planned`, `scope.compensated` | `EXCLUDE` | the source was compensating; reset to a point before the failure |
 | `reconciliation.requested` | `REFUSE` until `reconciliation.concluded` of the same step | an unknown outcome is open |
 | `reconciliation.concluded`, `step.needs_review`, `step.retry_requested`, `step.skipped`, `step.resolved` | `COPY` | an open review at the point makes it ineligible (state rule) |
-| `state.updated` | `COPY` | declared state restored; retained arguments (`reapplyOnReset`) stay referenced |
+| `state.updated` | `COPY` | declared state restored; the row keeps its `retained` marker, and the retained arguments (`reapplyOnReset`) stay where the receipt of the source run references them (D1975; whether a reset of the reset run finds them is G1978) |
 | `run.paused`, `run.resumed` | `COPY` | a point at which the run is paused is ineligible (state rule) |
 | `run.stop_requested`, `end.reached`, `run.finished` | `EXCLUDE` | terminal tail |
 | `execution_chain.started`, `execution_chain.successor_linked`, `run.continued`, `continuation.selected` | `EXCLUDE` | sources outside continuation chains only (G1001) |
@@ -144,6 +149,23 @@ add later has no rule until declared here, so resets over it are refused rather 
 reset run (it names the source, as for `RERUN_AS_NEW`). `startedBy` of a scheduled run is
 `system:schedule:<scheduleId>`; trigger-owned schedules keep `system:engine`.
 
+**As built (2026-11-10, G2057, D2141 to D2146).** All four are in the `Run` schema of `openapi.yaml`, read by `getRun` and
+`listRuns` (the list returns `Run` items, so the list carries them too) from the columns the run was created with, in the
+statement that loads the run: no query per run. Each is **absent, not `null`**, for a run that has none.
+`schedule.kind` is the kind of the **action** (`SCHEDULED`, `TRIGGERED` for run now, `BACKFILL`, as `runs.schedule_action_kind` and
+`ScheduleActionRecord.kind` say), not the schedule's origin (`API`/`TRIGGER`), which stays on the schedule; `nominalTime` is UTC
+to the microsecond and equal to the `nominalTime` of the action; `revision` is the revision the action was taken under.
+`resetFrom.runId` equals `rerunOf` and `resetFrom.sequence` is `runs.reset_sequence`; a run started again by `RERUN_AS_NEW` has
+`rerunOf` and no `resetFrom`. The run has no `actualTime` (the action has it). What carries no `schedule`: a run the legacy cron pass
+started for a trigger (it writes no provenance) and the later segments of a continuation chain (G2063).
+**The provenance lives on the run record, not in the journal (D2147):** the `schedule` of the `run.started` detail declared above is
+not written, a reset copies the journal verbatim, and `verify_run` (replay equals projection) does not reproduce the four
+columns; what replay equality would take is G2068. **`schedule.kind` is a closed enum in the response schema** (the three values
+the column admits): the description tells a client to read another value as "another kind" and the six SDKs keep it as sent, but
+adding a fourth kind later is a compatibility decision of its own (a migration of the check first, the schema, the SDK and Studio
+words), and a server that read a kind it does not know in `get` or `list` (a mixed-version fleet after that migration) would fail
+the read as stored data it cannot decode rather than skip it (G2067, accepted).
+
 ## AsyncAPI (`events.asyncapi.yaml`)
 
 `RunFinishedWebhook.payload.data` and `RunFinishedBroker` data gain two optional properties:
@@ -155,6 +177,23 @@ nominalTime: {type: string, format: date-time, description: 'Feature 018: the no
 
 Both are generated values. `businessId` is **not** added: it is caller text and would turn
 `event_outbox.payload` into content (ADR-0027). No new message, channel or header.
+
+**As built (2026-11-10, T018-010, D2143).** `RunFinishedWebhook.payload.data` has the two optional properties, and
+`RunFinishedBroker` takes that payload by reference, so a broker destination is given the same body. The four code paths that finish a
+run and tell its subscribers (`RunTx`, the collection finish, the loop terminal path, the chain's final head) add them through one
+function, `add_schedule_origin`, and only for a run a schedule started (`runs.schedule_id`); the body of every other run is what it was.
+**What is tested, and what is not.** The run transaction's writer: a real firing, its webhook, and the same run stamped with a
+business identifier (the canary of ADR-0027 is in no body and no hint, on the branch that adds properties). The collection, the
+loop and the chain-finalization writers: on runs **stamped by hand** with the provenance columns (the guard trigger switched off for
+one statement), with and without a schedule, which proves each writer carries the function's data and not that the firing reaches
+it. And a rule of `scripts/check-architecture.py` that fails when a `"type": "run.finished"` body is built in the adapter without
+`add_schedule_origin` before it in the same function (D2148). **What the product does on a real chain is different, and it is the
+open item against FR-046:** the final head of a chain a schedule started is a successor that copies no schedule column, so its
+`run.finished` carries no `scheduleId` (a real chain from a real firing, `chain_handoff.rs`; D2144, G2063). The hint on NATS or Redis (`RunFinished`, and `event_outbox.payload`) is
+unchanged. `events.baseline.json` was regenerated on purpose: the only change is the two properties on `RunFinishedWebhook.payload`
+(`data.scheduleId`, `data.nominalTime`; the shape tool does not follow the `$ref` of the broker message, so its entry is unchanged);
+`info.version` stays `0.3.0`, the release in development. `worker.baseline.json` and `workflow.schema.json` are untouched by
+this change (`git diff` empty; `workflow.schema.json` differs from `develop` only by `reapplyOnReset`, T018-078).
 
 ## The event document of trigger-owned schedules
 

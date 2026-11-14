@@ -17,7 +17,7 @@ use sagat_application::chain_progress::{
 use sagat_application::collection_source::{
     CollectionItemSource, CollectionSource, CollectionSourceError, CollectionSourceRequest,
 };
-use sagat_application::definitions::{Applied, DefinitionStore, Idempotency};
+use sagat_application::definitions::{DefinitionStore, Idempotency};
 use sagat_application::entropy::Entropy;
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
@@ -41,7 +41,7 @@ use sagat_application::primitives::{
     PrimitiveInputError, PrimitiveStoreError, SchedulerAuthority,
 };
 use sagat_application::quotas::RunLimits;
-use sagat_application::runs::{Lock, NewRun, RunStore};
+use sagat_application::runs::{Admitted, Lock, NewRun, RunStore};
 use sagat_application::scope_frontier::{
     CollectionFrontier, LoopFrontier, ScopeFrontierStore, ScopeMember,
 };
@@ -136,6 +136,8 @@ pub struct Report {
     pub retries_released: u32,
     pub leases_expired: u32,
     pub deadlines_enforced: u32,
+    /// Delayed starts whose entry was released (feature 018).
+    pub starts_released: u32,
     pub hints_renewed: u32,
     pub children_started: u32,
     pub children_finished: u32,
@@ -305,6 +307,7 @@ impl Report {
             + self.retries_released
             + self.leases_expired
             + self.deadlines_enforced
+            + self.starts_released
             + self.hints_renewed
             + self.children_started
             + self.children_finished
@@ -329,6 +332,9 @@ enum Condition<'a> {
     RetainedFits {
         bytes: usize,
     },
+    /// The run's entry is still held by a start delay that has ended *now*, by the database clock,
+    /// and nothing has stopped or paused the run meanwhile.
+    StartDue,
 }
 
 impl Condition<'_> {
@@ -336,7 +342,7 @@ impl Condition<'_> {
     const fn refused(&self) -> Outcome {
         match self {
             Self::RetainedFits { .. } => Outcome::DoesNotFit,
-            Self::Always | Self::LeaseLost { .. } => Outcome::Skipped,
+            Self::Always | Self::LeaseLost { .. } | Self::StartDue => Outcome::Skipped,
         }
     }
 
@@ -356,6 +362,20 @@ impl Condition<'_> {
             Self::RetainedFits { bytes } => {
                 let retained = tx.logical_output_bytes().await?;
                 Ok(!output_increment_exceeds_limit(retained, *bytes))
+            }
+            Self::StartDue => {
+                let now_us =
+                    i64::try_from(tx.now().unix_timestamp_nanos() / 1_000).map_err(|_| {
+                        StoreError::Internal {
+                            detail: "an instant out of range".to_owned(),
+                        }
+                    })?;
+                let (_, state) = tx.parts();
+                Ok(state
+                    .start_delayed_until_us()
+                    .is_some_and(|until| until <= now_us)
+                    && state.stop_reason().is_none()
+                    && !state.is_paused())
             }
         }
     }
@@ -637,6 +657,7 @@ where
         self.retries(&self.view(), &mut report).await;
         self.leases(&self.view(), &mut report).await;
         self.deadlines(&self.view(), &mut report).await;
+        self.start_releases(&self.view(), &mut report).await;
         self.stopped_runs(&self.view(), &mut report).await;
         self.hints(&self.view(), &mut report).await;
         self.children_start(&self.view(), &mut report).await;
@@ -3519,6 +3540,28 @@ where
                 "purged schedule actions past their retention"
             );
         }
+        // The bindings of business identifiers that are free again hold nothing but a row.
+        let mut bindings = 0u64;
+        for _ in 0..PURGE_ROUNDS {
+            match self.store.purge_business_ids(PURGE_BATCH).await {
+                Ok(n) => {
+                    bindings += n;
+                    if n < u64::from(PURGE_BATCH) {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not purge business identifier bindings");
+                    break;
+                }
+            }
+        }
+        if bindings > 0 {
+            tracing::info!(
+                removed = bindings,
+                "purged business identifier bindings that are free again"
+            );
+        }
         // One bounded statement at a time, so a backlog never holds a long one, repeated until the
         // backlog is gone (or this call has done its share): the purge must outrun what is written.
         let mut removed = 0u64;
@@ -4930,6 +4973,37 @@ where
         }
     }
 
+    /// Releases the entry of every run whose start delay has ended, once (feature 018, `FR-018-023`):
+    /// the run's own shard lease fences it, and the condition is read again under the run's lock, so a
+    /// run cancelled, stopped or paused since the candidate query is left alone.
+    async fn start_releases(&self, view: &View, report: &mut Report) {
+        let due = self
+            .pick(
+                view,
+                "start_releases",
+                report,
+                |r: &RunRef| r.tenant_id,
+                |r| r.run_id,
+                |store, window| async move { store.due_start_releases(&window).await },
+            )
+            .await;
+        let outcomes = self
+            .each(due, |run| {
+                self.apply_if(
+                    view,
+                    run,
+                    "start_release",
+                    Condition::StartDue,
+                    self.effects(),
+                    |def, state, now| Ok(((), execution::release_start(def, state, now)?)),
+                )
+            })
+            .await;
+        for outcome in outcomes {
+            Self::tally(report, outcome, |r| r.starts_released += 1);
+        }
+    }
+
     /// Ends the runs that a transaction of their own stopped (a loop at its iteration limit): the
     /// planner drains what is left and finishes them, which no worker report or timer would do.
     async fn stopped_runs(&self, view: &View, report: &mut Report) {
@@ -5192,6 +5266,7 @@ where
             }),
             depth: parent.info.depth.saturating_add(1),
             root: parent.info.root,
+            business_id: None,
         };
         let audit = AuditRecord::engine(
             tenant,
@@ -5205,6 +5280,7 @@ where
         let limits = RunLimits::of(&self.store, tenant, parent.info.namespace_id).await?;
         let new = NewRun {
             schedule: None,
+            business: None,
             retained: None,
             limits,
             info,
@@ -5220,9 +5296,12 @@ where
                 key: format!("child-start:{node}"),
                 fingerprint: child_id.as_uuid().as_bytes().to_vec(),
             },
+            reset_sequence: None,
+            pending_reset: None,
         };
         match self.store.create(new).await {
-            Ok(Applied::Replayed(_)) => Ok((Outcome::Skipped, false)),
+            // (a child run never carries a business identifier, so a holder is never returned)
+            Ok(Admitted::Replayed(_) | Admitted::Existing(_)) => Ok((Outcome::Skipped, false)),
             // The parent step no longer waits for this run (cancelled, or created by a peer).
             Err(StoreError::MissingReference) => Ok((Outcome::Skipped, false)),
             Err(StoreError::DatabaseUnavailable | StoreError::DatabaseLimit) => {
@@ -5275,7 +5354,7 @@ where
                 true,
             )),
             Err(other) => Err(other.into()),
-            Ok(Applied::Done(mut tx)) => {
+            Ok(Admitted::Created(mut tx)) => {
                 // The fence, before anything is committed: a replica that lost the parent's shard
                 // while it was reading must not leave a child run behind (dropping rolls it back).
                 if !view.holds_child_start(&mut tx, &hold).await? {

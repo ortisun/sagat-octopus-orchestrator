@@ -3,10 +3,10 @@
 use std::str::FromStr;
 
 use sagat_application::declared_operations::{
-    CompletedOperationResult, DeclaredOperationDocument, DeclaredOperationSnapshot,
-    DeclaredOperationStore, DeclaredOperationStoreError, DeclaredQuery, DeclaredUpdate,
-    DeclaredUpdateDecision, EvaluatedOperationWrite, OperationSnapshotPayload,
-    declared_chain_update_request_hash, declared_update_request_hash,
+    AppliedInTx, CompletedOperationResult, DeclaredOperationDocument, DeclaredOperationEvaluator,
+    DeclaredOperationSnapshot, DeclaredOperationStore, DeclaredOperationStoreError, DeclaredQuery,
+    DeclaredUpdate, DeclaredUpdateDecision, EvaluatedOperationWrite, OperationSnapshotPayload,
+    declared_chain_update_request_hash, declared_update_request_hash, update_argument_error,
 };
 use sagat_application::error::StoreError;
 use sagat_application::operation_evaluation::DeclaredOperationArguments;
@@ -101,6 +101,7 @@ fn operation_audit(
     resolved_run_id: RunId,
     operation: &ActivityName,
     outcome: Option<UpdateReceiptStatus>,
+    batch_job: Option<uuid::Uuid>,
 ) -> AuditRecord {
     let reason = match outcome {
         None => format!("operation={}", operation.as_str()),
@@ -110,6 +111,11 @@ fn operation_audit(
         Some(UpdateReceiptStatus::Rejected) => {
             format!("operation={};outcome=rejected", operation.as_str())
         }
+    };
+    // a change a batch job made says which job made it
+    let reason = match batch_job {
+        Some(job) => format!("{reason};batch={job}"),
+        None => reason,
     };
     audit.follow_up(
         AuditAction::RunUpdated,
@@ -647,6 +653,10 @@ async fn retain_evaluated_write(
     Ok(())
 }
 
+/// Writes an applied Update: its journal row, the state, the receipt and the outbox row, in the caller's
+/// transaction. `arguments` is the digest of the arguments kept for a reset, already a row of `payloads`,
+/// when the declaration keeps them.
+#[allow(clippy::too_many_arguments)]
 async fn commit_applied(
     tx: &mut Transaction<'_, Postgres>,
     update: &DeclaredUpdate,
@@ -655,6 +665,7 @@ async fn commit_applied(
     previous: &StoredState,
     state: &DeclaredOperationsState,
     receipt: &UpdateReceipt,
+    arguments: Option<Digest>,
 ) -> Result<(), DeclaredOperationStoreError> {
     let new_state = state.state();
     let result = receipt
@@ -668,6 +679,9 @@ async fn commit_applied(
         before_revision: receipt.before_state_revision(),
         after_revision: receipt.after_state_revision(),
         state_digest: new_state.digest(),
+        // the row says whether the arguments were kept, so a reset can tell an Update that did not opt in from
+        // one written before the journal said so
+        arguments_retained: Some(arguments.is_some()),
     };
     let encoded = crate::event_codec::encode(&event);
     sqlx::query(
@@ -755,8 +769,8 @@ async fn commit_applied(
          (tenant_id, namespace_id, address_scope, target_id, update_key, resolved_run_id, \
           operation_name, request_hash, status, result_digest, result_schema_digest, \
           result_size_bytes, before_state_revision, after_state_revision, run_version, actor, \
-          outbox_id, committed_at) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'APPLIED',$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+          outbox_id, committed_at, arguments_digest) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'APPLIED',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
     )
     .bind(receipt.scope().tenant_id().as_uuid())
     .bind(receipt.scope().namespace_id().as_uuid())
@@ -781,6 +795,7 @@ async fn commit_applied(
     .bind(receipt.actor().as_str())
     .bind(update.outbox_id())
     .bind(update.occurred_at())
+    .bind(arguments.map(|digest| digest.as_bytes().to_vec()))
     .execute(&mut **tx)
     .await
     .map_err(store_error)?;
@@ -889,213 +904,10 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
         F: FnOnce(&DeclaredOperationSnapshot) -> Result<DeclaredUpdateDecision, OperationError>
             + Send,
     {
-        let request = update.request();
-        let expected_hash = match request.scope().address() {
-            OperationAddress::Run(run_id) => declared_update_request_hash(
-                request.operation(),
-                update.arguments(),
-                request.expected_state_revision(),
-                *run_id,
-            ),
-            OperationAddress::Chain(chain_id) => declared_chain_update_request_hash(
-                request.operation(),
-                update.arguments(),
-                request.expected_state_revision(),
-                *chain_id,
-                update.expected_run_id(),
-            ),
-        };
-        if request.request_hash() != expected_hash {
-            return Err(OperationError::InvalidStoredOperation.into());
-        }
-        check_update_address(request.scope(), request.resolved_run_id())?;
-        check_audit(
-            update.audit(),
-            request.scope().tenant_id(),
-            request.actor(),
-            address_target(request.scope()),
-            AuditAction::RunUpdated,
-        )?;
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        authorize(
-            &mut tx,
-            request.scope().tenant_id(),
-            request.scope().namespace_id(),
-            request.actor(),
-            Permission::RunUpdate,
-        )
-        .await?;
-        let (resolved_run_id, run, prior) = match request.scope().address() {
-            OperationAddress::Run(run_id) => {
-                crate::execution::lock_member_chain(
-                    &mut tx,
-                    request.scope().tenant_id(),
-                    request.scope().namespace_id(),
-                    *run_id,
-                )
-                .await?;
-                let run = lock_run(&mut tx, request.scope(), *run_id, true).await?;
-                let prior = find_receipt(&mut tx, update).await?;
-                (*run_id, run, prior)
-            }
-            OperationAddress::Chain(chain_id) => {
-                let head = lock_chain_head(&mut tx, request.scope(), *chain_id, true).await?;
-                let prior = find_receipt(&mut tx, update).await?;
-                if prior.as_ref().is_some_and(|receipt| {
-                    receipt.operation() != request.operation()
-                        || receipt.request_hash() != request.request_hash()
-                }) {
-                    return Err(OperationError::UpdateKeyReused.into());
-                }
-                let resolved_run_id = match prior.as_ref() {
-                    Some(receipt) => receipt.resolved_run_id(),
-                    None if update
-                        .expected_run_id()
-                        .is_none_or(|expected| expected == head) =>
-                    {
-                        head
-                    }
-                    None => return Err(DeclaredOperationStoreError::ChainHeadChanged),
-                };
-                let run = lock_run(&mut tx, request.scope(), resolved_run_id, true).await?;
-                (resolved_run_id, run, prior)
-            }
-        };
-        if prior.as_ref().is_some_and(|receipt| {
-            receipt.operation() != request.operation()
-                || receipt.request_hash() != request.request_hash()
-                || receipt.resolved_run_id() != resolved_run_id
-        }) {
-            return Err(OperationError::UpdateKeyReused.into());
-        }
-        let request = update.resolved_request(resolved_run_id);
-        let stored = declared_state(
-            &mut tx,
-            request.scope(),
-            &run,
-            resolved_run_id,
-            request.operation(),
-            "UPDATE",
-        )
-        .await?;
-        let mut state = DeclaredOperationsState::restore(
-            stored.value.clone(),
-            stored.state_revision,
-            stored.last_changed_run_version,
-            prior.clone(),
-        )?;
-        if prior.is_some() {
-            let resolution = state.resolve_update_advancing(
-                run.status,
-                &request,
-                run.run_version,
-                |_| -> Result<UpdateEvaluation, OperationError> {
-                    Err(OperationError::InvalidStoredOperation)
-                },
-            )?;
-            let audit = operation_audit(
-                update.audit(),
-                resolved_run_id,
-                request.operation(),
-                Some(resolution.receipt().status()),
-            );
-            insert_audit(&mut tx, &audit).await?;
-            tx.commit().await.map_err(store_error)?;
-            return Ok(resolution);
-        }
-        if !matches!(run.status, RunStatus::Running | RunStatus::Waiting) {
-            // A segment that handed off to its successor is not "ended": the update was meant for
-            // the chain's current head (RUN_CONTINUED), not refused for the run's state.
-            let continued: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM chain_segments WHERE tenant_id = $1 AND run_id = $2 \
-                                AND completion_kind = 'CONTINUED')",
-            )
-            .bind(request.scope().tenant_id().as_uuid())
-            .bind(resolved_run_id.as_uuid())
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(store_error)?;
-            if continued {
-                return Err(OperationError::RunContinued.into());
-            }
-            return Err(OperationError::RunNotMutable(run.status).into());
-        }
-        let query_snapshot = state.query_snapshot(resolved_run_id, run.run_version);
-        let snapshot = operation_snapshot(
-            &mut tx,
-            request.scope(),
-            &run,
-            resolved_run_id,
-            query_snapshot,
-            stored.declaration_digest,
-            stored.content.clone(),
-        )
-        .await?;
-        validate_arguments(&snapshot, update.arguments())?;
-        let mut decision = None;
-        let resolution =
-            state.resolve_update_advancing(run.status, &request, run.run_version, |_| {
-                let evaluated = evaluate(&snapshot)?;
-                let domain = evaluated.domain_evaluation();
-                decision = Some(evaluated);
-                Ok(domain)
-            })?;
-        if resolution.replayed() {
-            return Err(OperationError::InvalidStoredOperation.into());
-        }
-        match resolution.receipt().status() {
-            UpdateReceiptStatus::Rejected => {
-                insert_rejected_receipt(&mut tx, update, resolution.receipt()).await?;
-                let audit = operation_audit(
-                    update.audit(),
-                    resolved_run_id,
-                    request.operation(),
-                    Some(UpdateReceiptStatus::Rejected),
-                );
-                insert_audit(&mut tx, &audit).await?;
-                tx.commit().await.map_err(store_error)?;
-                Ok(resolution)
-            }
-            UpdateReceiptStatus::Applied => {
-                if let Some((new_state, result)) =
-                    decision.as_ref().and_then(DeclaredUpdateDecision::writes)
-                {
-                    if resolution.receipt().result() != Some(result.value())
-                        || state.state() != new_state.value()
-                    {
-                        return Err(OperationError::InvalidStoredOperation.into());
-                    }
-                    retain_evaluated_write(&mut tx, request.scope().tenant_id(), new_state).await?;
-                    retain_evaluated_write(&mut tx, request.scope().tenant_id(), result).await?;
-                }
-                if resolution
-                    .receipt()
-                    .result()
-                    .is_none_or(|result| result.schema_digest() != stored.result_schema_digest)
-                {
-                    return Err(OperationError::InvalidStoredOperation.into());
-                }
-                commit_applied(
-                    &mut tx,
-                    update,
-                    &request,
-                    &run,
-                    &stored,
-                    &state,
-                    resolution.receipt(),
-                )
-                .await?;
-                let audit = operation_audit(
-                    update.audit(),
-                    resolved_run_id,
-                    request.operation(),
-                    Some(UpdateReceiptStatus::Applied),
-                );
-                insert_audit(&mut tx, &audit).await?;
-                tx.commit().await.map_err(store_error)?;
-                Ok(resolution)
-            }
-        }
+        let resolution = apply_update_in_tx(&mut tx, update, validate_arguments, evaluate).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(resolution)
     }
 
     async fn update_result(
@@ -1103,66 +915,343 @@ impl DeclaredOperationStore for PgDeclaredOperationStore {
         update: &DeclaredUpdate,
         resolution: &UpdateResolution,
     ) -> Result<Option<EvaluatedOperationWrite>, DeclaredOperationStoreError> {
-        let request = update.request();
-        check_update_address(request.scope(), request.resolved_run_id())?;
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
-        authorize(
-            &mut tx,
-            request.scope().tenant_id(),
-            request.scope().namespace_id(),
-            request.actor(),
-            Permission::RunUpdate,
-        )
-        .await?;
-        let (resolved_run_id, run, receipt) = match request.scope().address() {
-            OperationAddress::Run(run_id) => {
-                let run = lock_run(&mut tx, request.scope(), *run_id, false).await?;
-                let receipt = find_receipt(&mut tx, update)
-                    .await?
-                    .ok_or(OperationError::InvalidStoredOperation)?;
-                (*run_id, run, receipt)
-            }
-            OperationAddress::Chain(chain_id) => {
-                lock_chain_head(&mut tx, request.scope(), *chain_id, false).await?;
-                let receipt = find_receipt(&mut tx, update)
-                    .await?
-                    .ok_or(OperationError::InvalidStoredOperation)?;
-                let resolved_run_id = receipt.resolved_run_id();
-                let run = lock_run(&mut tx, request.scope(), resolved_run_id, false).await?;
-                (resolved_run_id, run, receipt)
-            }
-        };
-        let stored = declared_state(
-            &mut tx,
-            request.scope(),
-            &run,
-            resolved_run_id,
-            request.operation(),
-            "UPDATE",
-        )
-        .await?;
-        if &receipt != resolution.receipt() {
-            return Err(OperationError::InvalidStoredOperation.into());
-        }
-        let result = match receipt.result() {
-            None => None,
-            Some(value) => {
-                if value.schema_digest() != stored.result_schema_digest {
-                    return Err(OperationError::InvalidStoredOperation.into());
-                }
-                let content: Vec<u8> = sqlx::query_scalar(
-                    "SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2",
-                )
-                .bind(request.scope().tenant_id().as_uuid())
-                .bind(value.digest().as_bytes().as_slice())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(store_error)?
-                .ok_or(OperationError::InvalidStoredOperation)?;
-                Some(EvaluatedOperationWrite::restore(value.clone(), content)?)
-            }
-        };
+        let result = update_result_in_tx(&mut tx, update, resolution).await?;
         tx.commit().await.map_err(store_error)?;
         Ok(result)
     }
+}
+
+/// Applies a declared Update in `tx`, which the caller commits or drops (the store opens one for
+/// [`DeclaredOperationStore::apply_update`]; a run being started brings its own, feature 018).
+pub(crate) async fn apply_update_in_tx<V, F>(
+    tx: &mut Transaction<'_, Postgres>,
+    update: &DeclaredUpdate,
+    validate_arguments: V,
+    evaluate: F,
+) -> Result<UpdateResolution, DeclaredOperationStoreError>
+where
+    V: FnOnce(
+            &DeclaredOperationSnapshot,
+            &DeclaredOperationArguments,
+        ) -> Result<(), OperationError>
+        + Send,
+    F: FnOnce(&DeclaredOperationSnapshot) -> Result<DeclaredUpdateDecision, OperationError> + Send,
+{
+    let request = update.request();
+    let expected_hash = match request.scope().address() {
+        OperationAddress::Run(run_id) => declared_update_request_hash(
+            request.operation(),
+            update.arguments(),
+            request.expected_state_revision(),
+            *run_id,
+        ),
+        OperationAddress::Chain(chain_id) => declared_chain_update_request_hash(
+            request.operation(),
+            update.arguments(),
+            request.expected_state_revision(),
+            *chain_id,
+            update.expected_run_id(),
+        ),
+    };
+    if request.request_hash() != expected_hash {
+        return Err(OperationError::InvalidStoredOperation.into());
+    }
+    check_update_address(request.scope(), request.resolved_run_id())?;
+    check_audit(
+        update.audit(),
+        request.scope().tenant_id(),
+        request.actor(),
+        address_target(request.scope()),
+        AuditAction::RunUpdated,
+    )?;
+    authorize(
+        tx,
+        request.scope().tenant_id(),
+        request.scope().namespace_id(),
+        request.actor(),
+        Permission::RunUpdate,
+    )
+    .await?;
+    let (resolved_run_id, run, prior) = match request.scope().address() {
+        OperationAddress::Run(run_id) => {
+            crate::execution::lock_member_chain(
+                tx,
+                request.scope().tenant_id(),
+                request.scope().namespace_id(),
+                *run_id,
+            )
+            .await?;
+            let run = lock_run(tx, request.scope(), *run_id, true).await?;
+            let prior = find_receipt(tx, update).await?;
+            (*run_id, run, prior)
+        }
+        OperationAddress::Chain(chain_id) => {
+            let head = lock_chain_head(tx, request.scope(), *chain_id, true).await?;
+            let prior = find_receipt(tx, update).await?;
+            if prior.as_ref().is_some_and(|receipt| {
+                receipt.operation() != request.operation()
+                    || receipt.request_hash() != request.request_hash()
+            }) {
+                return Err(OperationError::UpdateKeyReused.into());
+            }
+            let resolved_run_id = match prior.as_ref() {
+                Some(receipt) => receipt.resolved_run_id(),
+                None if update
+                    .expected_run_id()
+                    .is_none_or(|expected| expected == head) =>
+                {
+                    head
+                }
+                None => return Err(DeclaredOperationStoreError::ChainHeadChanged),
+            };
+            let run = lock_run(tx, request.scope(), resolved_run_id, true).await?;
+            (resolved_run_id, run, prior)
+        }
+    };
+    if prior.as_ref().is_some_and(|receipt| {
+        receipt.operation() != request.operation()
+            || receipt.request_hash() != request.request_hash()
+            || receipt.resolved_run_id() != resolved_run_id
+    }) {
+        return Err(OperationError::UpdateKeyReused.into());
+    }
+    let request = update.resolved_request(resolved_run_id);
+    let stored = declared_state(
+        tx,
+        request.scope(),
+        &run,
+        resolved_run_id,
+        request.operation(),
+        "UPDATE",
+    )
+    .await?;
+    let mut state = DeclaredOperationsState::restore(
+        stored.value.clone(),
+        stored.state_revision,
+        stored.last_changed_run_version,
+        prior.clone(),
+    )?;
+    if prior.is_some() {
+        let resolution = state.resolve_update_advancing(
+            run.status,
+            &request,
+            run.run_version,
+            |_| -> Result<UpdateEvaluation, OperationError> {
+                Err(OperationError::InvalidStoredOperation)
+            },
+        )?;
+        let audit = operation_audit(
+            update.audit(),
+            resolved_run_id,
+            request.operation(),
+            Some(resolution.receipt().status()),
+            update.batch_job(),
+        );
+        insert_audit(tx, &audit).await?;
+        return Ok(resolution);
+    }
+    if !matches!(run.status, RunStatus::Running | RunStatus::Waiting) {
+        // A segment that handed off to its successor is not "ended": the update was meant for
+        // the chain's current head (RUN_CONTINUED), not refused for the run's state.
+        let continued: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM chain_segments WHERE tenant_id = $1 AND run_id = $2 \
+                                AND completion_kind = 'CONTINUED')",
+        )
+        .bind(request.scope().tenant_id().as_uuid())
+        .bind(resolved_run_id.as_uuid())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(store_error)?;
+        if continued {
+            return Err(OperationError::RunContinued.into());
+        }
+        return Err(OperationError::RunNotMutable(run.status).into());
+    }
+    let query_snapshot = state.query_snapshot(resolved_run_id, run.run_version);
+    let snapshot = operation_snapshot(
+        tx,
+        request.scope(),
+        &run,
+        resolved_run_id,
+        query_snapshot,
+        stored.declaration_digest,
+        stored.content.clone(),
+    )
+    .await?;
+    validate_arguments(&snapshot, update.arguments())?;
+    let mut decision = None;
+    let resolution =
+        state.resolve_update_advancing(run.status, &request, run.run_version, |_| {
+            let evaluated = evaluate(&snapshot)?;
+            let domain = evaluated.domain_evaluation();
+            decision = Some(evaluated);
+            Ok(domain)
+        })?;
+    if resolution.replayed() {
+        return Err(OperationError::InvalidStoredOperation.into());
+    }
+    match resolution.receipt().status() {
+        UpdateReceiptStatus::Rejected => {
+            insert_rejected_receipt(tx, update, resolution.receipt()).await?;
+            let audit = operation_audit(
+                update.audit(),
+                resolved_run_id,
+                request.operation(),
+                Some(UpdateReceiptStatus::Rejected),
+                update.batch_job(),
+            );
+            insert_audit(tx, &audit).await?;
+            Ok(resolution)
+        }
+        UpdateReceiptStatus::Applied => {
+            if let Some((new_state, result)) =
+                decision.as_ref().and_then(DeclaredUpdateDecision::writes)
+            {
+                if resolution.receipt().result() != Some(result.value())
+                    || state.state() != new_state.value()
+                {
+                    return Err(OperationError::InvalidStoredOperation.into());
+                }
+                retain_evaluated_write(tx, request.scope().tenant_id(), new_state).await?;
+                retain_evaluated_write(tx, request.scope().tenant_id(), result).await?;
+            }
+            // The arguments are content of the tenant only when the declaration keeps them for a reset: the
+            // write is charged to `tenant_content_bytes` like any payload, and the receipt points at it.
+            let arguments = decision
+                .as_ref()
+                .and_then(DeclaredUpdateDecision::retained_arguments);
+            if let Some(arguments) = arguments {
+                retain_evaluated_write(tx, request.scope().tenant_id(), arguments).await?;
+            }
+            if resolution
+                .receipt()
+                .result()
+                .is_none_or(|result| result.schema_digest() != stored.result_schema_digest)
+            {
+                return Err(OperationError::InvalidStoredOperation.into());
+            }
+            commit_applied(
+                tx,
+                update,
+                &request,
+                &run,
+                &stored,
+                &state,
+                resolution.receipt(),
+                arguments.map(|arguments| arguments.value().digest()),
+            )
+            .await?;
+            let audit = operation_audit(
+                update.audit(),
+                resolved_run_id,
+                request.operation(),
+                Some(UpdateReceiptStatus::Applied),
+                update.batch_job(),
+            );
+            insert_audit(tx, &audit).await?;
+            Ok(resolution)
+        }
+    }
+}
+
+/// The checked result bytes of an Update already resolved in `tx` (or committed before it), after
+/// rechecking current authorization.
+pub(crate) async fn update_result_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    update: &DeclaredUpdate,
+    resolution: &UpdateResolution,
+) -> Result<Option<EvaluatedOperationWrite>, DeclaredOperationStoreError> {
+    let request = update.request();
+    check_update_address(request.scope(), request.resolved_run_id())?;
+    authorize(
+        tx,
+        request.scope().tenant_id(),
+        request.scope().namespace_id(),
+        request.actor(),
+        Permission::RunUpdate,
+    )
+    .await?;
+    let (resolved_run_id, run, receipt) = match request.scope().address() {
+        OperationAddress::Run(run_id) => {
+            let run = lock_run(tx, request.scope(), *run_id, false).await?;
+            let receipt = find_receipt(tx, update)
+                .await?
+                .ok_or(OperationError::InvalidStoredOperation)?;
+            (*run_id, run, receipt)
+        }
+        OperationAddress::Chain(chain_id) => {
+            lock_chain_head(tx, request.scope(), *chain_id, false).await?;
+            let receipt = find_receipt(tx, update)
+                .await?
+                .ok_or(OperationError::InvalidStoredOperation)?;
+            let resolved_run_id = receipt.resolved_run_id();
+            let run = lock_run(tx, request.scope(), resolved_run_id, false).await?;
+            (resolved_run_id, run, receipt)
+        }
+    };
+    let stored = declared_state(
+        tx,
+        request.scope(),
+        &run,
+        resolved_run_id,
+        request.operation(),
+        "UPDATE",
+    )
+    .await?;
+    if &receipt != resolution.receipt() {
+        return Err(OperationError::InvalidStoredOperation.into());
+    }
+    let result = match receipt.result() {
+        None => None,
+        Some(value) => {
+            if value.schema_digest() != stored.result_schema_digest {
+                return Err(OperationError::InvalidStoredOperation.into());
+            }
+            let content: Vec<u8> = sqlx::query_scalar(
+                "SELECT content FROM payloads WHERE tenant_id = $1 AND digest = $2",
+            )
+            .bind(request.scope().tenant_id().as_uuid())
+            .bind(value.digest().as_bytes().as_slice())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(store_error)?
+            .ok_or(OperationError::InvalidStoredOperation)?;
+            Some(EvaluatedOperationWrite::restore(value.clone(), content)?)
+        }
+    };
+    Ok(result)
+}
+
+/// Applies a declared Update inside the transaction of a run being started or found (Update-with-Start,
+/// feature 018): the evaluator checks the arguments and evaluates the Update, the transaction is
+/// the caller's, and the answer carries the checked result bytes when the Update was applied.
+pub(crate) async fn apply_declared_update_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    update: &DeclaredUpdate,
+    evaluator: &dyn DeclaredOperationEvaluator,
+) -> Result<AppliedInTx, DeclaredOperationStoreError> {
+    let operation = update.request().operation().clone();
+    let arguments = update.arguments().clone();
+    let resolution = apply_update_in_tx(
+        tx,
+        update,
+        |snapshot, arguments| {
+            evaluator
+                .validate_update_arguments(snapshot, &operation, arguments)
+                .map_err(update_argument_error)
+        },
+        |snapshot| {
+            evaluator
+                .update(snapshot, &operation, &arguments)
+                .map_err(|_| OperationError::EvaluationFailed)
+        },
+    )
+    .await?;
+    let result = if resolution.receipt().status() == UpdateReceiptStatus::Applied {
+        update_result_in_tx(tx, update, &resolution).await?
+    } else {
+        None
+    };
+    Ok(AppliedInTx { resolution, result })
 }

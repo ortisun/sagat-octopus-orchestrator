@@ -1,0 +1,935 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "r1",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "r2",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "r3",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "preview",
+      "ok": true,
+      "op": "batchPreview",
+      "result": {
+        "capped": false,
+        "matched": 3,
+        "sampleSize": 3,
+        "sampleSteps": [
+          "r1",
+          "r2",
+          "r3"
+        ]
+      }
+    },
+    {
+      "id": "preview-capped",
+      "ok": true,
+      "op": "batchPreview",
+      "result": {
+        "capped": true,
+        "matched": 3,
+        "sampleSize": 3,
+        "sampleSteps": [
+          "r1",
+          "r2",
+          "r3"
+        ]
+      }
+    },
+    {
+      "id": "preview-filter",
+      "ok": true,
+      "op": "batchPreview",
+      "result": {
+        "capped": false,
+        "matched": 3,
+        "sampleSize": 3,
+        "sampleSteps": [
+          "r1",
+          "r2",
+          "r3"
+        ]
+      }
+    },
+    {
+      "id": "create",
+      "ok": true,
+      "op": "batchCreate",
+      "result": {
+        "action": "CANCEL",
+        "batchId": "<uuid:6>",
+        "createdBy": "alice",
+        "hasPayload": false,
+        "itemsPerSecond": 50,
+        "maxItems": 10000
+      }
+    },
+    {
+      "id": "create-again",
+      "ok": true,
+      "op": "batchCreate",
+      "result": {
+        "action": "CANCEL",
+        "batchId": "<uuid:6>",
+        "createdBy": "alice",
+        "hasPayload": false,
+        "itemsPerSecond": 50,
+        "maxItems": 10000
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "IDEMPOTENCY_KEY_REUSED",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:4>"
+      },
+      "id": "create-other-body",
+      "ok": false,
+      "op": "batchCreate"
+    },
+    {
+      "id": "completed",
+      "ok": true,
+      "op": "awaitBatch"
+    },
+    {
+      "id": "job",
+      "ok": true,
+      "op": "batchGet",
+      "result": {
+        "action": "CANCEL",
+        "batchId": "<uuid:6>",
+        "counts": {
+          "cancelled": 0,
+          "deferred": 0,
+          "failed": 0,
+          "selected": 3,
+          "skipped": 0,
+          "succeeded": 3
+        },
+        "createdAt": "<time>",
+        "createdBy": "alice",
+        "expiresAt": "<time>",
+        "failureReason": null,
+        "finishedAt": "<time>",
+        "hasPayload": false,
+        "itemsPerSecond": 50,
+        "maxItems": 10000,
+        "startedAt": "<time>",
+        "state": "COMPLETED"
+      }
+    },
+    {
+      "id": "items",
+      "ok": true,
+      "op": "batchItems",
+      "result": {
+        "items": [
+          {
+            "attempts": 0,
+            "errorCode": null,
+            "newRunId": null,
+            "reason": null,
+            "runStep": "r1",
+            "state": "SUCCEEDED"
+          },
+          {
+            "attempts": 0,
+            "errorCode": null,
+            "newRunId": null,
+            "reason": null,
+            "runStep": "r2",
+            "state": "SUCCEEDED"
+          },
+          {
+            "attempts": 0,
+            "errorCode": null,
+            "newRunId": null,
+            "reason": null,
+            "runStep": "r3",
+            "state": "SUCCEEDED"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "items-succeeded",
+      "ok": true,
+      "op": "batchItems",
+      "result": {
+        "items": [
+          {
+            "attempts": 0,
+            "errorCode": null,
+            "newRunId": null,
+            "reason": null,
+            "runStep": "r1",
+            "state": "SUCCEEDED"
+          },
+          {
+            "attempts": 0,
+            "errorCode": null,
+            "newRunId": null,
+            "reason": null,
+            "runStep": "r2",
+            "state": "SUCCEEDED"
+          }
+        ],
+        "nextCursor": "<cursor>"
+      }
+    },
+    {
+      "id": "r1-ended",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:1>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:1>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "r2-ended",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:4>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:2>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "r3-ended",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:5>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:3>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "second",
+      "ok": true,
+      "op": "batchCreate",
+      "result": {
+        "action": "CANCEL",
+        "batchId": "<uuid:7>",
+        "createdBy": "alice",
+        "hasPayload": false,
+        "itemsPerSecond": 20,
+        "maxItems": 10000
+      }
+    },
+    {
+      "id": "second-completed",
+      "ok": true,
+      "op": "awaitBatch"
+    },
+    {
+      "id": "second-job",
+      "ok": true,
+      "op": "batchGet",
+      "result": {
+        "action": "CANCEL",
+        "batchId": "<uuid:7>",
+        "counts": {
+          "cancelled": 0,
+          "deferred": 0,
+          "failed": 0,
+          "selected": 2,
+          "skipped": 2,
+          "succeeded": 0
+        },
+        "createdAt": "<time>",
+        "createdBy": "alice",
+        "expiresAt": "<time>",
+        "failureReason": null,
+        "finishedAt": "<time>",
+        "hasPayload": false,
+        "itemsPerSecond": 20,
+        "maxItems": 10000,
+        "startedAt": "<time>",
+        "state": "COMPLETED"
+      }
+    },
+    {
+      "id": "second-items",
+      "ok": true,
+      "op": "batchItems",
+      "result": {
+        "items": [
+          {
+            "attempts": 0,
+            "errorCode": null,
+            "newRunId": null,
+            "reason": "ALREADY_TERMINAL",
+            "runStep": "r1",
+            "state": "SKIPPED"
+          },
+          {
+            "attempts": 0,
+            "errorCode": null,
+            "newRunId": null,
+            "reason": "ALREADY_TERMINAL",
+            "runStep": "r2",
+            "state": "SKIPPED"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "BATCH_NOT_CANCELLABLE",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:5>"
+      },
+      "id": "cancel-ended-job",
+      "ok": false,
+      "op": "batchCancel"
+    },
+    {
+      "id": "list",
+      "ok": true,
+      "op": "batchList",
+      "result": {
+        "items": [
+          {
+            "action": "CANCEL",
+            "counts": {
+              "cancelled": 0,
+              "deferred": 0,
+              "failed": 0,
+              "selected": 2,
+              "skipped": 2,
+              "succeeded": 0
+            },
+            "state": "COMPLETED"
+          },
+          {
+            "action": "CANCEL",
+            "counts": {
+              "cancelled": 0,
+              "deferred": 0,
+              "failed": 0,
+              "selected": 3,
+              "skipped": 0,
+              "succeeded": 3
+            },
+            "state": "COMPLETED"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "BATCH_ACTION_UNAVAILABLE",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:6>"
+      },
+      "id": "repin",
+      "ok": false,
+      "op": "batchCreate"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "BATCH_SELECTOR_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:7>"
+      },
+      "id": "empty-selector",
+      "ok": false,
+      "op": "batchCreate"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "BATCH_REASON_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:8>"
+      },
+      "id": "short-reason",
+      "ok": false,
+      "op": "batchCreate"
+    },
+    {
+      "id": "lot-a",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "businessId": "lot-{{unique}}-a",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:8>",
+        "started": true,
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:9>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "lot-b",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "businessId": "lot-{{unique}}-b",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:9>",
+        "started": true,
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:10>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "other-lot",
+      "ok": true,
+      "op": "start",
+      "result": {
+        "businessId": "other-{{unique}}",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:10>",
+        "started": true,
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:11>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "business-prefix",
+      "ok": true,
+      "op": "batchPreview",
+      "result": {
+        "capped": false,
+        "matched": 2,
+        "sampleSize": 2,
+        "sampleSteps": [
+          "lot-a",
+          "lot-b"
+        ]
+      }
+    },
+    {
+      "id": "business-prefix-none",
+      "ok": true,
+      "op": "batchPreview",
+      "result": {
+        "capped": false,
+        "matched": 0,
+        "sampleSize": 0,
+        "sampleSteps": []
+      }
+    },
+    {
+      "id": "business-prefix-wildcard",
+      "ok": true,
+      "op": "batchPreview",
+      "result": {
+        "capped": false,
+        "matched": 0,
+        "sampleSize": 0,
+        "sampleSteps": []
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "BATCH_SELECTOR_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:12>"
+      },
+      "id": "business-prefix-invalid",
+      "ok": false,
+      "op": "batchPreview"
+    },
+    {
+      "id": "create-by-prefix",
+      "ok": true,
+      "op": "batchCreate",
+      "result": {
+        "action": "CANCEL",
+        "batchId": "<uuid:11>",
+        "createdBy": "alice",
+        "hasPayload": false,
+        "itemsPerSecond": 50,
+        "maxItems": 10000
+      }
+    },
+    {
+      "id": "by-prefix-completed",
+      "ok": true,
+      "op": "awaitBatch"
+    },
+    {
+      "id": "by-prefix-job",
+      "ok": true,
+      "op": "batchGet",
+      "result": {
+        "action": "CANCEL",
+        "batchId": "<uuid:11>",
+        "counts": {
+          "cancelled": 0,
+          "deferred": 0,
+          "failed": 0,
+          "selected": 2,
+          "skipped": 0,
+          "succeeded": 2
+        },
+        "createdAt": "<time>",
+        "createdBy": "alice",
+        "expiresAt": "<time>",
+        "failureReason": null,
+        "finishedAt": "<time>",
+        "hasPayload": false,
+        "itemsPerSecond": 50,
+        "maxItems": 10000,
+        "startedAt": "<time>",
+        "state": "COMPLETED"
+      }
+    },
+    {
+      "id": "by-prefix-items",
+      "ok": true,
+      "op": "batchItems",
+      "result": {
+        "items": [
+          {
+            "attempts": 0,
+            "errorCode": null,
+            "newRunId": null,
+            "reason": null,
+            "runStep": "lot-a",
+            "state": "SUCCEEDED"
+          },
+          {
+            "attempts": 0,
+            "errorCode": null,
+            "newRunId": null,
+            "reason": null,
+            "runStep": "lot-b",
+            "state": "SUCCEEDED"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "lot-a-ended",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "businessId": "lot-{{unique}}-a",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:8>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:9>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "lot-b-ended",
+      "ok": true,
+      "op": "waitForCompletion",
+      "result": {
+        "businessId": "lot-{{unique}}-b",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": "<time>",
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:9>",
+        "startedBy": "alice",
+        "status": "CANCELLED",
+        "traceId": "<trace:10>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "id": "other-lot-still-open",
+      "ok": true,
+      "op": "get",
+      "result": {
+        "businessId": "other-{{unique}}",
+        "correlationId": null,
+        "createdAt": "<time>",
+        "deadline": null,
+        "depth": 0,
+        "finishedAt": null,
+        "parent": null,
+        "paused": false,
+        "runId": "<uuid:10>",
+        "startedBy": "alice",
+        "status": "RUNNING",
+        "traceId": "<trace:11>",
+        "updatedAt": "<time>",
+        "version": "<n>",
+        "versionId": "<uuid:2>",
+        "workflowId": "<uuid:3>"
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "QUERY_UNSUPPORTED_OPERATOR",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:13>"
+      },
+      "id": "query-selector",
+      "ok": false,
+      "op": "batchPreview"
+    }
+  ],
+  "serverState": [
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "READY",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:10>",
+      "status": "RUNNING"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:9>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:8>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:5>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:4>",
+      "status": "CANCELLED"
+    },
+    {
+      "nodes": [
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "done",
+          "kind": "FORWARD",
+          "status": "NOT_STARTED",
+          "type": "end",
+          "waitingOn": null
+        },
+        {
+          "attempt": 0,
+          "cancelRequested": false,
+          "failureCode": null,
+          "forward": null,
+          "id": "hold",
+          "kind": "FORWARD",
+          "status": "CANCELLED",
+          "type": "activity",
+          "waitingOn": null
+        }
+      ],
+      "paused": false,
+      "runId": "<uuid:1>",
+      "status": "CANCELLED"
+    }
+  ],
+  "workerLog": {}
+}

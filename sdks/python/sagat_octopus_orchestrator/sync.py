@@ -13,14 +13,16 @@ import threading
 from collections.abc import Awaitable, Callable, Iterator
 from concurrent.futures import Future
 from types import TracebackType
-from typing import Concatenate, ParamSpec, TypeVar
+from typing import Concatenate, Generic, Literal, ParamSpec, TypeVar
 
 from .client import ApprovalListItem, ChainRun, Run, SagatClient
 from .config import ClientConfig
 from .errors import SagatError
+from .operations import BatchOperations, BusinessIds, Schedule, Schedules
 
 P = ParamSpec("P")
 R = TypeVar("R")
+G = TypeVar("G")
 
 
 def _blocking(
@@ -31,6 +33,87 @@ def _blocking(
         return self._run(lambda: method(self._client, *args, **kwargs))
 
     return call  # type: ignore[return-value]  # functools.wraps keeps the signature; mypy cannot see it
+
+
+class _SyncGroup(Generic[G]):
+    """A group of the async client (``schedules``, ``batch``, ``business_ids``) with blocking methods."""
+
+    def __init__(self, owner: SyncSagatClient, group: G) -> None:
+        self._owner = owner
+        self._group = group
+
+
+def _grouped(
+    method: Callable[Concatenate[G, P], Awaitable[R]],
+) -> Callable[Concatenate[_SyncGroup[G], P], R]:
+    @functools.wraps(method)
+    def call(self: _SyncGroup[G], *args: P.args, **kwargs: P.kwargs) -> R:
+        return self._owner._run(lambda: method(self._group, *args, **kwargs))
+
+    return call  # type: ignore[return-value]  # functools.wraps keeps the signature; mypy cannot see it
+
+
+class SyncSchedules(_SyncGroup[Schedules]):
+    """``client.schedules`` with blocking methods."""
+
+    create = _grouped(Schedules.create)
+    get = _grouped(Schedules.get)
+    list = _grouped(Schedules.list)
+    update = _grouped(Schedules.update)
+    delete = _grouped(Schedules.delete)
+    pause = _grouped(Schedules.pause)
+    resume = _grouped(Schedules.resume)
+    trigger = _grouped(Schedules.trigger)
+    backfill = _grouped(Schedules.backfill)
+    cancel_backfill = _grouped(Schedules.cancel_backfill)
+    list_backfills = _grouped(Schedules.list_backfills)
+    list_actions = _grouped(Schedules.list_actions)
+
+    def list_all(
+        self,
+        namespace_id: str,
+        *,
+        limit: int | None = None,
+        state: Literal["ACTIVE", "PAUSED"] | None = None,
+        origin: Literal["API", "TRIGGER"] | None = None,
+        workflow_id: str | None = None,
+        name: str | None = None,
+        traceparent: str | None = None,
+    ) -> Iterator[Schedule]:
+        """Every schedule the filter selects, following the opaque cursors."""
+        cursor: str | None = None
+        while True:
+            page = self.list(
+                namespace_id,
+                cursor=cursor,
+                limit=limit,
+                state=state,
+                origin=origin,
+                workflow_id=workflow_id,
+                name=name,
+                traceparent=traceparent,
+            )
+            yield from page.items
+            cursor = page.next_cursor
+            if not cursor:
+                return
+
+
+class SyncBatchOperations(_SyncGroup[BatchOperations]):
+    """``client.batch`` with blocking methods."""
+
+    preview = _grouped(BatchOperations.preview)
+    create = _grouped(BatchOperations.create)
+    get = _grouped(BatchOperations.get)
+    list = _grouped(BatchOperations.list)
+    cancel = _grouped(BatchOperations.cancel)
+    list_items = _grouped(BatchOperations.list_items)
+
+
+class SyncBusinessIds(_SyncGroup[BusinessIds]):
+    """``client.business_ids`` with blocking methods."""
+
+    get = _grouped(BusinessIds.get)
 
 
 class SyncSagatClient:
@@ -50,6 +133,9 @@ class SyncSagatClient:
             self._closed = True
             self._loop.call_soon_threadsafe(self._loop.stop)
             raise
+        self.schedules = SyncSchedules(self, self._client.schedules)
+        self.batch = SyncBatchOperations(self, self._client.batch)
+        self.business_ids = SyncBusinessIds(self, self._client.business_ids)
 
     def _serve(self) -> None:
         asyncio.set_event_loop(self._loop)
@@ -97,6 +183,13 @@ class SyncSagatClient:
     start = _blocking(SagatClient.start)
     upload_run_input = _blocking(SagatClient.upload_run_input)
     start_with_blob = _blocking(SagatClient.start_with_blob)
+    signal_with_start = _blocking(SagatClient.signal_with_start)
+    update_with_start = _blocking(SagatClient.update_with_start)
+    reset_points = _blocking(SagatClient.reset_points)
+    preview_reset = _blocking(SagatClient.preview_reset)
+    reset = _blocking(SagatClient.reset)
+    list_resets = _blocking(SagatClient.list_resets)
+    get_reset = _blocking(SagatClient.get_reset)
     get = _blocking(SagatClient.get)
     list = _blocking(SagatClient.list)
     operate = _blocking(SagatClient.operate)

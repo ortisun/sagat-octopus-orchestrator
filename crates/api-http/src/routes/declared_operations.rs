@@ -13,7 +13,7 @@ use sagat_application::api_admission::{
 use sagat_application::clock::Clock;
 use sagat_application::declared_operations::{
     DeclaredOperationEvaluator, DeclaredOperationStore, DeclaredOperationStoreError, DeclaredQuery,
-    DeclaredUpdate,
+    DeclaredUpdate, update_argument_error,
 };
 use sagat_application::error::AppError;
 use sagat_application::identity::IdentityStore;
@@ -111,6 +111,10 @@ where
 
     fn tenant_concurrency(&self) -> &Arc<TenantConcurrency> {
         self.core.tenant_concurrency()
+    }
+
+    fn serving_gate(&self) -> Option<&Arc<sagat_application::instances::ServingGate>> {
+        self.core.serving_gate()
     }
 
     async fn authenticate(
@@ -274,20 +278,7 @@ fn operation_error(error: OperationError) -> ApiError {
     }
 }
 
-fn update_argument_error(error: OperationEvaluationError) -> OperationError {
-    match error {
-        OperationEvaluationError::MalformedJson {
-            field: OperationDataField::Arguments,
-        }
-        | OperationEvaluationError::SchemaMismatch {
-            field: OperationDataField::Arguments,
-        }
-        | OperationEvaluationError::ArgumentsTooLarge => OperationError::InvalidArguments,
-        _ => OperationError::EvaluationFailed,
-    }
-}
-
-fn store_error(error: DeclaredOperationStoreError, permission: Permission) -> ApiError {
+pub(crate) fn store_error(error: DeclaredOperationStoreError, permission: Permission) -> ApiError {
     match error {
         DeclaredOperationStoreError::NotFound
         | DeclaredOperationStoreError::DefinitionUnavailable => ApiError::not_found(),
@@ -316,14 +307,29 @@ fn store_error(error: DeclaredOperationStoreError, permission: Permission) -> Ap
 /// `workflow_operation_duration_seconds{kind,outcome}` histogram and, when the operation is refused
 /// for a known reason, `workflow_primitive_rejections_total{kind,code}`. Every label and attribute
 /// comes from a closed enum; the operation name, arguments, state and result never reach them.
-struct OperationTelemetry {
+pub(crate) struct OperationTelemetry {
     kind: WorkflowPrimitiveKind,
-    span: tracing::Span,
+    pub(crate) span: tracing::Span,
     started: Instant,
 }
 
+/// The update key of a call made by a person or a program. The platform's own keys (the item of a
+/// batch job is `batch:{job}:{run}`, the action of a schedule `schedule:…`, an Update a reset applies
+/// again `reset:{reset}:{sequence}`) are not for callers: one
+/// that took such a key first would make the platform's own item fail as a reuse of it.
+///
+/// # Errors
+/// [`OperationError::InvalidUpdateKey`] for a key that is not 1 to 128 printable ASCII characters
+/// without spaces, or that starts with a prefix the platform keeps for itself.
+pub(crate) fn caller_update_key(text: &str) -> Result<UpdateKey, OperationError> {
+    if super::execution::is_reserved_key(text) {
+        return Err(OperationError::InvalidUpdateKey);
+    }
+    UpdateKey::parse(text)
+}
+
 impl OperationTelemetry {
-    fn start(kind: WorkflowPrimitiveKind) -> Self {
+    pub(crate) fn start(kind: WorkflowPrimitiveKind) -> Self {
         let span = if kind == WorkflowPrimitiveKind::Update {
             tracing::info_span!(
                 WorkflowPrimitiveSpan::Update.as_str(),
@@ -347,6 +353,50 @@ impl OperationTelemetry {
             span,
             started: Instant::now(),
         }
+    }
+
+    /// An Update-with-Start: a business rejection is an answer (`200`), counted as the rejection it
+    /// is; everything else is judged as for `updateRun`.
+    pub(crate) fn finish_update_with_start(
+        self,
+        result: &Result<Json<crate::dto_exec::UpdateWithStartResultBody>, ApiError>,
+    ) {
+        use crate::dto_exec::UpdateOutcomeBody;
+        let Ok(Json(done)) = result else {
+            return self.finish(result, |_| None);
+        };
+        let outcome = match &done.update {
+            UpdateOutcomeBody::Applied { receipt } => {
+                self.span
+                    .record("sagat.operation.replayed", receipt.replayed);
+                WorkflowPrimitiveOutcome::Applied
+            }
+            UpdateOutcomeBody::Rejected { reason } => {
+                if let Some(code) =
+                    sagat_telemetry::WorkflowPrimitiveRejectionCode::from_reason(reason)
+                {
+                    self.span.record("sagat.rejection.code", code.as_str());
+                    metrics::counter!(
+                        WorkflowPrimitiveMetric::Rejections.as_str(),
+                        "kind" => self.kind.as_str(),
+                        "code" => code.as_str(),
+                    )
+                    .increment(1);
+                }
+                WorkflowPrimitiveOutcome::Rejected
+            }
+        };
+        self.conclude(outcome);
+    }
+
+    fn conclude(&self, outcome: WorkflowPrimitiveOutcome) {
+        self.span.record("sagat.outcome", outcome.as_str());
+        metrics::histogram!(
+            WorkflowPrimitiveMetric::OperationDuration.as_str(),
+            "kind" => self.kind.as_str(),
+            "outcome" => outcome.as_str(),
+        )
+        .record(self.started.elapsed().as_secs_f64());
     }
 
     fn finish<T>(self, result: &Result<T, ApiError>, replayed: impl FnOnce(&T) -> Option<bool>) {
@@ -380,13 +430,7 @@ impl OperationTelemetry {
                 }
             },
         };
-        self.span.record("sagat.outcome", outcome.as_str());
-        metrics::histogram!(
-            WorkflowPrimitiveMetric::OperationDuration.as_str(),
-            "kind" => self.kind.as_str(),
-            "outcome" => outcome.as_str(),
-        )
-        .record(self.started.elapsed().as_secs_f64());
+        self.conclude(outcome);
     }
 }
 
@@ -590,7 +634,7 @@ async fn update_operation<B: DeclaredOperationApi>(
         ApiTarget::Run(run_id),
     )
     .await?;
-    let update_key = UpdateKey::parse(&body.update_key).map_err(operation_error)?;
+    let update_key = caller_update_key(&body.update_key).map_err(operation_error)?;
     let arguments = arguments(&body.args)?;
     let occurred_at = state.operation_clock().now();
     let audit = AuditRecord::by(
@@ -703,7 +747,7 @@ async fn update_chain_operation<B: DeclaredOperationApi>(
             ApiError::validation("expectedRunId must be a valid run identifier")
                 .with_reason("INVALID_EXPECTED_RUN_ID")
         })?;
-    let update_key = UpdateKey::parse(&body.update_key).map_err(operation_error)?;
+    let update_key = caller_update_key(&body.update_key).map_err(operation_error)?;
     let arguments = arguments(&body.args)?;
     let occurred_at = state.operation_clock().now();
     let audit = AuditRecord::by(
@@ -787,4 +831,118 @@ async fn update_chain_operation<B: DeclaredOperationApi>(
             resolution.replayed(),
         )),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::panic)]
+
+    use std::time::Duration;
+
+    use sagat_telemetry::Metrics;
+
+    use super::*;
+    use crate::dto_declared_operations::DeclaredUpdateResponseBody;
+    use crate::dto_exec::{UpdateOutcomeBody, UpdateWithStartResultBody};
+
+    fn applied() -> Json<UpdateWithStartResultBody> {
+        Json(UpdateWithStartResultBody {
+            run_id: "r".to_owned(),
+            started: true,
+            update: UpdateOutcomeBody::Applied {
+                receipt: DeclaredUpdateResponseBody {
+                    run_id: "r".to_owned(),
+                    operation: "balance.replace".to_owned(),
+                    update_key: "k".to_owned(),
+                    status: "APPLIED",
+                    result: serde_json::json!(1),
+                    before_state_revision: 0,
+                    after_state_revision: 1,
+                    run_version: 2,
+                    replayed: false,
+                },
+            },
+        })
+    }
+
+    fn page_after(result: &Result<Json<UpdateWithStartResultBody>, ApiError>) -> String {
+        let (export, recorder) = Metrics::detached(Duration::from_secs(60));
+        metrics::with_local_recorder(&recorder, || {
+            let telemetry = OperationTelemetry::start(WorkflowPrimitiveKind::Update);
+            telemetry.finish_update_with_start(result);
+        });
+        export.render()
+    }
+
+    /// An Update applied with a start is an Update in the metrics of the operations, as `updateRun`
+    /// would have counted it.
+    #[test]
+    fn an_applied_update_with_start_is_counted_as_an_applied_update() {
+        let page = page_after(&Ok(applied()));
+        assert!(
+            page.lines().any(|line| {
+                line.starts_with("workflow_operation_duration_seconds")
+                    && line.contains("kind=\"update\"")
+                    && line.contains("outcome=\"applied\"")
+            }),
+            "{page}"
+        );
+        assert!(
+            !page.contains("workflow_primitive_rejections_total"),
+            "{page}"
+        );
+    }
+
+    /// A business rejection is an answer to the caller and still a rejection in the metrics.
+    #[test]
+    fn a_rejected_update_with_start_is_counted_as_a_rejection_of_its_reason() {
+        let rejected = Ok(Json(UpdateWithStartResultBody {
+            run_id: "r".to_owned(),
+            started: true,
+            update: UpdateOutcomeBody::Rejected {
+                reason: "REVISION_CONFLICT",
+            },
+        }));
+        let page = page_after(&rejected);
+        assert!(
+            page.lines().any(|line| {
+                line.starts_with("workflow_primitive_rejections_total")
+                    && line.contains("kind=\"update\"")
+                    && line.contains("code=\"REVISION_CONFLICT\"")
+            }),
+            "{page}"
+        );
+        assert!(
+            page.lines().any(|line| {
+                line.starts_with("workflow_operation_duration_seconds")
+                    && line.contains("outcome=\"rejected\"")
+            }),
+            "{page}"
+        );
+    }
+
+    /// An error is judged as for `updateRun`: a refusal the contract names is a rejection.
+    #[test]
+    fn a_refused_update_with_start_is_counted_as_updaterun_would_count_it() {
+        let refused = Err(ApiError::conflict("the run does not admit a new update")
+            .with_reason("RUN_NOT_MUTABLE"));
+        let page = page_after(&refused);
+        assert!(
+            page.lines().any(|line| {
+                line.starts_with("workflow_primitive_rejections_total")
+                    && line.contains("code=\"RUN_NOT_MUTABLE\"")
+            }),
+            "{page}"
+        );
+    }
+
+    #[test]
+    fn the_platforms_own_update_keys_are_not_for_a_caller() {
+        assert!(caller_update_key("batch:job:run").is_err());
+        assert!(caller_update_key("schedule:action").is_err());
+        assert!(caller_update_key("reset:0192a3b4-0000-7000-8000-000000000000:12").is_err());
+        assert!(caller_update_key("my-reset:key").is_ok());
+        assert!(caller_update_key("my-batch:key").is_ok());
+        assert!(caller_update_key("plain-key-1").is_ok());
+    }
 }

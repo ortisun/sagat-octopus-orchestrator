@@ -471,6 +471,10 @@ pub enum DeclaredUpdateDecision {
     Applied {
         new_state: EvaluatedOperationWrite,
         result: EvaluatedOperationWrite,
+        /// The canonical arguments of the Update, present only when its declaration keeps them for a reset
+        /// (`reapplyOnReset`, feature 018). They are written in the transaction of the Update as content of
+        /// the tenant and referenced by its receipt; an Update that does not opt in has none.
+        arguments: Option<Box<EvaluatedOperationWrite>>,
     },
     Rejected(UpdateRejection),
 }
@@ -479,7 +483,9 @@ impl DeclaredUpdateDecision {
     #[must_use]
     pub fn domain_evaluation(&self) -> UpdateEvaluation {
         match self {
-            Self::Applied { new_state, result } => UpdateEvaluation::Applied {
+            Self::Applied {
+                new_state, result, ..
+            } => UpdateEvaluation::Applied {
                 new_state: new_state.value.clone(),
                 result: result.value.clone(),
             },
@@ -490,7 +496,18 @@ impl DeclaredUpdateDecision {
     #[must_use]
     pub const fn writes(&self) -> Option<(&EvaluatedOperationWrite, &EvaluatedOperationWrite)> {
         match self {
-            Self::Applied { new_state, result } => Some((new_state, result)),
+            Self::Applied {
+                new_state, result, ..
+            } => Some((new_state, result)),
+            Self::Rejected(_) => None,
+        }
+    }
+
+    /// The arguments to keep for a reset, if the declaration asks for them and the Update was applied.
+    #[must_use]
+    pub fn retained_arguments(&self) -> Option<&EvaluatedOperationWrite> {
+        match self {
+            Self::Applied { arguments, .. } => arguments.as_deref(),
             Self::Rejected(_) => None,
         }
     }
@@ -505,9 +522,24 @@ pub struct DeclaredUpdate {
     audit: AuditRecord,
     outbox_id: Uuid,
     occurred_at: OffsetDateTime,
+    /// The batch job that applies the Update to this run, if one does: written in the audit record
+    /// as an identifier, never as free text.
+    batch_job: Option<Uuid>,
 }
 
 impl DeclaredUpdate {
+    /// Marks the Update as applied by the batch job `job`.
+    #[must_use]
+    pub const fn with_batch_job(mut self, job: Uuid) -> Self {
+        self.batch_job = Some(job);
+        self
+    }
+
+    #[must_use]
+    pub const fn batch_job(&self) -> Option<Uuid> {
+        self.batch_job
+    }
+
     /// Builds an Update addressed to one exact run. Chain-addressed callers must use
     /// [`Self::for_chain`] so the receipt identity does not depend on the current head.
     #[must_use]
@@ -540,6 +572,7 @@ impl DeclaredUpdate {
             audit,
             outbox_id,
             occurred_at,
+            batch_job: None,
         }
     }
 
@@ -592,6 +625,7 @@ impl DeclaredUpdate {
             audit,
             outbox_id,
             occurred_at,
+            batch_job: None,
         })
     }
 
@@ -696,6 +730,33 @@ pub fn declared_chain_update_request_hash(
         None => hash.update([0]),
     }
     Digest::new(hash.finalize().into())
+}
+
+/// What an argument check of an Update that the evaluator refused means for the request: arguments
+/// that do not match the declared schema, or any other failure of the evaluation.
+#[must_use]
+pub fn update_argument_error(
+    error: crate::operation_evaluation::OperationEvaluationError,
+) -> OperationError {
+    use crate::operation_evaluation::{OperationDataField, OperationEvaluationError};
+    match error {
+        OperationEvaluationError::MalformedJson {
+            field: OperationDataField::Arguments,
+        }
+        | OperationEvaluationError::SchemaMismatch {
+            field: OperationDataField::Arguments,
+        }
+        | OperationEvaluationError::ArgumentsTooLarge => OperationError::InvalidArguments,
+        _ => OperationError::EvaluationFailed,
+    }
+}
+
+/// A declared Update applied inside a transaction that someone else commits (Update-with-Start,
+/// feature 018): the stable resolution, and the checked result bytes when it was applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedInTx {
+    pub resolution: UpdateResolution,
+    pub result: Option<EvaluatedOperationWrite>,
 }
 
 /// Safe failure categories of the declared-operation transaction boundary.

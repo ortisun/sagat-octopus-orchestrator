@@ -48,7 +48,8 @@ try (SagatClient client = SagatClient.create(config)) {
 }
 ```
 
-`start` takes a workflow name or id. Most network operations have a blocking form and an `...Async` form returning a
+`start` takes a workflow name or id and answers the `Run`. `startResult` is the same call answering a `StartedRun`: the `Run`
+(`run()`) and whether this call created it (`started()`; `false` is the `200` of a `USE_EXISTING` business identifier). Most network operations have a blocking form and an `...Async` form returning a
 `CompletableFuture` (the asynchronous form runs the blocking one on an executor, so cancelling the future
 interrupts a call that is waiting; the executor is the client's own, or yours through
 `ClientConfig.Builder.asyncExecutor`). `resolveWorkflow` has no asynchronous counterpart. `listAll` is a lazy `Stream` that reads a page when the previous one is
@@ -57,6 +58,95 @@ consumed, in the order returned by the server.
 For a large run input, call `uploadRunInput(onePassInputStream, options)`, then pass its verified
 `BlobDescriptor` to `startWithBlob`. The upload is streamed once and never retried; its descriptor is accepted
 only after source EOF and matching local size/SHA-256. Both operations also have asynchronous forms.
+
+## Schedules, business identifiers, batch jobs, with-start and reset
+
+```java
+String namespaceId = "0190aaaa-0000-7000-8000-00000000aaaa";
+String workflowId = "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+try (SagatClient client = SagatClient.create(config)) {
+    // A business identifier names the one open run of an order; a second start answers that run.
+    StartedRun order = client.startResult("order-flow", Map.of("orderId", "o-1"), StartOptions.create()
+            .businessId("order-o-1")
+            .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
+            .startDelay(Duration.ofMinutes(5)));
+    System.out.println(order.runId() + (order.started() ? " was started" : " already existed"));
+    BusinessIdBinding binding = client.businessIds().get(namespaceId, "order-o-1", null);
+    System.out.println(binding.currentRunId() + " open=" + binding.open());
+
+    // A schedule: every day at 09:00 UTC. The instants are sent in UTC, whatever the zone of the process.
+    Schedule schedule = client.schedules().create(namespaceId, ScheduleWrite.of("daily-report",
+            ScheduleWrite.Spec.create().cron("0 9 * * *").timezone("UTC").startAt(Instant.parse("2027-01-01T00:00:00Z")),
+            ScheduleWrite.Action.of(workflowId, Map.of("kind", "daily"))), null);
+    client.schedules().pause(namespaceId, schedule.scheduleId(), "maintenance window", null);
+    ScheduleDescription described = client.schedules().get(namespaceId, schedule.scheduleId(),
+            ScheduleGetOptions.create().nextCount(3).recentCount(5));
+    System.out.println(described.counters() + " " + described.nextActions());
+    client.schedules().delete(namespaceId, schedule.scheduleId(), schedule.revision(), null);
+
+    // A schedule whose runs get the business identifier "<prefix>-<nominal time>" (RFC 3339 UTC to the second, "Z").
+    Schedule orders = client.schedules().create(namespaceId, ScheduleWrite.of("hourly-orders",
+            ScheduleWrite.Spec.create().cron("0 * * * *").timezone("UTC"),
+            ScheduleWrite.Action.of(workflowId, Map.of("kind", "hourly")).businessIdPrefix("orders")
+                    .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
+                    .businessIdReusePolicy(BusinessIdReusePolicy.REJECT_DUPLICATE)), null);
+    System.out.println(orders.action().businessIdPrefix() + " " + orders.action().businessIdConflictPolicy()
+            + " " + orders.action().businessIdReusePolicy()); // orders USE_EXISTING REJECT_DUPLICATE
+
+    // A batch job over many runs; the same key and body answer the first job.
+    BatchJob job = client.batch().create(namespaceId, BatchRequest.of(
+            BatchSelector.runIds(List.of(order.runId())), "CANCEL", "clean up the held runs"),
+            CallOptions.create().idempotencyKey("cleanup-2027-01-01"));
+    System.out.println(job.state() + " " + job.counts());
+
+    // Signal a run by business identifier, starting it first when none is open; update it the same way.
+    client.signalWithStart("order-flow", "order-o-1", Map.of("orderId", "o-1"), "payment.confirmed", Map.of("paid", "12.50"), null);
+    UpdateWithStartResult updated = client.updateWithStart("order-flow", "order-o-1", Map.of("orderId", "o-1"),
+            "balance.set", "set-1", Map.of("balance", 25), UpdateWithStartOptions.create().expectedStateRevision(0L));
+    System.out.println(updated.update().outcome());
+
+    // Reset a run that ended to a point of its journal.
+    Page<ResetPoint> points = client.resetPoints(order.runId(), null);
+    ResetPlan plan = client.previewReset(order.runId(), points.items().get(0).sequence(), null, null);
+    Reset reset = client.reset(order.runId(), ResetRequest.of(plan.sequence(), "run the steps again")
+            .acknowledgeReexecution(plan.requiresAcknowledgement()), null);
+    System.out.println(reset.newRunId());
+}
+```
+
+`client.schedules()`, `client.batch()` and `client.businessIds()` are groups of the client; `signalWithStart`,
+`updateWithStart`, `resetPoints`, `previewReset`, `reset`, `listResets` and `getReset` are methods of it, and each has an
+`...Async` form. The rules are those of `sdks/SPEC.md` section 3.1, the same in every SDK:
+
+- Every call that changes something carries **one** `Idempotency-Key`: the caller's (`CallOptions.idempotencyKey`) or
+  one generated once for the call, reused by every retry of it. `updateWithStart` also needs the caller's `updateKey`
+  (1 to 128 printable ASCII characters), and refuses a missing or invalid one before anything is sent.
+- A start delay is a `java.time.Duration`, turned **once** into whole milliseconds (truncated toward zero) before the first
+  attempt and sent as `startDelayMs`; the range (1 ms to 366 days) is the server's to judge (`START_DELAY_INVALID`).
+- The action of a schedule may name a business-id prefix (`ScheduleWrite.Action.businessIdPrefix`, with the optional
+  `businessIdConflictPolicy` and `businessIdReusePolicy`, strings like those of `start`): every run it starts gets the
+  identifier `<prefix>-<nominal time>`. The prefix is customer text, **sent as given** (no trimming, no case folding, no
+  check of its pattern or length, the empty string included): the server judges it (`VALIDATION_FAILED`, reason
+  `SCHEDULE_SPEC_INVALID`). Set none of the three and none of the three keys is sent. `Schedule.action()` holds
+  what the server sent (`businessIdPrefix()`, `businessIdConflictPolicy()`, `businessIdReusePolicy()`, each a string, null
+  for an action that has no prefix; a policy newer than this SDK is kept as is). The prefix is left out of the
+  `toString` of the write and of everything read back (`raw()` keeps it), and the SDK never logs or traces it. An
+  action record may say `BUSINESS_ID_CONFLICT` (reason `BUSINESS_ID_IN_USE` or `BUSINESS_ID_REUSE_REJECTED`) or
+  `ALREADY_ACTED` with the `runId` that holds the identifier: like every outcome, strings.
+- A business identifier is sent **as given** by `start`, `signalWithStart` and `updateWithStart`; the server judges it
+  (`BUSINESS_ID_INVALID`). `businessIds().get` percent-encodes it in the path and refuses locally, as
+  `VALIDATION_FAILED` with nothing sent, only what cannot be a path segment: a value that is not 1 to 200 visible ASCII
+  characters, and a whole `.` or `..` (every URL resolver takes it for a step in the path). `...` and `a..b` are valid.
+- Ids that become path segments (namespace, schedule, backfill, batch, reset, run) must be UUIDs; `expectedRevision` is
+  1 or more; a pause or resume note is not empty; a reset sequence is 1 or more. A refusal made by the SDK is
+  `VALIDATION_FAILED`, and nothing is sent.
+- An instant you give is an `Instant`, or RFC 3339 text with an offset (`Schedules.backfill`, `ScheduleWrite.Spec.startAt`,
+  `BatchSelector.Filter.createdAfter`); text that is not an instant is refused. It is sent in UTC with a `Z`. An instant
+  you read is an `Instant` (null where the contract says it may be absent).
+- A value of an enumeration the SDK does not know (an action outcome, a batch item state or reason, a reset point kind)
+  is kept as the string it came as; policies are strings too (`OverlapPolicy`, `BusinessIdConflictPolicy`,
+  `BusinessIdReusePolicy` hold the names the SDK knows). Typed answers keep the server's JSON in `raw()`.
+- A `REJECTED` outcome of `updateWithStart` is an answer, not an error. `schedules().delete` answers `204` with no body.
 
 The SDK propagates the W3C `traceparent` (the one you pass, else the ambient context you expose through
 `ClientConfig.Builder.traceContext(...)`, for example from OpenTelemetry), the correlation id and the deadline, and

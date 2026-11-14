@@ -8,6 +8,7 @@ use sagat_application::identity::RequestContext;
 use sagat_application::schedule_firing::Fired;
 use sagat_application::schedules::{BackfillRecord, BackfillRequest, BackfillState, DueBackfill};
 use sagat_domain::identity::{Principal, Role, Subject};
+use sagat_domain::quota::QuotaResource;
 use sagat_domain::schedules::Overlap;
 use serde_json::json;
 use time::{Duration, OffsetDateTime};
@@ -70,6 +71,18 @@ async fn read(f: &Fixture, backfill: &BackfillRecord) -> BackfillRecord {
         .expect("the backfill")
 }
 
+/// The decisions of a schedule as the table keeps them, oldest nominal time first: the kind of action, its outcome and
+/// the backfill that made it (none for a scheduled time or a trigger).
+async fn action_rows(f: &Fixture, schedule: Uuid) -> Vec<(String, String, Option<Uuid>)> {
+    sqlx::query_as(
+        "SELECT kind, outcome, backfill_id FROM schedule_actions WHERE schedule_id = $1 ORDER BY nominal_at",
+    )
+    .bind(schedule)
+    .fetch_all(&f.w.db.pool)
+    .await
+    .expect("the rows of the decisions")
+}
+
 fn counters(pairs: &[(&str, u64)]) -> std::collections::BTreeMap<String, u64> {
     pairs.iter().map(|(k, n)| ((*k).to_owned(), *n)).collect()
 }
@@ -127,7 +140,13 @@ async fn a_backfill_is_recorded_with_its_range_and_the_buffering_default() {
     )
     .await
     .expect_err("one at a time");
-    assert!(matches!(own, AppError::QuotaExceeded(_)), "{own:?}");
+    assert!(
+        matches!(
+            own,
+            AppError::QuotaExceeded("schedule_backfills_per_schedule")
+        ),
+        "{own:?}"
+    );
 }
 
 #[tokio::test]
@@ -197,7 +216,13 @@ async fn a_schedule_runs_one_backfill_at_a_time_and_a_namespace_four() {
     let second = request(&f, first.id, &five_hours())
         .await
         .expect_err("a second on the same schedule");
-    assert!(matches!(second, AppError::QuotaExceeded(_)), "{second:?}");
+    assert!(
+        matches!(
+            second,
+            AppError::QuotaExceeded("schedule_backfills_per_schedule")
+        ),
+        "{second:?}"
+    );
     f.service
         .cancel_backfill(&f.w.admin, first.id, held.id, &RequestContext::default())
         .await
@@ -217,7 +242,10 @@ async fn a_schedule_runs_one_backfill_at_a_time_and_a_namespace_four() {
     let full = request(&f, last.id, &five_hours())
         .await
         .expect_err("the namespace is full");
-    assert!(matches!(full, AppError::QuotaExceeded(_)), "{full:?}");
+    assert!(
+        matches!(full, AppError::QuotaExceeded(what) if what == QuotaResource::ScheduleBackfills.limit_name()),
+        "{full:?}"
+    );
 }
 
 #[tokio::test]
@@ -347,6 +375,17 @@ async fn a_backfill_acts_on_each_time_of_its_range_in_order_and_then_completes()
             .collect::<Vec<_>>(),
         "in the order of the times, each a BACKFILL action"
     );
+    assert_eq!(
+        action_rows(&f, schedule.id.as_uuid()).await,
+        (0..5)
+            .map(|_| (
+                "BACKFILL".to_owned(),
+                "STARTED".to_owned(),
+                Some(backfill.id)
+            ))
+            .collect::<Vec<_>>(),
+        "each action of the backfill says which backfill made it"
+    );
     let done = read(&f, &backfill).await;
     assert_eq!(done.state, BackfillState::Completed);
     assert_eq!(done.counters, counters(&[("STARTED", 5)]));
@@ -395,6 +434,18 @@ async fn a_time_that_already_has_an_action_is_counted_not_acted_on_twice() {
     assert_eq!(
         done.counters,
         counters(&[("ALREADY_ACTED", 1), ("STARTED", 1)])
+    );
+    assert_eq!(
+        action_rows(&f, schedule.id.as_uuid()).await,
+        vec![
+            (
+                "BACKFILL".to_owned(),
+                "STARTED".to_owned(),
+                Some(backfill.id)
+            ),
+            ("SCHEDULED".to_owned(), "STARTED".to_owned(), None),
+        ],
+        "the time the backfill started names it; the one the schedule acted on by itself names none"
     );
 }
 
@@ -534,4 +585,20 @@ async fn a_backfill_that_buffers_waits_for_room_instead_of_dropping_times() {
     .await
     .expect("dropped");
     assert_eq!(dropped, 0, "no time of a backfill is dropped");
+    assert_eq!(
+        action_rows(&f, schedule.id.as_uuid()).await,
+        vec![
+            (
+                "BACKFILL".to_owned(),
+                "STARTED".to_owned(),
+                Some(backfill.id)
+            ),
+            (
+                "BACKFILL".to_owned(),
+                "BUFFERED".to_owned(),
+                Some(backfill.id)
+            ),
+        ],
+        "a time the backfill kept waiting names it as well as one it started"
+    );
 }

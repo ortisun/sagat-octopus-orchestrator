@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { UseQueryResult } from '@tanstack/react-query';
 import type { Page, Run, VersionSummary, Workflow } from '../../api/types';
 import { useApp, useCan, useNamespace } from '../../app/context';
+import { shortId } from './display';
 
 /** The most pages of workflows read to name the runs; a namespace with more shows ids for the rest. */
 const WORKFLOW_PAGES = 5;
@@ -55,7 +56,7 @@ export function useVersions(workflowId: string | undefined): UseQueryResult<read
 /** `v3` for a version the platform lists, or a short form of its id when it cannot say. */
 export function versionLabel(versions: readonly VersionSummary[] | undefined, versionId: string, active?: VersionSummary | null): string {
   const found = active?.versionId === versionId ? active : versions?.find((v) => v.versionId === versionId);
-  return found ? `v${found.versionNumber}` : `version ${versionId.slice(0, 8)}`;
+  return found ? `v${found.versionNumber}` : `version ${shortId(versionId)}`;
 }
 
 /** Private runs deliberately have no public workflow to link to. */

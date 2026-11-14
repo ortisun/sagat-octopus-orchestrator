@@ -608,3 +608,191 @@ async fn admission_database_failure_fails_closed_before_the_handler_runs() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     blocker.rollback().await.expect("release admission table");
 }
+
+#[tokio::test]
+async fn a_binding_lookup_consumes_one_token_whether_it_finds_the_identifier_or_not() {
+    let (api, tenant, namespace) = world().await;
+    let workflow = create_and_publish_workflow(&api, "orders").await;
+    let started = api
+        .as_user(Method::POST, "/runs", "alice", "acme")
+        .header("x-octopus-namespace", "payments")
+        .header("idempotency-key", uuid::Uuid::now_v7().to_string())
+        .json(&json!({ "workflowId": workflow, "input": {}, "businessId": "order-1" }))
+        .send()
+        .await
+        .expect("start a run under an identifier");
+    assert_eq!(started.status(), StatusCode::ACCEPTED);
+    set_rate(&api, &namespace, 10).await;
+    seed_bucket(&api, tenant, &namespace, 10).await;
+
+    let lookup = |id: &'static str| {
+        api.as_user(
+            Method::GET,
+            &format!("/namespaces/{namespace}/business-ids/{id}"),
+            "alice",
+            "acme",
+        )
+        .send()
+    };
+    assert_eq!(
+        lookup("order-1").await.expect("found").status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(19 * MICROTOKENS),
+        "a lookup is a request of the namespace"
+    );
+    assert_eq!(
+        lookup("order-2").await.expect("absent").status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(18 * MICROTOKENS),
+        "and so is one that finds nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_schedule_input_disclosure_consumes_one_token_whether_it_finds_the_schedule_or_not() {
+    let (api, tenant, namespace) = world().await;
+    let workflow = create_and_publish_workflow(&api, "orders").await;
+    let created = api
+        .as_user(
+            Method::POST,
+            &format!("/namespaces/{namespace}/schedules"),
+            "alice",
+            "acme",
+        )
+        .header("x-octopus-namespace", "payments")
+        .header("idempotency-key", uuid::Uuid::now_v7().to_string())
+        .json(&json!({
+            "name": "nightly",
+            "spec": {"intervals": [{"everyMs": 3_600_000}]},
+            "action": {"workflowId": workflow, "input": {"region": "eu"}}
+        }))
+        .send()
+        .await
+        .expect("create the schedule");
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let schedule = created.json::<Value>().await.expect("schedule")["scheduleId"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    set_rate(&api, &namespace, 10).await;
+    seed_bucket(&api, tenant, &namespace, 10).await;
+
+    let disclose = |id: String| {
+        api.as_user(
+            Method::POST,
+            &format!("/namespaces/{namespace}/schedules/{id}/input-disclosures"),
+            "alice",
+            "acme",
+        )
+        .header("x-octopus-namespace", "payments")
+        .json(&json!({}))
+        .send()
+    };
+    assert_eq!(
+        disclose(schedule).await.expect("found").status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(19 * MICROTOKENS),
+        "a disclosure is a request of the namespace"
+    );
+    assert_eq!(
+        disclose("00000000-0000-7000-8000-000000000000".to_owned())
+            .await
+            .expect("absent")
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(18 * MICROTOKENS),
+        "and so is one that finds nothing"
+    );
+}
+
+#[tokio::test]
+async fn an_update_with_start_consumes_one_token_even_when_the_engine_refuses_it() {
+    let (api, tenant, namespace) = world().await;
+    // the workflow declares no Update, so every request below is refused with a 404 after it was
+    // admitted and after the run it would have started was dropped
+    let workflow = create_and_publish_workflow(&api, "orders").await;
+    set_rate(&api, &namespace, 10).await;
+    seed_bucket(&api, tenant, &namespace, 10).await;
+
+    let send = || {
+        api.as_user(Method::POST, "/runs/update-with-start", "alice", "acme")
+            .header("x-octopus-namespace", "payments")
+            .header("idempotency-key", uuid::Uuid::now_v7().to_string())
+            .json(&json!({
+                "workflowId": workflow,
+                "businessId": "order-10",
+                "input": {},
+                "update": {"name": "balance.replace", "updateKey": "update-key-0001", "args": {}}
+            }))
+            .send()
+    };
+    assert_eq!(
+        send().await.expect("refused").status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(19 * MICROTOKENS),
+        "a request the engine refuses was still a request of the namespace"
+    );
+    assert_eq!(
+        send().await.expect("refused again").status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(18 * MICROTOKENS)
+    );
+}
+
+#[tokio::test]
+async fn a_signal_with_start_consumes_one_token_even_when_the_engine_refuses_it() {
+    let (api, tenant, namespace) = world().await;
+    // the workflow starts with an activity: nothing in a new run waits for a signal, so every
+    // request below is refused with a 409 after it was admitted
+    let workflow = create_and_publish_workflow(&api, "orders").await;
+    set_rate(&api, &namespace, 10).await;
+    seed_bucket(&api, tenant, &namespace, 10).await;
+
+    let send = || {
+        api.as_user(Method::POST, "/runs/signal-with-start", "alice", "acme")
+            .header("x-octopus-namespace", "payments")
+            .header("idempotency-key", uuid::Uuid::now_v7().to_string())
+            .json(&json!({
+                "workflowId": workflow,
+                "businessId": "order-9",
+                "input": {},
+                "signal": {"name": "payment.confirmed", "payload": {}}
+            }))
+            .send()
+    };
+    assert_eq!(
+        send().await.expect("refused").status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(19 * MICROTOKENS),
+        "a request the engine refuses was still a request of the namespace"
+    );
+    assert_eq!(
+        send().await.expect("refused again").status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        tokens(&api, tenant, &namespace).await,
+        Some(18 * MICROTOKENS)
+    );
+}

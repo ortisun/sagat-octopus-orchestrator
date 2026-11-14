@@ -9,6 +9,7 @@ fn state_update(before_revision: u64, after_revision: u64) -> RunEvent {
         before_revision,
         after_revision,
         state_digest: Digest::new([41; 32]),
+        arguments_retained: None,
     }
 }
 

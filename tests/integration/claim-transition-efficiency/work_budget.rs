@@ -129,21 +129,29 @@ async fn itemised(
     let first = w.poll(session, 1).await.remove(0);
     w.complete(session, &first, &json!({})).await.expect("a");
     let mut text = String::new();
-    let mut before = calls(w).await;
-    let task = w.poll(session, 1).await.remove(0);
-    for (title, done) in [("lease", false), ("completion", true)] {
-        if done {
-            w.complete(session, &task, &json!({})).await.expect("b");
-        }
-        let after = calls(w).await;
-        text.push_str(&format!("\n{title}:\n"));
-        for (query, count) in &after {
-            let delta = count - before.get(query).copied().unwrap_or(0);
-            if delta > 0 {
-                text.push_str(&format!("  {delta:>3}  {query}\n"));
+    // The second step (a completion with a next step) and the third (the completion that ends the run).
+    for (step, ends) in [("b", false), ("c", true)] {
+        let mut before = calls(w).await;
+        let task = w.poll(session, 1).await.remove(0);
+        for (title, done) in [("lease", false), ("completion", true)] {
+            if done {
+                w.complete(session, &task, &json!({})).await.expect(step);
             }
+            let after = calls(w).await;
+            let what = if ends && done {
+                "completion that ends the run"
+            } else {
+                title
+            };
+            text.push_str(&format!("\n{step} {what}:\n"));
+            for (query, count) in &after {
+                let delta = count - before.get(query).copied().unwrap_or(0);
+                if delta > 0 {
+                    text.push_str(&format!("  {delta:>3}  {query}\n"));
+                }
+            }
+            before = after;
         }
-        before = after;
     }
     text
 }
@@ -250,7 +258,7 @@ async fn a_lease_and_a_completion_cost_what_the_budget_says_once() -> Result<(),
              lease: {lease_a:?} {lease_b:?} {lease_c:?}, budget {LEASE:?}\n\
              completion with a next step: {done_a:?} {done_b:?}, budget {COMPLETION_WITH_A_NEXT_STEP:?}\n\
              completion that ends the run: {done_c:?}, budget {COMPLETION_THAT_ENDS_THE_RUN:?}\n\
-             statements of the second step of one more run:{}",
+             statements of the second and third steps of one more run:{}",
             itemised(&w, workflow, &session).await
         );
     }

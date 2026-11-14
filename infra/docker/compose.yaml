@@ -146,6 +146,15 @@ services:
       # one with `docker run --rm sagat-octopus-orchestrator/control-plane:dev script-key`.
       SAGAT_SCRIPT_SIGNING_KEY: ${SAGAT_SCRIPT_SIGNING_KEY:-}
       SAGAT_SCRIPT_CEILING: ${SAGAT_SCRIPT_CEILING:-}
+      # Schedules, batch operations and the two switches of a run reset (feature 018). Each is OFF by
+      # default, here and in the binary, and each is on only where the line below is set to `true` in
+      # infra/docker/.env. The control plane serves the routes; the engine runs the passes, so the same
+      # three lines are given to the engine below and must agree. docs/runbooks/{schedules,
+      # batch-operations,run-reset}.md say what each does and in which order to turn it on and off.
+      SAGAT_SCHEDULES_ENABLED: ${SAGAT_SCHEDULES_ENABLED:-false}
+      SAGAT_BATCHES_ENABLED: ${SAGAT_BATCHES_ENABLED:-false}
+      SAGAT_RESET_REAPPLY_ENABLED: ${SAGAT_RESET_REAPPLY_ENABLED:-false}
+      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-false}
       # The Studio, under /studio/ (its files are in the image; set this empty to not serve it).
       SAGAT_STUDIO_DIR: ${SAGAT_STUDIO_DIR-/srv/studio}
     ports:
@@ -185,6 +194,12 @@ services:
       # The worker API here is plaintext HTTP/2; outside SAGAT_ENV=dev say that TLS is in front.
       SAGAT_SECRETS_KEYS: ${SAGAT_SECRETS_KEYS:-}
       SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS: ${SAGAT_GRPC_ALLOW_PLAINTEXT_SECRETS:-false}
+      # The passes of feature 018 (off by default, like the routes of the control plane above): the
+      # engine fires schedules, runs batch jobs and completes the resets that cancelled an open run.
+      # An engine that does not run the schedule pass lists no `schedules-v1` capability.
+      SAGAT_SCHEDULES_ENABLED: ${SAGAT_SCHEDULES_ENABLED:-false}
+      SAGAT_BATCHES_ENABLED: ${SAGAT_BATCHES_ENABLED:-false}
+      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-false}
     ports:
       - "127.0.0.1:${SAGAT_GRPC_PORT:-19000}:9000"
     depends_on:
