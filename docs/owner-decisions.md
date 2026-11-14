@@ -4,6 +4,21 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-14 — Schedules on by default: quotas, input schema, upgrade order and the handover
+
+Before schedules are switched on by default (OD-2026-11-13-8) the assistant asked four questions, each with a
+recommendation. The owner took two recommendations and chose otherwise twice: the input of every run start is validated
+against the target version's `inputSchema` in 0.3.0, and the handover of the cron triggers to schedules is done
+automatically during the upgrade instead of by an operator's command. Both need design work before code, and both are
+in release 0.3.0.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-14-1 | "Manter 200 e 4": a namespace has at most 200 schedules and 4 backfills running at once by default in 0.3.0; a namespace changes them through its quotas | owner | Decided | docs/runbooks/schedules.md, crates/domain quota defaults, T018-007 |
+| OD-2026-11-14-2 | "Validar todos os starts já" (against the recommendation to defer G1955): the input of every run start (API, SDK, CLI, triggers, child runs, schedules, batch starts) is validated against the `inputSchema` of the target version in 0.3.0 through one validator port, and schedules use the same check (`SCHEDULE_INPUT_INVALID`, `NOMINAL_TIME_FIELD_INVALID`). A behaviour change: an input that does not match is refused where it was accepted | owner | Decided; not designed | G1955, G2081, FR-018-016, T018-016, docs/releases/0.3.0.md |
+| OD-2026-11-14-3 | "Migrate, engines, control": the documented upgrade order to 0.3.0 is migrate, then the execution engines, then the control planes | owner | Decided | docs/runbooks/schedules.md, docs/runbooks/scaling.md, docs/releases/0.3.0.md |
+| OD-2026-11-14-4 | "Automático no upgrade" (against the recommendation to keep it manual): the handover of the cron triggers to trigger-owned schedules happens without an operator command once every live engine lists `schedules-v1` and the schedules have converged; `schedule-trigger-handover` stays for an operator who wants to do it first or check it. The handover stays one-way, and its accepted losses (G2005, G2020, G2021) go in the release notes | owner | Decided; not designed | T018-061, ADR-0083, docs/runbooks/schedules.md section 6 |
+
 ## 2026-11-13 — What release 0.3.0 must contain: feature 018, schedules on by default, step logs per run
 
 Before the release pull request (219) was merged the owner asked whether anything else belonged in it. The assistant
