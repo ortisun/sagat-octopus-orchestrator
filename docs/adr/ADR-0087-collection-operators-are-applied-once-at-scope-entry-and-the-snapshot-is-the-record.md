@@ -97,6 +97,8 @@ The forces:
 
 ## Revision (2026-11-13, after review, before any code)
 
+The owner confirmed this revision on 2026-11-13 (OD-2026-11-13-19: "Confirmar a revisão").
+
 The owner accepted the text of commit df83eed9. The architecture, security and correctness reviews of commit 540154c8
 found that it left memory, bytes and time unbounded, broke the blob-source checks, put the switch where it would make
 stored definitions unreadable, promised `onError` that the scheduler does not take at entry, and described the entry as
