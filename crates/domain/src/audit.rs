@@ -224,7 +224,6 @@ pub enum AuditAction {
     /// The input of a schedule was shown to a reader, at the level their grants allow.
     ScheduleInputDisclosed,
     /// An operator handed the cron triggers over to the schedule pass (`FR-018-017`).
-    ScheduleTriggerHandover,
     /// A batch job was created, cancelled, or finished by itself.
     BatchCreated,
     BatchCancelled,
@@ -233,6 +232,12 @@ pub enum AuditAction {
     /// waiting for its source to end.
     RunReset,
     RunResetRequested,
+    /// A start or a schedule's action was refused because its business identifier is held: an open execution holds it
+    /// (`BUSINESS_ID_IN_USE`) or the reuse policy refuses a remembered one (`BUSINESS_ID_REUSE_REJECTED`). The reason is
+    /// that closed word; the identifier is customer text and is never written (`FR-018-044`, `G2086`). A person can repeat
+    /// the refused start at will, so the same refusal within five minutes is one record (D2221); the platform's records
+    /// carry the time, the job or the entry they decide in their reason and are each their own (D2220).
+    BusinessIdConflict,
 }
 
 impl AuditAction {
@@ -267,6 +272,7 @@ impl AuditAction {
                 | Self::RunQueried
                 | Self::ApprovalDenied
                 | Self::ScheduleInputDisclosed
+                | Self::BusinessIdConflict
         )
     }
 
@@ -285,7 +291,8 @@ impl AuditAction {
             | Self::PayloadDisclosed
             | Self::PayloadRevealDenied
             | Self::RunQueried
-            | Self::ScheduleInputDisclosed => Some(std::time::Duration::from_secs(300)),
+            | Self::ScheduleInputDisclosed
+            | Self::BusinessIdConflict => Some(std::time::Duration::from_secs(300)),
             Self::ApprovalDenied => Some(std::time::Duration::from_secs(300)),
             _ => None,
         }
@@ -422,12 +429,12 @@ impl AuditAction {
             Self::ScheduleBackfillRequested => "schedule.backfill_requested",
             Self::ScheduleBackfillCancelled => "schedule.backfill_cancelled",
             Self::ScheduleInputDisclosed => "schedule.input_disclosed",
-            Self::ScheduleTriggerHandover => "schedule.trigger_handover",
             Self::BatchCreated => "batch.created",
             Self::BatchCancelled => "batch.cancelled",
             Self::BatchFinished => "batch.finished",
             Self::RunReset => "run.reset",
             Self::RunResetRequested => "run.reset_requested",
+            Self::BusinessIdConflict => "business_id.conflict",
         }
     }
 }

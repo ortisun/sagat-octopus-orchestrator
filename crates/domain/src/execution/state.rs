@@ -1808,6 +1808,9 @@ pub struct RunState {
     sagas: BTreeMap<NodeId, SagaState>,
     scope_sagas: BTreeMap<ExecutionInstanceId, ScopeSagaState>,
     chain: Option<RunChainState>,
+    /// The instant (microseconds since the epoch) until which the entry of the run is held, for a run
+    /// created with a start delay (feature 018, `FR-018-023`); cleared when the entry is released.
+    start_delayed_until_us: Option<i64>,
     applied: u64,
 }
 
@@ -1826,8 +1829,21 @@ impl RunState {
             sagas: BTreeMap::new(),
             scope_sagas: BTreeMap::new(),
             chain: None,
+            start_delayed_until_us: None,
             applied: 0,
         }
+    }
+
+    /// Whether the entry of the run is held by a start delay that has not ended yet.
+    #[must_use]
+    pub const fn is_start_delayed(&self) -> bool {
+        self.start_delayed_until_us.is_some()
+    }
+
+    /// The instant (microseconds since the epoch) the held entry is released at, if it is held.
+    #[must_use]
+    pub const fn start_delayed_until_us(&self) -> Option<i64> {
+        self.start_delayed_until_us
     }
 
     /// Rebuilds a state by applying `events` in order.
@@ -1910,8 +1926,17 @@ impl RunState {
             sagas,
             scope_sagas: BTreeMap::new(),
             chain: None,
+            start_delayed_until_us: None,
             applied: version,
         }
+    }
+
+    /// The state with its entry held until `until_us` (microseconds since the epoch), for a trusted
+    /// projection of a run created with a start delay that has not been released.
+    #[must_use]
+    pub fn with_start_delayed_until_us(mut self, until_us: Option<i64>) -> Self {
+        self.start_delayed_until_us = until_us;
+        self
     }
 
     #[must_use]
@@ -3909,7 +3934,7 @@ impl RunState {
                     deadline: *deadline,
                 });
             }
-            RunEvent::WaitSatisfied { node } => {
+            RunEvent::WaitSatisfied { node, .. } => {
                 let step = self.step_mut(node, name, &[Waiting])?;
                 if !matches!(step.waiting, Some(WaitingOn::Event { .. })) {
                     return Err(ExecutionError::IllegalTransition {
@@ -4308,6 +4333,41 @@ impl RunState {
                 }
                 self.paused = false;
             }
+            RunEvent::StartDelayed { until_us } => {
+                // recorded once, right after the start and before anything else happened
+                if self.applied != 1
+                    || self.start_delayed_until_us.is_some()
+                    || self.steps.len() != 1
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a start delay is recorded once, right after the run starts",
+                    ));
+                }
+                self.start_delayed_until_us = Some(*until_us);
+            }
+            RunEvent::StartReleased { until_us } => {
+                if self.start_delayed_until_us != Some(*until_us) {
+                    return Err(ExecutionError::Invariant(
+                        "only a delayed run is released, at the instant it waits for",
+                    ));
+                }
+                self.start_delayed_until_us = None;
+            }
+            RunEvent::RunReset {
+                source_sequence, ..
+            } => {
+                // the events before it are the restored prefix of the source, so the run has started and is
+                // open, and a prefix has at least its `run.started`
+                if !self.has_started()
+                    || *source_sequence == 0
+                    || self.stop.is_some()
+                    || !matches!(self.status, RunStatus::Running | RunStatus::Waiting)
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a reset follows the restored prefix of a run that has started and is open",
+                    ));
+                }
+            }
             RunEvent::RunStopRequested { reason, code } => {
                 if self.stop.is_some() {
                     return Err(ExecutionError::AlreadyStopping);
@@ -4694,6 +4754,10 @@ impl RunState {
             self.stop.is_some(),
             self.paused,
         );
+        // A run whose entry is held waits, whatever its steps say, until it is stopped or released.
+        if self.start_delayed_until_us.is_some() && self.stop.is_none() && !self.paused {
+            self.status = RunStatus::Waiting;
+        }
     }
 
     pub(super) fn compensation_in_progress(&self) -> bool {

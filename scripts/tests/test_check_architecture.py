@@ -190,5 +190,200 @@ class ArchitectureRules(unittest.TestCase):
         self.assertIn("dependency cycle", out)
 
 
+# The lease row of a scheduler shard is a leaf lock (ADR-0050 decision 7, ADR-0020): a fence takes it FOR SHARE, the keeper FOR UPDATE
+# SKIP LOCKED and nothing else, and the keeper reads no run.
+KEEPER = """
+    async fn acquire() {
+        sqlx::query(
+            "WITH free AS ( \\
+                 SELECT shard FROM scheduler_shards \\
+                  WHERE expires_at <= clock_timestamp() ORDER BY shard FOR UPDATE SKIP LOCKED) \\
+             UPDATE scheduler_shards s SET owner = $1 FROM free WHERE s.shard = free.shard",
+        );
+        sqlx::query("SELECT shard FROM scheduler_shards");
+    }
+"""
+FENCE = """
+    pub async fn locked_scheduler_time_sql() {
+        sqlx::query("SELECT shard FROM scheduler_shards WHERE shard=$1 FOR SHARE");
+        sqlx::query("SELECT s.expires_at FROM scheduler_shards s");
+    }
+"""
+CHECK_FENCE = """
+    pub async fn check_fence() {
+        sqlx::query("SELECT shard FROM scheduler_shards WHERE shard = $1 FOR SHARE");
+    }
+"""
+
+
+def run_lease_check(files):
+    """The checker over a small PostgreSQL adapter tree made of `files` ({name: source}), with a valid dependency graph."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = pathlib.Path(tmp) / "src"
+        src.mkdir()
+        for name, source in files.items():
+            (src / name).write_text(source)
+        metadata = {
+            "workspace_root": "/r",
+            "workspace_members": ["d"],
+            "packages": [pkg("d", "crates/domain", [])],
+        }
+        meta = pathlib.Path(tmp) / "metadata.json"
+        meta.write_text(json.dumps(metadata))
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--metadata", str(meta), "--postgres-src", str(src)],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode, result.stdout
+
+
+ORIGIN = """
+    pub(crate) async fn add_schedule_origin(conn: &mut PgConnection, data: &mut Value) {
+        sqlx::query("SELECT 1");
+    }
+"""
+WRITER = """
+    async fn outbox_run_finished(conn: &mut PgConnection) {
+        let mut data = json!({"runId": "r"});
+        add_schedule_origin(&mut *conn, &mut data).await;
+        let body = json!({"id": "x", "type": "run.finished", "data": data});
+    }
+"""
+
+
+def tree(keeper=KEEPER, execution=FENCE, schedules=CHECK_FENCE, **more):
+    """A valid tree: the lease row as the rule wants it and one `run.finished` writer that says its schedule."""
+    return {
+        "partitioning.rs": keeper,
+        "execution.rs": execution,
+        "schedules.rs": schedules,
+        "outbound.rs": ORIGIN,
+        "writer.rs": WRITER,
+        **more,
+    }
+
+
+class LeaseRowIsALeafLock(unittest.TestCase):
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("the lease row is a leaf lock", result.stdout)
+
+    def test_fences_shared_and_a_keeper_that_never_waits_pass(self):
+        code, out = run_lease_check(tree())
+        self.assertEqual(code, 0, out)
+
+    def test_a_fence_that_takes_the_row_for_update_is_refused(self):
+        # holds_shard turned into FOR UPDATE: it would wait for every other fence and for the keeper
+        code, out = run_lease_check(tree(execution=FENCE.replace("FOR SHARE", "FOR UPDATE")))
+        self.assertEqual(code, 1, out)
+        self.assertIn("belongs to partitioning.rs only", out)
+        self.assertIn("`locked_scheduler_time_sql` (execution.rs) has no `FOR SHARE` statement", out)
+
+    def test_check_fence_that_takes_the_row_for_no_key_update_is_refused(self):
+        code, out = run_lease_check(tree(schedules=CHECK_FENCE.replace("FOR SHARE", "FOR NO KEY UPDATE")))
+        self.assertEqual(code, 1, out)
+        self.assertIn("belongs to partitioning.rs only", out)
+
+    def test_a_keeper_statement_without_skip_locked_is_refused(self):
+        code, out = run_lease_check(tree(keeper=KEEPER.replace(" SKIP LOCKED", "")))
+        self.assertEqual(code, 1, out)
+        self.assertIn("without SKIP LOCKED", out)
+
+    def test_an_update_of_the_row_outside_the_keeper_is_refused(self):
+        other = 'fn renew() { sqlx::query("UPDATE scheduler_shards SET expires_at = now() WHERE shard = $1"); }'
+        code, out = run_lease_check(tree(**{"somewhere.rs": other}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("somewhere.rs:1", out)
+        self.assertIn("belongs to partitioning.rs only", out)
+
+    def test_a_keeper_that_reads_a_run_is_refused(self):
+        code, out = run_lease_check(tree(keeper=KEEPER + ' fn x() { sqlx::query("SELECT 1 FROM runs WHERE id = $1"); }'))
+        self.assertEqual(code, 1, out)
+        self.assertIn("names `runs`", out)
+
+    def test_comments_and_text_that_are_not_sql_do_not_trip_the_rule(self):
+        commented = KEEPER + "\n// a takeover waits: UPDATE scheduler_shards ... FOR UPDATE, the runs it fences\n/* FOR UPDATE scheduler_shards runs */\n"
+        code, out = run_lease_check(tree(keeper=commented, **{"other.rs": 'const A: &str = "a run, runs";'}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_names_a_function_that_is_gone_is_an_error_and_not_a_pass(self):
+        code, out = run_lease_check(tree(execution="pub async fn something_else() {}"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("`locked_scheduler_time_sql` (execution.rs) is named by the lease-row rule and is not there", out)
+        code, out = run_lease_check({"execution.rs": FENCE, "schedules.rs": CHECK_FENCE})
+        self.assertEqual(code, 1, out)
+        self.assertIn("partitioning.rs is named by the lease-row rule", out)
+
+
+class EveryRunFinishedBodySaysItsSchedule(unittest.TestCase):
+    """FR-018-046, D2143: each place that builds the `run.finished` body calls `add_schedule_origin` on its data first."""
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("every run.finished body says its schedule", result.stdout)
+
+    def test_a_writer_that_calls_it_before_the_body_passes(self):
+        code, out = run_lease_check(tree())
+        self.assertEqual(code, 0, out)
+
+    def test_a_writer_that_leaves_the_call_out_is_refused_and_named(self):
+        bare = WRITER.replace("        add_schedule_origin(&mut *conn, &mut data).await;\n", "")
+        self.assertNotEqual(bare, WRITER)
+        code, out = run_lease_check(tree(**{"writer.rs": bare}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("writer.rs:4", out)
+        self.assertIn("a `run.finished` body is built without `add_schedule_origin`", out)
+
+    def test_a_writer_added_later_without_the_call_is_refused_while_the_first_stays_fine(self):
+        fifth = 'async fn another(conn: &mut PgConnection) { let body = json!({"type": "run.finished"}); }'
+        code, out = run_lease_check(tree(**{"fifth.rs": fifth}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("fifth.rs:1", out)
+        self.assertNotIn("writer.rs", out)
+
+    def test_a_call_after_the_body_does_not_count(self):
+        body = '        let body = json!({"id": "x", "type": "run.finished", "data": data});\n'
+        call = "        add_schedule_origin(&mut *conn, &mut data).await;\n"
+        late = WRITER.replace(call + body, body + call)
+        self.assertNotEqual(late, WRITER)
+        code, out = run_lease_check(tree(**{"writer.rs": late}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("without `add_schedule_origin` before it in the same function", out)
+
+    def test_a_call_in_another_function_does_not_count(self):
+        split = (
+            "async fn origin_of(conn: &mut PgConnection, data: &mut Value) { add_schedule_origin(&mut *conn, data).await; }\n"
+            'async fn body(data: Value) { let body = json!({"type": "run.finished", "data": data}); }\n'
+        )
+        code, out = run_lease_check(tree(**{"writer.rs": split}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("writer.rs:2", out)
+
+    def test_the_words_in_a_comment_or_a_string_are_not_a_writer(self):
+        noise = (
+            '// "type": "run.finished" is what the subscribers are sent\n'
+            '/* json!({"type": "run.finished"}) */\n'
+            'const NOTE: &str = "the body {\\"type\\": \\"run.finished\\"} says its schedule";\n'
+        )
+        code, out = run_lease_check(tree(**{"noise.rs": noise}))
+        self.assertEqual(code, 0, out)
+
+    def test_the_sql_name_of_the_event_is_not_a_body(self):
+        insert = "async fn hint() { sqlx::query(\"INSERT INTO event_outbox (event_type) VALUES ('run.finished')\"); }"
+        code, out = run_lease_check(tree(**{"hint.rs": insert}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_finds_no_writer_or_no_function_is_an_error_and_not_a_pass(self):
+        code, out = run_lease_check(tree(**{"writer.rs": "async fn nothing() {}"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("no `run.finished` body was found", out)
+        code, out = run_lease_check(tree(**{"outbound.rs": "async fn nothing() {}"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("`add_schedule_origin` is named by the `run.finished` rule and is not defined", out)
+
+
 if __name__ == "__main__":
     unittest.main()

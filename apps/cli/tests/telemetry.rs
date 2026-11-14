@@ -49,6 +49,9 @@ fn capture_http(response_body: &'static str) -> (String, mpsc::Receiver<Vec<u8>>
         loop {
             match listener.accept() {
                 Ok((mut socket, _)) => {
+                    // A socket accepted from a non-blocking listener is non-blocking on BSD and macOS (not on Linux):
+                    // without this its first read fails with WouldBlock whenever the client has not written yet.
+                    socket.set_nonblocking(false).expect("blocking socket");
                     socket
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .expect("read timeout");

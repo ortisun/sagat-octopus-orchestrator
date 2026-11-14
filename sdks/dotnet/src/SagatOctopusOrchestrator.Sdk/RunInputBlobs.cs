@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using SagatOctopusOrchestrator.Sdk.Internal;
 using SagatOctopusOrchestrator.Sdk.Workers;
+using static SagatOctopusOrchestrator.Sdk.Internal.Answers;
 
 namespace SagatOctopusOrchestrator.Sdk;
 
@@ -34,7 +35,7 @@ public sealed partial class SagatClient
         var answer = await transport.SendAsync(
             new HttpCall("upload-run-input", HttpMethod.Post, "/run-input-blobs", "/run-input-blobs", [], null, null, null,
                 SafeToRepeat: false, RawContent: content, Headers: headers), cancellationToken).ConfigureAwait(false);
-        var raw = Object(answer.Body, "a blob descriptor");
+        var raw = ObjectOf(answer.Body, "a blob descriptor");
         var descriptor = new BlobDescriptor(Str(raw, "id"), raw.GetProperty("size").GetInt64(), Str(raw, "sha256"), Str(raw, "contentType"));
         Blobs.Validate(descriptor);
         if (!content.SourceEof || !UuidPattern().IsMatch(descriptor.Id) || descriptor.Size != content.Size || descriptor.Sha256 != content.Sha256)

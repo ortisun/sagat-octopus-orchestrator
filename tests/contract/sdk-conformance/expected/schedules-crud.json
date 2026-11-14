@@ -1,0 +1,565 @@
+{
+  "faultsApplied": [],
+  "observations": [
+    {
+      "id": "create",
+      "ok": true,
+      "op": "scheduleCreate",
+      "result": {
+        "action": {
+          "inputDigest": "ce58fba5218079971db20c4c6ca998517de97da1b71cfcc22f68e9f797427787",
+          "nominalTimeField": "scheduledFor",
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "crud-{{unique}}",
+        "nextActionEpochMs": 4070908800000,
+        "note": "created by the conformance suite",
+        "noteBy": "alice",
+        "origin": "API",
+        "remainingActions": 100,
+        "revision": 1,
+        "scheduleId": "<uuid:2>",
+        "state": "ACTIVE",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:1>"
+      },
+      "id": "create-replay",
+      "ok": false,
+      "op": "scheduleCreate"
+    },
+    {
+      "id": "describe",
+      "ok": true,
+      "op": "scheduleGet",
+      "result": {
+        "action": {
+          "inputDigest": "ce58fba5218079971db20c4c6ca998517de97da1b71cfcc22f68e9f797427787",
+          "nominalTimeField": "scheduledFor",
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "bufferedCount": 0,
+        "counters": {},
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "crud-{{unique}}",
+        "nextActionEpochMs": 4070908800000,
+        "nextActions": [
+          {
+            "actualTimeEpochMs": 4070908800000,
+            "nominalTimeEpochMs": 4070908800000
+          },
+          {
+            "actualTimeEpochMs": 4070941200000,
+            "nominalTimeEpochMs": 4070941200000
+          },
+          {
+            "actualTimeEpochMs": 4070975400000,
+            "nominalTimeEpochMs": 4070975400000
+          },
+          {
+            "actualTimeEpochMs": 4070995200000,
+            "nominalTimeEpochMs": 4070995200000
+          },
+          {
+            "actualTimeEpochMs": 4071027600000,
+            "nominalTimeEpochMs": 4071027600000
+          }
+        ],
+        "note": "created by the conformance suite",
+        "noteBy": "alice",
+        "openRuns": [],
+        "origin": "API",
+        "recentActions": [],
+        "remainingActions": 100,
+        "revision": 1,
+        "scheduleId": "<uuid:2>",
+        "state": "ACTIVE",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "describe-none",
+      "ok": true,
+      "op": "scheduleGet",
+      "result": {
+        "action": {
+          "inputDigest": "ce58fba5218079971db20c4c6ca998517de97da1b71cfcc22f68e9f797427787",
+          "nominalTimeField": "scheduledFor",
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "bufferedCount": 0,
+        "counters": {},
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "crud-{{unique}}",
+        "nextActionEpochMs": 4070908800000,
+        "nextActions": [],
+        "note": "created by the conformance suite",
+        "noteBy": "alice",
+        "openRuns": [],
+        "origin": "API",
+        "recentActions": [],
+        "remainingActions": 100,
+        "revision": 1,
+        "scheduleId": "<uuid:2>",
+        "state": "ACTIVE",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "REVISION_CONFLICT",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:2>"
+      },
+      "id": "update-stale",
+      "ok": false,
+      "op": "scheduleUpdate"
+    },
+    {
+      "id": "update",
+      "ok": true,
+      "op": "scheduleUpdate",
+      "result": {
+        "action": {
+          "inputDigest": "363379742f80b51bdb9206579af7754911543079b9399cb3fc315fb199f476e8",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "crud-{{unique}}",
+        "nextActionEpochMs": 4071039300000,
+        "note": "created by the conformance suite",
+        "noteBy": "alice",
+        "origin": "API",
+        "remainingActions": null,
+        "revision": 2,
+        "scheduleId": "<uuid:2>",
+        "state": "ACTIVE",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "describe-updated",
+      "ok": true,
+      "op": "scheduleGet",
+      "result": {
+        "action": {
+          "inputDigest": "363379742f80b51bdb9206579af7754911543079b9399cb3fc315fb199f476e8",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "bufferedCount": 0,
+        "counters": {},
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "crud-{{unique}}",
+        "nextActionEpochMs": 4071039300000,
+        "nextActions": [
+          {
+            "actualTimeEpochMs": 4071039300000,
+            "nominalTimeEpochMs": 4071039300000
+          },
+          {
+            "actualTimeEpochMs": 4071125700000,
+            "nominalTimeEpochMs": 4071125700000
+          },
+          {
+            "actualTimeEpochMs": 4071212100000,
+            "nominalTimeEpochMs": 4071212100000
+          }
+        ],
+        "note": "created by the conformance suite",
+        "noteBy": "alice",
+        "openRuns": [],
+        "origin": "API",
+        "recentActions": [],
+        "remainingActions": null,
+        "revision": 2,
+        "scheduleId": "<uuid:2>",
+        "state": "ACTIVE",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "second",
+      "ok": true,
+      "op": "scheduleCreate",
+      "result": {
+        "action": {
+          "inputDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "crud-{{unique}}-b",
+        "nextActionEpochMs": null,
+        "note": null,
+        "noteBy": null,
+        "origin": "API",
+        "remainingActions": null,
+        "revision": 1,
+        "scheduleId": "<uuid:3>",
+        "state": "PAUSED",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "id": "list-by-name",
+      "ok": true,
+      "op": "scheduleList",
+      "result": {
+        "items": [
+          {
+            "name": "crud-{{unique}}-b",
+            "origin": "API",
+            "revision": 1,
+            "state": "PAUSED"
+          },
+          {
+            "name": "crud-{{unique}}",
+            "origin": "API",
+            "revision": 2,
+            "state": "ACTIVE"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "list-paused",
+      "ok": true,
+      "op": "scheduleList",
+      "result": {
+        "items": [
+          {
+            "name": "crud-{{unique}}-b",
+            "origin": "API",
+            "revision": 1,
+            "state": "PAUSED"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "list-first-page",
+      "ok": true,
+      "op": "scheduleList",
+      "result": {
+        "items": [
+          {
+            "name": "crud-{{unique}}-b",
+            "origin": "API",
+            "revision": 1,
+            "state": "PAUSED"
+          }
+        ],
+        "nextCursor": "<cursor>"
+      }
+    },
+    {
+      "id": "list-all",
+      "ok": true,
+      "op": "scheduleList",
+      "result": {
+        "items": [
+          {
+            "name": "crud-{{unique}}-b",
+            "origin": "API",
+            "revision": 1,
+            "state": "PAUSED"
+          },
+          {
+            "name": "crud-{{unique}}",
+            "origin": "API",
+            "revision": 2,
+            "state": "ACTIVE"
+          }
+        ],
+        "nextCursor": null
+      }
+    },
+    {
+      "id": "list-by-origin",
+      "ok": true,
+      "op": "scheduleList",
+      "result": {
+        "items": [],
+        "nextCursor": null
+      }
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:3>"
+      },
+      "id": "duplicate-name",
+      "ok": false,
+      "op": "scheduleCreate"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "SCHEDULE_SPEC_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:4>"
+      },
+      "id": "bad-cron",
+      "ok": false,
+      "op": "scheduleCreate"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "SCHEDULE_ZONE_UNKNOWN",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:5>"
+      },
+      "id": "unknown-zone",
+      "ok": false,
+      "op": "scheduleCreate"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "SCHEDULE_NEVER_FIRES",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:6>"
+      },
+      "id": "never-fires",
+      "ok": false,
+      "op": "scheduleCreate"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "SCHEDULE_TOO_FREQUENT",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:7>"
+      },
+      "id": "too-frequent",
+      "ok": false,
+      "op": "scheduleCreate"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "SCHEDULE_SPEC_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:8>"
+      },
+      "id": "no-spec",
+      "ok": false,
+      "op": "scheduleCreate"
+    },
+    {
+      "error": {
+        "code": "VALIDATION_FAILED",
+        "message": "<text>",
+        "reason": "SCHEDULE_SPEC_INVALID",
+        "remediation": "A field is invalid: the reason names it. Fix the input; repeating it fails the same way.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 422,
+        "traceId": "<trace:9>"
+      },
+      "id": "unknown-workflow",
+      "ok": false,
+      "op": "scheduleCreate"
+    },
+    {
+      "error": {
+        "code": "CONFLICT",
+        "message": "<text>",
+        "reason": "REVISION_CONFLICT",
+        "remediation": "The request conflicts with the current state: read the resource again and decide; do not repeat it unchanged.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 409,
+        "traceId": "<trace:10>"
+      },
+      "id": "delete-stale",
+      "ok": false,
+      "op": "scheduleDelete"
+    },
+    {
+      "id": "delete",
+      "ok": true,
+      "op": "scheduleDelete",
+      "result": {
+        "deleted": true
+      }
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:11>"
+      },
+      "id": "describe-deleted",
+      "ok": false,
+      "op": "scheduleGet"
+    },
+    {
+      "id": "name-is-free",
+      "ok": true,
+      "op": "scheduleCreate",
+      "result": {
+        "action": {
+          "inputDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "crud-{{unique}}",
+        "nextActionEpochMs": 4070930400000,
+        "note": null,
+        "noteBy": null,
+        "origin": "API",
+        "remainingActions": null,
+        "revision": 1,
+        "scheduleId": "<uuid:4>",
+        "state": "ACTIVE",
+        "updatedAt": "<time>"
+      }
+    },
+    {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The resource does not exist in this tenant and namespace: check the id and the namespace.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 404,
+        "traceId": "<trace:12>"
+      },
+      "id": "other-tenant",
+      "ok": false,
+      "op": "scheduleGet"
+    },
+    {
+      "error": {
+        "code": "FORBIDDEN",
+        "message": "<text>",
+        "reason": null,
+        "remediation": "The identity may not do this: ask an administrator for the role or permission the call needs.",
+        "retryAfterMs": null,
+        "retryable": false,
+        "status": 403,
+        "traceId": "<trace:13>"
+      },
+      "id": "viewer-cannot-write",
+      "ok": false,
+      "op": "scheduleCreate"
+    },
+    {
+      "id": "viewer-can-read",
+      "ok": true,
+      "op": "scheduleGet",
+      "result": {
+        "action": {
+          "inputDigest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "nominalTimeField": null,
+          "runTimeoutMs": null,
+          "versionId": null,
+          "versionPolicy": "ACTIVE",
+          "workflowId": "<uuid:1>"
+        },
+        "bufferedCount": 0,
+        "counters": {},
+        "createdAt": "<time>",
+        "exhausted": false,
+        "name": "crud-{{unique}}-b",
+        "nextActionEpochMs": null,
+        "nextActions": [],
+        "note": null,
+        "noteBy": null,
+        "openRuns": [],
+        "origin": "API",
+        "recentActions": [],
+        "remainingActions": null,
+        "revision": 1,
+        "scheduleId": "<uuid:3>",
+        "state": "PAUSED",
+        "updatedAt": "<time>"
+      }
+    }
+  ],
+  "serverState": [],
+  "workerLog": {}
+}

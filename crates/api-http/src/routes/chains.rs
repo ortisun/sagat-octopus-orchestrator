@@ -248,6 +248,11 @@ fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
             "the Idempotency-Key must be 8 to 160 printable ASCII characters",
         ));
     }
+    if super::execution::is_reserved_key(key) {
+        return Err(ApiError::bad_request(
+            "the Idempotency-Key prefixes batch:, schedule: and reset: are reserved for the platform",
+        ));
+    }
     Ok(key)
 }
 
@@ -263,4 +268,35 @@ fn no_store() -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
+
+    use super::idempotency_key;
+
+    fn with_key(key: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Idempotency-Key",
+            HeaderValue::from_str(key).expect("a header"),
+        );
+        headers
+    }
+
+    #[test]
+    fn the_keys_the_platform_derives_for_itself_are_not_the_key_of_a_request() {
+        for key in [
+            "batch:job-0001:run-1",
+            "schedule:abc-0001:cancel:1",
+            "reset:0194f5e2-7b1c-7000-8000-000000000009:12",
+        ] {
+            assert!(idempotency_key(&with_key(key)).is_err(), "{key}");
+        }
+        // a key that only looks like one is a key
+        for key in ["my-reset:0001", "plain-key-0001"] {
+            assert_eq!(idempotency_key(&with_key(key)).ok(), Some(key));
+        }
+    }
 }

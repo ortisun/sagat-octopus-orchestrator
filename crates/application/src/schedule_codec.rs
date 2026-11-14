@@ -513,16 +513,34 @@ pub fn target_from_json(value: &Value) -> Result<ScheduleTarget, CodecError> {
         Some(s) => ReusePolicy::from_str(s)
             .or_else(|()| fail(at(PATH, "businessIdReusePolicy"), CodecReason::UnknownValue))?,
     };
+    let business_id_prefix = text(map, "businessIdPrefix", PATH)?.map(str::to_owned);
+    // a policy is the policy of a prefix: without one it would be dropped without a word, so it is refused
+    if business_id_prefix.is_none() {
+        for policy in ["businessIdConflictPolicy", "businessIdReusePolicy"] {
+            if map.contains_key(policy) {
+                return fail(at(PATH, policy), CodecReason::Unexpected);
+            }
+        }
+    }
     let parts = TargetParts {
         workflow,
         version,
         nominal_time_field: text(map, "nominalTimeField", PATH)?.map(str::to_owned),
         run_timeout_ms: unsigned(map, "runTimeoutMs", PATH)?,
-        business_id_prefix: text(map, "businessIdPrefix", PATH)?.map(str::to_owned),
+        business_id_prefix,
         business_id_conflict: conflict,
         business_id_reuse: reuse,
     };
-    ScheduleTarget::new(parts).or_else(|e| invalid(PATH, e))
+    ScheduleTarget::new(parts).or_else(|error| {
+        // the place is the field the target refused, not the whole action
+        let field = match error {
+            ScheduleError::BadNominalTimeField => "nominalTimeField",
+            ScheduleError::BadRunTimeout => "runTimeoutMs",
+            ScheduleError::BadBusinessIdPrefix => "businessIdPrefix",
+            _ => return invalid(PATH, error),
+        };
+        fail(at(PATH, field), CodecReason::Invalid(error))
+    })
 }
 
 /// The canonical document of a target (without its input).

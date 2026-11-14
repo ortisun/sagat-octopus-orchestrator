@@ -4,6 +4,43 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-13 — What release 0.3.0 must contain: feature 018, schedules on by default, step logs per run
+
+Before the release pull request (219) was merged the owner asked whether anything else belonged in it. The assistant
+listed what was not built and recommended shipping as it was; the owner chose otherwise, then named the features the
+release must have ("Pause, Play, Replay, Sagas, Outbox, Inbox, Scheduler, Workflow, Logs"). The assistant mapped them:
+seven exist; schedules were off by default and there was no capture of step logs per run. It asked both, recommending
+the smaller option each time. The owner chose the larger. Release 0.3.0 is therefore not published until these are
+built and the release-candidate run is repeated on the commit that has them (OD-2026-11-04-8).
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-13-7 | "Incluir a 018": the rest of feature 018 (pull requests 91 and 98) is part of release 0.3.0 | owner | Decided | specs/018-schedules-bulk-operations/tasks.md, docs/releases/0.3.0.md |
+| OD-2026-11-13-8 | "Ligados por omissão": schedules are on by default in 0.3.0 (`SAGAT_SCHEDULES_ENABLED` defaults to true). The open tasks of 018 that justify it (benchmark, observability gates, runbooks, the cron-trigger handover) are closed first | owner | Decided; not built | crates and apps of feature 018, docs/runbooks/schedules.md |
+| OD-2026-11-13-9 | "Logs de passo por run na 0.3.0": the lines a step's code logs are captured per run, stored with retention and limits, and readable through a route and a Studio screen, in release 0.3.0. It is a new feature (041) with its own design | owner | Decided; not designed | docs/designs/041-step-logs.md (to be written) |
+| OD-2026-11-13-10 | "Atualize o rust para a ultima versao", then "1.100": the pinned toolchain moves to Rust 1.100.0 (stable of 2026-11-12), one day old; the two-week rule (D138) is about dependencies and the owner named the version | owner | Decided; pull request 221 | rust-toolchain.toml, infra/docker/Dockerfile |
+| OD-2026-11-13-11 | "Controle de througput para fluxos que tenham limitações de execução, buffering", answered "Concorrência + taxa": release 0.3.0 has throughput control: concurrency limits by key with a durable queue (feature 022, US02) and a rate limit per time window with buffering, added to feature 022 as new requirements | owner | Decided; not built | specs/022-flow-control-step-policies/spec.md |
+| OD-2026-11-13-12 | "Tudo na 0.3.0": release 0.3.0 waits for feature 018 with schedules on, step logs per run (041) and throughput control (022), against the assistant's recommendation to ship 0.3.0 first and the rest in 0.4.0 | owner | Decided | docs/releases/0.3.0.md |
+| OD-2026-11-13-13 | "Debounce, Window, Map, FlatMap, Filter, IgnoreElements, Skip, Distinct entre outros": reactive stream operators are wanted in release 0.3.0. Opened as feature 042 (Draft design); where they apply (event streams before a run, collections inside a workflow, or both) and the first operator set are questions the design puts to the owner | owner | Decided; not designed | docs/designs/042-stream-operators.md (to be written) |
+| OD-2026-11-13-14 | "Aceitar todas" (the recommendations of design 041, step logs): O041-001 to O041-011 as the design recommends (capture on at `info` with a namespace switch and a worker opt-out; `run:logs:read`; reads audited once per subject and run per 300 s; PostgreSQL rows; the stated ceilings; 14-day retention; first lines kept with a marker; a new SSE tail; script steps as a marker; server, six SDKs, routes and Studio together; the stated limit of redaction) | owner | Decided; not built | docs/designs/041-step-logs.md T041-2, T041-4, T041-5, T041-6, T041-7, T041-10, T041-11, T041-12, T041-13, T041-21, T041-25 |
+| OD-2026-11-13-15 | "Aceitar todas" (design 042, stream operators): O042-001 to O042-009 as the design recommends; release 0.3.0 carries only the collection operators (S0 and S1); trigger operators are a later release | owner | Decided; not built | docs/designs/042-stream-operators.md T042-1, T042-5, T042-6, T042-7, T042-18, T042-20, T042-39, T042-43 |
+| OD-2026-11-13-16 | "Aceitar todas" (feature 022, the 0.3.0 slice): O1163 to O1168 as recommended (a strict sliding window without burst; FIFO per key with skip-ahead; a full buffer refuses a synchronous start and keeps event and cron starts pending; a retry takes a new slot; no rate limit on collection body nodes in 0.3.0; a reset takes a slot or is refused) | owner | Decided; not built | specs/022-flow-control-step-policies/research.md O1163..O1168, T022-066 |
+| OD-2026-11-13-17 | "Aceito tudo": ADR-0056, ADR-0084, ADR-0085, ADR-0086, ADR-0087 and ADR-0088 are accepted | owner | Decided | docs/adr/ADR-0056-*.md, docs/adr/ADR-0084-*.md to docs/adr/ADR-0088-*.md, T042-4, T022-066, T041-2 |
+| OD-2026-11-13-18 | After the security review of design 041: "Exigir a concessão PII", reading step logs in a namespace with classified schemas also requires the namespace PII reveal grant; and "Fechar ao viewer", the `log` field of a script execution requires `run:logs:read`, so viewers no longer read it | owner | Decided; not built | docs/designs/041-step-logs.md T041-11, T041-12, T041-22, T041-25, T041-28, T041-29 |
+| OD-2026-11-13-19 | After the reviews of designs 022 and 042: "Aceitar o ADR-0089" (a gated step waits outside READY and one fenced grant routine, driven by key, serves every waiter whatever its gates; it supersedes ADR-0056 decisions 3 and 5) and "Confirmar a revisão" (the revised ADR-0087: the switch at publication, the chain bounded at 1,000 elements, 256 KiB per element and 4 MiB per stage, a failed chain fails the run) | owner | Decided | docs/adr/ADR-0089-*.md, docs/adr/ADR-0087-*.md, T022-107, T042-4 |
+
+## 2026-11-13 — Feature 018: the open questions, the audit of business-id conflicts and ADR-0081 to ADR-0083
+
+The assistant put the decisions that held pull requests 91 and 98 to the owner in three questions, each with a
+recommendation. The owner chose the recommended answer of each.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-13-2 | "Aceitar todas": O1950 (a), only a holder of `run:operate` may write a `CANCEL_OTHER` schedule (as built, D1953); O1951 (b), the effect on a run and the record of its batch item become one transaction, through a hook into the single-run use cases, before the feature is switched on (ADR-0050 decision 2, G1961); O1952 (a), T018-074 closes on the journeys it has, with the four states it cannot show covered by `ResetRun.test.tsx` and the REST suites (G2034, G2035); O1953 (a), a batch job survives ten failed selection rounds, about 25 minutes, before it ends `SELECTION_FAILED` (D2197) | owner | Decided; O1951 built 2026-11-13 (D2219) | specs/018-schedules-bulk-operations/research.md |
+| OD-2026-11-13-3 | "Nova ação de audit": business-id conflicts are audited (G2086). An audit action `business_id.conflict` is written where the refusal is decided (the `409` of a person's start, and the decision of a schedule that finds the id held), with a closed reason and without the id; FR-018-044 stands as written | owner | Decided; built 2026-11-13 (D2218) | specs/018-schedules-bulk-operations/spec.md FR-018-044 |
+| OD-2026-11-13-4 | "Aceitar os três": ADR-0081 (the cancel source of a reset is switched on per process, engine first, until the capability registry exists), ADR-0082 (the instance registry: only the schema owner records requirements, a refused process stays up with a closed gate) and ADR-0083 (the cron triggers are handed to the schedule pass once, and only when they have converged) are accepted | owner | Decided | docs/adr/ADR-0081-*.md, docs/adr/ADR-0082-*.md, docs/adr/ADR-0083-*.md |
+| OD-2026-11-13-5 | "Aceitar como está": the `business_id.conflict` record of a person's refused start is written in a transaction of its own after the start rolls back. It is best effort, and a lost write is counted by `audit_write_failures_total{action}`. Identical repeats within 300 s collapse into one record, like `database.denied`. Conflicts the platform decides (a schedule, a batch item, a reset completion) are recorded in the decision's own transaction. This accepts D2221 as the reading of FR-018-044 | owner | Decided | specs/018-schedules-bulk-operations/research.md D2221 |
+
 ## 2026-11-13 — Release 0.3.0 ships with the fallback ceilings
 
 The assistant reported that the T014-042 acceptance method (OD-2026-11-04-7: release build, runtime role, a separate
@@ -126,6 +163,20 @@ trusts, (b) the host and the runner accept an `http` storage or token endpoint o
 Read as the assistant recommended it with the option: the host and the runner accept `http` for the S3 endpoint and the OAuth2 token endpoint **on the loopback, and only when the runner says it is a development
 one** (a flag the runner sets and the connection can never set), which makes true what the server already says of a development namespace; **and the server also refuses, at save, an `http` host that is not the
 loopback**, since nothing could run it. The second half is the assistant's reading of "B" together with its recommendation, and is built as a separate change so that the owner can correct it (built 2026-11-10: `PLAIN_HTTP_OUTSIDE_LOOPBACK`). It unblocks T035-062.
+
+## 2026-11-08 — A reset that waits for its source expires, and the CI scope pull request was merged
+
+Feature 018. The assistant asked the owner two things that were theirs: to merge pull request 120 (a shared file selects no
+integration suite in a pull request, OD-2026-11-06-2) and what a pending `CANCEL_SOURCE` entry should do when its source never ends
+(an entry never expired and could not be withdrawn: a run in manual review could hold the 16 places of a namespace, and the
+replacement run could start days later on an acknowledgement given long before), with three options: expire after a time, an
+operator withdraws it, or both. The owner answered "Faça isso por mim". The assistant took it as the word to merge pull request 120
+(merged 2026-11-09, `5057de7b`) and as a delegation of the second decision, which it took the conservative way. The owner may
+overrule it; until the owner changes the cell to `owner` it is not an owner gate.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-08-1 | "Faça isso por mim" (the owner's whole answer to: merge pull request 120, and expire or withdraw a pending `CANCEL_SOURCE` entry). Taken: **expiry only, built next.** An entry that is still `PENDING_SOURCE` 24 hours after its request (the deployment may set 1 hour to 7 days) ends `FAILED` with the closed reason `SOURCE_DID_NOT_END`, no run is made and its place in the namespace is freed. No call that withdraws an entry is built: the operator's lever is to end the source (a run in manual review is resolved like any other run) or to let the entry expire; a withdrawal is a later decision. `SAGAT_RESET_CANCEL_SOURCE_ENABLED` stays off by default until the expiry is built and reviewed. | delegate | Built and reviewed 2026-11-09 (three independent reviews found no blocker; their findings are fixed, D2079 to D2082; the gates were rerun by the coordinator on the final tree; the flag stays off, and lifting it by default waits for the alert of G2026) | specs/018-schedules-bulk-operations/research.md (D2000, G1991, D2059 to D2068, G2014 to G2018), docs/runbooks/run-reset.md, docs/adr/ADR-0081-cancel-source-is-switched-on-per-process-until-the-capability-registry-exists.md |
 
 ## 2026-11-06 — Mutation testing runs only when a release is closed
 
@@ -304,7 +355,6 @@ Not asked, because neither blocks I0–I1: O035-002 (priority of ORC/Avro and Ke
 for a later delivery; and developers may **not** publish writes, which keeps D035-066 (admin-only
 `database:write`) and ADR-0036 decision 5 unchanged. Either can be reopened by the owner.
 
-
 ## 2026-11-01 — Feature 037 delivery, B01 split and upgrade compatibility
 
 The owner answered three questions in the Claude session that took over Codex's work. The answers
@@ -460,7 +510,6 @@ qualification exceptions disabled. This approves T037-001..031 and T037-034. US0
 qualification, deployment, merge and release remain outside this implementation approval.
 Implementation uses feature/037-compensation-safety derived from develop, with the approved
 uncommitted documentation copied and byte-verified. The original develop checkout remains intact.
-
 
 ## 2026-11-01 — Feature 037 delivery 1 preserves the feature-009 secret-output contract
 

@@ -1,0 +1,56 @@
+{
+  "name": "signal-with-start",
+  "description": "Feature 018 US04: signal-with-start. With no open holder the run is created and the signal reaches the entry wait in the same transaction (started true); an open run that waits receives it (started false); an open run that does not wait for that name refuses it (nothing changes); a new run whose entry does not wait refuses it and nothing is created; the same key and body replays the first answer.",
+  "workflows": {
+    "waiter": {
+      "name": "sws-waiter",
+      "description": "The entry waits for a payment signal, then one served activity.",
+      "program": [
+        { "op": "waitForEvent", "id": "paid", "options": { "eventType": "payment.confirmed", "correlationExpr": "input.orderId", "timeoutMs": 600000, "onTimeout": "gave-up" } },
+        { "op": "step", "id": "fulfil", "activity": "sws.fulfil" },
+        { "op": "end", "id": "fulfilled" },
+        { "op": "step", "id": "gave-up", "activity": "sws.give-up" }
+      ]
+    },
+    "late": {
+      "name": "sws-late",
+      "description": "An unserved activity first: the entry is not a wait.",
+      "program": [
+        { "op": "step", "id": "prepare", "activity": "sws.unserved" },
+        { "op": "waitForEvent", "id": "paid", "options": { "eventType": "payment.confirmed", "correlationExpr": "input.orderId", "timeoutMs": 600000, "onTimeout": "gave-up" } },
+        { "op": "end", "id": "fulfilled" },
+        { "op": "step", "id": "gave-up", "activity": "sws.give-up" }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "sws-worker",
+      "protocolVersion": "1.4",
+      "maxInflight": 2,
+      "activities": {
+        "sws.fulfil": { "behavior": { "echo": true } },
+        "sws.give-up": { "behavior": { "returns": { "gaveUp": true } } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "absent", "op": "signalWithStart", "workflow": "waiter", "businessId": "sws-{{unique}}-1", "input": { "orderId": "o-1-{{unique}}" }, "signal": { "name": "payment.confirmed", "payload": { "paid": "12.50" } }, "idempotencyKey": "sws-absent-{{unique}}" },
+    { "id": "absent-done", "op": "waitForCompletion", "run": "absent", "timeoutMs": 60000 },
+    { "id": "absent-events", "op": "events", "run": "absent" },
+    { "id": "replay", "op": "signalWithStart", "workflow": "waiter", "businessId": "sws-{{unique}}-1", "input": { "orderId": "o-1-{{unique}}" }, "signal": { "name": "payment.confirmed", "payload": { "paid": "12.50" } }, "idempotencyKey": "sws-absent-{{unique}}" },
+    { "id": "replay-other-body", "op": "signalWithStart", "workflow": "waiter", "businessId": "sws-{{unique}}-1", "input": { "orderId": "o-1-{{unique}}" }, "signal": { "name": "payment.confirmed", "payload": { "paid": "99.00" } }, "idempotencyKey": "sws-absent-{{unique}}" },
+
+    { "id": "open", "op": "start", "workflow": "waiter", "input": { "orderId": "o-2-{{unique}}" }, "businessId": "sws-{{unique}}-2", "idempotencyKey": "sws-open-start-{{unique}}" },
+    { "id": "open-waits", "op": "awaitJournal", "run": "open", "eventType": "wait.started", "stepId": "paid", "timeoutMs": 30000 },
+    { "id": "wrong-name", "op": "signalWithStart", "workflow": "waiter", "businessId": "sws-{{unique}}-2", "input": { "orderId": "o-2-{{unique}}" }, "signal": { "name": "no.such.signal", "payload": {} }, "idempotencyKey": "sws-wrong-{{unique}}" },
+    { "id": "still-waiting", "op": "get", "run": "open" },
+    { "id": "to-open-holder", "op": "signalWithStart", "workflow": "waiter", "businessId": "sws-{{unique}}-2", "input": { "orderId": "o-2-{{unique}}" }, "signal": { "name": "payment.confirmed", "payload": { "paid": "1.00" } }, "idempotencyKey": "sws-holder-{{unique}}" },
+    { "id": "open-done", "op": "waitForCompletion", "run": "open", "timeoutMs": 60000 },
+
+    { "id": "entry-not-waiting", "op": "signalWithStart", "workflow": "late", "businessId": "sws-{{unique}}-3", "input": { "orderId": "o-3-{{unique}}" }, "signal": { "name": "payment.confirmed", "payload": {} }, "idempotencyKey": "sws-late-{{unique}}" },
+    { "id": "nothing-created", "op": "businessIdGet", "businessId": "sws-{{unique}}-3" },
+    { "id": "invalid-id", "op": "signalWithStart", "workflow": "waiter", "businessId": "has a space", "input": { "orderId": "o-4-{{unique}}" }, "signal": { "name": "payment.confirmed", "payload": {} }, "idempotencyKey": "sws-invalid-{{unique}}" },
+    { "id": "reuse-rejected", "op": "signalWithStart", "workflow": "waiter", "businessId": "sws-{{unique}}-1", "input": { "orderId": "o-5-{{unique}}" }, "signal": { "name": "payment.confirmed", "payload": {} }, "businessIdReusePolicy": "REJECT_DUPLICATE", "idempotencyKey": "sws-reuse-{{unique}}" }
+  ]
+}

@@ -1,7 +1,7 @@
 //! The command line: every command, its required flags and what is refused.
 #![allow(clippy::expect_used, clippy::panic)]
 
-use sagat_cli::args::{Command, parse};
+use sagat_cli::args::{Command, IfExists, Reapply, Reuse, StartOptions, parse};
 
 fn argv(line: &str) -> Vec<String> {
     line.split_whitespace().map(str::to_owned).collect()
@@ -251,7 +251,8 @@ fn the_commands_for_one_workflow_take_the_words_and_flags_they_document() {
             input: Some("@in.json".into()),
             wait: true,
             timeout: 30,
-            key: Some("k-0123456789".into())
+            key: Some("k-0123456789".into()),
+            options: StartOptions::default(),
         }
     );
     assert_eq!(
@@ -263,7 +264,8 @@ fn the_commands_for_one_workflow_take_the_words_and_flags_they_document() {
             input: None,
             wait: false,
             timeout: 300,
-            key: None
+            key: None,
+            options: StartOptions::default(),
         }
     );
     assert_eq!(
@@ -591,6 +593,17 @@ fn the_usage_names_every_command_the_parser_takes() {
         "workflow inspect",
         "workflow cancel",
         "workflow rerun",
+        "workflow signal-with-start",
+        "workflow update-with-start",
+        "workflow reset-points",
+        "workflow reset-preview",
+        "workflow reset",
+        "workflow resets",
+        "--cancel-source",
+        "--reapply",
+        "--business-id",
+        "--if-exists",
+        "--start-delay",
         "namespace reveal-grants list",
         "namespace reveal-grants grant",
         "namespace reveal-grants revoke",
@@ -616,4 +629,353 @@ fn the_usage_names_every_command_the_parser_takes() {
         );
     }
     assert!(sagat_cli::args::USAGE.contains("6 it did not finish in time"));
+}
+
+#[test]
+fn a_run_takes_a_business_identifier_the_policies_about_it_and_a_delay() {
+    assert_eq!(
+        parse(&argv(
+            "workflow run checkout --business-id order-1001 --if-exists use-existing --reuse reject-duplicate --start-delay 90"
+        ))
+        .expect("parses")
+        .command,
+        Command::WorkflowRun {
+            name: "checkout".into(),
+            input: None,
+            wait: false,
+            timeout: 300,
+            key: None,
+            options: StartOptions {
+                business_id: Some("order-1001".into()),
+                if_exists: Some(IfExists::UseExisting),
+                reuse: Some(Reuse::RejectDuplicate),
+                start_delay_secs: Some(90),
+            },
+        }
+    );
+    // the identifier alone, with its API names
+    let Command::WorkflowRun { options, .. } = parse(&argv(
+        "workflow run checkout --business-id a --if-exists fail --reuse allow-duplicate-failed-only",
+    ))
+    .expect("parses")
+    .command
+    else {
+        panic!("a run");
+    };
+    assert_eq!(options.if_exists.map(IfExists::api), Some("FAIL"));
+    assert_eq!(
+        options.reuse.map(Reuse::api),
+        Some("ALLOW_DUPLICATE_FAILED_ONLY")
+    );
+    assert_eq!(Reuse::AllowDuplicate.api(), "ALLOW_DUPLICATE");
+    assert_eq!(IfExists::UseExisting.api(), "USE_EXISTING");
+    // a delay alone is allowed: it needs no identifier
+    assert!(parse(&argv("workflow run checkout --start-delay 1")).is_ok());
+}
+
+#[test]
+fn what_a_run_gets_wrong_about_the_identifier_and_the_delay_is_named_without_echoing_the_identifier()
+ {
+    for (line, mentions) in [
+        (
+            "workflow run c --if-exists use-existing",
+            "--if-exists needs --business-id",
+        ),
+        (
+            "workflow run c --reuse reject-duplicate",
+            "--reuse needs --business-id",
+        ),
+        (
+            "workflow run c --business-id a --if-exists sometimes",
+            "--if-exists is fail or use-existing",
+        ),
+        (
+            "workflow run c --business-id a --reuse never",
+            "--reuse is allow-duplicate",
+        ),
+        (
+            "workflow run c --start-delay 0",
+            "--start-delay is a number of seconds from 1 to 31622400",
+        ),
+        (
+            "workflow run c --start-delay 31622401",
+            "--start-delay is a number of seconds from 1 to 31622400",
+        ),
+        (
+            "workflow run c --start-delay soon",
+            "--start-delay is a number of seconds",
+        ),
+    ] {
+        let error = parse(&argv(line)).expect_err(line);
+        assert!(error.0.contains(mentions), "{line}: {}", error.0);
+    }
+    // 200 characters are allowed, 201 are not, and a space is not visible ASCII; the message never repeats the text
+    let long = "x".repeat(200);
+    assert!(parse(&argv(&format!("workflow run c --business-id {long}"))).is_ok());
+    for bad in [
+        "x".repeat(201),
+        "has\u{e9}accent".to_owned(),
+        "has space".to_owned(),
+    ] {
+        let error = parse(&[
+            "workflow".to_owned(),
+            "run".to_owned(),
+            "c".to_owned(),
+            "--business-id".to_owned(),
+            bad.clone(),
+        ])
+        .expect_err("refused");
+        assert!(
+            error.0.contains("--business-id is 1 to 200 visible ASCII"),
+            "{}",
+            error.0
+        );
+        assert!(!error.0.contains(&bad));
+    }
+    let empty = parse(&[
+        "workflow".to_owned(),
+        "run".to_owned(),
+        "c".to_owned(),
+        "--business-id=".to_owned(),
+    ])
+    .expect_err("empty");
+    assert!(empty.0.contains("--business-id is 1 to 200"));
+}
+
+#[test]
+fn the_with_start_and_reset_commands_take_the_words_and_flags_they_document() {
+    assert_eq!(
+        parse(&argv(
+            "workflow signal-with-start checkout --business-id o-1 --signal order.paid --payload {} --input @in.json --reuse allow-duplicate --key k-0123456789"
+        ))
+        .expect("parses")
+        .command,
+        Command::WorkflowSignalWithStart {
+            name: "checkout".into(),
+            business_id: "o-1".into(),
+            signal: "order.paid".into(),
+            payload: Some("{}".into()),
+            input: Some("@in.json".into()),
+            reuse: Some(Reuse::AllowDuplicate),
+            key: Some("k-0123456789".into()),
+        }
+    );
+    assert_eq!(
+        parse(&argv(
+            "workflow update-with-start checkout --business-id o-1 --update balance.replace --update-key u-1 --args {} --if-exists fail --start-delay 5 --expected-revision 3"
+        ))
+        .expect("parses")
+        .command,
+        Command::WorkflowUpdateWithStart {
+            name: "checkout".into(),
+            business_id: "o-1".into(),
+            update: "balance.replace".into(),
+            update_key: "u-1".into(),
+            args: Some("{}".into()),
+            input: None,
+            if_exists: Some(IfExists::Fail),
+            reuse: None,
+            start_delay_secs: Some(5),
+            expected_revision: Some(3),
+            key: None,
+        }
+    );
+    assert_eq!(
+        parse(&argv(&format!("workflow reset-points {RUN}")))
+            .expect("parses")
+            .command,
+        Command::WorkflowResetPoints { run: RUN.into() }
+    );
+    assert_eq!(
+        parse(&argv(&format!("workflow reset-preview {RUN} --sequence 5")))
+            .expect("parses")
+            .command,
+        Command::WorkflowResetPreview {
+            run: RUN.into(),
+            sequence: 5,
+            reapply: None,
+        }
+    );
+    // the policy of a reapply is one of four words, in either case
+    for (word, expected) in [
+        ("none", Reapply::None),
+        ("signals", Reapply::Signals),
+        ("updates", Reapply::Updates),
+        ("all", Reapply::All),
+        ("ALL", Reapply::All),
+        ("Signals", Reapply::Signals),
+    ] {
+        assert_eq!(
+            parse(&argv(&format!(
+                "workflow reset-preview {RUN} --sequence 5 --reapply {word}"
+            )))
+            .expect("parses")
+            .command,
+            Command::WorkflowResetPreview {
+                run: RUN.into(),
+                sequence: 5,
+                reapply: Some(expected),
+            },
+            "{word}"
+        );
+        assert_eq!(
+            parse(&argv(&format!(
+                "workflow reset {RUN} --sequence 5 --reason x --reapply {word}"
+            )))
+            .expect("parses")
+            .command,
+            Command::WorkflowReset {
+                run: RUN.into(),
+                sequence: 5,
+                reason: "x".into(),
+                acknowledge: false,
+                drop_business_id: false,
+                reapply: Some(expected),
+                cancel_source: false,
+                key: None,
+            },
+            "{word}"
+        );
+    }
+    assert_eq!(Reapply::None.api(), "NONE");
+    assert_eq!(Reapply::Signals.api(), "SIGNALS");
+    assert_eq!(Reapply::Updates.api(), "UPDATES");
+    assert_eq!(Reapply::All.api(), "ALL");
+    assert_eq!(
+        parse(&argv(&format!(
+            "workflow reset {RUN} --sequence 5 --reason price-list --acknowledge --drop-business-id --key k-0123456789"
+        )))
+        .expect("parses")
+        .command,
+        Command::WorkflowReset {
+            run: RUN.into(),
+            sequence: 5,
+            reason: "price-list".into(),
+            acknowledge: true,
+            drop_business_id: true,
+            reapply: None,
+            cancel_source: false,
+            key: Some("k-0123456789".into()),
+        }
+    );
+    assert_eq!(
+        parse(&argv(&format!(
+            "workflow reset {RUN} --sequence 5 --reason x"
+        )))
+        .expect("parses")
+        .command,
+        Command::WorkflowReset {
+            run: RUN.into(),
+            sequence: 5,
+            reason: "x".into(),
+            acknowledge: false,
+            drop_business_id: false,
+            reapply: None,
+            cancel_source: false,
+            key: None,
+        }
+    );
+    // `--cancel-source` is a switch that asks for the policy of the same name
+    assert_eq!(
+        parse(&argv(&format!(
+            "workflow reset {RUN} --sequence 5 --reason x --cancel-source --acknowledge"
+        )))
+        .expect("parses")
+        .command,
+        Command::WorkflowReset {
+            run: RUN.into(),
+            sequence: 5,
+            reason: "x".into(),
+            acknowledge: true,
+            drop_business_id: false,
+            reapply: None,
+            cancel_source: true,
+            key: None,
+        }
+    );
+    assert_eq!(
+        parse(&argv(&format!("workflow resets {RUN}")))
+            .expect("parses")
+            .command,
+        Command::WorkflowResets { run: RUN.into() }
+    );
+}
+
+#[test]
+fn what_the_with_start_and_reset_commands_get_wrong_is_named() {
+    for (line, mentions) in [
+        (
+            "workflow signal-with-start c --signal s",
+            "--business-id is required",
+        ),
+        (
+            "workflow signal-with-start c --business-id a",
+            "--signal is required",
+        ),
+        (
+            "workflow signal-with-start --business-id a --signal s",
+            "the name of the workflow is required",
+        ),
+        (
+            "workflow signal-with-start c --business-id a --signal s --if-exists fail",
+            "--if-exists is not a flag of this command",
+        ),
+        (
+            "workflow signal-with-start c --business-id a --signal s --start-delay 5",
+            "--start-delay is not a flag of this command",
+        ),
+        (
+            "workflow update-with-start c --business-id a --update u",
+            "--update-key is required",
+        ),
+        (
+            "workflow update-with-start c --business-id a --update-key k",
+            "--update is required",
+        ),
+        (
+            "workflow update-with-start c --business-id a --update u --update-key k --expected-revision x",
+            "--expected-revision is a revision number",
+        ),
+        (
+            "workflow reset-points not-an-id",
+            "the run is given by its id",
+        ),
+        ("workflow resets not-an-id", "the run is given by its id"),
+        (
+            "workflow reset-preview 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8 --sequence 5 --cancel-source",
+            "--cancel-source is not a flag of this command",
+        ),
+        (
+            "workflow reset-preview 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8",
+            "--sequence is required",
+        ),
+        (
+            "workflow reset-preview 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8 --sequence 0",
+            "--sequence is a positive sequence",
+        ),
+        (
+            "workflow reset 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8 --sequence 5",
+            "--reason is required",
+        ),
+        (
+            "workflow reset 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8 --reason r",
+            "--sequence is required",
+        ),
+        (
+            "workflow reset ../x --sequence 5 --reason r",
+            "the run is given by its id",
+        ),
+        (
+            "workflow reset 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8 --sequence 5 --reason r --reapply sometimes",
+            "--reapply is none, signals, updates or all",
+        ),
+        (
+            "workflow reset-preview 01a12aca-0d9d-7589-bf01-bc7b7cc0a7b8 --sequence 5 --reapply",
+            "--reapply",
+        ),
+        ("workflow frobnicate", "reset-points"),
+    ] {
+        let error = parse(&argv(line)).expect_err(line);
+        assert!(error.0.contains(mentions), "{line}: {}", error.0);
+    }
 }

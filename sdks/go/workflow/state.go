@@ -32,6 +32,10 @@ type UpdateDefinition struct {
 	Result       string
 	ResultSchema map[string]any
 	Disclosure   DisclosurePolicy
+	// ReapplyOnReset keeps the arguments of every applied instance of this Update so a reset can validate and
+	// apply them again. It is written into the document only when true; a server publishes it only when its
+	// capability is on.
+	ReapplyOnReset bool
 }
 
 // StateDefinition declares bounded business state and its named operations.
@@ -345,6 +349,9 @@ func (b *Builder) State(definition StateDefinition) *Builder {
 					return b.fail(err)
 				}
 				entry["validate"] = validator
+			}
+			if update.ReapplyOnReset {
+				entry["reapplyOnReset"] = true
 			}
 			updates[name] = entry
 		}

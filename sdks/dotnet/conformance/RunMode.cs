@@ -6,7 +6,7 @@ using SagatOctopusOrchestrator.Sdk.Workers;
 namespace SagatOctopusOrchestrator.Sdk.Conformance;
 
 /// <summary>`run.sh run`: plays a scenario against the platform with the public API of the SDK and writes what it observed.</summary>
-internal sealed class RunMode : IAsyncDisposable
+internal sealed partial class RunMode : IAsyncDisposable
 {
     private readonly JsonObject scenario;
     private readonly JsonObject config;
@@ -175,7 +175,7 @@ internal sealed class RunMode : IAsyncDisposable
     {
         if (step["page"] is JsonValue pageKey && pageKey.TryGetValue<string>(out var page))
         {
-            // A segment of a page of listChainRuns, by position.
+            // An item of an earlier step's page (a segment of listChainRuns, an action of scheduleActions), by position, for every op that names a run.
             var index = (int?)step["index"] ?? 0;
             return results.TryGetValue(page, out var listed) && listed["items"] is JsonArray items && index >= 0 && index < items.Count
                 && items[index] is JsonObject segment && segment["runId"] is JsonValue segmentId && segmentId.TryGetValue<string>(out var segmentRun)
@@ -254,7 +254,19 @@ internal sealed class RunMode : IAsyncDisposable
 
         foreach (var stepNode in scenario["steps"]!.AsArray())
         {
-            var step = stepNode!.AsObject();
+            var given = stepNode!.AsObject();
+            JsonObject step;
+            try
+            {
+                step = Refs(given)!.AsObject();
+            }
+            catch (InvalidOperationException error)
+            {
+                // A reference to a step that failed is a failure of this step, recorded like any other.
+                observations.Add(new JsonObject { ["id"] = (string)given["id"]!, ["op"] = (string)given["op"]!, ["ok"] = false, ["error"] = ErrorJson(error) });
+                continue;
+            }
+
             var observation = new JsonObject { ["id"] = (string)step["id"]!, ["op"] = (string)step["op"]! };
             if (Environment.GetEnvironmentVariable("SAGAT_RUNNER_TRACE") is { Length: > 0 })
             {
@@ -329,13 +341,25 @@ internal sealed class RunMode : IAsyncDisposable
             case "start":
                 {
                     var workflowId = (string)config["workflows"]![(string)step["workflow"]!]!["workflowId"]!;
-                    return RunJson(await client.StartAsync(workflowId, step["input"]?.DeepClone() ?? new JsonObject(), new StartOptions
+                    var started = await client.StartAsync(workflowId, step["input"]?.DeepClone() ?? new JsonObject(), new StartOptions
                     {
                         IdempotencyKey = (string?)step["idempotencyKey"],
                         CorrelationId = (string?)step["correlationId"],
                         Traceparent = (string?)step["traceparent"],
                         DeadlineIn = step["deadlineInMs"] is { } deadline ? TimeSpan.FromMilliseconds((long)deadline) : null,
-                    }, cancellationToken).ConfigureAwait(false));
+                        BusinessId = (string?)step["businessId"],
+                        BusinessIdConflictPolicy = (string?)step["businessIdConflictPolicy"],
+                        BusinessIdReusePolicy = (string?)step["businessIdReusePolicy"],
+                        StartDelay = DelayOf(step),
+                    }, cancellationToken).ConfigureAwait(false);
+                    var observed = RunJson(started);
+                    // "started" only when the step asked for a business identifier: the other observations stay as they were.
+                    if (step["businessId"] is not null)
+                    {
+                        observed["started"] = started.Started;
+                    }
+
+                    return observed;
                 }
 
             case "startWithBlob":
@@ -741,7 +765,7 @@ internal sealed class RunMode : IAsyncDisposable
                 }
 
             default:
-                throw new InvalidOperationException($"unknown step op {(string)step["op"]!}");
+                return await OperationAsync(step, client, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -831,6 +855,34 @@ internal sealed class RunMode : IAsyncDisposable
         if (run.RerunOf is { } origin)
         {
             observed["rerunOf"] = origin;
+        }
+
+        // Present only for a run started under a business identifier, or held by a start delay.
+        if (run.BusinessId is { } businessId)
+        {
+            observed["businessId"] = businessId;
+        }
+
+        if (run.StartDelayedUntil is { } delayedUntil)
+        {
+            observed["startDelayedUntil"] = Iso(delayedUntil);
+        }
+
+        // Present only for a run a schedule started, or a reset made.
+        if (run.Schedule is { } schedule)
+        {
+            observed["schedule"] = new JsonObject
+            {
+                ["scheduleId"] = schedule.ScheduleId,
+                ["nominalTime"] = Iso(schedule.NominalTime),
+                ["kind"] = schedule.Kind,
+                ["revision"] = schedule.Revision,
+            };
+        }
+
+        if (run.ResetFrom is { } resetFrom)
+        {
+            observed["resetFrom"] = new JsonObject { ["runId"] = resetFrom.RunId, ["sequence"] = resetFrom.Sequence };
         }
 
         return observed;

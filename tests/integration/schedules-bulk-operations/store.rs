@@ -5,7 +5,8 @@
 use sagat_application::error::{ConflictKind, StoreError};
 use sagat_application::schedule_codec::{policies_from_json, spec_from_json, target_from_json};
 use sagat_application::schedules::{
-    NewSchedule, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore, StoredInput,
+    NewSchedule, ScheduleFilter, ScheduleOrigin, ScheduleRecord, ScheduleState, ScheduleStore,
+    StoredInput,
 };
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::definition::WorkflowId;
@@ -388,7 +389,7 @@ async fn an_input_is_kept_as_a_payload_of_the_tenant_and_shared_by_digest() {
             .expect("payloads");
     assert_eq!(stored, 1, "the same input is one payload");
     let read = store
-        .schedules(w.tenant, w.namespace, None, 10)
+        .schedules(w.tenant, w.namespace, &ScheduleFilter::default(), None, 10)
         .await
         .expect("list");
     assert!(read.iter().all(|s| s.input_digest == Some(sha256(&body))));
@@ -436,7 +437,7 @@ async fn a_schedule_of_another_tenant_is_never_seen() {
     );
     assert!(
         store
-            .schedules(stranger, w.namespace, None, 10)
+            .schedules(stranger, w.namespace, &ScheduleFilter::default(), None, 10)
             .await
             .expect("list")
             .is_empty()
@@ -468,7 +469,7 @@ async fn the_list_pages_by_id_and_hides_deleted_schedules() {
     ids.reverse();
 
     let first = store
-        .schedules(w.tenant, w.namespace, None, 3)
+        .schedules(w.tenant, w.namespace, &ScheduleFilter::default(), None, 3)
         .await
         .expect("page 1");
     assert_eq!(
@@ -476,13 +477,180 @@ async fn the_list_pages_by_id_and_hides_deleted_schedules() {
         ids[..3].to_vec()
     );
     let second = store
-        .schedules(w.tenant, w.namespace, Some(first[2].id), 3)
+        .schedules(
+            w.tenant,
+            w.namespace,
+            &ScheduleFilter::default(),
+            Some(first[2].id),
+            3,
+        )
         .await
         .expect("page 2");
     assert_eq!(
         second.iter().map(|s| s.id).collect::<Vec<_>>(),
         ids[3..].to_vec()
     );
+}
+
+#[tokio::test]
+async fn a_listing_is_narrowed_by_every_part_of_the_filter_and_keeps_its_order_and_its_pages() {
+    let w = world().await;
+    let store = PgScheduleStore::new(w.db.pool.clone());
+    // five schedules: two workflows, one of them owned by a trigger, one of them paused
+    let shared = WorkflowId::generate();
+    let mut made: Vec<ScheduleRecord> = Vec::new();
+    for name in [
+        "nightly-a",
+        "nightly-b",
+        "weekly-a",
+        "trigger-a",
+        "paused-a",
+    ] {
+        let mut rec = record(&w, name);
+        if name != "weekly-a" {
+            rec.target =
+                target_from_json(&json!({"workflowId": shared.to_string()})).expect("target");
+        }
+        if name == "trigger-a" {
+            rec.origin = ScheduleOrigin::Trigger;
+            rec.trigger_id = Some(uuid::Uuid::now_v7());
+        }
+        store
+            .create_schedule(&new(rec.clone()), 20, &audit(&w, &rec))
+            .await
+            .expect("create");
+        made.push(rec);
+    }
+    sqlx::query("UPDATE schedules SET state = 'PAUSED' WHERE tenant_id = $1 AND id = $2")
+        .bind(w.tenant.as_uuid())
+        .bind(made[4].id.as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .expect("pause");
+
+    let names = |filter: ScheduleFilter, after: Option<ScheduleId>, limit: u32| {
+        let store = &store;
+        let (tenant, namespace) = (w.tenant, w.namespace);
+        async move {
+            store
+                .schedules(tenant, namespace, &filter, after, limit)
+                .await
+                .expect("a listing")
+                .into_iter()
+                .map(|s| s.name.as_str().to_owned())
+                .collect::<Vec<_>>()
+        }
+    };
+    let by = |change: &dyn Fn(&mut ScheduleFilter)| {
+        let mut filter = ScheduleFilter::default();
+        change(&mut filter);
+        filter
+    };
+    // newest first
+    let all = [
+        "paused-a",
+        "trigger-a",
+        "weekly-a",
+        "nightly-b",
+        "nightly-a",
+    ];
+    assert_eq!(names(ScheduleFilter::default(), None, 10).await, all);
+    assert_eq!(
+        names(by(&|f| f.state = Some(ScheduleState::Paused)), None, 10).await,
+        ["paused-a"]
+    );
+    assert_eq!(
+        names(by(&|f| f.state = Some(ScheduleState::Active)), None, 10).await,
+        ["trigger-a", "weekly-a", "nightly-b", "nightly-a"]
+    );
+    assert_eq!(
+        names(by(&|f| f.origin = Some(ScheduleOrigin::Trigger)), None, 10).await,
+        ["trigger-a"]
+    );
+    assert_eq!(
+        names(by(&|f| f.origin = Some(ScheduleOrigin::Api)), None, 10).await,
+        ["paused-a", "weekly-a", "nightly-b", "nightly-a"]
+    );
+    assert_eq!(
+        names(
+            by(&|f| f.workflow = Some(made[2].target.workflow().as_uuid())),
+            None,
+            10
+        )
+        .await,
+        ["weekly-a"]
+    );
+    assert_eq!(
+        names(
+            by(&|f| f.name_prefix = Some("nightly-".to_owned())),
+            None,
+            10
+        )
+        .await,
+        ["nightly-b", "nightly-a"]
+    );
+    assert!(
+        names(by(&|f| f.name_prefix = Some("a".to_owned())), None, 10)
+            .await
+            .is_empty(),
+        "a name is matched by its start, not anywhere in it"
+    );
+    assert_eq!(
+        names(
+            by(&|f| {
+                f.name_prefix = Some("nightly-".to_owned());
+                f.state = Some(ScheduleState::Active);
+                f.origin = Some(ScheduleOrigin::Api);
+                f.workflow = Some(shared.as_uuid());
+            }),
+            None,
+            10
+        )
+        .await,
+        ["nightly-b", "nightly-a"],
+        "every part given has to hold"
+    );
+    assert!(
+        names(
+            by(&|f| {
+                f.name_prefix = Some("weekly-".to_owned());
+                f.workflow = Some(shared.as_uuid());
+            }),
+            None,
+            10
+        )
+        .await
+        .is_empty()
+    );
+
+    // a page of a filtered listing ends where the next begins, whichever part filters it: paging one
+    // at a time gives the listing as a whole, none skipped and none twice
+    let filters: Vec<(&str, ScheduleFilter)> = vec![
+        ("state", by(&|f| f.state = Some(ScheduleState::Active))),
+        ("origin", by(&|f| f.origin = Some(ScheduleOrigin::Api))),
+        ("workflow", by(&|f| f.workflow = Some(shared.as_uuid()))),
+        ("name", by(&|f| f.name_prefix = Some("nightly-".to_owned()))),
+        ("none", ScheduleFilter::default()),
+    ];
+    for (part, filter) in filters {
+        let whole = names(filter.clone(), None, 50).await;
+        assert!(whole.len() >= 2, "{part}: something to page through");
+        let mut paged = Vec::new();
+        let mut after = None;
+        for _ in 0..10 {
+            let page = store
+                .schedules(w.tenant, w.namespace, &filter, after, 1)
+                .await
+                .expect("a page");
+            let Some(last) = page.last() else { break };
+            after = Some(last.id);
+            paged.extend(page.iter().map(|s| s.name.as_str().to_owned()));
+        }
+        assert_eq!(
+            paged, whole,
+            "{part}: one at a time gives the listing as a whole"
+        );
+    }
 }
 
 #[tokio::test]
@@ -502,7 +670,7 @@ async fn the_runtime_role_can_do_all_of_it() {
     );
     assert_eq!(
         store
-            .schedules(w.tenant, w.namespace, None, 10)
+            .schedules(w.tenant, w.namespace, &ScheduleFilter::default(), None, 10)
             .await
             .expect("list")
             .len(),

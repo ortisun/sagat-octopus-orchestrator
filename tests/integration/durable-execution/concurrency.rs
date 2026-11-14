@@ -378,13 +378,18 @@ async fn a_poll_never_waits_for_a_run_that_another_transaction_holds() {
         "polling blocked for {:?}",
         started.elapsed()
     );
-    drop(held); // rolls back
-
-    assert_eq!(
-        w.poll(&session, 4).await.len(),
-        1,
-        "and picked up as soon as it is free"
-    );
+    // Dropping the transaction only starts its rollback: the connection sends it on its own time, and
+    // until the server has read it the row is still locked and a poll skips the run (it did, on a busy
+    // runner, and the test saw 0 where it expected 1). The run is picked up once the lock is gone, so
+    // the poll is repeated until then, with a bound.
+    drop(held);
+    let give_up = Instant::now() + Duration::from_secs(60);
+    let mut picked = w.poll(&session, 4).await.len();
+    while picked == 0 && Instant::now() < give_up {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        picked = w.poll(&session, 4).await.len();
+    }
+    assert_eq!(picked, 1, "and picked up once it is free");
 }
 
 #[tokio::test]

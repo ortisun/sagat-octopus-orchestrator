@@ -15,6 +15,7 @@ mod instance;
 mod operations;
 mod path_state;
 mod plan;
+mod reset;
 mod sagas;
 mod scoped_controls;
 mod scoped_event_waits;
@@ -42,11 +43,12 @@ pub use command::{
     fail_step, fail_step_for_storage_quota, fail_unentered_loop, finish_child, fire_timer,
     heartbeat, heartbeat_instance, heartbeat_path_instance, lease_instance, lease_path_instance,
     lease_step, mark_for_review, mark_for_review_instance, mark_for_review_path_instance,
-    pause_run, prepare_scoped_content_refusal, prepare_scoped_output_refusal, release_pending,
-    resolve, resolve_review, resolve_review_instance, resolve_review_path_instance, resume_run,
-    retry_due, retry_due_instance, retry_due_path_instance, retry_review, retry_review_instance,
-    retry_review_path_instance, satisfy_wait, skip_review, skip_review_instance,
-    skip_review_path_instance, start_run, stop_for_storage_quota, stop_run, time_out_wait,
+    pause_run, prepare_scoped_content_refusal, prepare_scoped_output_refusal, record_reset,
+    release_pending, release_start, resolve, resolve_review, resolve_review_instance,
+    resolve_review_path_instance, resume_run, retry_due, retry_due_instance,
+    retry_due_path_instance, retry_review, retry_review_instance, retry_review_path_instance,
+    satisfy_wait, skip_review, skip_review_instance, skip_review_path_instance, start_run,
+    start_run_delayed, stop_for_storage_quota, stop_run, time_out_wait,
 };
 pub use continuation::{
     CancelResolution, ChainError, ChainFinalOutcome, ChainHandoff, ChainPolicy, ChainScope,
@@ -58,8 +60,8 @@ pub use error::ExecutionError;
 pub use event::{
     AddressedRunEvent, Cause, ChildOutcome, CollectionDrainReason, CollectionOutcome,
     CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, LoopContinuation,
-    LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent,
-    ScopedPlannedEntry, StopReason, SwitchSelection,
+    LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ResetReapply,
+    ReviewOutcome, RunEvent, ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,
@@ -76,6 +78,11 @@ pub use path_state::{
     PathLoopState, PathScopeSagaState,
 };
 pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed, plan_path};
+pub use reset::{
+    EffectMarkers, RULES as RESET_RULES, ReexecutedStep, ResetBlock, ResetId, ResetPlan,
+    ResetPoint, ResetPoints, ResetRefusal, ResetRule, RestoredStep, reset_plan, reset_points,
+    rule_by_name, rule_of,
+};
 pub use scoped_controls::{resolve_control_instance, resolve_control_path_instance};
 pub use scoped_event_waits::{
     satisfy_event_wait_instance, satisfy_event_wait_path_instance, scoped_event_wait_since,

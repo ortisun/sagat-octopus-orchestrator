@@ -414,3 +414,269 @@ async fn a_recovery_is_whole_and_bounded() {
         assert!(refused.is_err(), "{why} is refused");
     }
 }
+// --- the schedule of a cron trigger (US07, the rest of T018-029) ---------------------------------------------------------
+
+mod trigger_owned {
+    //! The schedule of a cron trigger after an outage: catch-up `ONE` over a window of 366 days. One run for the outage, the
+    //! other times summarised, the key of the earliest time acted on as feature 004 keys it, and the same run the legacy
+    //! cron pass makes of the same outage.
+    use sagat_application::schedule_firing::Fired;
+    use time::{Duration, OffsetDateTime};
+    use uuid::Uuid;
+
+    use crate::support::trigger_schedules::{Triggers, cron_workflow, triggers};
+
+    /// Midnight UTC `days` days before `now`, in whole seconds: an instant that goes through the database (microseconds) and one that does
+    /// not (nanoseconds on Linux, microseconds on macOS) are equal, so that a test never compares the text of one with the text of the other.
+    fn midnight_from(now: OffsetDateTime, days: i64) -> OffsetDateTime {
+        let now = now.unix_timestamp();
+        OffsetDateTime::from_unix_timestamp(now - now % 86_400 - days * 86_400).expect("instant")
+    }
+
+    /// Midnight UTC `days` days ago.
+    fn midnight(days: i64) -> OffsetDateTime {
+        midnight_from(OffsetDateTime::now_utc(), days)
+    }
+
+    async fn keys(t: &Triggers, trigger: Uuid) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT idempotency_key FROM command_dedupe WHERE scope = $1 ORDER BY idempotency_key",
+        )
+        .bind(format!("trigger:{trigger}"))
+        .fetch_all(&t.w.db.pool)
+        .await
+        .expect("keys")
+    }
+
+    #[tokio::test]
+    async fn an_outage_inside_the_window_is_one_run_at_the_earliest_time_and_the_same_run_the_legacy_pass_makes()
+     {
+        // the schedule pass
+        let t = triggers().await;
+        let (workflow, _) = t.publish(cron_workflow("outage", "0 0 * * *", "UTC")).await;
+        let (trigger, ..) = t.trigger_of("outage").await;
+        t.reconcile().await;
+        let schedule = t.schedule_of(trigger).await.expect("schedule");
+        let first = midnight(40);
+        t.due_at(trigger, &schedule, first).await;
+        t.clock.set(OffsetDateTime::now_utc());
+        let mut steps = 0;
+        for _ in 0..20 {
+            match t.fire(&schedule).await {
+                Fired::Acted => steps += 1,
+                _ => break,
+            }
+        }
+        assert!(steps >= 1);
+        let runs = t.runs_of(workflow).await;
+        assert_eq!(runs.len(), 1, "one run for the whole outage");
+        assert_eq!(
+            keys(&t, trigger).await,
+            [format!("cron-{}", first.unix_timestamp())],
+            "the key of the earliest missed time"
+        );
+        let actions = t.actions_of(&schedule).await;
+        let (started, coalesced): (Vec<_>, Vec<_>) = actions
+            .iter()
+            .partition(|(_, outcome, _)| outcome == "STARTED");
+        assert_eq!((started.len(), started[0].0), (1, first));
+        assert_eq!(
+            coalesced.len(),
+            1,
+            "the other times are one summary: {actions:?}"
+        );
+        assert_eq!(coalesced[0].1, "COALESCED");
+        let counted: i32 = sqlx::query_scalar(
+            "SELECT summary_count FROM schedule_actions WHERE schedule_id = $1 AND outcome = 'COALESCED'",
+        )
+        .bind(schedule.id.as_uuid())
+        .fetch_one(&t.w.db.pool)
+        .await
+        .expect("count");
+        assert!(
+            counted >= 39,
+            "every missed time after the first is counted: {counted}"
+        );
+        assert!(t.read(&schedule).await.next_action_at.expect("next") > OffsetDateTime::now_utc());
+
+        // the legacy pass, over the same outage in a world of its own
+        let l = triggers().await;
+        let (legacy_workflow, _) = l.publish(cron_workflow("outage", "0 0 * * *", "UTC")).await;
+        let (legacy_trigger, ..) = l.trigger_of("outage").await;
+        sqlx::query("UPDATE workflow_triggers SET next_fire_at = $2 WHERE id = $1")
+            .bind(legacy_trigger)
+            .bind(first)
+            .execute(&l.w.db.pool)
+            .await
+            .expect("due");
+        assert_eq!(l.w.dispatcher.tick().await.runs_started, 1);
+        assert_eq!(l.runs_of(legacy_workflow).await.len(), 1);
+        assert_eq!(
+            keys(&l, legacy_trigger).await,
+            [format!("cron-{}", first.unix_timestamp())],
+            "the same key, for the same time"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_outage_longer_than_the_window_summarises_what_is_older_than_366_days_and_acts_on_the_earliest_time_inside_it()
+     {
+        let t = triggers().await;
+        let (workflow, _) = t.publish(cron_workflow("long", "0 0 * * *", "UTC")).await;
+        let (trigger, ..) = t.trigger_of("long").await;
+        t.reconcile().await;
+        let schedule = t.schedule_of(trigger).await.expect("schedule");
+        t.due_at(trigger, &schedule, midnight(400)).await;
+        t.clock.set(OffsetDateTime::now_utc());
+        for _ in 0..30 {
+            if t.fire(&schedule).await != Fired::Acted {
+                break;
+            }
+        }
+        assert_eq!(t.runs_of(workflow).await.len(), 1);
+        let rows: Vec<(String, Option<i32>)> = sqlx::query_as(
+            "SELECT outcome, summary_count FROM schedule_actions WHERE schedule_id = $1 ORDER BY nominal_at",
+        )
+        .bind(schedule.id.as_uuid())
+        .fetch_all(&t.w.db.pool)
+        .await
+        .expect("actions");
+        let outcomes: Vec<&str> = rows.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(
+            outcomes,
+            ["MISSED_CATCHUP_WINDOW", "STARTED", "COALESCED"],
+            "older than the window is missed, the earliest inside it starts, the rest is one summary: {rows:?}"
+        );
+        let missed = rows[0].1.expect("count");
+        assert!(
+            (33..=35).contains(&missed),
+            "about 34 daily times fall outside the 366 days: {missed}"
+        );
+        // the key is that of the time acted on, which is the first one inside the window
+        let key = keys(&t, trigger).await;
+        assert_eq!(key.len(), 1);
+        let epoch: i64 = key[0].trim_start_matches("cron-").parse().expect("epoch");
+        let acted = OffsetDateTime::from_unix_timestamp(epoch).expect("instant");
+        let cutoff = OffsetDateTime::now_utc() - Duration::days(366);
+        assert!(
+            acted >= cutoff && acted < cutoff + Duration::days(1) + Duration::seconds(1),
+            "{acted} {cutoff}"
+        );
+    }
+
+    /// What the schedule pass made of an outage that began `days` days ago (a daily trigger, due since that midnight): the outcomes in
+    /// order of time, with the counts of the summaries, the keys of the runs it started, how many runs there are, and the instant that
+    /// "now" was for the whole of it (read once: a test that crossed midnight UTC would otherwise disagree with its own keys).
+    async fn after_an_outage_of(
+        days: i64,
+    ) -> (
+        Vec<(String, Option<i32>)>,
+        Vec<String>,
+        usize,
+        OffsetDateTime,
+    ) {
+        let now = OffsetDateTime::now_utc();
+        let t = triggers().await;
+        let (workflow, _) = t.publish(cron_workflow("edge", "0 0 * * *", "UTC")).await;
+        let (trigger, ..) = t.trigger_of("edge").await;
+        t.reconcile().await;
+        let schedule = t.schedule_of(trigger).await.expect("schedule");
+        t.due_at(trigger, &schedule, midnight_from(now, days)).await;
+        t.clock.set(now);
+        for _ in 0..30 {
+            if t.fire(&schedule).await != Fired::Acted {
+                break;
+            }
+        }
+        let rows: Vec<(String, Option<i32>)> = sqlx::query_as(
+            "SELECT outcome, summary_count FROM schedule_actions WHERE schedule_id = $1 ORDER BY nominal_at",
+        )
+        .bind(schedule.id.as_uuid())
+        .fetch_all(&t.w.db.pool)
+        .await
+        .expect("actions");
+        (
+            rows,
+            keys(&t, trigger).await,
+            t.runs_of(workflow).await.len(),
+            now,
+        )
+    }
+
+    #[tokio::test]
+    async fn an_outage_of_365_days_is_inside_the_window_whole_one_run_at_the_earliest_time_and_no_time_is_missed()
+     {
+        let (rows, keys, runs, now) = after_an_outage_of(365).await;
+        assert_eq!(runs, 1, "one run for the whole outage: {rows:?}");
+        let outcomes: Vec<&str> = rows.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(
+            outcomes,
+            ["STARTED", "COALESCED"],
+            "nothing is older than the window: {rows:?}"
+        );
+        assert_eq!(
+            keys,
+            [format!("cron-{}", midnight_from(now, 365).unix_timestamp())],
+            "the key of the earliest missed time"
+        );
+        assert!(
+            rows[1].1.expect("count") >= 364,
+            "every later time is in the summary: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_outage_that_began_366_days_ago_misses_the_one_time_older_than_the_window_and_acts_on_the_next()
+     {
+        let (rows, keys, runs, now) = after_an_outage_of(366).await;
+        assert_eq!(runs, 1, "{rows:?}");
+        let outcomes: Vec<&str> = rows.iter().map(|(o, _)| o.as_str()).collect();
+        assert_eq!(
+            outcomes,
+            ["MISSED_CATCHUP_WINDOW", "STARTED", "COALESCED"],
+            "{rows:?}"
+        );
+        assert_eq!(
+            rows[0].1,
+            Some(1),
+            "the midnight of 366 days ago is older than the window by the hours of today that have passed"
+        );
+        assert_eq!(
+            keys,
+            [format!("cron-{}", midnight_from(now, 365).unix_timestamp())],
+            "the earliest time inside the window is the one acted on"
+        );
+    }
+
+    /// The same outage, longer than the window, in a world where the legacy pass runs it: one run, at the oldest missed
+    /// tick whatever its age (D2040). The schedule pass makes one run too, so the handover does not make a catch-up bigger.
+    #[tokio::test]
+    async fn the_legacy_pass_over_an_outage_of_400_days_makes_one_run_at_the_oldest_tick_and_the_schedule_pass_one_too()
+     {
+        let l = triggers().await;
+        let (legacy_workflow, _) = l.publish(cron_workflow("outage", "0 0 * * *", "UTC")).await;
+        let (legacy_trigger, ..) = l.trigger_of("outage").await;
+        let oldest = midnight(400);
+        sqlx::query("UPDATE workflow_triggers SET next_fire_at = $2 WHERE id = $1")
+            .bind(legacy_trigger)
+            .bind(oldest)
+            .execute(&l.w.db.pool)
+            .await
+            .expect("due");
+        assert_eq!(l.w.dispatcher.tick().await.runs_started, 1);
+        assert_eq!(l.runs_of(legacy_workflow).await.len(), 1);
+        assert_eq!(
+            keys(&l, legacy_trigger).await,
+            [format!("cron-{}", oldest.unix_timestamp())],
+            "the legacy pass fires the oldest missed tick, a year and more late"
+        );
+        // and the schedule pass: one run too, at the earliest time inside the window, which is the midnight of 365 days ago
+        let (rows, keys, runs, now) = after_an_outage_of(400).await;
+        assert_eq!(runs, 1, "{rows:?}");
+        assert_eq!(
+            keys,
+            [format!("cron-{}", midnight_from(now, 365).unix_timestamp())],
+            "the earliest time inside the window, not the oldest tick: {rows:?}"
+        );
+    }
+}

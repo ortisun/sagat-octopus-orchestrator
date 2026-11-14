@@ -1,0 +1,65 @@
+rule_files:
+  - /rules/alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # a process whose gate is closed for more than five minutes: the alert fires, with the runbook of the refusal
+  - interval: 1m
+    input_series:
+      - series: 'instance_registry_gate_open{instance="engine-a:9091"}'
+        values: '1 1 1 0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SagatInstanceGateClosed
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: SagatInstanceGateClosed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: engine-a:9091
+            exp_annotations:
+              summary: A process has served nothing for five minutes because the instance registry does not let it.
+              runbook: docs/runbooks/instance-registry.md#2-a-process-is-refused
+
+  # a gate that closes for a minute (a refusal that clears on the next try) and a process that serves: no alert
+  - interval: 1m
+    input_series:
+      - series: 'instance_registry_gate_open{instance="cp-a:9090"}'
+        values: '1 1 0 0 1x20'
+      - series: 'instance_registry_gate_open{instance="cp-b:9090"}'
+        values: '1x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SagatInstanceGateClosed
+        exp_alerts: []
+
+  # the registry stops answering a process: its last beat gets older, and the alert fires after a minute beyond thirty seconds
+  - interval: 10s
+    input_series:
+      - series: 'instance_registry_last_beat_age_seconds{instance="engine-a:9091"}'
+        values: '0 5 10 15 20 25 30 35 40 45 50 55 60 65 70 75 80 85 90 95 100'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SagatInstanceRegistrySilent
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: SagatInstanceRegistrySilent
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: engine-a:9091
+            exp_annotations:
+              summary: A process has not been able to tell the instance registry that it is alive for more than thirty seconds.
+              runbook: docs/runbooks/instance-registry.md#3-while-it-runs
+
+  # a process that beats every ten seconds: the age never passes thirty
+  - interval: 10s
+    input_series:
+      - series: 'instance_registry_last_beat_age_seconds{instance="cp-a:9090"}'
+        values: '0 4 8 2 6 0 5 9 3 7 1 5 9 4 8 2 6 0 5 9 3'
+    alert_rule_test:
+      - eval_time: 200s
+        alertname: SagatInstanceRegistrySilent
+        exp_alerts: []
