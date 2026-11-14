@@ -49,6 +49,29 @@
         "At most one top-level and 16 node-level declarations by default (64 ceiling)."
       ]
     },
+    "rateLimitPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limit", "per"],
+      "description": "Release 0.3.0 slice, US07 (FR-022-039..050, ADR-0088). Merge instructions: add `rateLimit` to the properties of `activity` and `script` (root nodes only; body variants do NOT gain it: UNSUPPORTED_NODE with dependency SCOPED_RATE_LIMIT) and as a top-level property, beside `concurrency`. Gated by the capability rateLimits, separately from concurrencyKeys.",
+      "properties": {
+        "limit": {"type": "integer", "minimum": 1, "maximum": 10000, "description": "At most this many grants of one key may count in any window of `per` on the database clock (the acquiring definition's value, clamped by policy). Ceiling by window: 100 per second, 6000 per minute, 10000 per hour."},
+        "per": {"enum": ["second", "minute", "hour"], "description": "The length of the sliding window. Top level: a grant counts from the instant the run is granted. Node level: from the instant the attempt is leased, and without end while granted and not yet leased."},
+        "key": {
+          "$ref": "#/$defs/expression",
+          "description": "Top level: over `input`. Node level: over the run data when the step would become ready. Same bounds, keyed digest and label as concurrencyPolicy.key. Absent: one key for the whole group. A top-level key that cannot be evaluated ends the new run FAILED with EXPRESSION_ERROR."
+        },
+        "group": {"type": "string", "pattern": "^[a-z][a-z0-9.-]{0,63}$", "description": "Default: derived from the workflow name (top level) or the workflow name and node id (node level). Definitions of one namespace that name the same group at the same level share its window, each applying its own limit and per. A rate-limit group and a concurrency group of the same name are unrelated."},
+        "queueTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 86400000, "default": 600000, "description": "How long a buffered run (top level) or a step waiting for a slot (node level) waits before failing with RATE_LIMIT_WAIT_TIMEOUT. Must not exceed the run deadline. With a top-level concurrency too, the run waits once, until the earlier of the two deadlines."}
+      },
+      "x-semantic-rules": [
+        "RATE_LIMIT_POLICY_INVALID: limit above the ceiling of its per, bad group or timeout, top-level key reading other data than input.",
+        "Refused together with continueAsNew (FLOW_CONTROL_COMBINATION).",
+        "Warning RATE_LIMIT_MISMATCH when an explicit group is declared elsewhere in the namespace with a different limit or per.",
+        "No burst field: the window is strict (research O1163, decided by the owner).",
+        "At most one top-level and 16 node-level declarations by default (64 ceiling)."
+      ]
+    },
     "onFailure": {
       "type": "object",
       "additionalProperties": false,
@@ -106,6 +129,19 @@
         {"id": "price", "type": "activity", "activity": "catalog.price", "cache": {"key": "input.sku", "ttlSeconds": 300}, "next": "ack"},
         {"id": "ack", "type": "earlyReturn", "result": "steps.price.output", "next": "notify"},
         {"id": "notify", "type": "activity", "activity": "crm.notify", "concurrency": {"key": "input.accountId", "limit": 2}, "next": "done"},
+        {"id": "done", "type": "end"}
+      ]
+    },
+    {
+      "$comment": "Release 0.3.0 slice fixture (US02 and US07): tests/contract/flow-control-step-policies/fixtures/provider-sync.workflow.json.",
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "kind": "Workflow",
+      "metadata": {"name": "provider-sync"},
+      "entrypoint": "fetch",
+      "concurrency": {"key": "input.accountId", "limit": 1},
+      "rateLimit": {"group": "provider-starts", "key": "input.providerId", "limit": 100, "per": "minute", "queueTimeoutMs": 900000},
+      "nodes": [
+        {"id": "fetch", "type": "activity", "activity": "provider.fetch", "rateLimit": {"key": "input.providerId", "limit": 10, "per": "second"}, "next": "done"},
         {"id": "done", "type": "end"}
       ]
     }

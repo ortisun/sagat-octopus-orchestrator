@@ -60,6 +60,26 @@ unchecked item states why.
 | FR-022-031..036 | SC-022-010..014 | T022-005, 006, 011–014, 048–062, 065 |
 | FR-022-037 | SC-022-016 | T022-016, 063 |
 | FR-022-038 | SC-022-015 | T022-008, 064 |
+| FR-022-039..050, NFR-022-007..008 (US07, release 0.3.0 slice, added 2026-11-13) | SC-022-017..023 | T022-066..090 |
+| FR-022-051..060 (review of 2026-11-13) | SC-022-024..029 | T022-091..107 |
+
+## Release 0.3.0 slice (author, 2026-11-13)
+
+Added for OD-2026-11-13-11; a reviewer still owns the final marks, and the three repository reviewers have
+not read the amendment.
+
+- [x] The new story has an independent test, Given/When/Then scenarios for the happy and failure paths,
+  and edge cases (US07).
+- [x] Every new requirement names an observable outcome and is traced to a success criterion and a task
+  (table above).
+- [x] Scope is bounded: what the slice leaves out is listed in spec.md, "Release 0.3.0 slice" and "Out of
+  Scope"; gaps G1174–G1183 state what is not covered or not measured.
+- [x] No [NEEDS CLARIFICATION] markers remain — the six owner choices O1163–O1168 were answered on
+  2026-11-13 (OD-2026-11-13-16, every recommendation accepted); the requirements were written for those answers.
+- [x] Reviewed — the `architecture-reviewer`, `security-reviewer` and `correctness-reviewer` read the slice
+  at `1a21cbdc` on 2026-11-13 (B4 M28 N24 in all); the records and the answer to each relayed finding are in
+  `reviews/2026-11-13/`. The revision itself has not been reviewed again, and ADR-0089 and O1169 need the
+  owner.
 
 ## Notes
 
