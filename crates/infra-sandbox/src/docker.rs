@@ -133,6 +133,24 @@ const OOM_FLAG_PAUSE: Duration = Duration::from_millis(50);
 /// Requests and secrets a script may ask its supervisor for in one run. Past it every ask is refused:
 /// a script in a loop must not make the supervisor do the same work as many times as it can ask.
 const MAX_HOST_CALLS: usize = 100;
+
+/// Whether the engine says, within a moment, that the container `name` was killed for its memory. The engine learns it
+/// from an event that can come after the one that says the container stopped, so a container that ended on a 137 without
+/// the flag is asked about again for up to two seconds. The inline-code sandbox and the lake engine both ask this way.
+pub(crate) async fn oom_flag_settles(docker: &Docker, name: &str) -> bool {
+    for _ in 0..OOM_FLAG_ATTEMPTS {
+        tokio::time::sleep(OOM_FLAG_PAUSE).await;
+        match within(docker.inspect_container(name, None)).await {
+            Some(Ok(info)) => {
+                if info.state.as_ref().and_then(|s| s.oom_killed) == Some(true) {
+                    return true;
+                }
+            }
+            _ => return false,
+        }
+    }
+    false
+}
 /// Distinct refusals kept for the record of a run.
 const MAX_DENIED: usize = 32;
 /// How long the log is read after the script has said its last word: standard output and standard
@@ -553,22 +571,6 @@ func Run(input any, client *octopus.Client) (any, error) {
         driven
     }
 
-    /// Whether the engine says, within a moment, that the container was killed for its memory.
-    async fn oom_flag_settles(&self, name: &str) -> bool {
-        for _ in 0..OOM_FLAG_ATTEMPTS {
-            tokio::time::sleep(OOM_FLAG_PAUSE).await;
-            match within(self.docker.inspect_container(name, None)).await {
-                Some(Ok(info)) => {
-                    if info.state.as_ref().and_then(|s| s.oom_killed) == Some(true) {
-                        return true;
-                    }
-                }
-                _ => return false,
-            }
-        }
-        false
-    }
-
     async fn drive_created<H: HostCalls>(
         &self,
         name: &str,
@@ -780,7 +782,7 @@ func Run(input any, client *octopus.Client) (any, error) {
                         // by SIGKILL on its own, when nothing of ours had asked it to stop and it had said
                         // nothing, is taken to have been killed for its memory, the one thing that kills a
                         // script that way inside its sandbox. That is an inference, and the only one made.
-                        driven.oom = self.oom_flag_settles(name).await || ended_alone;
+                        driven.oom = oom_flag_settles(&self.docker, name).await || ended_alone;
                     }
                     break;
                 }

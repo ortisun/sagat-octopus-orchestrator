@@ -29,7 +29,7 @@ use super::{
     ATTEMPT_LABEL, CLASS_LABEL, DEADLINE_LABEL, LABEL, MAX_SLOTS, MEMORY_LABEL, OWNER_LABEL,
     SLOT_LABEL, attempt_id_ok, class_ok, deadline_ok, owner_ok,
 };
-use crate::docker::{Removal, failed_at, within};
+use crate::docker::{Removal, failed_at, oom_flag_settles, within};
 
 /// How long the engine gets to end a container that was killed.
 const KILL_GRACE: Duration = Duration::from_secs(5);
@@ -269,6 +269,15 @@ impl LakeEngine {
                     if state.running != Some(true) || Instant::now() >= end {
                         exit.code = state.exit_code;
                         exit.oom_killed = state.oom_killed == Some(true);
+                        let stopped = state.running != Some(true);
+                        if ask_again_for_the_memory_flag(
+                            !exit.timed_out,
+                            stopped,
+                            exit.code,
+                            exit.oom_killed,
+                        ) {
+                            exit.oom_killed = oom_flag_settles(&self.docker, &name).await;
+                        }
                         break;
                     }
                 }
@@ -653,8 +662,10 @@ impl LakeEngine {
     /// Kills one container, reads the memory flag while it is still there, and removes it. Returns the flag and whether the
     /// container is gone (removed, or the engine said there is none).
     async fn end_one(&self, id: &str) -> (bool, bool) {
-        // An error here is "not running" or "not there", and the forced removal below ends the first anyway.
-        let _ = within(self.docker.kill_container(id, None::<KillContainerOptions>)).await;
+        // An error here is "not running" or "not there", and the forced removal below ends the first anyway. The engine
+        // refuses to kill a container that is not running (409): that one had ended before it was asked to.
+        let kill = within(self.docker.kill_container(id, None::<KillContainerOptions>)).await;
+        let ended_alone = matches!(&kill, Some(Err(error)) if conflict(error));
         let end = Instant::now() + KILL_GRACE;
         let mut memory_killed = false;
         loop {
@@ -662,7 +673,16 @@ impl LakeEngine {
                 Some(Ok(info)) => {
                     let state = info.state.unwrap_or_default();
                     memory_killed |= state.oom_killed == Some(true);
-                    if state.running != Some(true) || Instant::now() >= end {
+                    let stopped = state.running != Some(true);
+                    if stopped || Instant::now() >= end {
+                        if ask_again_for_the_memory_flag(
+                            ended_alone,
+                            stopped,
+                            state.exit_code,
+                            memory_killed,
+                        ) {
+                            memory_killed = oom_flag_settles(&self.docker, id).await;
+                        }
                         break;
                     }
                 }
@@ -819,6 +839,20 @@ fn not_found(error: &bollard::errors::Error) -> bool {
 fn parse_api_version(text: &str) -> Option<(u32, u32)> {
     let (major, minor) = text.split_once('.')?;
     Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// Whether a container whose memory flag the engine has not set is asked about it again: only one that ended by itself
+/// (nothing of ours killed it), has stopped, and ended on a SIGKILL (137), which is what the kernel's out-of-memory killer
+/// sends. The engine sets the flag from an event that can come a moment after the one that says the container stopped,
+/// and reading the flag once lost a memory kill on the CI's Linux. No inference is made: if the flag never comes, the
+/// answer stays no.
+const fn ask_again_for_the_memory_flag(
+    ended_alone: bool,
+    stopped: bool,
+    exit_code: Option<i64>,
+    flag: bool,
+) -> bool {
+    ended_alone && stopped && !flag && matches!(exit_code, Some(137))
 }
 
 /// Whether the engine refused the name because it has a container by it.
@@ -1112,5 +1146,34 @@ mod label_tests {
             ])))
             .is_some()
         );
+    }
+}
+
+#[cfg(test)]
+mod memory_flag_tests {
+    use super::ask_again_for_the_memory_flag;
+
+    #[test]
+    fn only_a_container_that_ended_alone_on_a_sigkill_without_the_flag_is_asked_again() {
+        assert!(ask_again_for_the_memory_flag(true, true, Some(137), false));
+        // the flag is already there
+        assert!(!ask_again_for_the_memory_flag(true, true, Some(137), true));
+        // our own kill sends 137 too: that is not the memory limit
+        assert!(!ask_again_for_the_memory_flag(
+            false,
+            true,
+            Some(137),
+            false
+        ));
+        // still running at the end of the grace, or an exit that is not a SIGKILL
+        assert!(!ask_again_for_the_memory_flag(
+            true,
+            false,
+            Some(137),
+            false
+        ));
+        assert!(!ask_again_for_the_memory_flag(true, true, Some(0), false));
+        assert!(!ask_again_for_the_memory_flag(true, true, Some(152), false));
+        assert!(!ask_again_for_the_memory_flag(true, true, None, false));
     }
 }
