@@ -86,6 +86,18 @@ ENVIRONMENT (serve):
     SAGAT_LAKE_ENABLED                let a run carry an Apache Iceberg write; the control plane has the same switch [false]
     SAGAT_SCHEDULES_BATCH             due schedules per round (1-5000) [100]
     SAGAT_SCHEDULES_POLL_MS           pause when a round found nothing [1000]
+    SAGAT_BATCHES_ENABLED             run batch jobs from this replica [false]
+    SAGAT_BATCHES_BATCH               due batch jobs per round (1-5000) [100]
+    SAGAT_BATCHES_ROUND_ACTIONS       steps one round takes over all its jobs (1-1000) [100]
+    SAGAT_BATCHES_POLL_MS             pause when a round found nothing, cut short when a job's next slot comes [1000]
+    SAGAT_RESET_CANCEL_SOURCE_ENABLED complete resets that wait for their source run to end from this replica (the
+                                      control plane accepts them under the same variable) [false]
+    SAGAT_RESET_CANCEL_SOURCE_BATCH   pending resets completed per round (1-1000) [100]
+    SAGAT_RESET_CANCEL_SOURCE_PER_TENANT  pending resets of any one tenant a round takes (1-1000) [10]
+    SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS  how long a pending reset waits for its source to end, from its request,
+                                      before it fails SOURCE_DID_NOT_END and frees its place; only the engine reads
+                                      it (3600-604800: an hour to seven days) [86400]
+    SAGAT_RESET_CANCEL_SOURCE_POLL_MS pause when a round found nothing [1000]
     SAGAT_SCHEDULER_CONCURRENCY       candidates of one pass acted on at once (1-64) [8]
     SAGAT_SCHEDULER_FAIRNESS          share each pass between tenants by weight; false takes the oldest
                                       candidates only (a diagnostic, for measuring) [true]

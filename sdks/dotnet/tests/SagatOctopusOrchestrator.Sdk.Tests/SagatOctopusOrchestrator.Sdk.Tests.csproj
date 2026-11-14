@@ -25,6 +25,8 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/SagatOctopusOrchestrator.Sdk/SagatOctopusOrchestrator.Sdk.csproj" />
+    <!-- The conformance runner, to prove what it passes to the typed SDK and what it prints (ConformanceRunnerTests). -->
+    <ProjectReference Include="../../conformance/SagatOctopusOrchestrator.Sdk.Conformance.csproj" />
     <!-- The fake worker service of the tests: server stubs of the same proto the SDK is built from. -->
     <Protobuf Include="../../proto/worker.proto" ProtoRoot="../../proto" GrpcServices="Server" Link="proto/worker.proto" />
   </ItemGroup>

@@ -371,6 +371,18 @@ pub struct ServeConfig {
     /// Whether the schedule routes exist (`SAGAT_SCHEDULES_ENABLED`, off by default until the
     /// feature is released). The engine fires schedules under the same flag.
     pub schedules_enabled: bool,
+    /// Whether the batch operation routes exist (`SAGAT_BATCHES_ENABLED`, off by default until the
+    /// feature is released); the engine runs the jobs under the same flag.
+    pub batches_enabled: bool,
+    /// Whether a reset may deliver again the signals and the Updates of its source, and a workflow may declare
+    /// an Update with `reapplyOnReset` (`SAGAT_RESET_REAPPLY_ENABLED`, off by default until the feature is
+    /// released). The engine has no such setting: it reads the versions it was given (D1990).
+    pub reset_reapply_enabled: bool,
+    /// Whether a reset may cancel a run that has not ended and wait for it (`sourcePolicy` `CANCEL_SOURCE`,
+    /// `SAGAT_RESET_CANCEL_SOURCE_ENABLED`, off by default until the feature is released); the engine completes the
+    /// resets that wait under the same flag. With it off, a request for an open source is refused
+    /// `RESET_CANCEL_SOURCE_NOT_AVAILABLE`; a retry of one that was accepted is still answered.
+    pub reset_cancel_source_enabled: bool,
     /// Whether a workflow may hold an Apache Iceberg write (`SAGAT_LAKE_ENABLED`, feature 035, off by default).
     /// With it off, publishing such a workflow is refused with `LAKE_DISABLED`. With it on, publication still
     /// waits for the checks of access, allowed modes and data classification.
@@ -414,6 +426,9 @@ pub struct ServeConfig {
     pub telemetry_lag_budget: Duration,
     pub blobs: Option<sagat_infra_blobstore::BlobSettings>,
     pub blob_transfer: sagat_api_http::HttpBlobTransfer,
+    /// How the process keeps its place in the instance-capability registry (`FR-018-052`). Not read from the
+    /// environment: a test sets it.
+    pub registry: sagat_application::instances::RegistrySettings,
 }
 
 impl ServeConfig {
@@ -571,6 +586,9 @@ impl ServeConfig {
         Ok(Self {
             redis_callbacks: flag(get, "SAGAT_REDIS_CALLBACKS_ENABLED")?,
             schedules_enabled: flag(get, "SAGAT_SCHEDULES_ENABLED")?,
+            batches_enabled: flag(get, "SAGAT_BATCHES_ENABLED")?,
+            reset_reapply_enabled: flag(get, "SAGAT_RESET_REAPPLY_ENABLED")?,
+            reset_cancel_source_enabled: flag(get, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")?,
             lake_enabled: flag(get, "SAGAT_LAKE_ENABLED")?,
             tls,
             webhook_oidc,
@@ -611,6 +629,7 @@ impl ServeConfig {
             telemetry_lag_budget: Duration::from_secs(
                 optional(get, "SAGAT_TELEMETRY_LAG_BUDGET_SECS", 30u64)?.max(1),
             ),
+            registry: sagat_application::instances::RegistrySettings::default(),
             runbook_base: get("SAGAT_RUNBOOK_BASE_URL")
                 .map(|v| v.trim().to_owned())
                 .filter(|v| !v.is_empty())

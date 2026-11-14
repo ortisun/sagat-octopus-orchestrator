@@ -4,6 +4,7 @@
 //! new admissions while what exists keeps firing.
 #![allow(clippy::expect_used, clippy::panic)]
 
+use sagat_domain::quota::QuotaResource;
 use std::sync::Arc;
 
 use sagat_application::error::AppError;
@@ -90,7 +91,10 @@ async fn a_namespace_limited_to_zero_refuses_new_schedules_and_the_existing_ones
         .try_create(f.write_of("new", &hourly(), &json!({}), None))
         .await
         .expect_err("zero admits nothing");
-    assert!(matches!(refused, AppError::QuotaExceeded(_)), "{refused:?}");
+    assert!(
+        matches!(refused, AppError::QuotaExceeded(what) if what == QuotaResource::Schedules.limit_name()),
+        "{refused:?}"
+    );
     assert_eq!(
         footprint(&f).await,
         before,

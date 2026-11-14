@@ -1,0 +1,100 @@
+{
+  "canonical": {
+    "account": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"hold\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"Declared account state; an activity nobody serves keeps the run open.\",\"name\":\"uws-account\"},\"nodes\":[{\"activity\":\"uws.unserved\",\"id\":\"hold\",\"type\":\"activity\"}],\"state\":{\"initial\":\"input.account\",\"queries\":{\"balance.read\":{\"argsSchema\":{\"additionalProperties\":false,\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"expression\":\"state.balance\",\"resultSchema\":{\"type\":\"integer\"}}},\"schema\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"integer\"},\"label\":{\"maxLength\":64,\"type\":\"string\"}},\"required\":[\"balance\",\"label\"],\"type\":\"object\"},\"updates\":{\"balance.set\":{\"argsSchema\":{\"additionalProperties\":false,\"properties\":{\"allowed\":{\"type\":\"boolean\"},\"nextState\":{\"additionalProperties\":false,\"properties\":{\"balance\":{\"minimum\":0,\"type\":\"integer\"},\"label\":{\"maxLength\":64,\"type\":\"string\"}},\"required\":[\"balance\",\"label\"],\"type\":\"object\"}},\"required\":[\"allowed\",\"nextState\"],\"type\":\"object\"},\"disclosure\":\"declared-business-result-v1\",\"result\":\"newState.balance\",\"resultSchema\":{\"minimum\":0,\"type\":\"integer\"},\"state\":\"args.nextState\",\"validate\":\"args.allowed\"}}}}"
+  },
+  "workflows": {
+    "account": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "hold",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "Declared account state; an activity nobody serves keeps the run open.",
+        "name": "uws-account"
+      },
+      "nodes": [
+        {
+          "activity": "uws.unserved",
+          "id": "hold",
+          "type": "activity"
+        }
+      ],
+      "state": {
+        "initial": "input.account",
+        "queries": {
+          "balance.read": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "expression": "state.balance",
+            "resultSchema": {
+              "type": "integer"
+            }
+          }
+        },
+        "schema": {
+          "additionalProperties": false,
+          "properties": {
+            "balance": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "label": {
+              "maxLength": 64,
+              "type": "string"
+            }
+          },
+          "required": [
+            "balance",
+            "label"
+          ],
+          "type": "object"
+        },
+        "updates": {
+          "balance.set": {
+            "argsSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "allowed": {
+                  "type": "boolean"
+                },
+                "nextState": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "balance": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "label": {
+                      "maxLength": 64,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "balance",
+                    "label"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "allowed",
+                "nextState"
+              ],
+              "type": "object"
+            },
+            "disclosure": "declared-business-result-v1",
+            "result": "newState.balance",
+            "resultSchema": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": "args.nextState",
+            "validate": "args.allowed"
+          }
+        }
+      }
+    }
+  }
+}

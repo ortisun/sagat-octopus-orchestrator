@@ -18,24 +18,30 @@ use sagat_application::api_admission::{ApiOperation, ApiTarget};
 use sagat_application::definitions::DiffRef;
 use sagat_application::error::AppError;
 use sagat_application::identity::{Page, PageRequest};
-use sagat_application::runs::{GraphChanges, ReviewAction, RunFilter, RunOperation, StartRun};
+use sagat_application::operation_evaluation::DeclaredOperationArguments;
+use sagat_application::runs::{
+    GraphChanges, RerunBusinessId, ReviewAction, RunFilter, RunOperation, StartOptions, StartRun,
+};
 use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::execution::{
     ExecutionInstanceId, FailureCode, InstancePath, ReviewOutcome, RunId, RunStatus,
 };
-use sagat_domain::workflow::NodeId;
+use sagat_domain::workflow::{ActivityName, NodeId};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::admission::{admit, namespace_slug};
 use crate::dto::PageBody;
 use crate::dto_exec::{
-    CreateWorkflowBody, JournalEventBody, OperationBody, OperationResultBody, PublishBody,
-    PublishedBody, RunBody, SignalResultBody, StartRunBody, UpdateDraftBody, ValidateBody,
-    VersionBody, VersionSummary, WorkflowBody, compensation_plans_body, diff_body,
-    graph_changes_body, runtime_graph, validation_body,
+    BusinessBindingBody, CreateWorkflowBody, JournalEventBody, OperationBody, OperationResultBody,
+    PublishBody, PublishedBody, RerunBusinessIdBody, RunBody, SignalResultBody,
+    SignalWithStartBody, SignalWithStartResultBody, StartRunBody, UpdateDraftBody,
+    UpdateOutcomeBody, UpdateWithStartBody, UpdateWithStartResultBody, ValidateBody, VersionBody,
+    VersionSummary, WorkflowBody, compensation_plans_body, diff_body, graph_changes_body,
+    runtime_graph, validation_body,
 };
 use crate::error::ApiError;
 use crate::exec::Exec;
@@ -61,6 +67,23 @@ pub(crate) fn optional_idempotency_key(headers: &HeaderMap) -> Result<Option<&st
     idempotency_key(headers).map(Some)
 }
 
+/// The prefixes of the keys the platform derives for itself, for what a batch job, a schedule and a reset do to a run
+/// (`batch:{job}:{run}`, `schedule:{id}:cancel:...`, `reset:{reset}:{sequence}`). A caller who sent one first would
+/// decide what that effect is, so no validator of a caller's `Idempotency-Key` or update key accepts one: they all ask
+/// [`is_reserved_key`], and a test fails for a validator that does not.
+pub(crate) const RESERVED_KEY_PREFIXES: [&str; 3] = [
+    "batch:",
+    "schedule:",
+    sagat_application::runs::RESET_KEY_PREFIX,
+];
+
+/// Whether `key` starts with a prefix the platform keeps for its own keys.
+pub(crate) fn is_reserved_key(key: &str) -> bool {
+    RESERVED_KEY_PREFIXES
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
 /// `Idempotency-Key` is mandatory on every operation that creates or changes something, so a client
 /// that retries after an ambiguous failure can never apply it twice.
 pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
@@ -71,6 +94,11 @@ pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<&str, ApiError> {
     if !(8..=160).contains(&key.len()) || !key.bytes().all(|b| b.is_ascii_graphic()) {
         return Err(ApiError::bad_request(
             "the Idempotency-Key must be 8 to 160 printable ASCII characters",
+        ));
+    }
+    if is_reserved_key(key) {
+        return Err(ApiError::bad_request(
+            "the Idempotency-Key prefixes batch:, schedule: and reset: are reserved for the platform",
         ));
     }
     Ok(key)
@@ -90,7 +118,7 @@ fn operation_id(run: &str, key: &str) -> String {
     Uuid::from_bytes(bytes).to_string()
 }
 
-fn parse_id<T: FromStr>(raw: &str) -> Result<T, ApiError> {
+pub(crate) fn parse_id<T: FromStr>(raw: &str) -> Result<T, ApiError> {
     raw.parse().map_err(|_| ApiError::not_found())
 }
 
@@ -102,6 +130,24 @@ pub struct ListQuery {
     pub workflow_id: Option<String>,
     pub status: Option<String>,
     pub origin: Option<String>,
+    #[serde(rename = "businessId")]
+    pub business_id: Option<String>,
+    #[serde(rename = "businessIdPrefix")]
+    pub business_id_prefix: Option<String>,
+    #[serde(rename = "scheduleId")]
+    pub schedule_id: Option<String>,
+}
+
+/// An identifier or a prefix of one: visible ASCII, at most 200 characters. A prefix is not empty either.
+fn business_text(text: &str, field: &'static str) -> Result<(), ApiError> {
+    sagat_domain::business_ids::BusinessId::new(text)
+        .map(|_| ())
+        .map_err(|_| {
+            ApiError::from(sagat_application::error::AppError::InvalidStart {
+                reason: "BUSINESS_ID_INVALID",
+                field: Some(field.to_owned()),
+            })
+        })
 }
 
 fn page_request(query: &ListQuery) -> PageRequest {
@@ -415,6 +461,7 @@ pub async fn start_run<B: Exec>(
         .as_deref()
         .map(parse_id::<WorkflowVersionId>)
         .transpose()?;
+    let options = start_options(&body)?;
     let request = StartRun {
         namespace: namespace(&headers)?,
         workflow: parse_id::<WorkflowId>(&body.workflow_id)?,
@@ -431,8 +478,13 @@ pub async fn start_run<B: Exec>(
         ApiTarget::NamespaceSlug(namespace_slug(request.namespace)?),
     )
     .await?;
-    let record = if let Some(id) = body.input_blob_ref {
-        state
+    let started = if let Some(id) = body.input_blob_ref {
+        if options.business.is_some() {
+            return Err(ApiError::validation(
+                "a business identifier cannot be combined with inputBlobRef",
+            ));
+        }
+        let run = state
             .runs()
             .start_with_blob(
                 &caller.session.principal,
@@ -440,14 +492,230 @@ pub async fn start_run<B: Exec>(
                 parse_id::<sagat_domain::blobs::BlobId>(&id)?,
                 &caller.ctx,
             )
-            .await?
+            .await?;
+        sagat_application::runs::Started {
+            run,
+            existing: false,
+            delivered_to: Vec::new(),
+            update: None,
+        }
     } else {
         state
             .runs()
-            .start(&caller.session.principal, &request, &caller.ctx)
-            .await?
+            .start_with_options(&caller.session.principal, &request, options, &caller.ctx)
+            .await
+            .map_err(|error| holder_for_readers(error, &caller))?
     };
-    Ok((StatusCode::ACCEPTED, Json(RunBody::from(&record))))
+    // a start that found its holder open and asked for `USE_EXISTING` creates nothing: `200`
+    let status = if started.existing {
+        StatusCode::OK
+    } else {
+        StatusCode::ACCEPTED
+    };
+    Ok((status, Json(RunBody::from(&started.run))))
+}
+
+/// The options of a start: the business identifier and what to do when it is held, and the delay.
+fn start_options(body: &StartRunBody) -> Result<StartOptions, ApiError> {
+    let start_delay = body.start_delay_ms.map(|ms| {
+        // beyond the longest delay is as invalid as zero: the service says which in words
+        std::time::Duration::from_millis(ms)
+    });
+    let mut options = business_options(body)?;
+    options.start_delay = start_delay;
+    Ok(options)
+}
+
+/// The business identifier of a start and what to do when it is held.
+fn business_options(body: &StartRunBody) -> Result<StartOptions, ApiError> {
+    let Some(text) = body.business_id.as_deref() else {
+        if body.business_id_conflict_policy.is_some() || body.business_id_reuse_policy.is_some() {
+            return Err(sagat_application::error::AppError::InvalidStart {
+                reason: "BUSINESS_ID_INVALID",
+                field: Some("/businessId".to_owned()),
+            }
+            .into());
+        }
+        return Ok(StartOptions::default());
+    };
+    let invalid = |field: &str| {
+        ApiError::from(sagat_application::error::AppError::InvalidStart {
+            reason: "BUSINESS_ID_INVALID",
+            field: Some(field.to_owned()),
+        })
+    };
+    let id =
+        sagat_domain::business_ids::BusinessId::new(text).map_err(|_| invalid("/businessId"))?;
+    let conflict = body
+        .business_id_conflict_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .parse::<sagat_domain::business_ids::ConflictPolicy>()
+                .map_err(|()| invalid("/businessIdConflictPolicy"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let reuse = body
+        .business_id_reuse_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .parse::<sagat_domain::business_ids::ReusePolicy>()
+                .map_err(|()| invalid("/businessIdReusePolicy"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(StartOptions {
+        business: Some(sagat_application::runs::BusinessStart {
+            id,
+            conflict,
+            reuse,
+            window: sagat_domain::business_ids::ReuseWindow::default(),
+        }),
+        start_delay: None,
+    })
+}
+
+/// A refusal because a business identifier is held names the holder, to a caller who may read runs
+/// and to nobody else: the identifier is theirs to use, the run behind it may not be.
+pub(crate) fn holder_for_readers(
+    error: sagat_application::error::AppError,
+    caller: &Caller,
+) -> ApiError {
+    let may_read = caller
+        .session
+        .principal
+        .authorize(sagat_domain::identity::Permission::RunRead)
+        .is_ok();
+    name_the_holder(error, may_read)
+}
+
+/// The error of a refused start, with the holder named when `may_read`.
+fn name_the_holder(error: sagat_application::error::AppError, may_read: bool) -> ApiError {
+    use sagat_application::error::AppError;
+    let holder = match &error {
+        AppError::BusinessIdConflict { holder, .. } => Some(*holder),
+        _ => None,
+    };
+    let api = ApiError::from(error);
+    match holder {
+        Some(holder) if may_read => api.with_detail("runId", json!(holder.to_string())),
+        _ => api,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sagat_application::error::AppError;
+    use sagat_domain::execution::RunId;
+
+    use super::{RESERVED_KEY_PREFIXES, is_reserved_key, name_the_holder};
+
+    /// Every place that reads the `Idempotency-Key` of a caller, or takes an update key from one, refuses the keys the
+    /// platform derives for itself through the one shared list; a route that validates the key on its own and does not
+    /// is a route a caller could take such a key through. The test reads the sources, so a new helper that is not
+    /// listed here fails it by name.
+    #[test]
+    fn every_validator_of_a_callers_key_refuses_the_keys_of_the_platform_through_the_one_list() {
+        fn sources(dir: &std::path::Path, found: &mut Vec<(String, String)>) {
+            for entry in std::fs::read_dir(dir).expect("a directory").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    sources(&path, found);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let text = std::fs::read_to_string(&path).expect("a source");
+                    found.push((path.to_string_lossy().into_owned(), text));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        // the marker of a validator of a caller's key: the sentence it answers with, or the helper for update keys
+        let validators: Vec<&str> = files
+            .iter()
+            .filter(|(_, text)| {
+                text.contains("the Idempotency-Key header is required")
+                    || text.contains("fn caller_update_key")
+            })
+            .map(|(path, _)| path.as_str())
+            .collect();
+        assert!(
+            validators.len() >= 4,
+            "execution, chains, versioning and the update keys: {validators:?}"
+        );
+        for (path, text) in &files {
+            if validators.contains(&path.as_str()) {
+                assert!(
+                    text.contains("is_reserved_key("),
+                    "{path} validates a caller's key and does not refuse the platform's own through \
+                     `is_reserved_key`"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_prefixes_of_the_platform_s_own_keys_are_one_list() {
+        assert_eq!(RESERVED_KEY_PREFIXES, ["batch:", "schedule:", "reset:"]);
+        for key in [
+            "batch:job:run",
+            "schedule:abc:cancel:1",
+            "reset:0194f5e2-7b1c-7000-8000-000000000009:12",
+        ] {
+            assert!(is_reserved_key(key), "{key}");
+        }
+        for key in [
+            "my-batch:1",
+            "resets:1",
+            "Batch:1",
+            "x-reset:1",
+            "plain-key-1",
+            "",
+        ] {
+            assert!(!is_reserved_key(key), "{key}");
+        }
+    }
+
+    fn conflict() -> (AppError, RunId) {
+        let holder = RunId::generate();
+        (
+            AppError::BusinessIdConflict {
+                reason: "BUSINESS_ID_IN_USE",
+                holder,
+                reusable_after: None,
+            },
+            holder,
+        )
+    }
+
+    #[test]
+    fn the_holder_is_named_to_a_caller_who_may_read_runs() {
+        let (error, holder) = conflict();
+        let named = name_the_holder(error, true);
+        let details = named.parts().details.clone().expect("details");
+        assert_eq!(details["reason"], "BUSINESS_ID_IN_USE");
+        assert_eq!(details["runId"], holder.to_string());
+    }
+
+    #[test]
+    fn the_holder_is_not_named_to_a_caller_who_may_not() {
+        let (error, holder) = conflict();
+        let unnamed = name_the_holder(error, false);
+        let details = unnamed.parts().details.clone().expect("details");
+        assert_eq!(details["reason"], "BUSINESS_ID_IN_USE");
+        assert!(details.get("runId").is_none(), "{details}");
+        assert!(!details.to_string().contains(&holder.to_string()));
+    }
+
+    #[test]
+    fn nothing_else_gets_a_holder() {
+        let named = name_the_holder(AppError::NotFound, true);
+        assert!(named.parts().details.is_none());
+    }
 }
 
 pub async fn list_runs<B: Exec>(
@@ -478,6 +746,28 @@ pub async fn list_runs<B: Exec>(
                     .map_err(|_| ApiError::validation("unknown run status"))
             })
             .transpose()?,
+        business_id: query
+            .business_id
+            .as_deref()
+            .map(|text| {
+                business_text(text, "/businessId")?;
+                sagat_domain::business_ids::BusinessId::new(text)
+                    .map_err(|_| ApiError::from(sagat_application::error::AppError::Internal))
+            })
+            .transpose()?,
+        business_id_prefix: query
+            .business_id_prefix
+            .as_deref()
+            .map(|text| business_text(text, "/businessIdPrefix").map(|()| text.to_owned()))
+            .transpose()?,
+        schedule: query
+            .schedule_id
+            .as_deref()
+            .map(|text| {
+                text.parse::<sagat_domain::schedules::ScheduleId>()
+                    .map_err(|_| ApiError::validation("scheduleId is not a schedule id"))
+            })
+            .transpose()?,
     };
     let namespace_name = namespace(&headers)?;
     admit(
@@ -497,6 +787,288 @@ pub async fn list_runs<B: Exec>(
         )
         .await?;
     Ok(page(&result))
+}
+
+/// `POST /runs/signal-with-start` (feature 018, `FR-018-024`): signals the open run of the business
+/// identifier, or starts one and delivers the signal at creation. Never buffers a signal.
+pub async fn signal_with_start<B: Exec>(
+    caller: Caller,
+    State(state): State<B>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<SignalWithStartBody>,
+) -> Result<(StatusCode, Json<SignalWithStartResultBody>), ApiError> {
+    use sagat_application::error::AppError;
+    if body.start_delay_ms.is_some() {
+        return Err(AppError::InvalidStart {
+            reason: "START_DELAY_WITH_SIGNAL",
+            field: Some("/startDelayMs".to_owned()),
+        }
+        .into());
+    }
+    let invalid = |field: &str| {
+        ApiError::from(AppError::InvalidStart {
+            reason: "BUSINESS_ID_INVALID",
+            field: Some(field.to_owned()),
+        })
+    };
+    let id = sagat_domain::business_ids::BusinessId::new(&body.business_id)
+        .map_err(|_| invalid("/businessId"))?;
+    let reuse = body
+        .business_id_reuse_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .parse::<sagat_domain::business_ids::ReusePolicy>()
+                .map_err(|()| invalid("/businessIdReusePolicy"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let name = body.signal.name.trim();
+    if name.is_empty() || name.chars().count() > 128 || name.chars().any(char::is_control) {
+        return Err(ApiError::validation(
+            "the signal name must be 1 to 128 characters",
+        ));
+    }
+    let input = to_bytes(&body.input)?;
+    let payload = to_bytes(&body.signal.payload)?;
+    let version = body
+        .version_id
+        .as_deref()
+        .map(parse_id::<WorkflowVersionId>)
+        .transpose()?;
+    let request = StartRun {
+        namespace: namespace(&headers)?,
+        workflow: parse_id::<WorkflowId>(&body.workflow_id)?,
+        version,
+        input: &input,
+        correlation_id: body.correlation_id.as_deref(),
+        deadline: body.deadline,
+        key: idempotency_key(&headers)?,
+    };
+    admit(
+        &state,
+        &caller,
+        ApiOperation::RunStart,
+        ApiTarget::NamespaceSlug(namespace_slug(request.namespace)?),
+    )
+    .await?;
+    let done = state
+        .runs()
+        .signal_with_start(
+            &caller.session.principal,
+            &request,
+            sagat_application::runs::BusinessStart {
+                id,
+                conflict: sagat_domain::business_ids::ConflictPolicy::UseExisting,
+                reuse,
+                window: sagat_domain::business_ids::ReuseWindow::default(),
+            },
+            sagat_application::runs::SignalAtStart {
+                name,
+                payload: &payload,
+            },
+            &caller.ctx,
+        )
+        .await
+        .map_err(|error| holder_for_readers(error, &caller))?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(SignalWithStartResultBody {
+            run_id: done.run.info.run_id.to_string(),
+            started: done.started,
+            delivered_to: done.delivered_to.iter().map(ToString::to_string).collect(),
+        }),
+    ))
+}
+
+/// `POST /runs/update-with-start` (feature 018, `FR-018-025`): applies a declared Update to the open run
+/// of the business identifier, or starts one and applies it in the same transaction. A business
+/// rejection leaves the run started with a stable `REJECTED` receipt (`200`); a failure before
+/// admission creates nothing. The result is business data: `Cache-Control: no-store` (ADR-0031).
+pub async fn update_with_start<B: Exec>(
+    caller: Caller,
+    State(state): State<B>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<UpdateWithStartBody>,
+) -> Result<Json<UpdateWithStartResultBody>, ApiError> {
+    // the contracted telemetry of an Update, as `updateRun` has it (feature 014)
+    let telemetry = crate::routes::declared_operations::OperationTelemetry::start(
+        sagat_telemetry::WorkflowPrimitiveKind::Update,
+    );
+    let result = update_with_start_operation(caller, state, headers, body)
+        .instrument(telemetry.span.clone())
+        .await;
+    telemetry.finish_update_with_start(&result);
+    result
+}
+
+async fn update_with_start_operation<B: Exec>(
+    caller: Caller,
+    state: B,
+    headers: HeaderMap,
+    body: UpdateWithStartBody,
+) -> Result<Json<UpdateWithStartResultBody>, ApiError> {
+    use sagat_application::error::AppError;
+    let invalid = |field: &str| {
+        ApiError::from(AppError::InvalidStart {
+            reason: "BUSINESS_ID_INVALID",
+            field: Some(field.to_owned()),
+        })
+    };
+    let id = sagat_domain::business_ids::BusinessId::new(&body.business_id)
+        .map_err(|_| invalid("/businessId"))?;
+    let conflict = body
+        .business_id_conflict_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .parse::<sagat_domain::business_ids::ConflictPolicy>()
+                .map_err(|()| invalid("/businessIdConflictPolicy"))
+        })
+        .transpose()?
+        // an Update goes to the open holder unless the caller says an open holder is a conflict
+        .unwrap_or(sagat_domain::business_ids::ConflictPolicy::UseExisting);
+    let reuse = body
+        .business_id_reuse_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .parse::<sagat_domain::business_ids::ReusePolicy>()
+                .map_err(|()| invalid("/businessIdReusePolicy"))
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let operation = ActivityName::parse(&body.update.name).map_err(|_| {
+        ApiError::validation("update.name is not an operation name")
+            .with_reason("UNDECLARED_OPERATION")
+    })?;
+    let update_key = crate::routes::declared_operations::caller_update_key(&body.update.update_key)
+        .map_err(|_| {
+            ApiError::validation(
+                "updateKey must be 1..128 printable ASCII characters without spaces",
+            )
+            .with_reason("INVALID_UPDATE_KEY")
+        })?;
+    let arguments = serde_json::to_vec(&body.update.args)
+        .map_err(|_| ApiError::from(AppError::Internal))
+        .and_then(|bytes| {
+            DeclaredOperationArguments::parse(&bytes).map_err(|_| {
+                ApiError::validation("operation arguments do not match the declared schema")
+                    .with_reason("INVALID_ARGUMENTS")
+            })
+        })?;
+    let input = to_bytes(&body.input)?;
+    let version = body
+        .version_id
+        .as_deref()
+        .map(parse_id::<WorkflowVersionId>)
+        .transpose()?;
+    let request = StartRun {
+        namespace: namespace(&headers)?,
+        workflow: parse_id::<WorkflowId>(&body.workflow_id)?,
+        version,
+        input: &input,
+        correlation_id: body.correlation_id.as_deref(),
+        deadline: body.deadline,
+        key: idempotency_key(&headers)?,
+    };
+    admit(
+        &state,
+        &caller,
+        ApiOperation::RunStart,
+        ApiTarget::NamespaceSlug(namespace_slug(request.namespace)?),
+    )
+    .await?;
+    let options = StartOptions {
+        business: Some(sagat_application::runs::BusinessStart {
+            id,
+            conflict,
+            reuse,
+            window: sagat_domain::business_ids::ReuseWindow::default(),
+        }),
+        start_delay: body.start_delay_ms.map(std::time::Duration::from_millis),
+    };
+    let done = state
+        .runs()
+        .update_with_start(
+            &caller.session.principal,
+            &request,
+            options,
+            sagat_application::runs::UpdateAtStart {
+                operation: &operation,
+                update_key: &update_key,
+                arguments: &arguments,
+                expected_state_revision: body.update.expected_state_revision,
+                batch_job: None,
+            },
+            &caller.ctx,
+        )
+        .await
+        .map_err(|error| holder_for_readers(error, &caller))?;
+    let outcome = update_outcome(&done.update)?;
+    // `Cache-Control: no-store` is the API's policy for every response (`context::finalize`), so the
+    // result of an Update, which is business data, is never stored (ADR-0031).
+    Ok(Json(UpdateWithStartResultBody {
+        run_id: done.run.info.run_id.to_string(),
+        started: done.started,
+        update: outcome,
+    }))
+}
+
+/// What an applied or rejected Update says to the caller.
+fn update_outcome(
+    applied: &sagat_application::declared_operations::AppliedInTx,
+) -> Result<UpdateOutcomeBody, ApiError> {
+    use sagat_domain::execution::UpdateReceiptStatus;
+    let receipt = applied.resolution.receipt();
+    if receipt.status() == UpdateReceiptStatus::Rejected {
+        let details = crate::dto_declared_operations::RejectedUpdateDetails::from_receipt(
+            receipt,
+            applied.resolution.replayed(),
+        );
+        return Ok(UpdateOutcomeBody::Rejected {
+            reason: details.reason,
+        });
+    }
+    let result = applied
+        .result
+        .as_ref()
+        .ok_or_else(|| ApiError::from(sagat_application::error::AppError::Internal))?;
+    let result = serde_json::from_slice(result.content())
+        .map_err(|_| ApiError::from(sagat_application::error::AppError::Internal))?;
+    Ok(UpdateOutcomeBody::Applied {
+        receipt: crate::dto_declared_operations::DeclaredUpdateResponseBody::applied(
+            receipt,
+            result,
+            applied.resolution.replayed(),
+        ),
+    })
+}
+
+/// `GET /namespaces/{namespaceId}/business-ids/{businessId}`: who holds a business identifier and how
+/// it stands (`FR-018-022`). An identifier that cannot be one, one that is not bound and a namespace
+/// of another tenant are all as absent as one that never existed.
+pub async fn get_business_binding<B: Exec>(
+    caller: Caller,
+    State(state): State<B>,
+    Path((namespace, business_id)): Path<(String, String)>,
+) -> Result<Json<BusinessBindingBody>, ApiError> {
+    let namespace: sagat_domain::identity::NamespaceId =
+        namespace.parse().map_err(|_| ApiError::not_found())?;
+    admit(
+        &state,
+        &caller,
+        ApiOperation::RunRead,
+        ApiTarget::Namespace(namespace),
+    )
+    .await?;
+    let id = sagat_domain::business_ids::BusinessId::new(&business_id)
+        .map_err(|_| ApiError::not_found())?;
+    let binding = state
+        .runs()
+        .business_binding(&caller.session.principal, namespace, &id)
+        .await?;
+    Ok(Json(BusinessBindingBody::from(&binding)))
 }
 
 pub async fn get_run<B: Exec>(
@@ -798,6 +1370,12 @@ async fn follow<B: Exec>(
             let _ = send(SseEvent::default().event("reconnect").data("{}")).await;
             return;
         }
+        // A process that stopped serving (the platform requires a capability this binary lacks) lets no stream
+        // run on: the client opens it again and meets the refusal, or another replica (FR-018-052).
+        if state.serving_gate().is_some_and(|gate| !gate.is_open()) {
+            let _ = send(SseEvent::default().event("reconnect").data("{}")).await;
+            return;
+        }
         // The role the stream opened with is not the role for fifteen minutes: whoever was removed
         // or lowered since is asked again, and the stream is cut for them.
         if now >= next_recheck {
@@ -879,6 +1457,7 @@ pub async fn operate_run<B: Exec>(
             "the reason must be 8 to 2000 characters",
         ));
     }
+    let business = rerun_business(&body)?;
     let review = match body.action.as_str() {
         "RETRY_STEP" => Some(ReviewAction::Retry),
         "MARK_MANUAL_REVIEW" => Some(ReviewAction::Hold),
@@ -919,7 +1498,7 @@ pub async fn operate_run<B: Exec>(
         "CANCEL" => RunOperation::Cancel,
         "PAUSE" => RunOperation::Pause,
         "RESUME" => RunOperation::Resume,
-        "RERUN_AS_NEW" => return rerun_run(&caller, &state, &headers, &id, &body).await,
+        "RERUN_AS_NEW" => return rerun_run(&caller, &state, &headers, &id, &body, business).await,
         _ => return Err(ApiError::validation("unknown operation")),
     };
     if body.step_id.is_some() || body.instance_path.is_some() {
@@ -983,6 +1562,19 @@ fn validate_review_request(
     Ok(ExecutionInstanceId::in_path(path, node))
 }
 
+/// What a rerun does with the business identifier of the run it repeats (`businessId` of the
+/// request, `KEEP` when absent). Only a rerun has the choice.
+fn rerun_business(body: &OperationBody) -> Result<RerunBusinessId, ApiError> {
+    match body.business_id {
+        None => Ok(RerunBusinessId::Keep),
+        Some(_) if body.action != "RERUN_AS_NEW" => Err(ApiError::validation(
+            "businessId only goes with RERUN_AS_NEW",
+        )),
+        Some(RerunBusinessIdBody::Keep) => Ok(RerunBusinessId::Keep),
+        Some(RerunBusinessIdBody::Drop) => Ok(RerunBusinessId::Drop),
+    }
+}
+
 /// `RERUN_AS_NEW`: a run of the same version with the same input, from a run that ended.
 async fn rerun_run<B: Exec>(
     caller: &Caller,
@@ -990,6 +1582,7 @@ async fn rerun_run<B: Exec>(
     headers: &HeaderMap,
     id: &str,
     body: &OperationBody,
+    business: RerunBusinessId,
 ) -> Result<(StatusCode, Json<OperationResultBody>), ApiError> {
     if body.step_id.is_some()
         || body.instance_path.is_some()
@@ -1016,14 +1609,16 @@ async fn rerun_run<B: Exec>(
     }
     let started = state
         .runs()
-        .rerun(
+        .rerun_with(
             &caller.session.principal,
             run_id,
             &body.reason,
             idempotency_key(headers)?,
+            business,
             &caller.ctx,
         )
-        .await?;
+        .await
+        .map_err(|error| holder_for_readers(error, caller))?;
     Ok((
         StatusCode::ACCEPTED,
         Json(OperationResultBody {

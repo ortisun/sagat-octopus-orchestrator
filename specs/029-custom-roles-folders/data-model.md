@@ -178,3 +178,5 @@ pre-locks on items (`KEY SHARE` for the placement and list foreign keys) use the
 (`protected_system`, closed vocabulary bounded by `CHECK`). Access rows live until removed; role revisions are
 bounded per role; audit records are protected system records under ADR-0027. No access row holds a payload,
 a secret or a token.
+
+*Note 2026-11-08 (018 T018-080, G2001).* `platform_requirement_epoch` is readable by `sagat_app` but cannot be locked by it (`FOR SHARE` needs `UPDATE`); the request path that "reads the epoch `FOR SHARE`" needs a runtime-executable definer function, and must not hold the share lock for the whole tenant transaction (an activation's `FOR UPDATE` would queue behind it and stall new registrations).

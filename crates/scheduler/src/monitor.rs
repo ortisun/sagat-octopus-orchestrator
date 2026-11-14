@@ -266,6 +266,11 @@ fn gauges(sample: &Sample) {
     metrics::gauge!("scheduler_lag_seconds", "pass" => "retries").set(late.retries);
     metrics::gauge!("scheduler_lag_seconds", "pass" => "leases").set(late.leases);
     metrics::gauge!("scheduler_lag_seconds", "pass" => "deadlines").set(late.deadlines);
+    metrics::gauge!("scheduler_lag_seconds", "pass" => "schedules").set(late.schedules);
+    metrics::gauge!("scheduler_lag_seconds", "pass" => "batches").set(late.batches);
+    metrics::gauge!("scheduler_lag_seconds", "pass" => "resets").set(late.resets);
+    metrics::gauge!("batch_jobs_active").set(sample.batch_jobs_active as f64);
+    metrics::gauge!("workflow_resets_pending").set(sample.resets_pending as f64);
     for status in LIVE_STATUSES {
         let n = sample
             .runs_by_status

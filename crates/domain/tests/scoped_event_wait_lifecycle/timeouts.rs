@@ -168,6 +168,7 @@ fn recorded_event_and_timeout_are_mutually_exclusive_in_either_pure_order() {
         let mut bounded = PathExecutionState::from_run(&full, path(0)).expect("path");
         let received = event(RunEvent::WaitSatisfied {
             node: id("notified"),
+            via: None,
         });
         let late = OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(1);
         if event_wins {
@@ -421,6 +422,7 @@ fn event_lifecycle_projection_checks_the_pinned_timeout_policy_and_terminal_meta
         for outcome in [
             RunEvent::WaitSatisfied {
                 node: id("notified"),
+                via: None,
             },
             RunEvent::WaitTimedOut {
                 node: id("notified"),

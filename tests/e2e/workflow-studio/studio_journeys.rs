@@ -155,6 +155,18 @@ async fn the_studio_journeys_pass_in_a_real_browser() {
             ("SAGAT_SECRETS_KEYS", ring.as_str()),
             ("SAGAT_EVENT_POLL_MS", "50"),
             ("SAGAT_DELIVERY_POLL_MS", "50"),
+            // Feature 018: the schedule pass (which fires schedules and runs backfills), the batch pass and the pass
+            // that completes a reset waiting for its source run are loops of the engine and are off until a replica
+            // is told to run them. The journeys of the schedule, batch and reset screens (`schedules.spec.ts`,
+            // `batch-operations.spec.ts`, `reset-run.spec.ts`) watch a backfill progress, a job progress and a
+            // pending entry complete, so all three run here, polling fast. The control plane of this platform has
+            // the reset cancellation on already (`Options::reset_cancel_source`, `tests/support/api.rs`).
+            ("SAGAT_SCHEDULES_ENABLED", "true"),
+            ("SAGAT_SCHEDULES_POLL_MS", "100"),
+            ("SAGAT_BATCHES_ENABLED", "true"),
+            ("SAGAT_BATCHES_POLL_MS", "100"),
+            ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"),
+            ("SAGAT_RESET_CANCEL_SOURCE_POLL_MS", "100"),
         ],
     ))
     .await;
@@ -196,11 +208,14 @@ async fn the_studio_journeys_pass_in_a_real_browser() {
         .kill_on_drop(true)
         .spawn()
         .expect("npx playwright");
-    let finished = tokio::time::timeout(Duration::from_secs(40 * 60), async move {
+    // A guard against a hang, not a budget: the journeys of the schedule, batch, reset and business-identifier screens declare 240 s each
+    // (14 of them, 56 minutes if every one used all of it) on top of the older specs, which take about three minutes together when
+    // they pass; 90 minutes is longer than all of that. The `studio` job of CI ends at 60 minutes whatever this says (`timeout-minutes`).
+    let finished = tokio::time::timeout(Duration::from_secs(90 * 60), async move {
         child.wait_with_output().await
     })
     .await
-    .expect("the journeys finish within 40 minutes")
+    .expect("the journeys finish within 90 minutes")
     .expect("playwright ran");
     if let Some(pump) = pump {
         pump.abort();
