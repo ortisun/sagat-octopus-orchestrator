@@ -1,6 +1,6 @@
 # ADR-0089: A gated step waits outside READY, and one fenced grant routine, driven by key, serves every waiter whatever its gates
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-13, OD-2026-11-13-19: the owner's "Aceitar o ADR-0089")
 **Decided by:** agent proposal after the architecture, security and correctness reviews of 2026-11-13; pending owner acceptance
 **Refines / supersedes:** supersedes ADR-0056 decision 3 for step permits (a step permit is no longer taken
 at claim) and decision 5 (grant by the waiter's shard owner, strict oldest first); refines ADR-0088
