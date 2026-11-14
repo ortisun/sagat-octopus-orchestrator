@@ -69,13 +69,14 @@ Design checks, not implementation approval. Re-evaluated after the Phase 1 desig
 | VII — inbox/outbox, redeliverable hints | Pass | Pass | Every run admission writes its outbox in the causing transaction; passes find due work by index scan, not by broker message; lost-hint tests T018-020, T018-046. |
 | VIII — failure tests, honest results | Pass | Pass | Failure matrix below maps each rule-9 case to a task; ceilings are design values pending T018-072. |
 
-*Re-checked 2026-11-14 for FR-018-053 (the automatic handover, ADR-0091, proposed):* **I** — the handover stays one
-transaction under the lock order of D2241 and one-way. **V** — the runtime role gains `EXECUTE` on one definer function that
-records only `schedules-v1` for the engines and only when no live engine lacks it; it re-checks every condition itself and
-takes no argument that weakens one (D2240; G2243 and G2245 say what a holder of the role can still do); the opt-out is an
-owner-only row, not an environment variable (D2247). **VI** — the handover is audited per tenant and on the platform, with a
-log line and a counter; a blocked handover is a gauge per closed reason and an alert (D2245, D2246). **VIII** — barrier races in
-both orders, a crash at each wait, the runtime-role sweep, the privilege audit and a released-v0.2 upgrade (T018-085).
+*Re-checked 2026-11-14 for FR-018-053 (the automatic handover, ADR-0091, proposed):* **I** — the handover stays the
+command's one bounded transaction and one-way; no transaction is open across the job's wait (D2249). **V** — the runtime role
+gains no privilege; the job holds the owner's credential as long as `migrate` does; it decides on rows the runtime role can
+write and can be delayed or misled by them, not made to record (G2243). **VI** — the handover is recorded with its mode, epoch
+and census in its transaction and audited per tenant after it, idempotently; a blocked handover is a reason in a row the
+engines export, with an alert that does not restart (D2245, D2246). **VIII** — barrier races in both orders, the departure
+case, the detectors, a crash at each wait and after the commit, the exit codes, `helm template`, a compose smoke test and a
+released-v0.2 upgrade (T018-085).
 
 ## Project Structure
 
@@ -321,13 +322,14 @@ decision on alerts): `SCHEDULE_PAUSED_BY_SYSTEM`, `BATCH_STALLED` as additive al
    accept pause, resume and trigger. A later engine without `schedules-v1` refuses to run passes
    (registry rule 3); only a binary older than the registry release could still start (G1011, G1607,
    runbook).
-   *Amended 2026-11-14 (OD-2026-11-14-4, ADR-0091, proposed; T018-082 to T018-087):* the handover is also made
-   **automatically** by the engines (FR-018-053), in the same release that ships the registry. Step 1 of this list
-   said the registry ships "in a release before the handover can be used"; that is no longer so, and what replaces the
-   operator's attestation that no older engine runs is the check that no live `scheduler_members` row belongs to an
-   engine the registry does not list (D2242), with a live control plane and a quiet window (D2243, D2244). The upgrade
-   order is migrate, engines, control planes (OD-2026-11-14-3); the automatic handover comes after the last of them.
-   `migrate` does not make it: it must finish before the engines start (D2240).
+   *Amended 2026-11-14 (OD-2026-11-14-4 to -7, ADR-0091, proposed; T018-082 to T018-087):* the handover is also made
+   **automatically**, by a one-shot job with the owner's credentials (a compose service, a Helm `post-install,post-upgrade`
+   hook) that runs `schedule-trigger-handover --auto` after a deployment (FR-018-053), in the same release that ships the
+   registry. Step 1 of this list said the registry ships "in a release before the handover can be used"; that is no longer so,
+   and what replaces the operator's attestation is the job's reading, as the owner, of the scheduler memberships within a
+   horizon (D2242) and of the reconciliation's recent work (D2243), with a live control plane and stable rounds (D2241, D2244).
+   The upgrade order is migrate, engines, control planes (OD-2026-11-14-3); one `helm upgrade` rolls the last two together
+   (G2246). `migrate` does not make the handover: it must finish before the engines start (D2240).
 3. **Clients.** New request fields are optional; old SDKs never see `200 USE_EXISTING` because they
    never send the policy; new response fields are optional and ignored by old clients.
 4. **Rollback.** Disable new schedule, batch, with-start and reset admission with configuration;
