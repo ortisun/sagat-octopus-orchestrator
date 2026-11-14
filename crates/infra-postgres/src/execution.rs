@@ -430,9 +430,11 @@ impl PgRunStore {
             })
             .map(|(instance, step)| (instance.clone(), EventWaitReadState::from_step(step)))
             .collect();
+        let schedule_origin = crate::outbound::ScheduleOrigin::from_row(&row)?;
         Ok(Some(PgRunTx {
             tx,
             info: record.info,
+            schedule_origin,
             now,
             own_scheduler_time: None,
             scoped_event_delivery: None,
@@ -1476,6 +1478,7 @@ impl RunStore for PgRunStore {
                 info.created_at = now;
                 return Ok(Admitted::Created(PgRunTx {
                     tx,
+                    schedule_origin: None,
                     stored_kinds: BTreeMap::new(),
                     timer_read_states: BTreeMap::new(),
                     event_wait_read_states: BTreeMap::new(),
@@ -2144,6 +2147,8 @@ macro_rules! run_columns_sql {
      trace_id, deadline_at, created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
      cancel_policy, depth, trace_parent_span, rerun_of, origin, \
      (to_jsonb(runs.*) ->> 'start_delayed_until')::timestamptz AS start_delayed_until, \
+     (to_jsonb(runs.*) ->> 'schedule_id')::uuid AS origin_schedule_id, \
+     (to_jsonb(runs.*) ->> 'schedule_nominal_at')::timestamptz AS origin_schedule_nominal_at, \
      clock_timestamp() AS db_now \
      FROM runs WHERE tenant_id = $1 AND id = $2",
             $tail
@@ -3778,6 +3783,10 @@ async fn load_sagas(
 pub struct PgRunTx {
     tx: Transaction<'static, Postgres>,
     info: RunInfo,
+    /// The schedule action that started the run, as the row the transaction opened says: `None` when that row was
+    /// not read here (a run this transaction creates), in which case the run's end reads it (`add_schedule_origin`).
+    /// Carried so that the completion that ends a run adds no statement for it (design 038's budget).
+    schedule_origin: Option<crate::outbound::ScheduleOrigin>,
     now: OffsetDateTime,
     own_scheduler_time: Option<OffsetDateTime>,
     scoped_event_delivery: Option<scoped_events::ScopedEventDelivery>,
@@ -6560,14 +6569,20 @@ impl PgRunTx {
             // So a subscriber can put what it does about the run in the run's trace.
             "traceId": self.info.trace_id,
         });
-        // The schedule that started the run, when one did (`FR-018-046`).
-        crate::outbound::add_schedule_origin(
-            &mut self.tx,
-            self.info.tenant_id,
-            self.info.run_id.as_uuid(),
-            &mut data,
-        )
-        .await?;
+        // The schedule that started the run, when one did (`FR-018-046`): from the row this transaction opened,
+        // or read now when it did not open one.
+        match &self.schedule_origin {
+            Some(origin) => origin.add_to(&mut data)?,
+            None => {
+                crate::outbound::add_schedule_origin(
+                    &mut self.tx,
+                    self.info.tenant_id,
+                    self.info.run_id.as_uuid(),
+                    &mut data,
+                )
+                .await?;
+            }
+        }
         let body = serde_json::json!({
             "id": message.to_string(),
             "type": "run.finished",

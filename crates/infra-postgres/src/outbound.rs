@@ -379,15 +379,61 @@ pub(crate) async fn add_schedule_origin(
     .fetch_optional(&mut *conn)
     .await
     .map_err(store_error)?;
-    if let Some((Some(schedule), Some(nominal))) = origin {
-        data["scheduleId"] = serde_json::Value::String(schedule.to_string());
-        data["nominalTime"] = serde_json::Value::String(
-            nominal
-                .format(&time::format_description::well_known::Rfc3339)
-                .map_err(|_| corrupt("run schedule nominal time"))?,
-        );
+    match origin {
+        Some((schedule, nominal)) => ScheduleOrigin { schedule, nominal }.add_to(data),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// The schedule provenance of a run as a row gives it: both columns or neither. Read where the run's row is
+/// already read (the transaction that opens a run selects them through the same snapshot of the row), so that
+/// the end of the run does not read the row again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScheduleOrigin {
+    schedule: Option<Uuid>,
+    nominal: Option<time::OffsetDateTime>,
+}
+
+impl ScheduleOrigin {
+    /// From a row that selected `origin_schedule_id` and `origin_schedule_nominal_at`; `None` for a row whose
+    /// statement did not select them (the run's end then reads them itself). A column that is there and cannot be
+    /// read is a row changed behind our back.
+    pub(crate) fn from_row(row: &sqlx::postgres::PgRow) -> Result<Option<Self>, StoreError> {
+        fn column<'r, T>(
+            row: &'r sqlx::postgres::PgRow,
+            name: &'static str,
+        ) -> Result<Option<Option<T>>, StoreError>
+        where
+            T: sqlx::Decode<'r, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
+        {
+            match sqlx::Row::try_get::<Option<T>, _>(row, name) {
+                Ok(value) => Ok(Some(value)),
+                Err(sqlx::Error::ColumnNotFound(_)) => Ok(None),
+                Err(_) => Err(corrupt(name)),
+            }
+        }
+        let (Some(schedule), Some(nominal)) = (
+            column::<Uuid>(row, "origin_schedule_id")?,
+            column::<time::OffsetDateTime>(row, "origin_schedule_nominal_at")?,
+        ) else {
+            return Ok(None);
+        };
+        Ok(Some(Self { schedule, nominal }))
+    }
+
+    /// Adds `scheduleId` and `nominalTime` to the `data` of a `run.finished` event, when a schedule started
+    /// the run; nothing otherwise.
+    pub(crate) fn add_to(&self, data: &mut serde_json::Value) -> Result<(), StoreError> {
+        if let (Some(schedule), Some(nominal)) = (self.schedule, self.nominal) {
+            data["scheduleId"] = serde_json::Value::String(schedule.to_string());
+            data["nominalTime"] = serde_json::Value::String(
+                nominal
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .map_err(|_| corrupt("run schedule nominal time"))?,
+            );
+        }
+        Ok(())
+    }
 }
 
 impl OutboundStore for PgRunStore {
