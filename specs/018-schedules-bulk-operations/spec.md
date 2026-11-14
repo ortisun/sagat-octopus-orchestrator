@@ -226,7 +226,8 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
 1. **Given** an active version with a cron trigger, **When** schedules are listed, **Then** a `TRIGGER`
    schedule shows its expression, zone and next time.
 2. **Given** that schedule after the operator handover, **When** paused, resumed or triggered, **Then** it
-   behaves as any schedule; before the handover these are refused `SCHEDULE_TRIGGER_HANDOVER_PENDING`;
+   behaves as any schedule; before the handover these are refused `SCHEDULE_TRIGGER_HANDOVER_PENDING`
+   (the handover is the operator's or, since OD-2026-11-14-4, automatic: FR-018-053);
    **When** its spec is edited, **Then** it is refused `SCHEDULE_TRIGGER_OWNED`.
 3. **Given** a rolling upgrade, **When** an old dispatcher and a new pass reach one tick, **Then** one run
    starts (shared key `cron-{epoch}` in scope `trigger:{id}`).
@@ -335,6 +336,9 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   engine, stops the legacy cron pass; a
   reconciliation pass MUST keep trigger-owned schedules equal to the cron triggers in force. A rolling
   upgrade MUST NOT start a tick twice.
+  *Amended 2026-11-14 (OD-2026-11-14-4, D2240, ADR-0091, proposed):* the handover is made either by that
+  operator command or **automatically by the engines** under FR-018-053; "until an audited operator handover"
+  reads "until the handover, by either path". Both paths are audited (D2246) and one-way.
 
 **Business identifiers and start options**
 
@@ -504,6 +508,25 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   of the required kinds and records it — never inside a tenant or user transaction; until then the
   feature refuses its own use with its own reason. 018's trigger handover is its first
   activation; features 029 and 031 activate through the same registry.
+  *Amended 2026-11-14 (OD-2026-11-14-4, D2240, ADR-0091, proposed):* one exception to "only by an audited
+  operator activation command": the requirement `schedules-v1` of the execution engines MAY also be recorded by
+  the automatic handover of FR-018-053, in its one transaction, under the conditions that requirement states.
+  Every other requirement, and every removal, stays the operator's.
+- **FR-018-053 — Automatic handover of the cron triggers.** While the handover state is `LEGACY` and the
+  owner-only handover policy is `AUTOMATIC` (the default; `MANUAL` leaves the handover to the operator command),
+  an execution engine that runs the schedule pass MUST attempt the handover, through one function the runtime
+  role may execute that re-checks everything in one transaction under the requirement epoch, the table lock of
+  the cron triggers and the handover row, and that MUST hand over only when: the calling engine is a live
+  registered engine listing `schedules-v1`; no live engine lacks `schedules-v1`; no live scheduler membership
+  belongs to an engine the registry does not list; at least one control plane is live in the registry; no
+  serving instance or scheduler member started within the policy's quiet window (600 s by default); and no cron
+  trigger is unconverged (`schedule_trigger_drift` is empty). A refused attempt MUST change nothing and MUST be
+  reported per closed reason (`trigger_schedule_handover_blocked{reason}`, alert `SagatTriggerHandoverBlocked`
+  after an hour on any reason but `POLICY_MANUAL`), including by an engine that runs no schedule pass
+  (`SCHEDULE_PASS_OFF`). A handover, by either path, MUST be recorded with its mode in the handover row and the
+  registry's history and, subject to O1955, in the audit of every tenant that has a cron trigger, in the same
+  transaction. The operator command `schedule-trigger-handover` stays, with its checks, and its dry run says
+  what the automatic path would answer. (OD-2026-11-14-4; D2240 to D2248; ADR-0091.)
 
 ### Non-functional requirements
 
@@ -559,6 +582,7 @@ All evidence below is future evidence; none exists yet.
 | SC-018-016 | A barrier test runs every run-driven transition (completion, timer, wait timeout, deadline, terminal, handoff) against each aggregate path; `pg_locks` never shows a run-driven transaction holding a schedule, business-id, job, item, obligation or pending-reset row, and no deadlock occurs. | FR-018-007, FR-018-021, FR-018-030 |
 | SC-018-017 | An activation racing a registering instance that lacks the capability never leaves that instance serving (a running one that was silent at the activation stops within about 12 s of its first answer); an instance whose capability is missing after an activation answers `BINARY_CAPABILITY_MISSING` (API) or stops its passes (engine); an instance silent for 30 s no longer blocks an activation. | FR-018-052, FR-018-017 |
 | SC-018-018 | A job whose selection always fails survives ten failed rounds, each after the wait of a refused item, and ends `FAILED` `SELECTION_FAILED` at the eleventh with one audit record; one failed round followed by a pick does not fail the job and resets the count; the count and the wait survive a restart and a move of the lease; a cancel that commits while a failure is recorded is not overwritten; the record is cut at each of its writes and counts the failure once; the error text (a canary quoted by a database error) reaches no log, span, metric or table; a job that waits leaves the scan so the jobs behind it are reached. | FR-018-029, FR-018-033 |
+| SC-018-019 | With the policy `AUTOMATIC`, a released-v0.2 upgrade (migrate, engines, control planes) hands over by itself once the 0.2 engines' memberships have expired, a 0.3.0 control plane is live, the quiet window has passed and the view is empty, and not before; each failed condition is refused with its reason and changes nothing; an engine that registers without `schedules-v1`, a publication in flight, a second engine, the operator and a change of the policy racing the function are held by barriers in both orders and never leave the platform handed over with an engine lacking the capability or a trigger without its schedule; a crash at each wait records nothing; one tick starts one run throughout; the handover is recorded with its mode. | FR-018-053, FR-018-017, FR-018-052 |
 
 ## Assumptions
 
@@ -606,3 +630,5 @@ schedules that start anything other than a workflow run.
 See [research.md §5](research.md#5-owner-questions-the-plan-implements-the-recommended-defaults):
 O1000 (schedule authority after access loss — recommended: pause), O1001 (business-id reuse window —
 recommended: 30 days, up to 366), O1002 (who holds `run:batch` — recommended: admin and operator).
+Open since 2026-11-14 (FR-018-053): O1954 (may an operator keep the handover manual — recommended: yes, through an
+owner-only policy, automatic by default) and O1955 (do tenants see the handover in their audit — recommended: yes).

@@ -53,3 +53,7 @@ Accepted limits, each written in the runbook (`docs/runbooks/schedules.md` 6.2 a
 ## Evidence
 
 The tests named above; `tasks.md` of feature 018 (T018-060, T018-061), with the mutation batteries of each round.
+
+## Amendments
+
+- **2026-11-14 (ADR-0091, proposed; OD-2026-11-14-4).** The owner decided that the handover happens without an operator's command during the upgrade. ADR-0091 amends decision 4 (the handover is also made by the engines, through `schedule_trigger_handover_automatic`, a definer function the runtime role may execute, which re-checks every condition of decision 4 and adds its own: no unregistered engine holding a scheduler membership, a live control plane, a quiet window), extends the lock order of decision 5 with an owner-only policy row (`AUTOMATIC` by default, `MANUAL` keeps the handover an operator's act), and replaces the accepted limit "the handover has no tenant audit entry of its own" (D2042) with one audit record per tenant that has a cron trigger (O1955). The decisions above are not rewritten; until ADR-0091 is accepted and built, they describe what runs.
