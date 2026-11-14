@@ -467,6 +467,32 @@ async fn a_container_that_exits_by_itself_is_not_a_memory_kill() {
     );
 }
 
+/// A container that ends on a SIGKILL nobody sent for its memory is asked about the flag again, and the answer stays what
+/// the engine says: no inference turns a 137 into a memory kill.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_container_that_kills_itself_is_not_a_memory_kill() {
+    let fixture = Fixture::new().await;
+    let id = attempt();
+    fixture
+        .launch(&id, 28, now() + 3600, 128, &["sh", "-c", "kill -9 $$"])
+        .await;
+    within(
+        "wait for the exit",
+        STAGE,
+        fixture
+            .engine
+            .wait(&fixture.owner, &id, Duration::from_secs(30)),
+    )
+    .await
+    .expect("the engine answers");
+    let ended = within("end", STAGE, fixture.engine.end(&fixture.owner, &id)).await;
+    assert!(
+        ended.existed && ended.confirmed && !ended.memory_killed,
+        "{ended:?}"
+    );
+    fixture.nothing_is_left().await;
+}
+
 /// The deadline is a label the sweep reads, so that it holds across a restart of the process that set it. `now` is a
 /// parameter: no case waits for a real deadline.
 #[tokio::test(flavor = "multi_thread")]
