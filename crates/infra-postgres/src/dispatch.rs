@@ -417,6 +417,12 @@ impl EventDispatchStore for PgRunStore {
         .rows_affected())
     }
 
+    async fn trigger_handover(
+        &self,
+    ) -> Result<sagat_application::schedule_triggers::HandoverState, StoreError> {
+        crate::trigger_schedules::handover_state(&self.pool).await
+    }
+
     async fn due_cron_triggers(&self, limit: u32) -> Result<Vec<StoredTrigger>, StoreError> {
         sqlx::query(select_triggers!(
             "WHERE kind = 'cron' \

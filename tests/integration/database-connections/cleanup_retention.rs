@@ -317,6 +317,7 @@ async fn rerun_source_and_cleanup_barrier(
     info.root = info.run_id;
     info.rerun_of = Some(RunId::generate());
     let new = NewRun {
+        business: None,
         schedule: None,
         retained: None,
         limits: RunLimits::of(store, tenant, namespace).await.unwrap(),
@@ -337,6 +338,8 @@ async fn rerun_source_and_cleanup_barrier(
             fingerprint: vec![1],
         },
         info,
+        reset_sequence: None,
+        pending_reset: None,
     };
     assert!(matches!(
         store.create(new).await,

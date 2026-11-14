@@ -12,8 +12,15 @@
 //!   back, not even into a shard nobody took in the meantime; it takes it again, with a new
 //!   generation, so that nothing it started before it was away can still commit;
 //! - it is **fenced** by a `SELECT ... FOR SHARE` of the row in the transaction that changes a run:
-//!   a takeover (an `UPDATE` of the same row) waits for the transactions that found the lease good,
-//!   and the ones that start after find the new generation.
+//!   a takeover does **not** wait for the transactions that found the lease good. It takes the row
+//!   `FOR UPDATE SKIP LOCKED`, so a shard a fence holds is skipped and asked for again at the next
+//!   round; the ones that start after the takeover find the new generation.
+//!
+//! The lease row is a **leaf lock** (ADR-0050 decision 7): fences take it shared, the keeper takes it
+//! exclusively but never waits for it and holds no other row, so it is in no lock cycle.
+//! `scripts/check-architecture.py` refuses a change that would stop it being so (a stronger fence, a
+//! keeper statement without `SKIP LOCKED`, a keeper that names `runs`): a reader who makes the code
+//! "wait for the fences", as this text once said, breaks the property.
 
 use std::collections::BTreeMap;
 use std::time::Duration;

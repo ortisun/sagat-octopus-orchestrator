@@ -166,6 +166,7 @@ fn recorded_event_satisfaction_preserves_the_sibling_and_routes_next() {
         started(),
         event(RunEvent::WaitSatisfied {
             node: id("notified"),
+            via: None,
         }),
     ] {
         full.apply_addressed(&addressed)
@@ -237,6 +238,7 @@ fn timeout_or_event_records_one_outcome_and_an_unhandled_timeout_keeps_its_typed
         });
         let received = event(RunEvent::WaitSatisfied {
             node: id("notified"),
+            via: None,
         });
         let (first, late) = if timeout_first {
             (&timeout, &received)
@@ -275,6 +277,7 @@ fn cancelling_an_event_wait_prevents_late_satisfaction_and_timeout() {
     for late in [
         RunEvent::WaitSatisfied {
             node: id("notified"),
+            via: None,
         },
         RunEvent::WaitTimedOut {
             node: id("notified"),
@@ -300,6 +303,7 @@ fn an_accepted_event_may_record_completion_while_paused_but_routing_waits_for_re
     let mut bounded = PathExecutionState::from_run(&full, path(0)).expect("paused path");
     let received = event(RunEvent::WaitSatisfied {
         node: id("notified"),
+        via: None,
     });
     full.apply_addressed(&received).expect("accepted event");
     bounded
@@ -347,7 +351,7 @@ proptest::proptest! {
         let start=AddressedRunEvent::in_path(path(index),RunEvent::WaitStarted {node:id("notified"),correlation_key:key.clone(),deadline}).expect("address");
         full.apply_addressed(&start).expect("full start");bounded.apply_addressed(&start).expect("bounded start");
         proptest::prop_assert_eq!(full.instance(&wait(index)).expect("wait").waiting_on(),Some(&WaitingOn::Event {correlation_key:key,deadline}));
-        let end=if outcome==0 {RunEvent::WaitSatisfied {node:id("notified")}}else{RunEvent::WaitTimedOut {node:id("notified"),handled:outcome==1}};
+        let end=if outcome==0 {RunEvent::WaitSatisfied {node:id("notified"), via: None }}else{RunEvent::WaitTimedOut {node:id("notified"),handled:outcome==1}};
         let end=AddressedRunEvent::in_path(path(index),end).expect("address");
         full.apply_addressed(&end).expect("full outcome");bounded.apply_addressed(&end).expect("bounded outcome");
         proptest::prop_assert_eq!(&bounded,&PathExecutionState::from_run(&full,path(index)).expect("oracle"));
@@ -372,6 +376,7 @@ fn invalid_wait_source_states_and_duplicate_cancellation_are_inert_in_both_model
             vec![
                 event(RunEvent::WaitSatisfied {
                     node: id("notified"),
+                    via: None,
                 }),
                 event(RunEvent::WaitTimedOut {
                     node: id("notified"),
@@ -394,6 +399,7 @@ fn invalid_wait_source_states_and_duplicate_cancellation_are_inert_in_both_model
                 started(),
                 event(RunEvent::WaitSatisfied {
                     node: id("notified"),
+                    via: None,
                 }),
                 event(RunEvent::WaitTimedOut {
                     node: id("notified"),
@@ -409,6 +415,7 @@ fn invalid_wait_source_states_and_duplicate_cancellation_are_inert_in_both_model
             vec![
                 event(RunEvent::WaitSatisfied {
                     node: id("notified"),
+                    via: None,
                 }),
                 event(RunEvent::WaitTimedOut {
                     node: id("notified"),

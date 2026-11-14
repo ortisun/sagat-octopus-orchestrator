@@ -724,6 +724,32 @@ pub(crate) fn store_error(error: sqlx::Error) -> StoreError {
     record(classify(&error))
 }
 
+/// [`store_error`] for a statement whose error may quote customer text: the selection round of a batch job, whose statements bind the
+/// selector (a business-id prefix) and read it back (G2094, D2203). The message of a database error can quote a value (a cast that fails
+/// names the value, and so does the message a trigger raises), so none of it is logged or kept. The error is classified as
+/// [`store_error`] classifies it (a timeout or a deadlock is [`StoreError::Unavailable`], so what the caller decides is the same) and
+/// its text is replaced by its SQLSTATE, the closed five-character code of the kind of error (`57014` a statement over its timeout,
+/// `40P01` a deadlock), as `sqlstate:XXXXX`, which [`StoreError::sqlstate`] reads back. That code is also what an operator is given in
+/// place of the text. A failure that is no database error says `sqlstate:none`.
+pub(crate) fn store_error_without_text(error: sqlx::Error) -> StoreError {
+    let code = match &error {
+        sqlx::Error::Database(db) => db.code().map(|code| code.to_string()).filter(|code| {
+            code.len() == 5
+                && code
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+        }),
+        _ => None,
+    };
+    let detail = format!("sqlstate:{}", code.as_deref().unwrap_or("none"));
+    match classify(&error) {
+        StoreError::Unavailable { .. } => StoreError::Unavailable { detail },
+        StoreError::Internal { .. } => StoreError::Internal { detail },
+        // every other kind of error is a closed value of its own, with no text
+        other => other,
+    }
+}
+
 /// Logs a storage failure with its cause (never returned to clients) and passes it on.
 fn record(mapped: StoreError) -> StoreError {
     match &mapped {
@@ -739,6 +765,7 @@ fn record(mapped: StoreError) -> StoreError {
         | StoreError::RevealGrantRequired
         | StoreError::LakeRefused { .. }
         | StoreError::DatabaseUnavailable
+        | StoreError::BusinessIdHeld { .. }
         | StoreError::DatabaseLimit => {}
     }
     mapped

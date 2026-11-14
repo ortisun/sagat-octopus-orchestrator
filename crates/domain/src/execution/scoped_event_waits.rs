@@ -1,7 +1,7 @@
 //! Pure preparation of qualified event waits; no subscription or external delivery authority.
 use super::{
     AddressedProgress, AddressedRunEvent, CorrelationKey, ExecutionError, ExecutionInstanceId,
-    FailureCode, PathExecutionState, RunEvent, RunState, StepStatus, WaitingOn,
+    FailureCode, PathExecutionState, RunEvent, RunState, StepStatus, WaitVia, WaitingOn,
 };
 use crate::workflow::{EventType, Node, NodeKind, WorkflowDefinition};
 use time::OffsetDateTime;
@@ -147,6 +147,8 @@ fn prepared_satisfaction(
         instance.path().clone(),
         RunEvent::WaitSatisfied {
             node: instance.node().clone(),
+            // the one caller of this is the dispatch of a published event
+            via: Some(WaitVia::Event),
         },
     )
     .map_err(|_| ExecutionError::Invariant("event satisfaction lost its instance path"))

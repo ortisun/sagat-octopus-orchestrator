@@ -1,0 +1,412 @@
+{
+  "name": "update-with-start",
+  "description": "Feature 018 US04: update-with-start. With no open holder the run is created and the declared Update applied after its initial reduction (started true); an open holder receives it (started false, FAIL refuses instead); the validator or a stale revision is an answer (REJECTED), not an error; an undeclared operation, arguments outside the declaration and a key reused with another request are errors; the same key and body replays the first answer.",
+  "workflows": {
+    "account": {
+      "name": "uws-account",
+      "description": "Declared account state; an activity nobody serves keeps the run open.",
+      "state": {
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "balance": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "label": {
+              "type": "string",
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "balance",
+            "label"
+          ]
+        },
+        "initial": "input.account",
+        "queries": {
+          "balance.read": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false
+            },
+            "resultSchema": {
+              "type": "integer"
+            },
+            "expression": "state.balance",
+            "disclosure": "declared-business-result-v1"
+          }
+        },
+        "updates": {
+          "balance.set": {
+            "argsSchema": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "allowed": {
+                  "type": "boolean"
+                },
+                "nextState": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "balance": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "label": {
+                      "type": "string",
+                      "maxLength": 64
+                    }
+                  },
+                  "required": [
+                    "balance",
+                    "label"
+                  ]
+                }
+              },
+              "required": [
+                "allowed",
+                "nextState"
+              ]
+            },
+            "validate": "args.allowed",
+            "state": "args.nextState",
+            "result": "newState.balance",
+            "resultSchema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      },
+      "program": [
+        {
+          "op": "step",
+          "id": "hold",
+          "activity": "uws.unserved"
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "id": "applied",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "uws-{{unique}}-1",
+      "input": {
+        "account": {
+          "balance": 10,
+          "label": "main"
+        }
+      },
+      "update": {
+        "name": "balance.set",
+        "updateKey": "set-1-{{unique}}",
+        "expectedStateRevision": 0,
+        "args": {
+          "allowed": true,
+          "nextState": {
+            "balance": 25,
+            "label": "main"
+          }
+        }
+      },
+      "idempotencyKey": "uws-applied-{{unique}}"
+    },
+    {
+      "id": "balance",
+      "op": "query",
+      "run": "applied",
+      "name": "balance.read",
+      "args": {}
+    },
+    {
+      "id": "replay",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "uws-{{unique}}-1",
+      "input": {
+        "account": {
+          "balance": 10,
+          "label": "main"
+        }
+      },
+      "update": {
+        "name": "balance.set",
+        "updateKey": "set-1-{{unique}}",
+        "expectedStateRevision": 0,
+        "args": {
+          "allowed": true,
+          "nextState": {
+            "balance": 25,
+            "label": "main"
+          }
+        }
+      },
+      "idempotencyKey": "uws-applied-{{unique}}"
+    },
+    {
+      "id": "replay-other-request",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "uws-{{unique}}-1",
+      "input": {
+        "account": {
+          "balance": 10,
+          "label": "main"
+        }
+      },
+      "update": {
+        "name": "balance.set",
+        "updateKey": "set-1-{{unique}}",
+        "expectedStateRevision": 0,
+        "args": {
+          "allowed": true,
+          "nextState": {
+            "balance": 26,
+            "label": "main"
+          }
+        }
+      },
+      "idempotencyKey": "uws-applied-{{unique}}"
+    },
+    {
+      "id": "to-open-holder",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "uws-{{unique}}-1",
+      "input": {
+        "account": {
+          "balance": 10,
+          "label": "main"
+        }
+      },
+      "update": {
+        "name": "balance.set",
+        "updateKey": "set-2-{{unique}}",
+        "expectedStateRevision": 1,
+        "args": {
+          "allowed": true,
+          "nextState": {
+            "balance": 30,
+            "label": "main"
+          }
+        }
+      },
+      "idempotencyKey": "uws-holder-{{unique}}"
+    },
+    {
+      "id": "rejected-by-validator",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "uws-{{unique}}-1",
+      "input": {
+        "account": {
+          "balance": 10,
+          "label": "main"
+        }
+      },
+      "update": {
+        "name": "balance.set",
+        "updateKey": "set-3-{{unique}}",
+        "args": {
+          "allowed": false,
+          "nextState": {
+            "balance": 99,
+            "label": "main"
+          }
+        }
+      },
+      "idempotencyKey": "uws-validator-{{unique}}"
+    },
+    {
+      "id": "stale-revision",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "uws-{{unique}}-1",
+      "input": {
+        "account": {
+          "balance": 10,
+          "label": "main"
+        }
+      },
+      "update": {
+        "name": "balance.set",
+        "updateKey": "set-4-{{unique}}",
+        "expectedStateRevision": 0,
+        "args": {
+          "allowed": true,
+          "nextState": {
+            "balance": 40,
+            "label": "main"
+          }
+        }
+      },
+      "idempotencyKey": "uws-stale-{{unique}}"
+    },
+    {
+      "id": "balance-after-rejections",
+      "op": "query",
+      "run": "applied",
+      "name": "balance.read",
+      "args": {}
+    },
+    {
+      "id": "fail-policy-on-open",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "uws-{{unique}}-1",
+      "businessIdConflictPolicy": "FAIL",
+      "input": {
+        "account": {
+          "balance": 10,
+          "label": "main"
+        }
+      },
+      "update": {
+        "name": "balance.set",
+        "updateKey": "set-5-{{unique}}",
+        "args": {
+          "allowed": true,
+          "nextState": {
+            "balance": 50,
+            "label": "main"
+          }
+        }
+      },
+      "idempotencyKey": "uws-fail-{{unique}}"
+    },
+    {
+      "id": "undeclared",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "uws-{{unique}}-2",
+      "input": {
+        "account": {
+          "balance": 1,
+          "label": "x"
+        }
+      },
+      "update": {
+        "name": "no.such.update",
+        "updateKey": "set-6-{{unique}}",
+        "args": {}
+      },
+      "idempotencyKey": "uws-undeclared-{{unique}}"
+    },
+    {
+      "id": "invalid-arguments",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "uws-{{unique}}-3",
+      "input": {
+        "account": {
+          "balance": 1,
+          "label": "x"
+        }
+      },
+      "update": {
+        "name": "balance.set",
+        "updateKey": "set-7-{{unique}}",
+        "args": {
+          "allowed": "yes"
+        }
+      },
+      "idempotencyKey": "uws-arguments-{{unique}}"
+    },
+    {
+      "id": "nothing-created",
+      "op": "businessIdGet",
+      "businessId": "uws-{{unique}}-3"
+    },
+    {
+      "id": "rejected-at-creation",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "uws-{{unique}}-4",
+      "input": {
+        "account": {
+          "balance": 1,
+          "label": "x"
+        }
+      },
+      "update": {
+        "name": "balance.set",
+        "updateKey": "set-8-{{unique}}",
+        "args": {
+          "allowed": false,
+          "nextState": {
+            "balance": 5,
+            "label": "main"
+          }
+        }
+      },
+      "idempotencyKey": "uws-created-rejected-{{unique}}"
+    },
+    {
+      "id": "delayed",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "uws-{{unique}}-5",
+      "startDelayMs": 3600000,
+      "input": {
+        "account": {
+          "balance": 1,
+          "label": "x"
+        }
+      },
+      "update": {
+        "name": "balance.set",
+        "updateKey": "set-9-{{unique}}",
+        "expectedStateRevision": 0,
+        "args": {
+          "allowed": true,
+          "nextState": {
+            "balance": 7,
+            "label": "main"
+          }
+        }
+      },
+      "idempotencyKey": "uws-delayed-{{unique}}"
+    },
+    {
+      "id": "delayed-run",
+      "op": "get",
+      "run": "delayed"
+    },
+    {
+      "id": "cancel-delayed",
+      "op": "cancel",
+      "run": "delayed",
+      "reason": "only checking the delayed start"
+    },
+    {
+      "id": "invalid-id",
+      "op": "updateWithStart",
+      "workflow": "account",
+      "businessId": "has a space",
+      "input": {
+        "account": {
+          "balance": 1,
+          "label": "x"
+        }
+      },
+      "update": {
+        "name": "balance.set",
+        "updateKey": "set-10-{{unique}}",
+        "args": {
+          "allowed": true,
+          "nextState": {
+            "balance": 5,
+            "label": "main"
+          }
+        }
+      },
+      "idempotencyKey": "uws-invalid-{{unique}}"
+    }
+  ]
+}

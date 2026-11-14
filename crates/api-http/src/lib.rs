@@ -24,6 +24,7 @@ mod context;
 mod core;
 pub mod denial;
 mod dto;
+mod dto_batch;
 mod dto_chains;
 mod dto_database;
 mod dto_declared_operations;
@@ -32,6 +33,7 @@ mod dto_exec;
 mod dto_gov;
 mod dto_ops;
 mod dto_primitives;
+mod dto_resets;
 mod dto_schedules;
 mod dto_scripts;
 mod dto_versioning;
@@ -56,6 +58,7 @@ pub use extract::{Authenticated, authenticate_bearer, parse_bearer};
 pub use governance::{GovState, Governance};
 pub use limits::{
     DEFAULT_MAX_TRACKED_KEYS, MAX_RETRY_AFTER, RateLimitConfig, RateLimitConfigError, RateLimiter,
+    not_serving,
 };
 pub use routes::declared_operations::DeclaredOperationApiState;
 pub use routes::primitives::ApprovalApiState;
@@ -79,6 +82,10 @@ pub struct AppState<S, C> {
     pub(crate) ready_cache: Arc<Mutex<Option<(Instant, bool)>>>,
     /// Serialises readiness refreshes so concurrent probes share one storage ping.
     pub(crate) ready_refresh: Arc<tokio::sync::Mutex<()>>,
+    /// Whether this process may serve (the instance-capability registry, `FR-018-052`): while it is closed every
+    /// call but the liveness probe is answered `503 UNAVAILABLE` / `BINARY_CAPABILITY_MISSING`. `None` is a process
+    /// with no registry (a test), which serves.
+    pub(crate) serving_gate: Option<Arc<sagat_application::instances::ServingGate>>,
 }
 
 impl<S, C> AppState<S, C> {
@@ -123,7 +130,19 @@ impl<S, C> AppState<S, C> {
             )),
             ready_cache: Arc::new(Mutex::new(None)),
             ready_refresh: Arc::new(tokio::sync::Mutex::new(())),
+            serving_gate: None,
         }
+    }
+
+    /// Makes the state obey the gate of the process's registry membership: a closed gate refuses every call but
+    /// `GET /v1/health` with `503 UNAVAILABLE` and `details.reason = BINARY_CAPABILITY_MISSING`.
+    #[must_use]
+    pub fn with_serving_gate(
+        mut self,
+        gate: Arc<sagat_application::instances::ServingGate>,
+    ) -> Self {
+        self.serving_gate = Some(gate);
+        self
     }
 
     /// Replaces the per-subject budget (the default is [`RateLimitConfig::subject_default`]).
@@ -149,6 +168,7 @@ impl<S, C> Clone for AppState<S, C> {
             tenant_concurrency: Arc::clone(&self.tenant_concurrency),
             ready_cache: Arc::clone(&self.ready_cache),
             ready_refresh: Arc::clone(&self.ready_refresh),
+            serving_gate: self.serving_gate.clone(),
         }
     }
 }
@@ -231,6 +251,10 @@ where
         .route("/health", get(health::health))
         .route("/ready", get(health::ready::<S, C>))
         .merge(api)
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.serving_gate.clone(),
+            limits::require_serving,
+        ))
         .route_layer(from_fn(context::record_route));
 
     protect(Router::new().nest("/v1", v1).with_state(state), limits)
@@ -404,6 +428,7 @@ where
     let serves_secrets = state.secrets().is_some();
     let serves_events = state.events().is_some();
     let serves_schedules = state.schedules().is_some();
+    let serves_batches = state.batches().is_some();
     let serves_outbound = state.outbound().is_some();
     let serves_connectors = state.connectors().is_some();
     let serves_scripts = state.scripts().is_some();
@@ -573,6 +598,10 @@ where
                     axum::routing::post(sc::resume_schedule::<B<S, C, G>>),
                 )
                 .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/actions",
+                    get(sc::list_schedule_actions::<B<S, C, G>>),
+                )
+                .route(
                     "/namespaces/{namespace_id}/schedules/{schedule_id}/trigger",
                     axum::routing::post(sc::trigger_schedule::<B<S, C, G>>),
                 )
@@ -586,6 +615,50 @@ where
                     axum::routing::post(sc::cancel_schedule_backfill::<B<S, C, G>>),
                 )
                 .layer(RequestBodyLimitLayer::new(sc::SCHEDULE_MAX_BODY_BYTES)),
+        );
+    }
+    // The input of a schedule is disclosed only where the service for it is wired (feature 018).
+    if serves_schedules && state.schedule_input_disclosures().is_some() {
+        router = router.merge(
+            Router::new()
+                .route(
+                    "/namespaces/{namespace_id}/schedules/{schedule_id}/input-disclosures",
+                    axum::routing::post(routes::schedules::disclose_schedule_input::<B<S, C, G>>),
+                )
+                .layer(RequestBodyLimitLayer::new(
+                    routes::payload_disclosure::DISCLOSURE_MAX_BODY_BYTES,
+                ))
+                .route_layer(axum::middleware::from_fn(
+                    routes::payload_disclosure::no_store,
+                )),
+        );
+    }
+    // Batch operations are deployment-gated: without the service the routes are not there at all.
+    if serves_batches {
+        use routes::batch as ba;
+        router = router.merge(
+            Router::new()
+                .route(
+                    "/namespaces/{namespace_id}/batch-operations/preview",
+                    axum::routing::post(ba::preview_batch::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/batch-operations",
+                    get(ba::list_batches::<B<S, C, G>>).post(ba::create_batch::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/batch-operations/{batch_id}",
+                    get(ba::get_batch::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/batch-operations/{batch_id}/cancel",
+                    axum::routing::post(ba::cancel_batch::<B<S, C, G>>),
+                )
+                .route(
+                    "/namespaces/{namespace_id}/batch-operations/{batch_id}/items",
+                    get(ba::list_batch_items::<B<S, C, G>>),
+                )
+                .layer(RequestBodyLimitLayer::new(ba::BATCH_MAX_BODY_BYTES)),
         );
     }
     if serves_outbound {
@@ -815,6 +888,7 @@ where
     ExecState<S, C, P, X, E>: Exec,
 {
     use routes::execution as ex;
+    use routes::resets;
     use routes::{health, identity};
 
     // One place configures every limit: the per-tenant cap comes from `limits`, like the global one.
@@ -825,6 +899,9 @@ where
 
     let slots = Arc::new(tokio::sync::Semaphore::new(limits.max_in_flight.max(1)));
     let shed = || axum::middleware::from_fn_with_state(Arc::clone(&slots), limits::shed_excess);
+    // a process whose binary lacks a capability the platform requires serves nothing but its liveness (FR-018-052)
+    let serving =
+        || axum::middleware::from_fn_with_state(core.serving_gate.clone(), limits::require_serving);
 
     // Large streaming uploads have their own size/time budget. Ordinary JSON routes retain
     // their existing protection; no caller can smuggle a larger run request through this path.
@@ -841,6 +918,7 @@ where
                     axum::routing::post(blobs::upload::<B<S, C, P, X, E>>),
                 )
                 .route_layer(shed())
+                .route_layer(serving())
                 .route_layer(from_fn(context::record_route))
                 .with_state(state.clone()),
             upload_limits,
@@ -1024,7 +1102,19 @@ where
             "/runs",
             get(ex::list_runs::<B<S, C, P, X, E>>).post(ex::start_run::<B<S, C, P, X, E>>),
         )
+        .route(
+            "/runs/signal-with-start",
+            axum::routing::post(ex::signal_with_start::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/update-with-start",
+            axum::routing::post(ex::update_with_start::<B<S, C, P, X, E>>),
+        )
         .route("/runs/{run_id}", get(ex::get_run::<B<S, C, P, X, E>>))
+        .route(
+            "/namespaces/{namespace_id}/business-ids/{business_id}",
+            get(ex::get_business_binding::<B<S, C, P, X, E>>),
+        )
         .route(
             "/runs/{run_id}/events",
             get(ex::run_journal::<B<S, C, P, X, E>>),
@@ -1057,6 +1147,23 @@ where
             "/runs/{run_id}/signals/{signal_name}",
             axum::routing::post(ex::signal_run::<B<S, C, P, X, E>>),
         )
+        .route(
+            "/runs/{run_id}/reset-points",
+            get(resets::list_reset_points::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/reset-previews",
+            axum::routing::post(resets::preview_reset::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/resets",
+            get(resets::list_run_resets::<B<S, C, P, X, E>>)
+                .post(resets::reset_run::<B<S, C, P, X, E>>),
+        )
+        .route(
+            "/runs/{run_id}/resets/{reset_id}",
+            get(resets::get_run_reset::<B<S, C, P, X, E>>),
+        )
         .layer(RequestBodyLimitLayer::new(EXEC_MAX_BODY_BYTES))
         .route_layer(shed())
         .with_state(state);
@@ -1072,6 +1179,7 @@ where
         .merge(database_executions)
         .merge(exec_routes)
         .merge(extra_routes)
+        .route_layer(serving())
         .route_layer(from_fn(context::record_route))
         .with_state(core);
 

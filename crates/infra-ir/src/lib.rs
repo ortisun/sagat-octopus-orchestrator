@@ -8,6 +8,8 @@
 mod payload_projection;
 pub use payload_projection::JsonPayloadProjector;
 mod canonical;
+mod capabilities;
+pub use capabilities::{reset_reapply_enabled, set_reset_reapply};
 mod carrier_schema_check;
 mod classification_check;
 mod continuation;
@@ -142,7 +144,11 @@ impl IrCodec for JsonIrCodec {
     }
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
-        published_definition(validated_document(document)?)
+        let value = validated_document(document)?;
+        // a new publication needs every capability its document uses to be on; `parse_stored` below
+        // restores what was published while one was
+        capabilities::check_publication(&value)?;
+        published_definition(value)
     }
 
     fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
@@ -171,6 +177,8 @@ impl IrCodec for JsonIrCodec {
     ) -> Result<Option<sagat_application::declared_operations::PublishedDeclaredState>, IrError>
     {
         let value = validated_document(document)?;
+        // what a publication stores is held to the same capabilities as the parse that precedes it
+        capabilities::check_publication(&value)?;
         value
             .get("state")
             .map(|_| declared_state::parse(&value)?.publication())

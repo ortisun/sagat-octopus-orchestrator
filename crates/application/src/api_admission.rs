@@ -43,6 +43,10 @@ pub enum ApiOperation {
     DatabaseResultRead,
     RunOperate,
     RunRerun,
+    /// Create a run from the prefix of an ended one (feature 018): the permissions of a rerun.
+    RunReset,
+    /// The points a run can be reset to, and what a reset would do: it reads the journal of a run.
+    ResetInspect,
     RunSignal,
     ApprovalRead,
     ApprovalDecide,
@@ -77,6 +81,12 @@ pub enum ApiOperation {
     ScheduleTrigger,
     /// A backfill starts runs as the schedule, under the role of its requester.
     ScheduleBackfill,
+    /// Read a batch job, its items and the list of jobs of a namespace.
+    BatchRead,
+    /// Create or cancel a batch job; the permissions of the action are checked by the service.
+    BatchWrite,
+    /// Count what a selector matches: it reads runs, so it needs both permissions.
+    BatchPreview,
 }
 
 impl ApiOperation {
@@ -102,7 +112,8 @@ impl ApiOperation {
             Self::PayloadDisclose => &[RunRead],
             Self::DatabaseResultRead => &[RunRead, Permission::DatabaseResultRead],
             Self::RunOperate => &[RunOperate],
-            Self::RunRerun => &[RunOperate, RunStart],
+            Self::RunRerun | Self::RunReset => &[RunOperate, RunStart],
+            Self::ResetInspect => &[RunOperate, RunRead],
             Self::RunSignal => &[RunSignal],
             Self::ApprovalRead => &[RunRead, ApprovalRead],
             Self::ApprovalDecide => &[ApprovalDecide],
@@ -133,6 +144,9 @@ impl ApiOperation {
             Self::ScheduleResume | Self::ScheduleTrigger | Self::ScheduleBackfill => {
                 &[ScheduleOperate, RunStart]
             }
+            Self::BatchRead => &[RunRead],
+            Self::BatchWrite => &[Permission::RunBatch],
+            Self::BatchPreview => &[Permission::RunBatch, RunRead],
         }
     }
 }

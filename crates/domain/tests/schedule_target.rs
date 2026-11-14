@@ -195,3 +195,29 @@ fn the_business_id_of_an_action_is_the_prefix_a_dash_and_the_nominal_time() {
         "a nominal time that would push the id past 200 characters is refused, not truncated"
     );
 }
+
+/// The prefix is customer text: no `Debug` text of the parts of a target or of the target holds it (a debug print of a request
+/// or of an error reaches logs). It says whether there is one.
+#[test]
+fn no_debug_text_of_a_target_holds_its_prefix() {
+    let secret = "customer-text-canary-9f3a";
+    let given = TargetParts {
+        business_id_prefix: Some(secret.to_owned()),
+        ..parts()
+    };
+    let printed = format!("{given:?}");
+    assert!(!printed.contains(secret), "TargetParts: {printed}");
+    assert!(
+        printed.contains("business_id_prefix: Some(\"..\")"),
+        "it says there is one: {printed}"
+    );
+    assert!(
+        format!("{:?}", parts()).contains("business_id_prefix: None"),
+        "and when there is none"
+    );
+    let target = ScheduleTarget::new(given).expect("target");
+    let printed = format!("{target:?}");
+    assert!(!printed.contains(secret), "ScheduleTarget: {printed}");
+    let printed = format!("{:?}", target.business_id().expect("business id"));
+    assert!(!printed.contains(secret), "TargetBusinessId: {printed}");
+}

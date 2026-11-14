@@ -11,10 +11,11 @@ use std::sync::Arc;
 
 use sagat_application::error::AppError;
 use sagat_application::identity::RequestContext;
-use sagat_application::schedule_firing::{Fired, ScheduleFiring, ScheduledStart, ScheduledStarts};
+use sagat_application::schedule_firing::{
+    Fired, ScheduleFiring, ScheduledRun, ScheduledStart, ScheduledStarts,
+};
 use sagat_application::schedules::{ScheduleAdmission, ScheduleRecord, ScheduleState, ShardFence};
 use sagat_application::shards::Lease;
-use sagat_domain::execution::RunId;
 use sagat_domain::identity::{Principal, Role, Subject};
 use sagat_domain::schedules::Ceilings;
 use sagat_domain::sharding::Shard;
@@ -60,12 +61,22 @@ async fn status_of(f: &Fixture, run: Uuid) -> String {
 }
 
 /// A `CANCEL_OTHER` schedule whose 13:00 run is open and whose 14:00 waits, owing it a cancellation.
-async fn waiting_behind_an_open_run(
+pub(crate) async fn waiting_behind_an_open_run(
     f: &Fixture,
     name: &str,
     policies: Value,
 ) -> (ScheduleRecord, Uuid) {
-    let schedule = f.create(name, &hourly(), &policies, None).await;
+    waiting_behind_an_open_run_of(f, name, policies, None).await
+}
+
+/// [`waiting_behind_an_open_run`] for a schedule whose target is `target` (the published workflow of the fixture when none).
+pub(crate) async fn waiting_behind_an_open_run_of(
+    f: &Fixture,
+    name: &str,
+    policies: Value,
+    target: Option<Value>,
+) -> (ScheduleRecord, Uuid) {
+    let schedule = f.create(name, &hourly(), &policies, target).await;
     f.clock.advance(Duration::hours(1) + Duration::seconds(1));
     assert_eq!(f.fire(&schedule).await, Fired::Acted, "13:00 starts");
     let first = f.runs(&schedule).await[0];
@@ -75,7 +86,7 @@ async fn waiting_behind_an_open_run(
     (schedule, first)
 }
 
-fn cancel_other() -> Value {
+pub(crate) fn cancel_other() -> Value {
     json!({"overlap": "CANCEL_OTHER"})
 }
 
@@ -106,7 +117,7 @@ impl ScheduledStarts for FinishesFirst {
         request: &ScheduledStart<'_>,
         admission: ScheduleAdmission,
         ctx: &RequestContext,
-    ) -> Result<RunId, AppError> {
+    ) -> Result<ScheduledRun, AppError> {
         self.inner
             .start_scheduled(principal, request, admission, ctx)
             .await

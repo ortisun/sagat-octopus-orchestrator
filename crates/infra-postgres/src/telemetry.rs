@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use sagat_application::error::StoreError;
 use sagat_application::telemetry::{
-    Backlog, CONTEXT_EVENTS, JournalEntry, Pending, RunFacts, RunTelemetry, TelemetryStore,
-    ToProject, UnsupportedEntry,
+    Backlog, CONTEXT_EVENTS, JournalEntry, Pending, ResetOrigin, RunFacts, RunTelemetry,
+    TelemetryStore, ToProject, UnsupportedEntry,
 };
 use sagat_domain::execution::{ExecutionInstanceId, InstancePath, RunId};
 use sagat_domain::identity::{NamespaceId, TenantId};
@@ -147,8 +147,13 @@ impl TelemetryStore for PgRunStore {
         let tenant = pending.tenant_id.as_uuid();
         let run = pending.run_id.as_uuid();
         let Some(row) = sqlx::query(
+            // `reset_sequence` is read from the row as a whole: the projector keeps running while a
+            // rollback test takes the column away
             "SELECT r.namespace_id, r.trace_id, r.trace_parent_span, r.parent_run_id, r.created_at, \
-                    w.name AS workflow, v.version_number \
+                    w.name AS workflow, v.version_number, \
+                    to_jsonb(r.*)->>'reset_sequence' AS reset_sequence, r.rerun_of, \
+                    (SELECT s.trace_id FROM runs s \
+                      WHERE s.tenant_id = r.tenant_id AND s.id = r.rerun_of) AS source_trace \
              FROM runs r \
              JOIN workflows w ON w.tenant_id = r.tenant_id AND w.id = r.workflow_id \
              JOIN workflow_versions v ON v.tenant_id = r.tenant_id AND v.id = r.workflow_version_id \
@@ -226,6 +231,21 @@ impl TelemetryStore for PgRunStore {
         all.extend(entries);
         all.sort_by_key(|e| e.seq);
 
+        // A run a reset made starts with the history of its source: the entries up to `reset_sequence`
+        // are the source's, and its telemetry is told by the source.
+        let reset = match (
+            col::<Option<String>>(&row, "reset_sequence")?,
+            col::<Option<Uuid>>(&row, "rerun_of")?,
+        ) {
+            (Some(sequence), Some(source)) => Some(ResetOrigin {
+                source: RunId::new(source),
+                source_trace: col::<Option<String>>(&row, "source_trace")?
+                    .as_deref()
+                    .and_then(TraceId::parse),
+                restored_through: sequence.parse().map_err(|_| corrupt("reset sequence"))?,
+            }),
+            _ => None,
+        };
         let mut facts = RunFacts {
             tenant_id: pending.tenant_id,
             namespace_id: NamespaceId::new(col::<Uuid>(&row, "namespace_id")?),
@@ -238,6 +258,7 @@ impl TelemetryStore for PgRunStore {
             parent_run: col::<Option<Uuid>>(&row, "parent_run_id")?.map(RunId::new),
             created_at: col(&row, "created_at")?,
             steps,
+            reset,
         };
         // A child hangs from its parent's span, not from the request that started the parent.
         if facts.parent_run.is_some() {

@@ -18,6 +18,12 @@ Recovery refinement: [ADR-0076](ADR-0076-compensation-failure-and-uncertain-effe
 
 Specification workflow: [ADR-0077](ADR-0077-egm-replaces-spec-kit.md) — proposed; EGM design docs replace Spec Kit (Constitution 4.0.0).
 
+Reset of a run that is still open: [ADR-0081](ADR-0081-cancel-source-is-switched-on-per-process-until-the-capability-registry-exists.md) — accepted (OD-2026-11-13-4); `CANCEL_SOURCE` is switched on per process, engine first, until the instance-capability registry of ADR-0050 decision 9 exists, and records the order of locks of its request (feature 018, T018-057).
+
+The instance-capability registry: [ADR-0082](ADR-0082-the-instance-registry-records-requirements-only-for-the-operator-and-a-refused-process-stays-up-with-a-closed-gate.md) — accepted (OD-2026-11-13-4); requirements are recorded only by the operator, a refused process stays up with a closed gate, a requirement is learned within one heartbeat (refines ADR-0050 decision 9).
+
+The handover of the cron triggers: [ADR-0083](ADR-0083-the-cron-triggers-are-handed-to-the-schedule-pass-once-and-only-when-they-have-converged.md) — accepted (OD-2026-11-13-4); no data migration, the quota exemption, the engine's authority without a membership, a one-way switch that requires convergence and opens its control after a few seconds (refines ADR-0082).
+
 Lake sandbox API: [ADR-0079](ADR-0079-the-lake-runner-asks-the-sandbox-runner-for-an-attempt-never-for-a-container.md) — proposed; the lake runner asks a lake-mode sandbox runner for an attempt over a node-local Unix socket (attempt id, slot, budget class, deadline; never an image, mount, command or limit), with all lifecycle state in engine labels (refines ADR-0071 and ADR-0013; the Kubernetes shape stays open under T035-029).
 
 Capacity locks: [ADR-0078](ADR-0078-capacity-group-lock-order-and-possession-protocol.md) — proposed; the ChildRoot capacity group header is a lock nobody waits for and possession moves only through fenced commands (refines ADR-0075; leaves the creator, the sweeper's coverage and the worker's complete lock sequence open).

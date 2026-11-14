@@ -12,6 +12,8 @@ import dev.sagatoctopusorchestrator.sdk.workflow.StepOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.WaitForEventOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.WorkflowBuilder;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -37,6 +39,66 @@ final class ReadmeExamples {
             client.startAsync("order-flow", Map.of("orderId", "o-2"), null).thenAccept(r -> System.out.println(r.runId()));
         } catch (SagatException e) {
             System.err.println(e.code() + " " + e.remediation() + " trace=" + e.traceId());
+        }
+    }
+
+    static void schedulesBatchesAndReset() {
+        ClientConfig config = ClientConfig.builder()
+                .apiUrl("https://api.example/v1")
+                .namespace("payments")
+                .tokenProvider(() -> System.getenv("SAGAT_TOKEN"))
+                .build();
+        String namespaceId = "0190aaaa-0000-7000-8000-00000000aaaa";
+        String workflowId = "0190aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee";
+        try (SagatClient client = SagatClient.create(config)) {
+            // A business identifier names the one open run of an order; a second start answers that run.
+            StartedRun order = client.startResult("order-flow", Map.of("orderId", "o-1"), StartOptions.create()
+                    .businessId("order-o-1")
+                    .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
+                    .startDelay(Duration.ofMinutes(5)));
+            System.out.println(order.runId() + (order.started() ? " was started" : " already existed"));
+            BusinessIdBinding binding = client.businessIds().get(namespaceId, "order-o-1", null);
+            System.out.println(binding.currentRunId() + " open=" + binding.open());
+
+            // A schedule: every day at 09:00 UTC. The instants are sent in UTC, whatever the zone of the process.
+            Schedule schedule = client.schedules().create(namespaceId, ScheduleWrite.of("daily-report",
+                    ScheduleWrite.Spec.create().cron("0 9 * * *").timezone("UTC").startAt(Instant.parse("2027-01-01T00:00:00Z")),
+                    ScheduleWrite.Action.of(workflowId, Map.of("kind", "daily"))), null);
+            client.schedules().pause(namespaceId, schedule.scheduleId(), "maintenance window", null);
+            ScheduleDescription described = client.schedules().get(namespaceId, schedule.scheduleId(),
+                    ScheduleGetOptions.create().nextCount(3).recentCount(5));
+            System.out.println(described.counters() + " " + described.nextActions());
+            client.schedules().delete(namespaceId, schedule.scheduleId(), schedule.revision(), null);
+
+            // A schedule whose runs get the business identifier "<prefix>-<nominal time>" (RFC 3339 UTC to the second, "Z").
+            Schedule orders = client.schedules().create(namespaceId, ScheduleWrite.of("hourly-orders",
+                    ScheduleWrite.Spec.create().cron("0 * * * *").timezone("UTC"),
+                    ScheduleWrite.Action.of(workflowId, Map.of("kind", "hourly")).businessIdPrefix("orders")
+                            .businessIdConflictPolicy(BusinessIdConflictPolicy.USE_EXISTING)
+                            .businessIdReusePolicy(BusinessIdReusePolicy.REJECT_DUPLICATE)), null);
+            System.out.println(orders.action().businessIdPrefix() + " " + orders.action().businessIdConflictPolicy()
+                    + " " + orders.action().businessIdReusePolicy()); // orders USE_EXISTING REJECT_DUPLICATE
+
+            // A batch job over many runs; the same key and body answer the first job.
+            BatchJob job = client.batch().create(namespaceId, BatchRequest.of(
+                    BatchSelector.runIds(List.of(order.runId())), "CANCEL", "clean up the held runs"),
+                    CallOptions.create().idempotencyKey("cleanup-2027-01-01"));
+            System.out.println(job.state() + " " + job.counts());
+
+            // Signal a run by business identifier, starting it first when none is open; update it the same way.
+            client.signalWithStart("order-flow", "order-o-1", Map.of("orderId", "o-1"), "payment.confirmed", Map.of("paid", "12.50"), null);
+            UpdateWithStartResult updated = client.updateWithStart("order-flow", "order-o-1", Map.of("orderId", "o-1"),
+                    "balance.set", "set-1", Map.of("balance", 25), UpdateWithStartOptions.create().expectedStateRevision(0L));
+            System.out.println(updated.update().outcome());
+
+            // Reset a run that ended to a point of its journal.
+            Page<ResetPoint> points = client.resetPoints(order.runId(), null);
+            ResetPlan plan = client.previewReset(order.runId(), points.items().get(0).sequence(), null, null);
+            Reset reset = client.reset(order.runId(), ResetRequest.of(plan.sequence(), "run the steps again")
+                    .acknowledgeReexecution(plan.requiresAcknowledgement()), null);
+            System.out.println(reset.newRunId());
+        } catch (SagatException e) {
+            System.err.println(e.code() + " " + e.reason().orElse("") + " trace=" + e.traceId());
         }
     }
 

@@ -32,9 +32,9 @@ are classified in `crates/infra-postgres/storage-classification.json` (ADR-0027)
 | `DROPPED_BUFFER_FULL`, `DROPPED_DELETED` | yes | no | Buffer full; schedule deleted while buffered. |
 | `COALESCED` | yes | no | Catch-up mode `ONE` acted on an earlier missed time. |
 | `MISSED_CATCHUP_WINDOW` | yes | no | Recorded once per recovery as a summary (count, first, last). |
-| `ALREADY_ACTED` | yes | existing | A backfill or a replayed key found an existing action/run. |
+| `ALREADY_ACTED` | yes | existing | A backfill or a replayed key found an existing action/run, or (D2173) the open run that holds the action's business id answered it under `USE_EXISTING` (reason `BUSINESS_ID_IN_USE`, `run_id` the holder). |
 | `AUTHORITY_REVOKED` | yes | no | Authorizing subject lost `run:start`; schedule paused. |
-| `BUSINESS_ID_CONFLICT` | yes | no | Templated business id held by an open execution under `FAIL`. |
+| `BUSINESS_ID_CONFLICT` | yes | no | The business id of the action (`<prefix>-<nominal time>`) was held by an open execution under `FAIL` (reason `BUSINESS_ID_IN_USE`), or remembered by a closed one that the reuse policy refuses (reason `BUSINESS_ID_REUSE_REJECTED`) (D2173). The time is acted on: no retry, no remaining action used, no pause. |
 
 An owed time whose admission was refused has **no** action row: the schedule keeps `next_action_at`
 and sets `retry_at` (plan transaction 4).
@@ -174,16 +174,23 @@ audited operator command, which is an activation of the instance-capability regi
 `schedules-v1` from every live `EXECUTION_ENGINE` instance and records that requirement in the same
 transaction.
 
+*As built (T018-060, T018-061, migration `20270114000000_trigger_handover`; D2033 to D2045).* The row also holds `changed_db_role` (the `session_user` of the
+operator's session). It changes only through `schedule_trigger_handover_complete(actor)`, a definer function the runtime role cannot execute, which refuses unless
+`schedules-v1` is recorded for the engines and never moves a handed-over row back (a guard, `ENABLE ALWAYS`); `schedule_trigger_handover_census()` is the owner's read
+of the live engines. There is no tenant audit record (the registry's `platform_requirement_history` row of the same transaction is the evidence, D2042). A
+`TRIGGER` schedule is named `trigger-<hex of the trigger id>`, authorised by `system:engine`, and is not counted by the `schedules` quota (D2034).
+
 ### Instance-capability registry (owned by 018; used by 029 and 031)
 
-One deployment-level registry (not tenant-scoped) through which every process that holds platform
-database credentials — each control-plane and each execution-engine replica — announces what its binary
-can do, and through which a feature is activated only when every live process can honour it. Runners and
+One deployment-level registry (not tenant-scoped) through which every serving process — each control-plane
+and each execution-engine replica; the one-shot commands (`migrate`, `provision-tenant`, `cleanup-secrets`)
+do not register — announces what its binary can do and what its configuration runs, and through which a
+feature is activated only when every live process can honour it. Runners and
 SDK workers hold no database credentials and keep the worker-protocol minor negotiation (ADR-0015).
 
 | Table | Columns | Notes |
 | --- | --- | --- |
-| `serving_instances` | `instance_id uuid` PK (random per process start), `kind` (`CONTROL_PLANE`, `EXECUTION_ENGINE`; grows only), `scheduler_owner text null` (an engine's `scheduler_members.owner`, for correlation only), `binary_version text` (≤ 64), `capabilities text[]` (closed values, ≤ 32), `started_at`, `last_seen` | at most 1,000 rows; protected |
+| `serving_instances` | `instance_id uuid` PK (random per process start), `kind` (`CONTROL_PLANE`, `EXECUTION_ENGINE`; grows only), `scheduler_owner text null` (an engine's `scheduler_members.owner`, for correlation only), `binary_version text` (≤ 64), `capabilities text[]` (closed values, ≤ 32), `started_at`, `last_seen`, `token_hash bytea` (the SHA-256 of a random per-start token that only the registering process holds; the runtime role cannot read it) | at most 1,000 rows; protected |
 | `platform_requirements` | `capability text` PK, `kinds text[]` (the instance kinds that must hold it), `required_since`, `recorded_by` | protected |
 | `platform_requirement_epoch` | singleton `epoch bigint` | incremented in every transaction that inserts or deletes a requirement |
 
@@ -196,11 +203,19 @@ Rules (D1034, G1607):
    concurrent activation, which locks it `FOR UPDATE`.
 2. **Heartbeat and liveness.** Every 10 s each process sets `last_seen = clock_timestamp()` (database
    clock); an instance is **live** when `last_seen` is within the last 30 s; a clean stop deletes its row;
-   rows silent for more than one day are deleted by any heartbeat; a full table refuses registration.
-3. **Re-check while serving.** Each API admission and stream re-evaluation (control plane) and each
-   scheduler round (engine) compares a cached epoch; when it moved, the process re-reads the
-   requirements and, lacking one, answers `503 UNAVAILABLE`/`BINARY_CAPABILITY_MISSING` (API) or stops its
-   passes and fails readiness (engine).
+   rows silent for more than one day are deleted by any heartbeat; a table of 1,000 **live** rows refuses
+   to count a new process (a registration at the limit evicts the rows no longer live first, oldest first),
+   and a process that finds it still serves, loudly, and is not counted. A row is touched only for the token
+   that registered it.
+3. **Re-check while serving.** The heartbeat returns the epoch and compares it with the one the process's
+   gate was decided under; when it moved, the process re-reads the requirements and, lacking one, closes its
+   gate: every API admission and stream re-evaluation (control plane) answers `503 UNAVAILABLE` /
+   `BINARY_CAPABILITY_MISSING`, and every pass, connector and the worker API of an engine stops and readiness
+   fails. **A process learns of a requirement within one heartbeat period: about 12 s (10 s jittered by 20 %)
+   plus the time of the call**, and only a process that was not live (silent for 30 s) at the activation can
+   be in that window, because an activation is refused while a live process of the required kinds lacks the
+   capability. A heartbeat that fails for longer than 30 s closes the gate unless the failure is a lost
+   connection; readiness fails when the registry has not answered for 30 s.
 4. **Activation (operator only).** A requirement is recorded **only** by an audited operator activation
    command, never inside a tenant or user transaction. A feature that needs every process is activated in
    one transaction: lock `platform_requirement_epoch` `FOR UPDATE` → verify that every live instance of the
@@ -209,18 +224,31 @@ Rules (D1034, G1607):
    feature verifies that nothing depends on it. Until its operator activation, a feature refuses its own
    feature use with its own reason (018 `SCHEDULE_TRIGGER_HANDOVER_PENDING`, 029
    `ACCESS_CAPABILITY_DISABLED`, 031's equivalent).
-5. **Capability values** are owned by the feature that introduces them: `schedules-v1` (018,
+5. **Capability values** are listed by a process when the **process** will honour them, that is, the
+   binary's, narrowed by the passes its configuration turns on. They are owned by the feature that
+   introduces them: `schedules-v1` (018,
    `EXECUTION_ENGINE`), `access-narrowing-v1` (029, `CONTROL_PLANE`; activated by the operator before the
    first restricted folder or operation list can be created), `payload-encoding-v1` (031, `CONTROL_PLANE`
    and `EXECUTION_ENGINE`).
 
 `scheduler_members` is unchanged (shard membership and the replica count for shard shares); adding
 control-plane rows or capabilities to it would distort the shard-share computation of ADR-0020.
-Grants: the runtime role reads all three tables and upserts/deletes only its own `serving_instances` row
-(row ownership by `instance_id` through a `SECURITY DEFINER` function); requirement and epoch rows change
-only through the operator command's definer function. The registry ships in a release before any feature
+Grants: the runtime role reads the three tables (the instances without the hash of the token) and writes
+only through three `SECURITY DEFINER` functions, each of which touches a row only for the token that
+registered it (D2024); requirement and epoch rows change only through the operator command's definer
+functions, which the runtime role cannot execute (D2014). The registry ships in a release before any feature
 that activates through it (029's prerequisite release, T029-003); whichever of 018, 029, 031 is
 implemented first ships it.
+
+**As built (T018-080, migration `20270113000000_instance_registry`; decisions D2013 to D2032, ADR-0082).** The process functions are
+`instance_register`, `instance_heartbeat` and `instance_deregister` (executable by the runtime role); the operator functions are
+`platform_requirement_lock`, `platform_requirement_activate` and `platform_requirement_remove` (not executable by it, D2014).
+Differences from the text above, each with its reason in `research.md`: a fourth table, `platform_requirement_history` (the
+audit of an activation, with the database role that did it; `audit_records` is tenant-scoped, D2013); `platform_requirement_epoch.changed_xact`, which the
+deferred guard compares with the committing transaction (D2015); at the limit of 1,000 rows the rows no longer live give way to a
+registration, so the table is "full" only of live rows (D2016); the epoch check is carried by the heartbeat (D2017). The adapter's
+`activate`/`remove` take the feature's own step as a closure that runs in the same transaction (D2019). The runbook is
+[`docs/runbooks/instance-registry.md`](../../docs/runbooks/instance-registry.md).
 
 ### `batch_jobs`
 
@@ -229,7 +257,7 @@ implemented first ships it.
 | `tenant_id`, `namespace_id`, `id` | uuid | PK `(tenant_id, id)`; `id` UUIDv7. |
 | `action` | text | Closed set (D1021). |
 | `params` | jsonb | Closed per action (step id, instance path, operation name, update key); protected. |
-| `payload_digest` | bytea null | Signal payload or update arguments → `payloads`; content via payload row. |
+| `payload_digest` | bytea null | Signal payload or the new state of an Update → `payloads`; content via payload row. The retained arguments of an Update are on its receipt, not here (D1975). |
 | `selector` | jsonb | Closed structured filter or run-id list (≤ 1,000 UUIDs); content (`businessIdPrefix`). |
 | `reason` | text | 8..2000 chars; content. |
 | `created_by` | text | Subject; protected. |
@@ -240,7 +268,8 @@ implemented first ships it.
 | `select_cursor` | uuid null | Keyset cursor. |
 | `selection_bound_at` | timestamptz | = creation instant (database clock). |
 | `selection_horizon` | xid8 | `pg_snapshot_xmax(pg_current_snapshot())` at creation; selection starts when `pg_snapshot_xmin(pg_current_snapshot()) >= selection_horizon` (D1033). |
-| `next_slot_at` | timestamptz | Durable rate slot. |
+| `next_slot_at` | timestamptz | Durable rate slot: the earliest instant the next step of the job may be taken. For a running job the next item's; for a selecting job whose round failed, the end of its backoff (database clock, D2198). |
+| `selection_failures` | smallint, default 0 | Selection rounds that failed in a row (G2093, D2197, migration `20270116000000`): up by one in the transaction that records a failed round, back to 0 in the transaction of a round that picks, 11 on a job that failed `SELECTION_FAILED` (the evidence). `CHECK (>= 0)`; no rule ties it to the state (D2201). A job that runs has 0 unless an older engine picked its page. Never read by the API. |
 | `shard` | smallint | Generated `run_shard(id)`. |
 | `created_at`, `started_at`, `finished_at`, `expires_at` | timestamptz | |
 
@@ -258,10 +287,11 @@ block item retention; the item keeps the identifier only.
 
 `(tenant_id, id)` PK; `namespace_id`, `source_run_id` (FK runs), `source_sequence bigint`,
 `prefix_digest bytea(32)`, `reapply` (closed), `business_id_policy` (`KEEP`, `DROP`), `source_policy`,
-`state` (`PENDING_SOURCE`, `CREATED`, `FAILED`), `failure_reason`, `new_run_id uuid null` (FK runs),
+`state` (`PENDING_SOURCE`, `CREATED`, `FAILED`), `failure_reason` (`BOUNDARY_NO_LONGER_ELIGIBLE`, `ADMISSION_REFUSED`, `BUSINESS_ID_IN_USE`, `CONCURRENCY_PERMIT_UNAVAILABLE`, `RUN_PURGED` and, added by D1998, `AUTHORITY_REVOKED`, `REEXECUTION_NOT_ACKNOWLEDGED`, `REAPPLY_TOO_MANY` and, added by D2059 (migration `20270115000000_reset_expiry`), `SOURCE_DID_NOT_END`: the entry waited a whole window for a source that did not end), `acknowledged_reexecution boolean` (what the request acknowledged, immutable, D1999), `new_run_id uuid null` (FK runs),
 `actor`, `reason text` (8..2000, content), `reapply_report jsonb` (closed list ≤ 256 of
-`{sequence, kind, outcome, reason}`; protected), `shard` generated, `created_at`, `completed_at`.
-Index `(shard, created_at) WHERE state = 'PENDING_SOURCE'`.
+`{sequence, kind: SIGNAL|UPDATE, name|operation, outcome, reason?}`, D1985: a name, never a payload, an argument or a digest;
+protected), `shard` generated, `created_at`, `completed_at`.
+Index `(shard, created_at) WHERE state = 'PENDING_SOURCE'` for the pass, and `(tenant_id, namespace_id) WHERE state = 'PENDING_SOURCE'` for the count that judges the limit of the namespace (D2001, review J); the scan of the entries past their window (D2061) reads through one of them. An entry expires when `created_at` is at or before the clock of the pass minus the window (24 hours, the engine's setting from 1 hour to 7 days) and its source has not ended (D2059); `created_at` is the database's `clock_timestamp()` of the transaction of the source, never a process clock (D2079, which closed G2014). `source_policy` and `acknowledged_reexecution` keep what the request said, also for a source that had ended and was reset at once (D2011).
 
 ### Journal
 
@@ -272,14 +302,17 @@ row carries `detail.restored = true` and the re-emitted `run.started` carries
 `reset_of {source_run_id, source_sequence}`, so a journal reader (telemetry, 020 analytics, ADR-0056's
 holder count) can skip restored history without reading another table. `wait.satisfied` gains an
 optional `via` (`signal`, `event`, `signal_with_start`) in `detail` for new writes; old rows decode
-unchanged. A `state.updated` row of an Update declared `reapplyOnReset: true` sets `payload_digest` to
-the retained canonical Update arguments (a `payloads` row, content class); other Updates retain
-nothing (`operation_update_receipts` keeps only a request hash).
+unchanged. A `state.updated` row already sets `payload_digest` to the new state, so the arguments of an
+Update declared `reapplyOnReset: true` are referenced from its receipt instead: the new nullable column
+`operation_update_receipts.arguments_digest` (migration `20270105000000`, a foreign key to `payloads`, set only
+on an `APPLIED` receipt) points at the canonical arguments (a `payloads` row, content class), and the row
+says `retained: true` in its `detail`. Other Updates retain nothing: `arguments_digest` is null and the row
+says `retained: false`; a row written before says nothing (D1975).
 
 ### Payload references (entries of 020's content-store registry)
 
 `schedule_revisions.input_digest`, `batch_jobs.payload_digest` and the retained-argument
-`run_events.payload_digest` of `state.updated` reference `payloads (tenant_id, digest)` by foreign key
+`operation_update_receipts.arguments_digest` reference `payloads (tenant_id, digest)` by foreign key
 and are registered as payload references in `storage-classification.json` and as entries of 020's
 content-store registry (`crates/infra-postgres/run-content-references.json`, owned by 020, see
 `specs/020-visibility-analytics-archival/data-model.md`): retained Update arguments go with the

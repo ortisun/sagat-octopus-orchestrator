@@ -174,6 +174,12 @@ items, and no item transaction holding two run locks.
    **Given** the creator loses access mid-job, **Then** the job stops `FAILED` (`AUTHORITY_REVOKED`).
 5. **Given** a rerun job at the active-run quota, **When** an item is refused, **Then** it is deferred and
    retried, failing only after the bounded retry budget.
+6. **Given** a job whose selection keeps failing (for example a selector too wide for the database to read within
+   the statement time), **When** its selection rounds have failed ten times in a row, **Then** the next failure
+   ends the job `FAILED` with `SELECTION_FAILED` (about 25 minutes after the first), the runs it had already
+   selected stay as items (`CANCELLED`, their runs untouched; no item had been applied, items are applied only once
+   the selection ends) and the person who created it can read the reason; **Given** a round that fails once and
+   then picks, **Then** the job is not failed and selects as if nothing had happened.
 
 ### US06 — Reset a run to a point as a new run (Priority: P2)
 
@@ -385,7 +391,14 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   result is evaluated per round and fixed once an item is materialized; a materialized item's filter is
   not re-evaluated. With feature 020 the selector is 020's `RunSelector` (`contracts/list-query.md`:
   creator's rights re-resolved each round, keyset `(StartedAt, RunId)`, bounded preview); a query while
-  020's capability is off is refused `VALIDATION_FAILED`/`QUERY_UNSUPPORTED_OPERATOR`.
+  020's capability is off is refused `VALIDATION_FAILED`/`QUERY_UNSUPPORTED_OPERATOR`. A selection round
+  that fails (a statement over its time limit, a deadlock, an error that comes again) rolls back its own
+  work and MUST be recorded durably, so that the count survives a restart and a move of the shard lease;
+  the job MUST then wait a bounded backoff (5 seconds, doubling to 5 minutes, as a refused item does)
+  before its next round, MUST survive ten failed rounds in a row (a round that picks starts the count
+  again) and MUST end `FAILED` with `SELECTION_FAILED` at the eleventh, by the same writes as any other end
+  of a job. The text of the error MUST NOT reach a log, a span, a metric or a table (it can quote a value of the
+  selector). The ten retries are the plan's default, which the owner confirms or changes (`research.md`, O1953).
 - **FR-018-030 — Per-item transaction.** Each item commits in its own transaction that locks only its
   run (bounded wait), checks fence and job state, applies the action through the single-run use case
   under key `batch:{job}:{run}`, and records the outcome and counters with the effect. No batch
@@ -484,7 +497,9 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
 - **FR-018-052 — Instance-capability registry.** Every control-plane and execution-engine process MUST
   register its kind, binary version and capability set before serving, heartbeat on the database clock
   (10 s; live = seen within 30 s), and refuse to serve while a recorded requirement for its kind names a
-  capability it lacks (re-checked whenever the requirement epoch moves). A requirement MUST be recorded
+  capability it lacks (re-checked whenever the requirement epoch moves: a running process learns of one within
+  one heartbeat period, about 12 s, and only a process that was not live at the activation can be in that window).
+  A requirement MUST be recorded
   only by an audited operator activation command that, in one transaction, verifies every live instance
   of the required kinds and records it — never inside a tenant or user transaction; until then the
   feature refuses its own use with its own reason. 018's trigger handover is its first
@@ -542,7 +557,8 @@ All evidence below is future evidence; none exists yet.
 | SC-018-014 | Canary schedule inputs, batch payloads and business ids are absent from logs, spans, metrics, audit and outbox; each new quota refuses before work; real OTel export has fixed labels only. | FR-018-042, FR-018-044, FR-018-045 |
 | SC-018-015 | A real browser runs the schedule, batch and reset flows keyboard-only with WCAG AA contrast and table alternatives; the quickstart demo runs. | FR-018-047, FR-018-049 |
 | SC-018-016 | A barrier test runs every run-driven transition (completion, timer, wait timeout, deadline, terminal, handoff) against each aggregate path; `pg_locks` never shows a run-driven transaction holding a schedule, business-id, job, item, obligation or pending-reset row, and no deadlock occurs. | FR-018-007, FR-018-021, FR-018-030 |
-| SC-018-017 | An activation racing a registering instance that lacks the capability never leaves that instance serving; an instance whose capability is missing after an activation answers `BINARY_CAPABILITY_MISSING` (API) or stops its passes (engine); an instance silent for 30 s no longer blocks an activation. | FR-018-052, FR-018-017 |
+| SC-018-017 | An activation racing a registering instance that lacks the capability never leaves that instance serving (a running one that was silent at the activation stops within about 12 s of its first answer); an instance whose capability is missing after an activation answers `BINARY_CAPABILITY_MISSING` (API) or stops its passes (engine); an instance silent for 30 s no longer blocks an activation. | FR-018-052, FR-018-017 |
+| SC-018-018 | A job whose selection always fails survives ten failed rounds, each after the wait of a refused item, and ends `FAILED` `SELECTION_FAILED` at the eleventh with one audit record; one failed round followed by a pick does not fail the job and resets the count; the count and the wait survive a restart and a move of the lease; a cancel that commits while a failure is recorded is not overwritten; the record is cut at each of its writes and counts the failure once; the error text (a canary quoted by a database error) reaches no log, span, metric or table; a job that waits leaves the scan so the jobs behind it are reached. | FR-018-029, FR-018-033 |
 
 ## Assumptions
 

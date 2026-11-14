@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 import { env } from '../support/env';
 import { Api, paymentSaga } from '../support/platform';
 import { failOnBrowserErrors, goTo, signIn } from '../support/studio';
-import { ActivityFailure, startWorker } from '../support/worker';
+import { ActivityFailure, failsFirstAttempt, startWorker } from '../support/worker';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -11,18 +11,14 @@ test.use({ viewport: { width: 1440, height: 900 } });
 async function stuckRun(name: string) {
   const api = new Api('admin');
   const wf = await api.publish(name, paymentSaga(name));
-  let release = 0;
   const host = await startWorker(`${name}-worker`, {
     'payment.validate': () => ({ valid: true }),
     'limit.reserve': () => ({ reservation: 'r-1' }),
     'payment.submit': () => { throw ActivityFailure.permanent('PAYMENT_DECLINED', 'declined by the issuer'); },
   }, {
-    'limit.release': () => {
-      release += 1;
-      // The limit service is down for the first attempt; the retry the operator asks for finds it back.
-      if (release === 1) throw ActivityFailure.retryable('LIMIT_SERVICE_DOWN', 'the limit service is down');
-      return { released: true };
-    },
+    // The limit service is down for the first attempt of each run; the retry the operator asks for finds it back. Keyed on the run and
+    // its attempt, not on how many times the handler ran (see `failsFirstAttempt`).
+    'limit.release': failsFirstAttempt(() => ActivityFailure.retryable('LIMIT_SERVICE_DOWN', 'the limit service is down'), { released: true }),
   });
   const run = await api.start(wf.id, { paymentId: 'p-9', amount: 25 });
   await api.until(run, 'MANUAL_REVIEW');

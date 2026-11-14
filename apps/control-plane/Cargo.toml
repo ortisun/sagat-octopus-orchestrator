@@ -38,6 +38,7 @@ thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time", "io-util"] }
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 rcgen = "0.13"

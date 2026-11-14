@@ -9,17 +9,21 @@ use std::time::{Duration, Instant};
 
 use sagat_application::clock::{Clock, SystemClock};
 use sagat_application::entropy::{Entropy, SystemEntropy};
+use sagat_application::instances::ServingGate;
 use sagat_application::runs::RunService;
 use sagat_application::schedule_firing::ScheduledStarts;
 use sagat_control_plane::stopped;
 use sagat_infra_ir::JsonEvaluator;
 use sagat_infra_ir::schedule_calendar::SpecCalendar;
 use sagat_infra_nats::NatsPublisher;
-use sagat_infra_postgres::{DatabaseClock, PgIdentityStore, PgRunStore, PgScheduleStore};
+use sagat_infra_postgres::{
+    DatabaseClock, PgBatchStore, PgIdentityStore, PgRunStore, PgScheduleStore,
+};
 use sagat_scheduler::{
-    DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound, Keeper, Monitor,
-    MonitorRound, OutboxDispatcher, ProjectionRound, Report, Round, SchedulePass, ScheduleRound,
-    Scheduler, TelemetryProjector,
+    BatchPass, BatchRound, DeliveryRound, DeliveryWorker, Dispatched, EventDispatcher, EventRound,
+    Keeper, Monitor, MonitorRound, OutboxDispatcher, ProjectionRound, Report, ResetPass,
+    ResetRound, Round, SchedulePass, ScheduleRound, Scheduler, TelemetryProjector, TriggerPass,
+    TriggerRound,
 };
 use tokio::sync::watch;
 
@@ -50,6 +54,19 @@ pub type EngineSchedules = SchedulePass<
     PgIdentityStore,
     RunService<PgRunStore, SystemClock, JsonEvaluator>,
 >;
+pub type EngineTriggers = TriggerPass<PgScheduleStore, SpecCalendar, DatabaseClock<SystemClock>>;
+pub type EngineBatches = BatchPass<
+    PgBatchStore,
+    RunService<PgRunStore, SystemClock, JsonEvaluator>,
+    PgIdentityStore,
+    DatabaseClock<SystemClock>,
+>;
+pub type EngineResets = ResetPass<
+    PgRunStore,
+    RunService<PgRunStore, SystemClock, JsonEvaluator>,
+    PgIdentityStore,
+    DatabaseClock<SystemClock>,
+>;
 pub type EngineProjector = TelemetryProjector<PgRunStore>;
 pub type EngineMonitor = Monitor<PgRunStore>;
 pub type EngineKeeper = Keeper<PgRunStore>;
@@ -63,6 +80,16 @@ pub type EngineDeliveries = DeliveryWorker<
     >,
 >;
 
+/// What the registry says of a replica, for its probes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryState {
+    Serving,
+    /// The gate is closed (a capability is missing, or the replica has not registered).
+    Closed,
+    /// The registry has not answered for longer than the liveness window.
+    Silent,
+}
+
 /// Liveness of the scheduler loop: it must keep ticking, even when a tick finds nothing (or the
 /// database is down and every pass fails fast).
 #[derive(Debug)]
@@ -73,6 +100,8 @@ pub struct Health {
     stale_after: Duration,
     last_round_ms: AtomicU64,
     keeper_stale_after: Duration,
+    /// Whether the replica may serve, from the instance-capability registry (`None`: no registry).
+    gate: Option<Arc<ServingGate>>,
 }
 
 impl Health {
@@ -85,7 +114,40 @@ impl Health {
             stale_after,
             last_round_ms: AtomicU64::new(0),
             keeper_stale_after: stale_after,
+            gate: None,
         }
+    }
+
+    /// Makes readiness follow the replica's membership of the registry: a replica whose binary lacks a capability
+    /// the platform requires is not ready (`BINARY_CAPABILITY_MISSING`) and runs none of its passes.
+    #[must_use]
+    pub fn with_gate(mut self, gate: Arc<ServingGate>) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+
+    /// The gate of the instance registry, if the replica has one.
+    #[must_use]
+    pub fn gate(&self) -> Option<&Arc<ServingGate>> {
+        self.gate.as_ref()
+    }
+
+    /// What the registry says of this replica at `now`: it may serve, its gate is closed, or the registry has been silent for
+    /// longer than a replica stays live (invisible to an activation, so not offered work, whatever the gate says).
+    #[must_use]
+    pub fn registry_state(&self, now: Instant) -> RegistryState {
+        match &self.gate {
+            None => RegistryState::Serving,
+            Some(gate) if !gate.is_open() => RegistryState::Closed,
+            Some(gate) if gate.beat_is_stale(now) => RegistryState::Silent,
+            Some(_) => RegistryState::Serving,
+        }
+    }
+
+    /// Whether the registry lets this replica serve (always, with no registry).
+    #[must_use]
+    pub fn serving(&self) -> bool {
+        self.gate.as_ref().is_none_or(|gate| gate.is_open())
     }
 
     /// How long the shard keeper may go without finishing a round (a round that fails counts: the
@@ -144,6 +206,21 @@ impl Health {
             .now_ms()
             .saturating_sub(self.last_tick_ms.load(Ordering::Relaxed));
         u128::from(age) < self.stale_after.as_millis()
+    }
+}
+
+/// Runs `round` unless the replica's gate is closed. A closed gate (the platform requires a capability this binary
+/// lacks, `FR-018-052`) is a round that found nothing to do, so every loop goes on pausing and ticking its liveness
+/// while none of its passes touches a tenant's data.
+pub async fn while_serving<T, Fut>(gate: &ServingGate, round: impl FnOnce() -> Fut) -> T
+where
+    T: Default,
+    Fut: Future<Output = T>,
+{
+    if gate.is_open() {
+        round().await
+    } else {
+        T::default()
     }
 }
 
@@ -331,6 +408,168 @@ where
     tracing::info!("schedule pass stopped");
 }
 
+/// How often the reconciliation of trigger-owned schedules looks at the cron triggers: it finds what publication did not
+/// (an older control plane, the triggers older than the feature), which is no hurry, and its one query walks the triggers
+/// of the replica's shards (D2038).
+pub const TRIGGER_POLL: Duration = Duration::from_secs(5);
+
+/// One round of the reconciliation of trigger-owned schedules, after the clock it plans by has been moved to the
+/// database's time: the next time of a schedule it makes is the first one after the database's now.
+pub async fn trigger_round<L>(
+    clock: &DatabaseClock<L>,
+    pass: &TriggerPass<PgScheduleStore, SpecCalendar, DatabaseClock<L>>,
+) -> TriggerRound
+where
+    L: Clock,
+{
+    if let Err(error) = clock.sync().await {
+        if !clock.is_synced() {
+            tracing::warn!(%error, "could not read the database clock yet; the reconciliation of trigger schedules waits");
+            return TriggerRound {
+                failed: 1,
+                ..TriggerRound::default()
+            };
+        }
+        tracing::warn!(%error, "could not read the database clock; the reconciliation keeps the last difference");
+    }
+    pass.round().await
+}
+
+/// Keeps the schedules of the cron triggers equal to the triggers until stopped: a round that wrote something is
+/// followed at once by the next (a backlog drains at full speed), an idle one by a pause.
+pub async fn run_triggers<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = TriggerRound>,
+{
+    while !*stop.borrow() {
+        let done = round().await;
+        // a round that wrote is followed by a pause that keeps the writes to a bounded rate, never by the next round at once:
+        // an upgrade that leaves a great many triggers is worked through at that pace (D2047)
+        let pause = if done.did_work() {
+            done.pause_after()
+        } else if done.sweeping {
+            // the window did not reach the last trigger: the next one follows soon, not after the poll
+            TriggerRound::SWEEP_PAUSE.min(poll)
+        } else {
+            poll
+        };
+        if stop_during(jittered(pause, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("trigger schedule reconciliation stopped");
+}
+
+/// One round of the batch pass, after the clock it acts by has been read again: the items are
+/// paced by the database's time, which the jobs are stamped with, whatever this process's own says.
+pub async fn batch_round<L, R>(
+    clock: &DatabaseClock<L>,
+    pass: &BatchPass<PgBatchStore, R, PgIdentityStore, DatabaseClock<L>>,
+) -> BatchRound
+where
+    L: Clock,
+    R: sagat_application::batch_executor::ItemActions,
+{
+    if let Err(error) = clock.sync().await {
+        if !clock.is_synced() {
+            tracing::warn!(%error, "could not read the database clock yet; the batch pass waits");
+            return BatchRound {
+                failed: 1,
+                ..BatchRound::default()
+            };
+        }
+        tracing::warn!(%error, "could not read the database clock; the batch pass keeps the last difference");
+    }
+    pass.round().await
+}
+
+/// The shortest wait before a round that a job's slot calls for: a slot that has come, or comes within a hair, is still a
+/// wait, never a round straight after a round.
+const MIN_SLOT_WAKE: Duration = Duration::from_millis(1);
+
+/// How long the batch loop rests after a round that did nothing: its poll, jittered as every loop's, but not past the moment
+/// the soonest slot of a job comes, when the round says one does (G2043). A job's slot is durable and one job's apart from
+/// every other's, so the wake-up for it is not jittered (the jitter only keeps replicas that started together from polling
+/// together); it is at least [`MIN_SLOT_WAKE`], and the poll still bounds it, so a slot far ahead, or one a wrong clock put
+/// far ahead, leaves the loop looking again at its own pace.
+fn idle_pause(poll: Duration, next_due_in: Option<Duration>, entropy: &impl Entropy) -> Duration {
+    let pause = jittered(poll, entropy);
+    next_due_in.map_or(pause, |slot| pause.min(slot.max(MIN_SLOT_WAKE)))
+}
+
+/// Runs the batch jobs that are due until stopped. A round that did work is followed by the next at once; one that did
+/// none rests its poll, or until the soonest slot of a job comes when that is sooner: a job at the default rate has its next
+/// item due 50 ms after the last, and a loop that slept the whole poll (1 s) applied one item a second instead of twenty
+/// (G2043).
+pub async fn run_batches<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = BatchRound>,
+{
+    while !*stop.borrow() {
+        let done = round().await;
+        if done.did_work() {
+            tokio::task::yield_now().await;
+            continue;
+        }
+        if stop_during(idle_pause(poll, done.next_due_in, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("batch pass stopped");
+}
+
+/// One round of the pass that completes pending resets, after the clock it acts by has been read again.
+pub async fn reset_round<L, R>(
+    clock: &DatabaseClock<L>,
+    pass: &ResetPass<PgRunStore, R, PgIdentityStore, DatabaseClock<L>>,
+) -> ResetRound
+where
+    L: Clock,
+    R: sagat_application::reset_completion::ResetCompletions,
+{
+    if let Err(error) = clock.sync().await {
+        if !clock.is_synced() {
+            tracing::warn!(%error, "could not read the database clock yet; the reset pass waits");
+            return ResetRound {
+                errors: 1,
+                ..ResetRound::default()
+            };
+        }
+        tracing::warn!(%error, "could not read the database clock; the reset pass keeps the last difference");
+    }
+    pass.round().await
+}
+
+/// Completes the pending resets whose source has ended, and expires those whose source did not end in time, until
+/// stopped: the rhythm of the batch pass, except that a round that expired entries is followed by the pause they cost at a
+/// hundred a second, a ceiling on the pace and not the pace (the pause is added to the time of the round, and the pace of
+/// this pass was not measured; the caps of a round bound the round and not a rate, and the first rounds of an engine with
+/// the expiry expire everything that is older than the window: D2081).
+pub async fn run_resets<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ResetRound>,
+{
+    while !*stop.borrow() {
+        let done = round().await;
+        if done.did_work() {
+            let pause = done.pause_after();
+            if pause.is_zero() {
+                tokio::task::yield_now().await;
+            } else if stop_during(jittered(pause, &SystemEntropy), &stop).await {
+                break;
+            }
+            continue;
+        }
+        if stop_during(jittered(poll, &SystemEntropy), &stop).await {
+            break;
+        }
+    }
+    tracing::info!("reset pass stopped");
+}
+
 /// Sends outbound webhooks until stopped: the same rhythm as the event dispatcher.
 pub async fn run_deliveries<F, Fut>(mut round: F, poll: Duration, stop: watch::Receiver<bool>)
 where
@@ -398,6 +637,46 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The loop of the reset pass rests after a round that expired entries, for what they cost at the rate (D2081): the
+    /// first round of an engine with this version expires every entry that is older than the window, and the cap of a round
+    /// is a bound on the round, not a rate. The test only asserts a lower bound on the time between two rounds (a sleep
+    /// never returns early), so it cannot be flaky on a loaded machine; the sizes of the pauses are the unit test of
+    /// `ResetRound::pause_after`.
+    #[tokio::test]
+    async fn the_loop_of_the_reset_pass_rests_after_a_round_that_expired_entries() {
+        use std::sync::Mutex;
+        use std::time::Instant;
+
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let calls: Arc<Mutex<Vec<Instant>>> = Arc::default();
+        let seen = Arc::clone(&calls);
+        let round = move || {
+            let mut calls = seen.lock().expect("calls");
+            calls.push(Instant::now());
+            let n = calls.len();
+            drop(calls);
+            if n == 2 {
+                // the second round is the last: the loop stops at the next look at the flag
+                stop_tx.send(true).expect("stop");
+            }
+            async move {
+                // the pause of 20 entries is 200 ms at a hundred a second (a ceiling on the pace); the loop jitters it by -20 % at the least
+                ResetRound {
+                    expired: if n == 1 { 20 } else { 0 },
+                    ..ResetRound::default()
+                }
+            }
+        };
+        run_resets(round, Duration::from_secs(60), stop_rx).await;
+        let calls = calls.lock().expect("calls");
+        assert_eq!(calls.len(), 2);
+        let between = calls[1].duration_since(calls[0]);
+        assert!(
+            between >= Duration::from_millis(160),
+            "the next round followed at once: {between:?}"
+        );
+    }
 
     struct Fixed(f64);
 
@@ -598,6 +877,84 @@ mod tests {
         assert!((2..=4).contains(&sweeps), "{sweeps} sweeps in 500 ms");
     }
 
+    #[tokio::test]
+    async fn a_closed_gate_is_a_round_that_found_nothing_and_an_open_one_runs_the_round() {
+        let gate = ServingGate::closed();
+        let calls = AtomicUsize::new(0);
+        let round = || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Report {
+                timers_fired: 3,
+                ..Report::default()
+            })
+        };
+        let closed = while_serving(&gate, round).await;
+        assert!(!closed.did_work(), "nothing was done");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "and the round did not even start"
+        );
+        gate.open(1);
+        let open = while_serving(&gate, round).await;
+        assert_eq!(open.timers_fired, 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        gate.close(2, vec!["schedules-v1".to_owned()]);
+        assert!(!while_serving(&gate, round).await.did_work());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "closed again: not run");
+    }
+
+    #[test]
+    fn a_replica_serves_with_no_gate_and_follows_the_gate_it_has() {
+        assert!(Health::new(Duration::from_secs(1)).serving());
+        let gate = Arc::new(ServingGate::closed());
+        let health = Health::new(Duration::from_secs(1)).with_gate(Arc::clone(&gate));
+        assert!(!health.serving(), "closed until it registered");
+        gate.open(0);
+        assert!(health.serving());
+        gate.close(1, vec!["schedules-v1".to_owned()]);
+        assert!(!health.serving());
+        assert!(health.process_alive(), "not serving is not dead");
+    }
+
+    #[test]
+    fn the_registry_fails_readiness_when_the_gate_is_closed_and_when_it_has_been_silent_too_long() {
+        let now = Instant::now();
+        // no registry: it serves
+        assert_eq!(
+            Health::new(Duration::from_secs(1)).registry_state(now),
+            RegistryState::Serving
+        );
+        let gate = Arc::new(ServingGate::closed());
+        let health = Health::new(Duration::from_secs(1)).with_gate(Arc::clone(&gate));
+        assert_eq!(health.registry_state(now), RegistryState::Closed);
+        gate.open(1);
+        gate.heard_at(now);
+        assert_eq!(health.registry_state(now), RegistryState::Serving);
+        // thirty seconds of silence are not beyond the window; thirty-one are, and the gate is still open
+        assert_eq!(
+            health.registry_state(now + Duration::from_secs(30)),
+            RegistryState::Serving
+        );
+        assert_eq!(
+            health.registry_state(now + Duration::from_secs(31)),
+            RegistryState::Silent
+        );
+        assert!(gate.is_open(), "readiness fails, the gate rule is its own");
+        // an answer ends it
+        gate.heard_at(now + Duration::from_secs(31));
+        assert_eq!(
+            health.registry_state(now + Duration::from_secs(32)),
+            RegistryState::Serving
+        );
+        // a closed gate is closed whatever was heard
+        gate.close(2, vec!["schedules-v1".to_owned()]);
+        assert_eq!(
+            health.registry_state(now + Duration::from_secs(32)),
+            RegistryState::Closed
+        );
+    }
+
     #[test]
     fn jitter_stays_within_twenty_percent() {
         let base = Duration::from_millis(1000);
@@ -637,5 +994,170 @@ mod tests {
         );
         health.ticked();
         assert!(health.scheduler_alive(), "a tick revives it");
+    }
+
+    // --- the batch loop wakes when a slot comes (G2043) --------------------------------------------------------------
+
+    fn idle_round(next_due_in: Option<Duration>) -> BatchRound {
+        BatchRound {
+            next_due_in,
+            ..BatchRound::default()
+        }
+    }
+
+    /// Runs `run_batches` under paused time with a poll of `poll`: the round of index `n` answers `answers[n]`, and the
+    /// round after the last answer stops the loop. Returns the virtual instants at which the rounds began.
+    async fn batch_rounds(poll: Duration, answers: Vec<BatchRound>) -> Vec<tokio::time::Instant> {
+        use std::sync::Mutex;
+
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let began: Arc<Mutex<Vec<tokio::time::Instant>>> = Arc::default();
+        let seen = Arc::clone(&began);
+        let round = move || {
+            let mut began = seen.lock().expect("began");
+            began.push(tokio::time::Instant::now());
+            let n = began.len() - 1;
+            drop(began);
+            let answer = answers.get(n).copied().unwrap_or_else(|| {
+                stop_tx.send(true).expect("stop");
+                BatchRound::default()
+            });
+            async move { answer }
+        };
+        run_batches(round, poll, stop_rx).await;
+        began.lock().expect("began").clone()
+    }
+
+    /// A round that says "the next slot is due in 50 ms" wakes the loop at 50 ms, not after the poll: a lone job at the
+    /// default rate applied one item a second because its next slot, 50 ms ahead, found the loop asleep for the whole poll.
+    #[tokio::test(start_paused = true)]
+    async fn a_round_that_names_the_next_slot_wakes_the_loop_when_it_comes() {
+        let at = batch_rounds(
+            Duration::from_secs(1),
+            vec![idle_round(Some(Duration::from_millis(50)))],
+        )
+        .await;
+        assert_eq!(at.len(), 2);
+        let between = at[1] - at[0];
+        assert!(
+            between >= Duration::from_millis(50),
+            "the loop woke before the slot: {between:?}"
+        );
+        assert!(
+            between < Duration::from_millis(100),
+            "the loop slept toward its poll and not the slot: {between:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_round_that_names_no_slot_sleeps_the_poll_jittered() {
+        // the loop's own entropy is the system's, so this holds the range (80 % to 120 % of the poll); the exact jitter of a
+        // pause, with and without a slot, is held by `the_idle_pause_is_the_poll_or_the_slot_whichever_comes_first`
+        let at = batch_rounds(Duration::from_secs(1), vec![idle_round(None)]).await;
+        let between = at[1] - at[0];
+        assert!(
+            (Duration::from_millis(800)..=Duration::from_millis(1_200)).contains(&between),
+            "the poll jittered by 20 %: {between:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slot_far_ahead_never_makes_the_loop_sleep_longer_than_its_poll() {
+        let at = batch_rounds(
+            Duration::from_secs(1),
+            vec![idle_round(Some(Duration::from_secs(3_600)))],
+        )
+        .await;
+        let between = at[1] - at[0];
+        assert!(
+            (Duration::from_millis(800)..=Duration::from_millis(1_200)).contains(&between),
+            "an hour ahead is still the poll: {between:?}"
+        );
+    }
+
+    /// A round that did work is followed by the next at once, whatever else it said: the hint is for the round that found
+    /// nothing to do.
+    #[tokio::test(start_paused = true)]
+    async fn a_round_that_worked_is_followed_at_once() {
+        let worked = BatchRound {
+            steps: 1,
+            next_due_in: Some(Duration::from_millis(50)),
+            ..BatchRound::default()
+        };
+        let at = batch_rounds(Duration::from_secs(1), vec![worked]).await;
+        assert_eq!(at[1] - at[0], Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_during_the_wait_for_a_slot_ends_the_loop() {
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let rounds = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&rounds);
+        let looping = tokio::spawn(run_batches(
+            move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(idle_round(Some(Duration::from_secs(30))))
+            },
+            Duration::from_secs(60),
+            stop_rx,
+        ));
+        let began = tokio::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        stop_tx.send(true).expect("stop");
+        looping.await.expect("the loop ended");
+        assert_eq!(rounds.load(Ordering::SeqCst), 1);
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "the stop waited for the slot or the poll: {:?}",
+            began.elapsed()
+        );
+    }
+
+    /// A slot that has already come (or comes within a microsecond) is a wait of at least `MIN_SLOT_WAKE`: a round that
+    /// answers "now" every time must not become a loop with no pause. The round after the 2,000th stops the loop, so a
+    /// loop without the floor ends too, with no time passed.
+    #[tokio::test(start_paused = true)]
+    async fn a_slot_that_has_come_is_never_a_loop_with_no_pause() {
+        let answers = vec![idle_round(Some(Duration::ZERO)); 2_000];
+        let at = batch_rounds(Duration::from_secs(1), answers).await;
+        assert_eq!(at.len(), 2_001);
+        let total = at[2_000] - at[0];
+        assert!(
+            total >= MIN_SLOT_WAKE * 1_999,
+            "2,000 rounds took {total:?}: some followed another with no pause"
+        );
+    }
+
+    #[test]
+    fn the_idle_pause_is_the_poll_or_the_slot_whichever_comes_first() {
+        let poll = Duration::from_secs(1);
+        let middle = Fixed(0.5);
+        assert_eq!(idle_pause(poll, None, &middle), poll);
+        assert_eq!(
+            idle_pause(poll, Some(Duration::from_millis(50)), &middle),
+            Duration::from_millis(50)
+        );
+        assert_eq!(
+            idle_pause(poll, Some(Duration::from_secs(5)), &middle),
+            poll,
+            "a slot after the poll does not stretch it"
+        );
+        assert_eq!(
+            idle_pause(poll, Some(Duration::ZERO), &middle),
+            MIN_SLOT_WAKE
+        );
+        // the poll keeps its jitter, 80 % to 120 %, so replicas started together do not poll together
+        assert_eq!(
+            idle_pause(poll, None, &Fixed(0.0)),
+            Duration::from_millis(800)
+        );
+        assert_eq!(
+            idle_pause(poll, Some(Duration::from_millis(900)), &Fixed(0.0)),
+            Duration::from_millis(800)
+        );
+        assert_eq!(
+            idle_pause(poll, Some(Duration::from_millis(700)), &Fixed(0.0)),
+            Duration::from_millis(700)
+        );
     }
 }

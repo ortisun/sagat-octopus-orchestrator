@@ -431,8 +431,10 @@ pub(crate) async fn lock_schedules(
     lock(conn, QuotaResource::Schedules, tenant, Some(namespace)).await
 }
 
-/// A new schedule fits in its namespace: active and paused ones count, deleted ones do not. The
-/// caller holds [`lock_schedules`].
+/// A new schedule fits in its namespace: active and paused ones count, deleted ones do not, and neither do the
+/// schedules of cron triggers (`TRIGGER` origin): the quota is the tenant's to spend on the schedules it makes, and a
+/// publication must never be refused, or a schedule made impossible, because of it (D2034). The caller holds
+/// [`lock_schedules`].
 pub(crate) async fn ensure_room_for_schedule(
     conn: &mut PgConnection,
     tenant: TenantId,
@@ -441,7 +443,7 @@ pub(crate) async fn ensure_room_for_schedule(
 ) -> Result<(), StoreError> {
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM schedules \
-         WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED'",
+         WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED' AND origin = 'API'",
     )
     .bind(tenant.as_uuid())
     .bind(namespace.as_uuid())
@@ -485,6 +487,68 @@ pub(crate) async fn ensure_room_for_backfill(
     .await
     .map_err(store_error)?;
     judge(QuotaResource::ScheduleBackfills, count, limit)
+}
+
+/// Takes the locks that decide whether a new batch job fits, for the rest of the transaction: the
+/// tenant's first and then the namespace's, the same order in every transaction that takes both.
+pub(crate) async fn lock_batch_jobs(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::TenantBatchJobs, tenant, None).await?;
+    lock(conn, QuotaResource::BatchJobs, tenant, Some(namespace)).await
+}
+
+/// A new batch job fits in its namespace and in its tenant: the jobs that have not finished count.
+/// The caller holds [`lock_batch_jobs`].
+pub(crate) async fn ensure_room_for_batch(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    namespace_limit: u64,
+    tenant_limit: u64,
+) -> Result<(), StoreError> {
+    let (in_namespace, in_tenant): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE namespace_id = $2), count(*) FROM batch_jobs \
+         WHERE tenant_id = $1 AND state IN ('SELECTING', 'RUNNING', 'CANCELLING')",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::BatchJobs, in_namespace, namespace_limit)?;
+    judge(QuotaResource::TenantBatchJobs, in_tenant, tenant_limit)
+}
+
+/// Takes the lock of the pending resets of one namespace for the rest of the transaction.
+pub(crate) async fn lock_pending_resets(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<(), StoreError> {
+    lock(conn, QuotaResource::PendingResets, tenant, Some(namespace)).await
+}
+
+/// A new reset that waits for its source fits in its namespace: the ones still waiting count. The caller holds
+/// [`lock_pending_resets`].
+pub(crate) async fn ensure_room_for_pending_reset(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+    limit: u64,
+) -> Result<(), StoreError> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM run_resets \
+         WHERE tenant_id = $1 AND namespace_id = $2 AND state = 'PENDING_SOURCE'",
+    )
+    .bind(tenant.as_uuid())
+    .bind(namespace.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    judge(QuotaResource::PendingResets, count, limit)
 }
 
 /// Takes the lock of the scripts of one namespace for the rest of the transaction.
@@ -1172,7 +1236,7 @@ impl QuotaStore for PgRunStore {
                 .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,
             QuotaResource::Schedules => sqlx::query_scalar(
                 "SELECT count(*) FROM schedules \
-                 WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED'",
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND state <> 'DELETED' AND origin = 'API'",
             )
             .bind(tenant.as_uuid())
             .bind(namespace)
@@ -1182,6 +1246,30 @@ impl QuotaStore for PgRunStore {
                 "SELECT count(*) FROM schedule_backfills b \
                  JOIN schedules s ON s.tenant_id = b.tenant_id AND s.id = b.schedule_id \
                  WHERE b.tenant_id = $1 AND s.namespace_id = $2 AND b.state IN ('PENDING', 'RUNNING')",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            QuotaResource::BatchJobs => sqlx::query_scalar(
+                "SELECT count(*) FROM batch_jobs \
+                 WHERE tenant_id = $1 AND namespace_id = $2 \
+                   AND state IN ('SELECTING', 'RUNNING', 'CANCELLING')",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            QuotaResource::TenantBatchJobs => sqlx::query_scalar(
+                "SELECT count(*) FROM batch_jobs \
+                 WHERE tenant_id = $1 AND state IN ('SELECTING', 'RUNNING', 'CANCELLING')",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_one(&self.pool)
+            .await,
+            QuotaResource::PendingResets => sqlx::query_scalar(
+                "SELECT count(*) FROM run_resets \
+                 WHERE tenant_id = $1 AND namespace_id = $2 AND state = 'PENDING_SOURCE'",
             )
             .bind(tenant.as_uuid())
             .bind(namespace)

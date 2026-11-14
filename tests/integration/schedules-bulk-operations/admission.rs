@@ -101,6 +101,7 @@ impl Fixture {
             },
             manual: None,
             backfill: None,
+            trigger: None,
         }
     }
 

@@ -376,8 +376,13 @@ fn operations_outside_the_approved_additions_and_event_extensions_are_byte_stabl
     // built). The digest was recomputed from the reviewed one-operation text diff.
     // The digest below covers both reviewed text changes together; it was recomputed on the merged
     // document (the two operations differ, so neither earlier value remains valid).
+    // Approved feature 018 (owner decision of 2026-10-29) changes three existing operations, and
+    // only their request and query options and the text that says so: startRun takes the business
+    // identifier options and the start delay (and may answer 200 with the holder), listRuns takes
+    // the businessId, businessIdPrefix and scheduleId filters, and operateRun takes the businessId
+    // choice of RERUN_AS_NEW. The digest was recomputed from those three reviewed text diffs.
     assert_eq!(
-        digest, "ad2c46c519e0bcbccd37712fa84cef4b0b5c1f7c8b98161cdca0ae341396af56",
+        digest, "86234c0f7cd311617515ab667959bc8f0273bd1453d2c76ef1048fad374104fe",
         "an existing operation outside feature 016 changed"
     );
 }

@@ -348,6 +348,9 @@ async fn boot(scenario: &Value) -> Run {
         blob_store: Some(BlobStoreConfig::Fs {
             root: blob_dir.path().to_owned(),
         }),
+        // Feature 018: a reset may cancel a source that has not ended only where the operator said so; the engine is told
+        // by the flag below (`server.resetCancelSource`), the control plane of the scenario by this setting.
+        reset_cancel_source: scenario["server"]["resetCancelSource"] == true,
         ..Options::default()
     })
     .await;
@@ -387,18 +390,36 @@ async fn boot(scenario: &Value) -> Run {
     let ring = format!("k1:{}", platform.api.key_k1);
     let lease_secs = lease.to_string();
     let blob_root = blob_dir.path().to_string_lossy().into_owned();
-    let mut env = engine_env(
-        &platform.api.db,
-        &platform.api.idp,
-        &[
-            ("SAGAT_SECRETS_KEYS", ring.as_str()),
-            ("SAGAT_LEASE_TTL_SECS", lease_secs.as_str()),
-            ("SAGAT_EVENT_POLL_MS", "50"),
-            ("SAGAT_DELIVERY_POLL_MS", "50"),
-            ("SAGAT_BLOB_PROVIDER", "fs"),
-            ("SAGAT_BLOB_FS_ROOT", blob_root.as_str()),
-        ],
-    );
+    let mut extra = vec![
+        ("SAGAT_SECRETS_KEYS", ring.as_str()),
+        ("SAGAT_LEASE_TTL_SECS", lease_secs.as_str()),
+        ("SAGAT_EVENT_POLL_MS", "50"),
+        ("SAGAT_DELIVERY_POLL_MS", "50"),
+        ("SAGAT_BLOB_PROVIDER", "fs"),
+        ("SAGAT_BLOB_FS_ROOT", blob_root.as_str()),
+    ];
+    // Feature 018: the passes that fire schedules, run backfills and apply batch jobs are the engine's loops and are
+    // off until a replica is told to run them. A scenario that exercises them says so (`server.schedules`,
+    // `server.batches`); the others keep the engine they always had.
+    if scenario["server"]["schedules"] == true {
+        extra.push(("SAGAT_SCHEDULES_ENABLED", "true"));
+        extra.push(("SAGAT_SCHEDULES_POLL_MS", "100"));
+    }
+    if scenario["server"]["batches"] == true {
+        extra.push(("SAGAT_BATCHES_ENABLED", "true"));
+    }
+    if scenario["server"]["resetCancelSource"] == true {
+        extra.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"));
+        extra.push(("SAGAT_RESET_CANCEL_SOURCE_POLL_MS", "100"));
+    }
+    // A reset that delivers signals and Updates again, and a workflow that declares an Update with `reapplyOnReset`,
+    // are off until the operator says so, and only the control plane is told: the engine reads the versions it was
+    // given with `parse_stored`, which does not look at the setting (ADR-0032 decision 8). The control plane of a
+    // scenario is this process, whose capability is switched on here.
+    if scenario["server"]["resetReapply"] == true {
+        sagat_infra_ir::set_reset_reapply(true);
+    }
+    let mut env = engine_env(&platform.api.db, &platform.api.idp, &extra);
     if let Some(db) = &database {
         env.extend(db.engine_env());
     }

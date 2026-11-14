@@ -5,7 +5,8 @@
 use proptest::prelude::*;
 use sagat_domain::batch::{
     Action, BatchError, Counters, DeferCause, FailureReason, Filter, ItemState, JobEvent, JobState,
-    Justification, Limits, ParamsGiven, Rate, Retry, Selector, SkipReason, next_slot, retry,
+    Justification, Limits, ParamsGiven, Rate, Retry, SELECTION_RETRIES, Selector, SkipReason,
+    next_slot, retry, selection_retry,
 };
 use sagat_domain::execution::RunStatus;
 use time::{Duration, OffsetDateTime};
@@ -101,6 +102,29 @@ fn each_action_needs_exactly_its_parameters() {
 
 #[test]
 fn the_reason_is_eight_to_two_thousand_characters() {
+    // trimmed, and plain text: the single-run use cases refuse anything else, so a job that took it
+    // would fail every one of its items
+    assert_eq!(
+        Justification::new("  clean up the runs  ")
+            .expect("trimmed")
+            .as_str(),
+        "clean up the runs"
+    );
+    assert!(
+        Justification::new("   fix   ").is_err(),
+        "3 characters once trimmed"
+    );
+    for bad in [
+        "retry after incident\n#4821",
+        "tab\tseparated reason",
+        "nul\0inside it",
+    ] {
+        assert_eq!(
+            Justification::new(bad).expect_err("a control character"),
+            BatchError::BadReason,
+            "{bad:?}"
+        );
+    }
     assert!(Justification::new(&"é".repeat(8)).is_ok());
     assert!(Justification::new(&"é".repeat(2000)).is_ok());
     assert_eq!(
@@ -468,6 +492,47 @@ fn an_item_gives_up_after_ten_attempts_or_an_hour() {
         Retry::Exhausted,
         "an hour since the first refusal"
     );
+}
+
+/// A selection round that fails is waited for as a refused item is (G2093, D2197): 5 seconds doubling to 5 minutes, ten
+/// failures survived, the eleventh ends the job. Catches: a bound off by one in either direction, a wait that is not the item's.
+#[test]
+fn a_failed_selection_round_waits_as_a_refused_item_does_and_the_eleventh_in_a_row_ends_the_job() {
+    assert_eq!(
+        SELECTION_RETRIES, 10,
+        "the retries of an item, by decision D2197"
+    );
+    let waits: Vec<i64> = (1..=SELECTION_RETRIES)
+        .map(|failures| match selection_retry(failures) {
+            Retry::After(wait) => wait.whole_seconds(),
+            Retry::Exhausted => -1,
+        })
+        .collect();
+    assert_eq!(waits, [5, 10, 20, 40, 80, 160, 300, 300, 300, 300]);
+    assert_eq!(
+        waits.iter().sum::<i64>(),
+        1515,
+        "the time the ten waits take, which is the window of the bound"
+    );
+    assert_eq!(
+        selection_retry(SELECTION_RETRIES + 1),
+        Retry::Exhausted,
+        "the eleventh failure in a row"
+    );
+    assert_eq!(
+        selection_retry(u32::MAX),
+        Retry::Exhausted,
+        "and every one after it"
+    );
+    // the wait is the very one of an item refused as many times, so the two cannot drift apart
+    let first = at(0);
+    for failures in 1..=SELECTION_RETRIES {
+        assert_eq!(
+            selection_retry(failures),
+            retry(failures, first, first, &Limits::default()),
+            "failure {failures}"
+        );
+    }
 }
 
 // --- counters ---------------------------------------------------------------------------------

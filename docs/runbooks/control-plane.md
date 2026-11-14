@@ -15,7 +15,7 @@ code in this repository; what is **not** covered is listed at the end so nobody 
 | Quota ceilings | `control-plane quota-ceiling` with `SAGAT_CEILING_TENANT_ID`, `SAGAT_CEILING_RESOURCE`, `SAGAT_CEILING_VALUE` (a number, or `default` to withdraw) | The most a tenant's administrators may set for a quota; only this command raises it. Audited as `system:operator`. See `docs/runbooks/security-governance.md` |
 | OIDC provider | `SAGAT_OIDC_JWKS_URI` (HTTPS) | Only its public keys are fetched; no token is ever sent to it |
 
-Two database roles exist on purpose. The **owner** role runs `migrate` and `provision-tenant`. The
+Two database roles exist on purpose. The **owner** role runs `migrate`, `provision-tenant` and `schedule-trigger-handover` (the audited handover of the cron triggers to the schedule pass, [`schedules.md`](schedules.md) section 6). The
 API serves requests as **`sagat_app`**, which owns nothing, cannot alter or delete audit rows and
 cannot change the schema. Never point the API at the owner role: outside `SAGAT_ENV=dev`, `serve`
 checks the role it is connected as and **refuses to start** (exit code 2, before it listens) when
@@ -45,7 +45,7 @@ is skipped, which is why the local Docker stack (dev) also works with the owner 
   and follows the triggers those writes fire when the trigger function is not `SECURITY DEFINER`.
   A statement without a privilege fails the test unless it is in the `ALLOWED` list of that file with
   a reason (today: `provision-tenant` and `seed-dev` write `tenants` and `memberships`, and
-  `scheduling-weight` writes `tenant_scheduling`, all as the owner; one unused helper; two
+  `scheduling-weight` writes `tenant_scheduling`, and `schedule-trigger-handover` calls two owner-only functions, all as the owner; one unused helper; two
   statements whose text is assembled at run time). An `ALLOWED` entry that no longer excuses
   anything also fails. Besides it, `SAGAT_TEST_AS_RUNTIME_ROLE=1 cargo test -p sagat-tests --test
   integration_workflow_primitives` re-runs every API-backed test with the API connected as `sagat_app`.
@@ -127,8 +127,9 @@ logs for that value to follow one request.
 | `503` `UNAVAILABLE` on API routes, `/v1/ready` fine | Load shedding: more than `SAGAT_MAX_IN_FLIGHT` requests at once (the response carries `Retry-After`) | `http_load_shed_total`, `db_pool_connections{state="in_use"}`; scale out or raise the pool |
 | `429` right after authenticating, with `http_tenant_concurrency_rejected_total` rising | One tenant already has `SAGAT_MAX_IN_FLIGHT_PER_TENANT` requests in flight (default a quarter of `SAGAT_MAX_IN_FLIGHT`, at least 1): slow or stalled uploads, or slow handlers. The other tenants are unaffected by design | Find the tenant's clients holding requests open; the stalled ones end by themselves after `SAGAT_BODY_IDLE_TIMEOUT_SECS`. Raise the cap only if the tenant's real concurrency needs it |
 | `408` | The request exceeded `SAGAT_REQUEST_TIMEOUT_SECS`, or its body stopped arriving for `SAGAT_BODY_IDLE_TIMEOUT_SECS` (default 5 s between pieces of the body) | Slow database or client; check `http_request_duration_seconds`. A client that trickles one byte at a time is bounded only by the request timeout |
+| Every call but `/v1/health` is `503` with `details.reason` `BINARY_CAPABILITY_MISSING`, and `/v1/ready` fails, at start or after an activation (the log says `BINARY_CAPABILITY_MISSING: the platform requires ...`) | The platform records a requirement (a feature that every control plane has to honour was activated) that this build lacks | Upgrade or stop the replica; another replica serves the call. [`instance-registry.md`](instance-registry.md) |
 | Process refuses to start | Missing/invalid setting (exit code 2, names the variable), or `DATABASE_URL` without TLS outside dev | Fix the named variable; the message never includes the URL's password. For the standalone healthcheck, TLS settings require `SAGAT_HTTP_TLS_CERT`, a DNS-only server name and an exact IP socket in `SAGAT_HEALTHCHECK_ADDR` |
-| Process exits with code 2 and `database role '<name>' is too privileged to serve requests: ...` | `DATABASE_URL` of `serve` points at the owner role, a superuser, or a role that may rewrite `audit_records` (the message lists each reason) | Use the runtime role (`sagat_app`) in the `serve` environment; keep the owner role for `migrate` and `provision-tenant` only. Do not grant the runtime role more to make this go away |
+| Process exits with code 2 and `database role '<name>' is too privileged to serve requests: ...` | `DATABASE_URL` of `serve` points at the owner role, a superuser, or a role that may rewrite `audit_records` (the message lists each reason) | Use the runtime role (`sagat_app`) in the `serve` environment; keep the owner role for `migrate`, `provision-tenant` and `schedule-trigger-handover` only. Do not grant the runtime role more to make this go away |
 | Process exits with code 2 and `the audit trail does not exist yet ... run control-plane migrate` | `serve` started before the migrations (outside dev the privileges cannot be verified without the table) | Run `migrate` with the owner role first; start the API afterwards (let the orchestrator restart it) |
 
 ### Limits and the settings behind them
@@ -168,11 +169,16 @@ even when nothing scrapes it (the recorder only expires series while rendering).
 | `auth_failures_total{reason}` | counter | Spikes of a single reason (e.g. unknown key) |
 | `jwks_refresh_total{outcome}` | counter | `error` or `no_usable_keys` means the provider or network is failing |
 | `audit_denials_total{outcome}` | counter | `dropped` or `failed` means cross-tenant attempts were not recorded |
+| `audit_write_failures_total{action}` | counter | an audit record written after its refusal rolled back (today `business_id.conflict` of a person's start) was lost; the caller still got the refusal (D2221) |
 | `access_denial_audits_total{outcome}` | counter | `failed` means a `403` / `PERMISSION_DENIED` was answered but its audit record was not written (the caller still got the refusal) |
 | `http_rate_limited_total{scope}` | counter | Throttling, by `tenant` or `subject` budget |
 | `http_tenant_concurrency_rejected_total` | counter | A tenant hit its in-flight cap (stalled or slow requests) |
 | `http_load_shed_total` | counter | Overload |
 | `db_pool_connections{state}` | gauge | Pool saturation (`in_use` near `SAGAT_DB_MAX_CONNECTIONS`) |
+| `serving_instances_live{kind}` | gauge | The control planes and engines seen in the last 30 seconds in the instance registry; every process reports the fleet's value, so read it with `max`. [`instance-registry.md`](instance-registry.md) |
+| `instance_registry_refusals_total{reason}` | counter | A process was refused or could not be counted: `BINARY_CAPABILITY_MISSING`, `REGISTRY_FULL` or `REGISTRY_UNREACHABLE` (once per event) |
+| `instance_registry_gate_open` | gauge | `1` while this replica serves, `0` while its gate is closed (alert `SagatInstanceGateClosed`) |
+| `instance_registry_last_beat_age_seconds` | gauge | Seconds since the instance registry last answered this replica (alert `SagatInstanceRegistrySilent` above 30) |
 
 Prometheus rules and a Grafana dashboard for the whole platform ship in `infra/observability/`
 (feature 008; see [`observability.md`](observability.md)). Their thresholds are starting points

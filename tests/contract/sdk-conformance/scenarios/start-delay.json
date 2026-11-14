@@ -1,0 +1,43 @@
+{
+  "name": "start-delay",
+  "description": "Feature 018 US03: a run started with a delay is created WAITING and held, a signal is refused while it is held, cancelling it ends it CANCELLED with no step run, a short delay is released by the scheduler and the run then completes, and a delay outside 1 ms to 366 days is refused with its field. The delay is given once, as a duration, and sent as integer milliseconds.",
+  "workflows": {
+    "work": {
+      "name": "delay-work",
+      "description": "One activity the worker serves.",
+      "program": [
+        { "op": "step", "id": "work", "activity": "delay.work" },
+        { "op": "end", "id": "done" }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "delay-worker",
+      "protocolVersion": "1.4",
+      "maxInflight": 2,
+      "activities": {
+        "delay.work": { "behavior": { "returns": { "ok": true } } }
+      }
+    }
+  },
+  "steps": [
+    { "id": "held", "op": "start", "workflow": "work", "input": {}, "startDelayMs": 3600000, "idempotencyKey": "delay-held-{{unique}}" },
+    { "id": "read-held", "op": "get", "run": "held" },
+    { "id": "signal-while-held", "op": "signal", "run": "held", "name": "go", "payload": {} },
+    { "id": "events-while-held", "op": "events", "run": "held" },
+    { "id": "cancel-held", "op": "cancel", "run": "held", "reason": "not needed after all" },
+    { "id": "cancelled", "op": "waitForCompletion", "run": "held", "timeoutMs": 60000 },
+    { "id": "events-after-cancel", "op": "events", "run": "held" },
+    { "id": "short", "op": "start", "workflow": "work", "input": {}, "startDelayMs": 1500, "idempotencyKey": "delay-short-{{unique}}" },
+    { "id": "short-done", "op": "waitForCompletion", "run": "short", "timeoutMs": 60000 },
+    { "id": "short-events", "op": "events", "run": "short" },
+    { "id": "zero", "op": "start", "workflow": "work", "input": {}, "startDelayMs": 0, "idempotencyKey": "delay-zero-{{unique}}" },
+    { "id": "too-long", "op": "start", "workflow": "work", "input": {}, "startDelayMs": 31622400001, "idempotencyKey": "delay-long-{{unique}}" },
+    { "id": "longest", "op": "start", "workflow": "work", "input": {}, "startDelayMs": 31622400000, "idempotencyKey": "delay-longest-{{unique}}" },
+    { "id": "cancel-longest", "op": "cancel", "run": "longest", "reason": "only checking the limit" },
+    { "id": "fraction", "op": "start", "workflow": "work", "input": {}, "startDelayMs": 3600000.9, "idempotencyKey": "delay-fraction-{{unique}}" },
+    { "id": "cancel-fraction", "op": "cancel", "run": "fraction", "reason": "only checking the fraction" },
+    { "id": "different-delay-same-key", "op": "start", "workflow": "work", "input": {}, "startDelayMs": 7200000, "idempotencyKey": "delay-held-{{unique}}" }
+  ]
+}

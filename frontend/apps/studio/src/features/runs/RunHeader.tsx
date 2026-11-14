@@ -14,7 +14,9 @@ import type { Operation } from './ops';
 import { clip } from './time';
 import { useApp } from '../../app/context';
 import { originLabel } from './queries';
+import { ScheduleOrigin } from './ScheduleOrigin';
 import { TraceLink } from './TraceLink';
+import { shortId } from './display';
 
 const FOLLOW_SYMBOL: Record<LiveFollow, string> = { idle: '○', connecting: '◌', live: '●', polling: '↻', reconnecting: '↯', ended: '■', unauthorized: '✕', failed: '✕' };
 const FOLLOW_TONE: Record<LiveFollow, string> = { idle: 'idle', connecting: 'idle', live: 'ok', polling: 'waiting', reconnecting: 'waiting', ended: 'skip', unauthorized: 'bad', failed: 'bad' };
@@ -72,6 +74,8 @@ export function RunHeader({
   const { settings } = useApp();
   const view = runStatus(status);
   const finished = isTerminal(status);
+  // the entry of a run started with a delay is held until then; once it ends or is stopped the run says so no more
+  const held = run.startDelayedUntil !== undefined && status === 'WAITING';
   return (
     <header className="rn-header">
       <div className="rn-title">
@@ -84,7 +88,7 @@ export function RunHeader({
         </div>
         <div className="rn-run-reference">
           <code title={run.runId}>{run.runId}</code> <CopyButton text={run.runId} what="run id" />
-          <span className="rn-status-help">{view.help}</span>
+          <span className="rn-status-help">{held ? 'Held by its start delay: nothing runs until the entry is released.' : view.help}</span>
         </div>
         <div className="toolbar">
           <FollowIndicator state={follow} />
@@ -97,7 +101,7 @@ export function RunHeader({
       <NowProvider intervalMs={1000} enabled={!finished}>
         <dl className="rn-facts rn-grid">
           <Fact label="Workflow">
-            {run.origin ? originLabel(run.origin) : <Link to={path`/workflows/${run.workflowId}`}>{workflowName ? clip(workflowName, 80) : `workflow ${run.workflowId.slice(0, 8)}`}</Link>}, {version}
+            {run.origin ? originLabel(run.origin) : <Link to={path`/workflows/${run.workflowId}`}>{workflowName ? clip(workflowName, 80) : `workflow ${shortId(run.workflowId)}`}</Link>}, {version}
           </Fact>
           <Fact label="Started">
             <Moment at={run.createdAt} />
@@ -118,6 +122,26 @@ export function RunHeader({
             )}
           </Fact>
           <Fact label="Started by">{run.startedBy ? clip(run.startedBy, 80) : 'unknown'}</Fact>
+          {run.businessId ? <Fact label="Business id">{clip(run.businessId, 200)}</Fact> : null}
+          {run.schedule ? (
+            <Fact label="Started by schedule">
+              <ScheduleOrigin schedule={run.schedule} />
+            </Fact>
+          ) : null}
+          {run.resetFrom ? (
+            <Fact label="Reset from">
+              <Link to={path`/runs/${run.resetFrom.runId}`}>run {shortId(run.resetFrom.runId)}</Link>; this run keeps the first {run.resetFrom.sequence} {run.resetFrom.sequence === 1 ? 'event' : 'events'} of it
+            </Fact>
+          ) : run.rerunOf ? (
+            <Fact label="Started again from">
+              <Link to={path`/runs/${run.rerunOf}`}>run {shortId(run.rerunOf)}</Link>
+            </Fact>
+          ) : null}
+          {held && run.startDelayedUntil ? (
+            <Fact label="Starts at">
+              <Moment at={run.startDelayedUntil} />
+            </Fact>
+          ) : null}
         </dl>
         <details className="rn-run-details">
           <summary>Run details</summary>
@@ -147,7 +171,7 @@ export function RunHeader({
             </Fact>
             {run.parent ? (
               <Fact label="Child of">
-                <Link to={path`/runs/${run.parent.runId}`}>run {run.parent.runId.slice(0, 8)}</Link>, step {clip(run.parent.node, 60)}
+                <Link to={path`/runs/${run.parent.runId}`}>run {shortId(run.parent.runId)}</Link>, step {clip(run.parent.node, 60)}
               </Fact>
             ) : null}
           </dl>

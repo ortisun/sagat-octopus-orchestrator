@@ -101,15 +101,12 @@ fn the_audit_actions_have_the_names_of_the_plan() {
             AuditAction::ScheduleInputDisclosed,
             "schedule.input_disclosed",
         ),
-        (
-            AuditAction::ScheduleTriggerHandover,
-            "schedule.trigger_handover",
-        ),
         (AuditAction::BatchCreated, "batch.created"),
         (AuditAction::BatchCancelled, "batch.cancelled"),
         (AuditAction::BatchFinished, "batch.finished"),
         (AuditAction::RunReset, "run.reset"),
         (AuditAction::RunResetRequested, "run.reset_requested"),
+        (AuditAction::BusinessIdConflict, "business_id.conflict"),
     ];
     let unique: BTreeSet<_> = named.iter().map(|(_, name)| *name).collect();
     assert_eq!(unique.len(), named.len());
@@ -137,4 +134,53 @@ fn reading_a_schedules_input_collapses_repeats_like_every_other_disclosure() {
             "{action:?}: a change is always a new event"
         );
     }
+}
+/// Every role. The `match` has no wildcard on purpose: a new role does not compile here until it is listed, and so is
+/// asked the question of `a_role_that_may_reset_a_run_may_deliver_again_what_the_reset_reapplies`.
+fn every_role() -> [Role; 7] {
+    let all = [
+        Role::Admin,
+        Role::Developer,
+        Role::Operator,
+        Role::Viewer,
+        Role::Worker,
+        Role::Runner,
+        Role::DatabaseRunner,
+    ];
+    for role in all {
+        match role {
+            Role::Admin
+            | Role::Developer
+            | Role::Operator
+            | Role::Viewer
+            | Role::Worker
+            | Role::Runner
+            | Role::DatabaseRunner => {}
+        }
+    }
+    all
+}
+
+/// A fitness function (G1982): a reset with `reapply` asks `run:signal` and `run:update` of the caller besides
+/// `run:operate` and `run:start`, and the checks cannot be reached by a test while every role that holds the first two
+/// holds the other two. A new role that grants the first two and not the others fails here, and then the checks need
+/// a test of their own.
+#[test]
+fn a_role_that_may_reset_a_run_may_deliver_again_what_the_reset_reapplies() {
+    use Permission::{RunOperate, RunSignal, RunStart, RunUpdate};
+    let mut resetting = 0;
+    for role in every_role() {
+        if role.grants(RunOperate) && role.grants(RunStart) {
+            resetting += 1;
+            assert!(
+                role.grants(RunSignal) && role.grants(RunUpdate),
+                "{role} may reset a run and may not deliver again what the reset reapplies: the checks of \
+                 `run:signal` and `run:update` in `RunService::reset` are now reachable and need a test (G1982)"
+            );
+        }
+    }
+    assert_eq!(
+        resetting, 2,
+        "the administrator and the operator may reset a run"
+    );
 }

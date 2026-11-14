@@ -1,6 +1,7 @@
 mod control;
 #[path = "faults.rs"]
 mod faults;
+mod operations;
 mod rest;
 use futures_util::{FutureExt, StreamExt};
 use sagat_octopus_orchestrator_sdk::*;
@@ -64,6 +65,25 @@ fn run_json(run: Run) -> Value {
         if let Some(value) = run.raw.get(key).filter(|v| !v.is_null()) {
             result[key] = value.clone();
         }
+    }
+    // Present only for a run started under a business identifier, or held by a start delay.
+    if let Some(id) = &run.business_id {
+        result["businessId"] = json!(id);
+    }
+    if run.start_delayed_until.is_some() {
+        result["startDelayedUntil"] = operations::instant(run.start_delayed_until);
+    }
+    // Present only for a run a schedule started, or a reset made.
+    if let Some(schedule) = &run.schedule {
+        result["schedule"] = json!({
+            "scheduleId": schedule.schedule_id,
+            "nominalTime": operations::instant(Some(schedule.nominal_time)),
+            "kind": schedule.kind,
+            "revision": schedule.revision,
+        });
+    }
+    if let Some(reset) = &run.reset_from {
+        result["resetFrom"] = json!({"runId": reset.run_id, "sequence": reset.sequence});
     }
     result
 }
@@ -357,46 +377,60 @@ pub async fn run(scenario: &Value, config: &Value) -> Result<Value, Failure> {
     }
     let mut observations = Vec::new();
     let mut results = BTreeMap::new();
-    for step in scenario["steps"]
+    // The ids of the steps that have a result, in the order they got it: a run is named by the first.
+    let mut order: Vec<String> = Vec::new();
+    for given in scenario["steps"]
         .as_array()
         .ok_or("scenario steps missing")?
     {
+        // References inside a step are resolved before it runs; one that cannot be is the failure of
+        // that step, recorded like any other.
+        let resolved = match operations::resolve(given, config, &results) {
+            Ok(step) => step,
+            Err(message) => {
+                observations.push(json!({"id":given["id"],"op":given["op"],"ok":false,"error":{"code":"UNEXPECTED","message":message}}));
+                continue;
+            }
+        };
+        let step = &resolved;
         let op = text(step, "op");
         let token = step["token"].as_str().unwrap_or("default");
         let client = clients.get(token).ok_or("unknown scenario token")?;
-        if !matches!(
-            op,
-            "start"
-                | "startWithBlob"
-                | "workflowByName"
-                | "get"
-                | "list"
-                | "startWorker"
-                | "stopWorker"
-                | "restartWorker"
-                | "waitForCompletion"
-                | "events"
-                | "sleep"
-                | "control"
-                | "cancel"
-                | "operate"
-                | "awaitJournal"
-                | "awaitWorkerLog"
-                | "probeWorker"
-                | "signal"
-                | "publishEvent"
-                | "query"
-                | "update"
-                | "listApprovals"
-                | "decideApproval"
-                | "queryChain"
-                | "updateChain"
-                | "signalChain"
-                | "cancelChain"
-                | "listChainRuns"
-                | "inspectChain"
-                | "waitForChainCompletion"
-        ) {
+        if !operations::plays(op)
+            && !matches!(
+                op,
+                "start"
+                    | "startWithBlob"
+                    | "workflowByName"
+                    | "get"
+                    | "list"
+                    | "startWorker"
+                    | "stopWorker"
+                    | "restartWorker"
+                    | "waitForCompletion"
+                    | "events"
+                    | "sleep"
+                    | "control"
+                    | "cancel"
+                    | "operate"
+                    | "awaitJournal"
+                    | "awaitWorkerLog"
+                    | "probeWorker"
+                    | "signal"
+                    | "publishEvent"
+                    | "query"
+                    | "update"
+                    | "listApprovals"
+                    | "decideApproval"
+                    | "queryChain"
+                    | "updateChain"
+                    | "signalChain"
+                    | "cancelChain"
+                    | "listChainRuns"
+                    | "inspectChain"
+                    | "waitForChainCompletion"
+            )
+        {
             return Err(
                 format!("Rust runtime scenario operation {op} is not implemented yet").into(),
             );
@@ -405,7 +439,12 @@ pub async fn run(scenario: &Value, config: &Value) -> Result<Value, Failure> {
             "start"|"workflowByName"=>{
                 let workflow=&config["workflows"][text(step,"workflow")];let reference=text(workflow,if op=="start"{"workflowId"}else{"name"});
                 let options=StartOptions{call:CallOptions{idempotency_key:step["idempotencyKey"].as_str().map(str::to_owned),traceparent:step["traceparent"].as_str().map(str::to_owned),..Default::default()},correlation_id:step["correlationId"].as_str().map(str::to_owned),deadline:step.get("deadlineInMs").and_then(Value::as_u64).map(|n|RunDeadline::After(Duration::from_millis(n))),..Default::default()};
-                Some(run_json(client.start(reference,&step.get("input").cloned().unwrap_or_else(||json!({})),options).await?))
+                let options=StartOptions{business_id:step["businessId"].as_str().map(str::to_owned),business_id_conflict_policy:step["businessIdConflictPolicy"].as_str().map(BusinessIdConflictPolicy::from),business_id_reuse_policy:step["businessIdReusePolicy"].as_str().map(BusinessIdReusePolicy::from),start_delay:operations::delay_of(&step["startDelayMs"])?,..options};
+                let started=client.start(reference,&step.get("input").cloned().unwrap_or_else(||json!({})),options).await?;
+                let mut observed=run_json(started.run);
+                // `started` only when the step asked for a business identifier: the other observations stay as they were.
+                if step.get("businessId").is_some(){observed["started"]=json!(started.started);}
+                Some(observed)
             }
             "startWithBlob"=>{
                 let body=if let Some(text)=step["inputBlobText"].as_str(){text.as_bytes().to_vec()}else{vec![b'i';step["inputBlobBytes"].as_u64().unwrap_or(0) as usize]};
@@ -436,11 +475,15 @@ if tokio::time::Instant::now()>=end{return Err(SagatError::validation("the scena
             "awaitWorkerLog"=>{let worker=workers.get(text(step,"worker")).ok_or_else(||SagatError::validation("unknown scenario worker"))?;let end=tokio::time::Instant::now()+millis(step,"timeoutMs",20000);loop{if worker.measure.lock().map_err(|_|SagatError::validation("measurement unavailable"))?.log.len()>=step["count"].as_u64().unwrap_or(0) as usize{break;}
 if tokio::time::Instant::now()>=end{return Err(SagatError::validation("the scenario worker log barrier was not reached"));}tokio::time::sleep(Duration::from_millis(20)).await;}None}
             "probeWorker"=>{let mut options=WorkerOptions::new(text(config,"grpcUrl"),text(config,"namespace"),format!("probe-{}",text(config,"unique")),TokenSource::bearer(text(config,"workerToken")));options.protocol_version=text(step,"protocolVersion").into();options.retry.max_attempts=1;let mut probe=WorkerHost::new(options)?;probe.activity("conformance.probe",|_:ActivityContext,_:Value|async{Ok(())})?;let result=probe.start().await.map(|_|json!({"accepted":probe.protocol_version()}));let _=probe.stop(Duration::from_millis(500)).await;Some(result?)}
+            op if operations::plays(op)=>operations::play(op,client,step,config,&results,&order).await?,
             _=>rest::play(op,client,step,config,&results).await?,
         }; Ok(output) }.await;
         let mut observation = json!({"id":step["id"],"op":op,"ok":result.is_ok()});
         match result {
             Ok(Some(result)) => {
+                if !results.contains_key(text(step, "id")) {
+                    order.push(text(step, "id").into());
+                }
                 results.insert(text(step, "id").into(), result.clone());
                 observation["result"] = result;
             }

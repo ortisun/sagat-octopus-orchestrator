@@ -124,4 +124,13 @@ const ALL_RUN_STATUSES: Record<Run['status'], true> = {
   PARTIAL: true,
   COMPENSATION_FAILED: true,
 };
+/**
+ * What a run, a job or a schedule is called where its whole identifier would not fit: the last eight characters. The identifiers are
+ * time-ordered (UUIDv7), so the first eight are the same for everything made within a minute and tell a person nothing: a table of runs
+ * whose links are all called `01a1c079` cannot be read, by sight or by ear.
+ */
+export function shortId(id: string): string {
+  return id.slice(-8);
+}
+
 export const RUN_STATUSES = Object.keys(ALL_RUN_STATUSES) as Run['status'][];

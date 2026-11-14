@@ -146,6 +146,14 @@ pub(crate) async fn undo_to(db: &TestDb, target: i64) -> Result<(), sqlx::migrat
     if let Some(unlocked) = unlocked {
         unlocked.expect("release the migration advisory lock after a refusal");
     }
+    if result.is_err() {
+        // The rollback undoes the newest migration first and one at a time, so a refusal in an older one
+        // leaves the newer ones undone. A test that goes on after a refusal wants the schema it had: later
+        // features (a business id column on every run, for one) must not be missing from under it.
+        sagat_infra_postgres::migrate(&db.pool)
+            .await
+            .expect("bring back the migrations undone before the refusal");
+    }
     result
 }
 
@@ -629,10 +637,17 @@ async fn a_rollback_is_refused_while_schedules_exist_and_removes_the_tables_when
 #[tokio::test]
 async fn a_rollback_is_refused_after_the_cron_handover() {
     let db = migrated_db().await;
-    sqlx::query("UPDATE schedule_trigger_handover SET state = 'HANDED_OVER', changed_by = 'operator', changed_at = now()")
-        .execute(&db.pool)
+    // the table changes only through its function; a test that wants the end state sets the guard's flag as the function does
+    let mut tx = db.pool.begin().await.expect("transaction");
+    sqlx::query("SELECT set_config('sagat.handover_change', 'handover', true)")
+        .execute(&mut *tx)
+        .await
+        .expect("the guard's flag");
+    sqlx::query("UPDATE schedule_trigger_handover SET state = 'HANDED_OVER', changed_by = 'operator', changed_at = now(), changed_db_role = 'owner'")
+        .execute(&mut *tx)
         .await
         .expect("handover");
+    tx.commit().await.expect("commit");
     let before: i64 =
         sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE version < $1")
             .bind(MIGRATION)

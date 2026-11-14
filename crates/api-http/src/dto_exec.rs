@@ -255,6 +255,117 @@ pub struct StartRunBody {
     pub correlation_id: Option<String>,
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub deadline: Option<OffsetDateTime>,
+    /// The caller's own identifier for the run: 1 to 200 visible ASCII characters. At most one open
+    /// execution holds it (feature 018).
+    #[serde(default)]
+    pub business_id: Option<String>,
+    /// What to do when an open execution holds the identifier: `FAIL` (default) or `USE_EXISTING`.
+    #[serde(default)]
+    pub business_id_conflict_policy: Option<String>,
+    /// What to do when a closed execution still remembers it: `ALLOW_DUPLICATE` (default),
+    /// `ALLOW_DUPLICATE_FAILED_ONLY` or `REJECT_DUPLICATE`.
+    #[serde(default)]
+    pub business_id_reuse_policy: Option<String>,
+    /// Holds the entry of the run for this many milliseconds (1 to 366 days): the run is created
+    /// `WAITING` and released once, at the instant (feature 018).
+    #[serde(default)]
+    pub start_delay_ms: Option<u64>,
+}
+
+/// `POST /runs/signal-with-start`: a start with a business identifier, and the signal that goes with it
+/// (feature 018, `SignalWithStartRequest`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignalWithStartBody {
+    pub workflow_id: String,
+    #[serde(default)]
+    pub version_id: Option<String>,
+    pub input: Value,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub deadline: Option<OffsetDateTime>,
+    pub business_id: String,
+    #[serde(default)]
+    pub business_id_reuse_policy: Option<String>,
+    /// Accepted only to be refused in words: a delayed run cannot accept a signal at creation.
+    #[serde(default)]
+    pub start_delay_ms: Option<u64>,
+    pub signal: SignalAtStartBody,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignalAtStartBody {
+    pub name: String,
+    pub payload: Value,
+}
+
+/// What a Signal-with-Start came to (`SignalWithStartResult`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalWithStartResultBody {
+    pub run_id: String,
+    pub started: bool,
+    pub delivered_to: Vec<String>,
+}
+
+/// `POST /runs/update-with-start`: a start with a business identifier, and the declared Update that goes
+/// with it (feature 018, `UpdateWithStartRequest`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateWithStartBody {
+    pub workflow_id: String,
+    #[serde(default)]
+    pub version_id: Option<String>,
+    pub input: Value,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub deadline: Option<OffsetDateTime>,
+    pub business_id: String,
+    /// What to do when an open execution holds the identifier: `USE_EXISTING` (default, the Update
+    /// goes to the holder) or `FAIL`.
+    #[serde(default)]
+    pub business_id_conflict_policy: Option<String>,
+    #[serde(default)]
+    pub business_id_reuse_policy: Option<String>,
+    /// Holds the entry of a new run; a declared Update is admitted to a run held this way.
+    #[serde(default)]
+    pub start_delay_ms: Option<u64>,
+    pub update: UpdateAtStartBody,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateAtStartBody {
+    pub name: String,
+    pub update_key: String,
+    pub args: Value,
+    #[serde(default)]
+    pub expected_state_revision: Option<u64>,
+}
+
+/// What an Update-with-Start came to (`UpdateWithStartResult`): the run, whether this request
+/// created it, and the Update's outcome.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateWithStartResultBody {
+    pub run_id: String,
+    pub started: bool,
+    pub update: UpdateOutcomeBody,
+}
+
+/// `APPLIED` with the receipt of the Update, or `REJECTED` with why a business rule said no.
+#[derive(Debug, Serialize)]
+#[serde(tag = "outcome", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UpdateOutcomeBody {
+    Applied {
+        receipt: crate::dto_declared_operations::DeclaredUpdateResponseBody,
+    },
+    Rejected {
+        reason: &'static str,
+    },
 }
 
 fn present_json<'de, D: serde::Deserializer<'de>>(
@@ -289,6 +400,18 @@ pub struct OperationBody {
     /// graph.
     #[serde(default)]
     pub instance_path: Option<Vec<ScopeSegmentBody>>,
+    /// For `RERUN_AS_NEW`: `KEEP` (the default) binds the business identifier of the run to the new
+    /// one unless another open execution holds it, `DROP` starts the new run without one.
+    #[serde(default)]
+    pub business_id: Option<RerunBusinessIdBody>,
+}
+
+/// What a rerun does with the business identifier of the run it repeats.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RerunBusinessIdBody {
+    Keep,
+    Drop,
 }
 
 /// One scope around a step: the collection or loop node and the iteration the step runs in
@@ -319,6 +442,45 @@ pub struct SignalResultBody {
     pub delivered_to: Vec<String>,
 }
 
+/// How a business identifier stands in a namespace (`BusinessIdBinding`, `FR-018-022`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BusinessBindingBody {
+    pub business_id: String,
+    /// The run that holds it, or the initial run of the continuation chain that does.
+    pub execution_id: String,
+    /// The run that carries the work now.
+    pub current_run_id: String,
+    pub open: bool,
+    /// How the holder ended, when it has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_status: Option<&'static str>,
+    pub workflow_id: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub bound_at: OffsetDateTime,
+    /// When `REJECT_DUPLICATE` stops applying to a closed holder.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub reusable_after: Option<OffsetDateTime>,
+}
+
+impl From<&sagat_application::runs::BusinessBinding> for BusinessBindingBody {
+    fn from(binding: &sagat_application::runs::BusinessBinding) -> Self {
+        Self {
+            business_id: binding.business_id.as_str().to_owned(),
+            execution_id: binding.execution_id.to_string(),
+            current_run_id: binding.current_run_id.to_string(),
+            open: binding.open,
+            last_status: binding.last_status.map(|status| status.as_str()),
+            workflow_id: binding.workflow_id.to_string(),
+            bound_at: binding.bound_at,
+            reusable_after: binding.reusable_after,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunBody {
@@ -346,12 +508,49 @@ pub struct RunBody {
     /// The ended run this one was started again from (`RERUN_AS_NEW`), when it was.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerun_of: Option<String>,
+    /// The instant the entry of the run is held until, for a run started with a delay that has not
+    /// been released (feature 018).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub start_delayed_until: Option<OffsetDateTime>,
+    /// The business identifier the run was started under, when it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub business_id: Option<String>,
+    /// The schedule action that started the run, when a schedule did (feature 018, `FR-018-016`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<RunScheduleBody>,
+    /// The run a reset made this one from and the journal sequence it keeps, when a reset did
+    /// (feature 018, `FR-018-037`). A rerun as new has `rerunOf` and not this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_from: Option<RunResetFromBody>,
     /// How deeply nested the run is: 0 when started through the API.
     pub depth: u8,
     /// The run's segment in its continuation chain; absent for a run outside any chain. A segment
     /// that is `SUCCEEDED` with `completionKind` `CONTINUED` is not the process outcome.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain: Option<RunChainBody>,
+}
+
+/// Which schedule started a run, for which nominal time, by which kind of action and under which
+/// revision (`Run.schedule`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunScheduleBody {
+    pub schedule_id: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub nominal_time: OffsetDateTime,
+    pub kind: &'static str,
+    pub revision: u32,
+}
+
+/// The run a reset made a run from (`Run.resetFrom`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunResetFromBody {
+    pub run_id: String,
+    pub sequence: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -397,6 +596,18 @@ impl From<&RunRecord> for RunBody {
                 cancel_policy: p.cancel_policy.as_str(),
             }),
             rerun_of: r.info.rerun_of.map(|r| r.to_string()),
+            start_delayed_until: r.start_delayed_until,
+            business_id: r.info.business_id.as_ref().map(|id| id.as_str().to_owned()),
+            schedule: r.schedule.map(|schedule| RunScheduleBody {
+                schedule_id: schedule.schedule.to_string(),
+                nominal_time: schedule.nominal_at,
+                kind: schedule.kind.as_str(),
+                revision: schedule.revision,
+            }),
+            reset_from: r.reset_from.map(|reset| RunResetFromBody {
+                run_id: reset.source.to_string(),
+                sequence: reset.sequence,
+            }),
             depth: r.info.depth,
             chain: r.chain.map(|segment| RunChainBody {
                 chain_id: segment.chain_id.to_string(),
@@ -1038,6 +1249,7 @@ mod switch_graph_tests {
                     parent: None,
                     depth: 0,
                     root: run_id,
+                    business_id: None,
                     origin: None,
                 },
                 status: RunStatus::Running,
@@ -1046,7 +1258,10 @@ mod switch_graph_tests {
                 paused: false,
                 updated_at: now,
                 finished_at: None,
+                start_delayed_until: None,
                 chain: None,
+                schedule: None,
+                reset_from: None,
             },
             definition: std::sync::Arc::new(definition),
             steps: vec![
@@ -1204,5 +1419,114 @@ mod switch_graph_tests {
             })),
             json!({"kind":"EXPIRED","target":"expired"})
         );
+    }
+}
+
+/// `Run.schedule` and `Run.resetFrom` (feature 018, `FR-018-016`, `FR-018-037`): present with exactly the documented properties
+/// when the run has them, ABSENT (not `null`) when it has not.
+#[cfg(test)]
+mod provenance_tests {
+    #![allow(clippy::expect_used)]
+    use super::*;
+    use sagat_application::execution::{ResetProvenance, RunInfo, ScheduleProvenance};
+    use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
+    use sagat_domain::execution::{RunId, RunStatus};
+    use sagat_domain::identity::{NamespaceId, TenantId};
+    use sagat_domain::schedules::{ActionKind, ScheduleId};
+
+    fn record() -> RunRecord {
+        let run_id = RunId::new(uuid::Uuid::from_u128(1));
+        let now = OffsetDateTime::UNIX_EPOCH;
+        RunRecord {
+            info: RunInfo {
+                run_id,
+                tenant_id: TenantId::new(uuid::Uuid::from_u128(2)),
+                namespace_id: NamespaceId::new(uuid::Uuid::from_u128(3)),
+                workflow_id: WorkflowId::new(uuid::Uuid::from_u128(4)),
+                version_id: WorkflowVersionId::new(uuid::Uuid::from_u128(5)),
+                started_by: "test".into(),
+                correlation_id: None,
+                trace_id: None,
+                rerun_of: None,
+                parent_span: None,
+                deadline_at: None,
+                created_at: now,
+                parent: None,
+                depth: 0,
+                root: run_id,
+                business_id: None,
+                origin: None,
+            },
+            status: RunStatus::Running,
+            version: 1,
+            stop_reason: None,
+            paused: false,
+            updated_at: now,
+            finished_at: None,
+            start_delayed_until: None,
+            chain: None,
+            schedule: None,
+            reset_from: None,
+        }
+    }
+
+    #[test]
+    fn a_run_nobody_scheduled_and_no_reset_made_has_neither_field() {
+        let body = serde_json::to_value(RunBody::from(&record())).expect("json");
+        assert!(body.get("schedule").is_none(), "{body}");
+        assert!(body.get("resetFrom").is_none(), "{body}");
+    }
+
+    #[test]
+    fn a_scheduled_run_says_the_schedule_the_time_the_kind_and_the_revision_and_each_kind_is_spelled_as_the_contract_does()
+     {
+        let schedule = ScheduleId::new(uuid::Uuid::from_u128(9));
+        // a whole number of microseconds, as PostgreSQL keeps it
+        let nominal =
+            OffsetDateTime::UNIX_EPOCH + time::Duration::microseconds(1_793_192_400_123_456);
+        for (kind, spelled) in [
+            (ActionKind::Scheduled, "SCHEDULED"),
+            (ActionKind::Triggered, "TRIGGERED"),
+            (ActionKind::Backfill, "BACKFILL"),
+        ] {
+            let mut run = record();
+            run.schedule = Some(ScheduleProvenance {
+                schedule,
+                nominal_at: nominal,
+                kind,
+                revision: 3,
+            });
+            let body = serde_json::to_value(RunBody::from(&run)).expect("json");
+            assert_eq!(
+                body["schedule"],
+                json!({
+                    "scheduleId": schedule.to_string(),
+                    "nominalTime": "2026-10-28T13:00:00.123456Z",
+                    "kind": spelled,
+                    "revision": 3,
+                }),
+                "{body}"
+            );
+            assert!(body.get("resetFrom").is_none(), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_run_a_reset_made_says_the_run_and_the_sequence_and_does_not_say_it_was_scheduled() {
+        let source = RunId::new(uuid::Uuid::from_u128(7));
+        let mut run = record();
+        run.info.rerun_of = Some(source);
+        run.reset_from = Some(ResetProvenance {
+            source,
+            sequence: 12,
+        });
+        let body = serde_json::to_value(RunBody::from(&run)).expect("json");
+        assert_eq!(
+            body["resetFrom"],
+            json!({"runId": source.to_string(), "sequence": 12}),
+            "{body}"
+        );
+        assert_eq!(body["rerunOf"], source.to_string());
+        assert!(body.get("schedule").is_none(), "{body}");
     }
 }

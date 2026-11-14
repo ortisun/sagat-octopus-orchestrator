@@ -50,11 +50,22 @@ where
             ok
         }
     };
-    if ok {
-        Ok(Json(HealthBody { status: "ok" }))
-    } else {
-        Err(ApiError::unavailable())
+    if !ok {
+        return Err(ApiError::unavailable());
     }
+    // ready also means the instance registry lets this process serve (FR-018-052): asked after the database, so that
+    // a failing probe is logged with its cause whatever the gate says
+    if let Some(gate) = state.serving_gate.as_ref() {
+        if !gate.is_open() {
+            return Err(crate::limits::not_serving(gate));
+        }
+        // the registry has not answered for longer than a process stays live: whatever the gate says, this replica is
+        // invisible to an activation, so it is not offered traffic (the gate itself has its own rule for this case)
+        if gate.beat_is_stale(Instant::now()) {
+            return Err(ApiError::unavailable_after(10));
+        }
+    }
+    Ok(Json(HealthBody { status: "ok" }))
 }
 
 /// The last probe result, if it is still fresh.

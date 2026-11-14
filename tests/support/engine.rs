@@ -169,7 +169,15 @@ pub async fn world_with_breaker(
         execution_pool: store_pool,
         defs: DefinitionService::new(store.clone(), SystemClock, JsonIrCodec),
         publishing: Publishing::new(store.clone(), SystemClock, JsonIrCodec),
-        runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone()),
+        // The reapply of a reset is ON here, unlike in production (off unless the operator sets
+        // `SAGAT_RESET_REAPPLY_ENABLED`), so that the suites can exercise it. The production default is proved by
+        // `reapply::the_service_the_control_plane_builds_refuses_the_reapply_unless_the_operator_set_it`.
+        runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone())
+            .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
+            .with_reset_reapply(true)
+            // ON here, like the reapply, so that the suites can exercise it; the production default is proved by
+            // `cancel_source::the_service_the_control_plane_builds_refuses_the_cancel_of_a_source_unless_the_operator_set_it`.
+            .with_reset_cancel_source(true),
         quotas: QuotaService::new(store.clone(), SystemClock),
         bindings: BindingService::new(store.clone(), SystemClock),
         secrets: SecretService::new(store.clone(), SystemClock, keys.cipher()),
@@ -380,6 +388,59 @@ pub fn condition_node(id: &str, expression: &str, if_true: &str, if_false: &str)
 
 pub fn parallel_node(id: &str, branches: &[&str], join: &str) -> Value {
     json!({ "id": id, "type": "parallel", "branches": branches, "join": join })
+}
+
+/// The name of the one Update [`declared_waiter`] declares.
+pub const DECLARED_OPERATION: &str = "balance.replace";
+
+/// A workflow that declares a state and one Update, and whose entry waits for a signal, so that a run
+/// of it stays open and admits the Update.
+pub fn declared_waiter(name: &str) -> Value {
+    let mut definition = document(
+        name,
+        "w",
+        vec![
+            with(
+                wait_node("w", "payment.confirmed", "input.k", 300_000, None),
+                "next",
+                json!("notify"),
+            ),
+            activity("notify"),
+        ],
+    );
+    definition["state"] = json!({
+        "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"balance": {"type": "integer"}},
+            "required": ["balance"]
+        },
+        "initial": "input.account",
+        "updates": {
+            DECLARED_OPERATION: {
+                "argsSchema": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "allowed": {"type": "boolean"},
+                        "nextState": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {"balance": {"type": "integer"}},
+                            "required": ["balance"]
+                        }
+                    },
+                    "required": ["allowed", "nextState"]
+                },
+                "validate": "args.allowed",
+                "state": "args.nextState",
+                "result": "newState.balance",
+                "resultSchema": {"type": "integer"},
+                "disclosure": "declared-business-result-v1"
+            }
+        }
+    });
+    definition
 }
 
 pub fn end_node(id: &str) -> Value {

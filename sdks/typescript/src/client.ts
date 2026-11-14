@@ -7,6 +7,12 @@ import { HttpTransport, type HttpResponse } from './http.js';
 import { instant } from './json.js';
 import { sleep } from './retry.js';
 import { checkTraceparent } from './traceparent.js';
+import {
+  BatchOperations, BusinessIds, Schedules, toReset, toResetPlan, toResetPoint, toSignalWithStart, toUpdateWithStart,
+  type BusinessIdConflictPolicy, type BusinessIdReusePolicy, type Page, type Reset, type ResetPlan, type ResetPoint, type ResetRequest,
+  type SignalWithStartResult, type UpdateWithStartResult, type WithStartOptions,
+} from './operations.js';
+import { UUID, idOf, namespaceIdOf, num, object, optDate, optStr, revision, runIdOf, segmentOf, str } from './wire.js';
 import type { BlobDescriptor } from './worker/activity.js';
 
 export type RunStatus =
@@ -42,8 +48,32 @@ export interface Run {
   chain: RunChainSegment | null;
   /** The ended run this one was started again from (`RERUN_AS_NEW`), or null for a run that is not a rerun. */
   rerunOf: string | null;
+  /** The business identifier the run was started under, as it was given, or null. */
+  businessId: string | null;
+  /** The instant the entry of a run started with a delay is held until, or null once it is released (or if it never was held). */
+  startDelayedUntil: Date | null;
+  /** The schedule action that started the run, or null for a run no schedule started. */
+  schedule: RunSchedule | null;
+  /** The run a reset made this one from and the journal sequence of it that this run keeps, or null for a run no reset made (a rerun has `rerunOf` and not this). */
+  resetFrom: RunResetFrom | null;
   /** The answer as the server sent it, so a field of a newer server is reachable. */
   raw: Record<string, unknown>;
+}
+
+/** Which schedule started a run, for which nominal time, by which kind of action and under which revision of the schedule. */
+export interface RunSchedule {
+  scheduleId: string;
+  /** The nominal time of the action: the time the schedule calculated, or for `trigger` the instant of the action. A `Date`, so to the millisecond; `raw.schedule.nominalTime` holds the exact text. */
+  nominalTime: Date;
+  /** `SCHEDULED`, `TRIGGERED` or `BACKFILL`, or another string: the set only grows. */
+  kind: string;
+  revision: number;
+}
+
+/** The run a reset made a run from, and the journal sequence of that run (1 or more) the new run keeps as its own. */
+export interface RunResetFrom {
+  runId: string;
+  sequence: number;
 }
 
 export type SegmentCompletionKind = 'CONTINUED' | 'FINAL';
@@ -71,6 +101,19 @@ export interface StartOptions {
   /** The same, as a duration from now, computed once before the first attempt. */
   deadlineInMs?: number;
   traceparent?: string;
+  /** The caller's own identifier for the run (1 to 200 visible ASCII characters), sent as given. At most one open execution of a namespace holds it. */
+  businessId?: string;
+  /** What to do when an open execution holds `businessId`: `FAIL` (the default; `CONFLICT`) or `USE_EXISTING` (nothing is created, `started` is false). */
+  businessIdConflictPolicy?: BusinessIdConflictPolicy;
+  /** What to do when a closed execution still remembers `businessId`. */
+  businessIdReusePolicy?: BusinessIdReusePolicy;
+  /** Holds the entry of the run for this many milliseconds (a duration, turned into an integer once before the first attempt). */
+  startDelayMs?: number;
+}
+
+/** A run as `start` answers it: `started` is false when an open run already held the business identifier and `USE_EXISTING` was asked. */
+export interface StartedRun extends Run {
+  started: boolean;
 }
 
 export interface UploadRunInputOptions {
@@ -275,67 +318,21 @@ export interface JournalEvent {
   raw: Record<string, unknown>;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** A run id is a UUID: anything else would be a path of its own (`..`, `x/operations`) and is refused before a request (SPEC §10). */
-function runIdOf(value: string): string {
-  if (typeof value !== 'string' || !UUID.test(value)) throw invalid('a run id is a UUID');
-  return value.toLowerCase();
+/**
+ * A start delay given as a duration in milliseconds: the integer sent, once, before the first attempt (a fraction is
+ * dropped). The range (1 ms to 366 days) is the server's to judge; only what cannot be a number is refused here.
+ */
+function delayMs(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw invalid('a start delay is a finite number of milliseconds');
+  return Math.trunc(value);
 }
 
-function namespaceIdOf(value: string): string {
-  if (typeof value !== 'string' || !UUID.test(value)) throw invalid('a namespace id is a UUID');
-  return value.toLowerCase();
-}
-
-/** A name in a URL path segment: never empty and never `.` or `..`; the rest is percent-encoded where it is used. */
-function segmentOf(value: string, what: string): string {
-  if (typeof value !== 'string' || value === '' || value === '.' || value === '..') throw invalid(`${what} is not a name: it is empty, \`.\` or \`..\``);
-  return value;
-}
 const KEY = /^[\x21-\x7e]{8,160}$/;
 const APPROVAL_DECISION_KEY = /^[\x21-\x7e]{1,128}$/;
 const REASON_CODE = /^[A-Za-z0-9_.:-]{1,64}$/;
 const DECLARED_OPERATION_NAME = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const UPDATE_KEY = /^[\x21-\x7e]{1,128}$/;
-
-function object(value: unknown, what: string): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new SagatError({ code: 'PROTOCOL', message: `${what} is not an object` });
-  }
-  return value as Record<string, unknown>;
-}
-
-function str(raw: Record<string, unknown>, key: string): string {
-  const value = raw[key];
-  if (typeof value !== 'string') throw new SagatError({ code: 'PROTOCOL', message: `${key} is missing from the answer` });
-  return value;
-}
-
-function optStr(raw: Record<string, unknown>, key: string): string | null {
-  const value = raw[key];
-  return typeof value === 'string' ? value : null;
-}
-
-function optDate(raw: Record<string, unknown>, key: string): Date | null {
-  const value = raw[key];
-  if (typeof value !== 'string') return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function num(raw: Record<string, unknown>, key: string, fallback: number): number {
-  const value = raw[key];
-  return typeof value === 'number' ? value : fallback;
-}
-
-function revision(raw: Record<string, unknown>, key: string, minimum = 0): number {
-  const value = raw[key];
-  if (!Number.isSafeInteger(value) || (value as number) < minimum) {
-    throw new SagatError({ code: 'PROTOCOL', message: `${key} is invalid in the answer` });
-  }
-  return value as number;
-}
 
 function operationName(value: string): string {
   if (typeof value !== 'string' || !DECLARED_OPERATION_NAME.test(value)) {
@@ -369,8 +366,26 @@ export function toRun(value: unknown): Run {
       : null,
     chain: toRunChain(raw['chain']),
     rerunOf: optStr(raw, 'rerunOf'),
+    businessId: optStr(raw, 'businessId'),
+    startDelayedUntil: optDate(raw, 'startDelayedUntil'),
+    schedule: toRunSchedule(raw['schedule']),
+    resetFrom: toRunResetFrom(raw['resetFrom']),
     raw,
   };
+}
+
+function toRunSchedule(value: unknown): RunSchedule | null {
+  if (value === null || value === undefined) return null;
+  const schedule = object(value, 'a run schedule');
+  const nominalTime = optDate(schedule, 'nominalTime');
+  if (!nominalTime) throw new SagatError({ code: 'PROTOCOL', message: 'nominalTime is missing or invalid in the answer' });
+  return { scheduleId: str(schedule, 'scheduleId'), nominalTime, kind: str(schedule, 'kind'), revision: revision(schedule, 'revision', 1) };
+}
+
+function toRunResetFrom(value: unknown): RunResetFrom | null {
+  if (value === null || value === undefined) return null;
+  const reset = object(value, 'a run reset');
+  return { runId: str(reset, 'runId'), sequence: revision(reset, 'sequence', 1) };
 }
 
 function completionKind(value: unknown): SegmentCompletionKind | null {
@@ -403,12 +418,23 @@ export class SagatClient {
   readonly #http: HttpTransport;
   readonly #config: ClientConfig;
   private readonly names = new Map<string, { id: string; at: number }>();
+  /** Schedules: create, describe, list, update, delete, pause, resume, trigger, backfill and their history. */
+  readonly schedules: Schedules;
+  /** Batch jobs over many runs: preview, create, inspect, cancel and list the items. */
+  readonly batch: BatchOperations;
+  /** How a business identifier stands in a namespace. */
+  readonly businessIds: BusinessIds;
 
   constructor(config: ClientConfig) {
     this.#config = config;
     if (!config.apiUrl || !config.namespace) throw invalid('apiUrl and namespace are required');
     warnIfNotSecure(config.apiUrl, safeLogger(config.logger ?? silentLogger));
     this.#http = new HttpTransport(config);
+    // The groups get one function that sends a request: the token stays in the `#` fields of the client and the transport.
+    const transport = { request: (req: Parameters<HttpTransport['request']>[0]) => this.#http.request(req) };
+    this.schedules = new Schedules(transport);
+    this.batch = new BatchOperations(transport);
+    this.businessIds = new BusinessIds(transport);
   }
 
   private trace(explicit?: string): string | undefined {
@@ -452,10 +478,11 @@ export class SagatClient {
   }
 
   /** Starts a run of a published workflow, given by id or by name. */
-  async start(workflow: string, input: Record<string, unknown>, options: StartOptions = {}): Promise<Run> {
+  async start(workflow: string, input: Record<string, unknown>, options: StartOptions = {}): Promise<StartedRun> {
     // What the SDK can refuse by itself is refused before anything is asked of the server.
     const idempotencyKey = this.key(options.idempotencyKey);
     const traceparent = this.trace(options.traceparent);
+    const startDelayMs = delayMs(options.startDelayMs);
     const workflowId = await this.resolveWorkflow(workflow);
     let deadline = options.deadline;
     if (options.deadlineInMs !== undefined) deadline = new Date(Date.now() + options.deadlineInMs);
@@ -463,6 +490,12 @@ export class SagatClient {
     if (options.versionId) body['versionId'] = options.versionId;
     if (options.correlationId !== undefined) body['correlationId'] = options.correlationId;
     if (deadline) body['deadline'] = instant(deadline);
+    // Sent as given: no trimming, no case folding. The server is the one that judges the identifier and the policies,
+    // and an old SDK that never sent them never sees the `200` of USE_EXISTING.
+    if (options.businessId !== undefined) body['businessId'] = options.businessId;
+    if (options.businessIdConflictPolicy !== undefined) body['businessIdConflictPolicy'] = options.businessIdConflictPolicy;
+    if (options.businessIdReusePolicy !== undefined) body['businessIdReusePolicy'] = options.businessIdReusePolicy;
+    if (startDelayMs !== undefined) body['startDelayMs'] = startDelayMs;
     const response = await this.#http.request({
       method: 'POST',
       path: '/runs',
@@ -471,7 +504,116 @@ export class SagatClient {
       traceparent,
       safeToRepeat: true,
     });
-    return toRun(response.body);
+    return { ...toRun(response.body), started: response.status !== 200 };
+  }
+
+  /**
+   * Signals the open run of a business identifier, or starts one and delivers the signal at its creation. A run
+   * that no step of which waits for the signal is refused (`CONFLICT`) and nothing is created or changed.
+   */
+  async signalWithStart(
+    workflow: string, businessId: string, input: Record<string, unknown>, signalName: string, payload: Record<string, unknown>,
+    options: WithStartOptions = {},
+  ): Promise<SignalWithStartResult> {
+    const idempotencyKey = this.key(options.idempotencyKey);
+    const traceparent = this.trace(options.traceparent);
+    const workflowId = await this.resolveWorkflow(workflow);
+    const body: Record<string, unknown> = { workflowId, businessId, input, signal: { name: signalName, payload } };
+    this.withStartFields(body, options);
+    const response = await this.#http.request({
+      method: 'POST', path: '/runs/signal-with-start', body, idempotencyKey, traceparent, signal: options.signal, safeToRepeat: true,
+    });
+    return toSignalWithStart(response.body);
+  }
+
+  /**
+   * Applies a declared Update to the open run of a business identifier, starting the run first when none is open.
+   * The caller's `updateKey` is required and kept by every retry. A refusal of the validator or a stale revision is an
+   * answer (`update.outcome` is `REJECTED`), not an error.
+   */
+  async updateWithStart<TResult = unknown>(
+    workflow: string, businessId: string, input: Record<string, unknown>, updateName: string, updateKey: string, args: unknown,
+    options: WithStartOptions & { businessIdConflictPolicy?: BusinessIdConflictPolicy; startDelayMs?: number; expectedStateRevision?: number } = {},
+  ): Promise<UpdateWithStartResult<TResult>> {
+    if (typeof updateKey !== 'string' || !UPDATE_KEY.test(updateKey)) throw invalid('an update key is 1 to 128 printable ASCII characters');
+    if (options.expectedStateRevision !== undefined
+      && (!Number.isSafeInteger(options.expectedStateRevision) || options.expectedStateRevision < 0)) {
+      throw invalid('expectedStateRevision is a non-negative safe integer');
+    }
+    const idempotencyKey = this.key(options.idempotencyKey);
+    const traceparent = this.trace(options.traceparent);
+    const startDelayMs = delayMs(options.startDelayMs);
+    const workflowId = await this.resolveWorkflow(workflow);
+    const update: Record<string, unknown> = { name: operationName(updateName), updateKey, args };
+    if (options.expectedStateRevision !== undefined) update['expectedStateRevision'] = options.expectedStateRevision;
+    const body: Record<string, unknown> = { workflowId, businessId, input, update };
+    this.withStartFields(body, options);
+    if (options.businessIdConflictPolicy !== undefined) body['businessIdConflictPolicy'] = options.businessIdConflictPolicy;
+    if (startDelayMs !== undefined) body['startDelayMs'] = startDelayMs;
+    const response = await this.#http.request({
+      method: 'POST', path: '/runs/update-with-start', body, idempotencyKey, traceparent, signal: options.signal, safeToRepeat: true,
+    });
+    return toUpdateWithStart<TResult>(response.body);
+  }
+
+  private withStartFields(body: Record<string, unknown>, options: WithStartOptions): void {
+    if (options.versionId) body['versionId'] = options.versionId;
+    if (options.correlationId !== undefined) body['correlationId'] = options.correlationId;
+    const deadline = options.deadlineInMs !== undefined ? new Date(Date.now() + options.deadlineInMs) : options.deadline;
+    if (deadline) body['deadline'] = instant(deadline);
+    if (options.businessIdReusePolicy !== undefined) body['businessIdReusePolicy'] = options.businessIdReusePolicy;
+  }
+
+  /** Where a run that ended can be reset to, by ascending sequence. */
+  async resetPoints(runId: string, options: { cursor?: string; limit?: number; traceparent?: string; signal?: AbortSignal } = {}): Promise<Page<ResetPoint>> {
+    const response = await this.#http.request({
+      method: 'GET', path: `/runs/${encodeURIComponent(runIdOf(runId))}/reset-points`, query: { cursor: options.cursor, limit: options.limit },
+      traceparent: this.trace(options.traceparent), signal: options.signal, safeToRepeat: true,
+    });
+    const raw = object(response.body, 'a page of reset points');
+    const items = raw['items'];
+    if (!Array.isArray(items)) throw new SagatError({ code: 'PROTOCOL', message: 'items is missing from the page' });
+    return { items: items.map(toResetPoint), nextCursor: optStr(raw, 'nextCursor') };
+  }
+
+  /** What a reset to `sequence` would restore and run again; changes nothing. */
+  async previewReset(runId: string, sequence: number, reapply?: ResetRequest['reapply'], options: { traceparent?: string; signal?: AbortSignal } = {}): Promise<ResetPlan> {
+    if (!Number.isSafeInteger(sequence) || sequence < 1) throw invalid('sequence is a positive integer');
+    const body: Record<string, unknown> = { sequence };
+    if (reapply !== undefined) body['reapply'] = reapply;
+    const response = await this.#http.request({
+      method: 'POST', path: `/runs/${encodeURIComponent(runIdOf(runId))}/reset-previews`, body,
+      traceparent: this.trace(options.traceparent), signal: options.signal, safeToRepeat: true,
+    });
+    return toResetPlan(response.body);
+  }
+
+  /** Creates a new run from an eligible prefix of a run that ended. The same key and request answer the first reset. */
+  async reset(runId: string, request: ResetRequest, options: { idempotencyKey?: string; traceparent?: string; signal?: AbortSignal } = {}): Promise<Reset> {
+    if (!request || !Number.isSafeInteger(request.sequence) || request.sequence < 1) throw invalid('sequence is a positive integer');
+    const response = await this.#http.request({
+      method: 'POST', path: `/runs/${encodeURIComponent(runIdOf(runId))}/resets`, body: { ...request },
+      idempotencyKey: this.key(options.idempotencyKey), traceparent: this.trace(options.traceparent), signal: options.signal, safeToRepeat: true,
+    });
+    return toReset(response.body);
+  }
+
+  /** The resets made from a run, newest first (at most 200). */
+  async listResets(runId: string, options: { traceparent?: string; signal?: AbortSignal } = {}): Promise<Reset[]> {
+    const response = await this.#http.request({
+      method: 'GET', path: `/runs/${encodeURIComponent(runIdOf(runId))}/resets`,
+      traceparent: this.trace(options.traceparent), signal: options.signal, safeToRepeat: true,
+    });
+    const items = object(response.body, 'a list of resets')['items'];
+    return Array.isArray(items) ? items.map(toReset) : [];
+  }
+
+  async getReset(runId: string, resetId: string, options: { traceparent?: string; signal?: AbortSignal } = {}): Promise<Reset> {
+    const response = await this.#http.request({
+      method: 'GET', path: `/runs/${encodeURIComponent(runIdOf(runId))}/resets/${encodeURIComponent(idOf(resetId, 'a reset id'))}`,
+      traceparent: this.trace(options.traceparent), signal: options.signal, safeToRepeat: true,
+    });
+    return toReset(response.body);
   }
 
   /** Uploads a one-pass run input. The returned descriptor is accepted only when it matches the bytes sent. */

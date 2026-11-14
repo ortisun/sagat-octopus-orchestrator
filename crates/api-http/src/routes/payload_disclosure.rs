@@ -13,8 +13,8 @@ use sagat_application::classification::{
 };
 use sagat_application::error::AppError;
 use sagat_application::payload_disclosure::{
-    DisclosureSchema, DisclosureSchemaCarrier, DisclosureSelector, PayloadDisclosure,
-    PayloadDisclosureError, PayloadDisclosureResult, StructureOnlyReason,
+    DisclosureCaller, DisclosureSchema, DisclosureSchemaCarrier, DisclosureSelector,
+    PayloadDisclosure, PayloadDisclosureError, PayloadDisclosureResult, StructureOnlyReason,
     UnavailableDisclosureReason,
 };
 use sagat_application::payloads::{ExternalContentKind, PayloadStructure};
@@ -139,7 +139,7 @@ pub async fn no_store(request: Request, next: Next) -> Response {
     response
 }
 
-fn disclosure_response(bytes: Vec<u8>) -> Response {
+pub(crate) fn disclosure_response(bytes: Vec<u8>) -> Response {
     let mut response = Response::new(Body::from(bytes));
     *response.status_mut() = StatusCode::OK;
     response.headers_mut().insert(
@@ -153,7 +153,7 @@ fn disclosure_response(bytes: Vec<u8>) -> Response {
     response
 }
 
-fn disclosure_error(error: PayloadDisclosureError) -> ApiError {
+pub(crate) fn disclosure_error(error: PayloadDisclosureError) -> ApiError {
     match error {
         PayloadDisclosureError::Application(error) => error.into(),
         PayloadDisclosureError::PiiRevealNotGranted => ApiError::from(AppError::Forbidden {
@@ -186,9 +186,37 @@ fn encode_disclosure(disclosure: &PayloadDisclosure) -> Result<Vec<u8>, ApiError
         sagat_application::payload_disclosure::PAYLOAD_DISCLOSURE_POLICY,
     )?;
     field_name(&mut out, "caller", false)?;
-    caller(&mut out, disclosure)?;
+    caller(&mut out, &disclosure.caller)?;
     result(&mut out, &disclosure.result)?;
     out.push(b'}');
+    bounded(out)
+}
+
+/// The envelope of the disclosure of the input of a schedule (feature 018, `ScheduleInputDisclosure`):
+/// the schedule and its revision where a run's has the run and its version, and then the caller and
+/// the result exactly as `discloseRunPayload` writes them.
+pub(crate) fn encode_schedule_input(
+    disclosure: &sagat_application::schedule_disclosure::ScheduleInputDisclosure,
+) -> Result<Vec<u8>, ApiError> {
+    let mut out = Vec::new();
+    out.push(b'{');
+    field_name(&mut out, "scheduleId", true)?;
+    string(&mut out, &disclosure.schedule.to_string())?;
+    field_name(&mut out, "revision", false)?;
+    integer(&mut out, u64::from(disclosure.revision));
+    field_name(&mut out, "policy", false)?;
+    string(
+        &mut out,
+        sagat_application::payload_disclosure::PAYLOAD_DISCLOSURE_POLICY,
+    )?;
+    field_name(&mut out, "caller", false)?;
+    caller(&mut out, &disclosure.caller)?;
+    result(&mut out, &disclosure.result)?;
+    out.push(b'}');
+    bounded(out)
+}
+
+fn bounded(out: Vec<u8>) -> Result<Vec<u8>, ApiError> {
     if out.len() > MAX_RESPONSE_BYTES {
         tracing::error!(
             size_bytes = out.len(),
@@ -211,7 +239,7 @@ fn selection(out: &mut Vec<u8>, selector: DisclosureSelector) -> Result<(), ApiE
     Ok(())
 }
 
-fn caller(out: &mut Vec<u8>, disclosure: &PayloadDisclosure) -> Result<(), ApiError> {
+fn caller(out: &mut Vec<u8>, caller: &DisclosureCaller) -> Result<(), ApiError> {
     out.extend_from_slice(br#"{"disclosedLevels":["#);
     let mut first = true;
     for (level, name) in [
@@ -219,7 +247,7 @@ fn caller(out: &mut Vec<u8>, disclosure: &PayloadDisclosure) -> Result<(), ApiEr
         (Level::Internal, "internal"),
         (Level::Pii, "pii"),
     ] {
-        if disclosure.caller.disclosed_levels.contains(level) {
+        if caller.disclosed_levels.contains(level) {
             if !first {
                 out.push(b',');
             }
@@ -230,14 +258,14 @@ fn caller(out: &mut Vec<u8>, disclosure: &PayloadDisclosure) -> Result<(), ApiEr
     out.extend_from_slice(br#"],"revealPii":"#);
     string(
         out,
-        if disclosure.caller.reveal_granted {
+        if caller.reveal_granted {
             "granted"
         } else {
             "not_granted"
         },
     )?;
     out.extend_from_slice(br#","revealed":"#);
-    boolean(out, disclosure.caller.revealed);
+    boolean(out, caller.revealed);
     out.push(b'}');
     Ok(())
 }

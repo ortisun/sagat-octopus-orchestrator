@@ -290,6 +290,17 @@ SAGAT_SDK_SCENARIO=chain-query-handoff cargo test -p sagat-tests --test sdk_conf
 SAGAT_SDK_SCENARIO=chain-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-state-final-success cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 SAGAT_SDK_SCENARIO=chain-commands cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+
+# feature 018 (specs/018-schedules-bulk-operations/contracts/sdk-conformance.md)
+SAGAT_SDK_SCENARIO=schedules-crud cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=schedules-operate cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=schedules-overlap cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=business-ids cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=start-delay cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=signal-with-start cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=update-with-start cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=batch-operations cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
+SAGAT_SDK_SCENARIO=reset cargo test -p sagat-tests --test sdk_conformance --locked -- --ignored --nocapture
 ```
 
 ## Pending scenarios
@@ -500,10 +511,40 @@ stop the scenario.
 | `awaitWorkerLog` | `worker`, `count`, `timeoutMs` | waits until the worker's log has `count` entries | none |
 | `workflowByName` | `name`, `input` | `start` with the workflow **name** | the Run |
 
+**Feature 018 steps** (schedules, business identifiers, batch jobs, with-start, reset; `sdks/SPEC.md` §3.1). Each is one
+client call and its observation is the JSON the TypeScript runner writes (`sdks/typescript/conformance/runner.ts`:
+`scheduleJson`, `actionJson`, `descriptionJson`, `backfillJson`, `jobJson`, `resetJson`, `receiptJson`), which is the
+reference for the field names:
+
+| `op` | Fields | Calls |
+|---|---|---|
+| `start` (extended) | `businessId?`, `businessIdConflictPolicy?`, `businessIdReusePolicy?`, `startDelayMs?` | `start`; the Run gains `businessId` and `startDelayedUntil` when present, and `started` when the step has a `businessId` |
+| `scheduleCreate` / `scheduleUpdate` | `write` (a schedule; its `action.workflowId` is `{{workflow:<key>}}`), `schedule` and `expectedRevision` for an update, `idempotencyKey?` | `schedules.create` / `update` |
+| `scheduleGet`, `scheduleDelete`, `schedulePause`, `scheduleResume` | `schedule` (the id of the step that created it), `nextCount?`/`recentCount?`, `expectedRevision`, `note` | `schedules.get` / `delete` / `pause` / `resume` |
+| `scheduleList` | `filter?`, `limit?`, `all?` | `schedules.list` / `listAll`; the items are `{name, state, origin, revision}` and a next page is the literal `<cursor>` |
+| `scheduleTrigger`, `scheduleBackfill`, `scheduleCancelBackfill`, `scheduleBackfills`, `scheduleActions` | `schedule`, `overlap?`, `start`/`end`, `backfill` (a step id), `outcome?`, `limit?` | `schedules.trigger` / `backfill` / `cancelBackfill` / `listBackfills` / `listActions` |
+| `awaitSchedule`, `awaitBackfill`, `awaitBatch` | `schedule` + `counter` + `atLeast`; `schedule` + `backfill` + `state`; `batch` + `state`; `timeoutMs?` | polls `schedules.get` / `listBackfills` / `batch.get` until it holds, else the step fails: a wait for a decision of the engine is never a sleep |
+| `businessIdGet` | `businessId` | `businessIds.get` |
+| `signalWithStart`, `updateWithStart` | `workflow`, `businessId`, `input`, `signal` or `update` (`name`, `updateKey`, `args`, `expectedStateRevision?`), `businessIdConflictPolicy?`, `businessIdReusePolicy?`, `startDelayMs?`, `idempotencyKey?` | `signalWithStart` / `updateWithStart` |
+| `batchPreview`, `batchCreate`, `batchGet`, `batchList`, `batchCancel`, `batchItems` | `selector`/`maxItems?`, `request`, `batch` (a step id), `reason`, `state?`, `limit?` | `batch.*`; a run is named in an observation by the id of the step that started it (`sampleSteps`, `runStep`, sorted), because the order the server lists them in is not part of the contract; `batchCreate` observes only what does not change while the job runs |
+| `resetPoints`, `resetPreview`, `reset`, `resets`, `getReset` | `run`, `limit?`, `sequence`, `reapply?`, `reason`, `acknowledgeReexecution?`, `businessId?` (`KEEP`\|`DROP`), `sourcePolicy?`, `reset` (a step id), `idempotencyKey?` | `resetPoints` / `previewReset` / `reset` / `listResets` / `getReset` |
+
+Every string of a step that is exactly `{{step:<id>:<field>}}` (a field of the result of an earlier step),
+`{{workflow:<key>}}`, `{{namespaceId}}`, `{{now:<offsetMs>}}` (an instant) or `{{hour:<offsetHours>}}` (the start of a
+UTC hour, so a backfill over two whole hours holds the same number of nominal times whenever it runs) is replaced by
+its value before the step runs. Instants that depend on when a scenario ran are written as instants (the harness
+compares them as `<time>`); the ones a fixed spec determines are epoch milliseconds, so that an SDK that parses an
+instant wrongly shows.
+
+A scenario that needs the engine's schedule or batch passes says so in `"server": {"schedules": true, "batches": true}`
+(they are off in an engine until told to run). `target/sdk-conformance/` inside the repository holds the harness's
+work files whatever `CARGO_TARGET_DIR` is.
+
 A result is a plain JSON object with the fields named here. A **Run** is exactly
 `{runId, workflowId, versionId, status, version, paused, startedBy, createdAt, updatedAt, finishedAt,
 deadline, traceId, correlationId, depth, parent}`, plus `chain` for a run in a continuation chain and `rerunOf` for a
-run started again from an ended one (both only when present).
+run started again from an ended one, `businessId` for a run started under one and `startDelayedUntil` for a run whose
+entry is held (each only when present).
 
 ### Faults
 

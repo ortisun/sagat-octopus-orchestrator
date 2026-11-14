@@ -331,7 +331,8 @@ async fn runs_are_listed_newest_first_with_filters_and_stable_pages() {
         w.runs_of(&RunFilter {
             origin: None,
             workflow: Some(other),
-            status: None
+            status: None,
+            ..RunFilter::default()
         })
         .await,
         [foreign]
@@ -341,6 +342,7 @@ async fn runs_are_listed_newest_first_with_filters_and_stable_pages() {
             origin: None,
             workflow: None,
             status: Some(RunStatus::Cancelled),
+            ..RunFilter::default()
         })
         .await;
     assert_eq!(cancelled, [ids[0]]);

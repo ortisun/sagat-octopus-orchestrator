@@ -52,6 +52,16 @@ type callOptions struct {
 	outcome            string
 	errorCode          string
 	expectedRunVersion *int64
+
+	// Feature 018: business identifiers, the start delay, schedules.
+	businessID               *string
+	businessIDConflictPolicy BusinessIDConflictPolicy
+	businessIDReusePolicy    BusinessIDReusePolicy
+	startDelay               time.Duration
+	hasStartDelay            bool
+	overlap                  OverlapPolicy
+	nextCount                *int
+	recentCount              *int
 }
 
 func callOptionsOf(opts []CallOption) callOptions {
@@ -240,7 +250,12 @@ func lower(s string) string {
 
 // Start starts a run of a published workflow, given by id or by name. input is encoded as JSON (a
 // json.RawMessage is sent as it is, so numbers keep their text); nil is an empty object.
-func (c *Client) Start(ctx context.Context, workflow string, input any, opts ...CallOption) (*Run, error) {
+//
+// Reads WithIdempotencyKey, WithTraceparent, WithVersionID, WithCorrelationID, WithDeadline,
+// WithDeadlineIn, WithBusinessID, WithBusinessIDConflictPolicy, WithBusinessIDReusePolicy and
+// WithStartDelay. A call that gives none of the business identifier options and no start delay sends
+// exactly what it sent before they existed. The answer says whether this call created the run.
+func (c *Client) Start(ctx context.Context, workflow string, input any, opts ...CallOption) (*StartedRun, error) {
 	o := callOptionsOf(opts)
 	idempotencyKey, err := key(o.idempotencyKey)
 	if err != nil {
@@ -271,6 +286,20 @@ func (c *Client) Start(ctx context.Context, workflow string, input any, opts ...
 	if !deadline.IsZero() {
 		body["deadline"] = jsonx.Instant(deadline)
 	}
+	// Sent as given: no trimming, no case folding, no local pattern. The server judges the identifier and
+	// the policies, and a caller that never gives them never sees the 200 of BusinessIDUseExisting.
+	if o.businessID != nil {
+		body["businessId"] = *o.businessID
+	}
+	if o.businessIDConflictPolicy != "" {
+		body["businessIdConflictPolicy"] = string(o.businessIDConflictPolicy)
+	}
+	if o.businessIDReusePolicy != "" {
+		body["businessIdReusePolicy"] = string(o.businessIDReusePolicy)
+	}
+	if o.hasStartDelay {
+		body["startDelayMs"] = startDelayMs(o.startDelay)
+	}
 	resp, err := c.do(ctx, request{
 		method: "POST", path: "/runs", body: body, hasBody: true,
 		idempotencyKey: idempotencyKey, traceparent: traceparent, repeatable: true,
@@ -278,7 +307,11 @@ func (c *Client) Start(ctx context.Context, workflow string, input any, opts ...
 	if err != nil {
 		return nil, err
 	}
-	return parseRun(resp.body)
+	run, err := parseRun(resp.body)
+	if err != nil {
+		return nil, err
+	}
+	return &StartedRun{Run: run, Started: resp.status != http.StatusOK}, nil
 }
 
 // UploadRunInput streams source exactly once and accepts only a descriptor matching the bytes read.

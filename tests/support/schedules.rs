@@ -9,12 +9,13 @@ use sagat_application::clock::Clock;
 use sagat_application::error::AppError;
 use sagat_application::identity::RequestContext;
 use sagat_application::schedule_codec::{policies_from_json, spec_from_json, target_from_json};
-use sagat_application::schedule_firing::{Fired, ScheduleFiring, ScheduledStart, ScheduledStarts};
+use sagat_application::schedule_firing::{
+    Fired, ScheduleFiring, ScheduledRun, ScheduledStart, ScheduledStarts,
+};
 use sagat_application::schedules::{
     DueSchedule, ScheduleAdmission, ScheduleRecord, ScheduleService, ScheduleStore, ScheduleWrite,
 };
 use sagat_domain::definition::WorkflowId;
-use sagat_domain::execution::RunId;
 use sagat_domain::identity::Principal;
 use sagat_domain::schedules::{Ceilings, ScheduleName};
 use sagat_infra_ir::schedule_calendar::SpecCalendar;
@@ -62,7 +63,7 @@ impl ScheduledStarts for Starts {
         request: &ScheduledStart<'_>,
         admission: ScheduleAdmission,
         ctx: &RequestContext,
-    ) -> Result<RunId, AppError> {
+    ) -> Result<ScheduledRun, AppError> {
         ScheduledStarts::start_scheduled(&self.0.runs, principal, request, admission, ctx).await
     }
 
@@ -273,7 +274,7 @@ impl Fixture {
 
     /// Waits until some backend waits on a lock (`pg_stat_activity`, not a time), for at most two
     /// minutes, then panics naming `stage`.
-    async fn wait_for_a_backend_on_a_lock(&self, stage: &str) {
+    pub(crate) async fn wait_for_a_backend_on_a_lock(&self, stage: &str) {
         super::bounded::within(stage, std::time::Duration::from_secs(120), async {
             loop {
                 let waiting: i64 = sqlx::query_scalar(
@@ -360,10 +361,195 @@ pub(crate) fn outcomes_of(pairs: &[(&str, i64)]) -> Vec<(String, i64)> {
     pairs.iter().map(|(o, n)| ((*o).to_owned(), *n)).collect()
 }
 
+/// Fires, once, a schedule that was created through the REST API of `api`, at the nominal time `nominal` and without waiting for
+/// it: the times the schedule keeps are moved to `nominal` (what the pass finds as due) and the service the pass calls acts over
+/// the stores of the API and under the authority of the member who created the schedule. **The firing decides by a clock fixed
+/// five seconds after `nominal`**, not by the wall clock, so that no other time of the schedule is due while the test runs (a
+/// test that straddled the next time would otherwise find the firing acting on that one too, or only on the latest of the two under
+/// the catch-up mode `ONE`). What it starts is a run like any other, read back through the same API. The nominal time is the one the
+/// caller gives: what this proves is that it is passed through to the run, not how a schedule calculates it (the callers take it
+/// from the schedule's own `nextActionAt` less one period, and check the schedule's calculation of the next one afterwards).
+pub(crate) async fn fire_at(
+    api: &super::api::TestApi,
+    tenant: sagat_domain::identity::TenantId,
+    schedule: &str,
+    nominal: OffsetDateTime,
+) -> Fired {
+    use sagat_application::clock::SystemClock;
+    use sagat_application::execution::{DefinitionCache, Engine};
+    use sagat_application::runs::RunService;
+    use sagat_domain::schedules::ScheduleId;
+    use sagat_infra_ir::{JsonEvaluator, JsonIrCodec};
+
+    let id: Uuid = schedule.parse().expect("a schedule id");
+    sqlx::query(
+        "UPDATE schedules SET next_action_at = $2, next_actual_at = $2, state_version = state_version + 1 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(nominal)
+    .execute(&api.db.pool)
+    .await
+    .expect("the schedule is due");
+    let firing = ScheduleFiring::new(
+        PgScheduleStore::new(api.api_pool.clone()),
+        SpecCalendar,
+        TestClock::at(nominal + Duration::seconds(5)),
+        PgIdentityStore::new(api.api_pool.clone()),
+        RunService::new(
+            api.executions.clone(),
+            SystemClock,
+            Engine::new(JsonEvaluator),
+            DefinitionCache::new(Arc::new(JsonIrCodec), 64),
+        ),
+        Ceilings::default(),
+    );
+    firing
+        .fire(
+            &DueSchedule {
+                tenant_id: tenant,
+                id: ScheduleId::new(id),
+            },
+            None,
+        )
+        .await
+        .expect("fire")
+}
+
+/// Marks a run as started by a schedule action, for a test that built the run another way (a seeded chain, a loop, a collection)
+/// and needs to see what the paths that finish a run say about it: the columns the admission writes with the run. The provenance
+/// of a run never changes (a trigger refuses it), so the guard is switched off, by the owner, for this one statement (each of the
+/// three is its own transaction: the table cannot be altered while the update has events pending) and on again after it.
+pub(crate) async fn mark_as_scheduled(
+    pool: &sqlx::PgPool,
+    run: Uuid,
+    schedule: Uuid,
+    nominal: OffsetDateTime,
+) {
+    sqlx::query("ALTER TABLE runs DISABLE TRIGGER runs_schedule_provenance")
+        .execute(pool)
+        .await
+        .expect("switch the guard off");
+    let marked = sqlx::query(
+        "UPDATE runs SET schedule_id = $2, schedule_nominal_at = $3, schedule_action_kind = 'SCHEDULED', \
+         schedule_revision = 1 WHERE id = $1",
+    )
+    .bind(run)
+    .bind(schedule)
+    .bind(nominal)
+    .execute(pool)
+    .await
+    .expect("mark the run")
+    .rows_affected();
+    assert_eq!(marked, 1, "the run exists");
+    sqlx::query("ALTER TABLE runs ENABLE ALWAYS TRIGGER runs_schedule_provenance")
+        .execute(pool)
+        .await
+        .expect("switch the guard on");
+}
+
+/// The body the one delivery of a subscription carries: what the subscriber is sent for a finished run.
+pub(crate) async fn delivered_body(pool: &sqlx::PgPool, subscription: Uuid) -> Value {
+    let bytes: Vec<u8> =
+        sqlx::query_scalar("SELECT payload FROM webhook_deliveries WHERE subscription_id = $1")
+            .bind(subscription)
+            .fetch_one(pool)
+            .await
+            .expect("one delivery");
+    serde_json::from_slice(&bytes).expect("a JSON body")
+}
+
 /// An hour boundary a few hours ago. The pass finds what is due by the database clock and the
 /// firing decides by the clock of the test, so the test clock starts where the first time of an
 /// hourly schedule is already in the past for both.
 pub(crate) fn some_hours_ago() -> OffsetDateTime {
     let now = OffsetDateTime::now_utc().unix_timestamp();
     OffsetDateTime::from_unix_timestamp(now - now % 3_600 - 3 * 3_600).expect("instant")
+}
+
+/// An ad-hoc database run of the world's admin (feature 017's private document), ended: what a batch `RERUN` repeats
+/// through `rerun_private`. Its connection is declared and never reached: the run is cancelled before any worker asks.
+#[allow(dead_code)]
+pub(crate) async fn ad_hoc_run(w: &World, tag: &str) -> sagat_domain::execution::RunId {
+    use sagat_application::database::{ConnectionService, ConnectionWrite};
+    use sagat_application::runs::{AdHocMode, RunOperation, StartDatabaseExecution};
+    use sagat_domain::database::{ConnectionConfig, ConnectionStatus, DatabaseLimits, TlsPolicy};
+    use sagat_domain::identity::Slug;
+    use sagat_domain::secrets::SecretName;
+
+    let name = format!("ad-hoc-{tag}");
+    // the credential the connection names must exist, and is never read: the run is cancelled before a worker asks
+    let _ = w
+        .secrets
+        .put(
+            &w.admin,
+            w.namespace.id(),
+            "db-credentials",
+            b"never-read".to_vec(),
+            &RequestContext::default(),
+        )
+        .await;
+    // as if it had been moved to OpenBao (no OpenBao runs here): the admission of a connection asks only that
+    sqlx::query(
+        "UPDATE secrets SET authority = 'openbao' WHERE tenant_id = $1 AND namespace_id = $2 AND name = 'db-credentials'",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .bind(w.namespace.id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("the authority of the credential");
+    ConnectionService::new(w.store.clone(), sagat_application::clock::SystemClock)
+        .put(
+            &w.admin,
+            w.namespace.id(),
+            ConnectionWrite {
+                name: Slug::parse(&name).expect("a slug"),
+                expected_revision: 0,
+                request_id: Uuid::new_v4(),
+                status: ConnectionStatus::Active,
+                config: ConnectionConfig::postgres(
+                    "db.example.com",
+                    5432,
+                    "orders",
+                    TlsPolicy::VerifyFull { ca_pem: None },
+                    SecretName::parse("db-credentials").expect("a name"),
+                    DatabaseLimits::default(),
+                )
+                .expect("a config"),
+            },
+            &RequestContext::default(),
+        )
+        .await
+        .expect("the connection");
+    let bytes = serde_json::to_vec(&super::engine::document(
+        &format!("database-ad-hoc-{tag}"),
+        "query",
+        vec![json!({
+            "id": "query", "type": "database", "connectionRef": {"name": name},
+            "operation": "query", "statement": "SELECT 1::bigint"
+        })],
+    ))
+    .expect("the document");
+    let key = format!("ad-hoc-{tag}-{}", Uuid::now_v7().simple());
+    let run = w
+        .runs
+        .start_database(
+            &w.admin,
+            &StartDatabaseExecution {
+                namespace: w.namespace.id(),
+                mode: AdHocMode::Step,
+                document: &bytes,
+                input: b"{}",
+                timeout_ms: None,
+                key: &key,
+            },
+            &RequestContext::default(),
+        )
+        .await
+        .expect("the ad-hoc run")
+        .info
+        .run_id;
+    w.operate(run, RunOperation::Cancel)
+        .await
+        .expect("cancel it");
+    run
 }

@@ -117,6 +117,8 @@ enum UpdateOutcome {
     Applied {
         new_state: EvaluatedOperationValue,
         result: EvaluatedOperationValue,
+        /// The canonical arguments, when the declaration keeps them for a reset (`reapplyOnReset`).
+        arguments: Option<Box<EvaluatedOperationValue>>,
     },
     Rejected,
 }
@@ -135,11 +137,16 @@ impl UpdateEvaluationPlan {
         observed_run_version: u64,
         new_state: EvaluatedOperationValue,
         result: EvaluatedOperationValue,
+        arguments: Option<Box<EvaluatedOperationValue>>,
     ) -> Self {
         Self {
             source_state,
             observed_run_version,
-            outcome: UpdateOutcome::Applied { new_state, result },
+            outcome: UpdateOutcome::Applied {
+                new_state,
+                result,
+                arguments,
+            },
         }
     }
 
@@ -181,7 +188,9 @@ impl UpdateEvaluationPlan {
             return Err(OperationEvaluationError::StateChanged);
         }
         Ok(match &self.outcome {
-            UpdateOutcome::Applied { new_state, result } => UpdateEvaluation::Applied {
+            UpdateOutcome::Applied {
+                new_state, result, ..
+            } => UpdateEvaluation::Applied {
                 new_state: new_state.value.clone(),
                 result: result.value.clone(),
             },
@@ -201,7 +210,11 @@ impl UpdateEvaluationPlan {
     ) -> Result<DeclaredUpdateDecision, OperationEvaluationError> {
         self.domain_evaluation(snapshot.state(), snapshot.run_version())?;
         match &self.outcome {
-            UpdateOutcome::Applied { new_state, result } => {
+            UpdateOutcome::Applied {
+                new_state,
+                result,
+                arguments,
+            } => {
                 let new_state = EvaluatedOperationWrite::restore(
                     new_state.value.clone(),
                     new_state.content.clone(),
@@ -210,7 +223,22 @@ impl UpdateEvaluationPlan {
                 let result =
                     EvaluatedOperationWrite::restore(result.value.clone(), result.content.clone())
                         .map_err(|_| OperationEvaluationError::RetainedValueMismatch)?;
-                Ok(DeclaredUpdateDecision::Applied { new_state, result })
+                let arguments = arguments
+                    .as_ref()
+                    .map(|arguments| {
+                        EvaluatedOperationWrite::restore(
+                            arguments.value.clone(),
+                            arguments.content.clone(),
+                        )
+                        .map(Box::new)
+                    })
+                    .transpose()
+                    .map_err(|_| OperationEvaluationError::RetainedValueMismatch)?;
+                Ok(DeclaredUpdateDecision::Applied {
+                    new_state,
+                    result,
+                    arguments,
+                })
             }
             UpdateOutcome::Rejected => Ok(DeclaredUpdateDecision::Rejected(
                 UpdateRejection::ValidatorRejected,
@@ -481,11 +509,25 @@ impl JsonDeclaredOperationEvaluator {
             update.result_schema(),
             OperationDataField::UpdateResult,
         )?;
+        // the arguments are kept only when the declaration says so: they are customer content, and keeping
+        // every Update's would add a payload write and a charge to each of them. They are canonical and were
+        // checked against the arguments schema above.
+        let arguments = update
+            .reapply_on_reset()
+            .then(|| {
+                EvaluatedOperationValue::from_schema_checked(
+                    context.arguments().to_vec(),
+                    update.args_schema().digest(),
+                )
+                .map(Box::new)
+            })
+            .transpose()?;
         Ok(UpdateEvaluationPlan::applied(
             context.state().value().clone(),
             context.observed_run_version(),
             checked_state,
             checked_result,
+            arguments,
         ))
     }
 

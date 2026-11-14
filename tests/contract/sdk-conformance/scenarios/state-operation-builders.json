@@ -140,6 +140,56 @@
           "id": "waiting"
         }
       ]
+    },
+    "retained-update": {
+      "name": "retained-update-state",
+      "state": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "balance": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "balance"
+          ],
+          "additionalProperties": false
+        },
+        "initial": "input.account",
+        "updates": {
+          "balance.credit": {
+            "argsSchema": {
+              "type": "integer"
+            },
+            "validate": "args > 0",
+            "state": "state",
+            "result": "newState.balance",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "disclosure": "declared-business-result-v1",
+            "reapplyOnReset": true
+          },
+          "balance.note": {
+            "argsSchema": {
+              "type": "integer"
+            },
+            "state": "state",
+            "result": "newState.balance",
+            "resultSchema": {
+              "type": "integer"
+            },
+            "disclosure": "declared-business-result-v1"
+          }
+        }
+      },
+      "program": [
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
     }
   },
   "invalidWorkflows": {

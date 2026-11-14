@@ -1345,7 +1345,17 @@
             "string"
           ]
         },
+        "data.nominalTime": {
+          "type": [
+            "string"
+          ]
+        },
         "data.runId": {
+          "type": [
+            "string"
+          ]
+        },
+        "data.scheduleId": {
           "type": [
             "string"
           ]

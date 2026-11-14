@@ -37,6 +37,7 @@ fn facts() -> RunFacts {
         parent_run: None,
         created_at: OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("time"),
         steps: HashMap::new(),
+        reset: None,
     }
 }
 

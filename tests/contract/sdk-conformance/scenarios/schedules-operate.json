@@ -1,0 +1,354 @@
+{
+  "name": "schedules-operate",
+  "description": "Feature 018 US01: operating a schedule. Pause and resume carry a note; a trigger acts now, also while the schedule is paused, starts the schedule's run and does not use up a remaining action; the same key replays the same action; a backfill of a past range acts on each nominal time once (the range is two whole UTC hours of an hourly cron, so it holds exactly two times whenever the scenario runs), and a second backfill of the same range finds every time ALREADY_ACTED and starts nothing; a range that ends in the future is refused; the history is filtered by outcome; the run a trigger started and the run a backfill started are read back and say which schedule started them, by which kind of action (TRIGGERED, BACKFILL), for which nominal time (an instant) and under which revision (G2057, FR-018-016). A schedule whose action names a business-id prefix (FR-018-016) reads its prefix and its two policies back (the defaults written out when only the prefix is given; none of the three when there is no prefix), refuses a prefix that is not an id and a policy without a prefix with the reason SCHEDULE_SPEC_INVALID, and the run its trigger-now starts is read back under the id <prefix>-<nominal time>.",
+  "server": {
+    "schedules": true
+  },
+  "workflows": {
+    "plain": {
+      "name": "operate-plain",
+      "description": "The workflow the schedules start; nobody serves its activity, so every run stays open.",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "operate.work"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "id": "far",
+      "op": "scheduleCreate",
+      "idempotencyKey": "op-far-{{unique}}",
+      "write": {
+        "name": "operate-far-{{unique}}",
+        "spec": {
+          "calendars": [
+            {
+              "hour": [
+                {
+                  "start": 9
+                }
+              ],
+              "year": [
+                {
+                  "start": 2099
+                }
+              ]
+            }
+          ]
+        },
+        "policies": {
+          "overlap": "SKIP"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {
+            "kind": "far"
+          }
+        },
+        "remainingActions": 5
+      }
+    },
+    {
+      "id": "pause",
+      "op": "schedulePause",
+      "schedule": "far",
+      "note": "maintenance window",
+      "idempotencyKey": "op-pause-{{unique}}"
+    },
+    {
+      "id": "pause-again",
+      "op": "schedulePause",
+      "schedule": "far",
+      "note": "still in the window",
+      "idempotencyKey": "op-pause2-{{unique}}"
+    },
+    {
+      "id": "paused",
+      "op": "scheduleGet",
+      "schedule": "far",
+      "nextCount": 3,
+      "recentCount": 3
+    },
+    {
+      "id": "trigger-paused",
+      "op": "scheduleTrigger",
+      "schedule": "far",
+      "idempotencyKey": "op-trigger-{{unique}}"
+    },
+    {
+      "id": "trigger-replay",
+      "op": "scheduleTrigger",
+      "schedule": "far",
+      "idempotencyKey": "op-trigger-{{unique}}"
+    },
+    {
+      "id": "trigger-other-overlap",
+      "op": "scheduleTrigger",
+      "schedule": "far",
+      "overlap": "ALLOW_ALL",
+      "idempotencyKey": "op-trigger-{{unique}}"
+    },
+    {
+      "id": "trigger-overlaps",
+      "op": "scheduleTrigger",
+      "schedule": "far",
+      "idempotencyKey": "op-trigger2-{{unique}}"
+    },
+    {
+      "id": "after-triggers",
+      "op": "scheduleGet",
+      "schedule": "far",
+      "nextCount": 0,
+      "recentCount": 10
+    },
+    {
+      "id": "empty-note",
+      "op": "schedulePause",
+      "schedule": "far",
+      "note": "",
+      "idempotencyKey": "op-empty-{{unique}}"
+    },
+    {
+      "id": "resume",
+      "op": "scheduleResume",
+      "schedule": "far",
+      "note": "back to normal",
+      "idempotencyKey": "op-resume-{{unique}}"
+    },
+    {
+      "id": "resumed",
+      "op": "scheduleGet",
+      "schedule": "far",
+      "nextCount": 1,
+      "recentCount": 0
+    },
+    {
+      "id": "hourly",
+      "op": "scheduleCreate",
+      "idempotencyKey": "op-hourly-{{unique}}",
+      "write": {
+        "name": "operate-hourly-{{unique}}",
+        "spec": {
+          "cron": [
+            "0 * * * *"
+          ],
+          "timezone": "UTC"
+        },
+        "policies": {
+          "overlap": "ALLOW_ALL"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {
+            "kind": "hourly"
+          },
+          "nominalTimeField": "scheduledFor"
+        },
+        "paused": true
+      }
+    },
+    {
+      "id": "backfill",
+      "op": "scheduleBackfill",
+      "schedule": "hourly",
+      "start": "{{hour:-4}}",
+      "end": "{{hour:-2}}",
+      "overlap": "ALLOW_ALL",
+      "idempotencyKey": "op-backfill-{{unique}}"
+    },
+    {
+      "id": "backfill-acted",
+      "op": "awaitSchedule",
+      "schedule": "hourly",
+      "counter": "STARTED",
+      "atLeast": 2,
+      "timeoutMs": 60000
+    },
+    {
+      "id": "backfill-actions",
+      "op": "scheduleActions",
+      "schedule": "hourly",
+      "outcome": "STARTED"
+    },
+    {
+      "id": "backfills",
+      "op": "scheduleBackfills",
+      "schedule": "hourly"
+    },
+    {
+      "id": "backfill-again",
+      "op": "scheduleBackfill",
+      "schedule": "hourly",
+      "start": "{{hour:-4}}",
+      "end": "{{hour:-2}}",
+      "overlap": "ALLOW_ALL",
+      "idempotencyKey": "op-backfill2-{{unique}}"
+    },
+    {
+      "id": "already-acted",
+      "op": "awaitBackfill",
+      "schedule": "hourly",
+      "backfill": "backfill-again",
+      "state": "COMPLETED",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "after-backfills",
+      "op": "scheduleGet",
+      "schedule": "hourly",
+      "nextCount": 0,
+      "recentCount": 0
+    },
+    {
+      "id": "backfills-after",
+      "op": "scheduleBackfills",
+      "schedule": "hourly"
+    },
+    {
+      "id": "cancel-finished-backfill",
+      "op": "scheduleCancelBackfill",
+      "schedule": "hourly",
+      "backfill": "backfill"
+    },
+    {
+      "id": "future-range",
+      "op": "scheduleBackfill",
+      "schedule": "hourly",
+      "start": "{{hour:-1}}",
+      "end": "{{hour:2}}",
+      "idempotencyKey": "op-future-{{unique}}"
+    },
+    {
+      "id": "empty-range",
+      "op": "scheduleBackfill",
+      "schedule": "hourly",
+      "start": "{{hour:-2}}",
+      "end": "{{hour:-4}}",
+      "idempotencyKey": "op-empty-range-{{unique}}"
+    },
+    {
+      "id": "triggered-run",
+      "op": "get",
+      "run": "trigger-paused"
+    },
+    {
+      "id": "backfilled-run",
+      "op": "get",
+      "page": "backfill-actions",
+      "index": 0
+    },
+    {
+      "id": "prefixed",
+      "op": "scheduleCreate",
+      "idempotencyKey": "op-prefixed-{{unique}}",
+      "write": {
+        "name": "operate-prefixed-{{unique}}",
+        "spec": {
+          "cron": [
+            "0 * * * *"
+          ],
+          "timezone": "UTC"
+        },
+        "policies": {
+          "overlap": "ALLOW_ALL"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {
+            "kind": "prefixed"
+          },
+          "businessIdPrefix": "biz-{{unique}}",
+          "businessIdConflictPolicy": "USE_EXISTING",
+          "businessIdReusePolicy": "ALLOW_DUPLICATE_FAILED_ONLY"
+        },
+        "paused": true
+      }
+    },
+    {
+      "id": "prefixed-defaults",
+      "op": "scheduleCreate",
+      "idempotencyKey": "op-prefixed-defaults-{{unique}}",
+      "write": {
+        "name": "operate-prefixed-defaults-{{unique}}",
+        "spec": {
+          "cron": [
+            "0 * * * *"
+          ],
+          "timezone": "UTC"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {
+            "kind": "defaults"
+          },
+          "businessIdPrefix": "dflt-{{unique}}"
+        },
+        "paused": true
+      }
+    },
+    {
+      "id": "prefixed-invalid",
+      "op": "scheduleCreate",
+      "idempotencyKey": "op-prefixed-invalid-{{unique}}",
+      "write": {
+        "name": "operate-prefixed-invalid-{{unique}}",
+        "spec": {
+          "cron": [
+            "0 * * * *"
+          ],
+          "timezone": "UTC"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {},
+          "businessIdPrefix": "has space"
+        }
+      }
+    },
+    {
+      "id": "prefixed-policy-only",
+      "op": "scheduleCreate",
+      "idempotencyKey": "op-prefixed-policy-{{unique}}",
+      "write": {
+        "name": "operate-prefixed-policy-{{unique}}",
+        "spec": {
+          "cron": [
+            "0 * * * *"
+          ],
+          "timezone": "UTC"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {},
+          "businessIdConflictPolicy": "USE_EXISTING"
+        }
+      }
+    },
+    {
+      "id": "prefixed-trigger",
+      "op": "scheduleTrigger",
+      "schedule": "prefixed",
+      "idempotencyKey": "op-prefixed-trigger-{{unique}}"
+    },
+    {
+      "id": "prefixed-get",
+      "op": "scheduleGet",
+      "schedule": "prefixed",
+      "nextCount": 0,
+      "recentCount": 3
+    },
+    {
+      "id": "prefixed-run",
+      "op": "get",
+      "run": "prefixed-trigger"
+    }
+  ]
+}

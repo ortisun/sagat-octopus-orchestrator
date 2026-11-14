@@ -1,0 +1,28 @@
+{
+  "canonical": {
+    "plain": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"The workflow the schedules start; nobody serves its activity, so every run stays open.\",\"name\":\"operate-plain\"},\"nodes\":[{\"activity\":\"operate.work\",\"id\":\"work\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "plain": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "The workflow the schedules start; nobody serves its activity, so every run stays open.",
+        "name": "operate-plain"
+      },
+      "nodes": [
+        {
+          "activity": "operate.work",
+          "id": "work",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

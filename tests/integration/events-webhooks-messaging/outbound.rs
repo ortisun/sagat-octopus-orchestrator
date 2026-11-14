@@ -41,7 +41,7 @@ fn settings_for(url: &str) -> SubscriptionSettings {
 
 /// A subscription to `receiver`, stored directly: a receiver on loopback is not something an
 /// egress policy can allow, so the check the service makes on the destination would refuse it.
-async fn subscribe(w: &World, name: &str, receiver: &Receiver) -> SubscriptionRecord {
+pub(crate) async fn subscribe(w: &World, name: &str, receiver: &Receiver) -> SubscriptionRecord {
     subscribe_with(w, name, receiver, settings_for(&receiver.url)).await
 }
 

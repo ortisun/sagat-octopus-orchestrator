@@ -562,7 +562,7 @@ async fn runs_without_child_nodes_cause_no_child_work() {
 
 #[tokio::test]
 async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_candidate_was_read() {
-    use sagat_application::definitions::{Applied, Idempotency, IrCodec};
+    use sagat_application::definitions::{Idempotency, IrCodec};
     use sagat_application::execution::{ParentLink, RunInfo};
     use sagat_application::maintenance::MaintenanceStore;
     use sagat_application::runs::{NewRun, RunStore};
@@ -605,6 +605,7 @@ async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_can
     );
     let child = candidate.child;
     let new = NewRun {
+        business: None,
         schedule: None,
         retained: None,
         limits: sagat_application::quotas::RunLimits::UNLIMITED,
@@ -629,6 +630,7 @@ async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_can
             }),
             depth: 1,
             root: run,
+            business_id: None,
         },
         definition,
         input: candidate.input.clone(),
@@ -647,6 +649,8 @@ async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_can
             key: "child-start:c".into(),
             fingerprint: child.as_uuid().as_bytes().to_vec(),
         },
+        reset_sequence: None,
+        pending_reset: None,
     };
     let refused = w.store.create(new).await;
     assert!(
@@ -655,7 +659,7 @@ async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_can
             Err(sagat_application::error::StoreError::MissingReference)
         ),
         "{:?}",
-        refused.map(|applied| matches!(applied, Applied::Done(_)))
+        refused.map(|applied| matches!(applied, sagat_application::runs::Admitted::Created(_)))
     );
     assert!(
         w.run_record(child).await.is_none(),

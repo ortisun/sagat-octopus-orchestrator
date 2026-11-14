@@ -106,6 +106,192 @@ fn a_mistyped_schedule_setting_is_refused_not_guessed() {
 }
 
 #[test]
+fn batch_jobs_are_stored_but_run_nowhere_until_the_flag_is_set() {
+    let config = parse(&[]).expect("config");
+    assert!(!config.batches_enabled, "off by default");
+    assert_eq!(config.batches.batch, 100);
+    assert_eq!(config.batches.round_actions, 100);
+    assert_eq!(config.batch_poll, Duration::from_secs(1));
+
+    let on = parse(&[
+        ("SAGAT_BATCHES_ENABLED", "true"),
+        ("SAGAT_BATCHES_BATCH", "250"),
+        ("SAGAT_BATCHES_ROUND_ACTIONS", "1000"),
+        ("SAGAT_BATCHES_POLL_MS", "400"),
+    ])
+    .expect("config");
+    assert!(on.batches_enabled);
+    assert_eq!(on.batches.batch, 250);
+    assert_eq!(on.batches.round_actions, 1000);
+    assert_eq!(on.batch_poll, Duration::from_millis(400));
+}
+
+#[test]
+fn a_mistyped_batch_setting_is_refused_not_guessed() {
+    for (name, value) in [
+        ("SAGAT_BATCHES_ENABLED", "maybe"),
+        ("SAGAT_BATCHES_BATCH", "0"),
+        ("SAGAT_BATCHES_BATCH", "5001"),
+        ("SAGAT_BATCHES_ROUND_ACTIONS", "0"),
+        ("SAGAT_BATCHES_ROUND_ACTIONS", "1001"),
+        ("SAGAT_BATCHES_POLL_MS", "0"),
+        ("SAGAT_BATCHES_POLL_MS", "soon"),
+    ] {
+        let error = parse(&[(name, value)]).expect_err("refused");
+        assert!(
+            error.to_string().contains(name),
+            "{name}={value} was refused without naming the variable: {error}"
+        );
+    }
+}
+
+#[test]
+fn resets_that_wait_for_their_source_are_stored_but_completed_nowhere_until_the_flag_is_set() {
+    let config = parse(&[]).expect("config");
+    assert!(!config.reset_cancel_source_enabled, "off by default");
+    assert_eq!(config.resets.batch, 100);
+    assert_eq!(config.resets.per_tenant, 10);
+    assert_eq!(config.reset_poll, Duration::from_secs(1));
+    // it is not one of the other switches, and they are not it
+    assert!(!config.batches_enabled && !config.schedules_enabled);
+
+    let on = parse(&[
+        ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"),
+        ("SAGAT_RESET_CANCEL_SOURCE_BATCH", "250"),
+        ("SAGAT_RESET_CANCEL_SOURCE_PER_TENANT", "3"),
+        ("SAGAT_RESET_CANCEL_SOURCE_POLL_MS", "400"),
+    ])
+    .expect("config");
+    assert_eq!(on.resets.per_tenant, 3);
+    assert!(on.reset_cancel_source_enabled);
+    assert!(!on.batches_enabled && !on.schedules_enabled);
+    assert_eq!(on.resets.batch, 250);
+    assert_eq!(on.reset_poll, Duration::from_millis(400));
+    let top = parse(&[("SAGAT_RESET_CANCEL_SOURCE_BATCH", "1000")]).expect("config");
+    assert_eq!(top.resets.batch, 1000);
+}
+
+#[test]
+fn a_mistyped_reset_setting_is_refused_not_guessed() {
+    for (name, value) in [
+        ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "maybe"),
+        ("SAGAT_RESET_CANCEL_SOURCE_BATCH", "0"),
+        ("SAGAT_RESET_CANCEL_SOURCE_BATCH", "1001"),
+        ("SAGAT_RESET_CANCEL_SOURCE_BATCH", "many"),
+        ("SAGAT_RESET_CANCEL_SOURCE_PER_TENANT", "0"),
+        ("SAGAT_RESET_CANCEL_SOURCE_PER_TENANT", "1001"),
+        ("SAGAT_RESET_CANCEL_SOURCE_PER_TENANT", "all"),
+        ("SAGAT_RESET_CANCEL_SOURCE_POLL_MS", "0"),
+        ("SAGAT_RESET_CANCEL_SOURCE_POLL_MS", "soon"),
+    ] {
+        let error = parse(&[(name, value)]).expect_err("refused");
+        assert!(
+            error.to_string().contains(name),
+            "{name}={value} was refused without naming the variable: {error}"
+        );
+    }
+}
+
+/// The window of the expiry of a reset that waits (D2059, OD-2026-11-08-1): a day unless set, an hour to seven days
+/// accepted, both ends included.
+#[test]
+fn a_reset_that_waits_expires_after_a_day_unless_the_deployment_sets_a_window_from_an_hour_to_seven_days()
+ {
+    const NAME: &str = "SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS";
+    let hour = 3_600;
+    let week = 7 * 24 * 3_600;
+    assert_eq!(
+        parse(&[]).expect("config").resets.expiry,
+        Duration::from_secs(24 * 3_600),
+        "a day by default"
+    );
+    // empty is unset, as for every other setting
+    assert_eq!(
+        parse(&[(NAME, "")]).expect("config").resets.expiry,
+        Duration::from_secs(24 * 3_600)
+    );
+    for (given, held) in [
+        ("3600", hour),
+        ("3601", hour + 1),
+        ("5400", 5_400),
+        ("86400", 24 * 3_600),
+        (" 7200 ", 7_200),
+        ("604799", week - 1),
+        ("604800", week),
+    ] {
+        let config = parse(&[(NAME, given)]).expect("config");
+        assert_eq!(
+            config.resets.expiry,
+            Duration::from_secs(held),
+            "{NAME}={given}"
+        );
+    }
+    // the window does not move the other settings of the pass, and they do not move it
+    let tuned = parse(&[
+        ("SAGAT_RESET_CANCEL_SOURCE_BATCH", "7"),
+        ("SAGAT_RESET_CANCEL_SOURCE_PER_TENANT", "2"),
+    ])
+    .expect("config");
+    assert_eq!(tuned.resets.expiry, Duration::from_secs(24 * 3_600));
+    let wide = parse(&[(NAME, "7200")]).expect("config");
+    assert_eq!((wide.resets.batch, wide.resets.per_tenant), (100, 10));
+    // the flag is not what sets it, and turning the pass off does not change what the window reads
+    let on = parse(&[("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true")]).expect("config");
+    assert_eq!(on.resets.expiry, Duration::from_secs(24 * 3_600));
+}
+
+#[test]
+fn a_window_outside_an_hour_to_seven_days_or_not_a_whole_number_of_seconds_refuses_to_start_naming_the_variable()
+ {
+    const NAME: &str = "SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS";
+    for given in [
+        "0",
+        "1",
+        "3599",
+        "604801",
+        "31536000",
+        "-3600",
+        "24h",
+        "1d",
+        "86400s",
+        "1.5",
+        "86400.0",
+        "soon",
+        "99999999999999999999999",
+    ] {
+        let error = parse(&[(NAME, given)]).expect_err(given);
+        assert!(
+            error.to_string().contains(NAME),
+            "{NAME}={given} was refused without naming the variable: {error}"
+        );
+    }
+    // an out-of-range value is a refusal and not a clamp: the message says the bounds
+    let message = parse(&[(NAME, "3599")]).expect_err("too short").to_string();
+    assert!(
+        message.contains("3600") && message.contains("604800"),
+        "{message}"
+    );
+    // it refuses even where the pass is off: a deployment that sets a window means it
+    assert!(parse(&[(NAME, "60"), ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "false")]).is_err());
+}
+
+#[test]
+fn the_usage_lists_the_settings_of_the_pass_that_completes_pending_resets() {
+    for variable in [
+        "SAGAT_RESET_CANCEL_SOURCE_ENABLED",
+        "SAGAT_RESET_CANCEL_SOURCE_BATCH",
+        "SAGAT_RESET_CANCEL_SOURCE_PER_TENANT",
+        "SAGAT_RESET_CANCEL_SOURCE_POLL_MS",
+        "SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS",
+    ] {
+        assert!(
+            cli::USAGE.contains(variable),
+            "--help does not mention {variable}"
+        );
+    }
+}
+
+#[test]
 fn worker_budgets_are_larger_than_the_rest_api_s_but_finite() {
     let config = parse(&[]).expect("config");
     assert!(config.rate_limit.per_second >= 1000.0 && config.rate_limit.per_second.is_finite());
@@ -812,5 +998,244 @@ fn redis_settings_refuse_plaintext_production_and_invalid_bounds() {
         let mut config = vec![("SAGAT_EVENT_TRANSPORT", "redis")];
         config.extend(extra);
         assert!(parse(&config).is_err());
+    }
+}
+
+// ------------------------------------------------------------------- which optional passes run (D2009)
+
+#[test]
+fn the_pass_that_completes_resets_is_absent_unless_the_operator_turned_it_on() {
+    use sagat_execution_engine::settings::{
+        PASS_BATCHES, PASS_RESETS, PASS_SCHEDULES, optional_passes,
+    };
+    // nothing is on by default: the engine runs none of the three
+    assert_eq!(
+        optional_passes(&parse(&[]).expect("config")),
+        Vec::<&str>::new()
+    );
+    // each is on by its own variable and by no other
+    for (variable, pass) in [
+        ("SAGAT_SCHEDULES_ENABLED", PASS_SCHEDULES),
+        ("SAGAT_BATCHES_ENABLED", PASS_BATCHES),
+        ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", PASS_RESETS),
+    ] {
+        assert_eq!(
+            optional_passes(&parse(&[(variable, "true")]).expect("config")),
+            [pass],
+            "{variable}"
+        );
+        // and off said out loud is off
+        assert!(
+            optional_passes(&parse(&[(variable, "false")]).expect("config")).is_empty(),
+            "{variable}"
+        );
+    }
+    // the settings of the pass alone do not turn it on
+    let tuned = parse(&[
+        ("SAGAT_RESET_CANCEL_SOURCE_BATCH", "5"),
+        ("SAGAT_RESET_CANCEL_SOURCE_PER_TENANT", "2"),
+        ("SAGAT_RESET_CANCEL_SOURCE_POLL_MS", "50"),
+    ])
+    .expect("config");
+    assert!(!optional_passes(&tuned).contains(&PASS_RESETS));
+    // all three, in the order the engine starts them
+    let all = parse(&[
+        ("SAGAT_SCHEDULES_ENABLED", "true"),
+        ("SAGAT_BATCHES_ENABLED", "true"),
+        ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"),
+    ])
+    .expect("config");
+    assert_eq!(
+        optional_passes(&all),
+        [PASS_SCHEDULES, PASS_BATCHES, PASS_RESETS]
+    );
+}
+
+/// The expiry of a reset that waits is a step of the reset pass, not a pass of its own (D2080): the flag governs the
+/// completion and the expiry together. With it off in an engine nothing there expires an entry, however the window is set,
+/// so an entry accepted while some engine had the flag on holds its place until an engine with the flag on runs (and
+/// every entry older than the window then expires, a few at a time). The runbook says it; this is the test that no
+/// other path exists.
+#[test]
+fn with_the_flag_off_the_engine_runs_no_pass_that_expires_a_reset_either() {
+    use sagat_execution_engine::settings::{
+        PASS_BATCHES, PASS_RESETS, PASS_SCHEDULES, optional_passes,
+    };
+    const FLAG: &str = "SAGAT_RESET_CANCEL_SOURCE_ENABLED";
+    const WINDOW: &str = "SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS";
+    // a window set, the flag not: the window is read (a deployment that sets it means it) and starts nothing
+    for off in [
+        vec![(WINDOW, "3600")],
+        vec![(WINDOW, "3600"), (FLAG, "false")],
+    ] {
+        let config = parse(&off).expect("config");
+        assert!(!config.reset_cancel_source_enabled, "{off:?}");
+        assert_eq!(config.resets.expiry, Duration::from_secs(3_600), "{off:?}");
+        assert!(
+            optional_passes(&config).is_empty(),
+            "nothing runs with the flag off, so nothing expires: {off:?}"
+        );
+    }
+    // the flag on: one pass, the one that completes and expires
+    let on = parse(&[(WINDOW, "3600"), (FLAG, "true")]).expect("config");
+    assert_eq!(optional_passes(&on), [PASS_RESETS]);
+    // there is no pass of the expiry besides it, whatever else is on
+    let everything = parse(&[
+        (FLAG, "true"),
+        (WINDOW, "7200"),
+        ("SAGAT_SCHEDULES_ENABLED", "true"),
+        ("SAGAT_BATCHES_ENABLED", "true"),
+    ])
+    .expect("config");
+    assert_eq!(
+        optional_passes(&everything),
+        [PASS_SCHEDULES, PASS_BATCHES, PASS_RESETS],
+        "three passes and no fourth that expires"
+    );
+}
+
+// ------------------------------------------------------------ no shipped manifest turns the switch on (ADR-0081)
+
+/// Every file under `dir`, depth first.
+fn files_under(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files_under(&path, found);
+        } else {
+            found.push(path);
+        }
+    }
+}
+
+/// The value a line gives `name`, when it gives one (`NAME=value`, `NAME: value`, `- name: NAME` is not one).
+fn value_given(line: &str, name: &str) -> Option<String> {
+    let after = line.split_once(name)?.1.trim_start();
+    let value = after
+        .strip_prefix('=')
+        .or_else(|| after.strip_prefix(':'))?;
+    let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+    // `${NAME:-default}` (or `${NAME-default}`) takes the value from the environment of whoever runs the stack and ships the
+    // default it names; `${NAME}` ships none. What a manifest sets is that default.
+    let value = match value.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
+        Some(interpolation) => interpolation
+            .split_once(":-")
+            .or_else(|| interpolation.split_once('-'))
+            .map_or("", |(_, default)| default),
+        None => value,
+    };
+    Some(
+        value
+            .trim_matches(|c| c == '"' || c == '\'')
+            .to_ascii_lowercase(),
+    )
+}
+
+/// The lines under `root` that give the reset switch a value other than off, as `path:line: text`, and how many files were read.
+fn lines_that_turn_the_reset_switch_on(root: &std::path::Path) -> (usize, Vec<String>) {
+    let mut files = Vec::new();
+    files_under(root, &mut files);
+    let scanned = files.len();
+    let mut on = Vec::new();
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (number, line) in text.lines().enumerate() {
+            if let Some(value) = value_given(line, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")
+                && !["", "false", "0", "no"].contains(&value.as_str())
+            {
+                on.push(format!("{}:{}: {line}", path.display(), number + 1));
+            }
+        }
+    }
+    (scanned, on)
+}
+
+#[test]
+fn no_shipped_manifest_turns_the_reset_switch_on() {
+    // Until the instance-capability registry exists the switch is an operator's act, engine first (ADR-0081): no
+    // compose file, chart or example of this repository may set it to anything but off.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../infra");
+    let (scanned, on) = lines_that_turn_the_reset_switch_on(&root);
+    assert!(scanned > 10, "the manifests were not found under {root:?}");
+    assert!(on.is_empty(), "a manifest turns the switch on: {on:#?}");
+}
+
+/// The scan itself, over a directory of its own: a manifest that takes the value from the environment and defaults it ON is
+/// found (the text `${X:-true}` is not "off"), one that defaults it off or gives none is not. Without this the guard above could
+/// stop flagging an interpolated default and the shipped manifests would still pass.
+#[test]
+fn the_scan_finds_a_manifest_that_defaults_the_reset_switch_on_and_passes_one_that_defaults_it_off()
+{
+    let dir = std::env::temp_dir().join(format!(
+        "sagat-manifest-scan-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(dir.join("nested")).expect("a scratch directory");
+    let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).expect("a manifest");
+    write(
+        "compose.yaml",
+        "services:\n  engine:\n    environment:\n      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-true}\n",
+    );
+    write(
+        "nested/off.yaml",
+        "      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-false}\n      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED}\n",
+    );
+    write("nested/.env", "SAGAT_RESET_CANCEL_SOURCE_ENABLED=\n");
+    write(
+        "nested/note.md",
+        "the engine does not have SAGAT_RESET_CANCEL_SOURCE_ENABLED on\n",
+    );
+    let (scanned, on) = lines_that_turn_the_reset_switch_on(&dir);
+    std::fs::remove_dir_all(&dir).expect("remove the scratch directory");
+    assert_eq!(scanned, 4);
+    assert_eq!(on.len(), 1, "{on:#?}");
+    assert!(on[0].contains("compose.yaml:4"), "{on:#?}");
+    assert!(on[0].contains(":-true}"), "{on:#?}");
+}
+
+#[test]
+fn a_line_that_gives_the_switch_a_value_is_read_as_one() {
+    let name = "SAGAT_RESET_CANCEL_SOURCE_ENABLED";
+    for (line, value) in [
+        ("SAGAT_RESET_CANCEL_SOURCE_ENABLED=true", Some("true")),
+        (
+            "  - SAGAT_RESET_CANCEL_SOURCE_ENABLED: \"True\"",
+            Some("true"),
+        ),
+        ("      SAGAT_RESET_CANCEL_SOURCE_ENABLED: 1", Some("1")),
+        ("SAGAT_RESET_CANCEL_SOURCE_ENABLED = false", Some("false")),
+        // a compose file that takes the value from the environment ships the default it names: that is what the manifest sets
+        (
+            "      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-false}",
+            Some("false"),
+        ),
+        (
+            "      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-true}",
+            Some("true"),
+        ),
+        (
+            "      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED-True}",
+            Some("true"),
+        ),
+        (
+            "      SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED}",
+            Some(""),
+        ),
+        (
+            "the engine does not have SAGAT_RESET_CANCEL_SOURCE_ENABLED on",
+            None,
+        ),
+        ("nothing here", None),
+    ] {
+        assert_eq!(value_given(line, name).as_deref(), value, "{line}");
     }
 }

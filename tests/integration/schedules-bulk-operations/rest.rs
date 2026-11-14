@@ -289,6 +289,107 @@ async fn the_list_is_newest_first_and_pages_by_cursor() {
     assert_eq!(status, 400, "{bad}");
 }
 
+/// The names of the schedules a listing returned, in order.
+fn names(page: &Value) -> Vec<String> {
+    page["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|s| s["name"].as_str().expect("name").to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_listing_can_be_narrowed_by_state_workflow_and_name_and_pages_keep_to_the_filter() {
+    let r = rig().await;
+    let other = r.p.publish("billing", &chain_ir("billing")).await;
+    let (status, made) =
+        r.p.rest(
+            Method::POST,
+            &r.schedules(),
+            Some(&body(&other, "billing-nightly")),
+        )
+        .await;
+    assert_eq!(status, 201, "{made}");
+    let resting = Rig::id(&r.create("reports-resting").await);
+    for n in 0..3 {
+        r.create(&format!("reports-{n}")).await;
+    }
+    let (status, paused) =
+        r.p.rest(
+            Method::POST,
+            &format!("{}/pause", r.schedule(&resting)),
+            Some(&json!({"note": "release freeze"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{paused}");
+
+    let listed = |query: String| {
+        let url = format!("{}?{query}", r.schedules());
+        let r = &r;
+        async move {
+            let (status, page) = r.p.rest(Method::GET, &url, None).await;
+            assert_eq!(status, 200, "{url}: {page}");
+            page
+        }
+    };
+    assert_eq!(
+        names(&listed("state=PAUSED".to_owned()).await),
+        ["reports-resting"]
+    );
+    assert_eq!(
+        names(&listed("state=ACTIVE".to_owned()).await),
+        ["reports-2", "reports-1", "reports-0", "billing-nightly"]
+    );
+    assert_eq!(
+        names(&listed(format!("workflowId={other}")).await),
+        ["billing-nightly"]
+    );
+    assert_eq!(
+        names(&listed("name=reports-r".to_owned()).await),
+        ["reports-resting"],
+        "a name is matched by its start"
+    );
+    assert_eq!(
+        names(&listed("name=reports-&state=ACTIVE&origin=API".to_owned()).await),
+        ["reports-2", "reports-1", "reports-0"],
+        "every part given has to hold"
+    );
+    assert!(
+        names(&listed("origin=TRIGGER".to_owned()).await).is_empty(),
+        "none of these is owned by a trigger"
+    );
+    assert!(
+        names(&listed(format!("workflowId={}&state=PAUSED", other)).await).is_empty(),
+        "the filters are ANDed"
+    );
+
+    // a page keeps to the filter and ends where the filtered listing ends
+    let first = listed("name=reports-&limit=2".to_owned()).await;
+    assert_eq!(names(&first), ["reports-2", "reports-1"]);
+    let cursor = first["nextCursor"].as_str().expect("a next page");
+    let second = listed(format!("name=reports-&limit=2&cursor={cursor}")).await;
+    assert_eq!(names(&second), ["reports-0", "reports-resting"]);
+    assert_eq!(second["nextCursor"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_filter_that_is_not_one_is_refused_in_words() {
+    let r = rig().await;
+    for query in [
+        "state=DELETED",
+        "state=active",
+        "origin=SOMEONE",
+        "workflowId=reports",
+        &format!("name={}", "n".repeat(129)),
+    ] {
+        let (status, refused) =
+            r.p.rest(Method::GET, &format!("{}?{query}", r.schedules()), None)
+                .await;
+        assert_eq!(status, 400, "{query}: {refused}");
+    }
+}
+
 #[tokio::test]
 async fn every_change_needs_an_idempotency_key() {
     let r = rig().await;
@@ -780,6 +881,10 @@ async fn a_backfill_is_asked_for_listed_and_stopped_over_http() {
         )
         .await;
     assert_eq!(status, 429, "{busy}");
+    assert_eq!(
+        busy["details"]["reason"], "BACKFILL_CONCURRENCY",
+        "the ceiling says which it is: {busy}"
+    );
 
     let cancel = format!("{backfills}/{backfill}/cancel");
     let (status, stopped) = r
@@ -859,4 +964,498 @@ async fn a_range_that_makes_no_sense_is_refused_and_the_roles_are_kept() {
             .await
             .expect("send");
     assert_eq!(response.status(), 404, "another tenant");
+}
+
+#[tokio::test]
+async fn the_runs_a_schedule_started_are_listed_by_it() {
+    let r = rig().await;
+    let first = Rig::id(&r.create("first").await);
+    let second = Rig::id(&r.create("second").await);
+    let run_of = |answer: &Value| answer["runId"].as_str().expect("a run").to_owned();
+    let (status, a) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &format!("{}/trigger", r.schedule(&first)),
+            "filter-key-0001",
+            None,
+        )
+        .await;
+    assert_eq!(status, 202, "{a}");
+    let (status, b) = r
+        .keyed(
+            HUMAN,
+            Method::POST,
+            &format!("{}/trigger", r.schedule(&second)),
+            "filter-key-0002",
+            None,
+        )
+        .await;
+    assert_eq!(status, 202, "{b}");
+    // and a run nobody scheduled
+    let (status, plain) =
+        r.p.rest(
+            Method::POST,
+            "/runs",
+            Some(&json!({"workflowId": r.workflow, "input": {}})),
+        )
+        .await;
+    assert_eq!(status, 202, "{plain}");
+
+    let listed = |query: String| {
+        let r = &r;
+        async move {
+            let (status, page) = r.p.rest(Method::GET, &format!("/runs?{query}"), None).await;
+            (status, page)
+        }
+    };
+    let ids = |page: &Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|run| run["runId"].as_str().expect("id").to_owned())
+            .collect()
+    };
+    let (status, page) = listed(format!("scheduleId={first}")).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(ids(&page), [run_of(&a)]);
+    let (status, page) = listed(format!("scheduleId={second}")).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(ids(&page), [run_of(&b)]);
+    let (_, everything) = listed(String::new()).await;
+    assert_eq!(
+        ids(&everything).len(),
+        3,
+        "the filter narrows, it does not replace"
+    );
+    // a schedule nobody has: no runs. one that is not an id: refused in words.
+    let (status, none) = listed(format!("scheduleId={}", uuid::Uuid::now_v7())).await;
+    assert_eq!(status, 200, "{none}");
+    assert!(ids(&none).is_empty());
+    let (status, refused) = listed("scheduleId=not-an-id".to_owned()).await;
+    assert_eq!(status, 422, "{refused}");
+}
+// --- the business-id prefix of the action (FR-018-016) and the batch selector by prefix (G2027) ---------------------
+
+fn with_action(workflow: &str, name: &str, action: Value) -> Value {
+    let mut doc = body(workflow, name);
+    let map = doc["action"].as_object_mut().expect("action");
+    for (key, value) in action.as_object().expect("fields") {
+        map.insert(key.clone(), value.clone());
+    }
+    doc
+}
+
+#[tokio::test]
+async fn the_prefix_and_the_policies_of_an_action_are_written_and_read_back_and_absent_when_there_is_none()
+ {
+    let r = rig().await;
+    let doc = with_action(
+        &r.workflow,
+        "orders",
+        json!({
+            "businessIdPrefix": "order",
+            "businessIdConflictPolicy": "USE_EXISTING",
+            "businessIdReusePolicy": "REJECT_DUPLICATE"
+        }),
+    );
+    let (status, created) = r.p.rest(Method::POST, &r.schedules(), Some(&doc)).await;
+    assert_eq!(status, 201, "{created}");
+    for (field, value) in [
+        ("businessIdPrefix", "order"),
+        ("businessIdConflictPolicy", "USE_EXISTING"),
+        ("businessIdReusePolicy", "REJECT_DUPLICATE"),
+    ] {
+        assert_eq!(created["action"][field], value, "{created}");
+    }
+    let id = Rig::id(&created);
+    let (_, described) =
+        r.p.rest(
+            Method::GET,
+            &format!("{}?nextCount=1", r.schedule(&id)),
+            None,
+        )
+        .await;
+    assert_eq!(described["action"]["businessIdPrefix"], "order");
+
+    // the prefix alone writes the defaults out
+    let (status, defaults) =
+        r.p.rest(
+            Method::POST,
+            &r.schedules(),
+            Some(&with_action(
+                &r.workflow,
+                "defaults",
+                json!({"businessIdPrefix": "plain"}),
+            )),
+        )
+        .await;
+    assert_eq!(status, 201, "{defaults}");
+    assert_eq!(defaults["action"]["businessIdConflictPolicy"], "FAIL");
+    assert_eq!(
+        defaults["action"]["businessIdReusePolicy"],
+        "ALLOW_DUPLICATE"
+    );
+
+    // it is in the list, and an update without it takes it away
+    let (_, listed) = r.p.rest(Method::GET, &r.schedules(), None).await;
+    assert!(
+        listed["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .any(|s| s["action"]["businessIdPrefix"] == "order")
+    );
+    let mut replacement = body(&r.workflow, "orders");
+    replacement["expectedRevision"] = json!(1);
+    let (status, updated) =
+        r.p.rest(Method::PUT, &r.schedule(&id), Some(&replacement))
+            .await;
+    assert_eq!(status, 200, "{updated}");
+    for field in [
+        "businessIdPrefix",
+        "businessIdConflictPolicy",
+        "businessIdReusePolicy",
+    ] {
+        assert!(updated["action"].get(field).is_none(), "{field}: {updated}");
+    }
+    // a schedule that never had one has none
+    let plain = r.create("no-prefix").await;
+    assert!(plain["action"].get("businessIdPrefix").is_none(), "{plain}");
+}
+
+#[tokio::test]
+async fn a_prefix_that_is_not_one_is_refused_with_its_place_and_never_echoed() {
+    let r = rig().await;
+    for (action, field) in [
+        (json!({"businessIdPrefix": ""}), "/action/businessIdPrefix"),
+        (
+            json!({"businessIdPrefix": "has space canary-text"}),
+            "/action/businessIdPrefix",
+        ),
+        (
+            json!({"businessIdPrefix": "caf\u{e9}-canary-text"}),
+            "/action/businessIdPrefix",
+        ),
+        (
+            json!({"businessIdPrefix": "o".repeat(161)}),
+            "/action/businessIdPrefix",
+        ),
+        (json!({"businessIdPrefix": 7}), "/action/businessIdPrefix"),
+        // a policy is for a prefix: without one it is refused, not dropped
+        (
+            json!({"businessIdConflictPolicy": "FAIL"}),
+            "/action/businessIdConflictPolicy",
+        ),
+        (
+            json!({"businessIdReusePolicy": "REJECT_DUPLICATE"}),
+            "/action/businessIdReusePolicy",
+        ),
+        (
+            json!({"businessIdPrefix": "order", "businessIdConflictPolicy": "TERMINATE_EXISTING"}),
+            "/action/businessIdConflictPolicy",
+        ),
+        (
+            json!({"businessIdPrefix": "order", "businessIdReusePolicy": "SOMETIMES"}),
+            "/action/businessIdReusePolicy",
+        ),
+    ] {
+        let doc = with_action(&r.workflow, "refused", action.clone());
+        let (status, refused) = r.p.rest(Method::POST, &r.schedules(), Some(&doc)).await;
+        assert_eq!(status, 422, "{action} -> {refused}");
+        assert_eq!(
+            reason(&refused),
+            "SCHEDULE_SPEC_INVALID",
+            "{action} -> {refused}"
+        );
+        assert_eq!(refused["details"]["field"], field, "{action} -> {refused}");
+        assert!(
+            !refused.to_string().contains("canary-text"),
+            "the prefix is not echoed: {refused}"
+        );
+    }
+    let (_, listed) = r.p.rest(Method::GET, &r.schedules(), None).await;
+    assert_eq!(listed["items"], json!([]), "nothing was stored");
+}
+
+#[tokio::test]
+async fn a_batch_preview_and_a_job_select_by_the_prefix_of_the_business_id_over_http() {
+    let r = rig().await;
+    let batches = format!("/namespaces/{}/batch-operations", r.namespace);
+    for id in ["lot-1", "lot-2", "other-1"] {
+        let (status, run) =
+            r.p.rest(
+                Method::POST,
+                "/runs",
+                Some(&json!({"workflowId": r.workflow, "input": {}, "businessId": id})),
+            )
+            .await;
+        assert_eq!(status, 202, "{run}");
+    }
+    let preview_of = |prefix: &'static str| {
+        let (p, url) = (&r.p, format!("{batches}/preview"));
+        async move {
+            p.rest(
+                Method::POST,
+                &url,
+                Some(&json!({"selector": {"filter": {"businessIdPrefix": prefix}}})),
+            )
+            .await
+        }
+    };
+    let (status, preview) = preview_of("lot-").await;
+    assert_eq!(status, 200, "{preview}");
+    assert_eq!(preview["matched"], 2, "{preview}");
+    let (status, none) = preview_of("nothing-").await;
+    assert_eq!(status, 200, "{none}");
+    assert_eq!(none["matched"], 0, "{none}");
+    // the characters of a pattern are not a pattern
+    let (status, wild) = preview_of("%").await;
+    assert_eq!(status, 200, "{wild}");
+    assert_eq!(wild["matched"], 0, "{wild}");
+    // a prefix that is not an identifier is a malformed selector
+    let (status, bad) = preview_of("has space").await;
+    assert_eq!(status, 422, "{bad}");
+    assert_eq!(reason(&bad), "BATCH_SELECTOR_INVALID", "{bad}");
+
+    let (status, job) =
+        r.p.rest(
+            Method::POST,
+            &batches,
+            Some(&json!({
+                "selector": {"filter": {"businessIdPrefix": "lot-"}},
+                "action": "CANCEL",
+                "reason": "cancel the runs of the lot"
+            })),
+        )
+        .await;
+    assert_eq!(status, 202, "{job}");
+    assert!(
+        !job.to_string().contains("lot-"),
+        "a read of a job never returns the selector: {job}"
+    );
+}
+#[tokio::test]
+async fn an_action_under_a_business_id_makes_its_run_under_the_id_and_a_held_id_is_a_decision_over_http()
+ {
+    use sagat_application::schedule_firing::Fired;
+    use time::format_description::well_known::Rfc3339;
+    use time::{Duration, OffsetDateTime};
+
+    use crate::support::schedules::fire_at;
+
+    let r = rig().await;
+    let doc = with_action(
+        &r.workflow,
+        "ordered",
+        json!({"businessIdPrefix": "order", "businessIdConflictPolicy": "FAIL"}),
+    );
+    let (status, created) = r.p.rest(Method::POST, &r.schedules(), Some(&doc)).await;
+    assert_eq!(status, 201, "{created}");
+    eprintln!("created action: {}", created["action"]);
+    let id = Rig::id(&created);
+    let next = OffsetDateTime::parse(created["nextActionAt"].as_str().expect("next"), &Rfc3339)
+        .expect("RFC 3339");
+    // two past times of the schedule: the id of each is the prefix, a dash and the time to the second in UTC, ending in Z
+    let (first, second) = (next - Duration::hours(2), next - Duration::hours(1));
+    let id_of = |nominal: OffsetDateTime| {
+        format!(
+            "order-{}",
+            nominal
+                .to_offset(time::UtcOffset::UTC)
+                .format(&Rfc3339)
+                .expect("a time")
+        )
+    };
+
+    // a person's open run holds the id of the first time
+    let (status, held) =
+        r.p.rest(
+            Method::POST,
+            "/runs",
+            Some(&json!({"workflowId": r.workflow, "input": {}, "businessId": id_of(first)})),
+        )
+        .await;
+    assert_eq!(status, 202, "{held}");
+    let holder = held["runId"].as_str().expect("a run").to_owned();
+
+    // the first time finds its id held: a recorded decision that names no run, and the schedule goes on
+    assert_eq!(
+        fire_at(&r.p.api, r.p.tenant, &id, first).await,
+        Fired::Acted
+    );
+    let (_, page) =
+        r.p.rest(Method::GET, &format!("{}/actions", r.schedule(&id)), None)
+            .await;
+    let conflict = page["items"][0].clone();
+    eprintln!("action that found its id held: {conflict}");
+    assert_eq!(conflict["outcome"], "BUSINESS_ID_CONFLICT", "{page}");
+    assert_eq!(conflict["reason"], "BUSINESS_ID_IN_USE", "{page}");
+    assert!(conflict["runId"].is_null(), "{page}");
+    assert_eq!(conflict["kind"], "SCHEDULED");
+
+    // the second time is free: its run is bound to the id, which the run and the binding say
+    assert_eq!(
+        fire_at(&r.p.api, r.p.tenant, &id, second).await,
+        Fired::Acted
+    );
+    let (_, page) =
+        r.p.rest(Method::GET, &format!("{}/actions", r.schedule(&id)), None)
+            .await;
+    let started = page["items"][0].clone();
+    eprintln!("action that started: {started}");
+    assert_eq!(started["outcome"], "STARTED", "{page}");
+    let run = started["runId"].as_str().expect("a run").to_owned();
+    let read = r.p.run(&run).await;
+    assert_eq!(read["businessId"], id_of(second).as_str(), "{read}");
+    eprintln!(
+        "the run: businessId {}, schedule {}",
+        read["businessId"], read["schedule"]
+    );
+    let binding_path = format!("/namespaces/{}/business-ids/{}", r.namespace, id_of(second));
+    let (status, binding) = r.p.rest(Method::GET, &binding_path, None).await;
+    assert_eq!(status, 200, "{binding}");
+    assert_eq!(binding["executionId"], run.as_str(), "{binding}");
+    assert_eq!(binding["open"], true);
+    // the holder of the first id is untouched
+    let (_, binding) =
+        r.p.rest(
+            Method::GET,
+            &format!("/namespaces/{}/business-ids/{}", r.namespace, id_of(first)),
+            None,
+        )
+        .await;
+    assert_eq!(binding["executionId"], holder.as_str(), "{binding}");
+    let (_, described) = r.p.rest(Method::GET, &r.schedule(&id), None).await;
+    assert_eq!(
+        described["counters"],
+        json!({"BUSINESS_ID_CONFLICT": 1, "STARTED": 1}),
+        "{described}"
+    );
+}
+/// A job that failed to select is read over HTTP with the reason `SELECTION_FAILED` and nothing else of the failure: the body has
+/// the very fields of a job that has not failed (no count, no backoff, no cause), and no selector (G2093, D2197).
+#[tokio::test]
+async fn a_job_whose_selection_failed_is_read_with_its_reason_and_nothing_else_of_the_failure() {
+    use sagat_application::batch::DueJob;
+    use sagat_application::batch_executor::{
+        BatchExecutor, ExecutorSettings, ItemActions, ItemEffect, ItemRequest, Stepped,
+    };
+    use sagat_application::clock::SystemClock;
+    use sagat_application::error::AppError;
+    use sagat_infra_postgres::{PgBatchStore, PgIdentityStore};
+
+    use crate::batch_selection_failures::{break_selection_on, the_backoff_ends_on};
+
+    /// The action of a job that never selects a run: nothing calls it.
+    #[derive(Clone)]
+    struct Never;
+
+    impl ItemActions for Never {
+        async fn apply(&self, _: &ItemRequest<'_>) -> Result<ItemEffect, AppError> {
+            Err(AppError::Internal)
+        }
+    }
+
+    let r = rig().await;
+    let batches = format!("/namespaces/{}/batch-operations", r.namespace);
+    // a run the prefix reaches, so that a round has an item to insert (the statement the test makes fail)
+    let (status, run) =
+        r.p.rest(
+            Method::POST,
+            "/runs",
+            Some(&json!({"workflowId": r.workflow, "input": {}, "businessId": "lot-1"})),
+        )
+        .await;
+    assert_eq!(status, 202, "{run}");
+    let (status, made) =
+        r.p.rest(
+            Method::POST,
+            &batches,
+            Some(&json!({
+                "selector": {"filter": {"businessIdPrefix": "lot-"}},
+                "action": "CANCEL",
+                "reason": "cancel the runs of the lot"
+            })),
+        )
+        .await;
+    assert_eq!(status, 202, "{made}");
+    let id: Uuid = made["batchId"]
+        .as_str()
+        .expect("an id")
+        .parse()
+        .expect("a UUID");
+    let keys = |body: &Value| -> Vec<String> {
+        body.as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect()
+    };
+    let of_a_job_that_has_not_failed = keys(&made);
+
+    // its selection fails until the platform gives up, with the executor over the pool the API uses
+    let owner = r.p.api.db.pool.clone();
+    break_selection_on(&owner, id).await;
+    let pool = r.p.api.api_pool.clone();
+    let executor = BatchExecutor::new(
+        PgBatchStore::new(pool.clone()),
+        Never,
+        PgIdentityStore::new(pool),
+        SystemClock,
+        ExecutorSettings::default(),
+    );
+    let job = DueJob {
+        tenant_id: r.p.tenant,
+        id,
+    };
+    let give_up = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    let mut recorded = 0;
+    loop {
+        assert!(
+            std::time::Instant::now() < give_up && recorded <= 11,
+            "the job {id} did not fail in time: {recorded} failed rounds recorded, and the eleventh ends it"
+        );
+        match executor.step(&job, None).await.expect("step") {
+            Stepped::Acted => break,
+            Stepped::Backoff => {
+                recorded += 1;
+                the_backoff_ends_on(&owner, id).await;
+            }
+            // its selection waits for a transaction of the whole server
+            _ => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+        }
+    }
+    assert_eq!(
+        recorded, 10,
+        "ten failed rounds were survived and the eleventh ended the job"
+    );
+
+    let (status, read) =
+        r.p.rest(Method::GET, &format!("{batches}/{id}"), None)
+            .await;
+    assert_eq!(status, 200, "{read}");
+    assert_eq!(read["state"], "FAILED", "{read}");
+    assert_eq!(read["failureReason"], "SELECTION_FAILED", "{read}");
+    assert_eq!(
+        keys(&read),
+        of_a_job_that_has_not_failed,
+        "no field is added by the failure: no count, no backoff, no cause: {read}"
+    );
+    assert!(
+        !read.to_string().contains("lot-"),
+        "a read of a job never returns the selector: {read}"
+    );
+    let (status, listed) = r.p.rest(Method::GET, &batches, None).await;
+    assert_eq!(status, 200, "{listed}");
+    assert_eq!(
+        listed["items"][0]["failureReason"], "SELECTION_FAILED",
+        "{listed}"
+    );
+    assert_eq!(
+        keys(&listed["items"][0]),
+        of_a_job_that_has_not_failed,
+        "and the list says no more: {listed}"
+    );
 }

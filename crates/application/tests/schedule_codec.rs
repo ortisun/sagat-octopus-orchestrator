@@ -408,3 +408,56 @@ fn a_target_needs_a_workflow_and_refuses_what_it_does_not_know() {
         CodecReason::Invalid(ScheduleError::BadBusinessIdPrefix)
     );
 }
+#[test]
+fn a_target_refused_for_its_prefix_says_which_field_and_a_policy_needs_a_prefix() {
+    let workflow = WorkflowId::generate().to_string();
+    for (field, document) in [
+        (
+            "action.businessIdPrefix",
+            json!({"workflowId": workflow, "businessIdPrefix": ""}),
+        ),
+        (
+            "action.businessIdPrefix",
+            json!({"workflowId": workflow, "businessIdPrefix": "o".repeat(161)}),
+        ),
+        (
+            "action.nominalTimeField",
+            json!({"workflowId": workflow, "nominalTimeField": "has space"}),
+        ),
+        (
+            "action.runTimeoutMs",
+            json!({"workflowId": workflow, "runTimeoutMs": 5}),
+        ),
+    ] {
+        let err = failure(target_from_json(&document));
+        assert_eq!(err.path, field, "{document}");
+    }
+    // a policy without the prefix it is the policy of is refused, never dropped
+    for (field, document) in [
+        (
+            "action.businessIdConflictPolicy",
+            json!({"workflowId": workflow, "businessIdConflictPolicy": "USE_EXISTING"}),
+        ),
+        (
+            "action.businessIdReusePolicy",
+            json!({"workflowId": workflow, "businessIdReusePolicy": "REJECT_DUPLICATE"}),
+        ),
+    ] {
+        let err = failure(target_from_json(&document));
+        assert_eq!(
+            (err.path.as_str(), err.reason),
+            (field, CodecReason::Unexpected)
+        );
+    }
+    // and a target without any of them is as it was
+    let plain = target_from_json(&json!({"workflowId": workflow})).expect("target");
+    assert!(plain.business_id().is_none());
+    let json = target_to_json(&plain);
+    for key in [
+        "businessIdPrefix",
+        "businessIdConflictPolicy",
+        "businessIdReusePolicy",
+    ] {
+        assert!(json.get(key).is_none(), "{key}");
+    }
+}

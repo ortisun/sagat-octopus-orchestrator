@@ -1,8 +1,17 @@
 export { SagatClient, TERMINAL_STATUSES, toRun } from './client.js';
 export type {
-  ApprovalDecision, ApprovalDecisionOptions, ApprovalDecisionReceipt, ApprovalListItem, ApprovalListOptions, ApprovalPage, ApprovalScope, ApprovalStatus, CallOptions, ChainCommandOptions, ChainFinalOutcome, ChainInspection, ChainQueryOptions, ChainRun, ChainRunListOptions, ChainRunPage, ChainSegment, ChainUpdateOptions, EventAccepted, JournalEvent, ListOptions, OperationResult, PublishEventInput, QueryOptions, QueryResult, Run, RunChainSegment, RunPage, SegmentCompletionKind,
+  ApprovalDecision, ApprovalDecisionOptions, ApprovalDecisionReceipt, ApprovalListItem, ApprovalListOptions, ApprovalPage, ApprovalScope, ApprovalStatus, CallOptions, ChainCommandOptions, ChainFinalOutcome, ChainInspection, ChainQueryOptions, ChainRun, ChainRunListOptions, ChainRunPage, ChainSegment, ChainUpdateOptions, EventAccepted, JournalEvent, ListOptions, OperationResult, PublishEventInput, QueryOptions, QueryResult, Run, RunChainSegment, RunPage, RunResetFrom, RunSchedule, SegmentCompletionKind,
   RunStatus, SignalResult, StartOptions, UpdateOptions, UpdateReceipt, WaitOptions,
 } from './client.js';
+export type { StartedRun } from './client.js';
+export { BatchOperations, BusinessIds, Schedules } from './operations.js';
+export type {
+  BatchItem, BatchJob, BatchPreview, BatchRequest, BatchSelector, BusinessIdBinding, BusinessIdConflictPolicy, BusinessIdReusePolicy,
+  MutationOptions, OverlapPolicy, Page, PageOptions, ReadOptions, Reset, ResetPlan, ResetPoint, ResetRequest, Schedule, ScheduleAction,
+  ScheduleActionFilter, ScheduleActionRecord, ScheduleBackfill, ScheduleCalendarSpec, ScheduleDescription, ScheduleListFilter,
+  SchedulePolicies, ScheduleRange, ScheduleSpec, ScheduleWrite, SignalWithStartResult, UpdateWithStartReceipt, UpdateWithStartResult,
+  WithStartOptions,
+} from './operations.js';
 export { PROTOCOL_VERSION, SDK_VERSION, safeLogger, silentLogger, warnIfNotSecure } from './config.js';
 export type { ClientConfig, Logger, TlsOptions, TokenSource } from './config.js';
 export { MAX_WAIT_MS, SagatError, codeOfHttpStatus, isRetriable, remediationOf, retryableByDefault } from './errors.js';

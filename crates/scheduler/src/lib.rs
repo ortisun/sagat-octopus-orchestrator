@@ -11,16 +11,20 @@
 //! The [`OutboxDispatcher`] is the other half: it moves committed outbox messages to the broker,
 //! at-least-once, so a lost wake-up costs latency but never correctness.
 
+mod batches;
 mod deliveries;
 mod events;
 mod fairness;
 mod monitor;
 mod outbox;
 mod passes;
+mod resets;
 mod schedules;
 mod shards;
 mod telemetry;
+mod trigger_schedules;
 
+pub use batches::{BatchPass, BatchRound, BatchSettings};
 pub use deliveries::{DeliveryRound, DeliverySettings, DeliveryWorker};
 pub use events::{EventDispatchSettings, EventDispatcher, EventRound};
 pub use fairness::{DEFAULT_WEIGHT, ROUNDS, Selection, Weights, rest, rest_after, select, share};
@@ -30,8 +34,10 @@ pub use passes::{
     CollectionAdvance, CollectionAdvanceError, ContinuationAdvanceError, LoopAdvance,
     LoopAdvanceError, Report, Scheduler, SchedulerSettings,
 };
+pub use resets::{Backoff, ResetPass, ResetRound, ResetSettings, delay_after};
 pub use schedules::{SchedulePass, ScheduleRound, ScheduleSettings};
 pub use shards::{Keeper, KeeperSettings, Placement, Round, Snapshot};
 pub use telemetry::{
     ProjectionRound, ProjectorSettings, TelemetryProjector, state as projection_state,
 };
+pub use trigger_schedules::{TriggerPass, TriggerRound, TriggerSettings};

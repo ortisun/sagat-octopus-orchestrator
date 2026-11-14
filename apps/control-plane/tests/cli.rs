@@ -52,6 +52,7 @@ fn help_documents_every_serve_setting() {
         "SAGAT_SUBJECT_RATE_LIMIT_BURST",
         "SAGAT_MAX_IN_FLIGHT_PER_TENANT",
         "SAGAT_BODY_IDLE_TIMEOUT_SECS",
+        "SAGAT_RESET_CANCEL_SOURCE_ENABLED",
     ] {
         assert!(
             help.contains(variable),

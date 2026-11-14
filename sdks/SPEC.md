@@ -166,6 +166,80 @@ Rules:
   `startWithBlob` sends only its id and uses the normal run-start idempotency key; `input` and
   `inputBlobRef` are never sent together. Uploading alone does not start a run.
 
+### 3.1 Schedules, business identifiers, batch jobs, the with-start calls and reset (feature 018)
+
+Names are given in TypeScript style; each SDK uses its own casing. The operations are groups on the client
+(`schedules`, `batch`, `businessIds`) and methods of it. The request/answer shapes are those of the REST contract
+(`openapi.yaml`, tags Schedules, Batch operations, Runs, Operations); the scenarios are
+`tests/contract/sdk-conformance/scenarios/{schedules-crud,schedules-operate,schedules-overlap,business-ids,start-delay,signal-with-start,update-with-start,batch-operations,reset}.json`.
+
+| Operation | Request | Success |
+|---|---|---|
+| `schedules.create(namespaceId, write, options)` | `POST /namespaces/{ns}/schedules`, `Idempotency-Key` | `201` Schedule |
+| `schedules.get(namespaceId, id, {nextCount, recentCount})` | `GET …/schedules/{id}?nextCount=&recentCount=` | `200` ScheduleDescription |
+| `schedules.list(namespaceId, filter)`, `listAll` | `GET …/schedules?state=&origin=&workflowId=&name=&limit=&cursor=` | page; `listAll` follows opaque cursors |
+| `schedules.update(namespaceId, id, write, expectedRevision, options)` | `PUT …/schedules/{id}` with the write and `expectedRevision`, `Idempotency-Key` | `200` Schedule |
+| `schedules.delete(namespaceId, id, expectedRevision, options)` | `DELETE …/schedules/{id}?expectedRevision=`, `Idempotency-Key` | `204` empty |
+| `schedules.pause / resume(namespaceId, id, note, options)` | `POST …/schedules/{id}/pause` / `…/resume` with `{note}`, `Idempotency-Key` | `200` Schedule |
+| `schedules.trigger(namespaceId, id, {overlap}, options)` | `POST …/schedules/{id}/trigger` with `{}` or `{overlap}`, `Idempotency-Key` | `202` ScheduleActionRecord |
+| `schedules.backfill(namespaceId, id, start, end, {overlap}, options)`, `cancelBackfill`, `listBackfills` | `POST …/backfills` with `{start, end, overlap?}`; `POST …/backfills/{b}/cancel`; `GET …/backfills` | `202` / `200` ScheduleBackfill |
+| `schedules.listActions(namespaceId, id, {outcome, limit, cursor})` | `GET …/schedules/{id}/actions` | page of ScheduleActionRecord |
+| `businessIds.get(namespaceId, businessId)` | `GET /namespaces/{ns}/business-ids/{businessId}` | `200` BusinessIdBinding |
+| `start(…, {businessId, businessIdConflictPolicy, businessIdReusePolicy, startDelay})` | `POST /runs` as before plus the new fields | `202` Run, or `200` the run that already held the identifier |
+| `signalWithStart(workflow, businessId, input, signalName, payload, options)` | `POST /runs/signal-with-start` with `{workflowId, businessId, input, signal: {name, payload}, …}`, `Idempotency-Key` | `202` `{runId, started, deliveredTo}` |
+| `updateWithStart(workflow, businessId, input, updateName, updateKey, args, options)` | `POST /runs/update-with-start` with `{…, update: {name, updateKey, args, expectedStateRevision?}}`, `Idempotency-Key` | `200` `{runId, started, update: {outcome, receipt \| reason}}` |
+| `batch.preview(namespaceId, selector, maxItems)` | `POST …/batch-operations/preview` | `200` BatchPreview |
+| `batch.create / get / list / cancel / listItems` | `…/batch-operations…`, `Idempotency-Key` on the writes | BatchJob / page |
+| `resetPoints(runId)`, `previewReset(runId, sequence, reapply)`, `reset(runId, request, options)`, `listResets`, `getReset` | `GET /runs/{id}/reset-points`, `POST …/reset-previews`, `POST …/resets` (`Idempotency-Key`), `GET …/resets`, `GET …/resets/{resetId}` | ResetPoint page / ResetPlan / Reset |
+
+Rules:
+
+- Every call that changes something carries one `Idempotency-Key` (8 to 160 visible ASCII characters), given or
+  generated once per call and kept by every retry. `updateWithStart` also requires the caller's `updateKey` (1 to 128).
+- A business identifier is sent **as given** in `start`, `signalWithStart` and `updateWithStart`: no trimming, no case
+  folding and no local pattern check, so the server's `BUSINESS_ID_INVALID` is what every language reads.
+  `businessIds.get` percent-encodes it in the path and refuses locally (`VALIDATION_FAILED`, nothing sent) only what is
+  not 1 to 200 visible ASCII characters and an identifier that is exactly `.` or `..`: every URL resolver (also for
+  `%2E`) takes a whole dot segment as a step in the path, so the request would reach another route. An identifier that
+  merely contains dots is valid.
+- `start` says whether it created the run: `started` is true for `202` and false for the `200` of `USE_EXISTING`. An
+  SDK that never sends a conflict policy never sees the `200`. Where the language cannot widen the type `start` already
+  returns (Java: `Run` is a final record), `start` keeps answering the `Run` and `startResult` answers the pair. A `Run` carries `businessId` and `startDelayedUntil` when
+  the server sent them.
+- A `Run` says where it came from, when the server says so: `schedule` (`{scheduleId, nominalTime, kind, revision}`: the schedule action
+  that started it, `kind` being the kind of the action, `SCHEDULED`, `TRIGGERED` or `BACKFILL`, or another string kept as sent) and
+  `resetFrom` (`{runId, sequence}`: the run a reset made it from and the journal sequence it keeps). Both are absent/null/None/nil for a run
+  that has none, read strictly (a `schedule` that is not an object, lacks `scheduleId` or `kind`, has an unreadable `nominalTime` or a
+  `revision` below 1, and a `resetFrom` without `runId` or with a `sequence` below 1, is the SDK's `PROTOCOL` error, never a run with half of
+  it), and an instant keeps the language's native precision (the server writes microseconds). The conformance observation of a `Run` carries the
+  two objects only when the run has them, so the observations of every other run are what they were.
+- The action of a schedule may name a business-id prefix (FR-018-016): `businessIdPrefix` (a string), `businessIdConflictPolicy` and
+  `businessIdReusePolicy` (the two policies of `start`), optional on the schedule write (create and update) and on the `action` of what is
+  read back. **Absent means absent**: a write that sets none of them sends none of the three keys (not `null`, not empty), and a schedule whose
+  action has none reads back with none (null, None, nil). The prefix is customer text and is sent **as given**, like a business id: no
+  trimming, no case folding, no local pattern or length check (the platform answers `VALIDATION_FAILED`, reason `SCHEDULE_SPEC_INVALID`, for
+  one that is not 1 to 160 visible ASCII characters and for a policy without a prefix), and it never appears in a log line, a span, a metric
+  label or an error text an SDK writes, nor in the debug text of the types that hold it. The values of the two policies on a read are kept as the
+  string the platform sent. The outcomes of a schedule action record that a prefix can make (`BUSINESS_ID_CONFLICT`; `ALREADY_ACTED` with the
+  `runId` of the run that held the id) and their reasons (`BUSINESS_ID_IN_USE`, `BUSINESS_ID_REUSE_REJECTED`) are kept as raw strings like
+  every other. The observation of a schedule's action carries the three keys **only when the value is present**, so the observations of
+  every schedule without a prefix are what they were.
+- The `businessIdPrefix` of a batch selector's filter (a literal prefix of the id the runs carry, 1 to 200 visible ASCII characters) is sent
+  as given in the same way; the platform counts and selects the runs it matches, and a prefix that matches nothing counts zero.
+- A start delay is a duration in the language's idiom, converted **once**, before the first attempt, to integer
+  milliseconds by truncation toward zero and sent as `startDelayMs`. Only a value that is not a finite number is
+  refused locally; the range (1 ms to 366 days) is the server's (`START_DELAY_INVALID`).
+- Instants sent (a schedule's `startAt` and `endAt`, a backfill's range, a batch filter's bounds) are written in UTC
+  (`…Z`); text that is not an instant is refused locally. Instants read are date-times.
+- A value of an enumeration this SDK does not know (`ScheduleActionOutcome`, a batch item state or reason, a reset point
+  kind) is kept as the raw string and is never an error.
+- Ids that become path segments (namespace, schedule, backfill, batch, reset, run) are UUIDs; `expectedRevision` is an
+  integer of 1 or more; a pause or resume note is not empty; a reset sequence is an integer of 1 or more. A refusal made
+  by the SDK is `VALIDATION_FAILED` and sends nothing.
+- A `REJECTED` outcome of `updateWithStart` (the validator said no, or the expected revision is stale) is an answer,
+  not an error: the run was started and the receipt is absent.
+- The input of a schedule is customer content: the SDK sends it and the server never returns it, only its digest.
+
 ## 4. Trace context, correlation, deadline
 
 - **traceparent.** An explicit `traceparent` option wins; otherwise the SDK uses the ambient trace

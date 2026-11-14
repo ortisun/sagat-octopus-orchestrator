@@ -1,5 +1,7 @@
 // Package client is the REST client of the Sagat Octopus Orchestrator (sdks/SPEC.md, section 3):
-// start, read, list, operate, cancel and signal runs, and publish events.
+// start, read, list, operate, cancel and signal runs, and publish events; and the surface of feature 018,
+// reached from the client: schedules (Client.Schedules), batch jobs (Client.Batch), business identifiers
+// (Client.BusinessIDs, and the options of Start, SignalWithStart and UpdateWithStart) and the reset of a run.
 //
 // A Client is safe for concurrent use. Every method takes a context first; cancelling it ends the
 // call with a *sagat.Error of code CANCELLED that wraps the context's error.
@@ -41,6 +43,14 @@ type Client struct {
 
 	mu    sync.Mutex
 	names map[string]nameEntry
+
+	// Schedules are created, read, changed and acted on here. Like the other groups, it is set by New and
+	// never changed.
+	Schedules *Schedules
+	// Batch creates, reads and cancels batch jobs over many runs.
+	Batch *BatchOperations
+	// BusinessIDs reads how a business identifier stands in a namespace.
+	BusinessIDs *BusinessIDs
 }
 
 type nameEntry struct {
@@ -133,6 +143,7 @@ func New(apiURL, namespace string, token sagat.TokenSource, opts ...Option) (*Cl
 	if cfg.userAgent != "" {
 		c.userAgent += " " + cfg.userAgent
 	}
+	c.Schedules, c.Batch, c.BusinessIDs = &Schedules{c}, &BatchOperations{c}, &BusinessIDs{c}
 	c.logger = safelog.New(c.logger)
 	// A redirect is never followed (sdks/SPEC.md, section 1): a Location can point anywhere, and the request
 	// carries a bearer token, the namespace and an idempotency key. A client the caller supplied is

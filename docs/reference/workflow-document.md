@@ -637,6 +637,7 @@ string
 |---|---|---|---|
 | `argsSchema` | object | yes |  |
 | `disclosure` | `"declared-business-result-v1"` | yes |  |
+| `reapplyOnReset` | boolean |  | When true, the canonical arguments of every applied instance of this Update are retained as a content-addressed payload referenced by its state.updated journal row (charged to tenant_content_bytes), so a reset with reapply UPDATES or ALL can re-validate and re-apply it. Absent means false: the arguments are not retained and a reset reports the Update NOT_REAPPLIED (NOT_RETAINED). Not a classification carrier (FR-016-004). A new publication is refused unless the server's resetReapply capability is enabled (ADR-0032). |
 | `result` | [`expression`](#expression) | yes |  |
 | `resultSchema` | [`resultSchema`](#resultSchema) | yes |  |
 | `state` | [`expression`](#expression) | yes |  |

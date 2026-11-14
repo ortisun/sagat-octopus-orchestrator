@@ -11,6 +11,7 @@
 //! breaking, `5` differences (`diff --check`).
 
 pub mod args;
+mod batch;
 pub mod client;
 mod dev;
 pub mod diagnostics;
@@ -20,12 +21,15 @@ pub mod manifest;
 pub mod mocks;
 pub mod new;
 mod remote;
+mod reset;
 mod reveal;
+mod schedule;
 mod script;
 mod sync;
 pub mod telemetry;
 mod validate;
 mod versions;
+mod with_start;
 mod worker;
 mod workflow;
 
@@ -400,6 +404,7 @@ async fn run_with(
             wait,
             timeout,
             key,
+            options,
         } => {
             workflow::run(
                 &common,
@@ -409,6 +414,101 @@ async fn run_with(
                     input: input.as_deref(),
                     wait,
                     timeout,
+                    key: key.as_deref(),
+                    options: &options,
+                },
+                &mut io,
+            )
+            .await
+        }
+        Command::WorkflowSignalWithStart {
+            name,
+            business_id,
+            signal,
+            payload,
+            input,
+            reuse,
+            key,
+        } => {
+            with_start::signal_with_start(
+                &common,
+                env,
+                &with_start::SignalAsk {
+                    name: &name,
+                    business_id: &business_id,
+                    signal: &signal,
+                    payload: payload.as_deref(),
+                    input: input.as_deref(),
+                    reuse,
+                    key: key.as_deref(),
+                },
+                &mut io,
+            )
+            .await
+        }
+        Command::WorkflowUpdateWithStart {
+            name,
+            business_id,
+            update,
+            update_key,
+            args,
+            input,
+            if_exists,
+            reuse,
+            start_delay_secs,
+            expected_revision,
+            key,
+        } => {
+            with_start::update_with_start(
+                &common,
+                env,
+                &with_start::UpdateAsk {
+                    name: &name,
+                    business_id: &business_id,
+                    update: &update,
+                    update_key: &update_key,
+                    args: args.as_deref(),
+                    input: input.as_deref(),
+                    if_exists,
+                    reuse,
+                    start_delay_secs,
+                    expected_revision,
+                    key: key.as_deref(),
+                },
+                &mut io,
+            )
+            .await
+        }
+        Command::Schedule(command) => schedule::run(&common, env, &command, &mut io).await,
+        Command::Batch(command) => batch::run(&common, env, &command, &mut io).await,
+        Command::WorkflowResetPoints { run } => reset::points(&common, env, &run, &mut io).await,
+        Command::WorkflowResets { run } => reset::resets(&common, env, &run, &mut io).await,
+        Command::WorkflowResetPreview {
+            run,
+            sequence,
+            reapply,
+        } => reset::preview(&common, env, &run, sequence, reapply, &mut io).await,
+        Command::WorkflowReset {
+            run,
+            sequence,
+            reason,
+            acknowledge,
+            drop_business_id,
+            reapply,
+            cancel_source,
+            key,
+        } => {
+            reset::reset(
+                &common,
+                env,
+                &reset::ResetAsk {
+                    run: &run,
+                    sequence,
+                    reason: &reason,
+                    acknowledge,
+                    drop_business_id,
+                    reapply,
+                    cancel_source,
                     key: key.as_deref(),
                 },
                 &mut io,

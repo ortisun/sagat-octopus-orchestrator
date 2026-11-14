@@ -71,6 +71,14 @@ jobs:
           sudo rm -rf /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           df -h /
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: free disk space the build needs
+        # A run of the whole stack (a release, or a change of this workflow) compiles every integration target of
+        # `sagat-tests`, and the runner's disk ran out at 74 MB free (pull request 91, `No space left on device`
+        # in rustc). The image carries toolchains this job never uses (the Android SDK, .NET, GHC, CodeQL); they
+        # are the largest things on it.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       # rust-toolchain.toml pins the exact compiler; rustup installs it on first use.
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -606,6 +614,12 @@ jobs:
           docker run --rm --entrypoint promtool \
             -v "$PWD/infra/observability/alerts.yaml:/etc/prometheus/alerts.yaml:ro" \
             prom/prometheus:v3.15.0 check rules /etc/prometheus/alerts.yaml
+      - name: promtool test rules (the alerts fire and stay silent when they should)
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/infra/observability:/rules:ro" \
+            -v "$PWD/infra/observability/tests:/tests:ro" \
+            prom/prometheus:v3.15.0 test rules /tests/batch_stalled_test.yaml
       - name: OpenTelemetry Collector validate
         run: |
           docker run --rm \

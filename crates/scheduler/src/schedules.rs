@@ -5,14 +5,17 @@
 //! and every step it takes is committed under that lease by the firing: a replica that was slow or
 //! cut off finds, in the transaction that would act, that the generation moved and commits nothing.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use sagat_application::clock::Clock;
 use sagat_application::identity::IdentityStore;
+use sagat_application::maintenance::Window;
 use sagat_application::schedule_firing::{Fired, ScheduleFiring, ScheduledStarts};
 use sagat_application::schedules::{ScheduleCalendar, ScheduleStore, ShardFence};
+use sagat_domain::identity::TenantId;
 use sagat_domain::sharding::Shard;
 
+use crate::fairness;
 use crate::shards::Placement;
 
 /// How a pass is tuned.
@@ -27,6 +30,9 @@ pub struct ScheduleSettings {
     /// hard ceiling 1,000). The round stops there and the next one carries on, so a burst of due
     /// schedules is spread over rounds instead of one long one.
     pub round_actions: u32,
+    /// How long the search for other tenants rests after it found nobody new (see
+    /// `SchedulerSettings::discovery_rest`); zero: never.
+    pub discovery_rest: Duration,
 }
 
 impl ScheduleSettings {
@@ -57,6 +63,7 @@ impl Default for ScheduleSettings {
             batch: 100,
             steps_per_schedule: 20,
             round_actions: 100,
+            discovery_rest: Duration::from_millis(100),
         }
     }
 }
@@ -87,6 +94,8 @@ pub struct SchedulePass<S, K, C, I, R> {
     firing: ScheduleFiring<S, K, C, I, R>,
     placement: Placement,
     settings: ScheduleSettings,
+    /// Until when the search for other tenants rests (`fairness::rest_after`).
+    rest_until: std::sync::Mutex<Option<Instant>>,
 }
 
 impl<S, K, C, I, R> SchedulePass<S, K, C, I, R>
@@ -106,6 +115,7 @@ where
             firing,
             placement,
             settings: settings.effective(),
+            rest_until: std::sync::Mutex::new(None),
         }
     }
 
@@ -177,22 +187,69 @@ where
         }
     }
 
+    /// The schedules this round looks at: the oldest of the shards the replica owns when they all
+    /// fit in the batch, and otherwise a share for every tenant that has any due (`FR-010-002`),
+    /// so that a tenant with a backlog of older schedules does not hold back the others.
+    async fn due(
+        &self,
+        owned: sagat_domain::sharding::ShardSet,
+        snapshot: &crate::shards::Snapshot,
+    ) -> Result<Vec<sagat_application::schedules::DueSchedule>, sagat_application::error::StoreError>
+    {
+        let limit = self.settings.batch;
+        let store = self.firing.store();
+        let discover = self
+            .rest_until
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none_or(|until| until <= Instant::now());
+        let (chosen, selection) = fairness::select(
+            limit,
+            discover,
+            snapshot.weights(),
+            |due: &sagat_application::schedules::DueSchedule| due.tenant_id,
+            |due| due.id,
+            |exclude: Vec<TenantId>| async move {
+                store
+                    .due_schedules(&Window {
+                        shards: owned,
+                        exclude,
+                        limit,
+                    })
+                    .await
+            },
+        )
+        .await?;
+        let rest = fairness::rest_after(self.settings.discovery_rest, &selection);
+        if discover && !rest.is_zero() {
+            *self
+                .rest_until
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now() + rest);
+        }
+        if selection.limited > 0 {
+            metrics::counter!("scheduler_fairness_limited_total", "pass" => "schedules")
+                .increment(selection.limited as u64);
+        }
+        if selection.exhausted {
+            metrics::counter!("scheduler_fairness_exhausted_total", "pass" => "schedules")
+                .increment(1);
+        }
+        Ok(chosen)
+    }
+
     /// Runs one round. A failure is logged and counted; the next round starts over from what is
     /// stored.
     pub async fn round(&self) -> ScheduleRound {
         let snapshot = self.placement.snapshot();
         let now = Instant::now();
-        let shards: Vec<Shard> = snapshot.shards(now).iter().collect();
+        let owned = snapshot.shards(now);
+        let shards: Vec<Shard> = owned.iter().collect();
         let mut round = ScheduleRound::default();
         if shards.is_empty() {
             return round;
         }
-        let due = match self
-            .firing
-            .store()
-            .due_schedules(&shards, self.settings.batch)
-            .await
-        {
+        let due = match self.due(owned, &snapshot).await {
             Ok(due) => due,
             Err(error) => {
                 tracing::warn!(%error, "could not look for due schedules");

@@ -9,6 +9,11 @@
 //! the pass's own poll of the database and no broker message announces it (the pass tests run with
 //! no broker at all), so nothing a broker loses can delay or repeat a firing.
 //!
+//! Two more steps are cut at every write for a schedule whose action names a business-id prefix (`FR-018-016`): the start that
+//! claims the id in the transaction that makes the run (the binding is one more table of the same transaction), and the decision
+//! a held id makes (the claim is refused and rolled back, and the action is recorded in a transaction of its own). Whichever write
+//! the process dies at, nothing is left behind, and the restarted process makes one run and one binding, or records the one decision.
+//!
 //! Not killed at each write here (the other decision-only steps share the structure of the skipped
 //! time: one transaction with the fence, the compare-and-swap, the action row and the new state):
 //! buffer, coalesce, drop, reconcile, auto-pause and the backfill step. See gap G1018.
@@ -17,15 +22,17 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use sagat_application::runs::{BusinessStart, StartOptions, StartRun};
 use sagat_application::schedule_firing::{Fired, ScheduleFiring};
 use sagat_application::schedules::{DueSchedule, ScheduleRecord};
+use sagat_domain::business_ids::{BusinessId, ConflictPolicy, ReusePolicy, ReuseWindow};
 use sagat_domain::execution::RunId;
 use sagat_domain::schedules::Ceilings;
 use sagat_domain::sharding::Shard;
 use sagat_infra_ir::schedule_calendar::SpecCalendar;
 use sagat_infra_postgres::{PgIdentityStore, PgScheduleStore};
 use sagat_scheduler::{Keeper, KeeperSettings, Placement, SchedulePass, ScheduleSettings};
-use serde_json::json;
+use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime};
 use tokio::sync::Barrier;
 use uuid::Uuid;
@@ -77,6 +84,32 @@ async fn assert_one_scheduled_run(f: &Fixture, schedule: &ScheduleRecord, nomina
     f.w.assert_consistent(RunId::new(runs[0])).await;
 }
 
+/// The binding of the id of the action of `nominal`: one, held by the one run the schedule made, whose id is the prefix (the name
+/// of the schedule), a dash and the nominal time to the second.
+async fn assert_one_binding(f: &Fixture, schedule: &ScheduleRecord, nominal: OffsetDateTime) {
+    let id = format!(
+        "{}-{}",
+        schedule.name.as_str(),
+        nominal
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("a time")
+    );
+    let holders: Vec<Uuid> =
+        sqlx::query_scalar("SELECT execution_id FROM business_ids WHERE business_id = $1")
+            .bind(&id)
+            .fetch_all(&f.w.db.pool)
+            .await
+            .expect("bindings");
+    let runs = f.runs(schedule).await;
+    assert_eq!(holders, runs, "one binding of the id, held by the one run");
+    let carried: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM runs WHERE business_id = $1")
+        .bind(&id)
+        .fetch_all(&f.w.db.pool)
+        .await
+        .expect("runs");
+    assert_eq!(carried, runs, "and the run carries it");
+}
+
 /// A transaction of the pass whose every write is cut off in turn.
 #[derive(Clone, Copy)]
 enum Step {
@@ -84,6 +117,12 @@ enum Step {
     Start,
     /// The time falls due next to an open run under `SKIP`: the time is recorded as skipped.
     Skip,
+    /// As `Start`, for a schedule whose action names a business-id prefix: the run is made under `<prefix>-<nominal time>` and
+    /// the binding is written in the same transaction.
+    StartWithPrefix,
+    /// The time falls due and a person's open run holds the id the action would take (`FAIL`): the action is recorded as a
+    /// conflict, and no run is made.
+    HeldId,
 }
 
 impl Step {
@@ -91,7 +130,25 @@ impl Step {
         match self {
             Self::Start => "start",
             Self::Skip => "skip",
+            Self::StartWithPrefix => "start-with-a-prefix",
+            Self::HeldId => "held-id",
         }
+    }
+
+    /// The step makes a run.
+    fn starts_a_run(self) -> bool {
+        matches!(self, Self::Start | Self::StartWithPrefix)
+    }
+
+    /// The target of the schedule named `name`: the prefix is the name, so that each schedule of the matrix has ids of its own.
+    fn target(self, f: &Fixture, name: &str) -> Option<Value> {
+        matches!(self, Self::StartWithPrefix | Self::HeldId).then(|| {
+            json!({
+                "workflowId": f.workflow.to_string(),
+                "businessIdPrefix": name,
+                "businessIdConflictPolicy": "FAIL"
+            })
+        })
     }
 
     /// A schedule created at `start`, brought to the instant just before the step under test.
@@ -99,10 +156,46 @@ impl Step {
         let first = start + Duration::hours(1);
         f.clock.set(start);
         let policies = match self {
-            Self::Start => json!({}),
+            Self::Start | Self::StartWithPrefix | Self::HeldId => json!({}),
             Self::Skip => json!({"overlap": "SKIP"}),
         };
-        let schedule = f.create(name, &hourly(), &policies, None).await;
+        let schedule = f
+            .create(name, &hourly(), &policies, self.target(f, name))
+            .await;
+        if matches!(self, Self::HeldId) {
+            // a person's run holds the id of the first time
+            let id = format!(
+                "{name}-{}",
+                first
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .expect("a time")
+            );
+            f.w.runs
+                .start_with_options(
+                    &f.w.admin,
+                    &StartRun {
+                        namespace: "payments",
+                        workflow: f.workflow,
+                        version: None,
+                        input: b"{}",
+                        correlation_id: None,
+                        deadline: None,
+                        key: &format!("holder-{name}"),
+                    },
+                    StartOptions {
+                        business: Some(BusinessStart {
+                            id: BusinessId::new(&id).expect("an identifier"),
+                            conflict: ConflictPolicy::Fail,
+                            reuse: ReusePolicy::AllowDuplicate,
+                            window: ReuseWindow::default(),
+                        }),
+                        ..StartOptions::default()
+                    },
+                    &sagat_application::identity::RequestContext::default(),
+                )
+                .await
+                .expect("the holder of the id");
+        }
         if matches!(self, Self::Skip) {
             f.clock.set(first + Duration::seconds(5));
             f.drain(&schedule).await; // the run that is open when the next time falls due
@@ -114,15 +207,16 @@ impl Step {
     /// The time the step acts on.
     fn nominal(self, start: OffsetDateTime) -> OffsetDateTime {
         match self {
-            Self::Start => start + Duration::hours(1),
+            Self::Start | Self::StartWithPrefix | Self::HeldId => start + Duration::hours(1),
             Self::Skip => start + Duration::hours(2),
         }
     }
 
     fn outcomes(self) -> Vec<(String, i64)> {
         match self {
-            Self::Start => outcomes_of(&[("STARTED", 1)]),
+            Self::Start | Self::StartWithPrefix => outcomes_of(&[("STARTED", 1)]),
             Self::Skip => outcomes_of(&[("SKIPPED_OVERLAP", 1), ("STARTED", 1)]),
+            Self::HeldId => outcomes_of(&[("BUSINESS_ID_CONFLICT", 1)]),
         }
     }
 }
@@ -136,6 +230,8 @@ async fn die_at_every_write(step: Step) {
 
     // Which writes does the step make? Watch a normal one.
     let probe = step.prepare(&f, start, "probe").await;
+    // what the step is expected to leave: a run only when it starts one
+    let runs_expected = usize::from(step.starts_a_run());
     wire.watch().await;
     assert_eq!(f.fire(&probe).await, Fired::Acted);
     wire.disarm().await;
@@ -155,7 +251,7 @@ async fn die_at_every_write(step: Step) {
             step.name()
         );
     }
-    if matches!(step, Step::Start) {
+    if step.starts_a_run() {
         for table in ["runs", "run_events", "audit_records"] {
             assert!(
                 tables.contains(table),
@@ -163,6 +259,19 @@ async fn die_at_every_write(step: Step) {
             );
         }
         assert_one_scheduled_run(&f, &probe, first).await;
+    }
+    if matches!(step, Step::StartWithPrefix) {
+        assert!(
+            tables.contains("business_ids"),
+            "the id is claimed in the transaction that makes the run: {writes:?}"
+        );
+        assert_one_binding(&f, &probe, first).await;
+    }
+    if matches!(step, Step::HeldId) {
+        assert!(
+            !tables.contains("runs") && !tables.contains("business_ids"),
+            "a held id makes no run and takes no binding: {writes:?}"
+        );
     }
     assert_eq!(f.outcomes(&probe).await, step.outcomes());
     println!(
@@ -233,7 +342,15 @@ async fn die_at_every_write(step: Step) {
             "{}: after write {position} ({table}) the time is acted on once",
             step.name()
         );
-        assert_one_scheduled_run(&f, &schedule, first).await;
+        if step.starts_a_run() {
+            assert_one_scheduled_run(&f, &schedule, first).await;
+        }
+        if matches!(step, Step::StartWithPrefix) {
+            assert_one_binding(&f, &schedule, first).await;
+        }
+        if !matches!(step, Step::Skip) {
+            assert_eq!(f.runs(&schedule).await.len(), runs_expected);
+        }
         assert_eq!(
             f.read(&schedule).await.next_action_at,
             Some(nominal + Duration::hours(1)),
@@ -264,6 +381,18 @@ async fn a_process_killed_after_any_write_of_a_start_commits_nothing_and_the_tim
 #[tokio::test]
 async fn a_process_killed_after_any_write_of_a_skip_commits_nothing_and_the_time_is_skipped_once() {
     die_at_every_write(Step::Skip).await;
+}
+
+#[tokio::test]
+async fn a_process_killed_after_any_write_of_a_start_under_a_business_id_leaves_nothing_and_the_retry_makes_one_run_and_one_binding()
+ {
+    die_at_every_write(Step::StartWithPrefix).await;
+}
+
+#[tokio::test]
+async fn a_process_killed_after_any_write_of_the_decision_a_held_id_makes_leaves_nothing_and_the_time_is_decided_once()
+ {
+    die_at_every_write(Step::HeldId).await;
 }
 
 /// A firing built from nothing but the database: what a restarted process has.

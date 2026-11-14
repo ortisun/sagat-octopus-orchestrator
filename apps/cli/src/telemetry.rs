@@ -16,7 +16,7 @@ use sagat_telemetry::{
 use tracing::Instrument;
 use tracing_subscriber::layer::SubscriberExt;
 
-use crate::args::Command;
+use crate::args::{BatchCommand, Command, ScheduleCommand};
 use crate::{
     EXIT_BREAKING, EXIT_DIFFERENCES, EXIT_DONE, EXIT_FAILED, EXIT_PENDING, EXIT_TIMEOUT, EXIT_USAGE,
 };
@@ -349,6 +349,32 @@ fn command_label(command: &Command) -> &'static str {
         Command::WorkflowInspect { .. } => "workflow.inspect",
         Command::WorkflowCancel { .. } => "workflow.cancel",
         Command::WorkflowRerun { .. } => "workflow.rerun",
+        Command::Schedule(command) => match command {
+            ScheduleCommand::List { .. } => "schedule.list",
+            ScheduleCommand::Get { .. } => "schedule.get",
+            ScheduleCommand::Create { .. } => "schedule.create",
+            ScheduleCommand::Update { .. } => "schedule.update",
+            ScheduleCommand::Delete { .. } => "schedule.delete",
+            ScheduleCommand::Pause { .. } => "schedule.pause",
+            ScheduleCommand::Resume { .. } => "schedule.resume",
+            ScheduleCommand::Trigger { .. } => "schedule.trigger",
+            ScheduleCommand::Backfill { .. } => "schedule.backfill",
+            ScheduleCommand::Actions { .. } => "schedule.actions",
+        },
+        Command::Batch(command) => match command {
+            BatchCommand::Preview { .. } => "batch.preview",
+            BatchCommand::Create(_) => "batch.create",
+            BatchCommand::Get { .. } => "batch.get",
+            BatchCommand::List { .. } => "batch.list",
+            BatchCommand::Items { .. } => "batch.items",
+            BatchCommand::Cancel { .. } => "batch.cancel",
+        },
+        Command::WorkflowSignalWithStart { .. } => "workflow.signal_with_start",
+        Command::WorkflowUpdateWithStart { .. } => "workflow.update_with_start",
+        Command::WorkflowResetPoints { .. } => "workflow.reset_points",
+        Command::WorkflowResetPreview { .. } => "workflow.reset_preview",
+        Command::WorkflowReset { .. } => "workflow.reset",
+        Command::WorkflowResets { .. } => "workflow.resets",
         Command::RevealGrantsList => "namespace.reveal_grants.list",
         Command::RevealGrant { .. } => "namespace.reveal_grants.grant",
         Command::RevealRevoke { .. } => "namespace.reveal_grants.revoke",

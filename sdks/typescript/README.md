@@ -45,6 +45,41 @@ For a large run input, call `uploadRunInput(onePassAsyncIterable, options)` and 
 never retried; the SDK accepts its descriptor only after the source reaches EOF and the measured size and
 SHA-256 match. `startWithBlob` retains the normal run-start idempotency, correlation, deadline and trace options.
 
+### Schedules, business identifiers, batches and reset
+
+```ts
+const created = await client.schedules.create(namespaceId, {
+  name: 'nightly-report',
+  spec: { cron: ['0 2 * * *'], timezone: 'Europe/Lisbon' },
+  policies: { overlap: 'SKIP' },
+  action: { workflowId, input: { report: 'daily' } },
+});
+await client.schedules.pause(namespaceId, created.scheduleId, 'maintenance window');
+const action = await client.schedules.trigger(namespaceId, created.scheduleId); // action.outcome: 'STARTED', 'SKIPPED_OVERLAP', 'BUSINESS_ID_CONFLICT', ...
+
+// Every run of a schedule can start under the business id `<prefix>-<nominal time>`; the prefix is sent as given.
+const keyed = await client.schedules.create(namespaceId, {
+  name: 'hourly-order-sync',
+  spec: { cron: ['0 * * * *'] },
+  action: { workflowId, input: {}, businessIdPrefix: 'order-sync', businessIdConflictPolicy: 'USE_EXISTING', businessIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY' },
+});
+console.log(keyed.action.businessIdPrefix, keyed.action.businessIdConflictPolicy); // null when the schedule has no prefix
+
+// One open run per business identifier; a second start answers the run that holds it.
+const order = await client.start('charge-card', { orderId: 'o-1' }, {
+  businessId: 'order-o-1', businessIdConflictPolicy: 'USE_EXISTING', startDelayMs: 5_000,
+});
+if (!order.started) console.log('an open run already held order-o-1:', order.runId);
+
+await client.signalWithStart('charge-card', 'order-o-1', { orderId: 'o-1' }, 'payment.confirmed', { paid: '19.90' });
+const job = await client.batch.create(namespaceId, { selector: { runIds }, action: 'CANCEL', reason: 'clean up the day' });
+const plan = await client.previewReset(runId, sequence); // plan.requiresAcknowledgement tells whether steps run again
+```
+
+A write carries one idempotency key for all its retries; an instant you send is written in UTC; a value of an
+enumeration the SDK does not know (an action outcome, a batch item state) is the string the server sent. The
+operations are specified in [`sdks/SPEC.md`](../SPEC.md) §3.1.
+
 Every failure is a `SagatError` with `code`, `status`, `retryable`, `traceId`, `reason`, `retryAfterMs`
 and a `remediation` sentence. It never repeats a payload, a token or a secret.
 
