@@ -1,0 +1,144 @@
+rule_files:
+  - /rules/alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # failures that keep rising for a quarter of an hour: the alert fires after fifteen minutes of it, with the runbook
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_reconcile_failures_total{instance="engine-a:9091"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SagatTriggerScheduleReconcileFailing
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: SagatTriggerScheduleReconcileFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: engine-a:9091
+            exp_annotations:
+              summary: The reconciliation of the schedules of the cron triggers has been failing for fifteen minutes.
+              runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
+
+  # one failure that stops: no alert
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_reconcile_failures_total{instance="engine-a:9091"}'
+        values: '0 0 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SagatTriggerScheduleReconcileFailing
+        exp_alerts: []
+
+  # a loop that stopped: the last round gets older and the alert fires after a minute beyond sixty seconds and two minutes of it
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_last_round_timestamp_seconds{instance="engine-a:9091"}'
+        values: '60 120 180 180 180 180 180 180 180 180'
+      - series: 'trigger_schedule_last_round_timestamp_seconds{instance="engine-b:9091"}'
+        values: '60 120 180 240 300 360 420 480 540 600'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SagatTriggerScheduleReconcileStale
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: SagatTriggerScheduleReconcileStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: engine-a:9091
+            exp_annotations:
+              summary: The reconciliation of the schedules of the cron triggers has not completed a round in an engine for more than a minute.
+              runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
+
+  # a trigger with no schedule for half an hour, whichever replica says it; and a count that reaches zero in time
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_unconverged{instance="engine-a:9091"}'
+        values: '1x40'
+      - series: 'trigger_schedule_unconverged{instance="engine-b:9091"}'
+        values: '1x40'
+      - series: 'trigger_schedule_unconverged{instance="engine-c:9091"}'
+        values: '1x5 0x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SagatTriggersUnconverged
+        exp_alerts: []
+      - eval_time: 36m
+        alertname: SagatTriggersUnconverged
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Cron triggers have had no schedule equal to them for thirty minutes.
+              runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
+
+  # after the handover five minutes are enough; before it the alert waits as long as the other
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_unconverged{instance="engine-a:9091"}'
+        values: '1x40'
+      - series: 'trigger_schedule_handed_over{instance="engine-a:9091"}'
+        values: '0x10 1x30'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: SagatTriggersUnconvergedAfterHandover
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: SagatTriggersUnconvergedAfterHandover
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SagatTriggersUnconvergedAfterHandover
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: After the handover, cron triggers have had no schedule equal to them for five minutes, so they do not fire.
+              runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
+
+  # a legacy pass that fires after the handover: the alert fires as soon as the counter rises, and goes out when it stops
+  - interval: 1m
+    input_series:
+      - series: 'cron_legacy_fires_after_handover_total{source="legacy_pass",instance="engine-a:9091"}'
+        values: '0 0 0 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: SagatCronLegacyFiredAfterHandover
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: SagatCronLegacyFiredAfterHandover
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: engine-a:9091
+              source: legacy_pass
+            exp_annotations:
+              summary: An engine binary older than the registry release fired a cron trigger after the handover.
+              runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
+      - eval_time: 25m
+        alertname: SagatCronLegacyFiredAfterHandover
+        exp_alerts: []
+
+  # a handover that cannot be read, five rounds in a row and for two minutes: one engine; another whose read recovers is silent
+  - interval: 1m
+    input_series:
+      - series: 'cron_handover_read_consecutive_failures{instance="engine-a:9091"}'
+        values: '0 0 6 7 8 9 10 11 12 13'
+      - series: 'cron_handover_read_consecutive_failures{instance="engine-b:9091"}'
+        values: '0 3 0 4 0 5 0 6 0 7'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: SagatCronHandoverUnreadable
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: SagatCronHandoverUnreadable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: engine-a:9091
+            exp_annotations:
+              summary: An engine cannot read whether the cron triggers were handed over and its legacy cron pass goes on firing.
+              runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation

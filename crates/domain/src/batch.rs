@@ -26,6 +26,9 @@ pub const MAX_RATE_MILLI: u32 = 200_000;
 pub const DEFAULT_RATE_MILLI: u32 = 20_000;
 pub const DEFAULT_ITEM_RETRIES: u32 = 10;
 pub const MAX_ITEM_RETRIES: u32 = 50;
+/// Selection rounds of one job that may fail in a row and be tried again; the next one fails the job. Ten, as the retries
+/// of an item (`DEFAULT_ITEM_RETRIES`), with the same backoff: about 25 minutes from the first failure to the job's end.
+pub const SELECTION_RETRIES: u32 = 10;
 const FIRST_BACKOFF_SECONDS: u64 = 5;
 const MAX_BACKOFF_SECONDS: u64 = 300;
 
@@ -148,15 +151,21 @@ impl FromStr for Action {
     }
 }
 
-/// Why the operator ran the batch: 8 to 2000 characters, kept in the audit trail.
+/// Why the operator ran the batch: 8 to 2000 characters of plain text once trimmed, the rule the
+/// single-run use cases apply to the reason of each item (a reason they refuse would make every item
+/// of the job fail).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Justification(String);
 
 impl Justification {
     /// # Errors
-    /// [`BatchError::BadReason`] outside 8 to 2000 characters.
+    /// [`BatchError::BadReason`] outside 8 to 2000 characters after trimming, or with a control
+    /// character (a new line included).
     pub fn new(value: &str) -> Result<Self, BatchError> {
-        if !(MIN_REASON_CHARS..=MAX_REASON_CHARS).contains(&value.chars().count()) {
+        let value = value.trim();
+        if !(MIN_REASON_CHARS..=MAX_REASON_CHARS).contains(&value.chars().count())
+            || value.chars().any(char::is_control)
+        {
             return Err(BatchError::BadReason);
         }
         Ok(Self(value.to_owned()))
@@ -384,13 +393,34 @@ pub fn retry(
     if attempts > limits.item_retries || now - first_refused_at >= limits.retry_window {
         return Retry::Exhausted;
     }
+    Retry::After(backoff(attempts))
+}
+
+/// The wait after the `attempts`-th refusal or failure: 5 seconds, doubling to 5 minutes. One function for an item that is
+/// refused and a selection round that fails, so that the two cannot drift apart.
+fn backoff(attempts: u32) -> Duration {
     let doublings = attempts.saturating_sub(1).min(16);
     let seconds = FIRST_BACKOFF_SECONDS
         .saturating_mul(1u64 << doublings)
         .min(MAX_BACKOFF_SECONDS);
-    Retry::After(Duration::seconds(
-        i64::try_from(seconds).unwrap_or(i64::MAX),
-    ))
+    Duration::seconds(i64::try_from(seconds).unwrap_or(i64::MAX))
+}
+
+/// What to do with a job whose selection round has failed `failures` times in a row, the one that just failed
+/// included (G2093, D2197). A round that picks resets the count, so only failures that follow one another count.
+///
+/// The model is the item's: the wait is [`backoff`] (5 seconds doubling to 5 minutes) and the bound is
+/// [`SELECTION_RETRIES`], the retries of an item (10): the job survives ten failed rounds and the eleventh fails it
+/// (`SELECTION_FAILED`). The bound is a count and not a count and a window because the wait is what spaces the rounds
+/// (the store refuses a round before its time), so ten retries are at least 1,515 seconds apart: the window is
+/// implicit, and no instant of a first failure has to be kept.
+#[must_use]
+pub fn selection_retry(failures: u32) -> Retry {
+    if failures > SELECTION_RETRIES {
+        Retry::Exhausted
+    } else {
+        Retry::After(backoff(failures))
+    }
 }
 
 // --- the job ----------------------------------------------------------------------------------

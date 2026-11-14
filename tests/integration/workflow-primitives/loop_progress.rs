@@ -3401,6 +3401,64 @@ async fn loop_failure_with_an_error_edge_to_an_end_finishes_the_run_through_the_
     crate::hint_contract::assert_published(&published, &["loop.drain_started", "run.finished"]);
 }
 
+/// `FR-018-046`: the run a loop ends through the terminal path is told to its subscribers with the schedule that started it
+/// (`scheduleId`, `nominalTime`), like every other run a schedule started, and a run no schedule started is told with neither.
+/// The run is stamped by hand with the columns a run a schedule started has (`mark_as_scheduled`): this world starts its
+/// runs through the store, not through a firing, so this proves the writer of the loop's terminal path, not the firing.
+#[tokio::test]
+async fn a_loop_that_ends_a_run_a_schedule_started_says_the_schedule_in_the_webhook_and_a_plain_run_does_not()
+ {
+    for scheduled in [true, false] {
+        let fixture = seed_running_loop_routed("loop-error-scheduled", OnError::End).await;
+        let schedule = Uuid::now_v7();
+        let nominal = OffsetDateTime::from_unix_timestamp(1_793_192_400).expect("an instant");
+        if scheduled {
+            crate::support::schedules::mark_as_scheduled(
+                &fixture.db.pool,
+                fixture.run.as_uuid(),
+                schedule,
+                nominal,
+            )
+            .await;
+        }
+        let subscription = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO webhook_subscriptions \
+             (id,tenant_id,namespace_id,name,destination_kind,destination_settings,url,secret_name, \
+              kinds,rate_per_second,timeout_ms,status,created_by) \
+             VALUES ($1,$2,$3,'loop-scheduled','WEBHOOK','{}','https://example.invalid/loop', \
+                     'loop-key',ARRAY['run.finished'],100,1000,'ACTIVE','test')",
+        )
+        .bind(subscription)
+        .bind(fixture.tenant)
+        .bind(fixture.namespace.as_uuid())
+        .execute(&fixture.db.pool)
+        .await
+        .expect("run finished subscription");
+        drain_on_replicas(
+            &fixture,
+            LoopDrainReason::Failed {
+                iteration: 0,
+                code: FailureCode::expression_error(),
+            },
+            crate::support::now(),
+        )
+        .await;
+        let body = crate::support::schedules::delivered_body(&fixture.db.pool, subscription).await;
+        assert_eq!(body["data"]["runId"], fixture.run.to_string());
+        if scheduled {
+            assert_eq!(body["data"]["scheduleId"], schedule.to_string(), "{body}");
+            assert_eq!(
+                body["data"]["nominalTime"], "2026-10-28T13:00:00Z",
+                "{body}"
+            );
+        } else {
+            assert!(body["data"].get("scheduleId").is_none(), "{body}");
+            assert!(body["data"].get("nominalTime").is_none(), "{body}");
+        }
+    }
+}
+
 /// Without an `onError` edge a loop failure keeps failing the run after the drain.
 #[tokio::test]
 async fn permanent_body_failure_without_an_error_edge_still_fails_the_run() {

@@ -12,7 +12,8 @@ export default defineConfig({
   retries: 0,
   timeout: 120_000,
   expect: { timeout: 15_000 },
-  reporter: [['line']],
+  // `STUDIO_REPORTER=list` prints the time each journey took (the harness passes the environment on)
+  reporter: [[process.env['STUDIO_REPORTER'] === 'list' ? 'list' : 'line']],
   use: {
     baseURL: `${origin}/studio/`,
     trace: 'retain-on-failure',

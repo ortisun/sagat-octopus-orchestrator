@@ -1,0 +1,374 @@
+{
+  "name": "batch-operations",
+  "description": "Feature 018 US05: a batch job over runs. A selector is previewed (a count and a sample, nothing changed); a CANCEL job over three open runs applies to each run once and ends COMPLETED with counters that equal its items; the same key and body answers the first job; a second job over the now ended runs skips each with ALREADY_TERMINAL; a job that ended cannot be cancelled; an action this build does not offer, a selector that selects nothing and a reason that is too short are refused with their reasons. A selector by the prefix of the business id (G2027) selects the runs started under it and no other: a preview counts them, a prefix that matches nothing or that is only a wildcard character counts zero, a prefix that is not an id is refused as a malformed selector, and a CANCEL job by the prefix cancels exactly those runs and leaves the run of another id open.",
+  "server": {
+    "batches": true
+  },
+  "workflows": {
+    "hold": {
+      "name": "batch-hold",
+      "description": "An activity nobody serves: the run stays open until the batch cancels it.",
+      "program": [
+        {
+          "op": "step",
+          "id": "hold",
+          "activity": "batch.hold"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "id": "r1",
+      "op": "start",
+      "workflow": "hold",
+      "input": {},
+      "idempotencyKey": "batch-r1-{{unique}}"
+    },
+    {
+      "id": "r2",
+      "op": "start",
+      "workflow": "hold",
+      "input": {},
+      "idempotencyKey": "batch-r2-{{unique}}"
+    },
+    {
+      "id": "r3",
+      "op": "start",
+      "workflow": "hold",
+      "input": {},
+      "idempotencyKey": "batch-r3-{{unique}}"
+    },
+    {
+      "id": "preview",
+      "op": "batchPreview",
+      "selector": {
+        "runIds": [
+          "{{step:r1:runId}}",
+          "{{step:r2:runId}}",
+          "{{step:r3:runId}}"
+        ]
+      }
+    },
+    {
+      "id": "preview-capped",
+      "op": "batchPreview",
+      "selector": {
+        "runIds": [
+          "{{step:r1:runId}}",
+          "{{step:r2:runId}}",
+          "{{step:r3:runId}}"
+        ]
+      },
+      "maxItems": 2
+    },
+    {
+      "id": "preview-filter",
+      "op": "batchPreview",
+      "selector": {
+        "filter": {
+          "workflowId": "{{workflow:hold}}",
+          "status": [
+            "RUNNING"
+          ],
+          "createdAfter": "{{now:-600000}}"
+        }
+      }
+    },
+    {
+      "id": "create",
+      "op": "batchCreate",
+      "request": {
+        "selector": {
+          "runIds": [
+            "{{step:r1:runId}}",
+            "{{step:r2:runId}}",
+            "{{step:r3:runId}}"
+          ]
+        },
+        "action": "CANCEL",
+        "reason": "clean up the three held runs",
+        "itemsPerSecond": 50
+      },
+      "idempotencyKey": "batch-create-{{unique}}"
+    },
+    {
+      "id": "create-again",
+      "op": "batchCreate",
+      "request": {
+        "selector": {
+          "runIds": [
+            "{{step:r1:runId}}",
+            "{{step:r2:runId}}",
+            "{{step:r3:runId}}"
+          ]
+        },
+        "action": "CANCEL",
+        "reason": "clean up the three held runs",
+        "itemsPerSecond": 50
+      },
+      "idempotencyKey": "batch-create-{{unique}}"
+    },
+    {
+      "id": "create-other-body",
+      "op": "batchCreate",
+      "request": {
+        "selector": {
+          "runIds": [
+            "{{step:r1:runId}}"
+          ]
+        },
+        "action": "CANCEL",
+        "reason": "clean up the three held runs",
+        "itemsPerSecond": 50
+      },
+      "idempotencyKey": "batch-create-{{unique}}"
+    },
+    {
+      "id": "completed",
+      "op": "awaitBatch",
+      "batch": "create",
+      "state": "COMPLETED",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "job",
+      "op": "batchGet",
+      "batch": "create"
+    },
+    {
+      "id": "items",
+      "op": "batchItems",
+      "batch": "create"
+    },
+    {
+      "id": "items-succeeded",
+      "op": "batchItems",
+      "batch": "create",
+      "state": "SUCCEEDED",
+      "limit": 2
+    },
+    {
+      "id": "r1-ended",
+      "op": "waitForCompletion",
+      "run": "r1",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "r2-ended",
+      "op": "waitForCompletion",
+      "run": "r2",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "r3-ended",
+      "op": "waitForCompletion",
+      "run": "r3",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "second",
+      "op": "batchCreate",
+      "request": {
+        "selector": {
+          "runIds": [
+            "{{step:r1:runId}}",
+            "{{step:r2:runId}}"
+          ]
+        },
+        "action": "CANCEL",
+        "reason": "cancel what already ended"
+      },
+      "idempotencyKey": "batch-second-{{unique}}"
+    },
+    {
+      "id": "second-completed",
+      "op": "awaitBatch",
+      "batch": "second",
+      "state": "COMPLETED",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "second-job",
+      "op": "batchGet",
+      "batch": "second"
+    },
+    {
+      "id": "second-items",
+      "op": "batchItems",
+      "batch": "second"
+    },
+    {
+      "id": "cancel-ended-job",
+      "op": "batchCancel",
+      "batch": "create",
+      "reason": "too late for this one"
+    },
+    {
+      "id": "list",
+      "op": "batchList",
+      "state": "COMPLETED",
+      "limit": 10
+    },
+    {
+      "id": "repin",
+      "op": "batchCreate",
+      "request": {
+        "selector": {
+          "runIds": [
+            "{{step:r1:runId}}"
+          ]
+        },
+        "action": "REPIN",
+        "reason": "move to the new version"
+      },
+      "idempotencyKey": "batch-repin-{{unique}}"
+    },
+    {
+      "id": "empty-selector",
+      "op": "batchCreate",
+      "request": {
+        "selector": {
+          "runIds": []
+        },
+        "action": "CANCEL",
+        "reason": "there is nothing to select"
+      },
+      "idempotencyKey": "batch-empty-{{unique}}"
+    },
+    {
+      "id": "short-reason",
+      "op": "batchCreate",
+      "request": {
+        "selector": {
+          "runIds": [
+            "{{step:r1:runId}}"
+          ]
+        },
+        "action": "CANCEL",
+        "reason": "no"
+      },
+      "idempotencyKey": "batch-reason-{{unique}}"
+    },
+    {
+      "id": "lot-a",
+      "op": "start",
+      "workflow": "hold",
+      "input": {},
+      "businessId": "lot-{{unique}}-a",
+      "idempotencyKey": "batch-lot-a-{{unique}}"
+    },
+    {
+      "id": "lot-b",
+      "op": "start",
+      "workflow": "hold",
+      "input": {},
+      "businessId": "lot-{{unique}}-b",
+      "idempotencyKey": "batch-lot-b-{{unique}}"
+    },
+    {
+      "id": "other-lot",
+      "op": "start",
+      "workflow": "hold",
+      "input": {},
+      "businessId": "other-{{unique}}",
+      "idempotencyKey": "batch-other-lot-{{unique}}"
+    },
+    {
+      "id": "business-prefix",
+      "op": "batchPreview",
+      "selector": {
+        "filter": {
+          "businessIdPrefix": "lot-{{unique}}-"
+        }
+      }
+    },
+    {
+      "id": "business-prefix-none",
+      "op": "batchPreview",
+      "selector": {
+        "filter": {
+          "businessIdPrefix": "no-such-{{unique}}-"
+        }
+      }
+    },
+    {
+      "id": "business-prefix-wildcard",
+      "op": "batchPreview",
+      "selector": {
+        "filter": {
+          "businessIdPrefix": "%"
+        }
+      }
+    },
+    {
+      "id": "business-prefix-invalid",
+      "op": "batchPreview",
+      "selector": {
+        "filter": {
+          "businessIdPrefix": "has space"
+        }
+      }
+    },
+    {
+      "id": "create-by-prefix",
+      "op": "batchCreate",
+      "request": {
+        "selector": {
+          "filter": {
+            "businessIdPrefix": "lot-{{unique}}-"
+          }
+        },
+        "action": "CANCEL",
+        "reason": "cancel the runs of the lot",
+        "itemsPerSecond": 50
+      },
+      "idempotencyKey": "batch-by-prefix-{{unique}}"
+    },
+    {
+      "id": "by-prefix-completed",
+      "op": "awaitBatch",
+      "batch": "create-by-prefix",
+      "state": "COMPLETED",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "by-prefix-job",
+      "op": "batchGet",
+      "batch": "create-by-prefix"
+    },
+    {
+      "id": "by-prefix-items",
+      "op": "batchItems",
+      "batch": "create-by-prefix"
+    },
+    {
+      "id": "lot-a-ended",
+      "op": "waitForCompletion",
+      "run": "lot-a",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "lot-b-ended",
+      "op": "waitForCompletion",
+      "run": "lot-b",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "other-lot-still-open",
+      "op": "get",
+      "run": "other-lot"
+    },
+    {
+      "id": "query-selector",
+      "op": "batchPreview",
+      "selector": {
+        "query": "status = 'RUNNING'"
+      }
+    }
+  ]
+}

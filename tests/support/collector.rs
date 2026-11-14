@@ -64,6 +64,11 @@ struct Inner {
     /// The status of each request in order; 200 once the list is empty.
     statuses: Mutex<VecDeque<u16>>,
     spans: Mutex<Vec<Received>>,
+    /// The accepted requests as they came over the wire, so that a test can search what the exporter sent and not only
+    /// what this collector chose to parse of it. Kept only after [`Collector::keep_bodies`]: a suite that does not search
+    /// the wire does not pay for every body it receives.
+    bodies: Mutex<Vec<String>>,
+    keep_bodies: std::sync::atomic::AtomicBool,
     requests: Mutex<u32>,
 }
 
@@ -114,6 +119,13 @@ async fn receive(State(inner): State<Arc<Inner>>, body: axum::body::Bytes) -> St
         .unwrap_or(200);
     if status != 200 {
         return StatusCode::from_u16(status).expect("status");
+    }
+    if inner.keep_bodies.load(std::sync::atomic::Ordering::Relaxed) {
+        inner
+            .bodies
+            .lock()
+            .expect("bodies")
+            .push(String::from_utf8_lossy(&body).into_owned());
     }
     let json: Value = serde_json::from_slice(&body).expect("the body is JSON");
     let mut spans = inner.spans.lock().expect("spans");
@@ -191,6 +203,20 @@ impl Collector {
 
     pub fn requests(&self) -> u32 {
         *self.inner.requests.lock().expect("requests")
+    }
+
+    /// From now on the bodies of the requests are kept (the default is not to keep them).
+    pub fn keep_bodies(&self) {
+        self.inner
+            .keep_bodies
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The bodies of the requests the collector accepted since [`Self::keep_bodies`], as text: the OTLP/HTTP JSON the exporter
+    /// sent. A string that went through JSON is in it as JSON writes it: a search for a text with a quote, a backslash or a
+    /// character outside ASCII must search the escaped form too.
+    pub fn bodies(&self) -> Vec<String> {
+        self.inner.bodies.lock().expect("bodies").clone()
     }
 
     pub fn spans(&self) -> Vec<Received> {

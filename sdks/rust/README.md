@@ -42,6 +42,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+Feature 018 adds schedules, business identifiers, batch jobs, the with-start calls and resets to the
+client: `client.schedules()`, `client.batch()` and `client.business_ids()` return light handles, and
+`signal_with_start`, `update_with_start`, `reset_points`, `preview_reset`, `reset`, `list_resets` and
+`get_reset` are methods of `Client`. `start` takes a business identifier (sent as given), its conflict
+and reuse policies and a start delay as a `Duration` (truncated once to integer milliseconds before the
+first attempt) and answers a `StartedRun`, which reads as the `Run` and says in `started` whether this
+call created it. Every call that changes something carries one `Idempotency-Key`, given in
+`CallOptions` or generated once, that every retry keeps. Instants you send are a date-time or RFC 3339
+text (`Moment`) and are written in UTC; values of an enumeration the SDK does not know stay as the raw
+string (`Other`), never an error. A start with an input blob takes neither a business identifier nor a
+delay. The action of a schedule may carry a business-id prefix and its two policies
+(`business_id_prefix`, `business_id_conflict_policy`, `business_id_reuse_policy`): each run the
+schedule starts is under `<prefix>-<nominal time>`, the prefix is customer text that is sent as given
+and never printed by a `Debug`, and a schedule read back has the three as the server sent them, or
+`None`.
+
+```rust,no_run
+use sagat_octopus_orchestrator_sdk::{
+    BusinessIdConflictPolicy, CallOptions, Client, OverlapPolicy, ScheduleAction, ScheduleSpec,
+    ScheduleWrite, StartOptions, json,
+};
+use std::time::Duration;
+
+async fn operations(client: &Client, namespace_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let started = client
+        .start(
+            "order-flow",
+            &json!({"orderId": "o-1"}),
+            StartOptions {
+                business_id: Some("order-o-1".into()),
+                business_id_conflict_policy: Some(BusinessIdConflictPolicy::UseExisting),
+                start_delay: Some(Duration::from_secs(600)),
+                ..StartOptions::default()
+            },
+        )
+        .await?;
+    println!("{} created by this call: {}", started.id, started.started);
+    let spec = ScheduleSpec {
+        cron: vec!["0 9 * * *".into()],
+        timezone: Some("UTC".into()),
+        ..ScheduleSpec::default()
+    };
+    let mut action = ScheduleAction::new("019b5d6e-0000-7000-8000-000000000002", json!({}));
+    // Every run the schedule starts gets the business id `nightly-<nominal time>`.
+    action.business_id_prefix = Some("nightly".into());
+    action.business_id_conflict_policy = Some(BusinessIdConflictPolicy::UseExisting);
+    let schedule = client
+        .schedules()
+        .create(namespace_id, &ScheduleWrite::new("nightly", spec, action), CallOptions::default())
+        .await?;
+    // Read back as the server sent it: `None` for a schedule whose action has no prefix.
+    println!("{:?}", schedule.action.business_id_prefix);
+    client
+        .schedules()
+        .trigger(
+            namespace_id,
+            &schedule.schedule_id.to_string(),
+            Some(OverlapPolicy::Skip),
+            CallOptions::default(),
+        )
+        .await?;
+    Ok(())
+}
+```
+
 Use a dynamic `TokenSource` for rotation. An explicit `CallOptions.traceparent` is validated before
 I/O. Retries preserve the exact body and idempotency key; they never retry an activity's external
 effect for the application. Use the task's idempotency key with external providers.
