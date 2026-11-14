@@ -9,8 +9,10 @@ use sqlx::migrate::Migrator;
 mod api_admission;
 mod approval_progress;
 mod approval_scheduler;
+mod batch;
 mod bindings;
 mod breaker;
+mod business_ids;
 mod capacity_acquire;
 mod capacity_discovery;
 mod capacity_finish;
@@ -32,6 +34,7 @@ mod event_payloads;
 mod events;
 mod execution;
 mod identity;
+mod instances;
 mod leaf_certification;
 mod loop_progress;
 mod maintenance;
@@ -54,10 +57,15 @@ mod scripts;
 mod secrets;
 mod signals;
 mod telemetry;
+mod trigger_schedules;
 mod versioning;
 mod workers;
 
 pub use approval_progress::PgApprovalProgressStore;
+pub use batch::PgBatchStore;
+/// The statements of a batch selector by business-id prefix, exposed so a test can ask the planner about the very text they run.
+#[doc(hidden)]
+pub use batch::{PREVIEW_BY_PREFIX_SQL, SELECTION_BY_PREFIX_SQL};
 pub use capacity_acquire::PgCapacityAcquireStore;
 pub use capacity_finish::PgCapacityFinishStore;
 pub use capacity_vacate::PgCapacityVacateStore;
@@ -65,8 +73,12 @@ pub use chain_progress::{PgChainProgressStore, initialize_chain_in_transaction};
 pub use clock::DatabaseClock;
 pub use declared_operations::PgDeclaredOperationStore;
 pub use definitions::PgDefinitionStore;
+/// The scan of the pending resets whose source did not end within the window, exposed so a test can check its plan.
+#[doc(hidden)]
+pub use execution::EXPIRED_RESETS_SQL;
 pub use execution::{PgRunStore, PgRunTx};
 pub use identity::PgIdentityStore;
+pub use instances::{FeatureStep, OperatorBounds, PgInstanceStore};
 pub use leaf_certification::PgLeafCollectionSuccessStore;
 pub use loop_progress::PgLoopProgressStore;
 pub use operations::{MONITOR_LEASE, READ_AUDIT_SQL};
@@ -78,6 +90,10 @@ pub use schedules::PgScheduleStore;
 pub use scoped_leaf_finish::PgScopedLeafFinishStore;
 pub use sqlx::PgPool;
 pub use telemetry::PROJECTOR_LEASE;
+pub use trigger_schedules::{
+    Census, HandoverWritten, complete_handover, engine_census, handover_step, may_hand_over,
+    read_epoch, read_handover_row,
+};
 /// The query that finds the runs a worker may claim, exposed so a test can check its plan.
 #[doc(hidden)]
 pub use workers::CLAIMABLE as CLAIMABLE_SQL;

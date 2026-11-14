@@ -6,6 +6,15 @@ namespace SagatOctopusOrchestrator.Sdk;
 /// </summary>
 public interface ISagatClient
 {
+    /// <summary>The schedules of the namespace: create, describe, list, update, delete, pause, resume, trigger, backfill and their history.</summary>
+    SchedulesClient Schedules { get; }
+
+    /// <summary>The batch jobs of the namespace: preview, create, inspect, cancel and list the items.</summary>
+    BatchClient Batch { get; }
+
+    /// <summary>How a business identifier stands in the namespace.</summary>
+    BusinessIdsClient BusinessIds { get; }
+
     /// <summary>Streams a staged run input exactly once and verifies the returned descriptor.</summary>
     Task<Workers.BlobDescriptor> UploadRunInputAsync(Stream source, RunInputBlobOptions? options = null, CancellationToken cancellationToken = default);
 
@@ -15,11 +24,42 @@ public interface ISagatClient
     /// <summary>
     /// Starts a run of a published workflow, given by id or by name. The call carries an idempotency key (the caller's, or one
     /// generated for this call and reused by every retry of it), so that it is repeated only when that cannot start a second run.
+    /// The answer says whether this call created the run (<see cref="StartedRun.Started"/>).
     /// </summary>
-    Task<Run> StartAsync<TInput>(string workflow, TInput input, StartOptions? options = null, CancellationToken cancellationToken = default);
+    Task<StartedRun> StartAsync<TInput>(string workflow, TInput input, StartOptions? options = null, CancellationToken cancellationToken = default);
 
     /// <summary>Atomically starts a run with a staged input descriptor.</summary>
     Task<Run> StartWithBlobAsync(string workflow, Workers.BlobDescriptor descriptor, StartOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Signals the open run of a business identifier, or starts one and delivers the signal at its creation. A run none of whose steps waits for the
+    /// signal is refused (<c>CONFLICT</c>) and nothing is created or changed. The identifier is sent as given.
+    /// </summary>
+    Task<SignalWithStartResult> SignalWithStartAsync<TInput, TPayload>(
+        string workflow, string businessId, TInput input, string signalName, TPayload payload, WithStartOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Applies a declared Update to the open run of a business identifier, starting the run first when none is open. The caller's
+    /// <paramref name="updateKey"/> (1 to 128 printable ASCII characters) is required and kept by every retry. A refusal of the validator or a stale
+    /// revision is an answer (<see cref="UpdateWithStartOutcome.Outcome"/> is <c>REJECTED</c>), not an error.
+    /// </summary>
+    Task<UpdateWithStartResult> UpdateWithStartAsync<TInput, TArgs>(
+        string workflow, string businessId, TInput input, string updateName, string updateKey, TArgs args, UpdateWithStartOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Where a run that ended can be reset to, by ascending sequence.</summary>
+    Task<Page<ResetPoint>> ResetPointsAsync(string runId, ResetPointListOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>What a reset to <paramref name="sequence"/> would restore and run again; changes nothing.</summary>
+    Task<ResetPlan> PreviewResetAsync(string runId, long sequence, string? reapply = null, RequestOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Creates a new run from an eligible prefix of a run that ended. The same key and request answer the first reset.</summary>
+    Task<Reset> ResetAsync(string runId, ResetRequest request, RequestOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>The resets made from a run, newest first (at most 200).</summary>
+    Task<IReadOnlyList<Reset>> ListResetsAsync(string runId, RequestOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>One reset of a run.</summary>
+    Task<Reset> GetResetAsync(string runId, string resetId, RequestOptions? options = null, CancellationToken cancellationToken = default);
 
     /// <summary>Reads a run.</summary>
     Task<Run> GetAsync(string runId, CancellationToken cancellationToken = default);

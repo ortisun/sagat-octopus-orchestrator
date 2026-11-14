@@ -39,6 +39,9 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
     ServeConfig {
         redis_callbacks: false,
         schedules_enabled: false,
+        batches_enabled: false,
+        reset_reapply_enabled: false,
+        reset_cancel_source_enabled: false,
         lake_enabled: false,
         openbao: Default::default(),
         bind_addr: "127.0.0.1:0".parse().expect("addr"),
@@ -60,6 +63,7 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
         streams: sagat_api_http::streams::StreamLimits::default(),
         runbook_base: "docs/runbooks/alerts.md".to_owned(),
         telemetry_lag_budget: std::time::Duration::from_secs(30),
+        registry: Default::default(),
     }
 }
 

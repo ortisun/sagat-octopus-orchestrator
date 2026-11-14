@@ -6,7 +6,7 @@ Internal REST transport, error metadata, bounds, JSON/TLS and safe observability
 
 ## Interface
 
-- Internal APIs are HttpCall/HttpAnswer/HttpTransport, ErrorCatalog, Limits, Log, Telemetry, Tls, Wire, Safe/SafeLogger and StrictJsonEncoder. [HttpTransport.cs:HttpCall] [HttpTransport.cs:HttpAnswer] [HttpTransport.cs:HttpTransport] [ErrorCatalog.cs:ErrorCatalog] [Limits.cs:Limits] [Log.cs:Log] [Telemetry.cs:Telemetry] [Tls.cs:Tls] [Wire.cs:Wire] [Safe.cs:SafeLogger] [StrictJsonEncoder.cs:StrictJsonEncoder]
+- Internal APIs are HttpCall/HttpAnswer/HttpTransport, ErrorCatalog, Limits, Log, Telemetry, Tls, Wire, Safe/SafeLogger, StrictJsonEncoder, Answers (the typed reads of an answer) and Requests/QueryBuilder (the checks and the spelling of a path and a query). [HttpTransport.cs:HttpCall] [HttpTransport.cs:HttpAnswer] [HttpTransport.cs:HttpTransport] [ErrorCatalog.cs:ErrorCatalog] [Limits.cs:Limits] [Log.cs:Log] [Telemetry.cs:Telemetry] [Tls.cs:Tls] [Wire.cs:Wire] [Safe.cs:SafeLogger] [StrictJsonEncoder.cs:StrictJsonEncoder] [Answers.cs:Answers] [Requests.cs:Requests] [Requests.cs:QueryBuilder]
 
 ## Invariants
 

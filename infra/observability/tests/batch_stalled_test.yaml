@@ -1,0 +1,120 @@
+rule_files:
+  - /rules/alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # jobs are active and their items never get an outcome: the alert fires after fifteen minutes
+  - interval: 1m
+    input_series:
+      - series: 'batch_jobs_active'
+        values: '2x40'
+      - series: 'batch_items_total{action="cancel",outcome="succeeded"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SagatBatchJobsStalled
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: SagatBatchJobsStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Batch jobs are active and no run has had an outcome from any of them for fifteen minutes.
+              runbook: docs/runbooks/batch-operations.md#5-when-a-job-does-not-move
+
+  # jobs are active and items keep getting outcomes: no alert
+  - interval: 1m
+    input_series:
+      - series: 'batch_jobs_active'
+        values: '2x40'
+      - series: 'batch_items_total{action="cancel",outcome="succeeded"}'
+        values: '0+10x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SagatBatchJobsStalled
+        exp_alerts: []
+
+  # no job is active: no alert, whatever the counter does
+  - interval: 1m
+    input_series:
+      - series: 'batch_jobs_active'
+        values: '0x40'
+      - series: 'batch_items_total{action="cancel",outcome="succeeded"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SagatBatchJobsStalled
+        exp_alerts: []
+
+  # jobs are active and no item has ever been counted (the series does not exist): the alert fires
+  - interval: 1m
+    input_series:
+      - series: 'batch_jobs_active'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SagatBatchJobsStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Batch jobs are active and no run has had an outcome from any of them for fifteen minutes.
+              runbook: docs/runbooks/batch-operations.md#5-when-a-job-does-not-move
+
+  # ---- SagatBatchSelectionFailed (G2093, G2097) ----------------------------------------------------------------------------------
+  # A job ended SELECTION_FAILED at minute 5: the alert is up for the quarter of an hour the counter's increase stays in the
+  # window, and goes when it leaves it
+  - interval: 1m
+    input_series:
+      - series: 'batch_selection_failures_total{outcome="failed"}'
+        values: '0x5 1x40'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: SagatBatchSelectionFailed
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: SagatBatchSelectionFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: A batch job ended SELECTION_FAILED. A burst of these across many jobs means the database, not the selectors.
+              runbook: docs/runbooks/batch-operations.md#51-a-selection-that-keeps-failing-selection_failed-g2093
+      - eval_time: 30m
+        alertname: SagatBatchSelectionFailed
+        exp_alerts: []
+
+  # rounds that fail and are tried again (outcome="retry") are a transient the platform absorbs: no alert while no job has ended
+  - interval: 1m
+    input_series:
+      - series: 'batch_selection_failures_total{outcome="retry"}'
+        values: '0+3x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SagatBatchSelectionFailed
+        exp_alerts: []
+
+  # other jobs keep getting outcomes, so `SagatBatchJobsStalled` stays silent, and a job that failed its selection is told by its own
+  # alert (the reason this alert exists)
+  - interval: 1m
+    input_series:
+      - series: 'batch_jobs_active'
+        values: '3x40'
+      - series: 'batch_items_total{action="cancel",outcome="succeeded"}'
+        values: '0+10x40'
+      - series: 'batch_selection_failures_total{outcome="failed"}'
+        values: '0x20 1x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SagatBatchJobsStalled
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: SagatBatchSelectionFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: A batch job ended SELECTION_FAILED. A burst of these across many jobs means the database, not the selectors.
+              runbook: docs/runbooks/batch-operations.md#51-a-selection-that-keeps-failing-selection_failed-g2093

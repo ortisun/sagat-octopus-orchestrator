@@ -91,12 +91,20 @@ pub struct DeclaredUpdateDefinition {
     result: Expression,
     result_schema: DeclaredSchema,
     disclosure: ResultDisclosure,
+    reapply_on_reset: bool,
 }
 
 impl DeclaredUpdateDefinition {
     #[must_use]
     pub const fn name(&self) -> &ActivityName {
         &self.name
+    }
+
+    /// Whether the arguments of every applied instance are kept so a reset can validate and apply them
+    /// again (`reapplyOnReset`, feature 018). Absent in the document means no.
+    #[must_use]
+    pub const fn reapply_on_reset(&self) -> bool {
+        self.reapply_on_reset
     }
 
     #[must_use]
@@ -417,6 +425,28 @@ fn queries(
     Ok(parsed)
 }
 
+/// `reapplyOnReset` of an Update declaration: a boolean, false when it is not written.
+fn reapply_on_reset(operation: &Map<String, Value>, path: &str) -> Result<bool, IrError> {
+    match operation.get("reapplyOnReset") {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(issue(
+            format!("{path}/reapplyOnReset"),
+            "expected a boolean",
+        )),
+    }
+}
+
+/// The declaration as its digest is taken: a default that is written is the same declaration as one that is
+/// not, and a document made before a field existed keeps the digest it had.
+fn declaration_without_defaults(operation: &Map<String, Value>) -> Value {
+    let mut declaration = operation.clone();
+    if declaration.get("reapplyOnReset") == Some(&Value::Bool(false)) {
+        declaration.remove("reapplyOnReset");
+    }
+    Value::Object(declaration)
+}
+
 fn updates(
     value: Option<&Value>,
 ) -> Result<BTreeMap<ActivityName, DeclaredUpdateDefinition>, IrError> {
@@ -451,9 +481,12 @@ fn updates(
                     })
             })
             .transpose()?;
+        let reapply_on_reset = reapply_on_reset(operation, &path)?;
         let definition = DeclaredUpdateDefinition {
             name: name.clone(),
-            digest: canonical::digest_of(&canonical::canonical_json(value)),
+            digest: canonical::digest_of(&canonical::canonical_json(
+                &declaration_without_defaults(operation),
+            )),
             args_schema: schema(
                 operation
                     .get("argsSchema")
@@ -480,6 +513,7 @@ fn updates(
                 &format!("{path}/resultSchema"),
             )?,
             disclosure: disclosure(operation, &path)?,
+            reapply_on_reset,
         };
         parsed.insert(name, definition);
     }

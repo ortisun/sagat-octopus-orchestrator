@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use sagat_application::api_admission::{ApiAdmissionService, ApiAdmissionStore};
+use sagat_application::batch_api::BatchUseCase;
 use sagat_application::bindings::{BindingService, BindingStore};
 use sagat_application::clock::Clock;
 use sagat_application::connectors::{ConnectorService, ConnectorStore};
@@ -17,6 +18,7 @@ use sagat_application::operations::{AlertReader, AuditStore, OperationsService, 
 use sagat_application::outbound::{OutboundService, OutboundStore};
 use sagat_application::quotas::{QuotaService, QuotaStore};
 use sagat_application::reveal_grants::{RevealGrantService, RevealGrantStore};
+use sagat_application::schedule_disclosure::ScheduleInputDisclosureUseCase;
 use sagat_application::schedules::ScheduleUseCase;
 use sagat_application::scripts::{RunnerService, RunnerStore, ScriptService, ScriptStore};
 use sagat_application::secrets::{SecretService, SecretStore};
@@ -63,6 +65,16 @@ pub trait Governance: Core + Admission {
     fn schedules(&self) -> Option<&Arc<dyn ScheduleUseCase>> {
         None
     }
+    /// `None` when the instance does not disclose the input of a schedule: that route is then not
+    /// served at all.
+    fn schedule_input_disclosures(&self) -> Option<&Arc<dyn ScheduleInputDisclosureUseCase>> {
+        None
+    }
+    /// `None` when the instance does not serve batch operations: the batch routes are then not
+    /// served at all.
+    fn batches(&self) -> Option<&Arc<dyn BatchUseCase>> {
+        None
+    }
     /// `None` when the instance has no key ring (deliveries are signed): the subscription routes are
     /// then not served at all.
     fn outbound(&self) -> Option<&OutboundService<Self::Store, Self::Clock>>;
@@ -93,6 +105,8 @@ pub struct GovState<S, C, G> {
     events: Option<Arc<EventService<G, C>>>,
     event_payloads: Option<Arc<dyn EventPayloadUseCase>>,
     schedules: Option<Arc<dyn ScheduleUseCase>>,
+    schedule_input_disclosures: Option<Arc<dyn ScheduleInputDisclosureUseCase>>,
+    batches: Option<Arc<dyn BatchUseCase>>,
     outbound: Option<Arc<OutboundService<G, C>>>,
     connectors: Option<Arc<ConnectorService<G, C>>>,
     scripts: Option<Arc<ScriptService<G, C>>>,
@@ -123,6 +137,8 @@ impl<S, C, G> GovState<S, C, G> {
             events: None,
             event_payloads: None,
             schedules: None,
+            schedule_input_disclosures: None,
+            batches: None,
             outbound: None,
             connectors: None,
             scripts: None,
@@ -196,6 +212,23 @@ impl<S, C, G> GovState<S, C, G> {
         self
     }
 
+    /// Serves the disclosure of the input of a schedule, backed by `disclosures`.
+    #[must_use]
+    pub fn with_schedule_input_disclosures(
+        mut self,
+        disclosures: Arc<dyn ScheduleInputDisclosureUseCase>,
+    ) -> Self {
+        self.schedule_input_disclosures = Some(disclosures);
+        self
+    }
+
+    /// Serves the batch operation routes, backed by `batches`.
+    #[must_use]
+    pub fn with_batches(mut self, batches: Arc<dyn BatchUseCase>) -> Self {
+        self.batches = Some(batches);
+        self
+    }
+
     /// Serves the event routes (endpoints, publishing, the public webhook URL), backed by `events`.
     #[must_use]
     pub fn with_events(mut self, events: EventService<G, C>) -> Self {
@@ -219,6 +252,8 @@ impl<S, C, G> Clone for GovState<S, C, G> {
             events: self.events.clone(),
             event_payloads: self.event_payloads.clone(),
             schedules: self.schedules.clone(),
+            schedule_input_disclosures: self.schedule_input_disclosures.clone(),
+            batches: self.batches.clone(),
             outbound: self.outbound.clone(),
             connectors: self.connectors.clone(),
             scripts: self.scripts.clone(),
@@ -262,6 +297,10 @@ where
 
     fn tenant_concurrency(&self) -> &Arc<TenantConcurrency> {
         self.core.tenant_concurrency()
+    }
+
+    fn serving_gate(&self) -> Option<&Arc<sagat_application::instances::ServingGate>> {
+        self.core.serving_gate()
     }
 
     async fn authenticate(
@@ -343,6 +382,14 @@ where
 
     fn schedules(&self) -> Option<&Arc<dyn ScheduleUseCase>> {
         self.schedules.as_ref()
+    }
+
+    fn schedule_input_disclosures(&self) -> Option<&Arc<dyn ScheduleInputDisclosureUseCase>> {
+        self.schedule_input_disclosures.as_ref()
+    }
+
+    fn batches(&self) -> Option<&Arc<dyn BatchUseCase>> {
+        self.batches.as_ref()
     }
 
     fn outbound(&self) -> Option<&OutboundService<G, C>> {

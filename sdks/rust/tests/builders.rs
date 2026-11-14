@@ -205,3 +205,41 @@ fn state_schema_byte_budget_measures_canonical_text() {
         .end("done", None);
     builder.build().expect("canonical schema fits the budget");
 }
+
+fn declared_update(reapply_on_reset: bool) -> serde_json::Value {
+    use sagat_octopus_orchestrator_sdk::workflow::{
+        DisclosurePolicy, StateDefinition, UpdateDefinition,
+    };
+    let builder = Builder::new("account-state");
+    builder
+        .state(StateDefinition {
+            schema: json!({"type":"object","properties":{"balance":{"type":"integer"}},"required":["balance"],"additionalProperties":false}),
+            initial: "input.account".into(),
+            updates: [(
+                "balance.credit".to_owned(),
+                UpdateDefinition {
+                    args_schema: json!({"type":"integer"}),
+                    result_schema: json!({"type":"integer"}),
+                    state: "state".into(),
+                    result: "newState.balance".into(),
+                    disclosure: Some(DisclosurePolicy::DeclaredBusinessResultV1),
+                    reapply_on_reset,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Default::default()
+        })
+        .end("done", None);
+    builder.build().expect("a valid workflow")["state"]["updates"]["balance.credit"].clone()
+}
+
+#[test]
+fn an_update_that_opts_in_writes_reapply_on_reset() {
+    assert_eq!(declared_update(true)["reapplyOnReset"], json!(true));
+}
+
+#[test]
+fn the_default_is_not_written_so_a_document_that_does_not_opt_in_is_the_one_made_before() {
+    assert!(declared_update(false).get("reapplyOnReset").is_none());
+}

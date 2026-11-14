@@ -17,8 +17,8 @@ use sagat_infra_blobstore::{BlobSettings, BlobStoreConfig, ConfigError as BlobCo
 use sagat_infra_connectors::redis::RedisConfig;
 use sagat_infra_nats::NatsConfig;
 use sagat_scheduler::{
-    DeliverySettings, DispatchSettings, EventDispatchSettings, KeeperSettings, MonitorSettings,
-    ProjectorSettings, ScheduleSettings, SchedulerSettings,
+    BatchSettings, DeliverySettings, DispatchSettings, EventDispatchSettings, KeeperSettings,
+    MonitorSettings, ProjectorSettings, ResetSettings, ScheduleSettings, SchedulerSettings,
 };
 use sagat_telemetry::OtlpConfig;
 
@@ -39,6 +39,28 @@ pub struct MonitorConfig {
     pub settings: MonitorSettings,
     /// How often it looks.
     pub interval: Duration,
+}
+
+/// The passes of the engine that run only where the operator asked for them, by name (D2009).
+pub const PASS_SCHEDULES: &str = "schedules";
+pub const PASS_BATCHES: &str = "batches";
+/// The pass of the resets that wait for their source: it completes them when the source has ended **and expires them when
+/// it did not end within the window**; the expiry is not a pass of its own, so the flag governs both (D2080).
+pub const PASS_RESETS: &str = "resets";
+
+/// Which of the optional passes this configuration runs: a function of the configuration alone, so that "the pass that
+/// completes the resets that wait for their source is absent unless the operator turned it on" is a thing a test can
+/// say (it was the one pass whose absence nothing could assert, G1992). `serve` starts exactly these.
+#[must_use]
+pub fn optional_passes(config: &EngineConfig) -> Vec<&'static str> {
+    [
+        (config.schedules_enabled, PASS_SCHEDULES),
+        (config.batches_enabled, PASS_BATCHES),
+        (config.reset_cancel_source_enabled, PASS_RESETS),
+    ]
+    .into_iter()
+    .filter_map(|(enabled, name)| enabled.then_some(name))
+    .collect()
 }
 
 /// Everything `serve` needs beyond the shared database settings.
@@ -84,6 +106,20 @@ pub struct EngineConfig {
     pub schedules: ScheduleSettings,
     /// Pause between schedule rounds when the last one found nothing to do.
     pub schedule_poll: Duration,
+    /// Whether the replica runs batch jobs (`SAGAT_BATCHES_ENABLED`, off by default until the
+    /// feature is released): the REST routes can create jobs either way, none runs without it.
+    pub batches_enabled: bool,
+    pub batches: BatchSettings,
+    /// Pause between batch rounds when the last one found nothing to do.
+    pub batch_poll: Duration,
+    /// Whether the replica completes the resets that wait for their source run to end
+    /// (`SAGAT_RESET_CANCEL_SOURCE_ENABLED`, off by default until the feature is released): the REST routes can accept
+    /// them either way (under the same variable of the control plane), none is completed without it, **and none expires**:
+    /// the expiry is a step of the same pass (D2080).
+    pub reset_cancel_source_enabled: bool,
+    pub resets: ResetSettings,
+    /// Pause between rounds of the pass that completes pending resets when the last one found nothing to do.
+    pub reset_poll: Duration,
     /// The worker that sends outbound webhooks.
     pub deliveries: DeliverySettings,
     /// Pause between delivery rounds when the last one found nothing to send.
@@ -104,6 +140,9 @@ pub struct EngineConfig {
     pub openbao: Option<sagat_infra_secrets::openbao::OpenBaoSettings>,
     pub blobs: Option<BlobSettings>,
     pub blob_transfer: BlobTransfer,
+    /// How the replica keeps its place in the instance-capability registry (`FR-018-052`). Not read from the
+    /// environment: a test sets it.
+    pub registry: sagat_application::instances::RegistrySettings,
 }
 
 /// The most candidates of one pass a scheduler acts on at once; each holds a database connection.
@@ -280,6 +319,27 @@ fn seconds(
         name,
         optional(get, name, default.as_secs())?,
     )?))
+}
+
+/// How long a reset that waits for its source may wait before it expires (`SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS`,
+/// D2059): whole seconds like the other durations of the engine, a day when unset, an hour at least and seven days at
+/// most. A value outside the bounds, or one that is not a whole number of seconds, is refused naming the variable
+/// instead of being brought to a bound: a window that is not the one the operator meant is an entry that expires
+/// earlier, or later, than they said.
+fn reset_expiry(get: Lookup<'_>) -> Result<Duration, ConfigError> {
+    const NAME: &str = "SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS";
+    let given = seconds(get, NAME, ResetSettings::DEFAULT_EXPIRY)?;
+    if given < ResetSettings::MIN_EXPIRY || given > ResetSettings::MAX_EXPIRY {
+        return Err(ConfigError::Invalid {
+            name: NAME,
+            reason: format!(
+                "must be from {} (an hour) to {} (seven days) seconds",
+                ResetSettings::MIN_EXPIRY.as_secs(),
+                ResetSettings::MAX_EXPIRY.as_secs()
+            ),
+        });
+    }
+    Ok(given)
 }
 
 fn capacity(get: Lookup<'_>, name: &'static str, default: usize) -> Result<usize, ConfigError> {
@@ -598,11 +658,85 @@ impl EngineConfig {
                 name: "SAGAT_SCHEDULES_ROUND_ACTIONS",
                 reason: format!("must be at most {}", ScheduleSettings::MAX_ROUND_ACTIONS),
             })?,
+            // the search for other tenants rests like the scheduler's own
+            discovery_rest,
             ..schedule_defaults
         };
         let schedule_poll = Duration::from_millis(positive(
             "SAGAT_SCHEDULES_POLL_MS",
             optional(get, "SAGAT_SCHEDULES_POLL_MS", 1_000u64)?,
+        )?);
+
+        let batches_enabled = flag(get, "SAGAT_BATCHES_ENABLED")?;
+        let batch_defaults = BatchSettings::default();
+        let batches = BatchSettings {
+            batch: u32::try_from(positive(
+                "SAGAT_BATCHES_BATCH",
+                optional(get, "SAGAT_BATCHES_BATCH", u64::from(batch_defaults.batch))?,
+            )?)
+            .ok()
+            .filter(|batch| *batch <= MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_BATCHES_BATCH",
+                reason: format!("must be at most {MAX_BATCH}"),
+            })?,
+            round_actions: u32::try_from(positive(
+                "SAGAT_BATCHES_ROUND_ACTIONS",
+                optional(
+                    get,
+                    "SAGAT_BATCHES_ROUND_ACTIONS",
+                    u64::from(batch_defaults.round_actions),
+                )?,
+            )?)
+            .ok()
+            .filter(|actions| *actions <= BatchSettings::MAX_ROUND_ACTIONS)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_BATCHES_ROUND_ACTIONS",
+                reason: format!("must be at most {}", BatchSettings::MAX_ROUND_ACTIONS),
+            })?,
+            ..batch_defaults
+        };
+        let batch_poll = Duration::from_millis(positive(
+            "SAGAT_BATCHES_POLL_MS",
+            optional(get, "SAGAT_BATCHES_POLL_MS", 1_000u64)?,
+        )?);
+
+        let reset_cancel_source_enabled = flag(get, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")?;
+        let reset_defaults = ResetSettings::default();
+        let resets = ResetSettings {
+            batch: u32::try_from(positive(
+                "SAGAT_RESET_CANCEL_SOURCE_BATCH",
+                optional(
+                    get,
+                    "SAGAT_RESET_CANCEL_SOURCE_BATCH",
+                    u64::from(reset_defaults.batch),
+                )?,
+            )?)
+            .ok()
+            .filter(|batch| *batch <= ResetSettings::MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_RESET_CANCEL_SOURCE_BATCH",
+                reason: format!("must be at most {}", ResetSettings::MAX_BATCH),
+            })?,
+            per_tenant: u32::try_from(positive(
+                "SAGAT_RESET_CANCEL_SOURCE_PER_TENANT",
+                optional(
+                    get,
+                    "SAGAT_RESET_CANCEL_SOURCE_PER_TENANT",
+                    u64::from(reset_defaults.per_tenant),
+                )?,
+            )?)
+            .ok()
+            .filter(|share| *share <= ResetSettings::MAX_BATCH)
+            .ok_or_else(|| ConfigError::Invalid {
+                name: "SAGAT_RESET_CANCEL_SOURCE_PER_TENANT",
+                reason: format!("must be at most {}", ResetSettings::MAX_BATCH),
+            })?,
+            expiry: reset_expiry(get)?,
+        };
+        let reset_poll = Duration::from_millis(positive(
+            "SAGAT_RESET_CANCEL_SOURCE_POLL_MS",
+            optional(get, "SAGAT_RESET_CANCEL_SOURCE_POLL_MS", 1_000u64)?,
         )?);
 
         let delivery_defaults = DeliverySettings::default();
@@ -816,6 +950,12 @@ impl EngineConfig {
             lake_enabled,
             schedules,
             schedule_poll,
+            batches_enabled,
+            batches,
+            batch_poll,
+            reset_cancel_source_enabled,
+            resets,
+            reset_poll,
             deliveries,
             delivery_poll,
             connector_refresh,
@@ -827,6 +967,7 @@ impl EngineConfig {
             openbao,
             blobs,
             blob_transfer,
+            registry: sagat_application::instances::RegistrySettings::default(),
         })
     }
 }

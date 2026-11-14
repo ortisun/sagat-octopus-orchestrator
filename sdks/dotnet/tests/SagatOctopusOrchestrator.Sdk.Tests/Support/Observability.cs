@@ -117,3 +117,68 @@ internal sealed class SpanCapture : IDisposable
 
     public void Dispose() => listener.Dispose();
 }
+
+/// <summary>
+/// Where a tracer provider's in-memory exporter puts the spans of a test. The SDK's <see cref="ActivitySource"/> is process-wide, so the
+/// spans of every test that runs in parallel reach the provider of this one too, from other threads, while it reads: a plain
+/// <see cref="List{T}"/> enumerated then throws "Collection was modified" (CI, 2026-11-11, <c>TelemetryTests</c>). Enumerating this one
+/// walks a copy taken under the lock.
+/// </summary>
+internal sealed class ExportedSpans : ICollection<Activity>
+{
+    private readonly object gate = new();
+    private readonly List<Activity> items = [];
+
+    internal Activity[] Snapshot()
+    {
+        lock (gate)
+        {
+            return [.. items];
+        }
+    }
+
+    public int Count
+    {
+        get
+        {
+            lock (gate)
+            {
+                return items.Count;
+            }
+        }
+    }
+
+    public bool IsReadOnly => false;
+
+    public void Add(Activity item)
+    {
+        lock (gate)
+        {
+            items.Add(item);
+        }
+    }
+
+    public void Clear()
+    {
+        lock (gate)
+        {
+            items.Clear();
+        }
+    }
+
+    public bool Contains(Activity item) => Array.IndexOf(Snapshot(), item) >= 0;
+
+    public void CopyTo(Activity[] array, int arrayIndex) => Snapshot().CopyTo(array, arrayIndex);
+
+    public bool Remove(Activity item)
+    {
+        lock (gate)
+        {
+            return items.Remove(item);
+        }
+    }
+
+    public IEnumerator<Activity> GetEnumerator() => ((IEnumerable<Activity>)Snapshot()).GetEnumerator();
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+}

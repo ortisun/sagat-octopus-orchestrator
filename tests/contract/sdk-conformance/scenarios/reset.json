@@ -1,0 +1,531 @@
+{
+  "name": "reset",
+  "description": "Feature 018 US06: resetting a run that ended to a point of its journal. The points are listed and one is previewed (what the new run keeps, what it runs again, whether the caller must acknowledge it); a reset that runs completed steps again needs the acknowledgement; the reset creates a new run that finishes, is recorded in the register of the source and is read back by id; the same key answers the first reset; a run that is still open, a sequence that is not a point and a policy the server does not know are refused with their reasons; with `sourcePolicy: CANCEL_SOURCE` a run that is still open is cancelled and the reset waits for it (`PENDING_SOURCE`, no run yet; the same key answers the same entry, another request under it is refused, the register and the read by id show it), and a run that has ended is simply reset at once. A run that was signalled is reset with its signal delivered again (the preview lists it, the report says it was delivered), and reset to its start the same signal finds nothing waiting for it and is reported rejected. The server runs with the reapply and the cancelling of a source turned on (the engine too: it makes the run once the source has ended). The run held in flight is let go after the observations, and the scenario waits, through the log of the worker that serves it, for the run the engine makes to do its step, so that nothing is in flight when the scenario ends.",
+  "server": {
+    "resetReapply": true,
+    "resetCancelSource": true
+  },
+  "workflows": {
+    "two": {
+      "name": "reset-two",
+      "description": "Two served activities in a row.",
+      "program": [
+        {
+          "op": "step",
+          "id": "a",
+          "activity": "reset.a"
+        },
+        {
+          "op": "step",
+          "id": "b",
+          "activity": "reset.b"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    },
+    "hold": {
+      "name": "reset-hold",
+      "description": "An activity nobody serves: the run stays open.",
+      "program": [
+        {
+          "op": "step",
+          "id": "hold",
+          "activity": "reset.hold"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    },
+    "signalled": {
+      "name": "reset-signalled",
+      "description": "An activity, a wait for a signal, and an activity.",
+      "program": [
+        {
+          "op": "step",
+          "id": "a",
+          "activity": "reset.a"
+        },
+        {
+          "op": "waitForEvent",
+          "id": "paid",
+          "options": {
+            "eventType": "payment.confirmed",
+            "correlationExpr": "input.orderId",
+            "timeoutMs": 600000
+          }
+        },
+        {
+          "op": "step",
+          "id": "b",
+          "activity": "reset.b"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    },
+    "held": {
+      "name": "reset-held",
+      "description": "An activity a worker holds for a few seconds and does not stop when the run is cancelled; the run that is made from it holds it again.",
+      "program": [
+        {
+          "op": "step",
+          "id": "held",
+          "activity": "reset.held"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    }
+  },
+  "workers": {
+    "w1": {
+      "workerName": "reset-worker",
+      "protocolVersion": "1.4",
+      "maxInflight": 2,
+      "activities": {
+        "reset.a": {
+          "behavior": {
+            "returns": {
+              "step": "a"
+            }
+          }
+        },
+        "reset.b": {
+          "behavior": {
+            "returns": {
+              "step": "b"
+            }
+          }
+        }
+      }
+    },
+    "w2": {
+      "workerName": "reset-holder",
+      "protocolVersion": "1.4",
+      "maxInflight": 1,
+      "heartbeatIntervalMs": 100,
+      "activities": {
+        "reset.held": {
+          "behavior": {
+            "sleepMs": 5000,
+            "ignoresCancel": true,
+            "returns": {
+              "step": "held"
+            }
+          }
+        }
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "source",
+      "op": "start",
+      "workflow": "two",
+      "input": {},
+      "businessId": "reset-{{unique}}",
+      "idempotencyKey": "reset-source-{{unique}}"
+    },
+    {
+      "id": "source-done",
+      "op": "waitForCompletion",
+      "run": "source",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "points",
+      "op": "resetPoints",
+      "run": "source"
+    },
+    {
+      "id": "points-first-page",
+      "op": "resetPoints",
+      "run": "source",
+      "limit": 1
+    },
+    {
+      "id": "preview-start",
+      "op": "resetPreview",
+      "run": "source",
+      "sequence": 1
+    },
+    {
+      "id": "preview-after-a",
+      "op": "resetPreview",
+      "run": "source",
+      "sequence": 4
+    },
+    {
+      "id": "preview-not-a-point",
+      "op": "resetPreview",
+      "run": "source",
+      "sequence": 2
+    },
+    {
+      "id": "preview-signals",
+      "op": "resetPreview",
+      "run": "source",
+      "sequence": 4,
+      "reapply": "SIGNALS"
+    },
+    {
+      "id": "preview-unknown-policy",
+      "op": "resetPreview",
+      "run": "source",
+      "sequence": 4,
+      "reapply": "SOMETIMES"
+    },
+    {
+      "id": "not-acknowledged",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "idempotencyKey": "reset-first-{{unique}}"
+    },
+    {
+      "id": "reapply-unknown-policy",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "reapply": "SOMETIMES",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-reapply-{{unique}}"
+    },
+    {
+      "id": "short-reason",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "no",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-short-{{unique}}"
+    },
+    {
+      "id": "reset",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "acknowledgeReexecution": true,
+      "businessId": "DROP",
+      "idempotencyKey": "reset-made-{{unique}}"
+    },
+    {
+      "id": "reset-again",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "acknowledgeReexecution": true,
+      "businessId": "DROP",
+      "idempotencyKey": "reset-made-{{unique}}"
+    },
+    {
+      "id": "reset-other-sequence",
+      "op": "reset",
+      "run": "source",
+      "sequence": 1,
+      "reason": "run b again after a",
+      "acknowledgeReexecution": true,
+      "businessId": "DROP",
+      "idempotencyKey": "reset-made-{{unique}}"
+    },
+    {
+      "id": "new-run-done",
+      "op": "waitForCompletion",
+      "run": "reset",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "register",
+      "op": "resets",
+      "run": "source"
+    },
+    {
+      "id": "register-entry",
+      "op": "getReset",
+      "run": "source",
+      "reset": "reset"
+    },
+    {
+      "id": "register-of-the-new-run",
+      "op": "resets",
+      "run": "reset"
+    },
+    {
+      "id": "events-of-the-new-run",
+      "op": "events",
+      "run": "reset"
+    },
+    {
+      "id": "open",
+      "op": "start",
+      "workflow": "hold",
+      "input": {},
+      "idempotencyKey": "reset-open-{{unique}}"
+    },
+    {
+      "id": "open-points",
+      "op": "resetPoints",
+      "run": "open"
+    },
+    {
+      "id": "open-source",
+      "op": "reset",
+      "run": "open",
+      "sequence": 1,
+      "reason": "this run has not ended",
+      "idempotencyKey": "reset-open-source-{{unique}}"
+    },
+    {
+      "id": "other-tenant",
+      "op": "resetPoints",
+      "run": "source",
+      "token": "other"
+    },
+    {
+      "id": "viewer-cannot-reset",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "a viewer may not do this",
+      "acknowledgeReexecution": true,
+      "token": "viewer",
+      "idempotencyKey": "reset-viewer-{{unique}}"
+    },
+    {
+      "id": "signalled",
+      "op": "start",
+      "workflow": "signalled",
+      "input": {
+        "orderId": "o-{{unique}}"
+      },
+      "idempotencyKey": "reset-signalled-{{unique}}"
+    },
+    {
+      "id": "signalled-waits",
+      "op": "awaitJournal",
+      "run": "signalled",
+      "eventType": "wait.started",
+      "stepId": "paid",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "signalled-signal",
+      "op": "signal",
+      "run": "signalled",
+      "name": "payment.confirmed",
+      "payload": {
+        "paid": "12.50"
+      }
+    },
+    {
+      "id": "signalled-done",
+      "op": "waitForCompletion",
+      "run": "signalled",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "signalled-points",
+      "op": "resetPoints",
+      "run": "signalled"
+    },
+    {
+      "id": "signalled-preview",
+      "op": "resetPreview",
+      "run": "signalled",
+      "sequence": 4,
+      "reapply": "SIGNALS"
+    },
+    {
+      "id": "signalled-preview-none",
+      "op": "resetPreview",
+      "run": "signalled",
+      "sequence": 4,
+      "reapply": "NONE"
+    },
+    {
+      "id": "signalled-reset",
+      "op": "reset",
+      "run": "signalled",
+      "sequence": 4,
+      "reason": "deliver the payment again after a",
+      "reapply": "SIGNALS",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-signalled-made-{{unique}}"
+    },
+    {
+      "id": "signalled-reset-again",
+      "op": "reset",
+      "run": "signalled",
+      "sequence": 4,
+      "reason": "deliver the payment again after a",
+      "reapply": "SIGNALS",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-signalled-made-{{unique}}"
+    },
+    {
+      "id": "signalled-reset-done",
+      "op": "waitForCompletion",
+      "run": "signalled-reset",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "signalled-reset-events",
+      "op": "events",
+      "run": "signalled-reset"
+    },
+    {
+      "id": "signalled-reset-early",
+      "op": "reset",
+      "run": "signalled",
+      "sequence": 1,
+      "reason": "deliver the payment again from the start",
+      "reapply": "ALL",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-signalled-early-{{unique}}"
+    },
+    {
+      "id": "signalled-reset-early-waits",
+      "op": "awaitJournal",
+      "run": "signalled-reset-early",
+      "eventType": "wait.started",
+      "stepId": "paid",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "signalled-register",
+      "op": "resets",
+      "run": "signalled"
+    },
+    {
+      "id": "held",
+      "op": "start",
+      "workflow": "held",
+      "input": {},
+      "idempotencyKey": "reset-held-{{unique}}"
+    },
+    {
+      "id": "held-running",
+      "op": "awaitJournal",
+      "run": "held",
+      "eventType": "step.started",
+      "stepId": "held",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "held-cancel-source",
+      "op": "reset",
+      "run": "held",
+      "sequence": 1,
+      "reason": "cancel it and run it again",
+      "sourcePolicy": "CANCEL_SOURCE",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-held-cancel-{{unique}}"
+    },
+    {
+      "id": "held-cancel-source-again",
+      "op": "reset",
+      "run": "held",
+      "sequence": 1,
+      "reason": "cancel it and run it again",
+      "sourcePolicy": "CANCEL_SOURCE",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-held-cancel-{{unique}}"
+    },
+    {
+      "id": "held-cancel-source-other-request",
+      "op": "reset",
+      "run": "held",
+      "sequence": 1,
+      "reason": "cancel it and run it again",
+      "sourcePolicy": "CANCEL_SOURCE",
+      "acknowledgeReexecution": false,
+      "idempotencyKey": "reset-held-cancel-{{unique}}"
+    },
+    {
+      "id": "held-status",
+      "op": "get",
+      "run": "held"
+    },
+    {
+      "id": "held-register",
+      "op": "resets",
+      "run": "held"
+    },
+    {
+      "id": "held-entry",
+      "op": "getReset",
+      "run": "held",
+      "reset": "held-cancel-source"
+    },
+    {
+      "id": "held-source-done",
+      "op": "waitForCompletion",
+      "run": "held",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "held-new-run-done-by-the-worker",
+      "op": "awaitWorkerLog",
+      "worker": "w2",
+      "count": 2,
+      "timeoutMs": 60000
+    },
+    {
+      "id": "held-entry-made",
+      "op": "getReset",
+      "run": "held",
+      "reset": "held-cancel-source"
+    },
+    {
+      "id": "held-register-made",
+      "op": "resets",
+      "run": "held"
+    },
+    {
+      "id": "held-new-run-done",
+      "op": "waitForCompletion",
+      "run": "held-entry-made",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "ended-source-cancel-source",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "sourcePolicy": "CANCEL_SOURCE",
+      "acknowledgeReexecution": true,
+      "businessId": "DROP",
+      "idempotencyKey": "reset-ended-cancel-{{unique}}"
+    },
+    {
+      "id": "ended-source-cancel-source-done",
+      "op": "waitForCompletion",
+      "run": "ended-source-cancel-source",
+      "timeoutMs": 60000
+    },
+    {
+      "id": "unknown-source-policy",
+      "op": "reset",
+      "run": "source",
+      "sequence": 4,
+      "reason": "run b again after a",
+      "sourcePolicy": "SOMETIMES",
+      "acknowledgeReexecution": true,
+      "idempotencyKey": "reset-source-policy-{{unique}}"
+    }
+  ]
+}

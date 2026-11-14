@@ -77,6 +77,12 @@ internal static partial class StateDefinitionValidator
                     entry["validate"] = Expression(update.Validate, $"update {name}.validate");
                 }
 
+                if (update.ReapplyOnReset)
+                {
+                    // the default is not written, so a document that does not opt in is the one made before
+                    entry["reapplyOnReset"] = true;
+                }
+
                 declared[name] = entry;
             }
 

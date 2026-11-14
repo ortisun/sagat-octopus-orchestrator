@@ -28,7 +28,7 @@ public sealed class TelemetryTests
         await using var server = await FakeRestServer.StartAsync();
         server.Handler = _ => new FakeAnswer(200, Run);
         var space = Space();
-        var exported = new List<Activity>();
+        var exported = new ExportedSpans();
         using var provider = global::OpenTelemetry.Sdk.CreateTracerProviderBuilder()
             .AddSource(SdkInfo.ActivitySourceName, "Tests.Caller")
             .AddInMemoryExporter(exported)

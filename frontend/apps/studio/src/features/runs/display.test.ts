@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RuntimeEdge, RuntimeNode } from '../../api/types';
-import { edgeKindWords, kindView, waitingWords } from './display';
+import { edgeKindWords, kindView, shortId, waitingWords } from './display';
 
 const node = (over: Partial<RuntimeNode>): RuntimeNode => ({ id: 'n', type: 'activity', status: 'NOT_STARTED', ...over });
 
@@ -28,5 +28,16 @@ describe('what a run graph says about the routes and waits of the structured pri
     const view = kindView(node({ type: 'quantumGate' }));
     expect(view.unsupported).toBe(true);
     expect(view.label).toBe('Unsupported node (quantumGate)');
+  });
+});
+
+describe('shortId', () => {
+  it('is the end of an identifier: they are time-ordered, so the start is the same for everything made within a minute', () => {
+    const first = '01a1c079-b050-7696-afaa-f4a5466f8152';
+    const second = '01a1c079-b0aa-7696-afaa-f4a5466f8153';
+    expect(shortId(first)).toBe('466f8152');
+    expect(first.slice(0, 8)).toBe(second.slice(0, 8));
+    expect(shortId(first)).not.toBe(shortId(second));
+    expect(shortId('abc')).toBe('abc');
   });
 });

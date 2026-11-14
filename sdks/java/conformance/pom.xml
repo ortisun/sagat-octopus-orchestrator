@@ -30,6 +30,12 @@
       <groupId>io.grpc</groupId>
       <artifactId>grpc-api</artifactId>
     </dependency>
+    <!-- Only the tests of the runner's own mapping use it; the runner's runtime classpath (classpath.txt) leaves it out. -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

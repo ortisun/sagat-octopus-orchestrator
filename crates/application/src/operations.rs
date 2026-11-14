@@ -205,6 +205,10 @@ pub struct Sample {
     /// seconds, zero when nothing is: the scheduler's lag, which is what its replicas scale on
     /// (`FR-010-004`).
     pub overdue: Overdue,
+    /// Batch jobs that are selecting, running or being cancelled (feature 018).
+    pub batch_jobs_active: u64,
+    /// Resets that wait for their source run to end (`CANCEL_SOURCE`, feature 018).
+    pub resets_pending: u64,
 }
 
 /// How late the scheduler is, by pass (seconds; zero when nothing is overdue).
@@ -215,6 +219,15 @@ pub struct Overdue {
     pub retries: f64,
     pub leases: f64,
     pub deadlines: f64,
+    /// A schedule whose next time has passed and which the schedule pass has not acted on.
+    pub schedules: f64,
+    /// A batch job the batch pass would take (its slot has come and, while it selects, no older
+    /// transaction is still open) and has not. A job held back by an older transaction is not late:
+    /// no replica added would change that.
+    pub batches: f64,
+    /// A pending reset whose source ended and which the completion pass has not completed: since when its source
+    /// has been over. A reset whose source is still open is not late: it waits for the run, not for the engine.
+    pub resets: f64,
 }
 
 /// A pool of workers as the operator defines it: a name and the activities its workers serve. The

@@ -140,6 +140,13 @@ async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
             tracing::info!(tenant = %request.tenant_id, "scheduling weight changed");
             Ok(())
         }
+        Command::ScheduleTriggerHandover(args) => {
+            let said = sagat_control_plane::handover::run_handover_command(&config.database, &args)
+                .await?;
+            // the operator's answer goes to standard output, as the key of `script-key` does
+            println!("{said}");
+            Ok(())
+        }
         Command::ProvisionTenant => {
             let request = ProvisionConfig::from_lookup(&env_lookup)?;
             sagat_control_plane::provision_tenant(config, &request).await?;
