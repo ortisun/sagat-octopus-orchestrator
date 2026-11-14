@@ -44,6 +44,11 @@ gap is closed by evidence, not by deletion. Measurements are added as dated sect
 | D042-035 | The delivery row is inserted once, last in the apply transaction, with its final outcome; it is never updated and is deleted with the inbox row. A chain of only stateless stages takes no key row. Supersedes the order of D042-005 for `emit`; the application order remains the order of `skip` and `take` counts. | 2026-11-13 |
 | D042-036 | A window whose run 022 buffers is `STARTED`, since the run exists; 022's D022-018 says "stays sealed" and is to be aligned (G042-011). | 2026-11-13 |
 | D042-037 | Lock order: chain row, key row, window rows, then the admission port's rows, then quota and usage rows; the purge takes the chain row first. | 2026-11-13 |
+| D042-100 | A chain's canonical encoding is the canonical JSON of its `operators` array as declared (an absent `by` stays absent: `{"distinct":{}}`), and `chain_digest` is SHA-256 of those bytes. Both live in `crates/infra-ir` (`canonical_chain`, `chain_digest`), beside the writer of the definition digest, since the domain has no JSON or hash; the domain holds the pure rules (S0, T042-5/6). | 2026-11-14 |
+| D042-101 | The 0.3.0 schema names only the seven collection operators, closed with their ranges. An unknown or trigger-only stage name is refused with a typed `IrError::Operator` (API reason `INVALID_OPERATOR`, `refusal` `UNKNOWN`, `SURFACE`, `RANGE`, `EXPRESSION` or `VARIABLE`, with `node`, `stage`, `operator`) by a structural check that runs before the schema on every codec path; a range or a malformed stage is refused by the schema, the domain rule being the backstop. The switch's refusal is `IrError::CollectionOperatorsDisabled` (`COLLECTION_OPERATORS_DISABLED`). | 2026-11-14 |
+| D042-102 | A stage expression reads a closed set of variables: anything outside `element`, `position`, `input`, `steps`, `run`, `state` is refused (`node` included), not only the five names FR-042-005 lists. | 2026-11-14 |
+| D042-103 | `collection-operators` is `SAGAT_COLLECTION_OPERATORS_ENABLED` on the control plane, wired into `DefinitionService` and `PublishingService` beside `SAGAT_LAKE_ENABLED`, and off by default: the design does not set a default, and until T042-8 the scheduler does not apply a chain (G042-100). The engine needs no switch, since nothing but publication reads it. | 2026-11-14 |
+| D042-104 | `NodeKind::ForEach` carries `operators: Option<OperatorChain>`; the domain's structured validation holds every stage expression to the 1,024-byte limit, as it does `items` and `result`. | 2026-11-14 |
 
 ## Gaps
 
@@ -63,6 +68,8 @@ gap is closed by evidence, not by deletion. Measurements are added as dated sect
 | G042-012 | The storage-quota re-entry back-off is a per-replica hint; a lost hint costs one more evaluation. | Accepted |
 | G042-013 | `take` after `flatMap` does not rescue a `flatMap` output that crosses a ceiling (stages are materialised). | Accepted; documented |
 | G042-014 | The chain input ceiling (1,000) is below the 10,000 elements validation accepts for `maxItems`. | Open; waits for the T014-042 measurement deferred by OD-2026-11-13-1 |
+| G042-100 | Until T042-7 and T042-8, the scheduler does not apply a chain: a chain published with the switch on would run the body over the list `items` yields, unshaped. Nothing but the default (off) and the operator help keeps the switch off before S1 merges. | Open; closed by T042-8 |
+| G042-101 | The Studio's generated `src/api/schema.d.ts` was edited to follow the new `Error.details` description of the OpenAPI document; `npm run check:api` was not run in S0 (no `node_modules` on that machine). | Open; rerun `npm run check:api` |
 
 ## Owner questions
 

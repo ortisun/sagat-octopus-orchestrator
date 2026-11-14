@@ -971,6 +971,22 @@ fn definition_details(error: &IrError) -> Value {
             json!({ "reason": "EXPRESSION", "node": node, "field": field })
         }
         IrError::LakeDisabled { node } => json!({ "reason": "LAKE_DISABLED", "node": node }),
+        IrError::CollectionOperatorsDisabled { node } => {
+            json!({ "reason": "COLLECTION_OPERATORS_DISABLED", "node": node })
+        }
+        IrError::Operator {
+            node,
+            stage,
+            operator,
+            refusal,
+            ..
+        } => json!({
+            "reason": "INVALID_OPERATOR",
+            "node": node,
+            "stage": stage,
+            "operator": operator,
+            "refusal": refusal.as_str(),
+        }),
         IrError::LakeWriteRefused { node, refusal } => lake_refusal_details(node, refusal),
         IrError::NameMismatch { .. } => json!({ "reason": "NAME_MISMATCH" }),
         IrError::UnknownScript { digest } => {

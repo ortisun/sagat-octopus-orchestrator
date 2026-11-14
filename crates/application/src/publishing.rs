@@ -315,6 +315,13 @@ where
         self
     }
 
+    /// Lets a `forEach` declare `operators` (the deployment's `collection-operators`, design 042).
+    #[must_use]
+    pub fn with_collection_operators_enabled(mut self, enabled: bool) -> Self {
+        self.definitions = self.definitions.with_collection_operators_enabled(enabled);
+        self
+    }
+
     // ------------------------------------------------------------------ dependencies
 
     /// The script artifacts the version pins (FR-011-001): what a promotion has to find in the target

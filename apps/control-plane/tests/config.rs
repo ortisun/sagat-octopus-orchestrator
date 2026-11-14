@@ -989,6 +989,30 @@ fn the_lake_is_an_explicit_strict_operator_switch_and_off_by_default() {
     );
 }
 
+/// Design 042, T042-47: off by default, because the scheduler applies a chain only with slice S1 (G042-100).
+#[test]
+fn collection_operators_are_an_explicit_strict_operator_switch_and_off_by_default() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .collection_operators_enabled,
+        "a deployment that does not say so publishes no collection chain"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_COLLECTION_OPERATORS_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .collection_operators_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_COLLECTION_OPERATORS_ENABLED", "maybe"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values)).is_err(),
+        "anything but true or false is refused"
+    );
+}
+
 #[test]
 fn redis_callback_activation_is_an_explicit_strict_operator_switch() {
     assert!(

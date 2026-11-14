@@ -97,6 +97,21 @@ admitted, and its step leased, only by a process that has the same setting: set 
 the credentials of the step to the lake runner. A lake runner is handed the step and its credentials, but the runner that carries out
 the attempt is not built yet, so a deployment should not turn the lake on to write to a table.
 
+### COLLECTION_OPERATORS_DISABLED
+
+This deployment has not enabled collection operators, so a forEach cannot declare operators. Ask the operator to turn on SAGAT_COLLECTION_OPERATORS_ENABLED, or shape the list in an activity before the collection.
+
+Collection operators are off by default (design 042). The switch is read at publication only: a workflow published while it
+was on stays readable, and its runs restore, when it is turned off. Turn it on only when every replica runs a release that
+applies the chain at scope entry.
+
+### INVALID_OPERATOR
+
+A stage of a forEach's operators is refused at the index shown. A collection has filter, map, flatMap, skip, take, distinct and window (debounce and ignoreElements are a trigger's); a stage expression reads element, position, input, steps, run and state, never item, index, iteration, carry or bodyResult.
+
+The details say which stage (`stage`, from 0), which `operator`, and why (`refusal`: `UNKNOWN`, `SURFACE`, `RANGE`,
+`EXPRESSION` or `VARIABLE`). The body still sees `item` and `index`, the element's position in the chain's output.
+
 ### INVALID_ICEBERG_NODE
 
 Check the connection reference, the table, the record source (exactly one of inline, blobs or a database result), the mapping and the limits. A database result must name a database step that runs before the write. An Apache Iceberg write cannot declare its own retries or effect, impersonate an ordinary activity, or name a field and a column twice.

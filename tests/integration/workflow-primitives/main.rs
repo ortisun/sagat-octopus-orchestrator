@@ -38,6 +38,7 @@ mod collection_empty_quota;
 mod collection_end_result;
 mod collection_events;
 mod collection_finish_atomic;
+mod collection_operators_switch;
 mod collection_pipeline;
 mod collection_recovery;
 mod collection_restore;
