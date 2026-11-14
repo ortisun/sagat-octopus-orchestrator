@@ -244,6 +244,7 @@ fn scoped_root(kind: &str) -> NodeKind {
         },
         _ => NodeKind::ForEach {
             items: expr("input.items"),
+            operators: None,
             body: id("iteration"),
             result: expr("bodyResult"),
             max_items: 4,

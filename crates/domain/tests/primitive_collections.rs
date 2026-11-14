@@ -44,6 +44,7 @@ fn collection(max_items: u32, max_concurrency: u16) -> Result<WorkflowDefinition
                 id("items"),
                 NodeKind::ForEach {
                     items: expr("input.items"),
+                    operators: None,
                     body: id("line"),
                     result: expr("bodyResult"),
                     max_items,

@@ -20,6 +20,7 @@ pub mod events;
 pub mod execution;
 pub mod identity;
 pub mod operations;
+pub mod operators;
 pub mod outbound;
 pub mod quota;
 pub mod saga;

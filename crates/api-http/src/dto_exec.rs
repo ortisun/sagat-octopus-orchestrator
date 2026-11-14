@@ -975,6 +975,7 @@ mod switch_graph_tests {
                     id("items"),
                     NodeKind::ForEach {
                         items: Expression::parse("input.items").unwrap(),
+                        operators: None,
                         body: id("line"),
                         result: Expression::parse("bodyResult").unwrap(),
                         max_items: 2,

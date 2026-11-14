@@ -1051,6 +1051,8 @@ where
             result,
             max_items,
             max_concurrency,
+            // The chain is applied at entry by T042-8; until then publication keeps it off (G042-100).
+            operators: _,
         } = collection_node.kind()
         else {
             return Err(CollectionAdvanceError::NotCollection);
