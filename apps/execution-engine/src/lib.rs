@@ -521,7 +521,9 @@ pub async fn serve(
             ),
         );
     } else {
-        tracing::info!("SAGAT_SCHEDULES_ENABLED is not set: schedules are stored but none fires");
+        tracing::info!(
+            "SAGAT_SCHEDULES_ENABLED is false: schedules are stored but none fires from this replica"
+        );
     }
     if optional.contains(&settings::PASS_BATCHES) {
         // An item is applied as the job's creator through the same run service the API has. The

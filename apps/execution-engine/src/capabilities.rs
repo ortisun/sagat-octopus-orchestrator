@@ -3,7 +3,7 @@
 //!
 //! A capability is listed when the **process** will honour it, not when the binary could: it is the code of the binary
 //! narrowed by the passes the configuration turns on. `schedules-v1` is the promise that this engine fires the schedules
-//! (and, after the handover, the cron triggers that became schedules); an engine with `SAGAT_SCHEDULES_ENABLED` unset runs
+//! (and, after the handover, the cron triggers that became schedules); an engine with `SAGAT_SCHEDULES_ENABLED=false` runs
 //! no schedule pass, so it does not list it, an activation that requires it from every live engine refuses it by name,
 //! and one that is restarted without the pass after the handover is refused at registration and closes its whole gate.
 //! The flags are read from the environment once, so the list is true for the life of the process.

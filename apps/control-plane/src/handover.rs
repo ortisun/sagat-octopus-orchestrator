@@ -155,8 +155,8 @@ fn lacking(missing: u32, examples: &[uuid::Uuid]) -> RunError {
         .join(", ");
     declined(format!(
         "{missing} live execution engine(s) do not list schedules-v1 (instance ids: {names}). An engine lists it only when it \
-         runs the schedule pass: start it with SAGAT_SCHEDULES_ENABLED=true (or stop it), wait for it to register, and run \
-         the command again. Nothing was changed."
+         runs the schedule pass, which it does unless SAGAT_SCHEDULES_ENABLED=false: start it without that setting (or \
+         stop it), wait for it to register, and run the command again. Nothing was changed."
     ))
 }
 
@@ -172,7 +172,7 @@ fn check_live(live: u32, expect: Option<u32>) -> Result<(), RunError> {
         None if live == 0 => Err(declined(
             "no execution engine is live (seen within 30 seconds), so there is nothing to verify and the handover would \
              leave the cron triggers with nothing that fires them if the engines are started without the schedule pass. \
-             Start the engines (with SAGAT_SCHEDULES_ENABLED=true) and run the command again, or pass --expect-live 0 if \
+             Start the engines (without SAGAT_SCHEDULES_ENABLED=false) and run the command again, or pass --expect-live 0 if \
              that is what you mean. Nothing was changed.",
         )),
         _ => Ok(()),

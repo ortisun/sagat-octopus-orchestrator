@@ -31,7 +31,7 @@ cleanly. It uses one database connection of its own for this, besides the pool o
 The capabilities are a closed list: `schedules-v1` (feature 018, the engine), `access-narrowing-v1` (029, the control plane) and
 `payload-encoding-v1` (031, both). **A process lists a capability when the process will honour it**: what its binary can do,
 narrowed by the passes its configuration turns on. An engine lists `schedules-v1` only when it runs the schedule pass
-(`SAGAT_SCHEDULES_ENABLED`); an engine started without it lists nothing, because after the handover of the cron triggers it
+(`SAGAT_SCHEDULES_ENABLED`, on unless it says `false`); an engine started with `false` lists nothing, because after the handover of the cron triggers it
 would fire neither.
 
 A process is **live** when it was seen in the last 30 seconds, on the database's clock (so replicas with skewed clocks agree).
@@ -200,7 +200,7 @@ refuses it (G1011, G1607). The registry therefore ships **in a release before an
 1. Upgrade the whole fleet, control planes and engines, to a build that registers. Run `control-plane migrate` first.
 2. Check `serving_instances_live` equals the replicas you run, that no process of the old build is left, and that the engines
    list what you expect (`SELECT scheduler_owner, capabilities FROM serving_instances`): an engine lists `schedules-v1` only if
-   it runs with `SAGAT_SCHEDULES_ENABLED`.
+   it runs the schedule pass (`SAGAT_SCHEDULES_ENABLED` unset or `true`).
 3. Only then activate a feature through the registry.
 
 Rolling back below a recorded requirement is not supported: see "Rolling back" in section 5.
@@ -216,7 +216,7 @@ remain per-process settings with the rollout orders of their own runbooks; the r
 | Every replica of a kind answers `503 BINARY_CAPABILITY_MISSING` | A requirement for the kind was recorded and the build you run lacks it, or its configuration does not run the pass | Section 2; or remove the requirement (section 5) |
 | One replica answers `503 BINARY_CAPABILITY_MISSING`, the others serve | It is an old build that was silent at the activation and came back, or an engine started without the pass | Upgrade it, set the flag, or stop it |
 | An engine is refused after a restart that changed its flags | It no longer runs the pass that provides a required capability | Set the flag again, or remove the requirement if you mean to roll the feature back |
-| An activation is refused naming instance ids | Those processes are live and lack the capability (an engine without `SAGAT_SCHEDULES_ENABLED` is one of them) | Upgrade, set the flag, or stop them; query `serving_instances` for their version and capabilities |
+| An activation is refused naming instance ids | Those processes are live and lack the capability (an engine with `SAGAT_SCHEDULES_ENABLED=false` is one of them) | Upgrade, set the flag, or stop them; query `serving_instances` for their version and capabilities |
 | `serving_instances_live` is lower than the replicas you run | A replica is not beating (the log has `could not say this instance is alive`), it was refused, or the table was full when it started | Its log; the database; section 2 |
 | `SagatInstanceRegistrySilent` fires | The registry has not answered a process for more than 30 seconds | The database, and the lock waits on `serving_instances` rows; a lost connection leaves the process serving, any other failure closes its gate |
 | A row stays for a day after a process died | The process did not leave cleanly; the row is only bookkeeping and stops counting after 30 seconds | None. It is deleted by the day rule, or gives way when the table is full |

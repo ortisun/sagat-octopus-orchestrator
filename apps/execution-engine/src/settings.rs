@@ -10,7 +10,7 @@ use sagat_application::execution::BreakerPolicy;
 use sagat_application::operations::WorkerPool;
 use sagat_application::worker::WorkerSettings;
 use sagat_control_plane::config::{
-    ConfigError, Environment, Lookup, SUBJECT_RATE_VARS, TENANT_RATE_VARS, flag, optional,
+    ConfigError, Environment, Lookup, SUBJECT_RATE_VARS, TENANT_RATE_VARS, flag, flag_or, optional,
     rate_limit_error, read_auth, read_rate_limit, read_secrets,
 };
 use sagat_infra_blobstore::{BlobSettings, BlobStoreConfig, ConfigError as BlobConfigError};
@@ -97,8 +97,8 @@ pub struct EngineConfig {
     pub events: EventDispatchSettings,
     /// Pause between event dispatch rounds when the last one found nothing to do.
     pub event_poll: Duration,
-    /// Whether the replica fires schedules (`SAGAT_SCHEDULES_ENABLED`, off by default until the
-    /// feature is released): the REST routes can create schedules either way, none fires without it.
+    /// Whether the replica fires schedules (`SAGAT_SCHEDULES_ENABLED`, on by default since 0.3.0,
+    /// OD-2026-11-13-8; an explicit `false` takes the pass out, and then none fires from this replica).
     pub schedules_enabled: bool,
     /// Whether a run may carry an Apache Iceberg write (`SAGAT_LAKE_ENABLED`, feature 035, off by default). It is the
     /// control plane's setting too, and a replica that leases the work reads it where it admits the claim.
@@ -626,7 +626,7 @@ impl EngineConfig {
             optional(get, "SAGAT_EVENT_POLL_MS", 200u64)?,
         )?);
 
-        let schedules_enabled = flag(get, "SAGAT_SCHEDULES_ENABLED")?;
+        let schedules_enabled = flag_or(get, "SAGAT_SCHEDULES_ENABLED", true)?;
         let lake_enabled = flag(get, "SAGAT_LAKE_ENABLED")?;
         let schedule_defaults = ScheduleSettings::default();
         let schedules = ScheduleSettings {

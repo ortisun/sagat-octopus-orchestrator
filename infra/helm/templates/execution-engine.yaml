@@ -64,6 +64,7 @@ spec:
             - {name: SAGAT_SHARD_LEASE_SECS, value: {{ $e.shardLeaseSeconds | quote }}}
             - {name: SAGAT_SCHEDULER_CONCURRENCY, value: {{ $e.schedulerConcurrency | quote }}}
             - {name: SAGAT_SCHEDULER_BATCH, value: {{ $e.schedulerBatch | quote }}}
+            - {name: SAGAT_SCHEDULES_ENABLED, value: {{ .Values.schedules.enabled | quote }}}
             {{- if .Values.workerPools }}
             - {name: SAGAT_WORKER_POOLS, value: {{ include "sagat.workerPools" . | quote }}}
             {{- end }}

@@ -107,6 +107,12 @@ nats:
   requireTls: true
   credentialsSecret: ""        # a Secret with the key nats.creds
 
+# Schedules (feature 018): the control plane serves the schedule routes and every engine runs the schedule pass. On by
+# default since 0.3.0 (OD-2026-11-13-8). Both read the same value, so they cannot disagree; false takes both out
+# (docs/runbooks/schedules.md, section 2).
+schedules:
+  enabled: true
+
 controlPlane:
   replicas: 2
   resources:

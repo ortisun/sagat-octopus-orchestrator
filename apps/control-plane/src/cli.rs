@@ -187,7 +187,7 @@ ENVIRONMENT (serve):
                                       same type, case-insensitive, whitespace trimmed [unset]
     SAGAT_ALLOW_INSECURE_JWKS_HTTP    allow an http JWKS URL (dev only) [false]
     SAGAT_REDIS_CALLBACKS_ENABLED     enable Redis callback creation after a cold upgrade [false]
-    SAGAT_SCHEDULES_ENABLED           serve the schedule routes (the engine fires them under the same flag) [false]
+    SAGAT_SCHEDULES_ENABLED           serve the schedule routes (the engine fires them under the same flag) [true]
     SAGAT_BATCHES_ENABLED             serve the batch operation routes (the engine runs the jobs under the same flag) [false]
     SAGAT_RESET_REAPPLY_ENABLED       let a reset deliver signals and Updates again (reapply SIGNALS, UPDATES, ALL) and
                                       let a workflow declare an Update with reapplyOnReset (the engine needs nothing) [false]

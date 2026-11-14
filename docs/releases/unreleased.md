@@ -26,6 +26,14 @@ decides from now on changes:
 Workers that are stopped before their in-flight activities end now create review items. Drain
 workers before a restart ([scaling runbook](../runbooks/scaling.md#draining-workers-before-a-restart)).
 
+## Schedules are on by default (feature 018, OD-2026-11-13-8)
+
+`SAGAT_SCHEDULES_ENABLED` now defaults to `true` in the control plane and the engine (and in the development stack and the Helm chart, value
+`schedules.enabled`): a deployment that sets nothing serves the schedule routes and runs the schedule pass. Upgrade in this order: migrate, then
+the execution engines, then the control planes (OD-2026-11-14-3). **An explicit `SAGAT_SCHEDULES_ENABLED=false` kept from 0.2 keeps schedules off**,
+and after the handover of the cron triggers such an engine is refused at registration: remove the line, or keep it on purpose
+([schedules runbook](../runbooks/schedules.md#2-turning-it-on-and-off)). Batch operations and the two reset switches stay off by default.
+
 ## Schedules: the business-id prefix of an action (feature 018)
 
 An action of a schedule may name a business-id prefix with a conflict and a reuse policy; each run it starts is bound to `<prefix>-<nominal time>`, and a

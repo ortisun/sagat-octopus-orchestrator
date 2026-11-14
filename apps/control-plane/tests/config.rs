@@ -940,14 +940,22 @@ fn openbao_alone_requires_secret_transport_protection() {
 }
 
 #[test]
-fn schedules_are_an_explicit_strict_operator_switch() {
+fn schedules_are_on_by_default_and_a_strict_operator_switch() {
     assert!(
-        !ServeConfig::from_lookup(&env(&OIDC))
+        ServeConfig::from_lookup(&env(&OIDC))
             .expect("defaults")
             .schedules_enabled,
-        "off by default"
+        "on by default (OD-2026-11-13-8)"
     );
     let mut values = OIDC.to_vec();
+    values.push(("SAGAT_SCHEDULES_ENABLED", "false"));
+    assert!(
+        !ServeConfig::from_lookup(&env(&values))
+            .expect("turned off")
+            .schedules_enabled,
+        "an explicit false turns the routes off"
+    );
+    values.pop();
     values.push(("SAGAT_SCHEDULES_ENABLED", "true"));
     assert!(
         ServeConfig::from_lookup(&env(&values))
@@ -1019,7 +1027,7 @@ fn cancelling_a_source_for_a_reset_is_an_explicit_strict_operator_switch() {
     let on = ServeConfig::from_lookup(&env(&values)).expect("activated");
     assert!(on.reset_cancel_source_enabled);
     // it is not one of the other switches
-    assert!(!on.batches_enabled && !on.reset_reapply_enabled && !on.schedules_enabled);
+    assert!(!on.batches_enabled && !on.reset_reapply_enabled && on.schedules_enabled);
     values.pop();
     values.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "maybe"));
     let error = ServeConfig::from_lookup(&env(&values)).expect_err("refused");

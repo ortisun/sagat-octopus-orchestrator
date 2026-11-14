@@ -398,11 +398,10 @@ async fn boot(scenario: &Value) -> Run {
         ("SAGAT_BLOB_PROVIDER", "fs"),
         ("SAGAT_BLOB_FS_ROOT", blob_root.as_str()),
     ];
-    // Feature 018: the passes that fire schedules, run backfills and apply batch jobs are the engine's loops and are
-    // off until a replica is told to run them. A scenario that exercises them says so (`server.schedules`,
-    // `server.batches`); the others keep the engine they always had.
+    // Feature 018: the schedule pass is on by default since 0.3.0 (OD-2026-11-13-8), so every scenario runs against the
+    // engine an operator gets; a scenario that exercises schedules says so (`server.schedules`) and gets a short poll.
+    // Batch jobs stay off until a scenario asks for them (`server.batches`).
     if scenario["server"]["schedules"] == true {
-        extra.push(("SAGAT_SCHEDULES_ENABLED", "true"));
         extra.push(("SAGAT_SCHEDULES_POLL_MS", "100"));
     }
     if scenario["server"]["batches"] == true {
