@@ -960,6 +960,100 @@ fn schedules_are_an_explicit_strict_operator_switch() {
 }
 
 #[test]
+fn batch_operations_are_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .batches_enabled,
+        "off by default"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_BATCHES_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .batches_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_BATCHES_ENABLED", "maybe"));
+    assert!(ServeConfig::from_lookup(&env(&values)).is_err());
+}
+
+#[test]
+fn delivering_signals_and_updates_again_after_a_reset_is_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .reset_reapply_enabled,
+        "off by default"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_RESET_REAPPLY_ENABLED", "true"));
+    assert!(
+        ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .reset_reapply_enabled
+    );
+    // it is not one of the other switches
+    assert!(
+        !ServeConfig::from_lookup(&env(&values))
+            .expect("activated")
+            .batches_enabled
+    );
+    values.pop();
+    values.push(("SAGAT_RESET_REAPPLY_ENABLED", "maybe"));
+    let error = ServeConfig::from_lookup(&env(&values)).expect_err("refused");
+    assert!(error.to_string().contains("SAGAT_RESET_REAPPLY_ENABLED"));
+}
+
+#[test]
+fn cancelling_a_source_for_a_reset_is_an_explicit_strict_operator_switch() {
+    assert!(
+        !ServeConfig::from_lookup(&env(&OIDC))
+            .expect("defaults")
+            .reset_cancel_source_enabled,
+        "off by default"
+    );
+    let mut values = OIDC.to_vec();
+    values.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"));
+    let on = ServeConfig::from_lookup(&env(&values)).expect("activated");
+    assert!(on.reset_cancel_source_enabled);
+    // it is not one of the other switches
+    assert!(!on.batches_enabled && !on.reset_reapply_enabled && !on.schedules_enabled);
+    values.pop();
+    values.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "maybe"));
+    let error = ServeConfig::from_lookup(&env(&values)).expect_err("refused");
+    assert!(
+        error
+            .to_string()
+            .contains("SAGAT_RESET_CANCEL_SOURCE_ENABLED")
+    );
+}
+
+/// The expiry of a reset that waits is the engine's alone (D2059): the control plane accepts the request and expires
+/// nothing, so it has no window to read, does not refuse a deployment that sets one for both processes, and its `--help`
+/// says where the setting lives.
+#[test]
+fn the_window_of_the_expiry_of_a_reset_that_waits_is_not_a_setting_of_the_control_plane() {
+    let reference = ServeConfig::from_lookup(&env(&OIDC)).expect("defaults");
+    for value in ["7200", "0", "soon", "24h", "99999999999999999999999"] {
+        let mut values = OIDC.to_vec();
+        values.push(("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"));
+        values.push(("SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS", value));
+        let config = ServeConfig::from_lookup(&env(&values))
+            .unwrap_or_else(|error| panic!("{value}: the control plane read it: {error}"));
+        // what it does read is as before
+        assert!(config.reset_cancel_source_enabled, "{value}");
+        assert_eq!(config.batches_enabled, reference.batches_enabled, "{value}");
+    }
+    let help = cli::USAGE;
+    assert!(
+        help.contains("SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS") && help.contains("engine only"),
+        "the help of the control plane says that the window is the engine's"
+    );
+}
+
+#[test]
 fn the_lake_is_an_explicit_strict_operator_switch_and_off_by_default() {
     assert!(
         !ServeConfig::from_lookup(&env(&OIDC))

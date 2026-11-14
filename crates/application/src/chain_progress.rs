@@ -10,7 +10,7 @@ use std::future::Future;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::execution::{
     self, ChainError, ChainFinalOutcome, ChainPolicy, ChainScope, ContinuationTransfer,
-    CorrelationKey, Progress, RunId, RunStatus, StepStatus, StopReason, WaitingOn,
+    CorrelationKey, Progress, RunId, RunStatus, StepStatus, StopReason, WaitVia, WaitingOn,
 };
 use sagat_domain::identity::{NamespaceId, Permission, Principal, Subject, TenantId};
 use sagat_domain::workflow::{Digest, NodeId, NodeKind};
@@ -920,7 +920,13 @@ where
                 let mut events = Vec::new();
                 let mut pending = None;
                 for node in &targets {
-                    let mut progress = execution::satisfy_wait(definition, state, node, now)?;
+                    let mut progress = execution::satisfy_wait(
+                        definition,
+                        state,
+                        node,
+                        now,
+                        Some(WaitVia::Signal),
+                    )?;
                     events.append(&mut progress.events);
                     pending = pending.or(progress.pending);
                 }

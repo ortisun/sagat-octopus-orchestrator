@@ -179,6 +179,11 @@ pub struct ScheduleBody {
     pub origin: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger_id: Option<String>,
+    /// Only for a schedule a cron trigger owns: whether pause, resume and run now are open, which they are once the operator has
+    /// handed the cron triggers over and the engines have had time to learn of it. `false` before; the platform's refusal
+    /// (`SCHEDULE_TRIGGER_HANDOVER_PENDING`) stays the authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub controllable: Option<bool>,
     pub state: &'static str,
     pub exhausted: bool,
     pub revision: u32,
@@ -207,6 +212,17 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
+impl ScheduleBody {
+    /// Says whether the control of the schedule is open, for a schedule a cron trigger owns (and only for it).
+    #[must_use]
+    pub fn controllable_when(mut self, control_open: bool) -> Self {
+        if self.origin == "TRIGGER" {
+            self.controllable = Some(control_open);
+        }
+        self
+    }
+}
+
 impl From<&ScheduleRecord> for ScheduleBody {
     fn from(record: &ScheduleRecord) -> Self {
         let mut action = target_to_json(&record.target);
@@ -218,6 +234,7 @@ impl From<&ScheduleRecord> for ScheduleBody {
             name: record.name.as_str().to_owned(),
             origin: record.origin.as_str(),
             trigger_id: record.trigger_id.map(|id| id.to_string()),
+            controllable: None,
             state: match record.state {
                 ScheduleState::Active => "ACTIVE",
                 // a deleted schedule is never returned; the arm keeps the match total
@@ -245,6 +262,14 @@ impl From<&ScheduleRecord> for ScheduleBody {
 #[serde(rename_all = "camelCase")]
 pub struct SchedulePageBody {
     pub items: Vec<ScheduleBody>,
+    pub next_cursor: Option<String>,
+}
+
+/// One page of the decisions of a schedule, newest first.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleActionPageBody {
+    pub items: Vec<ScheduleActionBody>,
     pub next_cursor: Option<String>,
 }
 

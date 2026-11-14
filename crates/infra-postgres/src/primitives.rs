@@ -1158,6 +1158,22 @@ async fn outbox_run_finished(
     .execute(&mut *conn)
     .await
     .map_err(store_error)?;
+    let mut data = json!({
+        "tenantId": transition.tenant_id().to_string(),
+        "namespaceId": transition.namespace_id().to_string(),
+        "runId": transition.run_id().to_string(),
+        "workflow": definition.name().as_str(),
+        "status": status,
+        "traceId": transition.trace_id(),
+    });
+    // The schedule that started the run, when one did (`FR-018-046`).
+    crate::outbound::add_schedule_origin(
+        &mut *conn,
+        transition.tenant_id(),
+        transition.run_id().as_uuid(),
+        &mut data,
+    )
+    .await?;
     let body = json!({
         "id": message.to_string(),
         "type": "run.finished",
@@ -1165,14 +1181,7 @@ async fn outbox_run_finished(
             .occurred_at()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default(),
-        "data": {
-            "tenantId": transition.tenant_id().to_string(),
-            "namespaceId": transition.namespace_id().to_string(),
-            "runId": transition.run_id().to_string(),
-            "workflow": definition.name().as_str(),
-            "status": status,
-            "traceId": transition.trace_id(),
-        },
+        "data": data,
     });
     crate::outbound::fan_out(
         conn,

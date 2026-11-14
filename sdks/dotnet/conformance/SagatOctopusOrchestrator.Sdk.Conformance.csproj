@@ -14,6 +14,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The unit tests of the SDK play small scenarios through the runner against a fake server (what the runner prints is compared with goldens). -->
+    <InternalsVisibleTo Include="SagatOctopusOrchestrator.Sdk.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../src/SagatOctopusOrchestrator.Sdk/SagatOctopusOrchestrator.Sdk.csproj" />
     <PackageReference Include="Grpc.Core.Api" />
   </ItemGroup>

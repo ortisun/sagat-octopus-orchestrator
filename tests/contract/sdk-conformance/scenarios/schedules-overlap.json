@@ -1,0 +1,118 @@
+{
+  "name": "schedules-overlap",
+  "description": "Feature 018 US01: what an action does while a run the schedule started is still open, decided by the overlap policy. The run is held open by an activity nobody serves, and each action is a trigger now, so no outcome depends on the clock: SKIP skips, BUFFER_ONE keeps one waiting time and drops the next, ALLOW_ALL starts another run, and the description counts the open runs and the buffered time.",
+  "server": {
+    "schedules": true
+  },
+  "workflows": {
+    "plain": {
+      "name": "overlap-plain",
+      "description": "The workflow the schedule starts; nobody serves its activity, so every run stays open.",
+      "program": [
+        {
+          "op": "step",
+          "id": "work",
+          "activity": "overlap.work"
+        },
+        {
+          "op": "end",
+          "id": "done"
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "id": "schedule",
+      "op": "scheduleCreate",
+      "idempotencyKey": "ov-create-{{unique}}",
+      "write": {
+        "name": "overlap-{{unique}}",
+        "spec": {
+          "calendars": [
+            {
+              "hour": [
+                {
+                  "start": 9
+                }
+              ],
+              "year": [
+                {
+                  "start": 2099
+                }
+              ]
+            }
+          ]
+        },
+        "policies": {
+          "overlap": "SKIP"
+        },
+        "action": {
+          "workflowId": "{{workflow:plain}}",
+          "input": {
+            "kind": "overlap"
+          }
+        }
+      }
+    },
+    {
+      "id": "first",
+      "op": "scheduleTrigger",
+      "schedule": "schedule",
+      "idempotencyKey": "ov-first-{{unique}}"
+    },
+    {
+      "id": "skipped",
+      "op": "scheduleTrigger",
+      "schedule": "schedule",
+      "idempotencyKey": "ov-skipped-{{unique}}"
+    },
+    {
+      "id": "buffered",
+      "op": "scheduleTrigger",
+      "schedule": "schedule",
+      "overlap": "BUFFER_ONE",
+      "idempotencyKey": "ov-buffered-{{unique}}"
+    },
+    {
+      "id": "buffer-full",
+      "op": "scheduleTrigger",
+      "schedule": "schedule",
+      "overlap": "BUFFER_ONE",
+      "idempotencyKey": "ov-full-{{unique}}"
+    },
+    {
+      "id": "allowed",
+      "op": "scheduleTrigger",
+      "schedule": "schedule",
+      "overlap": "ALLOW_ALL",
+      "idempotencyKey": "ov-allowed-{{unique}}"
+    },
+    {
+      "id": "unknown-policy",
+      "op": "scheduleTrigger",
+      "schedule": "schedule",
+      "overlap": "WHENEVER",
+      "idempotencyKey": "ov-unknown-{{unique}}"
+    },
+    {
+      "id": "described",
+      "op": "scheduleGet",
+      "schedule": "schedule",
+      "nextCount": 1,
+      "recentCount": 10
+    },
+    {
+      "id": "started-runs",
+      "op": "scheduleActions",
+      "schedule": "schedule",
+      "outcome": "STARTED"
+    },
+    {
+      "id": "skipped-runs",
+      "op": "scheduleActions",
+      "schedule": "schedule",
+      "outcome": "SKIPPED_OVERLAP"
+    }
+  ]
+}

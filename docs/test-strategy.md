@@ -93,7 +93,12 @@ Unrestricted host-level test parallelism reproduced transient PostgreSQL pool ti
 503s in the developer-experience fixtures. With two test threads, all 32 runnable DX tests and
 all 11 event E2E tests passed against fresh containers. This is a test-runner resource profile,
 not a change to production pool sizes, admission limits or the races exercised within tests.
-Keep performance benchmarks separate and report their own concurrency and hardware.
+Keep performance benchmarks separate and report their own concurrency and hardware. A benchmark scenario is `#[ignore]`
+and its sizes default to a smoke run: a pull request that changes a `perf_*` target runs only the unit tests of its helpers
+(CI runs the target without `--ignored`), and the sizes of the report come from the environment of the script that runs it
+(`tests/performance/schedules-bulk-operations/run.sh` is the model: a disposable PostgreSQL of its own, the load of the machine
+before and after every repetition, N repetitions, fragments the report is written from). The report says which bound each
+scenario asserts and whether it held; a bound the data exceeds is a finding, not a number to loosen.
 
 CI sets the Cargo dev and test profiles to `debug = "line-tables-only"`. This retains filename/line
 backtraces while omitting type and variable debugging metadata; test commands are unchanged, and

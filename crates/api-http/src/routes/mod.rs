@@ -1,5 +1,6 @@
 //! HTTP routes.
 
+pub mod batch;
 pub mod chains;
 pub mod connectors;
 pub mod database;
@@ -14,6 +15,7 @@ pub mod outbound;
 pub mod payload_disclosure;
 pub mod payload_inspection;
 pub mod primitives;
+pub mod resets;
 pub mod runner;
 pub mod schedules;
 pub mod scripts;

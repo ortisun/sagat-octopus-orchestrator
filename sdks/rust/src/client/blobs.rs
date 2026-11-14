@@ -34,6 +34,17 @@ impl Client {
     ) -> Result<Run, SagatError> {
         descriptor.check()?;
         let options = options.into();
+        // The server refuses a business identifier together with an input blob, and a held start is not
+        // offered here: say so before anything is sent rather than drop what was asked for.
+        if options.business_id.is_some()
+            || options.business_id_conflict_policy.is_some()
+            || options.business_id_reuse_policy.is_some()
+            || options.start_delay.is_some()
+        {
+            return Err(SagatError::validation(
+                "a start with an input blob takes no business identifier and no start delay",
+            ));
+        }
         let mut body = start_body(workflow, &options)?;
         let request_key = key(&options.call)?;
         body["workflowId"] = self
@@ -193,7 +204,7 @@ impl Client {
         }
         let response = tokio::select! {biased;_=options.call.cancel.cancelled()=>return Err(cancelled()),result=tokio::time::timeout_at(deadline,request.send())=>result.map_err(|_|transport())?.map_err(|_|transport())?};
         let descriptor = self
-            .consume_response(response, 201, deadline, &options.call.cancel)
+            .consume_response(response, &[201], deadline, &options.call.cancel)
             .await?
             .parse(crate::BlobDescriptor::parse)?;
         let state = measured.lock().map_err(|_| protocol())?;

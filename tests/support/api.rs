@@ -259,6 +259,21 @@ pub struct Options {
     pub streams: Option<sagat_api_http::streams::StreamLimits>,
     /// Serve the Studio from this directory under `/studio/` (D143).
     pub studio: Option<sagat_api_http::studio::StudioConfig>,
+    /// Let a reset deliver signals and Updates again (`SAGAT_RESET_REAPPLY_ENABLED`, feature 018). ON BY DEFAULT
+    /// HERE, unlike in production (where it is off unless the operator sets it), so that the suites can exercise
+    /// the reapply; the gate is what a test of the refusal turns off. That the production default is off is
+    /// proved by `reapply::the_service_the_control_plane_builds_refuses_the_reapply_unless_the_operator_set_it`,
+    /// which builds the service from the real configuration.
+    pub reset_reapply: bool,
+    /// Let a reset cancel an open source and wait for it (`SAGAT_RESET_CANCEL_SOURCE_ENABLED`, feature 018). ON BY
+    /// DEFAULT HERE, unlike in production (where it is off unless the operator sets it), so that the suites can
+    /// exercise it; the gate is what a test of the refusal turns off. That the production default is off is proved by
+    /// `cancel_source::the_service_the_control_plane_builds_refuses_the_cancel_of_a_source_unless_the_operator_set_it`.
+    pub reset_cancel_source: bool,
+    /// The gate of the instance-capability registry (`FR-018-052`): while it is closed every call but `/v1/health` is
+    /// `503 BINARY_CAPABILITY_MISSING`. `None` is a process with no registry, which serves.
+    pub serving_gate: Option<Arc<sagat_application::instances::ServingGate>>,
+
     /// The lake is on: Iceberg writes are published, admitted and leased, and the worker service completes them (feature 035).
     pub lake: bool,
 }
@@ -293,6 +308,10 @@ impl Default for Options {
             script_ceiling: sagat_domain::scripts::Policy::default(),
             streams: None,
             studio: None,
+            reset_reapply: true,
+            reset_cancel_source: true,
+            serving_gate: None,
+
             lake: false,
         }
     }
@@ -363,6 +382,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         .expect("valid budget")
         .with_subject_rate_limit(options.subject_rate_limit)
         .expect("valid subject budget");
+    if let Some(gate) = &options.serving_gate {
+        state = state.with_serving_gate(Arc::clone(gate));
+    }
     state.tenant_concurrency = Arc::new(sagat_api_http::TenantConcurrency::new(
         options.limits.max_in_flight_per_tenant,
     ));
@@ -416,6 +438,18 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
             ),
             sagat_domain::schedules::Ceilings::default(),
         ),
+    )))
+    .with_schedule_input_disclosures(Arc::new(
+        sagat_application::schedule_disclosure::ScheduleInputDisclosureService::new(
+            sagat_infra_postgres::PgScheduleStore::new(api_pool.clone()),
+            SystemClock,
+            sagat_infra_schema::classification::Classifier::default(),
+            sagat_infra_ir::JsonPayloadProjector,
+        ),
+    ))
+    .with_batches(Arc::new(sagat_application::batch::BatchService::new(
+        sagat_infra_postgres::PgBatchStore::new(api_pool.clone()),
+        SystemClock,
     )))
     .with_secrets(SecretService::new(
         executions.clone(),
@@ -506,6 +540,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         Engine::new(JsonEvaluator),
         cache,
     )
+    .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
+    .with_reset_reapply(options.reset_reapply)
+    .with_reset_cancel_source(options.reset_cancel_source)
     .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec));
     if let Some(blobs) = &blobs {
         runs = runs.with_input_blobs(blobs.clone(), Arc::new(sagat_infra_schema::Schemas));
@@ -569,6 +606,9 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         workers = workers.with_secret_provider(provider.clone());
     }
     let mut grpc = WorkerGrpc::new(exec.clone(), workers);
+    if let Some(gate) = &options.serving_gate {
+        grpc = grpc.with_serving_gate(Arc::clone(gate));
+    }
     if let Some(blobs) = &blobs {
         grpc = grpc.with_blobs(blobs.clone(), options.blob_transfer);
     }

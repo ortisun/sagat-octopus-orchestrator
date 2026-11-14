@@ -26,6 +26,7 @@ import { runOperations, stepOperations } from './ops';
 import type { Operation, RunFacts } from './ops';
 import { useVersions, versionLabel } from './queries';
 import { RunHeader } from './RunHeader';
+import { ResetRun, ResetsMade } from './ResetRun';
 import { SendSignal } from './SendSignal';
 import { RunsPage } from './RunsPage';
 import { TableView } from './TableView';
@@ -134,8 +135,8 @@ function RunDetail({ runId }: { runId: string }) {
   }, [status, queries, runId]);
 
   const facts: RunFacts | undefined = useMemo(
-    () => (status === undefined ? undefined : { status, paused: status === 'PAUSED' || run.data?.paused === true, version: run.data?.version }),
-    [status, run.data?.paused, run.data?.version],
+    () => (status === undefined ? undefined : { status, paused: status === 'PAUSED' || run.data?.paused === true, version: run.data?.version, businessId: run.data?.businessId }),
+    [status, run.data?.paused, run.data?.version, run.data?.businessId],
   );
 
   const [tab, setTab] = useState<TabId | undefined>(undefined);
@@ -272,6 +273,7 @@ function RunDetail({ runId }: { runId: string }) {
 
         <div className="rn-run-context">
           <SendSignal runId={runId} status={status} onSent={refresh} />
+          <ResetRun runId={runId} status={status} businessId={run.data.businessId} />
           <PayloadDisclosureView runId={runId} selector={{ source: 'input' }} label="View permitted run input values" />
           <PayloadInspector runId={runId} selector={{ source: 'input' }} label="Inspect redacted run input" />
           {finished ? <PayloadDisclosureView runId={runId} selector={{ source: 'result' }} label="View permitted run result values" /> : null}
@@ -280,6 +282,7 @@ function RunDetail({ runId }: { runId: string }) {
               {run.data.finishedAt ? <>The run finished <Relative at={run.data.finishedAt} past />.</> : 'The run is over.'} Its graph and journal stay as they were.
             </p>
           ) : null}
+          <ResetsMade runId={runId} />
         </div>
 
         {snapshot.lagMs > 0 ? (

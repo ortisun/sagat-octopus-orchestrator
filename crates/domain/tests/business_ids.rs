@@ -328,6 +328,37 @@ fn the_id_is_free_from_the_instant_the_window_ends() {
 }
 
 #[test]
+fn a_closed_holder_is_remembered_until_its_finish_plus_its_window_and_an_open_one_is_not_dated() {
+    let open = Held {
+        binding: binding(30),
+        holder: HolderStatus::Open,
+    };
+    assert_eq!(open.reusable_after(), None);
+    for (days, finished) in [(1, 0), (30, 12_345), (366, 1_000_000)] {
+        let held = Held {
+            binding: binding(days),
+            holder: closed(RunStatus::Failed, finished),
+        };
+        let until = held.reusable_after().expect("a closed holder is dated");
+        assert_eq!(until, at(finished + days * DAY));
+        // and it is the instant `admit` frees the id
+        let policy = |now| {
+            admit(
+                Some(&held),
+                ConflictPolicy::Fail,
+                ReusePolicy::RejectDuplicate,
+                now,
+            )
+        };
+        assert_eq!(
+            policy(until - time::Duration::seconds(1)),
+            Admission::ReuseRejected
+        );
+        assert_eq!(policy(until), Admission::Bind);
+    }
+}
+
+#[test]
 fn the_window_is_the_one_frozen_at_binding_not_the_current_setting() {
     let short = Held {
         binding: binding(1),

@@ -109,6 +109,16 @@ pub async fn namespaces(client: &Client) -> Result<Vec<NamespaceInfo>, String> {
         .collect())
 }
 
+/// The id of the namespace with this slug, which the routes of schedules and batch jobs carry.
+pub async fn namespace_id(client: &Client, slug: &str) -> Result<String, String> {
+    namespaces(client)
+        .await?
+        .into_iter()
+        .find(|namespace| namespace.slug == slug)
+        .map(|namespace| namespace.id)
+        .ok_or_else(|| format!("the tenant has no namespace '{slug}'"))
+}
+
 /// The document a published version froze.
 pub async fn version(client: &Client, id: &str, number: u32) -> Result<Value, String> {
     let (_, body) = client

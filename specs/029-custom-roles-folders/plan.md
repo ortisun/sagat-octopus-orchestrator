@@ -346,3 +346,5 @@ regressions `integration_security_multitenancy`, `contract_rest_security_multite
 `sdk_conformance`, with `SAGAT_TEST_AS_RUNTIME_ROLE=1` where supported; `python3 scripts/check-architecture.py`;
 Studio `npm --prefix frontend run typecheck|test|build` and the Chromium journey. Results are recorded as
 run, with failures and skips; nothing in this plan is evidence.
+
+*Note 2026-11-08 (018 T018-080, G2001).* The request path below reads the epoch row `FOR SHARE`, and the runtime role has `SELECT` only on `platform_requirement_epoch` (a share lock needs `UPDATE`): it needs a definer function the runtime role can execute, not a bare statement. And a `FOR SHARE` held for a whole tenant transaction makes a queued activation's `FOR UPDATE` wait, and that wait stalls the registration of every new process: read the epoch, do not hold it. Not built here (029 is not approved).
