@@ -104,7 +104,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 
 ### Second draft, after the three reviews and the owner's answers (2026-11-14)
 
-- **D043-017** (2026-11-14) The port is narrow: `SchemaValidator` (implemented by `InputSchemas` in `crates/infra-schema`)
+- **D043-017** (2026-11-14; the constructor's visibility superseded by D043-032, the key by D043-041 below) The port is narrow: `SchemaValidator` (implemented by `InputSchemas` in `crates/infra-schema`)
   takes a key, the schema bytes and the input bytes and answers accept or a `SchemaRefusal` (`Invalid` with segments and
   rule, `Unusable`, `TooDeep`). A concrete `RunInputGate` in `crates/application` owns the mode, the metrics, the
   blocking pool and the only non-test constructor of `CheckedRunInput`, which is `pub(crate)`. The test constructor is
@@ -121,12 +121,12 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   computed once at parse and carried by `InputSchema` (an `Arc<[u8]>` and the digest). Identical schemas of one tenant
   share an entry; two tenants never do. Ad hoc starts (`crates/application/src/runs/ad_hoc.rs:459`, a new version id per
   call) compile and validate outside the shared cache, under their own single permit.
-- **D043-021** (2026-11-14) Compile bounds, applied before `build` and again at publish: the classification
+- **D043-021** (2026-11-14; references and cycles refined by D043-036) Compile bounds, applied before `build` and again at publish: the classification
   pre-checks (`MAX_CARRIER_BYTES` 64 KiB of schema, 64 KiB per pattern, `MAX_SCHEMA_DEPTH` 32, `MAX_CARRIER_PATTERNS` 32,
   the dry `Walk` with `MAX_WALK_STEPS` 4,000,000), a refusal of applicator `$ref` cycles, and a retriever that refuses
   every URI. A failure is `SchemaUnusable`, remembered per key. Cache entries are weighed with the real per-pattern
   limit.
-- **D043-022** (2026-11-14) Validation budget: the gate runs the validator in `spawn_blocking` behind a
+- **D043-022** (2026-11-14; the permits and the deadline superseded by D043-033 to D043-035) Validation budget: the gate runs the validator in `spawn_blocking` behind a
   `tokio::sync::Semaphore` of four permits, under the deadline `MAX_PROJECTION_DURATION` (5 s); the cache's `Condvar`
   is waited on only on the blocking pool. A missed deadline is `503 UNAVAILABLE` (retryable) for a caller and a
   transient refusal for the engine's creators. The input is parsed with a depth limit of 64 before validation; a deeper
@@ -136,7 +136,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   `should_validate_formats(false)`, `without_content_media_type_support("application/json")`,
   `without_content_encoding_support("base64")`. Under drafts 4, 6 and 7 `jsonschema` 0.58.6 would otherwise assert them
   (`src/compiler.rs:66-68`, `:538-541`; `src/keywords/mod.rs:473-480`).
-- **D043-024** (2026-11-14) Error text: the rule comes from a `match` on `ValidationErrorKind` that names every variant
+- **D043-024** (2026-11-14; the field of repeats refined by D043-037; `workLimit` added to the enum by D043-033) Error text: the rule comes from a `match` on `ValidationErrorKind` that names every variant
   (no `_` arm), into a closed enum (`type`, `required`, `enum`, `const`, `minimum`, `maximum`, `exclusiveMinimum`,
   `exclusiveMaximum`, `multipleOf`, `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`, `uniqueItems`,
   `contains`, `minProperties`, `maxProperties`, `additionalProperties`, `unevaluatedProperties`, `unevaluatedItems`,
@@ -179,22 +179,70 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   Each widened `CHECK` is added `NOT VALID` under a new name, then `VALIDATE CONSTRAINT`, then the old one is dropped;
   the down migration refuses while a row holds a new value.
 
+### Third draft, after the second review round (2026-11-14, at `42082d73`)
+
+- **D043-032** (2026-11-14) The fields and the only non-test constructor of `CheckedRunInput` are private to
+  `crates/application/src/run_input.rs`, not `pub(crate)`. A fourth architecture rule fails on a struct expression or an
+  associated function call of `CheckedRunInput` in any other file outside test paths.
+- **D043-033** (2026-11-14) The bound on validation work is the classification projection's instance-aware `Walk`
+  (`crates/infra-schema/src/classification/walk.rs`), charged against the input before `iter_errors` with
+  `MAX_WALK_STEPS` (4,000,000). Past it the input is refused with `RUN_INPUT_INVALID`, `rule` `workLimit`, `field` `/`:
+  deterministic for a schema and an input, so final on every row. `workLimit` joins the closed rule enum.
+- **D043-034** (2026-11-14) Permits: four global per process; per tenant at most one shared-cache permit and one ad hoc
+  permit in flight (a bounded map of per-tenant semaphores of one), because the caller chooses an ad hoc document
+  (`crates/application/src/runs/ad_hoc.rs:400-405`). The tenant permit and an `OwnedSemaphorePermit` of the global
+  semaphore move into the `spawn_blocking` closure, so a thread that outlives its caller's deadline keeps them until it
+  ends: at most four blocking threads, and a slow tenant holds at most two permits.
+- **D043-035** (2026-11-14) The deadline (`MAX_PROJECTION_DURATION`, 5 s) covers acquiring the permits and the work. A miss
+  is never cached as `Unusable`. A bounded in-process memory (4,096 entries, least recently used out) keyed by
+  `(tenant, schema digest, input digest)` counts misses: **the first miss is transient, the second is final**, answered
+  as `RUN_INPUT_INVALID` with `workLimit` on every row. A first miss is `503` for a caller, a deferral for a batch item
+  (`crates/application/src/batch_executor.rs:540`), a pending reset left pending (`failure_of` answers `None`,
+  `crates/application/src/reset_completion.rs:237`), an owed schedule time, a retried event, and a child or continuation
+  left for the next pass. The threshold of two lets a single slow moment pass and stops an input that is slow every
+  time.
+- **D043-036** (2026-11-14) References. The retriever that refuses every URI is the control on remote references: `build`
+  resolves every `$ref`, `$dynamicRef` and `$schema` through it, wherever they are. The dry walk sees only what is
+  reachable from the root and is not that control. Before `build`, a walk of the whole document checks that every
+  reference is document-local and that the graph of non-consuming applicator edges has no cycle; recursion through a
+  keyword that moves to a child instance is allowed. The shared `Walk` refuses `#` and anchors (`walk.rs:139`), which
+  would make recursive tree schemas unusable: the run input path calls it with a reference policy that resolves `#`,
+  `#/...` and the document's `$anchor`s; the classification path keeps its policy. `$dynamicRef` and `$recursiveRef` are
+  unusable.
+- **D043-037** (2026-11-14) For a rerun or reset, `FieldPolicy::Show` only when the caller's view of the source run's input
+  under feature 016's graded disclosure withholds nothing; otherwise `field` `/` and `rule` `other`, so the answer never
+  describes a withheld value.
+- **D043-038** (2026-11-14) Before failing a parent step for a refused child, the engine looks up the child's idempotency
+  record (`child:{parent}`, `child-start:{node}`, `crates/scheduler/src/passes.rs:5302-5306`). A child that a peer, a 0.2.x
+  engine or an engine in `report` already created is answered as a replay, and the step is not failed.
+- **D043-039** (2026-11-14) In `report` mode the audit of a reported refusal is one of the records written in the
+  transaction that creates the run, so a retry or a replay does not audit twice.
+- **D043-040** (2026-11-14) Before the upgrade, the runbook runs the inventory query and, when the operator wants it, sets
+  `SAGAT_RUN_INPUT_VALIDATION=report` in every engine's and control plane's manifest before migrating: the engines are
+  upgraded first and default to `enforce`, so they would otherwise record final outcomes before anyone could choose. The
+  requirement `run-input-validation-v1` can be recorded only once every live process lists it (ADR-0082 decision 2
+  refuses it while a live instance lacks it).
+- **D043-041** (2026-11-14) `SchemaValidator::check` takes the `SchemaKey`, the `&InputSchema` and the input. The gate builds
+  the key from the tenant, the digest that `InputSchema` carries and the creator (`shared` is false for `Creator::AdHoc`).
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
 |---|---|---|---|
-| G043-001 | A control plane of 0.2.x running beside new engines during the upgrade meets the new outcome `INPUT_INVALID`. The action listing reads the outcome as a string by design (`crates/application/src/schedules.rs:634-635`, `crates/infra-postgres/src/schedules.rs:547`), so it passes through; the outcome filter parses the name strictly (`crates/api-http/src/routes/schedules.rs:275`) and an old binary answers `422` to a filter on `INPUT_INVALID`. | Read in the code, not yet tested: T043-10 adds the test of an action list with an unknown outcome. The filter case is stated in the release notes. | Open |
+| G043-001 | A control plane of 0.2.x running beside new engines during the upgrade meets the new outcome `INPUT_INVALID`. The action listing reads the outcome as a string by design (`crates/application/src/schedules.rs:634-635`, `crates/infra-postgres/src/schedules.rs:547`), so it passes through; the outcome filter parses the name strictly (`crates/api-http/src/routes/schedules.rs:275`) and an old binary answers `422` to a filter on `INPUT_INVALID`. | Read in the code, not yet tested: T043-11 adds the test of an action list with an unknown outcome. The filter case is stated in the release notes. | Open |
 | G043-002 | A trigger refusal could be audited again on every retry of its event. | Closed for inbox events by D043-027 (the delivery row), proven by T043-7. Left: two engines that reach the same cron tick at once can both audit it; the reason names the tick key, so the duplicate is recognisable. | Open (narrowed 2026-11-14) |
-| G043-003 | `details.field` names property names declared in the schema. A caller with `run:start` learns them even without the permission to read the version. | The names are the workflow's input contract, which a caller needs to start it. Confirmed or refused by the security review. | Open |
+| G043-003 | `details.field` names property names declared in the schema to a caller with `run:start`. | Closed 2026-11-14: every role that holds `run:start` also holds `definition:read` (`crates/domain/src/identity.rs:607-691`), so the caller may read the schema the names come from. T043-23 adds the unit test that keeps it so for every `Role`. | Closed (by reading; test in T043-23) |
 | G043-004 | A published version with a non-manual trigger and an `inputSchema` that describes a manual input (and not the event envelope `{event, data}`) refuses every triggered start after the upgrade. | The release notes and the runbook carry a query that lists versions with both (OD-2026-11-14-8); it cannot tell which schemas accept the envelope without real events. `report` mode covers the time to fix them. | Open |
 | G043-005 | `format`, `contentMediaType` and `contentEncoding` are not asserted under any draft, so a schema that relies on them to refuse an input does not refuse it. | D043-023; documented in the runbook. | Open (documented) |
 | G043-006 | The CPU cost of validating a 256 KiB input on the API path is not measured. | Counters, not timers, prove the compile count; a benchmark is not a target of this design. | Open |
 | G043-007 | Inputs stored before the upgrade (schedules, pending resets) are not checked at the upgrade; they are refused at action time. | By design: the action time is the authority (D043-008). Stated in the release notes. | Open (documented) |
 | G043-008 | Signals, Updates, worker results and activity outputs are not validated against a schema by this feature. | Out of scope: OD-2026-11-14-2 is about starts. | Open (out of scope) |
 | G043-009 | `infra-schema::validate` (scripts, feature 005) reports instance paths that can hold caller-chosen keys. | Observed while reading the code; not changed here (another feature's contract). Reported to the owner. | Open |
-| G043-010 | Until the operator records `run-input-validation-v1`, replicas may run different modes and a 0.2.x control plane admits what a new one refuses. | OD-2026-11-14-8 puts the guarantee on the requirement; the runbook says when to record it. | Open (documented) |
-| G043-011 | A validation that misses its deadline is transient: for rows 6 to 12 it is tried again, and an input that always misses it is tried again without end. | Not expected within the bounds of D043-021 and D043-022; counted `outcome="deadline"`. The deadline value is not measured (G043-006). | Open |
+| G043-010 | Until the operator records `run-input-validation-v1`, replicas may run different modes and a 0.2.x control plane admits what a new one refuses; the first upgraded engine runs `enforce` unless the manifest said `report` before the migration. | D043-040: the runbook sets the mode before migrating; the requirement can only be recorded once every live process is in `enforce` (ADR-0082 decision 2). | Open (documented) |
+| G043-011 | A validation that misses its deadline under load is refused for a while: transient once, final the second time for the same schema and input. A final refusal caused by load, not by the input, is possible. | D043-035; the instance-aware walk (D043-033) bounds the work, so a miss means a starved machine. Counted `outcome="deadline"`. The deadline value is not measured (G043-006). | Open |
 | G043-012 | A rerun or reset refused for its input answers `field` `/` to a caller who may not read the source run's input, which says less than the caller needs to fix it. | Accepted: the field names a property of a payload the caller may not see. | Open (accepted by design) |
+| G043-013 | The miss memory of D043-035 is per process: across processes and restarts a slow input can be tried at most twice per process lifetime before it is final there. | A durable memory would add a statement on the refusal path and a table; not worth it for a backstop. | Open (accepted by design) |
+| G043-014 | `$dynamicRef` and `$recursiveRef` make a schema unusable, so a published schema that uses them refuses every start of its version. | D043-036; the inventory query lists versions whose schema fails the compile. | Open (documented) |
 
 ## 4. Owner questions
 
