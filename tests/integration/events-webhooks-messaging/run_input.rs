@@ -249,3 +249,59 @@ async fn report_mode_starts_the_triggered_run_and_audits_the_refusal_once() {
         1
     );
 }
+
+/// CUJ 3: the event a refusing trigger starts nothing for still wakes the step that waits for it.
+#[tokio::test]
+async fn row_9_a_refused_trigger_does_not_keep_a_wait_for_the_same_event_from_waking() {
+    use crate::support::engine::{wait_node, with};
+
+    let w = world().await;
+    let mut strict = triggered(
+        "row-9-wait-strict",
+        json!([{"kind": "event", "eventType": "order.created"}]),
+    );
+    strict["inputSchema"] = needs_order();
+    w.publish(strict).await;
+    let (waiter, _) = w
+        .publish(document(
+            "row-9-waiter",
+            "wait",
+            vec![
+                with(
+                    wait_node("wait", "order.created", "input.key", 300_000, None),
+                    "next",
+                    json!("after"),
+                ),
+                activity("after"),
+            ],
+        ))
+        .await;
+    let run = w.start(waiter, &json!({"key": "c-1"})).await;
+    w.events
+        .publish(
+            &w.admin,
+            PublishRequest {
+                namespace: "payments".to_owned(),
+                event_id: Some(EventId::parse("row-9-w1").expect("id")),
+                event_type: EventType::parse("order.created").expect("type"),
+                subject: None,
+                correlation_key: Some(
+                    sagat_domain::execution::CorrelationKey::parse("c-1").expect("key"),
+                ),
+                occurred_at: None,
+                data: br#"{"amount": 1}"#.to_vec(),
+                dedupe_ttl: None,
+            },
+            &ctx(),
+        )
+        .await
+        .expect("published");
+    let round = w.dispatcher.tick().await;
+    assert_eq!(round.steps_woken, 1, "the wait is woken");
+    assert_eq!(runs_named(&w, "row-9-wait-strict").await, 0);
+    assert_eq!(refused_deliveries(&w, "row-9-w1").await, 1);
+    assert_ne!(
+        w.step_status(run, "wait").await,
+        Some(sagat_domain::execution::StepStatus::Waiting)
+    );
+}

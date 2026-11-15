@@ -243,3 +243,60 @@ async fn report_mode_audits_a_refused_continuation_with_its_hand_off() {
     .expect("audits");
     assert_eq!(audits, 1);
 }
+
+/// Row 11 with a parent created before the check was on (`report` mode, an input its own schema refuses): its child is
+/// checked all the same (OD-2026-11-14-9).
+#[tokio::test]
+async fn row_11_the_child_of_a_parent_admitted_before_the_check_is_checked() {
+    let w = world().await;
+    let kid = format!("row-11-old-kid-{}", Uuid::now_v7());
+    w.publish(with_schema(
+        document(&kid, "a", vec![activity("a")]),
+        order_schema(),
+    ))
+    .await;
+    let (parent_workflow, _) = w
+        .publish(with_schema(
+            document(&format!("row-11-old-parent-{}", Uuid::now_v7()), "c", vec![child_node("c", &kid, None)]),
+            json!({"type": "object", "required": ["orderId"], "properties": {"orderId": {"type": "string"}}}),
+        ))
+        .await;
+    let old = sagat_application::runs::RunService::new(
+        w.store.clone(),
+        sagat_application::clock::SystemClock,
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        w.cache.clone(),
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        InputValidationMode::Report,
+    ));
+    let input = serde_json::to_vec(&json!({"orderId": 42})).expect("json");
+    let parent = old
+        .start(
+            &w.admin,
+            &sagat_application::runs::StartRun {
+                namespace: "payments",
+                workflow: parent_workflow,
+                version: None,
+                input: &input,
+                correlation_id: None,
+                deadline: None,
+                key: &format!("start-{}", Uuid::now_v7()),
+            },
+            &crate::support::engine::ctx(),
+        )
+        .await
+        .expect("admitted before the check")
+        .info
+        .run_id;
+    w.scheduler.tick().await;
+    assert!(
+        w.run_record(child_run_id(parent, &NodeId::parse("c").expect("node")))
+            .await
+            .is_none()
+    );
+    assert_eq!(
+        step_code(&w, parent, "c").await.as_deref(),
+        Some("CHILD_INPUT_INVALID")
+    );
+}

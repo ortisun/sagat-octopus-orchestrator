@@ -751,3 +751,41 @@ async fn a_retry_the_gate_refuses_replays_the_update_of_the_run_its_key_holds() 
     );
     assert_eq!(balance_of(&again), balance_of(&first));
 }
+
+/// Row 3 for Update-with-Start (FR-043-005, OD-2026-11-14-10): an input the version refuses is refused also when an open
+/// holder would answer, and the holder gets no Update.
+#[tokio::test]
+async fn an_update_with_start_whose_input_is_refused_applies_nothing_to_an_open_holder() {
+    let f = fixture().await;
+    let mut document = declared_waiter(&format!("update-with-start-{}", uuid::Uuid::now_v7()));
+    // INPUT has `account` and `k`; this version also requires `orderId`
+    document["inputSchema"] =
+        json!({"type": "object", "required": ["k"], "properties": {"k": {"type": "string"}}});
+    let workflow = f.w.publish(document.clone()).await.0;
+    let holder = Call::new(workflow, "acct-riv", 25)
+        .send(&f)
+        .await
+        .expect("the holder starts");
+    let receipts = receipts_of(&f, holder.run.info.run_id).await;
+    document["inputSchema"] = json!({"type": "object", "required": ["orderId"]});
+    f.w.publish_new_version(workflow, document).await;
+    let mut call = Call::new(workflow, "acct-riv", 30);
+    call.update_key = "update-key-0002";
+    let refused = call
+        .send(&f)
+        .await
+        .expect_err("refused although the holder is open");
+    assert_eq!(
+        refused,
+        AppError::InvalidRunInput {
+            reason: "RUN_INPUT_INVALID",
+            field: Some("/orderId".to_owned()),
+            rule: Some("required"),
+        }
+    );
+    assert_eq!(
+        receipts_of(&f, holder.run.info.run_id).await,
+        receipts,
+        "the holder got no Update"
+    );
+}

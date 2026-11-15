@@ -143,15 +143,33 @@ async fn row_6_an_action_the_new_version_refuses_is_input_invalid_and_pauses_onc
     assert!(f.runs(&schedule).await.is_empty());
     assert_eq!(f.read(&schedule).await.state, ScheduleState::Paused);
     assert_eq!(auto_paused(&f, schedule.id).await, 1);
-    f.clock.advance(Duration::hours(1));
+    // the refused time is acted on, not owed: resumed, the schedule goes on to the next time and decides that one only
+    let paused = f.read(&schedule).await;
+    assert_eq!(paused.retry_at, None, "nothing is owed");
+    f.service
+        .resume(
+            &f.w.admin,
+            schedule.id,
+            sagat_domain::schedules::Note::new("fixed the input").expect("note"),
+            &RequestContext::default(),
+        )
+        .await
+        .expect("resumed");
     assert_eq!(
-        f.drain(&schedule).await,
-        0,
-        "a paused schedule does nothing more"
+        f.fire(&schedule).await,
+        Fired::Idle,
+        "the refused time is not decided again"
     );
     assert_eq!(
         f.outcomes(&schedule).await,
         outcomes_of(&[("INPUT_INVALID", 1)])
+    );
+    f.clock.advance(Duration::hours(1));
+    f.drain(&schedule).await;
+    assert_eq!(
+        f.outcomes(&schedule).await,
+        outcomes_of(&[("INPUT_INVALID", 2)]),
+        "the next time is decided, once"
     );
 }
 
