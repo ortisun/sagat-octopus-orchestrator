@@ -44,6 +44,8 @@ pub mod cleanup;
 pub mod cli;
 pub mod config;
 pub mod handover;
+pub mod handover_auto;
+pub mod handover_role;
 pub mod registry;
 
 /// Parsed workflow versions kept in memory (they are immutable, so they never go stale).
@@ -89,6 +91,12 @@ pub enum RunError {
     /// do next (the engines that lack a capability, a count that is not the one expected, a role that may not run it).
     #[error("{0}")]
     Declined(String),
+    /// The automatic handover's wait ended before the database's conditions held; the sentence names the last reason (exit 3).
+    #[error("{0}")]
+    Deadline(String),
+    /// The automatic handover received SIGTERM or SIGINT and started no activation (exit 4).
+    #[error("{0}")]
+    Interrupted(String),
 }
 
 impl RunError {
@@ -107,6 +115,8 @@ impl RunError {
             | Self::Unhealthy(_)
             | Self::AlreadyExists => 1,
             Self::Cleanup => 1,
+            Self::Deadline(_) => 3,
+            Self::Interrupted(_) => 4,
         }
     }
 }
@@ -144,10 +154,30 @@ pub async fn open_pool(
 /// # Errors
 /// [`RunError::Database`] if PostgreSQL is unreachable, [`RunError::Migrate`] if a migration fails.
 pub async fn run_migrations(db: &DatabaseConfig) -> Result<(), RunError> {
+    run_migrations_with(db, None).await
+}
+
+/// [`run_migrations`], then, given the password of the handover role (`SAGAT_HANDOVER_PASSWORD`), its login: set from a SCRAM
+/// verifier this process computes, only while the handover is `LEGACY` and the role was never retired (ADR-0091 decision 1,
+/// D2264, D2269, D2272). An empty password is no password.
+///
+/// # Errors
+/// As [`run_migrations`]; [`RunError::Config`] for a password it will not use.
+pub async fn run_migrations_with(
+    db: &DatabaseConfig,
+    handover_password: Option<&str>,
+) -> Result<(), RunError> {
     let pool = open_pool(db, Duration::ZERO).await?;
     migrate(&pool)
         .await
         .map_err(|e| RunError::Migrate(e.to_string()))?;
+    if let Some(password) = handover_password.filter(|password| !password.is_empty()) {
+        let set = handover_role::set_login(&pool, password).await;
+        if let Err(error) = set {
+            pool.close().await;
+            return Err(error);
+        }
+    }
     pool.close().await;
     Ok(())
 }
