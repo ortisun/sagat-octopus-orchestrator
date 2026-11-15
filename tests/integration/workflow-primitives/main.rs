@@ -42,6 +42,7 @@ mod collection_operators;
 mod collection_operators_measure;
 mod collection_operators_old_reader;
 mod collection_operators_races;
+mod collection_operators_review;
 mod collection_operators_switch;
 mod collection_operators_unchanged;
 mod collection_pipeline;

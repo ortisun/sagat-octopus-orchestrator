@@ -19,11 +19,12 @@ struct Work {
     rows_written: i64,
 }
 
-/// What the entry of the collection below cost before the chain was applied (measured at `0e94bf0e`).
+/// What the entry of the collection below cost before the chain was applied: measured with this test at `0e94bf0e` (S0)
+/// and at `a4f6e9db` (develop before design 042), both 69, 2 and 22 (`specs/042-stream-operators/validation-report.md`).
 const BEFORE: Work = Work {
-    statements: 63,
+    statements: 69,
     transactions: 2,
-    rows_written: 17,
+    rows_written: 22,
 };
 
 async fn work(w: &World) -> Work {
@@ -62,7 +63,7 @@ fn collection(name: &str) -> Value {
         ]}},
         "nodes": [
             {"id": "items", "type": "forEach", "items": "input.lines", "body": "line",
-             "result": "bodyResult", "maxItems": 5, "maxConcurrency": 2, "next": "done"},
+             "result": "bodyResult", "maxItems": 10, "maxConcurrency": 2, "next": "done"},
             {"id": "done", "type": "end"}
         ]
     })
@@ -80,7 +81,11 @@ async fn once() -> Option<(Work, Vec<u8>)> {
     let run = w
         .start(
             workflow,
-            &json!({"lines": [{"v": 1, "k": "a"}, 2, "x", [1.0, -0]]}),
+            // A raw document, not `json!`: the macro writes `-0` as the integer `0` before anything reads it.
+            &serde_json::from_str::<Value>(
+                r#"{"lines": [{"v": 1, "k": "a"}, 2, "x", [1.0, -0], -0, -0.0, 1e2]}"#,
+            )
+            .expect("json"),
         )
         .await;
     let scheduler = crate::limits::scheduler(&w, "operators-unchanged").await;
@@ -122,9 +127,10 @@ async fn collection_entry_without_operators_is_unchanged() {
         let Some((spent, snapshot)) = once().await else {
             continue;
         };
+        println!("FR-042-012 entry without operators: {spent:?}");
         assert_eq!(
             String::from_utf8(snapshot).expect("utf-8"),
-            r#"[{"k":"a","v":1},2,"x",[1.0,0]]"#,
+            r#"[{"k":"a","v":1},2,"x",[1.0,-0.0],-0.0,-0.0,100.0]"#,
             "the same snapshot bytes"
         );
         assert_eq!(spent, BEFORE, "the same statements, transactions and rows");

@@ -94,26 +94,74 @@ async fn a_cancellation_committed_while_the_chain_is_held_wins_and_the_entry_rec
     verified(&p, run).await;
 }
 
+/// Sessions of this database waiting on a lock, and whether one of them is the entry, held on its instance usage row.
+async fn waiters(p: &Platform) -> (i64, bool) {
+    sqlx::query_as(
+        "SELECT count(*), coalesce(bool_or(query ILIKE '%FROM run_instance_usage%FOR UPDATE%'), false) \
+         FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
+    )
+    .fetch_one(&p.api.db.pool)
+    .await
+    .expect("lock waiters")
+}
+
+/// Waits, bounded, until `done` holds of the lock waiters; the bound orders nothing, it only keeps a defect from hanging.
+async fn until_waiting(p: &Platform, done: impl Fn((i64, bool)) -> bool, what: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if done(waiters(p).await) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "never saw {what}");
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Entry first, forced with a held lock (D042-150, amending D042-120): the entry is held inside its own transaction,
+/// after it locked the run, on the instance-usage row the test holds; the cancellation is sent and waits on the run's
+/// lock; the test releases. The entry commits first, once, and the cancellation is then applied to the entered run.
 #[tokio::test]
-async fn an_entry_committed_before_the_cancellation_is_entered_once_and_then_cancelled() {
+async fn an_entry_holding_the_run_lock_commits_before_the_cancellation_that_waits_on_it() {
     let p = platform_with_operators().await;
     let run = chained_run(&p, "operators-entry-first").await;
-    let (hold, mut barrier) = gate();
-    let evaluator = Watched::new(Mode::Hold(hold));
+    let evaluator = Watched::new(Mode::Apply);
     let (scheduler, keeper) = replica(&p, evaluator.clone(), None).await;
 
-    let release = async {
-        barrier.held().await;
-        barrier.release();
-    };
+    let mut holder = p.api.db.pool.begin().await.expect("holder");
+    sqlx::query("SELECT 1 FROM run_instance_usage WHERE run_id = $1 FOR UPDATE")
+        .bind(run)
+        .execute(&mut *holder)
+        .await
+        .expect("hold the run's instance usage row");
+
     let joined_owner = owner();
+    let mut cancelled = None;
+    let order = async {
+        until_waiting(
+            &p,
+            |(_, entry)| entry,
+            "the entry held after it locked the run",
+        )
+        .await;
+        let cancel = cancel(&p, run);
+        let release = async {
+            until_waiting(
+                &p,
+                |(count, _)| count >= 2,
+                "the cancellation waiting on the run lock",
+            )
+            .await;
+            holder.commit().await.expect("release the entry");
+        };
+        let ((), ()) = tokio::join!(cancel, release);
+        cancelled = Some(());
+    };
     let (entry, ()) = tokio::join!(
         scheduler.advance_collection_from_run(p.tenant, RunId::new(run), &joined_owner),
-        release
+        order
     );
     assert!(matches!(entry, Ok(CollectionAdvance::Entered)), "{entry:?}");
-    // The entry has committed: only now is the cancellation sent.
-    cancel(&p, run).await;
+    assert!(cancelled.is_some(), "the cancellation was answered 2xx");
     keeper.leave().await;
     drop(scheduler);
     let after = Watched::new(Mode::Panic);
@@ -122,11 +170,8 @@ async fn an_entry_committed_before_the_cancellation_is_entered_once_and_then_can
     assert_eq!(status_and_code(&p, run).await.0, "CANCELLED");
     assert_eq!(scopes(&p, run).await, 1, "entered exactly once");
     assert_eq!(scope_of(&p, run).await.0, 3);
-    assert_eq!(
-        evaluator.calls(),
-        1,
-        "the drain does not evaluate the chain"
-    );
+    assert_eq!(evaluator.calls(), 1);
+    assert_eq!(after.calls(), 0, "the drain does not evaluate the chain");
     verified(&p, run).await;
 }
 

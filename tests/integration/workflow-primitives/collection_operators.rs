@@ -571,7 +571,7 @@ async fn an_expression_error_fails_the_run_and_on_error_is_not_taken() {
     let mut ir = chained_ir(
         "operators-expression",
         "input.lines",
-        &json!([{"map": {"select": "element.missing"}}]),
+        &json!([{"map": {"select": "element"}}, {"filter": {"where": "element.missing"}}]),
         10,
     );
     ir["nodes"][0]["onError"] = json!("recover");
@@ -582,9 +582,41 @@ async fn an_expression_error_fails_the_run_and_on_error_is_not_taken() {
     let workflow = p.publish("operators-expression", &ir).await;
     let run = start_inline(&p, &workflow, &json!({"lines": [{"a": 1}]})).await;
     let (scheduler, keeper) = replica(&p, Watched::new(Mode::Apply), None).await;
+    let (guard, captured) = crate::support::logs::capture();
     settle(&p, &scheduler, run, 20).await;
+    drop(guard);
     keeper.leave().await;
     assert_eq!(status_and_code(&p, run).await, failed("EXPRESSION_ERROR"));
+    // The run's failure detail says which stage, which operator and which position, never a value (review of S1).
+    let detail: Vec<String> = sqlx::query_scalar(
+        "SELECT reason FROM audit_records WHERE tenant_id = $1 AND resource_id = $2 \
+           AND action = 'run.collection_chain_failed'",
+    )
+    .bind(p.tenant.as_uuid())
+    .bind(run.to_string())
+    .fetch_all(&p.api.db.pool)
+    .await
+    .expect("audit");
+    assert_eq!(
+        detail,
+        ["operators[1] (filter) failed at position 0 (expression)"],
+        "one value-free record of where the chain failed"
+    );
+    let log = captured.text();
+    let warning = log
+        .lines()
+        .find(|line| {
+            line.contains("a collection source was refused") && line.contains(&run.to_string())
+        })
+        .unwrap_or_else(|| panic!("the warning of the refusal: {log}"));
+    for field in [
+        "stage=1",
+        "operator=\"filter\"",
+        "position=0",
+        "code=\"EXPRESSION_ERROR\"",
+    ] {
+        assert!(warning.contains(field), "{field} in {warning}");
+    }
     let recovered: i64 =
         sqlx::query_scalar("SELECT count(*) FROM steps WHERE run_id = $1 AND node = 'recover'")
             .bind(run)
@@ -1071,8 +1103,11 @@ async fn a_chained_entry_that_lost_its_fence_is_counted_as_a_re_entry() {
     let (hold, mut barrier) = gate();
     let evaluator = Watched::new(Mode::Hold(hold));
     let (scheduler, keeper) = replica(&p, evaluator.clone(), None).await;
-    let metrics = Metrics::global();
-    let before = chain_reentries(&metrics.render(), "fence");
+    // A recorder of this test's own (review of S1): every metric the scheduler records on this thread lands here, and
+    // nothing another test records does, so the counts below are equalities. The blocking task records nothing.
+    let (metrics, recorder) =
+        sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(600));
+    let local = metrics::set_default_local_recorder(&recorder);
 
     let steal = async {
         barrier.held().await;
@@ -1100,7 +1135,44 @@ async fn a_chained_entry_that_lost_its_fence_is_counted_as_a_re_entry() {
         matches!(second, Ok(sagat_scheduler::CollectionAdvance::Entered)),
         "{second:?}"
     );
-    assert!(chain_reentries(&metrics.render(), "fence") >= before + 1.0);
+    // A third try finds the scope entered: nothing more is counted.
+    let joined_owner = owner();
+    let third = scheduler
+        .advance_collection_from_run(p.tenant, RunId::new(run), &joined_owner)
+        .await;
+    drop(local);
+    assert!(third.is_ok(), "{third:?}");
+    let page = metrics.render();
+    assert_eq!(
+        chain_reentries(&page, "fence"),
+        1.0,
+        "one re-entry, counted once:\n{page}"
+    );
+    assert_eq!(
+        metric(
+            &page,
+            "operator_elements_total",
+            &[
+                ("surface", "collection"),
+                ("operator", "take"),
+                ("outcome", "kept")
+            ]
+        ),
+        1.0,
+        "the discarded evaluation is not counted; the committed one is, once"
+    );
+    assert_eq!(
+        metric(
+            &page,
+            "operator_elements_total",
+            &[
+                ("surface", "collection"),
+                ("operator", "take"),
+                ("outcome", "dropped")
+            ]
+        ),
+        1.0
+    );
     assert_eq!(evaluator.calls(), 2);
     assert_eq!(scopes(&p, run).await, 1);
 }
