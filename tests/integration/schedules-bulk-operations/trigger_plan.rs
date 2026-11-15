@@ -358,7 +358,7 @@ async fn the_view_lists_what_its_previous_definition_listed_for_every_kind_of_di
         .expect("the guard's switch");
     sqlx::query(
         "UPDATE schedule_trigger_handover SET state = 'HANDED_OVER', changed_by = 'test', changed_at = clock_timestamp(), \
-                changed_db_role = 'test'",
+                changed_db_role = 'test', changed_mode = 'OPERATOR', changed_epoch = 0",
     )
     .execute(&mut *tx)
     .await

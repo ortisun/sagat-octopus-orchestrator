@@ -327,7 +327,7 @@ async fn old_binary_round(t: &Triggers) -> u32 {
     .execute(pool)
     .await
     .expect("disable the guard");
-    sqlx::query("UPDATE schedule_trigger_handover SET state = 'LEGACY', changed_by = NULL, changed_at = NULL, changed_db_role = NULL")
+    sqlx::query("UPDATE schedule_trigger_handover SET state = 'LEGACY', changed_by = NULL, changed_at = NULL, changed_db_role = NULL, changed_mode = NULL, changed_epoch = NULL")
         .execute(pool)
         .await
         .expect("legacy for the old binary");
@@ -337,7 +337,7 @@ async fn old_binary_round(t: &Triggers) -> u32 {
             .tick()
             .await
             .runs_started;
-    sqlx::query("UPDATE schedule_trigger_handover SET state = 'HANDED_OVER', changed_by = 'ana', changed_at = now(), changed_db_role = 'owner'")
+    sqlx::query("UPDATE schedule_trigger_handover SET state = 'HANDED_OVER', changed_by = 'ana', changed_at = now(), changed_db_role = 'owner', changed_mode = 'OPERATOR', changed_epoch = 0")
         .execute(pool)
         .await
         .expect("handed over again");
@@ -402,8 +402,10 @@ async fn the_reconciliation_cut_off_at_any_write_leaves_nothing_half_done_and_th
         t.drift().await
     }
 
-    // what an older control plane does, three ways: it adds a trigger, drops one, and the expression of one drifts
-    for (case, position_limit) in [("create", 8usize), ("remove", 8), ("respec", 8)] {
+    // what an older control plane does, three ways: it adds a trigger, drops one, and the expression of one drifts. A make writes one
+    // statement more since ADR-0091, the mark of the reconciliation (`reconciled_at`, D2258), with the accounting rows it moves; the
+    // probe of each case can see a make of the triggers the cases before it left, and the matrix below cuts every write of it
+    for (case, position_limit) in [("create", 9usize), ("remove", 9), ("respec", 9)] {
         let trigger = Uuid::now_v7();
         match case {
             "create" => {
@@ -481,7 +483,7 @@ async fn the_reconciliation_cut_off_at_any_write_leaves_nothing_half_done_and_th
             .expect("a transaction");
         assert!(
             writes_of_the_change >= 2 && writes_of_the_change <= position_limit + 4,
-            "{case}: {writes_of_the_change}"
+            "{case}: {writes_of_the_change} writes: {writes:?}"
         );
         // undo what the probe did so that the same drift can be cut off: delete and add again
         let _ = (schedules_before, before);

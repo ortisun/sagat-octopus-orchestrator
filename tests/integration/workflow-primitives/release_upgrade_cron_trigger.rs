@@ -320,7 +320,7 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         progress.enter("2. the current migrations, with the released process still up");
         sagat_infra_postgres::migrate(&pool).await.expect("current migrations");
         let after: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&pool).await.expect("current schema boundary");
-        assert_eq!(after, 20270116000000);
+        assert_eq!(after, 20270117000000, "the automatic handover's migration (ADR-0091) is the last");
         let state: String = sqlx::query_scalar("SELECT state FROM schedule_trigger_handover").fetch_one(&pool).await.expect("handover state");
         assert_eq!(state, "LEGACY");
         let schedules: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules").fetch_one(&pool).await.expect("schedules");
