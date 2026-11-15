@@ -513,8 +513,9 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   (`schedules.autoHandover: false` in Helm, `SAGAT_SCHEDULES_AUTO_HANDOVER=false` in compose; on by default,
   OD-2026-11-14-6), a one-shot job MUST run after a deployment (a compose service; a plain Helm Job of the release named by
   its revision, so that a rollback deletes it) the operator command of FR-018-017 with `--auto`, as the login role
-  `sagat_handover`, which may record `schedules-v1` for the engines and nothing else; it MUST start no activation after
-  SIGTERM, and MUST hand over no sooner than one horizon (at most 1 h) after its first round and only after
+  `sagat_handover`, which may make the automatic handover and nothing else, through functions that compute every condition
+  below again in the database under the epoch lock and take the mode from `session_user` (D2259); it MUST start no activation
+  after SIGTERM, and MUST hand over no sooner than one horizon (10 min to 1 h) after its first round and only after
   `--stable` consecutive rounds, read with no transaction open between them, in which: every execution engine seen within
   `--horizon` lists `schedules-v1`; the set of live engines is unchanged and has at least `--min-live` members; no
   scheduler membership seen within the horizon belongs to an engine the registry does not list; the reconciliation made,
@@ -527,7 +528,8 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   and the set of tenants that have a cron trigger, each with a random audit id, in its transaction, and, after the commit,
   one audit record per tenant of that set with the handover row's actor, mode and time, refusing a planted record
   (OD-2026-11-14-7). The runtime role gains no privilege; requirements stay the operator's command's (FR-018-052), run with
-  the owner or with `sagat_handover`. (OD-2026-11-14-4 to -7; D2240 to D2258; ADR-0091.)
+  the owner or with `sagat_handover`. Every `migrate` run MUST ensure the role and its grants (D2264). (OD-2026-11-14-4 to -7 and -12; D2240 to D2259, D2263 to
+  D2268; ADR-0091.)
 
 ### Non-functional requirements
 

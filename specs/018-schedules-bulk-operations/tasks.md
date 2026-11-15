@@ -1564,47 +1564,54 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 *The automatic handover (added 2026-11-14, OD-2026-11-14-4 to -7, ADR-0091 proposed; revised after the second review).* The
 owner decided that the handover happens after a deployment without an operator: a one-shot job runs `schedule-trigger-handover
 --auto`. T018-082 to T018-087 build it; T018-061 stays the operator path. None of them may be ticked before ADR-0091 has the three
-repository reviews on its last text (T018-087) and O1957 is answered (an `OD-` row).
+repository reviews on its last text (T018-087); O1957 was answered by OD-2026-11-14-12. *Revised after the third review (D2259,
+D2263 to D2268).*
 
 - [ ] T018-082 [US7] Migration of the automatic handover — `crates/infra-postgres/migrations/<timestamp>_trigger_handover_automatic.{up,down}.sql`,
   `crates/infra-postgres/storage-classification.json`, `infra/docker/postgres-init/` — on `schedule_trigger_handover`: `changed_mode`
   (backfilled `OPERATOR` on a row already handed over, null only in `LEGACY`) and `changed_epoch`; owner-only, keyed by the epoch
   and written in the activation: the census copy (whole, or the handover refuses: D2257) and the tenant set with a random audit id
   and `audited_at` per tenant (D2253); the attempt row (run id, first round, deadline, last reason, count, time; `sagat_app` and
-  `sagat_handover` read it); `schedules.reconciled_at` with a partial index; definer functions for the rounds, the handover wrapper
-  (records `schedules-v1` for the engines and moves the state, nothing else) and the audit completion (writes from the recorded set
-  with the handover row's actor, mode and time, refuses `AUDIT_CONFLICT` on a planted id); grants to `sagat_handover` inside
-  `IF EXISTS` and nothing new to `sagat_app`; the role created by `postgres-init` in compose (D2252, G2249); the reason codes as one
+  `sagat_handover` read it); `schedules.reconciled_at` with a partial index; definer functions for the rounds (each computes every
+  condition and counts the stable rounds in the attempt row, floors in SQL) and the handover wrapper (takes only the run id,
+  computes every condition again under the epoch lock, takes the mode from `session_user`, records `schedules-v1` for the engines
+  and moves the state, nothing else: D2259), the grant function `migrate` calls every run (D2264), the retirement (`NOLOGIN`,
+  D2265) and the audit completion (writes from the recorded set
+  with the handover row's actor, mode and time, refuses `AUDIT_CONFLICT` on a planted id); every function with `SET search_path = pg_catalog,
+  pg_temp` and `REVOKE ALL ... FROM PUBLIC` (D2267); nothing new to `sagat_app`; the reason codes as one
   closed set. Follows `.claude/skills/migration/SKILL.md` (timestamp after `develop` and every open 018 branch; additive; `down`
   refuses for any mode). The reconciliation sets the mark on make, revive, respec (`trigger_schedules.rs:877-946`), resume
   (`:1020`) and removal (D2258). Test first: the migration, backfill, role and audit tests of T018-085 seen failing.
-  Refs: FR-018-053, D2243, D2246, D2252, D2253, D2257, D2258
+  Refs: FR-018-053, D2243, D2246, D2252, D2253, D2257, D2258, D2259, D2264, D2265, D2267
   Owner-gate: OD-2026-11-14-5, OD-2026-11-14-7
 - [ ] T018-083 [US7] The deployment's job — `infra/docker/compose.yaml`, `infra/docker/.env.example`, `infra/helm/templates/`,
   `infra/helm/values.yaml`, `infra/helm/templates/NOTES.txt` — compose: the service `schedule-trigger-handover` (control-plane
   image, the `sagat_handover` URL, `restart: "no"`, after `control-plane` and `execution-engine`, health checks for both if the image
-  can give them, G2247; `SAGAT_SCHEDULES_AUTO_HANDOVER`, default true, false exits 0 at once). Helm: a plain Job (not a hook) named
-  `<release>-schedule-trigger-handover-<revision>`, `ttlSecondsAfterFinished` 1 h, `backoffLimit: 2`, `activeDeadlineSeconds` the
-  wait plus five minutes, a `podFailurePolicy` failing it on exit code 2, `terminationGracePeriodSeconds` 30, its own service account
-  with `automountServiceAccountToken: false`, the Secret `schedules.autoHandover.databaseSecret` `required` when on, `--run-id` the
-  Job's name, `--min-live` from the engine's replicas or autoscaler minimum, `--operator` naming the release; nothing rendered when
+  can give them, G2247; `SAGAT_SCHEDULES_AUTO_HANDOVER`, default true, false exits 0 at once; `SAGAT_HANDOVER_PASSWORD` to `migrate` and the job, not
+  to `postgres-init`; `SAGAT_HANDOVER_RETIRE_ROLE`, default false). Helm: a plain Job (not a hook) named
+  `<release>-schedule-trigger-handover-<revision>` cut to 52 characters plus `-` and 10 hex digits of its SHA-256 (D2268),
+  `restartPolicy: Never`, `ttlSecondsAfterFinished` 1 h, `backoffLimit: 2`, `activeDeadlineSeconds` the wait plus five minutes,
+  a `podFailurePolicy` failing it on exit code 2 and ignoring `DisruptionTarget`, `terminationGracePeriodSeconds` 30,
+  `SAGAT_HANDOVER_RUN_ID` from the label `batch.kubernetes.io/controller-uid` (D2263), `schedules.autoHandover.retireRole`, its own service account
+  with `automountServiceAccountToken: false`, the Secret `schedules.autoHandover.databaseSecret` `required` when on, `--min-live` from the engine's replicas or autoscaler minimum, `--operator` naming the release; nothing rendered when
   `schedules.autoHandover: false` (D2251, D2252). The engines export `trigger_schedule_handover_blocked{reason}` from the attempt row
   and `trigger_schedule_handover_mode{mode}` from the handover row (series at zero, D2217, D2255); `SagatTriggerHandoverBlocked` as
   `max without (reason)` with its `promtool` test. Test first: `helm template` cases and the rule test seen failing.
-  Refs: FR-018-053, D2245, D2247, D2251, D2252, D2255, G2246, G2247
+  Refs: FR-018-053, D2245, D2247, D2251, D2252, D2255, D2263, D2264, D2265, D2268, G2246, G2247
   Owner-gate: OD-2026-11-14-5, OD-2026-11-14-6
 - [ ] T018-084 [US7] The command learns to wait — `apps/control-plane/src/handover.rs`, `apps/control-plane/src/cli.rs`,
   `apps/control-plane/src/lib.rs`, `crates/infra-postgres/src/trigger_schedules.rs`, `crates/infra-postgres/src/instances.rs` —
-  `--auto` (implies `--apply`, records `AUTOMATIC`), `--wait` (default 2 h, at most 24 h), `--stable` (default 3), `--horizon`
-  (default 10 min, 60 s to 1 h), `--min-live` (default 1; `--expect-live` replaces it), `--run-id`; rounds through the definer
-  functions with a 5 s statement timeout and no transaction held across a wait; the conditions of D2241 to D2244 and the first
+  `--auto` (implies `--apply`, records `AUTOMATIC` from the role, not from an argument), `--wait` (default 2 h, at most 24 h), `--stable` (default 3), `--horizon`
+  (default 10 min, 10 min to 1 h), `--min-live` (default 1; `--expect-live` replaces it for `--apply`), `--run-id` (from `SAGAT_HANDOVER_RUN_ID`), `--retire-role`;
+  `migrate` ensures the role and re-grants it every run, and sets its login from `SAGAT_HANDOVER_PASSWORD` (D2264); the dry run
+  checks the wrapper's privilege (D2266); rounds through the round function, never the owner-only census, with a 5 s statement timeout and no transaction held across a wait; the conditions of D2241 to D2244 and the first
   horizon (D2256); the activation through the wrapper with `expect_live` the stable count; typed reasons instead of matched text,
   `Declined` only for what no wait cures, the others retried with a backoff and `CHECK_TOO_SLOW` after three `57014` (D2254);
   SIGTERM and SIGINT start no activation (exit 4, `INTERRUPTED`, D2251); the attempt row each round; the audit completion after the
-  commit and on "already handed over"; exit codes 0, 2, 3, 4, 1; the dry run prints what `--auto` would answer; both the owner and
-  `sagat_handover` can run it. Test first: unit tests of the loop, the reasons, the backoff and one per refusal call site (16 today),
+  commit and on "already handed over"; exit codes 0, 2, 3, 4, 1; the dry run prints what `--auto` would answer; `--apply` as the owner
+  only, `--auto` as `sagat_handover`; exit 2 at once in compose when the job is on and there is no password. Test first: unit tests of the loop, the reasons, the backoff and one per refusal call site (16 today),
   seen failing.
-  Refs: FR-018-053, FR-018-017, D2240, D2241, D2242, D2243, D2244, D2246, D2249, D2250, D2251, D2253, D2254, D2256
+  Refs: FR-018-053, FR-018-017, D2240, D2241, D2242, D2243, D2244, D2246, D2249, D2250, D2251, D2253, D2254, D2256, D2259, D2264, D2265, D2266
   Owner-gate: OD-2026-11-14-5, OD-2026-11-14-7
 - [ ] T018-085 [US7] The tests of ADR-0091 — `tests/fault/schedules-bulk-operations/auto_handover.rs`,
   `tests/integration/schedules-bulk-operations/trigger_auto_handover.rs`, `trigger_scale.rs`, `tests/contract/scalability-ha/`,
@@ -1614,15 +1621,21 @@ repository reviews on its last text (T018-087) and O1957 is answered (an `OD-` r
   reconciliation; the four forgeries of G2243, one test each; a planted audit record refused and a completion from the recorded set
   with the handover row's actor, mode and time; timeouts and refusals retried with the backoff and `CHECK_TOO_SLOW`; SIGTERM held
   between a stable round and the activation (exit 4, state `LEGACY`); a retried pod resuming its run id; the roles (`sagat_app` gains
-  nothing, `sagat_handover` can do only its functions) and the `ALLOWED` list; the migration's backfill and `down`; `helm template`
-  (a plain Job named by the revision, its TTL, limits, service account without a token, the required Secret failing the render when
+  nothing, `sagat_handover` can do only its functions) and the `ALLOWED` list, plus a privilege audit of `sagat_handover` with its
+  own list and the auto-handover suites run as that role (D2266); the wrapper called alone from `psql` as `sagat_handover` with
+  each condition false in turn, and the mode and actor it records (D2259); the role on an upgrade from 0.2, created by hand after the
+  migration, given a password, retired (D2264, D2265); a Job recreated by `helm rollback` starting a new run (D2263); the catalog
+  test of D2267; the migration's backfill and `down`; `helm template`
+  (a plain Job named by the revision and at most 63 characters for a 53-character release, `restartPolicy: Never`, the
+  `DisruptionTarget` rule, the run id from the controller UID, its TTL, limits, service account without a token, the required Secret failing the render when
   missing, nothing when off); a compose smoke test; the one-set test of the reason codes, the Rust enum and the runbook anchors; the
   alert's `promtool` test; the cost of the tenant set under the lock at 100,000 triggers of 1,000 tenants (G2248); the
   released-v0.2 upgrade; a kind run of an `--atomic` rollback deleting the Job in the release profile (G2250). Hand mutants only.
-  Refs: SC-018-019, SC-018-005, SC-018-017, FR-018-053, G2243, G2248, G2250
+  Refs: SC-018-019, SC-018-005, SC-018-017, FR-018-053, D2259, D2263, D2264, D2266, D2267, D2268, G2243, G2248, G2250
   Owner-gate: OD-2026-11-14-5
 - [ ] T018-086 [US7] Documents of the automatic handover — `docs/runbooks/schedules.md` section 6 (the job by default, its conditions
-  and flags, creating `sagat_handover` and its Secret before the upgrade and deleting the Secret after, the opt-out, a row per reason
+  and flags, `SAGAT_HANDOVER_PASSWORD` for `migrate` or the login created once, the Secret, and after the handover `--retire-role` or
+  `ALTER ROLE sagat_handover NOLOGIN` and the Secret deleted (D2265), what to look at when no attempt row appears (G2251), the opt-out, a row per reason
   in 6.3 with the anchor the alert names, the attempt row and the two gauges in 6.5, rollback in 6.4), `docs/runbooks/instance-registry.md`
   (the role of the command), `docs/runbooks/control-plane.md` (the third role), `docs/runbooks/scaling.md` (the upgrade order and
   Helm, G2246), `docs/runbooks/observability.md`, `infra/helm/templates/NOTES.txt`, the release notes of 0.3.0 (D2248), `data-model.md`,
