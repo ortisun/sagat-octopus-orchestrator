@@ -123,6 +123,52 @@ then decided O041-012 and O041-013 (OD-2026-11-13-18). Decisions 1, 3, 5, 6, 10 
 added; options 4, 5 and 9 were added. The chosen option is unchanged. The reports are in
 `docs/designs/041-step-logs.reviews/2026-11-13/`.
 
+## Revision (2026-11-15), proposed: awaiting the owner's acceptance (O041-014)
+
+Not in force until the owner accepts it (design 041, T041-2; O041-014 in `specs/041-step-logs/research.md`). The Status
+line above and the decisions as written above are unchanged until then. The egm-review and the second round of the
+reviewers (`docs/designs/041-step-logs.reviews/2026-11-15/`) found that a secret leaves the process's set when its
+attempt ends although a later attempt can log it through shared state; that each language's own decimal text of a number
+does not contain a numeric secret; that the server's scrubbers cannot be reused as written (`scrub_shapes` and
+`redact_credentials` are private, `scrub` cuts at 2,048 characters) and never hide a non-string value; that the withheld
+script log still disclosed its size class; that the classified-namespace flag failed open during a rolling upgrade or after a rollback; and
+that "purged" named both the delete and the purge. The revision replaces these decisions:
+
+- **1.** The SDK MUST replace, before a line leaves the worker process, every value in the process's secret set, in the
+  message, in every field key, in every string field value, in the canonical decimal text of every number field (the
+  form of ECMAScript `Number::toString`, defined in `sdks/SPEC.md`; a number whose text holds a value becomes the string
+  `[REDACTED]`), and in the exception text and stack it formats, by the rule of `sagat_domain::scripts::redact`. The set
+  holds every value `ResolveSecrets` returned in the process for the life of the process, bounded; when it is full,
+  capture MUST stop for the process (pending O041-017: if the owner answers (b), the set holds a value only while an
+  attempt that holds it is in flight, and rule 12 names the shared-state case). Context the language attaches to a line
+  is captured only as fields and redacted as fields.
+- **3.** The server MUST apply, in the application layer and before any size is measured, the shapes of both existing
+  scrubbers through public entry points that take the placeholder `[REDACTED]` and do not cut, and MUST replace with
+  `[REDACTED]` the value, of any type, of a field whose key the existing sensitive-name list matches. It reuses those
+  functions; it MUST NOT grow a second list.
+- **6.** Step logs MUST be read only with `run:read` and `run:logs:read`, a permission held by the admin, developer and
+  operator roles and not by viewer, worker or runner. In a namespace that is classified (a published version carries a
+  classification annotation, recorded by a database trigger on every version insert into an insert-only table that
+  nothing clears, with a test that may over-match and so errs closed) the reader MUST also hold the namespace's PII
+  reveal grant. Neither the read routes nor any other route MUST disclose a line, or whether a run or a stream has a log
+  or how large it is, to a caller without both; the tenant's total retained log bytes stay readable under `quota:read`
+  as today.
+- **7.** The `log` of a script execution of a run MUST be returned only to a caller who may read that run's step logs
+  under rule 6; any other caller gets the execution with `log` empty, `logTruncated` false and `logWithheld` true, and a
+  listing shows `logTruncated` false to them.
+- **9.** Deleting a run's step logs MUST need `run:logs:delete`, held by the admin role only, and MUST be audited as
+  `run.logs_deleted` in the same transaction; "purge" names only the later removal of the rows.
+- **12.** **The limit, stated and not hidden:** a secret that the step's code transforms before logging it (encoded,
+  split, shorter than 6 bytes), or that it obtained outside `ResolveSecrets`, is stored as written; a client that speaks
+  protocol 1.7 without an official SDK can skip rule 1 and store what it was given; and, if O041-017 is answered (b), a
+  value of an attempt that has ended is not redacted from a later attempt's lines. The platform MUST NOT claim otherwise
+  in its documentation, and the runbook MUST say how a stream's lines are deleted and that the secret is then rotated.
+
+"Enforced by" gains, when built: `step-logs-redaction` with an attempt that starts after another ended and with numbers
+12345678 and 1e15 (rule 1, T041-14 to T041-21); tests that the public scrubber entry points equal what they replace and
+that a sensitive field of each type is hidden (rule 3, T041-6); the trigger tests, an old binary's insert included (rule 6,
+T041-28); the withheld `logTruncated` in the viewer test (rule 7, T041-29).
+
 ## Evidence
 
 None measured yet; nothing is built. Read in the code at `2e90dbb8`: `crates/domain/src/scripts.rs` (`redact`,
