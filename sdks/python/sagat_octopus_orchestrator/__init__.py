@@ -5,6 +5,7 @@ Three things in one package and nothing else (``sdks/SPEC.md``): a client of the
 of the workflow IR (``workflow``, ``flow``). Every failure is one ``SagatError``.
 """
 
+from . import ops
 from ._json import canonical_json, format_instant, parse_instant
 from .client import (
     TERMINAL_STATUSES,
@@ -92,6 +93,7 @@ from .operations import (
     UpdateWithStartResult,
     UpdateWithStartUpdate,
 )
+from .ops import Operator
 from .retry import DEFAULT_RETRY, RetryPolicy, backoff_delay
 from .sync import SyncBatchOperations, SyncBusinessIds, SyncSagatClient, SyncSchedules
 from .traceparent import check_traceparent, is_traceparent, new_traceparent, trace_id_of
@@ -192,6 +194,7 @@ __all__ = [
     "JournalPage",
     "OperateAction",
     "OperationResult",
+    "Operator",
     "OverlapPolicy",
     "Page",
     "QueryDefinition",
@@ -263,6 +266,7 @@ __all__ = [
     "format_instant",
     "is_traceparent",
     "new_traceparent",
+    "ops",
     "parse_instant",
     "remediation_of",
     "retryable_by_default",
