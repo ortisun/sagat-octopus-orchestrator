@@ -283,7 +283,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   within 5 s; the work through `block_in_place` holding its permit; a backstop in the counter that reads the clock every
   4,096 units and stops past 5 s. A permit not obtained and a backstop stop are transient (`503`, or a retry of the
   platform), never cached and never final.
-- **D043-051** (2026-11-14) Publication runs the pre-check on every `inputSchema`: in `enforce` a violation refuses with a
+- **D043-051** (2026-11-14; the issue codes completed by D043-065) Publication runs the pre-check on every `inputSchema`: in `enforce` a violation refuses with a
   typed issue (`INPUT_SCHEMA_KEYWORD_UNSUPPORTED`, `INPUT_SCHEMA_REFERENCE_INVALID`, `INPUT_SCHEMA_TOO_LARGE`) that names
   the keyword and its pointer; in `report` it is a warning with the same fields.
 - **D043-052** (2026-11-14) The inventory is `control-plane input-schema-inventory`, run with the owner's credentials as
@@ -293,16 +293,16 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 
 ### Sixth draft, after the fifth review (2026-11-14, at `058ba9d3`)
 
-- **D043-053** (2026-11-14) A tenant holds at most two of the four permits. The gate counts permits in flight per tenant
+- **D043-053** (2026-11-14; superseded by D043-061) A tenant holds at most two of the four permits. The gate counts permits in flight per tenant
   in a map under a mutex (an entry leaves when its count is zero, so nothing in use is evicted) and refuses a tenant at
   its cap at once (`Unavailable`, transient), without waiting; the global permit is then awaited for at most 5 s.
-- **D043-054** (2026-11-14) Pattern cost. When the lazy DFA gives up, the `regex` crate falls back to an NFA simulation
+- **D043-054** (2026-11-14; the charge, the state cap and the cache superseded by D043-063 and D043-064) Pattern cost. When the lazy DFA gives up, the `regex` crate falls back to an NFA simulation
   whose cost per byte grows with the NFA's states, and a match cannot be interrupted. So each pattern is capped at
   compile (a 16 KiB program, 2,048 NFA states, a 64 KiB `hybrid_cache_capacity`; 32 patterns and 256 KiB of programs per
   schema), and a match is charged (bytes + 1) × ⌈NFA states / 64⌉ **before** it runs; a charge past the budget stops
   with `workLimit` without matching. A test with a pattern that defeats the DFA (`[ab]*a[ab]{12}`) against 256 KiB
   checks the cost stays within a constant multiple of the charge. `pattern` stays in 0.3.0 under these bounds.
-- **D043-055** (2026-11-14) Pattern syntax is checked on the parsed `regex-syntax` AST against an allowlist (literals,
+- **D043-055** (2026-11-14; refined by D043-066) Pattern syntax is checked on the parsed `regex-syntax` AST against an allowlist (literals,
   escaped metacharacters, `\n`, `\r`, `\t`, `\xHH`, bracket classes of literals and ranges, `.`, `^`, `$`, alternation,
   capturing and non-capturing groups, repetitions with bounds of at most 100), never on the text. Refused: every Perl
   class and its negation (`\d\D\w\W\s\S`) and the word boundaries (`\b\B`), inside brackets too; `\p{...}`; POSIX classes;
@@ -313,12 +313,12 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   anything else is refused, and an array index with a leading zero is refused. The target must be a schema position
   recorded by the vocabulary walk; `#/enum/0`, `#/default`, `#/examples/0`, an `x-sagat-classification` value and a
   container such as `#/properties` are refused.
-- **D043-057** (2026-11-14) The compiled form is an arena of nodes, one per schema position, and a `$ref` is the index of
+- **D043-057** (2026-11-14; the stored path and the cost count by D043-062) The compiled form is an arena of nodes, one per schema position, and a `$ref` is the index of
   its target, never an inlined copy, so a reference DAG stays the size of the document. A depth-first search with white,
   grey and black marks over every application edge refuses a cycle at a grey node and computes the longest application
   path; a path longer than 128 is a schema defect, refused at publication (`INPUT_SCHEMA_TOO_DEEP`) and listed by the
   inventory, not a `workLimit` of the input.
-- **D043-058** (2026-11-14) Every loop step and every subschema application costs at least one unit: an application
+- **D043-058** (2026-11-14; the pattern charge by D043-063; whole-validation stop by D043-067) Every loop step and every subschema application costs at least one unit: an application
   (`{}` included) and each `$ref` followed, each `required` name, each `type` name, each `allOf`/`anyOf`/`oneOf` branch,
   each instance member's `properties` lookup and `additionalProperties` decision, each `items` element; `enum` one per
   member plus the smaller of the two sizes; `const` the smaller size; a length check its length; a pattern match per
@@ -330,6 +330,33 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   of the cases; it generates i64 values, u64 values above `i64::MAX`, integral floats, `-0.0` and integers beyond u64. The
   validator compares numbers by value, not with `serde_json`'s `PartialEq` (`1 != 1.0` there). Integers beyond u64 are
   parsed to f64 by both validators, since `arbitrary_precision` is off, so both round them the same way.
+
+### Seventh draft, after the sixth review (2026-11-14, at `9fb12386`)
+
+- **D043-061** (2026-11-14) Per-tenant fairness waits instead of refusing: a `tokio::sync::Semaphore(2)` per tenant, in a map
+  whose entry leaves only when the map holds its only `Arc` and both permits are free, is awaited before the global
+  permit, within the same 5 s deadline; both are owned guards, so a future dropped while it waits releases its tenant
+  permit. Refusing at once (D043-053) made a single tenant on an idle process get `503` for its own third concurrent start.
+- **D043-062** (2026-11-14) The marked DFS stores, when a node turns black, its longest application path and its
+  input-independent application count (itself, plus its `$ref` target and its `allOf`/`anyOf`/`oneOf` branches), so the
+  pass is linear. A count past `RUN_INPUT_WORK_UNITS` is refused at publication (`INPUT_SCHEMA_TOO_COSTLY`) and listed by
+  the inventory, so a ×2 DAG of depth 20 cannot be published and then refuse every input.
+- **D043-063** (2026-11-14) A `pattern` match is charged (bytes + 1) × NFA states before it runs; no bit-parallel divisor
+  is assumed, because the PikeVM and the backtracker work per state per byte and the lazy DFA may never be built. A smaller
+  divisor only if the T043-2 measurement sets it (G043-017). The state cap is lowered from 2,048 to 512 so that realistic
+  patterns stay affordable: a 64-character string against 512 states costs about 33,000 units; a long string stops at the
+  budget, and length checks run before `pattern` in a subschema.
+- **D043-064** (2026-11-14) Every regex runtime engine is bounded explicitly: forward and reverse lazy DFA at 64 KiB of
+  `hybrid_cache_capacity` each, the bounded backtracker off (its visited set is 256 KiB by default), the PikeVM cache
+  measured once by `Cache::memory_usage()` after a warm-up. A cache entry weighs its programs plus four times that
+  per-pattern cache size.
+- **D043-065** (2026-11-14) The publication issue codes are six: `INPUT_SCHEMA_KEYWORD_UNSUPPORTED`,
+  `INPUT_SCHEMA_REFERENCE_INVALID`, `INPUT_SCHEMA_PATTERN_UNSUPPORTED`, `INPUT_SCHEMA_TOO_LARGE`, `INPUT_SCHEMA_TOO_DEEP`,
+  `INPUT_SCHEMA_TOO_COSTLY`, published in `specs/043-run-input-validation/contracts/errors.md` and in OpenAPI (T043-14).
+- **D043-066** (2026-11-14) The pattern allowlist also refuses a class set operation (`ClassSet::BinaryOp`: `&&`, `--`,
+  `~~`) and a nested bracket, which ECMA-262 reads as literals.
+- **D043-067** (2026-11-14) A budget stop ends the whole validation with `workLimit`; it is never the failure of one branch.
+  `oneOf: [cheap match, costly match]` is refused, not accepted.
 
 ## 3. Gaps
 
@@ -351,7 +378,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-014 | A published schema with a keyword outside the subset (recursion, `patternProperties`, `not`, `if`, `unevaluated*`, ...) refuses every start of its version in `enforce`. | OD-2026-11-14-14; `control-plane input-schema-inventory` lists them (D043-052); `report` mode covers the time to republish. | Open (documented) |
 | G043-015 | `multipleOf` accepts only positive integers, so a schema with `multipleOf: 0.01` (a money amount) is outside the subset. | Floating-point remainders differ between implementations; an exact decimal rule can be added later. | Open (documented) |
 | G043-016 | `pattern` refuses Perl classes and their negations, word boundaries, Unicode and POSIX classes, flags and named groups, which authors use often; they write `[0-9]` and the like instead. Characters are code points, as in the `jsonschema` crate, not the UTF-16 units of ECMA-262 without the `u` flag, so an astral character counts as one. | D043-055; the publication issue `INPUT_SCHEMA_PATTERN_UNSUPPORTED` names the pattern's pointer. | Open (documented) |
-| G043-017 | The constant k of the per-keyword tests (primitive operations per unit) and the time a full budget costs are not measured yet. | Measured by the tests of T043-2 and stated with them; G043-006 for the time. | Open |
+| G043-017 | The constant k per keyword (primitive operations per unit) and the pattern divisor (work per byte per state on this machine) are not measured; a full budget's time is not measured either. | Measured by the adversarial tests of T043-2 and recorded here per keyword with the commit and the machine; until then the pattern charge uses no divisor (D043-063). G043-006 for the time. | Open |
 
 ## 4. Owner questions
 

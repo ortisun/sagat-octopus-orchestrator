@@ -37,22 +37,22 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
 4. The schema MUST come from the parsed definition of that version, which carries the schema's canonical bytes and
    their digest. In `enforce` mode the check MUST NOT add a SQL statement to a start, a triggered start, a child start or
    a continuation, and MUST NOT run inside a database transaction or on the async scheduler (`block_in_place`, or in
-   place on a current-thread runtime, holding one of four permits per process obtained within 5 s; a tenant MAY hold at
-   most two and is refused at once over its cap, transiently).
+   place on a current-thread runtime, holding one of four permits per process; a tenant MAY hold at most two, awaited
+   before the global permit within one 5 s deadline, and a dropped waiter MUST release what it holds).
 5. An `inputSchema` MUST be within the documented subset: `type`, `properties`, `required`, `items` (one schema),
    `enum`, `const`, the numeric bounds, `multipleOf` (a positive integer), the length bounds, a `pattern` whose parsed
    syntax passes an allowlist (no Perl, Unicode or POSIX classes, no word boundaries, flags or named groups) and whose
-   compiled program stays within 16 KiB and 2,048 NFA states, `additionalProperties`, `allOf`, `anyOf`, `oneOf`, a local
+   compiled program stays within 16 KiB and 512 NFA states, `additionalProperties`, `allOf`, `anyOf`, `oneOf`, a local
    `$ref` (a JSON pointer whose target is a schema position, no cycle, no sibling keyword but annotations), `$defs` and
    `definitions`, the ignored annotations (`title`, `description`, `default`, `examples`, `$comment`, `format`; `$schema`
    and `$id` at the root only) and `x-sagat-classification`, with the same meaning when `$schema` is absent, draft-07 or
-   2020-12, and with no application path longer than 128. Any other keyword, a remote or cyclic `$ref`, or another
+   2020-12, with no application path longer than 128 and no input-independent application count above the budget. Any other keyword, a remote or cyclic `$ref`, or another
    `$schema` makes the schema unusable. `patternProperties`, `uniqueItems` and `not` are out of 0.3.0.
 6. The input MUST be validated by the platform's own validator of that subset, which carries a work counter: every
    loop step and every subschema application costs at least one unit (an empty schema included), an `enum` or `const`
    comparison costs per member and by the size of the values, a length check costs its length, and a `pattern` match
-   costs (bytes + 1) × ⌈NFA states / 64⌉, charged before it runs; the counter stops the run before a step that would pass
-   the budget. References MUST be compiled to node indices, never inlined, and iteration MUST NOT depend on a hash seed,
+   costs (bytes + 1) × NFA states, charged before it runs; the counter stops the whole validation (never one branch)
+   before a step that would pass the budget. References MUST be compiled to node indices, never inlined, and iteration MUST NOT depend on a hash seed,
    so replicas report the same violation. A budget
    miss is deterministic and final (`RUN_INPUT_INVALID`, `workLimit`). The counter also stops past 5 s of work as a
    backstop; that stop and a permit not obtained are transient and MUST NOT be remembered. The compiled form MUST be
@@ -101,7 +101,7 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
 
 - A behaviour change for existing users: an input their version's schema refuses now fails, and a trigger on a version
   whose schema describes a manual input rather than the event envelope stops starting runs. The release notes carry a
-  warning and a query that lists the versions at risk; `report` mode covers the time to fix callers.
+  warning and a command that lists the versions at risk; `report` mode covers the time to fix callers.
 - **Runs in progress are affected**, an accepted deviation from constitution principle IV (OD-2026-11-14-9): a run
   started before the upgrade can fail at the step that creates a child or continues, when that new run's input does not
   match its version's schema. The release notes say so.
@@ -120,7 +120,7 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
 ## Evidence
 
 - Design: `docs/designs/043-run-input-validation.md`; registers: `specs/043-run-input-validation/research.md`
-  (D043-001 to D043-060, G043-001 to G043-017, O043-001 to O043-004).
+  (D043-001 to D043-067, G043-001 to G043-017, O043-001 to O043-004).
 - Background: G1955 and G2081 in `specs/018-schedules-bulk-operations/research.md`.
 - Existing tests this builds on: `crates/infra-schema/tests/annotation_is_inert.rs`;
   `claim_check_schema_validation_refuses_external_refs_without_exposing_payloads` in `crates/infra-schema/src/lib.rs`;

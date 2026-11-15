@@ -36,9 +36,9 @@ and the owner then answered its questions (`docs/owner-decisions.md`):
   (`RUN_INPUT_SCHEMA_UNUSABLE`), permanently for the creators nobody waits for; a rerun or reset of a run from before
   0.3.0 is validated like any start.
 - OD-2026-11-14-14 ("Subconjunto suportado"), after four review rounds of a static bound on `jsonschema`: the subset
-  and the platform's own validator with a work counter. This is the fifth draft.
+  and the platform's own validator with a work counter. This is the seventh draft; `research.md` dates each one.
 
-The registers are in `specs/043-run-input-validation/research.md` (D043-001 to D043-060, G043-001 to G043-017,
+The registers are in `specs/043-run-input-validation/research.md` (D043-001 to D043-067, G043-001 to G043-017,
 O043-001 to O043-004). The rule is ADR-0090.
 
 ## The Problem
@@ -162,7 +162,7 @@ What makes it more than a check in `start_with`:
   label, on any of rows 1 to 14. The validator never formats an input value. Metric labels are closed
   sets (`creator`, `outcome`), with no tenant, namespace, workflow, version, field or rule. *Acceptance:*
   `integration_payload_classification` starts each row with a sentinel value, and a sentinel key under
-  `additionalProperties` and `patternProperties`, in an input that fails at them, and asserts the sentinels are in none
+  `additionalProperties` (the only place a caller's key can reach the subset), in an input that fails at them, and asserts the sentinels are in none
   of the response, the captured logs and spans, the audit rows and the metrics text.
 - **FR-043-015** The six SDKs MUST expose `field` and `rule` on their error type beside `reason`; the CLI and the Studio
   show them; the Studio and the SDK schedule views show the `INPUT_INVALID` outcome; `CHILD_INPUT_INVALID`,
@@ -192,9 +192,9 @@ What makes it more than a check in `start_with`:
   schema is compiled at most once per process and tenant while its entry stays cached. Compiling and validating never
   run inside a database transaction, and run through `block_in_place` off the async scheduler.
 - **NFR-043-BOUND** A compile is bounded by the pre-check (64 KiB of schema, depth 32, an application path of at most
-  128, at most 32 patterns of 16 KiB and 2,048 NFA states each, 256 KiB of programs in all); a validation by the
+  128, an input-independent count within the budget, at most 32 patterns of 16 KiB and 512 NFA states each, 256 KiB of programs in all); a validation by the
   validator's own counter of `RUN_INPUT_WORK_UNITS` (1,000,000) and an input depth of 64, with a 5 s backstop; at most four
-  validations run at once per process and two per tenant.
+  validations run at once per process and two per tenant, awaited within the same deadline.
 - **NFR-043-SEC** No new grant, role membership or `SECURITY DEFINER` function for the runtime role. No tenant code runs
   in the control plane or the engine; no reference is resolved; a compiled schema is shared only within its tenant.
 - **NFR-043-COMPAT** The upgrade order of OD-2026-11-14-3 (migrate, engines, control planes) holds; until the operator
@@ -253,7 +253,7 @@ What makes it more than a check in `start_with`:
 
 ## Owner decisions needed
 
-None open. The answers are OD-2026-11-14-2, -8, -9, -10 and -11 (`docs/owner-decisions.md`), and each task that builds
+None open. The answers are OD-2026-11-14-2, -8, -9, -10, -11 and -14 (`docs/owner-decisions.md`), and each task that builds
 one cites it in an `Owner-gate:` line.
 
 ## Critical User Journeys (CUJs)
@@ -385,21 +385,22 @@ enum FieldPolicy { Show, Root }      // Show only when the caller's view of the 
   it runs and stops at `RUN_INPUT_WORK_UNITS` (1,000,000). A budget miss is deterministic for a schema and an input, so
   it is final the first time, on every row: `RUN_INPUT_INVALID` with `rule` `workLimit` and `field` `/`. No static
   estimate of the work is needed or made: the counter is exact because it counts what the validator does.
-- **Threads and permits** (D043-050, D043-053). Four permits per process. A tenant may hold at most two at once: the gate
-  keeps a count of permits in flight per tenant (a map under a mutex; an entry leaves the map when its count returns to
-  zero, so nothing is evicted while held), and a tenant at its cap is refused at once with `InputRefusal::Unavailable`
-  (transient), without waiting. Otherwise the gate takes a global permit of a `tokio::sync::Semaphore`, waiting at most
-  `MAX_PROJECTION_DURATION` (5 s, `crates/application/src/classification.rs:18`), and runs the validator through the
+- **Threads and permits** (D043-050, D043-061). Four permits per process, and at most two per tenant. The gate keeps a
+  `tokio::sync::Semaphore(2)` per tenant in a map (an entry leaves the map only when the map holds its only `Arc` and both
+  permits are free, so nothing in use is evicted). Within one deadline of `MAX_PROJECTION_DURATION` (5 s,
+  `crates/application/src/classification.rs:18`) the gate first awaits the tenant's permit, then the global one; both are
+  owned guards, so a future dropped while it waits, or after, releases what it holds. A tenant alone on an idle process
+  therefore waits for nothing and is never refused for its cap; two tenants share the four permits two and two. The
+  validator then runs through the
   `off_worker` helper of `crates/infra-postgres/src/payload_disclosure.rs:561`: `block_in_place` on a multi-thread
   runtime, and in place on a current-thread runtime (where `block_in_place` would panic, and where there is no other
   worker to protect). It holds both permits until the validator returns. The validator's cache waits on its
   single-flight `Condvar` only there. The work is bounded by the counter, so nothing has to be cancelled and no thread
   outlives its caller.
 - **The backstop** (D043-050). The counter also reads the clock every 4,096 units; past 5 s of work it stops with
-  `SchemaRefusal::Backstop`. A tenant at its cap, a permit not obtained within 5 s and a backstop stop are
-  `InputRefusal::Unavailable`: `503`,
-  retryable, for a caller; for the engine's creators a refusal of the platform tried again as a lack of room is. They
-  mean a starved machine, not an input, and are never remembered or cached.
+  `SchemaRefusal::Backstop`. Permits not obtained within 5 s and a backstop stop are `InputRefusal::Unavailable`. A
+  caller gets a retryable `503`; the engine's creators treat it as a lack of room and try again later, as they do for a
+  full quota. Both mean a busy or starved machine, not an input, and are never remembered or cached.
 - **Input depth.** Before validating, the input is parsed with a depth limit of 64. A deeper input, and one deeper than
   `serde_json` parses (its recursion limit is 128), is `Invalid` with `rule` `maxDepth` and `field` `/`, never an
   internal error. A version without a schema keeps today's checks only.
@@ -418,7 +419,7 @@ Schema (OD-2026-11-14-14, D043-046 to D043-049). `jsonschema` is not on this pat
 | Values | `enum`, `const` | equality of JSON values, numbers compared by value |
 | Numbers | `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf` | the exclusive bounds are numbers (the boolean form of draft-04 is refused); `multipleOf` is a positive integer (a fractional divisor is refused: floating-point remainders differ between implementations, G043-015) |
 | Lengths | `minLength`, `maxLength`, `minItems`, `maxItems`, `minProperties`, `maxProperties` | string length in Unicode code points |
-| Pattern | `pattern` | parsed with `regex-syntax` and checked node by node against an allowlist (D043-055): literal characters, escaped metacharacters, `\n`, `\r`, `\t`, `\xHH`, bracket classes of literals and ranges (negated too), `.`, `^`, `$`, alternation, groups and non-capturing groups `(?:...)`, and the repetitions `*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}` (greedy or lazy, bounds at most 100); everything else is refused, among it `\d`, `\D`, `\w`, `\W`, `\s`, `\S`, `\b`, `\B` (Unicode classes in the `regex` crate, ASCII in ECMA-262), inside brackets too, `\p{...}`, POSIX classes `[[:alpha:]]`, flags `(?i)`, `\A`, `\z`, named groups `(?P<...>` and `(?<...>`, backreferences and lookaround. `.` is compiled as "any character but `\n`, `\r`, U+2028 and U+2029", its ECMA-262 meaning. Unanchored search, as both drafts specify. Characters are code points, as in the `jsonschema` crate (G043-016) |
+| Pattern | `pattern` | parsed with `regex-syntax` and checked node by node against an allowlist (D043-055): literal characters, escaped metacharacters, `\n`, `\r`, `\t`, `\xHH`, bracket classes of literals and ranges (negated too; a class set operation `&&`, `--` or `~~` and a nested bracket are refused, because ECMA-262 reads them as literals), `.`, `^`, `$`, alternation, groups and non-capturing groups `(?:...)`, and the repetitions `*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}` (greedy or lazy, bounds at most 100); everything else is refused, among it `\d`, `\D`, `\w`, `\W`, `\s`, `\S`, `\b`, `\B` (Unicode classes in the `regex` crate, ASCII in ECMA-262), inside brackets too, `\p{...}`, POSIX classes `[[:alpha:]]`, flags `(?i)`, `\A`, `\z`, named groups `(?P<...>` and `(?<...>`, backreferences and lookaround. `.` is compiled as "any character but `\n`, `\r`, U+2028 and U+2029", its ECMA-262 meaning. Unanchored search, as both drafts specify. Characters are code points, as in the `jsonschema` crate (G043-016) |
 | Combinators | `allOf`, `anyOf`, `oneOf` | each a non-empty array of schemas |
 | References | `$ref` to a JSON pointer into the document (`#/...`), decoded by the validator itself (D043-056), whose target is a schema position the vocabulary walk recorded; `$defs` and `definitions` as containers | a target that is not a schema position (`#/enum/0`, `#/default`, `#/examples/0`, an `x-sagat-classification` value, a `properties` map itself) is refused; no cycle; a `$ref` with sibling keywords other than annotations is refused (draft-07 ignores them, 2020-12 applies them) |
 | Ignored | `title`, `description`, `default`, `examples`, `$comment`, `format` (an annotation); `$schema` and `$id` at the root of the `inputSchema` only (anywhere else they are refused) | the walk does not descend into the values of `enum`, `const`, `default`, `examples` and `x-sagat-classification`: they are data, not schemas |
@@ -445,10 +446,14 @@ the inventory:
    schema position, and a `$ref` becomes the index of its target node, never an inlined copy, so a DAG of references
    stays the size of the document.
 4. A depth-first search with white, grey and black marks over the application edges (references and every child
-   schema) refuses a cycle when it meets a grey node, and computes the longest application path; a path longer than 128
-   is refused at publication (`INPUT_SCHEMA_TOO_DEEP`) and listed by the inventory, so the validator's own recursion is
-   bounded by the schema, never by the input.
-5. Each pattern passes the syntax allowlist and, compiled, stays within a 16 KiB program and 2,048 NFA states; at most
+   schema) refuses a cycle when it meets a grey node. When a node turns black the search stores two numbers with it, so
+   the pass stays linear in the arena: its longest application path, and the number of applications it performs at one
+   instance node without consuming input (itself, plus those of its `$ref` target and of each `allOf`, `anyOf` and
+   `oneOf` branch). A path longer than 128 is refused at publication (`INPUT_SCHEMA_TOO_DEEP`), so the validator's own
+   recursion is bounded by the schema; a node whose input-independent count passes `RUN_INPUT_WORK_UNITS` is refused
+   too (`INPUT_SCHEMA_TOO_COSTLY`), so a ×2 reference DAG of depth 20 cannot be published and then refuse every input
+   (D043-062). Both are listed by the inventory.
+5. Each pattern passes the syntax allowlist and, compiled, stays within a 16 KiB program and 512 NFA states; at most
    32 patterns, and at most 256 KiB of compiled programs for the whole schema.
 
 The first violation is `SchemaRefusal::Unusable` with the keyword and its JSON pointer in the schema (author
@@ -464,10 +469,17 @@ is proportional to units whatever the keyword holds:
   array element for `items`;
 - for `enum`, one unit per member plus the smaller of the member's size and the value's size; for `const`, the smaller
   of the two sizes;
-- for a length check, the length in code points; for a `pattern` match, (length in bytes + 1) × ⌈NFA states / 64⌉,
-  charged before the match runs (D043-054).
+- for a length check, the length in code points; for a `pattern` match, (length in bytes + 1) × NFA states, charged
+  before the match runs (D043-063). The PikeVM and the backtracker do work proportional to the states per byte, and the
+  lazy DFA may never be built, so no bit-parallel divisor is assumed. A divisor smaller than the states is used only if
+  the T043-2 measurement sets it, recorded with k in G043-017. With this charge the state cap is lowered to 512: a
+  64-character string against a 512-state pattern costs about 33,000 units, and a 256 KiB string against any pattern
+  stops at the budget. Within one subschema the length checks run before `pattern`, so a long string fails on its
+  length first; authors pair `pattern` with `maxLength`.
 
-A charge that would pass the budget stops the run before the step, with `workLimit`. An adversarial test per keyword
+A charge that would pass the budget stops the whole validation before the step, with `workLimit`: it is never the
+failure of one branch, so `oneOf: [cheap match, costly match]` is refused with `workLimit`, never accepted because the
+costly branch "failed". An adversarial test per keyword
 counts the validator's primitive operations (lookups, comparisons, regex steps) under `test-support` and asserts they
 stay within a constant multiple of the units charged.
 
@@ -478,9 +490,11 @@ workspace does not enable `preserve_order`). So every replica reports the same f
 **Cache.** The classification cache (`crates/infra-schema/src/classification/cache.rs`) made generic over key and value
 holds the compiled form (resolved references, compiled patterns), keyed by `(tenant, digest)`: identical schemas of one
 tenant share an entry, two tenants never do. 256 entries and 64 MiB, each weighed with its compiled programs plus the
-runtime caches its patterns can hold: each regex is built with an explicit `hybrid_cache_capacity` of 64 KiB, and at most
-four validations run at once, so an entry weighs its programs plus 4 × 64 KiB per pattern (D043-054); single flight per
-key; a remembered `Unusable` per key. Ad hoc keys
+runtime caches its patterns can hold (D043-064). Each regex is built with every runtime engine bounded explicitly: the
+forward and reverse lazy DFA with a `hybrid_cache_capacity` of 64 KiB each, the bounded backtracker turned off (its
+visited set is 256 KiB by default), the PikeVM cache measured once with `Cache::memory_usage()` after a warm-up match.
+At most four validations run at once, so an entry weighs its programs plus 4 × that per-pattern cache size; single
+flight per key; a remembered `Unusable` per key. Ad hoc keys
 (`shared: false`, row 13: a new version id per call at `ad_hoc.rs:459`) are compiled for the call and not cached.
 
 **The refusal** (D043-049). The validator reports its first violation as a closed `Rule` named by the keyword that
@@ -504,7 +518,7 @@ within a bounded time on the CI machine.
 
 - **Rows 1 to 5, 8, 13 (a caller waits).** `AppError::InvalidRunInput { reason, field, rule }` (D043-014), mapped in
   `crates/api-http/src/error.rs` beside `InvalidStart` (`:854`) to `422 VALIDATION_FAILED`, with remediation lines beside
-  `SCHEDULE_INPUT_INVALID` (`:187`); `InputRefusal::Unavailable` (a tenant at its cap, no permit within 5 s, the
+  `SCHEDULE_INPUT_INVALID` (`:187`); `InputRefusal::Unavailable` (no permits within 5 s, the
   backstop) maps to `AppError::Unavailable`, and a budget miss to `InvalidRunInput` with `workLimit`. Before answering a
   refusal, `start_with` replays an existing run of the same key and fingerprint (D043-004); `start_private` has its own
   lookup (D043-029). For rows 4 and 5 the gate uses `FieldPolicy::Show` only when the caller's view of the source run's
@@ -576,8 +590,8 @@ label (constitution V and VI).
 `validated_document_in` (`crates/infra-ir/src/lib.rs:326`) runs the pre-check of Technical Plan 4 on every
 `inputSchema`, annotated or not. In `enforce` mode a violation refuses the publication with an `IrIssue` that names the
 keyword and its pointer (`/inputSchema/...`), as a closed issue `INPUT_SCHEMA_KEYWORD_UNSUPPORTED`,
-`INPUT_SCHEMA_REFERENCE_INVALID`, `INPUT_SCHEMA_PATTERN_UNSUPPORTED`, `INPUT_SCHEMA_TOO_LARGE` or
-`INPUT_SCHEMA_TOO_DEEP`; in `report` mode it is a `DefinitionWarning` with the
+`INPUT_SCHEMA_REFERENCE_INVALID`, `INPUT_SCHEMA_PATTERN_UNSUPPORTED`, `INPUT_SCHEMA_TOO_LARGE`, `INPUT_SCHEMA_TOO_DEEP`
+or `INPUT_SCHEMA_TOO_COSTLY` (D043-065); in `report` mode it is a `DefinitionWarning` with the
 same fields and the version is published (D043-051). `sagat validate` runs the same check locally. The stored-document
 path (`validated_stored_document_in`, `:344`) does not, so a version already stored still parses and is refused at start
 instead (FR-043-011). A `DefinitionWarning` is also added when a version has an `inputSchema` and a non-manual trigger.
@@ -621,11 +635,11 @@ exists.
 | Risk | Mitigation |
 |---|---|
 | Triggers on versions whose schema describes a manual input stop starting runs (G043-004) | A delivery and an audit row per refused event, the metric, the publish warning, the release notes, `report` mode while callers are fixed |
-| A run started before the upgrade fails at a child or a continuation (OD-2026-11-14-9) | Stated in the release notes with the query that lists the versions at risk; the failure code names the cause; accepted by the owner as a deviation from principle IV |
+| A run started before the upgrade fails at a child or a continuation (OD-2026-11-14-9) | Stated in the release notes with the command that lists the versions at risk; the failure code names the cause; accepted by the owner as a deviation from principle IV |
 | A schema the platform did not write costs CPU or memory | The subset and its pre-check, the weighed cache, the validator's own work counter, the input depth and nesting limits, four permits, a 5 s backstop (NFR-043-BOUND) |
 | Published schemas that use a keyword outside the subset (recursion, `patternProperties`, `if`, `not`, ...) become unusable (OD-2026-11-14-14) | `control-plane input-schema-inventory` lists them before the upgrade (FR-043-018); `report` mode while they are republished (G043-014) |
 | The platform's validator and the drafts disagree on a case | The subset excludes the known disagreements (fractional `multipleOf`, `\d`-style classes, `$ref` siblings, tuple `items`); the oracle property test against `jsonschema` (T043-2) is a regression check, not a proof (G043-015, G043-016) |
-| One tenant's burst occupies the four permits | A tenant holds at most two and is refused at once over its cap (transient); each validation is bounded by the counter, so a permit is held for a bounded time; a caller who cannot get one in 5 s gets a retryable `503`, never a final refusal (D043-050, D043-053) |
+| One tenant's burst occupies the four permits | A tenant holds at most two, awaited within the 5 s deadline, so a lone tenant uses them freely and two tenants share them (D043-061); each validation is bounded by the counter, so a permit is held for a bounded time; a caller who cannot get one in 5 s gets a retryable `503`, never a final refusal (D043-050, D043-053) |
 | The first upgraded engine records final outcomes before the operator chose `report` | The runbook runs the inventory and sets `report` in every manifest before migrating (D043-040) |
 | A pointer or a rule name leaks what the caller sent | Segments only where `properties` or `items` matched; the rule named by the validator's own keyword; no input value ever formatted; `/` for repeats; the sentinel test with sentinel keys |
 | A refusal loops | Rows 6 to 12 record a final outcome; the trigger delivery stops the re-audit; the schedule arm sits before `NotAllowed` and `Err(other)` |
@@ -659,7 +673,7 @@ exists.
 | The schema bytes and digest in `WorkflowDefinition` | Continue-as-new holds the definition, not the document; no statement may be added | Reading the document on a cache miss: an extra statement on the continuation path |
 | A second compiled-validator cache keyed by tenant and digest | Compile once per schema; never under a lock; never shared across tenants | Compiling per start, as the blob check does today; keying by version, which ad hoc floods |
 | A validator of the platform for a documented subset, with a work counter (OD-2026-11-14-14) | The bound on the work holds by construction: the counter counts what the validator does and stops at a budget. Four review rounds found work that `jsonschema` does and a static walk did not charge (`unevaluated*`, percent-encoded pointers, value-sized keywords) | `jsonschema` with a static walk as the bound: rejected after four reviews; validation in an isolated process with a timeout: rejected for latency and operations |
-| A blocking section with four permits and a 5 s backstop | Validation is CPU work on schemas and inputs the platform did not write; the counter bounds it, so `block_in_place` and a permit are enough | The per-tenant permits, the miss memory and the two clocks of the third draft: needed only while the work had no exact bound (removed, D043-050) |
+| A blocking section with four permits, two per tenant awaited within one 5 s deadline, and a 5 s backstop | Validation is CPU work on schemas and inputs the platform did not write; the counter bounds each run, and the tenant cap keeps one tenant from taking all four | The miss memory and the two clocks of the third draft (removed, D043-050); refusing a tenant at its cap at once (D043-053, which broke a single-tenant deployment; replaced by D043-061) |
 | A schedule action outcome and a migration | A refused action must be visible and must not loop | Reusing `ADMISSION_RETRY` (`NotAllowed`): retries forever |
 | A capability and a strict variable | Replicas must not answer differently once the operator decides | A per-process flag alone: nothing stops one replica in `report` beside others in `enforce` |
 | Three failure codes (`CHILD_INPUT_INVALID`, `CONTINUATION_INPUT_INVALID`, `RUN_INPUT_SCHEMA_UNUSABLE`) | The parent and the chain must say why, without the value | `EXPRESSION_ERROR`: says the expression failed, which it did not |
@@ -724,14 +738,18 @@ come first; T043-21 to T043-24 land with the tasks they test; T043-5 to T043-13 
   (`required`, `properties`, `additionalProperties`, `enum`, `const`, `type`, `allOf`, `anyOf`, `oneOf`, `items`, the
   length checks, `pattern`), each asserting primitive operations ≤ k × units and a stop at `workLimit`, among them a
   `$ref` DAG with ×2 fan-out ending at a `required` of 6,000 names and a pattern that defeats the lazy DFA (such as
-  `[ab]*a[ab]{12}`) against a 256 KiB string; the oracle property test with its skip ratio and its number generators; a
+  `[ab]*a[ab]{12}`) against a 256 KiB string, timed against its `(bytes + 1) × states` charge to measure the divisor and
+  k recorded in G043-017; `oneOf: [cheap match, costly match]` refused with `workLimit`, not accepted; a class set
+  operation and a nested bracket refused; a ×2 reference DAG of depth 20 refused at publication with
+  `INPUT_SCHEMA_TOO_COSTLY`; the oracle property test with its skip ratio and its number generators; a
   determinism test (two validators built from the same bytes report the same `field` and `rule`); a proptest that no
   generated value or key appears in a refusal.
   Refs: FR-043-002, FR-043-011, FR-043-014, NFR-043-BOUND, NFR-043-SEC, SC-043-004
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11, OD-2026-11-14-14
 - [ ] T043-3 Build the `RunInputGate` and `CheckedRunInput` (version id, fields and constructor private to
-  `run_input.rs`, a `test-support` constructor and a `test-support` validator double): the per-tenant cap of two
-  refused at once, four permits acquired within 5 s, `off_worker` (`block_in_place`, or in place on a current-thread
+  `run_input.rs`, a `test-support` constructor and a `test-support` validator double): a per-tenant
+  `Semaphore(2)` awaited before the global permit within one 5 s deadline, owned guards released when the future is
+  dropped, `off_worker` (`block_in_place`, or in place on a current-thread
   runtime), the backstop mapped to `Unavailable`, the input depth limit, the field policy, the metrics.
   Files: `crates/application/src/run_input.rs` (new), `crates/application/src/lib.rs`, `crates/application/Cargo.toml`
   (`[features] test-support`), `crates/application/src/blobs.rs` (remove `RunInputChecker`); unit tests in the module.
@@ -819,8 +837,10 @@ come first; T043-21 to T043-24 land with the tasks they test; T043-5 to T043-13 
   Refs: FR-043-012
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-14
 - [ ] T043-14 Update the contracts: OpenAPI (outcome, reasons, `422` descriptions, the `details.rule` enum,
-  `RUN_INPUT_SCHEMA_UNUSABLE`), the new `errors.md`, the 018 `errors.md` row, the remediation lines; confirm AsyncAPI
-  is unchanged.
+  `RUN_INPUT_SCHEMA_UNUSABLE`), the new `errors.md` with the publication issue codes `INPUT_SCHEMA_KEYWORD_UNSUPPORTED`,
+  `INPUT_SCHEMA_REFERENCE_INVALID`, `INPUT_SCHEMA_PATTERN_UNSUPPORTED`, `INPUT_SCHEMA_TOO_LARGE`, `INPUT_SCHEMA_TOO_DEEP`
+  and `INPUT_SCHEMA_TOO_COSTLY` (and the same closed list in the OpenAPI description of the publication's `422`), the 018
+  `errors.md` row, the remediation lines; confirm AsyncAPI is unchanged.
   Files: `specs/001-platform-foundation/contracts/openapi.yaml`, `frontend/apps/studio/src/api/schema.d.ts`
   (regenerated), `specs/043-run-input-validation/contracts/errors.md` (new),
   `specs/018-schedules-bulk-operations/contracts/errors.md`, `docs/quickstarts/errors.md`; tests
@@ -862,8 +882,10 @@ come first; T043-21 to T043-24 land with the tasks they test; T043-5 to T043-13 
   Owner-gate: OD-2026-11-14-2
 - [ ] T043-21 Test the budget and the backstop on every row: an input past the budget is final the first time with
   `workLimit` (an `INPUT_INVALID` action, a failed child step, a trigger delivery without a run, a batch item `FAILED`);
-  with the `test-support` validator double held by a barrier, a tenant at its cap of two (refused at once while another
-  tenant is still served), a permit not obtained within 5 s and a backstop stop are transient (`503`, a batch item deferred, a pending reset left pending, a schedule time owed, an event retried, a child
+  with the `test-support` validator double held by a barrier, a tenant alone on an idle process served without
+  refusal at four concurrent starts, a second tenant served while the first waits at its cap of two, a future dropped
+  while it waits for the global permit that gives back its tenant permit (the cancellation test), permits not obtained
+  within 5 s and a backstop stop are transient (`503`, a batch item deferred, a pending reset left pending, a schedule time owed, an event retried, a child
   or a continuation left for the next pass), never cached, never final; no more than four validations at once.
   Files: tests in `tests/integration/durable-execution/`, `tests/integration/schedules-bulk-operations/`,
   `tests/integration/events-webhooks-messaging/`, `tests/integration/workflow-primitives/`, and unit tests in
@@ -924,6 +946,6 @@ Failure cases (constitution VIII): a crash between the check and the creation (t
 event (the delivery row stops a second audit); a crash between the trigger's delivery and its audit (one transaction,
 so neither or both); a restart with a cold cache (one compile, no statement); a schedule refusal under a lost shard
 lease (the decision is refused by its fence); two creators compiling the same schema at once (single flight, one
-compile by counter); a budget miss (T043-21: final the first time); a tenant at its cap, no permit within 5 s, or the
-backstop (T043-21: transient, never remembered). A test that fails is a
+compile by counter); a budget miss (T043-21: final the first time); no permits within 5 s, a dropped waiting future, or
+the backstop (T043-21: transient, never remembered). A test that fails is a
 defect to explain, not to retry.
