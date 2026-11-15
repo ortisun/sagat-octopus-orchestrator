@@ -27,6 +27,11 @@ pub const MAX_STAGE_ELEMENTS: usize = 1_000;
 /// The cooperative wall-time budget of one chain, checked between elements (FR-042-006).
 pub const CHAIN_WALL_TIME: Duration = Duration::from_secs(1);
 
+/// The most lists and maps an element may nest. The JSON parser of every reader of the stored items refuses 128 levels,
+/// and the snapshot array, a task's input and a collection's result wrap an item in a few more, so an element is held
+/// to 120 and refused when produced rather than stored and then refused by every read (design 042 review).
+pub const MAX_ELEMENT_DEPTH: usize = 120;
+
 /// The running ceilings of a chain. Each one maps to exactly one code (design 042, section 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChainCeilings {
@@ -130,6 +135,8 @@ pub enum ChainCeiling {
     ElementBytes,
     StageBytes,
     WallTime,
+    /// An element nested deeper than [`MAX_ELEMENT_DEPTH`] levels.
+    ElementDepth,
 }
 
 impl ChainCeiling {
@@ -142,6 +149,7 @@ impl ChainCeiling {
             Self::ElementBytes => "operator_element_bytes",
             Self::StageBytes => "operator_stage_bytes",
             Self::WallTime => "wall_time",
+            Self::ElementDepth => "operator_element_depth",
         }
     }
 }
@@ -200,6 +208,26 @@ impl ChainFailure {
         match self {
             Self::Items | Self::Unsupported | Self::Stage { .. } => FailureCode::expression_error(),
             Self::Budget { .. } => FailureCode::collection_operator_budget(),
+        }
+    }
+
+    /// The stage, the operator and the position the failure names, for structured log fields.
+    #[must_use]
+    pub const fn location(&self) -> (Option<usize>, Option<OperatorName>, Option<usize>) {
+        match *self {
+            Self::Items | Self::Unsupported => (None, None, None),
+            Self::Budget {
+                stage,
+                operator,
+                position,
+                ..
+            } => (stage, operator, position),
+            Self::Stage {
+                stage,
+                operator,
+                position,
+                ..
+            } => (Some(stage), Some(operator), Some(position)),
         }
     }
 
@@ -276,6 +304,7 @@ mod tests {
             ChainCeiling::ElementBytes,
             ChainCeiling::StageBytes,
             ChainCeiling::WallTime,
+            ChainCeiling::ElementDepth,
         ] {
             let failure = ChainFailure::Budget {
                 ceiling,

@@ -431,7 +431,11 @@ impl CollectionItemSource for BlobService {
                     }
                 }
             }
-            let items = canonical_items(&bytes, request.max_items)?;
+            // Parsing up to 8 MiB is CPU work: off the runtime's workers.
+            let max_items = request.max_items;
+            let items = tokio::task::spawn_blocking(move || canonical_items(&bytes, max_items))
+                .await
+                .map_err(|_| CollectionSourceError::Unavailable)??;
             let digest = items_digest(&items);
             let count =
                 u32::try_from(items.len()).map_err(|_| CollectionSourceError::TooManyItems)?;
@@ -445,6 +449,10 @@ impl CollectionItemSource for BlobService {
 
 /// The elements of the JSON array in `bytes`, each as canonical compact JSON.
 ///
+/// The array is read element by element: the count and the byte ceilings are checked as each element is read, and the
+/// read stops at the first crossing (at `max_items + 1` elements for the count), so a source far over a ceiling is never
+/// parsed in full (design 042 review).
+///
 /// # Errors
 /// [`CollectionSourceError::NotAnArray`], [`CollectionSourceError::TooManyItems`] or
 /// [`CollectionSourceError::TooLarge`].
@@ -452,21 +460,57 @@ pub fn canonical_items(
     bytes: &[u8],
     max_items: u32,
 ) -> Result<Vec<Vec<u8>>, CollectionSourceError> {
-    let values: Vec<Value> =
-        serde_json::from_slice(bytes).map_err(|_| CollectionSourceError::NotAnArray)?;
-    if values.len() > usize::try_from(max_items).unwrap_or(usize::MAX) {
-        return Err(CollectionSourceError::TooManyItems);
+    use serde::de::{Deserializer as _, Error as _, SeqAccess, Visitor};
+    use std::cell::Cell;
+
+    struct Items<'a> {
+        max: usize,
+        refused: &'a Cell<Option<CollectionSourceError>>,
     }
-    let mut total = 0usize;
-    let mut items = Vec::with_capacity(values.len());
-    for value in &values {
-        let item = serde_json::to_vec(value).map_err(|_| CollectionSourceError::NotAnArray)?;
-        total = total.saturating_add(item.len());
-        if item.len() > MAX_PAYLOAD_BYTES || total > MAX_RUN_OUTPUT_BYTES {
-            return Err(CollectionSourceError::TooLarge);
+
+    impl<'de> Visitor<'de> for Items<'_> {
+        type Value = Vec<Vec<u8>>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a JSON array")
         }
-        items.push(item);
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let refuse = |error| {
+                self.refused.set(Some(error));
+                A::Error::custom("refused")
+            };
+            let mut total = 0usize;
+            let mut items = Vec::new();
+            while let Some(value) = seq.next_element::<Value>()? {
+                if items.len() >= self.max {
+                    return Err(refuse(CollectionSourceError::TooManyItems));
+                }
+                let item = serde_json::to_vec(&value)
+                    .map_err(|_| refuse(CollectionSourceError::NotAnArray))?;
+                total = total.saturating_add(item.len());
+                if item.len() > MAX_PAYLOAD_BYTES || total > MAX_RUN_OUTPUT_BYTES {
+                    return Err(refuse(CollectionSourceError::TooLarge));
+                }
+                items.push(item);
+            }
+            Ok(items)
+        }
     }
+
+    let refused = Cell::new(None);
+    let mut reader = serde_json::Deserializer::from_slice(bytes);
+    let parsed = reader.deserialize_seq(Items {
+        max: usize::try_from(max_items).unwrap_or(usize::MAX),
+        refused: &refused,
+    });
+    if let Some(error) = refused.take() {
+        return Err(error);
+    }
+    let items = parsed.map_err(|_| CollectionSourceError::NotAnArray)?;
+    reader
+        .end()
+        .map_err(|_| CollectionSourceError::NotAnArray)?;
     Ok(items)
 }
 
@@ -605,6 +649,29 @@ mod tests {
             canonical_items(together.as_bytes(), 100),
             Err(CollectionSourceError::TooLarge),
             "items under 256 KiB each are still bounded together by 4 MiB"
+        );
+    }
+
+    /// Design 042 review: a source is read element by element and stops at `max_items + 1`, so a blob far over the
+    /// count is refused without building the rest of it (what follows the extra element is never parsed).
+    #[test]
+    fn an_array_over_max_items_is_refused_before_the_rest_is_read() {
+        assert_eq!(
+            canonical_items(b"[1, 2, 3, this is never read", 2),
+            Err(CollectionSourceError::TooManyItems)
+        );
+        assert_eq!(
+            canonical_items(b"[1, 2, oops]", 2),
+            Err(CollectionSourceError::NotAnArray),
+            "within the count, a malformed element is still malformed"
+        );
+        assert_eq!(
+            canonical_items(b" [ 1 , 2 ] ", 2),
+            Ok(vec![b"1".to_vec(), b"2".to_vec()])
+        );
+        assert_eq!(
+            canonical_items(b"[1, 2] trailing", 2),
+            Err(CollectionSourceError::NotAnArray)
         );
     }
 

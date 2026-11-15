@@ -110,6 +110,31 @@ fn joined_items(items: &[Vec<u8>]) -> Vec<u8> {
     snapshot
 }
 
+/// The most collections with operators one tick of a replica enters (review of S1): the rest wait for the next tick,
+/// so the evaluations a tick waits for are bounded whatever the backlog. Each is bounded by the chain's ceilings.
+pub const MAX_CHAINED_ENTRIES_PER_TICK: usize = 4;
+
+/// The most chains one replica evaluates at the same time, each in a blocking task of its own.
+pub const MAX_CONCURRENT_CHAINS: usize = 2;
+
+/// The chained entries a tick may still take, open for the length of the collection pass: dropping it closes the
+/// budget again, whichever way the pass ends.
+struct ChainedBudget<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl<'a> ChainedBudget<'a> {
+    fn open(budget: &'a std::sync::atomic::AtomicUsize, entries: usize) -> Self {
+        budget.store(entries, std::sync::atomic::Ordering::SeqCst);
+        Self(budget)
+    }
+}
+
+impl Drop for ChainedBudget<'_> {
+    fn drop(&mut self) {
+        self.0
+            .store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Tunable limits of the passes.
 #[derive(Debug, Clone, Copy)]
 pub struct SchedulerSettings {
@@ -597,6 +622,10 @@ pub struct Scheduler<S, E, R> {
     chain_ceilings: ChainCeilings,
     /// Chained entries of this replica that did not commit (design 042, FR-042-009).
     reentries: collection_chain::Reentries,
+    /// Chains of this replica evaluated at the same time (review of S1).
+    chain_permits: tokio::sync::Semaphore,
+    /// Chained entries the running tick may still take; `usize::MAX` outside a tick (review of S1).
+    chained_budget: std::sync::atomic::AtomicUsize,
 }
 
 impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
@@ -630,6 +659,8 @@ where
             pass_interval: Duration::from_millis(500),
             chain_ceilings: ChainCeilings::COLLECTION,
             reentries: collection_chain::Reentries::new(),
+            chain_permits: tokio::sync::Semaphore::const_new(MAX_CONCURRENT_CHAINS),
+            chained_budget: std::sync::atomic::AtomicUsize::new(usize::MAX),
         }
     }
 
@@ -1194,6 +1225,10 @@ where
                 definition.limits().max_depth(),
             )?;
             let mut committed_stages = None;
+            // A tick takes at most `MAX_CHAINED_ENTRIES_PER_TICK` chained entries; the others wait for the next one.
+            if operators.is_some() && !self.take_chained_entry() {
+                return Ok(CollectionAdvance::Waiting);
+            }
             let built = if let Some(chain) = operators {
                 // Design 042: the chain is applied once here, by one evaluator call in a blocking task, and its output
                 // is what the entry records. Every ceiling is checked before `enter_collection`, so the store never
@@ -1202,6 +1237,7 @@ where
                     .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
                 let input_blob = data.input_blob;
                 let Some((answer, data)) = collection_chain::apply(
+                    &self.chain_permits,
                     self.engine.shared_evaluator(),
                     collection_chain::OwnedInput::Items(items.clone()),
                     chain.clone(),
@@ -1250,8 +1286,11 @@ where
                                     ),
                                     other => source_failure(other),
                                 };
-                                return self
-                                    .stop_collection_for_source(
+                                return self.settle_chained(
+                                    tenant,
+                                    run,
+                                    owner,
+                                    self.stop_collection_for_source(
                                         view,
                                         &hold,
                                         tenant,
@@ -1260,10 +1299,12 @@ where
                                         code,
                                         reason,
                                     )
-                                    .await;
+                                    .await,
+                                );
                             }
                         };
                         let Some((answer, _)) = collection_chain::apply(
+                            &self.chain_permits,
                             self.engine.shared_evaluator(),
                             collection_chain::OwnedInput::Elements(materialized.items),
                             chain.clone(),
@@ -1279,8 +1320,11 @@ where
                                 (output, Some((materialized.manifest, request.descriptor)))
                             }
                             Ok(ChainAnswer::Blob(_)) => {
-                                return self
-                                    .stop_collection_for_source(
+                                return self.settle_chained(
+                                    tenant,
+                                    run,
+                                    owner,
+                                    self.stop_collection_for_source(
                                         view,
                                         &hold,
                                         tenant,
@@ -1289,11 +1333,15 @@ where
                                         FailureCode::expression_error(),
                                         "expression",
                                     )
-                                    .await;
+                                    .await,
+                                );
                             }
                             Err(failure) => {
-                                return self
-                                    .stop_collection_for_chain(
+                                return self.settle_chained(
+                                    tenant,
+                                    run,
+                                    owner,
+                                    self.stop_collection_for_chain(
                                         view,
                                         &hold,
                                         RunRef {
@@ -1303,14 +1351,18 @@ where
                                         state.version(),
                                         failure,
                                     )
-                                    .await;
+                                    .await,
+                                );
                             }
                         }
                     }
                     // A chain that fails at entry fails the run with its code; `onError` is not taken (G042-008).
                     Err(failure) => {
-                        return self
-                            .stop_collection_for_chain(
+                        return self.settle_chained(
+                            tenant,
+                            run,
+                            owner,
+                            self.stop_collection_for_chain(
                                 view,
                                 &hold,
                                 RunRef {
@@ -1320,13 +1372,17 @@ where
                                 state.version(),
                                 failure,
                             )
-                            .await;
+                            .await,
+                        );
                     }
                 };
                 // The output ceilings of today's entry, checked here rather than by the store.
                 if output.items.len() > usize::try_from(*max_items).unwrap_or(usize::MAX) {
-                    return self
-                        .stop_collection_for_limit(
+                    return self.settle_chained(
+                        tenant,
+                        run,
+                        owner,
+                        self.stop_collection_for_limit(
                             view,
                             &hold,
                             tenant,
@@ -1334,7 +1390,8 @@ where
                             state.version(),
                             FailureCode::iteration_limit(),
                         )
-                        .await;
+                        .await,
+                    );
                 }
                 let count = u32::try_from(output.items.len())
                     .map_err(|_| CollectionAdvanceError::InvalidProgress)?;
@@ -1344,8 +1401,11 @@ where
                         // Today's snapshot array, written from the bytes each element was measured by.
                         let snapshot = joined_items(&output.items);
                         if snapshot.len() > MAX_PAYLOAD_BYTES {
-                            return self
-                                .stop_collection_for_limit(
+                            return self.settle_chained(
+                                tenant,
+                                run,
+                                owner,
+                                self.stop_collection_for_limit(
                                     view,
                                     &hold,
                                     tenant,
@@ -1353,7 +1413,8 @@ where
                                     state.version(),
                                     FailureCode::run_data_limit(),
                                 )
-                                .await;
+                                .await,
+                            );
                         }
                         CollectionEntry::from_snapshot(
                             transition(state.version()),
@@ -2866,18 +2927,40 @@ where
         failure: sagat_application::collection_chain::ChainFailure,
     ) -> Result<CollectionAdvance, CollectionAdvanceError> {
         let code = failure.code();
+        let reason = failure.reason();
         let rejection = WorkflowPrimitiveRejectionCode::from_reason(code.as_str());
-        let advance = self
-            .stop_collection_for_source(
-                view,
-                hold,
-                run.tenant_id,
-                run.run_id,
-                version,
-                code,
-                failure.reason(),
-            )
-            .await?;
+        // The failure's description names the stage, the operator and the position, never a value (D042-024): it is the
+        // run's failure detail, recorded in the stop's transaction, and the warning's fields.
+        let detail = failure.to_string();
+        let (stage, operator, position) = failure.location();
+        tracing::warn!(
+            run = %run.run_id,
+            code = code.as_str(),
+            reason,
+            stage,
+            operator = operator.map(sagat_domain::operators::OperatorName::as_str),
+            position,
+            "a collection source was refused"
+        );
+        let advance = match self
+            .stop_with_code_routing(view, hold, run, version, code, None, Some(&detail))
+            .await?
+        {
+            Outcome::Done => {
+                metrics::counter!("scheduler_collection_source_failures_total", "reason" => reason)
+                    .increment(1);
+                CollectionAdvance::LimitStopped
+            }
+            Outcome::Skipped | Outcome::DoesNotFit => CollectionAdvance::Waiting,
+            Outcome::Fenced => return Err(CollectionAdvanceError::FenceUnavailable),
+            Outcome::Failed | Outcome::QuotaStopped => {
+                return Err(CollectionAdvanceError::Engine(EngineError::Store(
+                    StoreError::Internal {
+                        detail: "unexpected collection chain recovery outcome".to_owned(),
+                    },
+                )));
+            }
+        };
         if advance == CollectionAdvance::LimitStopped
             && let Some(rejection) = rejection
         {
@@ -2889,6 +2972,35 @@ where
             .increment(1);
         }
         Ok(advance)
+    }
+
+    /// One chained entry of the running tick's budget; always granted outside a tick (a direct call).
+    fn take_chained_entry(&self) -> bool {
+        self.chained_budget
+            .try_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |left| match left {
+                    usize::MAX => Some(usize::MAX),
+                    0 => None,
+                    left => Some(left - 1),
+                },
+            )
+            .is_ok()
+    }
+
+    /// Forgets a chained collection's re-entry note once its run has been stopped.
+    fn settle_chained(
+        &self,
+        tenant: TenantId,
+        run: RunId,
+        owner: &ExecutionInstanceId,
+        advance: Result<CollectionAdvance, CollectionAdvanceError>,
+    ) -> Result<CollectionAdvance, CollectionAdvanceError> {
+        if matches!(advance, Ok(CollectionAdvance::LimitStopped)) {
+            self.reentries.forget(tenant, run, owner);
+        }
+        advance
     }
 
     async fn drain_collection_for_storage_quota(
@@ -4341,6 +4453,7 @@ where
             version,
             FailureCode::expression_error(),
             Some(owner),
+            None,
         )
         .await
     }
@@ -4379,13 +4492,14 @@ where
         version: u64,
         code: FailureCode,
     ) -> Result<Outcome, EngineError> {
-        self.stop_with_code_routing(view, hold, run, version, code, None)
+        self.stop_with_code_routing(view, hold, run, version, code, None, None)
             .await
     }
 
     /// Stops the run with `code`, unless `unentered_loop` names a loop that declares `onError`: its
     /// pending owner then fails with `code` and the edge is taken, since no scope or iteration
     /// exists to drain (G341). The run is only stopped when nothing handles the failure.
+    #[allow(clippy::too_many_arguments)]
     async fn stop_with_code_routing(
         &self,
         view: &View,
@@ -4397,6 +4511,7 @@ where
         version: u64,
         code: FailureCode,
         unentered_loop: Option<&NodeId>,
+        chain_detail: Option<&str>,
     ) -> Result<Outcome, EngineError> {
         let Some(mut tx) = self
             .store
@@ -4413,8 +4528,20 @@ where
         if let Err(outcome) = recovery_guard(shard_held, version, tx.parts().1.version()) {
             return Ok(outcome);
         }
+        let mut effects = self.effects();
+        if let Some(detail) = chain_detail {
+            effects.audit = Some(AuditRecord::engine(
+                tenant,
+                AuditAction::RunCollectionChainFailed,
+                ResourceType::Run,
+                run.to_string(),
+                detail,
+                tx.info().trace_id.clone(),
+                tx.now(),
+            ));
+        }
         self.engine
-            .run(&mut tx, self.effects(), |definition, state, now| {
+            .run(&mut tx, effects, |definition, state, now| {
                 let routed = unentered_loop.filter(|owner| {
                     definition
                         .node(owner)
@@ -4615,6 +4742,7 @@ where
         if view.snapshot.is_none() {
             return;
         }
+        let _budget = ChainedBudget::open(&self.chained_budget, MAX_CHAINED_ENTRIES_PER_TICK);
         let candidates = self
             .pick(
                 view,

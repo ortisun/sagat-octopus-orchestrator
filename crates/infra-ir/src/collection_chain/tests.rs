@@ -822,3 +822,141 @@ fn measure_the_chain_at_its_ceilings() {
         &many,
     );
 }
+
+// --- the review of S1 (2026-11-15) -----------------------------------------------------------------------------------
+
+fn elements_of(values: &[Value]) -> Vec<Vec<u8>> {
+    values
+        .iter()
+        .map(|value| serde_json::to_vec(value).expect("json"))
+        .collect()
+}
+
+/// A stage expression that names a 256 KiB element about 120 times is refused by the bound on what one evaluation
+/// copies, and the stage fails typed, instead of building hundreds of MiB for a boolean.
+#[test]
+fn a_stage_expression_that_copies_its_element_many_times_fails_its_stage() {
+    let sixty = vec!["element"; 60].join(", ");
+    let elements = elements_of(&[string_of(256 * 1024)]);
+    assert_eq!(
+        JsonEvaluator.collection_chain(
+            ChainInput::Elements(&elements),
+            &chain(vec![filter(&format!("size([[{sixty}], [{sixty}]]) > 0"))]),
+            &RunData::default(),
+            &ChainCeilings::COLLECTION,
+        ),
+        Err(ChainFailure::Stage {
+            stage: 0,
+            operator: OperatorName::Filter,
+            position: 0,
+            fault: StageFault::Expression
+        })
+    );
+}
+
+/// The same bound holds for `items`, before any stage, and for a collection without operators.
+#[test]
+fn an_items_expression_that_copies_a_value_many_times_fails() {
+    let sixty = vec!["input.big"; 60].join(", ");
+    let items = expression(&format!("[[{sixty}], [{sixty}]]"));
+    let data = data(&json!({ "big": string_of(256 * 1024 - 64) }));
+    assert_eq!(
+        JsonEvaluator.collection_chain(
+            ChainInput::Items(&items),
+            &chain(vec![map("element")]),
+            &data,
+            &ChainCeilings::COLLECTION,
+        ),
+        Err(ChainFailure::Items)
+    );
+    assert!(
+        JsonEvaluator.collection_source(&items, &data).is_err(),
+        "a collection without operators is bounded the same way"
+    );
+}
+
+/// An element nested too deep would be stored and then refused by every parser that reads it back (the JSON parser
+/// stops below 128 levels, and the snapshot array and a task's input wrap an item in more), so the run would be retried
+/// at every tick: it is refused when produced, with the budget code.
+#[test]
+fn an_element_deeper_than_120_levels_fails_with_the_budget_code() {
+    // The language nests at most seven lists in one expression, so each `map` below adds seven levels.
+    let seven = format!("{}element{}", "[".repeat(7), "]".repeat(7));
+    let nested = |levels: usize| {
+        let mut value = json!(1);
+        for _ in 0..levels {
+            value = json!([value]);
+        }
+        value
+    };
+    // 120 levels in, 127 after the first stage: over the 120 an element may nest, the first stage fails, typed.
+    let elements = elements_of(&[nested(120)]);
+    assert_eq!(
+        JsonEvaluator.collection_chain(
+            ChainInput::Elements(&elements),
+            &chain((0..8).map(|_| map(&seven)).collect()),
+            &RunData::default(),
+            &ChainCeilings::COLLECTION,
+        ),
+        Err(budget(
+            ChainCeiling::ElementDepth,
+            Some(0),
+            Some(OperatorName::Map),
+            Some(0)
+        ))
+    );
+    // 113 + 7: 120 nested lists are accepted, and the snapshot array that holds them reads back.
+    let elements = elements_of(&[nested(113)]);
+    let answer = JsonEvaluator
+        .collection_chain(
+            ChainInput::Elements(&elements),
+            &chain(vec![map(&seven)]),
+            &RunData::default(),
+            &ChainCeilings::COLLECTION,
+        )
+        .expect("128 levels");
+    let ChainAnswer::Output(output) = answer else {
+        panic!("not a blob")
+    };
+    let snapshot = format!(
+        "[{}]",
+        String::from_utf8(output.items[0].clone()).expect("utf-8")
+    );
+    assert!(serde_json::from_str::<Value>(&snapshot).is_ok());
+    // A window adds a level too.
+    let elements = elements_of(&[nested(120)]);
+    assert!(matches!(
+        JsonEvaluator.collection_chain(
+            ChainInput::Elements(&elements),
+            &chain(vec![Operator::Window { count: 1 }]),
+            &RunData::default(),
+            &ChainCeilings::COLLECTION,
+        ),
+        Err(ChainFailure::Budget {
+            ceiling: ChainCeiling::ElementDepth,
+            ..
+        })
+    ));
+}
+
+/// A variable only a stage reads that cannot be read names that stage, not `items`.
+#[test]
+fn a_stage_variable_that_cannot_be_read_fails_that_stage() {
+    let mut data = data(&json!({"list": [1, 2]}));
+    data.state = Some(b"{not json".to_vec());
+    let items = expression("input.list");
+    assert_eq!(
+        JsonEvaluator.collection_chain(
+            ChainInput::Items(&items),
+            &chain(vec![map("element"), filter("state.on")]),
+            &data,
+            &ChainCeilings::COLLECTION,
+        ),
+        Err(ChainFailure::Stage {
+            stage: 1,
+            operator: OperatorName::Filter,
+            position: 0,
+            fault: StageFault::Expression
+        })
+    );
+}

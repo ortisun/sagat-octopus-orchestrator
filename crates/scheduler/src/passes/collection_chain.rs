@@ -24,6 +24,9 @@ const FORGET_AFTER: Duration = Duration::from_secs(600);
 /// Entries remembered before the oldest are forgotten.
 const REMEMBERED: usize = 4_096;
 
+/// Entries one tenant may hold of [`REMEMBERED`].
+const REMEMBERED_PER_TENANT: usize = 512;
+
 /// What the chain runs over, owned so it can move into the blocking task.
 pub(crate) enum OwnedInput {
     Items(Expression),
@@ -36,12 +39,18 @@ pub(crate) enum OwnedInput {
 /// A panic of the evaluator is resumed here, as it would be from a synchronous call. `None` when the runtime is
 /// shutting down and the task never ran: nothing was decided, and the run is left for the next pass.
 pub(crate) async fn apply<E: ExpressionEvaluator + 'static>(
+    permits: &tokio::sync::Semaphore,
     evaluator: Arc<E>,
     input: OwnedInput,
     chain: OperatorChain,
     data: RunData,
     ceilings: ChainCeilings,
 ) -> Option<(Result<ChainAnswer, ChainFailure>, RunData)> {
+    // At most `MAX_CONCURRENT_CHAINS` chains of this replica are evaluated at once: each may hold two stage lists of
+    // 4 MiB as values and bytes. The permit is held until the evaluation has answered.
+    let Ok(_permit) = permits.acquire().await else {
+        return None;
+    };
     // The blocking thread logs to the caller's subscriber, inside the caller's span.
     let span = tracing::Span::current();
     let dispatch = tracing::dispatcher::get_default(Clone::clone);
@@ -107,7 +116,8 @@ impl Uncommitted {
 
 #[derive(Debug, Clone, Copy)]
 struct Remembered {
-    reason: Uncommitted,
+    /// Why the last try did not commit; taken by the next try, which counts it.
+    reason: Option<Uncommitted>,
     noted: Instant,
     /// When the last wait for storage quota ends, and how long it was.
     rest: Option<(Instant, Duration)>,
@@ -150,21 +160,25 @@ impl Reentries {
         owner: &ExecutionInstanceId,
         now: Instant,
     ) -> Admission {
-        let Ok(entries) = self.entries.lock() else {
+        let Ok(mut entries) = self.entries.lock() else {
             return Admission::Enter(None);
         };
-        match entries.get(&Self::key(tenant, run, owner)) {
+        match entries.get_mut(&Self::key(tenant, run, owner)) {
             Some(Remembered {
                 rest: Some((until, _)),
                 ..
             }) if now < *until => Admission::Rest,
             Some(remembered) if now.duration_since(remembered.noted) < FORGET_AFTER => {
-                metrics::counter!(
-                    "collection_chain_reentries_total",
-                    "reason" => remembered.reason.reason(),
-                )
-                .increment(1);
-                Admission::Enter(Some(remembered.reason))
+                // Counted once: the note's reason is taken by this try; the rest, if any, stays for the next note.
+                let reason = remembered.reason.take();
+                if let Some(reason) = reason {
+                    metrics::counter!(
+                        "collection_chain_reentries_total",
+                        "reason" => reason.reason(),
+                    )
+                    .increment(1);
+                }
+                Admission::Enter(reason)
             }
             _ => Admission::Enter(None),
         }
@@ -196,6 +210,20 @@ impl Reentries {
             }
         }
         let key = Self::key(tenant, run, owner);
+        if !entries.contains_key(&key)
+            && entries
+                .keys()
+                .filter(|(held, _, _)| *held == tenant)
+                .count()
+                >= REMEMBERED_PER_TENANT
+            && let Some(oldest) = entries
+                .iter()
+                .filter(|((held, _, _), _)| *held == tenant)
+                .min_by_key(|(_, remembered)| remembered.noted)
+                .map(|(key, _)| key.clone())
+        {
+            entries.remove(&oldest);
+        }
         let previous = entries.get(&key).and_then(|remembered| remembered.rest);
         let rest = (reason == Uncommitted::StorageQuota).then(|| {
             let length = previous
@@ -206,7 +234,7 @@ impl Reentries {
         entries.insert(
             key,
             Remembered {
-                reason,
+                reason: Some(reason),
                 noted: now,
                 rest,
             },
@@ -335,5 +363,79 @@ mod tests {
             );
         }
         assert!(memory.entries.lock().expect("lock").len() <= REMEMBERED);
+    }
+
+    /// Review of S1: a re-entry is counted once, by the try that follows the note, not by every pass after it.
+    #[test]
+    fn a_re_entry_is_counted_once() {
+        let (metrics, recorder) = sagat_telemetry::Metrics::detached(Duration::from_secs(60));
+        let memory = Reentries::new();
+        let (tenant, run) = (TenantId::generate(), RunId::generate());
+        let now = Instant::now();
+        metrics::with_local_recorder(&recorder, || {
+            memory.note(
+                tenant,
+                run,
+                &owner(),
+                Uncommitted::Fence,
+                Duration::from_millis(500),
+                now,
+            );
+            assert_eq!(
+                memory.admit(tenant, run, &owner(), now),
+                Admission::Enter(Some(Uncommitted::Fence))
+            );
+            assert_eq!(
+                memory.admit(tenant, run, &owner(), now),
+                Admission::Enter(None),
+                "the second try after one note is not a re-entry again"
+            );
+        });
+        assert!(
+            metrics
+                .render()
+                .contains("collection_chain_reentries_total{reason=\"fence\"} 1"),
+            "{}",
+            metrics.render()
+        );
+    }
+
+    /// Review of S1: one tenant cannot fill the memory and push every other tenant's notes out.
+    #[test]
+    fn a_tenant_holds_at_most_its_share_of_the_memory() {
+        let memory = Reentries::new();
+        let (busy, quiet) = (TenantId::generate(), TenantId::generate());
+        let now = Instant::now();
+        let quiet_run = RunId::generate();
+        memory.note(
+            quiet,
+            quiet_run,
+            &owner(),
+            Uncommitted::Revision,
+            Duration::from_millis(500),
+            now,
+        );
+        for _ in 0..REMEMBERED {
+            memory.note(
+                busy,
+                RunId::generate(),
+                &owner(),
+                Uncommitted::Revision,
+                Duration::from_millis(500),
+                now,
+            );
+        }
+        let entries = memory.entries.lock().expect("lock");
+        assert!(
+            entries
+                .keys()
+                .filter(|(tenant, _, _)| *tenant == busy)
+                .count()
+                <= REMEMBERED_PER_TENANT
+        );
+        assert!(
+            entries.contains_key(&(quiet, quiet_run, owner())),
+            "the quiet tenant's note stays"
+        );
     }
 }

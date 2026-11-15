@@ -12,8 +12,8 @@ use std::collections::{BTreeSet, HashSet};
 use std::time::Instant;
 
 use sagat_application::collection_chain::{
-    ChainAnswer, ChainCeiling, ChainCeilings, ChainFailure, ChainInput, ChainOutput, StageFault,
-    StageTally,
+    ChainAnswer, ChainCeiling, ChainCeilings, ChainFailure, ChainInput, ChainOutput,
+    MAX_ELEMENT_DEPTH, StageFault, StageTally,
 };
 use sagat_application::collection_source::descriptor_from_json;
 use sagat_application::execution::RunData;
@@ -37,6 +37,49 @@ impl Element {
         // Serialising a `Value` cannot fail: its keys are strings and it holds no non-finite number.
         let bytes = serde_json::to_vec(&value).unwrap_or_default();
         Self { value, bytes }
+    }
+
+    /// The element of `value`, unless its compact JSON is longer than `limit`: the writer stops at `limit + 1` bytes, so
+    /// a value far over the ceiling is never written out in full.
+    fn bounded(value: Value, limit: usize) -> Option<Self> {
+        let mut writer = BoundedWriter {
+            bytes: Vec::new(),
+            limit,
+        };
+        serde_json::to_writer(&mut writer, &value).ok()?;
+        Some(Self {
+            value,
+            bytes: writer.bytes,
+        })
+    }
+}
+
+/// A writer that refuses to grow past `limit` bytes.
+struct BoundedWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl std::io::Write for BoundedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.bytes.len().saturating_add(buf.len()) > self.limit {
+            return Err(std::io::Error::other("over the element ceiling"));
+        }
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// How many lists and maps `value` nests, the outermost included: what the JSON parser's depth limit counts.
+fn nesting(value: &Value) -> usize {
+    match value {
+        Value::Array(items) => 1 + items.iter().map(nesting).max().unwrap_or(0),
+        Value::Object(map) => 1 + map.values().map(nesting).max().unwrap_or(0),
+        _ => 0,
     }
 }
 
@@ -70,13 +113,30 @@ impl<'a> Produced<'a> {
     }
 
     /// Adds `element`, produced from the input element at `position`, or fails at the first ceiling it crosses: the
-    /// count, then the element, then the stage in all.
+    /// count, then the element's bytes, then its depth, then the stage in all.
     fn push(&mut self, position: usize, element: Element) -> Result<(), ChainFailure> {
         if self.elements.len() >= self.ceilings.max_stage_elements {
             return Err(self.crossed(ChainCeiling::StageElements, position));
         }
         if element.bytes.len() > self.ceilings.max_element_bytes {
             return Err(self.crossed(ChainCeiling::ElementBytes, position));
+        }
+        self.push_measured(position, element)
+    }
+
+    /// Adds a value a stage built, written through a writer that stops past the element ceiling.
+    fn push_value(&mut self, position: usize, value: Value) -> Result<(), ChainFailure> {
+        if self.elements.len() >= self.ceilings.max_stage_elements {
+            return Err(self.crossed(ChainCeiling::StageElements, position));
+        }
+        let element = Element::bounded(value, self.ceilings.max_element_bytes)
+            .ok_or_else(|| self.crossed(ChainCeiling::ElementBytes, position))?;
+        self.push_measured(position, element)
+    }
+
+    fn push_measured(&mut self, position: usize, element: Element) -> Result<(), ChainFailure> {
+        if nesting(&element.value) > MAX_ELEMENT_DEPTH {
+            return Err(self.crossed(ChainCeiling::ElementDepth, position));
         }
         self.bytes = self.bytes.saturating_add(element.bytes.len());
         if self.bytes > self.ceilings.max_stage_bytes {
@@ -148,15 +208,32 @@ pub(crate) fn apply(
             })?;
         compiled.push(expression);
     }
-    let mut needed: BTreeSet<String> = items
-        .iter()
-        .chain(compiled.iter().flatten())
-        .flat_map(Compiled::variables)
-        .collect();
-    needed.remove(ELEMENT);
-    needed.remove(POSITION);
-    let mut env =
-        crate::evaluator::environment(&needed, data, None).map_err(|_| ChainFailure::Items)?;
+    // The environment is built once, in parts, so that a variable that cannot be read names who reads it first:
+    // `items`, or the first stage that does.
+    let mut loaded: BTreeSet<String> = [ELEMENT.to_owned(), POSITION.to_owned()].into();
+    let mut env = Env::new();
+    let mut load = |names: BTreeSet<String>, env: &mut Env| -> Result<(), ()> {
+        let fresh: BTreeSet<String> = names.difference(&loaded).cloned().collect();
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        env.absorb(crate::evaluator::environment(&fresh, data, None).map_err(|_| ())?);
+        loaded.extend(fresh);
+        Ok(())
+    };
+    if let Some(items) = &items {
+        load(items.variables(), &mut env).map_err(|()| ChainFailure::Items)?;
+    }
+    for (stage, (operator, expression)) in chain.stages().iter().zip(&compiled).enumerate() {
+        if let Some(expression) = expression {
+            load(expression.variables(), &mut env).map_err(|()| ChainFailure::Stage {
+                stage,
+                operator: operator.name(),
+                position: 0,
+                fault: StageFault::Expression,
+            })?;
+        }
+    }
 
     let mut list = match (input, items) {
         (ChainInput::Items(_), Some(items)) => {
@@ -232,7 +309,7 @@ pub(crate) fn apply(
                     deadline.check(stage, name, position)?;
                     let (result, _) = evaluate(select, &mut env, element.value, position);
                     let value = result.map_err(|()| fault(position, StageFault::Expression))?;
-                    out.push(position, Element::new(value))?;
+                    out.push_value(position, value)?;
                 }
             }
             (Operator::FlatMap { .. }, Some(select)) => {
@@ -242,7 +319,7 @@ pub(crate) fn apply(
                     match result {
                         Ok(Value::Array(values)) => {
                             for value in values {
-                                out.push(position, Element::new(value))?;
+                                out.push_value(position, value)?;
                             }
                         }
                         Ok(_) => return Err(fault(position, StageFault::NotAList)),
