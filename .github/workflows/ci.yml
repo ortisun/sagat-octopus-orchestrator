@@ -217,7 +217,7 @@ jobs:
           evidence="$RUNNER_TEMP/sagat-upgrade-evidence"
           mkdir "$evidence"
           prepared=""
-          for scenario in active-data inflight-worker applied-lookup applied-output-quota scoped-event-cutover redis-callback-cutover; do
+          for scenario in active-data inflight-worker applied-lookup applied-output-quota scoped-event-cutover redis-callback-cutover cron-trigger-upgrade; do
             args=(--scenario "$scenario")
             if [[ -n "$prepared" ]]; then args+=(--prepared-run "$prepared"); fi
             python3 scripts/test-release-upgrade-profile.py "${args[@]}"
