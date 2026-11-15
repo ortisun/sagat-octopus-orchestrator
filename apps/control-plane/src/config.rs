@@ -123,17 +123,11 @@ pub fn flag(get: Lookup<'_>, name: &'static str) -> Result<bool, ConfigError> {
     }
 }
 
-/// `SAGAT_COLLECTION_OPERATORS_ENABLED` (design 042). Only `false` is accepted while the scheduler of this build does not
-/// apply a chain at scope entry (T042-8): turning it on would publish chains that a run would refuse (G042-100). The
-/// definition service keeps its builder, so a test can turn it on.
+/// `SAGAT_COLLECTION_OPERATORS_ENABLED` (design 042): whether a `forEach` may be published with `operators`. Off unless
+/// the deployment says so; before turning it on, every scheduler and control-plane replica must run this release
+/// (`docs/runbooks/workflow-primitives.md`, the fleet rule).
 fn collection_operators(get: Lookup<'_>) -> Result<bool, ConfigError> {
-    if flag(get, "SAGAT_COLLECTION_OPERATORS_ENABLED")? {
-        return Err(ConfigError::Invalid {
-            name: "SAGAT_COLLECTION_OPERATORS_ENABLED",
-            reason: "collection operators are not available in this release: the scheduler applies a chain only from T042-8".to_owned(),
-        });
-    }
-    Ok(false)
+    flag(get, "SAGAT_COLLECTION_OPERATORS_ENABLED")
 }
 
 /// Variables of the per-tenant request budget: (requests per second, burst).
@@ -400,9 +394,9 @@ pub struct ServeConfig {
     /// With it off, publishing such a workflow is refused with `LAKE_DISABLED`. With it on, publication still
     /// waits for the checks of access, allowed modes and data classification.
     pub lake_enabled: bool,
-    /// Whether a `forEach` may declare `operators` (`SAGAT_COLLECTION_OPERATORS_ENABLED`, design 042). Always off in
-    /// this release, whose scheduler does not apply a chain (T042-8): the variable may only say `false`. With it off,
-    /// publishing such a workflow is refused with `COLLECTION_OPERATORS_DISABLED`; a stored one stays readable.
+    /// Whether a `forEach` may declare `operators` (`SAGAT_COLLECTION_OPERATORS_ENABLED`, design 042). Off by default.
+    /// With it off, publishing such a workflow is refused with `COLLECTION_OPERATORS_DISABLED`; a stored one stays
+    /// readable and its runs apply their chain.
     pub collection_operators_enabled: bool,
     /// Native TLS identity is required for the mTLS webhook profile; no forwarded headers are trusted.
     pub tls: Option<sagat_api_http::HttpTlsConfig>,

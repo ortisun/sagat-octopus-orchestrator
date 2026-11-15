@@ -265,11 +265,11 @@ impl FailureCode {
         Self::system("BLOB_UNAVAILABLE")
     }
 
-    /// The collection declares `operators` and this release's scheduler does not apply a chain (design 042, T042-8): the
-    /// run fails at scope entry rather than run its body over the list `items` yields (G042-100).
+    /// A collection's operator chain crossed one of its running ceilings at scope entry (design 042, FR-042-007): more
+    /// than 1,000 input or stage elements, an element over 256 KiB, a stage over 4 MiB, or the 1-second wall time.
     #[must_use]
-    pub fn collection_operators_unsupported() -> Self {
-        Self::system("COLLECTION_OPERATORS_UNSUPPORTED")
+    pub fn collection_operator_budget() -> Self {
+        Self::system("COLLECTION_OPERATOR_BUDGET")
     }
 
     /// The bytes of a blob are not the bytes that were stored (size or digest differ).

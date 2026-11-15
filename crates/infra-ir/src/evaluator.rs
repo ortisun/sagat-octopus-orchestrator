@@ -30,7 +30,7 @@ fn parse(bytes: &[u8]) -> Result<Value, ExpressionFailure> {
 }
 
 /// Builds the environment holding just `needed`.
-fn environment(
+pub(crate) fn environment(
     needed: &BTreeSet<String>,
     data: &RunData,
     instance: Option<&ExecutionInstanceId>,
@@ -339,6 +339,19 @@ impl ExpressionEvaluator for JsonEvaluator {
                     failure("a collection items expression must yield an array or a blob reference")
                 }),
         }
+    }
+
+    fn collection_chain(
+        &self,
+        input: sagat_application::collection_chain::ChainInput<'_>,
+        chain: &sagat_domain::operators::OperatorChain,
+        data: &RunData,
+        ceilings: &sagat_application::collection_chain::ChainCeilings,
+    ) -> Result<
+        sagat_application::collection_chain::ChainAnswer,
+        sagat_application::collection_chain::ChainFailure,
+    > {
+        crate::collection_chain::apply(input, chain, data, ceilings)
     }
 
     fn collection_return(

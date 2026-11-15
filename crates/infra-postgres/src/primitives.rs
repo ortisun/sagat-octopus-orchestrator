@@ -5,7 +5,7 @@
 //! finish additionally require an immutable definition cache. Runtime orchestration stays gated
 //! until the planner owns scoped routing and supplies semantic audit evidence for every transition.
 
-use sagat_application::collection_source::{SourceManifest, items_digest as source_items_digest};
+use sagat_application::collection_source::{BlobManifest, items_digest as source_items_digest};
 use sagat_application::error::StoreError;
 use sagat_application::execution::{
     Actor, DefinitionCache, Effects, EndOutputAnswer, MAX_PAYLOAD_BYTES, MAX_RUN_OUTPUT_BYTES,
@@ -1436,7 +1436,9 @@ impl CollectionStore for PgCollectionStore {
                 content,
             ));
         }
-        if let Some(manifest) = SourceManifest::parse(&snapshot) {
+        // A blob-sourced scope stores a manifest, of a plain read or of a chained one (design 042, FR-042-010): either
+        // way the stored items are checked against the count and digest it records; the blob is never read again.
+        if let Some(manifest) = BlobManifest::parse(&snapshot) {
             if usize::try_from(manifest.count()).ok() != Some(items.len())
                 || source_items_digest(&items) != *manifest.items_digest()
             {
@@ -1575,9 +1577,9 @@ impl CollectionStore for PgCollectionStore {
         )
         .await?;
         let item_payloads = if let Some(source) = entry.blob_source() {
-            // The snapshot payload is the manifest of a blob read: it must describe exactly the
-            // items the entry carries, so the digest the scope pins is the membership.
-            let manifest = SourceManifest::parse(&snapshot_content)
+            // The snapshot payload is the manifest of a blob read (or of a chain applied to one, design 042): it must
+            // describe exactly the items the entry carries, so the digest the scope pins is the membership.
+            let manifest = BlobManifest::parse(&snapshot_content)
                 .ok_or(PrimitiveStoreError::InvalidTransition)?;
             if manifest.blob().id() != source.blob
                 || usize::try_from(manifest.count()).ok() != Some(source.items.len())

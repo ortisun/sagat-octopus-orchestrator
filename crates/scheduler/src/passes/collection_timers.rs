@@ -30,7 +30,7 @@ where
         + LoopProgressStore
         + ScopeFrontierStore
         + ApprovalSchedulerStore,
-    E: ExpressionEvaluator,
+    E: ExpressionEvaluator + 'static,
     R: Entropy,
 {
     #[tracing::instrument(name="scheduler.action",skip_all,

@@ -177,6 +177,159 @@ impl SourceManifest {
     }
 }
 
+const CHAINED_MANIFEST_KEY: &str = "$collectionChainSource";
+
+/// What a scope keeps when its items came from a blob through an operator chain (design 042, FR-042-010, D042-020):
+/// the blob that was read with its element count and digest (provenance: the restore never reads the blob again), the
+/// chain's digest, and the count and digest of the chain's output, which are the items stored per item. It is under a
+/// key of its own, so a reader that only knows [`SourceManifest`] does not take it for one: `SourceManifest::parse`
+/// answers `None` and that reader's restore refuses the scope as invalid storage instead of misreading it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainedSourceManifest {
+    blob: BlobDescriptor,
+    source_count: u32,
+    source_digest: Digest,
+    chain_digest: Digest,
+    count: u32,
+    items_digest: Digest,
+}
+
+impl ChainedSourceManifest {
+    #[must_use]
+    pub fn new(
+        source: &SourceManifest,
+        chain_digest: Digest,
+        count: u32,
+        items_digest: Digest,
+    ) -> Self {
+        Self {
+            blob: source.blob.clone(),
+            source_count: source.count,
+            source_digest: source.items_digest,
+            chain_digest,
+            count,
+            items_digest,
+        }
+    }
+
+    #[must_use]
+    pub const fn blob(&self) -> &BlobDescriptor {
+        &self.blob
+    }
+
+    #[must_use]
+    pub const fn source_count(&self) -> u32 {
+        self.source_count
+    }
+
+    #[must_use]
+    pub const fn source_digest(&self) -> &Digest {
+        &self.source_digest
+    }
+
+    #[must_use]
+    pub const fn chain_digest(&self) -> &Digest {
+        &self.chain_digest
+    }
+
+    /// Elements of the chain's output: the items the scope stores.
+    #[must_use]
+    pub const fn count(&self) -> u32 {
+        self.count
+    }
+
+    /// Digest of the canonical array of the chain's output.
+    #[must_use]
+    pub const fn items_digest(&self) -> &Digest {
+        &self.items_digest
+    }
+
+    /// The bytes stored as the scope's snapshot payload: its canonical JSON, every key in code-point order.
+    #[must_use]
+    pub fn to_json(&self) -> Vec<u8> {
+        format!(
+            "{{\"{CHAINED_MANIFEST_KEY}\":{{\"blob\":{{\"contentType\":\"{}\",\"id\":\"{}\",\"sha256\":\"{}\",\"size\":{}}},\"chainSha256\":\"{}\",\"count\":{},\"itemsSha256\":\"{}\",\"sourceCount\":{},\"sourceSha256\":\"{}\"}}}}",
+            self.blob.content_type().as_str(),
+            self.blob.id(),
+            self.blob.digest().to_hex(),
+            self.blob.size(),
+            self.chain_digest.to_hex(),
+            self.count,
+            self.items_digest.to_hex(),
+            self.source_count,
+            self.source_digest.to_hex(),
+        )
+        .into_bytes()
+    }
+
+    /// Reads a stored chained manifest; `None` for anything else, a plain [`SourceManifest`] included.
+    #[must_use]
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        let value: Value = serde_json::from_slice(bytes).ok()?;
+        let object = value.as_object()?;
+        if object.len() != 1 {
+            return None;
+        }
+        let body = object.get(CHAINED_MANIFEST_KEY)?.as_object()?;
+        if body.len() != 6 {
+            return None;
+        }
+        let count = |field: &str| u32::try_from(body.get(field)?.as_u64()?).ok();
+        let digest = |field: &str| Digest::from_hex(body.get(field)?.as_str()?);
+        Some(Self {
+            blob: descriptor_from_value(body.get("blob")?)?,
+            source_count: count("sourceCount")?,
+            source_digest: digest("sourceSha256")?,
+            chain_digest: digest("chainSha256")?,
+            count: count("count")?,
+            items_digest: digest("itemsSha256")?,
+        })
+    }
+}
+
+/// The manifest a blob-sourced scope stores, either kind: what entry and restore check the stored items against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlobManifest {
+    Source(SourceManifest),
+    Chained(ChainedSourceManifest),
+}
+
+impl BlobManifest {
+    /// `None` for anything that is neither, an inline snapshot array included.
+    #[must_use]
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        SourceManifest::parse(bytes)
+            .map(Self::Source)
+            .or_else(|| ChainedSourceManifest::parse(bytes).map(Self::Chained))
+    }
+
+    #[must_use]
+    pub const fn blob(&self) -> &BlobDescriptor {
+        match self {
+            Self::Source(manifest) => manifest.blob(),
+            Self::Chained(manifest) => manifest.blob(),
+        }
+    }
+
+    /// The items the scope stores.
+    #[must_use]
+    pub const fn count(&self) -> u32 {
+        match self {
+            Self::Source(manifest) => manifest.count(),
+            Self::Chained(manifest) => manifest.count(),
+        }
+    }
+
+    /// The digest of the items the scope stores.
+    #[must_use]
+    pub const fn items_digest(&self) -> &Digest {
+        match self {
+            Self::Source(manifest) => manifest.items_digest(),
+            Self::Chained(manifest) => manifest.items_digest(),
+        }
+    }
+}
+
 /// The digest of the canonical array made of `items` (compact JSON, elements in order).
 #[must_use]
 pub fn items_digest(items: &[Vec<u8>]) -> Digest {
@@ -346,6 +499,58 @@ mod tests {
             SourceManifest::parse(br#"{"$collectionSource":{"count":1}}"#),
             None
         );
+    }
+
+    #[test]
+    fn a_chained_manifest_round_trips_under_its_own_key_and_an_old_reader_does_not_take_it() {
+        let source = SourceManifest::new(descriptor(), 7, Digest::new([1; 32]));
+        let chained =
+            ChainedSourceManifest::new(&source, Digest::new([2; 32]), 3, Digest::new([3; 32]));
+        let bytes = chained.to_json();
+        assert_eq!(ChainedSourceManifest::parse(&bytes), Some(chained.clone()));
+        assert_eq!(
+            BlobManifest::parse(&bytes),
+            Some(BlobManifest::Chained(chained.clone()))
+        );
+        assert_eq!(
+            SourceManifest::parse(&bytes),
+            None,
+            "a reader that knows only $collectionSource does not read a chained manifest as one"
+        );
+        assert_eq!(ChainedSourceManifest::parse(&source.to_json()), None);
+        assert_eq!(
+            BlobManifest::parse(&source.to_json()),
+            Some(BlobManifest::Source(source))
+        );
+        let value: Value = serde_json::from_slice(&bytes).expect("json");
+        let body = value["$collectionChainSource"]
+            .as_object()
+            .expect("the chained manifest key");
+        assert_eq!(
+            body.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "blob",
+                "chainSha256",
+                "count",
+                "itemsSha256",
+                "sourceCount",
+                "sourceSha256"
+            ]
+        );
+        assert_eq!(value["$collectionChainSource"]["sourceCount"], 7);
+        assert_eq!(value["$collectionChainSource"]["count"], 3);
+        let canonical = serde_json::to_vec(&value).expect("json");
+        assert_eq!(
+            canonical, bytes,
+            "the manifest is written in its canonical form"
+        );
+        let mut extra = value.clone();
+        extra["$collectionChainSource"]["more"] = Value::Bool(true);
+        assert_eq!(
+            ChainedSourceManifest::parse(&serde_json::to_vec(&extra).expect("json")),
+            None
+        );
+        assert_eq!(BlobManifest::parse(b"[1,2]"), None);
     }
 
     #[test]

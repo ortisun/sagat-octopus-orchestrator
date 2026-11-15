@@ -31,6 +31,17 @@ impl Env {
         self.vars.insert(name.to_owned(), value);
         self
     }
+
+    /// Binds `name` to `value` in place, replacing what it held: how a per-element variable is bound on top of an
+    /// environment built once, without copying the rest.
+    pub fn set(&mut self, name: &str, value: Value) {
+        self.vars.insert(name.to_owned(), value);
+    }
+
+    /// Unbinds `name` and gives its value back, so a bound element can be moved out again instead of copied.
+    pub fn remove(&mut self, name: &str) -> Option<Value> {
+        self.vars.remove(name)
+    }
 }
 
 /// A parsed expression, ready to evaluate any number of times.
