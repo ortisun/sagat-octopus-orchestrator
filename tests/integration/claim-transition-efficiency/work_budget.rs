@@ -776,3 +776,105 @@ fn a_poll_counts_what_it_fetched_probed_opened_and_leased() {
         "the stage is the only label: {rendered}"
     );
 }
+
+/// What one start of `workflow` with `input` costs, after a first start warmed the definition and the compiled schema.
+async fn a_start_once(
+    w: &World,
+    workflow: sagat_domain::definition::WorkflowId,
+    input: &serde_json::Value,
+) -> Result<Work, Evicted> {
+    w.start(workflow, input).await;
+    let before = reading(w).await;
+    w.start(workflow, input).await;
+    spent(w, before).await
+}
+
+/// SC-043-003, design 043 in `enforce` mode: a start of a version with an `inputSchema` costs exactly the statements,
+/// the transactions and the rows written of the same shape without one (NFR-043-PERF): the schema travels with the
+/// parsed definition and the check runs before the creation transaction, writing nothing.
+async fn a_checked_start_costs_what_an_unchecked_one_does_once() -> Result<(), Evicted> {
+    let w = world().await;
+    let (plain, _) = w
+        .publish(document("budget-plain", "a", vec![activity("a")]))
+        .await;
+    let mut checked = document("budget-checked", "a", vec![activity("a")]);
+    checked["inputSchema"] = json!({
+        "type": "object",
+        "required": ["orderId"],
+        "properties": {"orderId": {"type": "string", "maxLength": 64}}
+    });
+    let (checked, _) = w.publish(checked).await;
+    let input = json!({"orderId": "o-1"});
+    let without = a_start_once(&w, plain, &input).await?;
+    let with = a_start_once(&w, checked, &input).await?;
+    assert_eq!(
+        with, without,
+        "a start with an inputSchema costs what one without does"
+    );
+    Ok(())
+}
+
+measured!(
+    /// SC-043-003 for a start.
+    a_checked_start_costs_what_an_unchecked_one_does,
+    a_checked_start_costs_what_an_unchecked_one_does_once
+);
+
+/// What one triggered start costs: an event published, then one dispatch round that starts the run of its trigger.
+async fn a_triggered_start_once(w: &World, kind: &str) -> Result<Work, Evicted> {
+    let publish = |id: String| async move {
+        w.events
+            .publish(
+                &w.admin,
+                sagat_application::events::PublishRequest {
+                    namespace: "payments".to_owned(),
+                    event_id: Some(sagat_domain::events::EventId::parse(&id).expect("id")),
+                    event_type: sagat_domain::workflow::EventType::parse(kind).expect("type"),
+                    subject: None,
+                    correlation_key: None,
+                    occurred_at: None,
+                    data: br#"{"orderId":"o-1"}"#.to_vec(),
+                    dedupe_ttl: None,
+                },
+                &crate::support::engine::ctx(),
+            )
+            .await
+            .expect("published");
+    };
+    publish(format!("{kind}-warm")).await;
+    w.dispatcher.tick().await;
+    publish(format!("{kind}-measured")).await;
+    let before = reading(w).await;
+    let round = w.dispatcher.tick().await;
+    assert_eq!(round.runs_started, 1, "{kind}");
+    spent(w, before).await
+}
+
+/// SC-043-003 for a triggered start: the envelope checked against an `inputSchema` costs nothing more.
+async fn a_checked_triggered_start_costs_what_an_unchecked_one_does_once() -> Result<(), Evicted> {
+    let w = world().await;
+    let mut plain = document("budget-trigger-plain", "a", vec![activity("a")]);
+    plain["triggers"] = json!([{"kind": "event", "eventType": "budget.plain"}]);
+    w.publish(plain).await;
+    let mut checked = document("budget-trigger-checked", "a", vec![activity("a")]);
+    checked["triggers"] = json!([{"kind": "event", "eventType": "budget.checked"}]);
+    checked["inputSchema"] = json!({
+        "type": "object",
+        "required": ["data"],
+        "properties": {"data": {"type": "object", "required": ["orderId"]}}
+    });
+    w.publish(checked).await;
+    let without = a_triggered_start_once(&w, "budget.plain").await?;
+    let with = a_triggered_start_once(&w, "budget.checked").await?;
+    assert_eq!(
+        with, without,
+        "a triggered start with an inputSchema costs what one without does"
+    );
+    Ok(())
+}
+
+measured!(
+    /// SC-043-003 for a triggered start.
+    a_checked_triggered_start_costs_what_an_unchecked_one_does,
+    a_checked_triggered_start_costs_what_an_unchecked_one_does_once
+);

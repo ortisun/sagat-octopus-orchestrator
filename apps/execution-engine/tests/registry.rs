@@ -69,9 +69,9 @@ fn the_run_input_validation_mode_of_the_engine_is_read_strictly() {
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| (*value).to_owned())
         };
-        let error = EngineConfig::from_lookup(&lookup, Environment::Dev)
-            .err()
-            .expect("refused");
+        let Err(error) = EngineConfig::from_lookup(&lookup, Environment::Dev) else {
+            panic!("{wrong:?} was accepted");
+        };
         assert!(
             error.to_string().contains("SAGAT_RUN_INPUT_VALIDATION"),
             "{wrong:?}: {error}"

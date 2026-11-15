@@ -531,6 +531,60 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   and the size walk counts its real steps (D043-100), so "operations ≤ k × units" is a check of the charges. The time per
   charged unit of a pattern at the state cap is measured separately (G043-030).
 
+### Phase 2 of the build, the gate and the creators (2026-11-15, on `feature/043-creators`)
+
+- **D043-120** (2026-11-15) A service built without a gate holds `RunInputGate::unwired()`, whose port answers `Busy` for
+  every schema: a start of a version with an `inputSchema` is refused as transient (`503`, or tried again by the engine)
+  and never admitted unchecked; a version without one passes as it would through a wired gate. The composition roots and
+  the test support wire `RunInputValidator::gate(mode)`, a gate over `RunInputValidator::process()`, one cache and one
+  pool of four permits per process however many services hold it.
+- **D043-121** (2026-11-15) Every repeat (a rerun, a batch rerun, a reset, a pending reset) answers `field` `/` and `rule`
+  `other`: the gate is given `FieldPolicy::Root` for them. Whether the caller's view of the source input under feature
+  016's graded disclosure withholds anything is not computed on the start path (G043-040); the answer never describes a
+  withheld value, at the cost of saying less than D043-037 allows to a caller who may read the source.
+- **D043-122** (2026-11-15) The legacy-continuation rule of the architecture check lets a `.continue_as_new(` call stand
+  inside a function itself named `continue_as_new`: the `ChainProgressStore` implementation of `PgRunStore` forwards to
+  `PgChainProgressStore`. Any other call outside the tests fails.
+- **D043-123** (2026-11-15) The reason a schedule action records for a refused input: `RUN_INPUT_SCHEMA_UNUSABLE` for a
+  schema outside the subset, `NOMINAL_TIME_FIELD_INVALID` when the refusal's pointer is the one of `nominalTimeField`,
+  `SCHEDULE_INPUT_INVALID` for anything else.
+- **D043-124** (2026-11-15) Trigger-now answers the pointer into the action's input as it is (`/orderId`), since its request
+  carries no input; the schedule writes prefix it with `/action/input`.
+- **D043-125** (2026-11-15) The write check of row 14 needs the gate and a definition cache
+  (`ScheduleService::with_run_inputs`); without them a write is checked only at action time, which is the authority
+  (D043-008). It reads the target version's document (`ScheduleStore::target_version`, one statement on the write path)
+  and fills `nominalTimeField` with the write's instant, RFC 3339 to the second like an action's, rather than computing the
+  next nominal time.
+- **D043-126** (2026-11-15) The check before `decide` of rows 6 to 8 is `ScheduledStarts::check_scheduled`: the run service
+  resolves the version and its definition as a start does and runs the gate. The start then checks again (the compile is
+  cached). A refusal at the start after the check passed (a buffered action released into a version promoted meanwhile)
+  records `INPUT_INVALID` through the same decision, and the waiting row is settled where it stands: `settle_waiting`
+  accepts `INPUT_INVALID` beside the business-id outcomes. Red first: `a_buffered_action_is_checked_again_at_its_release`
+  failed with "the schedule already acted on that time" before that line.
+- **D043-127** (2026-11-15) The port's types (`Rule`, `PathSegment`, `SchemaRefusal`, `Unusable`, `pointer_of`) live in
+  `crates/application/src/run_input.rs` and `crates/infra-schema` re-exports them: one shared type at the boundary
+  (AGENTS.md rule 6). `SchemaRefusal` gains `Busy`.
+- **D043-128** (2026-11-15) The audit records: in `report` mode, `run.input_refused` as a follow-up of the run's own record,
+  on the run, reason `reported: <reason> rule=<rule>`; for a trigger, on the workflow version, reason
+  `<reason> rule=<rule> via trigger <id>`, and for a cron tick `... at tick <key>`. None names a field or a value.
+- **D043-129** (2026-11-15) `trigger_events_total{outcome="input_invalid"|"input_schema_unusable"}` counts once per dispatch
+  (CUJ 3); the delivery and the audit are written once.
+- **D043-130** (2026-11-15) The six SDK errors carry `field` whenever the server's answer names one, a schedule spec or a
+  start option included (the Rust SDK test that said `details.field` is not carried changed with `sdks/SPEC.md`). The
+  conformance runners record `field` only beside `rule`, so the goldens of the other scenarios are unchanged.
+- **D043-131** (2026-11-15) The migration names the widened constraints `*_known`, and also widens
+  `platform_requirement_history_capability_valid`, which the design did not list; its down migration refuses while a
+  history row names the capability.
+- **D043-132** (2026-11-15) Before failing a parent step (D043-038) the engine looks the child up with
+  `RunStore::replay_start` under the child's own idempotency (`child:{parent}`, `child-start:{node}`, the reserved child
+  id), as `system:engine`: one statement on the refusal path only.
+- **D043-133** (2026-11-15) A continuation whose input cannot be checked now is `ContinuationAdvanceError::InputUnavailable`,
+  counted as a wait (`scheduler_continuation_waits_total{blocker="input_check"}`); a refused one ends the predecessor through
+  the fenced path of `finalize_continuation_expression`, now given the failure, with
+  `scheduler_continuation_input_refusals_total`.
+- **D043-134** (2026-11-15) A refused backfill step ends the backfill `CANCELLED` and does not pause the schedule; a refused
+  scheduled or triggered action pauses it when `pauseOnFailure` is set.
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
@@ -556,7 +610,12 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-021 | The control plane publishes in `enforce` mode whatever `SAGAT_RUN_INPUT_VALIDATION` says: the parameter exists (D043-089) and nothing reads the variable yet. | Closed 2026-11-15 by D043-109: the control plane reads it strictly and passes it to publication; tests `the_run_input_validation_mode_is_read_strictly_and_enforce_by_default` and `no_shipped_manifest_sets_run_input_validation_to_report` (`apps/control-plane/tests/config.rs`). The registry capability is phase 2 (T043-12). | Closed |
 | G043-022 | The oracle property test generates references only to `$defs` entries with plain names and strings from a small alphabet; percent-encoded and `~`-escaped pointers, and `.` against line terminators, are covered by unit tests, not by the oracle. | Regression check, not a proof (D043-060); the unit tests `a_reference_must_name_a_schema_position_of_the_document` and `the_pattern_allowlist_refuses_what_ecma_262_and_the_regex_engine_read_differently` cover them. | Open (documented) |
 | G043-030 | Matching a pattern at the cap of 512 NFA states costs, per charged unit, what this machine measured and no more is known. | Measured 2026-11-15 (release, Apple M3 Max): with the production configuration, `a[ab]{12}c{100}d{100}e{100}f{100}g{50}` (466 states, the most a pattern reaches before its 16 KiB program) costs 0.06 ns per charged unit in the test build; the raw automaton with the prefilter off costs 0.0032 ns per (byte × state) at 466 states and 0.0144 at 225 states of classes, against 5.8 to 8.7 ns per unit for the dearest keywords. `a_pattern_at_the_state_cap_runs_its_charge_within_the_backstop` holds a whole budget of it within the 5 s backstop. Not measured on the CI machine. | Open (measured on the development machine) |
-| G043-031 | The run-input cache bounds compiles with four permits, but a key that is not shared (an ad hoc start) compiles outside the cache and its permits, and a pattern's weight counts `1 + 4` matchers only while every match runs under one of the gate's permits. | The gate of T043-3 must hold every compile and every validation, ad hoc ones included, under `RUN_INPUT_PERMITS` (D043-107). | Open (phase 2) |
+| G043-031 | The run-input cache bounds compiles with four permits, but a key that is not shared (an ad hoc start) compiles outside the cache and its permits, and a pattern's weight counts `1 + 4` matchers only while every match runs under one of the gate's permits. | Closed 2026-11-15: `RunInputValidator::check` takes one of the `RUN_INPUT_PERMITS` permits before it compiles or validates, shared or not, and every creator, row 13 included, calls it through the gate (`crates/infra-schema/src/run_input/mod.rs`). | Closed |
+| G043-040 | Repeats answer `/` and `other` always (D043-121): the graded-disclosure check of D043-037, which would let a caller who may read the source input see the field, is not built. | Never describes a withheld value; says less than allowed. | Open |
+| G043-041 | The check before `decide` of a schedule action reads the workflow and the version again and validates twice (D043-126). | The schedule path has no statement budget; the compile is cached. | Open (accepted) |
+| G043-042 | Rows without an integration test of their own: the uploaded-input start (row 2), Update-with-Start (row 3), the batch `RERUN` item (row 4), reset and pending reset (row 5), the ad hoc start (row 13); and `RUN_INPUT_SCHEMA_UNUSABLE` on rows 3 to 5, 8 and 13. They go through the paths the tested rows use (`start_with`, `start_private`) and the mappings have unit tests (`a_rerun_refused_for_its_input_fails_with_validation_failed`, `a_pending_reset_refused_for_its_input_ends_admission_refused_and_no_room_is_retried`). | SC-043-001 is not yet met for these rows. | Open |
+| G043-043 | The lookup of an existing child before a parent step is failed (D043-038, D043-132) has no integration test: it needs a child created by a peer between the reservation and the check. | Built; untested. | Open |
+| G043-044 | Not built in phase 2: the fault tests of T043-7, T043-9 and T043-11 (a crash between the delivery and the audit, two engines on one refused cron tick, a restart between the evaluation and the failure, a crash before the schedule decision commits); the budget of a child start and a continuation (T043-18 has the start and the triggered start); the cache counters of SC-043-004 as an integration test; the problem-shape assertions in `contract_rest_durable_execution`; the metric-label check of `integration_observability_operations`; the sentinel on rows 2, 3, 5 to 8, 10, 12 to 14 (T043-17 covers rows 1, 4, 9 and 11, the answers, logs, spans and audit rows, not the metrics text). | Phase 3. | Open |
 
 ## 4. Owner questions
 

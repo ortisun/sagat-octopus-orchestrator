@@ -3,6 +3,27 @@
 These changes are on the project completion feature branch. This is not a published release.
 Final compatibility, fault, canary, performance and workspace gates remain in the feature tasks.
 
+## Breaking: every run input is checked against its version's schema (design 043)
+
+From 0.3.0 the input of every run is checked against the `inputSchema` of the version the run pins, before the run is
+created (ADR-0090, OD-2026-11-14-2). An input the schema refuses is `422 VALIDATION_FAILED` with `details.reason`
+`RUN_INPUT_INVALID`, `details.field` and `details.rule`, where it used to be accepted. The six SDKs expose `field` and
+`rule` beside `reason`, and the CLI and the Studio show them.
+
+- An `inputSchema` must stay within a documented subset of JSON Schema. A schema outside it refuses every start of its
+  version (`RUN_INPUT_SCHEMA_UNUSABLE`), and publication refuses a new one in `enforce` mode. Run
+  `control-plane input-schema-inventory` before the upgrade to list the versions at risk.
+- **Runs in progress can fail** at the step that creates a child (`CHILD_INPUT_INVALID`) or continues
+  (`CONTINUATION_INPUT_INVALID`) when that new run's input does not match its version's schema (OD-2026-11-14-9, an
+  accepted deviation from constitution principle IV).
+- Triggers on a version whose schema describes a manual input rather than the event envelope `{event, data}` stop
+  starting runs: each refused event is a delivery without a run and an audit record `run.input_refused`.
+- Schedule actions whose input the target version refuses are recorded `INPUT_INVALID`, are not retried, and pause the
+  schedule when `pauseOnFailure` is set; trigger-now answers `422`.
+- `SAGAT_RUN_INPUT_VALIDATION=report` admits refused inputs while callers are fixed; set it in every manifest **before
+  migrating**, then go back to `enforce` and record the requirement `run-input-validation-v1`. The
+  [runbook](../runbooks/run-input-validation.md) has the steps.
+
 ## Breaking: uncertain external effects wait for a person (feature 037)
 
 New decisions follow Constitution 2.0.0, principle III. Journals written by v0.1 and v0.2 still

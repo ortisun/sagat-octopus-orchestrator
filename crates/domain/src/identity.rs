@@ -1055,3 +1055,47 @@ impl Membership {
         Principal::new(self.tenant_id, self.subject.clone(), self.role)
     }
 }
+
+#[cfg(test)]
+mod run_input_tests {
+    use super::*;
+
+    /// Every role. The match is exhaustive, so a role added later does not compile here until it is listed.
+    fn every_role() -> Vec<Role> {
+        let all = [
+            Role::Admin,
+            Role::Developer,
+            Role::Operator,
+            Role::Viewer,
+            Role::Worker,
+            Role::Runner,
+            Role::DatabaseRunner,
+        ];
+        for role in all {
+            match role {
+                Role::Admin
+                | Role::Developer
+                | Role::Operator
+                | Role::Viewer
+                | Role::Worker
+                | Role::Runner
+                | Role::DatabaseRunner => {}
+            }
+        }
+        all.to_vec()
+    }
+
+    /// Design 043, T043-23 (keeps G043-003 closed): `details.field` of a refused start names properties the version's
+    /// `inputSchema` declares, so a role that may start a run must be one that may read that definition.
+    #[test]
+    fn every_role_that_may_start_a_run_may_read_the_definition_it_starts() {
+        for role in every_role() {
+            if role.grants(Permission::RunStart) {
+                assert!(
+                    role.grants(Permission::DefinitionRead),
+                    "{role:?} holds run:start without definition:read"
+                );
+            }
+        }
+    }
+}
