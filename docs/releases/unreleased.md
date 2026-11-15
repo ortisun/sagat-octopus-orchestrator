@@ -56,6 +56,11 @@ cron trigger lacks its schedule ([schedules runbook](../runbooks/schedules.md#62
   (`schedules.autoHandover.enabled: false`, `SAGAT_SCHEDULES_AUTO_HANDOVER=false`)**, and only then delete the Secret: a later release would
   otherwise run a job that cannot log in. Give `migrate` `SAGAT_HANDOVER_MIN_LIVE` (the engine's replicas or the autoscaler's minimum), the
   floor the job counts live engines with.
+- **`helm upgrade` with the values of 0.2 fails at render** until `schedules.autoHandover.databaseSecret` names the Secret or the job is
+  switched off: the job is on by default and the chart requires its Secret (fail-closed; architecture review of 2026-11-15, m6). A role
+  that may create in a schema is refused its grants and its login: on a database first made before PostgreSQL 15 run
+  `REVOKE CREATE ON SCHEMA public FROM PUBLIC` first (security review of 2026-11-15). The schema `down` of the release leaves the role's
+  login to you (`ALTER ROLE sagat_handover NOLOGIN PASSWORD NULL`, D2306).
 - **To keep it manual:** `schedules.autoHandover.enabled: false` (or `schedules.autoHandover: false`) in Helm, `SAGAT_SCHEDULES_AUTO_HANDOVER=false`
   in compose; then hand over with `--apply` as before.
 - **What is accepted:** an engine binary below the registry release that never registers keeps its legacy pass and ignores a pause (G2005); a
