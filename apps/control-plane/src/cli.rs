@@ -41,6 +41,53 @@ pub struct HandoverArgs {
     pub dry_run: bool,
     /// `--apply`: do it. Without it the command only verifies and says so (the handover has no way back).
     pub apply: bool,
+    /// `--auto`: the deployment's job (ADR-0091). It waits, bounded, until the database says the fleet is stable and converged,
+    /// and hands over as `sagat_handover`; it implies `--apply` (with `--dry-run` it only checks the role and says the last reason).
+    pub auto: bool,
+    /// `--stable N`: consecutive stable rounds, at least 15 s apart (at least 3; the database floors it).
+    pub stable: Option<u32>,
+    /// `--horizon DURATION`: how far back the engines, the memberships and the reconciliation are looked at (10m to 1h).
+    pub horizon: Option<std::time::Duration>,
+    /// `--min-live N`: the fewest live engines the job hands over with (at least 1).
+    pub min_live: Option<u32>,
+    /// `--wait DURATION`: how long the job waits in all (at most 24h).
+    pub wait: Option<std::time::Duration>,
+    /// `--retire-role`: after the handover and its audit, take the login of `sagat_handover` away.
+    pub retire_role: bool,
+}
+
+/// The defaults and bounds of `--auto` (ADR-0091 decisions 2 and 3).
+pub mod auto_bounds {
+    use std::time::Duration;
+
+    pub const STABLE: u32 = 3;
+    pub const HORIZON: Duration = Duration::from_secs(600);
+    pub const HORIZON_MAX: Duration = Duration::from_secs(3600);
+    pub const MIN_LIVE: u32 = 1;
+    pub const WAIT: Duration = Duration::from_secs(2 * 3600);
+    pub const WAIT_MAX: Duration = Duration::from_secs(24 * 3600);
+}
+
+/// A duration as the flags take it: a whole number followed by `s`, `m` or `h` (`600s`, `10m`, `2h`).
+///
+/// # Errors
+/// [`UsageError`] for any other text.
+pub fn parse_duration(name: &str, text: &str) -> Result<std::time::Duration, UsageError> {
+    let wrong = || {
+        UsageError(format!(
+            "{name} needs a duration such as 600s, 10m or 2h, not '{text}'"
+        ))
+    };
+    let split = text.len().checked_sub(1).ok_or_else(wrong)?;
+    let (number, unit) = text.split_at(split);
+    let number: u64 = number.parse().map_err(|_| wrong())?;
+    let seconds = match unit {
+        "s" => number,
+        "m" => number.checked_mul(60).ok_or_else(wrong)?,
+        "h" => number.checked_mul(3600).ok_or_else(wrong)?,
+        _ => return Err(wrong()),
+    };
+    Ok(std::time::Duration::from_secs(seconds))
 }
 
 /// The arguments were not understood.
@@ -110,6 +157,32 @@ fn parse_handover<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<Command
             }
             "--dry-run" if inline.is_none() => parsed.dry_run = true,
             "--apply" if inline.is_none() => parsed.apply = true,
+            "--auto" if inline.is_none() => parsed.auto = true,
+            "--retire-role" if inline.is_none() => parsed.retire_role = true,
+            "--stable" => {
+                let text = value("--stable")?;
+                parsed.stable = Some(text.parse::<u32>().map_err(|_| {
+                    UsageError(format!(
+                        "--stable needs a whole number of rounds, not '{text}'"
+                    ))
+                })?);
+            }
+            "--min-live" => {
+                let text = value("--min-live")?;
+                parsed.min_live = Some(text.parse::<u32>().map_err(|_| {
+                    UsageError(format!(
+                        "--min-live needs a whole number of engines, not '{text}'"
+                    ))
+                })?);
+            }
+            "--horizon" => {
+                let text = value("--horizon")?;
+                parsed.horizon = Some(parse_duration("--horizon", &text)?);
+            }
+            "--wait" => {
+                let text = value("--wait")?;
+                parsed.wait = Some(parse_duration("--wait", &text)?);
+            }
             other => {
                 return Err(UsageError(format!(
                     "unexpected argument '{other}' for schedule-trigger-handover"
@@ -122,7 +195,64 @@ fn parse_handover<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<Command
             "--apply and --dry-run contradict each other: choose one".to_owned(),
         ));
     }
+    check_auto(&parsed)?;
     Ok(Command::ScheduleTriggerHandover(parsed))
+}
+
+/// The flags of `--auto` go with `--auto` and keep to their bounds; `--expect-live` and `--apply` go with the operator's command.
+fn check_auto(parsed: &HandoverArgs) -> Result<(), UsageError> {
+    use auto_bounds::{HORIZON, HORIZON_MAX, STABLE, WAIT_MAX};
+    let auto_only = parsed.stable.is_some()
+        || parsed.horizon.is_some()
+        || parsed.min_live.is_some()
+        || parsed.wait.is_some()
+        || parsed.retire_role;
+    if !parsed.auto {
+        if auto_only {
+            return Err(UsageError(
+                "--stable, --horizon, --min-live, --wait and --retire-role go with --auto"
+                    .to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+    if parsed.apply {
+        return Err(UsageError(
+            "--auto implies --apply: give one of them".to_owned(),
+        ));
+    }
+    if parsed.expect_live.is_some() {
+        return Err(UsageError(
+            "--expect-live is the operator's (--apply); the job takes --min-live".to_owned(),
+        ));
+    }
+    if parsed.stable.is_some_and(|stable| stable < STABLE) {
+        return Err(UsageError(format!("--stable is at least {STABLE}")));
+    }
+    if parsed
+        .horizon
+        .is_some_and(|horizon| horizon < HORIZON || horizon > HORIZON_MAX)
+    {
+        return Err(UsageError(
+            "--horizon is between 10m and 1h: expired scheduler memberships are deleted after an hour".to_owned(),
+        ));
+    }
+    if parsed.min_live == Some(0) {
+        return Err(UsageError("--min-live is at least 1".to_owned()));
+    }
+    if parsed.wait.is_some_and(|wait| wait > WAIT_MAX) {
+        return Err(UsageError("--wait is at most 24h".to_owned()));
+    }
+    // a wait that cannot hold one horizon and the stable rounds after it can only end at its deadline (correctness review)
+    let floor = parsed.horizon.unwrap_or(HORIZON)
+        + std::time::Duration::from_secs(15) * parsed.stable.unwrap_or(STABLE);
+    if parsed.wait.is_some_and(|wait| wait <= floor) {
+        return Err(UsageError(format!(
+            "--wait must be longer than --horizon plus 15 s for each --stable round ({} s here)",
+            floor.as_secs()
+        )));
+    }
+    Ok(())
 }
 
 pub const USAGE: &str = "\
@@ -141,7 +271,9 @@ COMMANDS:
     quota-ceiling  Grant a tenant a quota ceiling (SAGAT_CEILING_TENANT_ID, _RESOURCE, _VALUE; a number or default)
     scheduling-weight  Set a tenant's weight in the scheduler's passes, 1 to 16 (SAGAT_WEIGHT_TENANT_ID, SAGAT_WEIGHT_VALUE; a number or default)
     schedule-trigger-handover  Hand the cron triggers over from the legacy cron pass to the schedule pass; audited, once, with the
-                  owner role: schedule-trigger-handover --operator NAME [--expect-live N] [--dry-run | --apply]
+                  owner role: schedule-trigger-handover --operator NAME [--expect-live N] [--dry-run | --apply];
+                  the deployment's job: schedule-trigger-handover --auto [--stable N] [--horizon D] [--min-live N]
+                  [--wait D] [--retire-role] [--dry-run], as sagat_handover
     script-key    Print a new Ed25519 key for SAGAT_SCRIPT_SIGNING_KEY (it signs the artifacts of scripts)
     healthcheck   Probe the local API (GET /v1/health); exit 0 when healthy
     version       Print the version
@@ -245,6 +377,24 @@ ENVIRONMENT (schedule-trigger-handover):
     --apply               do it. Without it the command only verifies, as --dry-run does, and says so: the handover has no way back
     --dry-run             verify everything (engines, capability, convergence of the triggers, privilege) and change nothing
     A second run says it is already handed over and exits 0. There is no command to go back.
+    --auto                the deployment's job (ADR-0091): rounds every 15 s, through the database's round function, until the
+                          fleet is stable and converged for --stable rounds and one horizon has passed since the first round;
+                          then the handover, made by the database as sagat_handover (mode AUTOMATIC), and the tenant audit.
+                          Exit 0 handed over, already handed over or switched off; 2 a reason no wait cures; 3 the deadline;
+                          4 interrupted (SIGTERM or SIGINT: no activation is started after it); 1 a database failure
+    --stable N            stable rounds in a row, at least 15 s apart [3, at least 3]
+    --horizon D           how far back engines, memberships and reconciliation work are looked at [10m, 10m to 1h]
+    --min-live N          the fewest live engines it hands over with [1]
+    --wait D              how long it waits in all [2h, at most 24h]
+    --retire-role         after the handover and its audit, take the login of sagat_handover away
+    SAGAT_HANDOVER_PASSWORD   the password of sagat_handover, given apart from DATABASE_URL (required with --auto); for
+                          migrate, the password it sets (from a SCRAM verifier it computes) while the state is LEGACY and the
+                          role was never retired
+    SAGAT_HANDOVER_RUN_ID     the run id (a uuid; in Kubernetes the Job's UID); drawn at start when unset
+    SAGAT_SCHEDULES_AUTO_HANDOVER  false: --auto exits 0 at once and hands nothing over [true]
+    SAGAT_HANDOVER_RETIRE_ROLE     true: as --retire-role (for compose, which cannot add a flag on a condition) [false]
+    SAGAT_HANDOVER_MIN_LIVE        for migrate: the owner's floor of the live engines the job counts with, 1 to 1000; a
+                          caller of the round function cannot ask for fewer [unset: 1]
 
 ENVIRONMENT (healthcheck):
     SAGAT_HEALTHCHECK_ADDR            address to probe                [127.0.0.1:8080]

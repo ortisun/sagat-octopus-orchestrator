@@ -83,6 +83,8 @@ ENVIRONMENT (serve):
     SAGAT_SCHEDULER_INTERVAL_MS       pause between idle scheduler ticks [500]
     SAGAT_SCHEDULER_BATCH             candidates per pass per tick (1-5000) [200]
     SAGAT_SCHEDULES_ENABLED           fire schedules from this replica [true]
+    SAGAT_SCHEDULES_AUTO_HANDOVER     the deployment runs the job of the automatic handover; exported only, as
+                                      trigger_schedule_auto_handover_expected, for the alert on a job that never writes [true]
     SAGAT_LAKE_ENABLED                let a run carry an Apache Iceberg write; the control plane has the same switch [false]
     SAGAT_SCHEDULES_BATCH             due schedules per round (1-5000) [100]
     SAGAT_SCHEDULES_POLL_MS           pause when a round found nothing [1000]

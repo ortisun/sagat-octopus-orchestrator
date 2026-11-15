@@ -401,7 +401,7 @@ fn no_metric_is_labelled_with_something_that_grows_with_the_data() {
 
 /// The rules the schedules, batch, trigger-handover and instance-registry slices of feature 018 added or lean on, with the
 /// runbook each must point to. A rule removed or renamed fails here by name (the generic tests above only read what is there).
-const SCHEDULE_RULES: [(&str, &str); 11] = [
+const SCHEDULE_RULES: [(&str, &str); 14] = [
     (
         "SagatSchedulerLate",
         "docs/runbooks/scaling.md#scheduler-late",
@@ -437,6 +437,18 @@ const SCHEDULE_RULES: [(&str, &str); 11] = [
     (
         "SagatCronHandoverUnreadable",
         "docs/runbooks/schedules.md#65-watching-the-reconciliation",
+    ),
+    (
+        "SagatTriggerHandoverBlocked",
+        "docs/runbooks/schedules.md#63-why-a-handover-is-blocked",
+    ),
+    (
+        "SagatTriggerHandoverAuditPending",
+        "docs/runbooks/schedules.md#63-why-a-handover-is-blocked",
+    ),
+    (
+        "SagatTriggerHandoverNotAttempted",
+        "docs/runbooks/schedules.md#61-before-the-handover-the-job-the-role-and-the-opt-out",
     ),
     (
         "SagatInstanceGateClosed",

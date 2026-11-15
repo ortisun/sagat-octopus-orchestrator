@@ -643,7 +643,7 @@ async fn a_rollback_is_refused_after_the_cron_handover() {
         .execute(&mut *tx)
         .await
         .expect("the guard's flag");
-    sqlx::query("UPDATE schedule_trigger_handover SET state = 'HANDED_OVER', changed_by = 'operator', changed_at = now(), changed_db_role = 'owner'")
+    sqlx::query("UPDATE schedule_trigger_handover SET state = 'HANDED_OVER', changed_by = 'operator', changed_at = now(), changed_db_role = 'owner', changed_mode = 'OPERATOR', changed_epoch = 0")
         .execute(&mut *tx)
         .await
         .expect("handover");

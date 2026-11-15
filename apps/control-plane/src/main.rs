@@ -83,7 +83,24 @@ async fn run(command: Command) -> Result<(), RunError> {
 async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
     match command {
         Command::Migrate => {
-            sagat_control_plane::run_migrations(&config.database).await?;
+            let password =
+                zeroize::Zeroizing::new(env_lookup("SAGAT_HANDOVER_PASSWORD").unwrap_or_default());
+            let floor = match env_lookup("SAGAT_HANDOVER_MIN_LIVE").filter(|text| !text.is_empty())
+            {
+                None => None,
+                Some(text) => Some(text.trim().parse::<u32>().map_err(|_| {
+                    sagat_control_plane::config::ConfigError::Invalid {
+                        name: "SAGAT_HANDOVER_MIN_LIVE",
+                        reason: "must be a whole number of engines".to_owned(),
+                    }
+                })?),
+            };
+            sagat_control_plane::run_migrations_for_handover(
+                &config.database,
+                Some(password.as_str()).filter(|password| !password.is_empty()),
+                floor,
+            )
+            .await?;
             tracing::info!("migrations are up to date");
             Ok(())
         }
@@ -138,6 +155,19 @@ async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
             let request = sagat_control_plane::config::WeightConfig::from_lookup(&env_lookup)?;
             sagat_control_plane::set_scheduling_weight(config, &request).await?;
             tracing::info!(tenant = %request.tenant_id, "scheduling weight changed");
+            Ok(())
+        }
+        Command::ScheduleTriggerHandover(args) if args.auto => {
+            let interrupt = sagat_control_plane::handover_auto::Interrupt::default();
+            sagat_control_plane::handover_auto::raise_on_signals(&interrupt);
+            let said = sagat_control_plane::handover_auto::run_auto_command(
+                &config.database,
+                &args,
+                &env_lookup,
+                &interrupt,
+            )
+            .await?;
+            println!("{said}");
             Ok(())
         }
         Command::ScheduleTriggerHandover(args) => {

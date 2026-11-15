@@ -354,6 +354,11 @@ async fn run(
         .await
         .map_err(|error| store_failure(&error))?;
     if state.is_handed_over() {
+        drop(conn);
+        if !request.dry_run {
+            // a command that died between the commit and the audit, or the job's handover: the recorded set is completed
+            complete_audit(pool).await?;
+        }
         return Ok(HandoverOutcome::AlreadyHandedOver { by, db_role });
     }
     if let HandoverState::Other(other) = &state {
@@ -410,6 +415,7 @@ async fn run(
     match activated {
         Ok(Activated::Recorded { epoch }) => {
             let live = seen.load(std::sync::atomic::Ordering::Relaxed);
+            complete_audit(pool).await?;
             tracing::info!(operator = %operator, %os_user, %host, epoch, live, "the cron triggers were handed over to the schedule pass");
             Ok(HandoverOutcome::HandedOver { live, epoch })
         }
@@ -426,6 +432,7 @@ async fn run(
                 .map_err(|error| store_failure(&error))?;
             drop(conn);
             if state.is_handed_over() {
+                complete_audit(pool).await?;
                 return Ok(HandoverOutcome::AlreadyHandedOver { by, db_role });
             }
             let completed = store
@@ -437,6 +444,7 @@ async fn run(
             match completed {
                 Ok(()) => {
                     let live = seen.load(std::sync::atomic::Ordering::Relaxed);
+                    complete_audit(pool).await?;
                     tracing::info!(operator = %operator, %os_user, %host, live, "the cron triggers were handed over to the schedule pass (the requirement had been recorded before)");
                     let epoch: i64 = sqlx_epoch(pool).await?;
                     Ok(HandoverOutcome::HandedOver { live, epoch })
@@ -446,6 +454,33 @@ async fn run(
         }
         Err(error) => Err(refused(error, &why, pool).await),
     }
+}
+
+/// The tenant audit of the handover, written after its commit from the set recorded in it (ADR-0091 decision 7): the operator's
+/// handover has it too. The handover is made when this runs, so nothing here fails the command (correctness review): a record found
+/// under a drawn id that differs (`AUDIT_CONFLICT`), or a failure, is a warning; the engines export the tenants left
+/// (`trigger_schedule_handover_audit_pending`, alerted on) and the next run completes them.
+async fn complete_audit(pool: &sagat_infra_postgres::PgPool) -> Result<(), RunError> {
+    match sagat_infra_postgres::complete_handover_audit(pool).await {
+        Ok(audit) => {
+            tracing::info!(
+                mode = audit.mode.as_deref().unwrap_or("not recorded"),
+                epoch = audit.epoch.unwrap_or_default(),
+                tenants = audit.tenants,
+                written = audit.written,
+                "the tenant audit of the handover is complete"
+            );
+        }
+        Err(sagat_infra_postgres::HandoverDbError::AuditConflict) => tracing::warn!(
+            "AUDIT_CONFLICT: an audit record exists under an id drawn for a tenant of the handover and differs from the \
+             handover's. The handover itself is made; the tenant audit is not complete (docs/runbooks/schedules.md, 6.3)"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "the tenant audit of the handover could not be completed; the handover itself is made and the next run completes it"
+        ),
+    }
+    Ok(())
 }
 
 async fn sqlx_epoch(pool: &sagat_infra_postgres::PgPool) -> Result<i64, RunError> {

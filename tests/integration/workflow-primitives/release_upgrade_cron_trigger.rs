@@ -320,7 +320,7 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         progress.enter("2. the current migrations, with the released process still up");
         sagat_infra_postgres::migrate(&pool).await.expect("current migrations");
         let after: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations WHERE success").fetch_one(&pool).await.expect("current schema boundary");
-        assert_eq!(after, 20270116000000);
+        assert_eq!(after, 20270117000000, "the automatic handover's migration (ADR-0091) is the last");
         let state: String = sqlx::query_scalar("SELECT state FROM schedule_trigger_handover").fetch_one(&pool).await.expect("handover state");
         assert_eq!(state, "LEGACY");
         let schedules: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules").fetch_one(&pool).await.expect("schedules");
@@ -422,7 +422,7 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         assert_eq!(keys(&pool, new_first).await, [key(today)]);
         assert_eq!(runs(&pool, new_first).await.len(), 1);
 
-        progress.enter("5. the released process stops, then the owner hands over");
+        progress.enter("5. the released process stops, then the automatic job hands over (ADR-0091)");
         control::send(&mut stream, &json!({"stop": true})).await;
         assert_eq!(bounded::within("released stop", Duration::from_secs(30), control::receive(&mut stream)).await["stopped"], true);
         let exit = bounded::within("join the released process", Duration::from_secs(30), old_process.wait()).await.expect("join");
@@ -430,6 +430,24 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         let mut engine = RunningEngine::start(env.clone()).await;
         let unconverged: i64 = sqlx::query_scalar("SELECT count(*) FROM schedule_trigger_drift").fetch_one(&pool).await.expect("drift");
         assert_eq!(unconverged, 0, "convergence is 0");
+        // the reconciliation made the schedules of the released triggers: its marks hold the job a horizon after them
+        let marked: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules WHERE reconciled_at IS NOT NULL").fetch_one(&pool).await.expect("marks");
+        assert!(marked > 0, "the upgrade's backlog leaves the reconciliation's marks");
+        // the scenario runs no control-plane process: one is registered, by the runtime role, as a control plane of this release does
+        use sagat_application::instances::InstanceStore as _;
+        let token = sagat_application::instances::InstanceToken::from_bytes([5; 32]);
+        let control_plane = Uuid::new_v4();
+        sagat_infra_postgres::PgInstanceStore::new(db.runtime_pool().await)
+            .register(&sagat_application::instances::Registration {
+                instance: control_plane,
+                token: &token,
+                kind: sagat_application::instances::InstanceKind::ControlPlane,
+                scheduler_owner: None,
+                binary_version: "0.3.0-scenario",
+                capabilities: &[],
+            })
+            .await
+            .expect("a control plane registers");
         let database = sagat_control_plane::config::DatabaseConfig {
             url: db.url.clone(),
             max_connections: 2,
@@ -440,13 +458,57 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
             expect_live: Some(1),
             dry_run,
             apply,
+            ..sagat_control_plane::cli::HandoverArgs::default()
         };
         let said = sagat_control_plane::handover::run_handover_command(&database, &args(true, false)).await.expect("dry run");
         assert!(said.starts_with("dry run: nothing stops the handover"), "{said}");
-        let said = sagat_control_plane::handover::run_handover_command(&database, &args(false, true)).await.expect("apply");
-        assert!(said.starts_with("handed over"), "{said}");
-        let (state, by): (String, Option<String>) = sqlx::query_as("SELECT state, changed_by FROM schedule_trigger_handover").fetch_one(&pool).await.expect("handover");
-        assert_eq!((state.as_str(), by.as_deref()), ("HANDED_OVER", Some("release-upgrade-operator")));
+        // the job, not --apply: as sagat_handover, its waits instant and the database's times moved back as the owner
+        let run = Uuid::new_v4();
+        // the control plane's row heartbeats at every wait of the job, as the process would (correctness review nit)
+        let pace = auto::Backdate::new(pool.clone(), run, control_plane, vec![5; 32]);
+        let job_database = sagat_control_plane::config::DatabaseConfig {
+            url: db.url_without_password(support::HANDOVER_ROLE),
+            max_connections: 2,
+            statement_timeout: Duration::from_secs(5),
+        };
+        let request = sagat_control_plane::handover_auto::AutoRequest {
+            ask: sagat_infra_postgres::AutoAsk {
+                run,
+                stable: 3,
+                horizon: Duration::from_secs(600),
+                min_live: 1,
+                wait: Duration::from_secs(7_200),
+            },
+            retire_role: false,
+            dry_run: false,
+            operator: Some("release-upgrade".to_owned()),
+            activation: sagat_infra_postgres::OperatorBounds::default(),
+        };
+        let done = bounded::within(
+            "the automatic handover",
+            Duration::from_secs(120),
+            sagat_control_plane::handover_auto::auto_handover(
+                &job_database,
+                Some(support::HANDOVER_ROLE_PASSWORD),
+                &request,
+                &pace,
+                &sagat_control_plane::handover_auto::Interrupt::default(),
+            ),
+        )
+        .await
+        .expect("the job hands over");
+        assert!(matches!(done, sagat_control_plane::handover_auto::AutoOutcome::HandedOver { .. }), "{done:?}");
+        let reasons = pace.reasons();
+        // the backlog's marks first, and only them, then the rounds count to the handover
+        let blocked = reasons.iter().take_while(|reason| reason.as_deref() == Some("RECONCILIATION_RECENT")).count();
+        assert!(blocked >= 1, "{reasons:?}");
+        assert!(reasons[blocked..].iter().all(Option::is_none), "nothing but RECONCILIATION_RECENT, then counting: {reasons:?}");
+        let (state, by, mode): (String, Option<String>, Option<String>) =
+            sqlx::query_as("SELECT state, changed_by, changed_mode FROM schedule_trigger_handover").fetch_one(&pool).await.expect("handover");
+        let actor = format!("system:handover-job:{run}");
+        assert_eq!((state.as_str(), by.as_deref(), mode.as_deref()), ("HANDED_OVER", Some(actor.as_str()), Some("AUTOMATIC")));
+        let audited: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_records WHERE action = 'schedule.trigger_handover'").fetch_one(&pool).await.expect("audit");
+        assert!(audited >= 1, "the tenant audit of the handover");
         engine.finish().await.expect("a clean stop");
         // The tick comes due for both passes: the legacy pass of the current code starts nothing and leaves the trigger alone
         due(&pool, handover, today, true, true).await;
@@ -479,11 +541,88 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
             "defaultEngineTickOutcome": default_outcome, "defaultEngineTickRuns": 1,
             "mixedReleasedFirst": "ALREADY_ACTED", "mixedCurrentFirstReleasedRunsStarted": 0,
             "mixedConcurrentRace": {"releasedRunsStarted": released_started, "scheduleDecision": race_outcome, "runs": 1},
-            "handover": "HANDED_OVER", "legacyPassAfterHandoverRunsStarted": 0, "scheduleAfterHandover": "STARTED",
+            "handover": "HANDED_OVER", "handoverMode": "AUTOMATIC", "handoverReasons": reasons,
+            "handoverTenantAuditRecords": audited, "legacyPassAfterHandoverRunsStarted": 0, "scheduleAfterHandover": "STARTED",
             "documentBytesEqualCurrent": {"released": released_bytes_equal, "defaultEngine": default_bytes_equal,
                 "currentFirst": new_first_bytes_equal, "afterHandover": handover_bytes_equal},
             "releasedReaderAfterHandover": false,
         });
         std::fs::write(std::env::var_os("SAGAT_V02_RESULT").expect("selected phase result path"), serde_json::to_vec_pretty(&result).expect("result JSON")).expect("bounded result evidence");
     }).await;
+}
+
+/// The waits of the automatic job, made instant for the scenario: each records the reason of the round before it and moves the
+/// run's times, and the reconciliation's marks once they were seen, back as the owner (ADR-0091's test plan: backdated, never slept).
+mod auto {
+    use std::sync::Mutex;
+
+    use sagat_control_plane::handover_auto::{Interrupt, Pace, Paced};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    pub(super) struct Backdate {
+        owner: PgPool,
+        run: Uuid,
+        heartbeat: (Uuid, Vec<u8>),
+        reasons: Mutex<Vec<Option<String>>>,
+    }
+
+    impl Backdate {
+        pub(super) fn new(owner: PgPool, run: Uuid, instance: Uuid, token: Vec<u8>) -> Self {
+            Self {
+                owner,
+                run,
+                heartbeat: (instance, token),
+                reasons: Mutex::new(Vec::new()),
+            }
+        }
+
+        pub(super) fn reasons(&self) -> Vec<Option<String>> {
+            self.reasons.lock().expect("reasons").clone()
+        }
+    }
+
+    impl Pace for Backdate {
+        fn wait<'a>(&'a self, _wait: std::time::Duration, interrupt: &'a Interrupt) -> Paced<'a> {
+            Box::pin(async move {
+                let reason: Option<String> = sqlx::query_scalar(
+                    "SELECT last_reason FROM schedule_trigger_handover_attempts WHERE run_id = $1",
+                )
+                .bind(self.run)
+                .fetch_optional(&self.owner)
+                .await
+                .expect("reason")
+                .flatten();
+                sqlx::query("SELECT * FROM instance_heartbeat($1, $2)")
+                    .bind(self.heartbeat.0)
+                    .bind(&self.heartbeat.1)
+                    .execute(&self.owner)
+                    .await
+                    .expect("the control plane heartbeats");
+                let seen = {
+                    let mut reasons = self.reasons.lock().expect("reasons");
+                    reasons.push(reason);
+                    reasons.len()
+                };
+                if seen > 1 {
+                    sqlx::query("UPDATE schedules SET reconciled_at = reconciled_at - interval '11 minutes' WHERE reconciled_at IS NOT NULL")
+                        .execute(&self.owner)
+                        .await
+                        .expect("the marks are a horizon old");
+                }
+                sqlx::query(
+                    "UPDATE schedule_trigger_handover_attempts \
+                        SET first_round_at = least(first_round_at, clock_timestamp() - horizon - interval '1 minute'), \
+                            last_stable_at = last_stable_at - interval '16 seconds' WHERE run_id = $1",
+                )
+                .bind(self.run)
+                .execute(&self.owner)
+                .await
+                .expect("the run's rounds are a heartbeat apart");
+                if seen > 40 {
+                    interrupt.raise();
+                }
+            })
+        }
+    }
 }

@@ -257,6 +257,40 @@ groups:
           summary: An engine cannot read whether the cron triggers were handed over and its legacy cron pass goes on firing.
           runbook: docs/runbooks/schedules.md#65-watching-the-reconciliation
 
+      - alert: SagatTriggerHandoverBlocked
+        # ADR-0091 decision 5: the job of the automatic handover writes the reason of its last round to the attempt row and every
+        # engine exports it, one series per reason (all at zero but the last one, while the state is LEGACY). `max without (reason)`
+        # keeps the hour when the reason changes: a fleet that is blocked for one reason and then another is blocked all along.
+        expr: max without (reason) (trigger_schedule_handover_blocked) == 1
+        for: 1h
+        labels: {severity: warning}
+        annotations:
+          summary: The automatic handover of the cron triggers has been blocked for an hour; the reason is the series of trigger_schedule_handover_blocked at 1.
+          runbook: docs/runbooks/schedules.md#63-why-a-handover-is-blocked
+
+      - alert: SagatTriggerHandoverAuditPending
+        # ADR-0091 decision 7, correctness review: a committed handover whose tenant audit could not be completed (AUDIT_CONFLICT, a
+        # failure after the commit). The job and the command exit 0 with a warning; this is what stays visible.
+        expr: max(trigger_schedule_handover_audit_pending) > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: The cron triggers were handed over, and tenants of the handover have had no audit record for thirty minutes.
+          runbook: docs/runbooks/schedules.md#63-why-a-handover-is-blocked
+
+      - alert: SagatTriggerHandoverNotAttempted
+        # D2270: a job that cannot log in (a pg_hba refusal, a missing role or password) writes no attempt row, so nothing above can
+        # fire. While the deployment runs the job, the state is LEGACY, and the attempt row is missing or older than 15 minutes.
+        expr: >-
+          (max(trigger_schedule_auto_handover_expected) == 1)
+          and on() (max(trigger_schedule_handed_over) == 0)
+          and on() (absent(trigger_schedule_handover_attempt_age_seconds) or (min(trigger_schedule_handover_attempt_age_seconds) > 900))
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: The deployment runs the automatic handover, the cron triggers are not handed over, and its job has written no round for fifteen minutes.
+          runbook: docs/runbooks/schedules.md#61-before-the-handover-the-job-the-role-and-the-opt-out
+
       - alert: SagatInstanceGateClosed
         # A control plane or an engine that is up and serves nothing: it has not registered in the instance registry
         # (the database or the migration), or the platform requires a capability its build lacks (FR-018-052). Its
