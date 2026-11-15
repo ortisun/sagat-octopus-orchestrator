@@ -584,6 +584,12 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   `scheduler_continuation_input_refusals_total`.
 - **D043-134** (2026-11-15) A refused backfill step ends the backfill `CANCELLED` and does not pause the schedule; a refused
   scheduled or triggered action pauses it when `pauseOnFailure` is set.
+- **D043-135** (2026-11-15) The 422 text of each start route, the schedule writes, trigger-now and the publication is not
+  written into their OpenAPI operations: the operation definitions outside the additions of features 016 and 035 are
+  pinned byte for byte (`contract_payload_classification`, `contract_iceberg_writes`, which are never blessed). The
+  contract carries design 043 in the shared `Error` schema instead (the `details.reason` list, `details.rule` as a closed
+  enum, `details.field`), in the schedule action outcome enum, and in `specs/043-run-input-validation/contracts/errors.md`
+  (G043-045).
 
 ## 3. Gaps
 
@@ -616,6 +622,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-042 | Rows without an integration test of their own: the uploaded-input start (row 2), Update-with-Start (row 3), the batch `RERUN` item (row 4), reset and pending reset (row 5), the ad hoc start (row 13); and `RUN_INPUT_SCHEMA_UNUSABLE` on rows 3 to 5, 8 and 13. They go through the paths the tested rows use (`start_with`, `start_private`) and the mappings have unit tests (`a_rerun_refused_for_its_input_fails_with_validation_failed`, `a_pending_reset_refused_for_its_input_ends_admission_refused_and_no_room_is_retried`). | SC-043-001 is not yet met for these rows. | Open |
 | G043-043 | The lookup of an existing child before a parent step is failed (D043-038, D043-132) has no integration test: it needs a child created by a peer between the reservation and the check. | Built; untested. | Open |
 | G043-044 | Not built in phase 2: the fault tests of T043-7, T043-9 and T043-11 (a crash between the delivery and the audit, two engines on one refused cron tick, a restart between the evaluation and the failure, a crash before the schedule decision commits); the budget of a child start and a continuation (T043-18 has the start and the triggered start); the cache counters of SC-043-004 as an integration test; the problem-shape assertions in `contract_rest_durable_execution`; the metric-label check of `integration_observability_operations`; the sentinel on rows 2, 3, 5 to 8, 10, 12 to 14 (T043-17 covers rows 1, 4, 9 and 11, the answers, logs, spans and audit rows, not the metrics text). | Phase 3. | Open |
+| G043-045 | The OpenAPI operations of the start routes, the schedule writes, trigger-now and the publication do not describe the design 043 refusals in their own text (D043-135). | The pinned baselines of features 016 and 035 would have to be renewed by their owners; the shared `Error` schema and `errors.md` carry the contract. | Open (owner) |
 
 ## 4. Owner questions
 

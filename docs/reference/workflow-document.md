@@ -12,7 +12,7 @@ Made from `specs/001-platform-foundation/contracts/workflow.schema.json`. A work
 | `bodies` | object |  |  |
 | `chainPolicy` | [`chainPolicy`](#chainPolicy) |  |  |
 | `entrypoint` | string (min length 1) | yes |  |
-| `inputSchema` | object |  |  |
+| `inputSchema` | object |  | The schema every run input of this version is checked against before the run is created (design 043, ADR-0090). It must stay within the supported subset of JSON Schema, with one meaning under $schema absent, draft-07 and 2020-12: type, properties, required, items (one schema), additionalProperties, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum (numbers), multipleOf (a positive integer), minLength, maxLength, minItems, maxItems, minProperties, maxProperties, pattern (an allowlisted syntax: no \d, \w, \s, \b, Unicode or POSIX classes, flags or named groups), allOf, anyOf, oneOf, a local $ref (no cycle, no sibling keyword but annotations), $defs, definitions, the annotations title, description, default, examples, $comment and format (never asserted), $schema and $id at the root only, and x-sagat-classification. Any other keyword makes the schema unusable: from 0.3.0 publication refuses it in enforce mode and every start of a stored version with it is refused RUN_INPUT_SCHEMA_UNUSABLE. The keyword list is specs/043-run-input-validation/contracts/errors.md and Technical Plan 4 of docs/designs/043-run-input-validation.md. |
 | `kind` | `"Workflow"` | yes |  |
 | `limits` | [`limits`](#limits) |  |  |
 | `metadata` | object | yes |  |
