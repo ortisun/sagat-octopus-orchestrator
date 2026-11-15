@@ -96,6 +96,10 @@ services:
     environment:
       <<: *owner-database-url
       SAGAT_ENV: ${SAGAT_ENV:-dev}
+      # The password of the role of the automatic handover (sagat_handover, ADR-0091): migrate creates and grants the role at
+      # every run and, given this, sets its login from a SCRAM verifier, only while the triggers are not handed over and the role
+      # was never retired. Empty: the role stays without a login and the job below exits 2 saying so.
+      SAGAT_HANDOVER_PASSWORD: ${SAGAT_HANDOVER_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -200,12 +204,38 @@ services:
       SAGAT_SCHEDULES_ENABLED: ${SAGAT_SCHEDULES_ENABLED:-true}
       SAGAT_BATCHES_ENABLED: ${SAGAT_BATCHES_ENABLED:-false}
       SAGAT_RESET_CANCEL_SOURCE_ENABLED: ${SAGAT_RESET_CANCEL_SOURCE_ENABLED:-false}
+      # Whether the job below runs: exported only, for the alert on a job that never writes (D2270).
+      SAGAT_SCHEDULES_AUTO_HANDOVER: ${SAGAT_SCHEDULES_AUTO_HANDOVER:-true}
     ports:
       - "127.0.0.1:${SAGAT_GRPC_PORT:-19000}:9000"
     depends_on:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+
+  # The automatic handover of the cron triggers (feature 018, ADR-0091): a one-shot job, after the control plane and the engines have
+  # started (they have no health check, G2247), that waits, bounded, until the database finds the fleet stable and converged and
+  # hands over as the role sagat_handover. Its URL carries no password: SAGAT_HANDOVER_PASSWORD is given apart (D2273), and without
+  # it the job exits 2. SAGAT_SCHEDULES_AUTO_HANDOVER=false makes it exit 0 at once (the handover is then the operator's:
+  # docs/runbooks/schedules.md, 6.2). Compose does not retry it; its run id is drawn when it starts. `docker compose up
+  # schedule-trigger-handover` runs it again.
+  schedule-trigger-handover:
+    <<: *control-plane
+    command: ["schedule-trigger-handover", "--auto", "--operator", "compose"]
+    environment:
+      DATABASE_URL: postgres://sagat_handover@postgres:5432/${POSTGRES_DB:-sagat}
+      SAGAT_HANDOVER_PASSWORD: ${SAGAT_HANDOVER_PASSWORD:-}
+      SAGAT_SCHEDULES_AUTO_HANDOVER: ${SAGAT_SCHEDULES_AUTO_HANDOVER:-true}
+      SAGAT_HANDOVER_RETIRE_ROLE: ${SAGAT_HANDOVER_RETIRE_ROLE:-false}
+      SAGAT_ENV: ${SAGAT_ENV:-dev}
+      SAGAT_LOG_FORMAT: ${SAGAT_LOG_FORMAT:-json}
+      SAGAT_DB_MAX_CONNECTIONS: "2"
+    depends_on:
+      control-plane:
+        condition: service_started
+      execution-engine:
+        condition: service_started
+    restart: "no"
 
   # The sandbox runner (profile `sandbox`, not started by default): it builds and runs scripts in
   # containers of their own, through the engine's socket. THE SOCKET IS ROOT ON THE HOST THAT OWNS

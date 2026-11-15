@@ -1,0 +1,131 @@
+{{- /*
+The automatic handover of the cron triggers (feature 018, ADR-0091 decision 1, D2251, D2263, D2268): a plain Job of the release, not a
+hook, so `helm upgrade` does not wait for it and the next upgrade or a rollback deletes the Job of the revision it leaves. It runs
+`control-plane schedule-trigger-handover --auto` as the role sagat_handover, which can make only the automatic handover. Nothing of it,
+nor any reference to its Secret, is rendered when schedules.autoHandover is off.
+*/ -}}
+{{- if eq (include "sagat.autoHandover.enabled" .) "true" }}
+{{- $ah := include "sagat.autoHandover.values" . | fromJson }}
+{{- $secret := required "schedules.autoHandover.databaseSecret is required while the automatic handover is on: a Secret with the keys DATABASE_URL (the role sagat_handover, without a password) and SAGAT_HANDOVER_PASSWORD (docs/runbooks/schedules.md, 6.1); or set schedules.autoHandover.enabled: false to keep the handover manual" $ah.databaseSecret }}
+{{- $ctx := dict "root" . "component" "schedule-trigger-handover" }}
+{{- $e := .Values.engine }}
+{{- $minLive := int $ah.minLive }}
+{{- if le $minLive 0 }}
+{{- $minLive = int $e.replicas }}
+{{- if $e.autoscaling.keda.enabled }}{{- $minLive = int $e.autoscaling.keda.minReplicaCount }}{{- end }}
+{{- if $e.autoscaling.hpa.enabled }}{{- $minLive = int $e.autoscaling.hpa.minReplicas }}{{- end }}
+{{- end }}
+{{- if lt $minLive 1 }}{{- $minLive = 1 }}{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "sagat.fullname" . }}-schedule-trigger-handover
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: schedule-trigger-handover
+# The job calls no Kubernetes API.
+automountServiceAccountToken: false
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "sagat.autoHandover.jobName" . }}
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+    app.kubernetes.io/component: schedule-trigger-handover
+spec:
+  backoffLimit: 2
+  # the job's own wait plus five minutes
+  activeDeadlineSeconds: {{ add (int $ah.waitSeconds) 300 }}
+  ttlSecondsAfterFinished: 3600
+  podFailurePolicy:
+    rules:
+      # a reason no wait cures: retrying it changes nothing
+      - action: FailJob
+        onExitCodes:
+          containerName: schedule-trigger-handover
+          operator: In
+          values: [2]
+      # a drain or a preemption does not use up the retries
+      - action: Ignore
+        onPodConditions:
+          - type: DisruptionTarget
+  template:
+    metadata:
+      labels:
+        {{- include "sagat.labels" . | nindent 8 }}
+        app.kubernetes.io/component: schedule-trigger-handover
+    spec:
+      serviceAccountName: {{ include "sagat.fullname" . }}-schedule-trigger-handover
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      # an activation already begun is bounded at 3 s and commits or rolls back within this
+      terminationGracePeriodSeconds: 30
+      securityContext: {runAsNonRoot: true, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: schedule-trigger-handover
+          image: {{ include "sagat.image" (dict "root" . "repository" .Values.image.controlPlane) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - schedule-trigger-handover
+            - --auto
+            - --operator
+            - {{ printf "helm-release-%s" .Release.Name | quote }}
+            - --stable
+            - {{ $ah.stable | int | toString | quote }}
+            - --horizon
+            - {{ printf "%ds" (int $ah.horizonSeconds) | quote }}
+            - --min-live
+            - {{ $minLive | toString | quote }}
+            - --wait
+            - {{ printf "%ds" (int $ah.waitSeconds) | quote }}
+            {{- if $ah.retireRole }}
+            - --retire-role
+            {{- end }}
+          env:
+            - {name: SAGAT_ENV, value: {{ .Values.environment | quote }}}
+            - {name: SAGAT_LOG_FORMAT, value: json}
+            - {name: SAGAT_DB_MAX_CONNECTIONS, value: "2"}
+            - {name: SAGAT_SCHEDULES_AUTO_HANDOVER, value: "true"}
+            # the UID of the Job: the same for a retried pod, new for every Job, the one `helm rollback` recreates included (D2263)
+            - name: SAGAT_HANDOVER_RUN_ID
+              valueFrom:
+                fieldRef: {fieldPath: "metadata.labels['batch.kubernetes.io/controller-uid']"}
+            # the role's URL without its password, and the password apart (D2273)
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: {{ $secret | quote }}, key: DATABASE_URL}
+            - name: SAGAT_HANDOVER_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ $secret | quote }}, key: SAGAT_HANDOVER_PASSWORD}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          {{- include "sagat.containerSecurity" . | nindent 10 }}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sagat.fullname" . }}-schedule-trigger-handover
+  labels:
+    {{- include "sagat.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "sagat.selector" $ctx | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+      to:
+        {{- toYaml .Values.networkPolicy.egress.dnsTo | nindent 8 }}
+    - ports: [{port: {{ .Values.networkPolicy.egress.postgres.port }}, protocol: TCP}]
+      to:
+        {{- toYaml .Values.networkPolicy.egress.postgres.to | nindent 8 }}
+{{- end }}
+{{- end }}
