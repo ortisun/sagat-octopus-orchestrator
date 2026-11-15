@@ -523,12 +523,14 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         {
             Ok(input) => input,
             Err(refusal) => {
-                if refusal.is_final()
-                    && let Some(existing) = self
-                        .replay_start_authorized(principal, info.workflow_id, &idempotency, ctx)
-                        .await?
+                // any refusal, a transient one too, first answers a run its key already holds, as a retry was answered
+                // before design 043 (D043-151)
+                if let Some(existing) = self
+                    .replay_start_authorized(principal, info.workflow_id, &idempotency, ctx)
+                    .await?
                 {
-                    // answered as any replay of a private start is (D043-141)
+                    // answered as any replay of a private start is (D043-141), and counted as the store path counts one
+                    metrics::counter!("database_executions_total", "origin" => origin.as_str(), "outcome" => "admitted").increment(1);
                     return self
                         .finish_start(
                             principal,
@@ -545,6 +547,7 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
                         .await
                         .map(|started| started.run);
                 }
+                metrics::counter!("database_executions_total", "origin" => origin.as_str(), "outcome" => "refused").increment(1);
                 return Err(refusal.into());
             }
         };

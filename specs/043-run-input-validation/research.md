@@ -617,6 +617,16 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   reading the diff: in the 035 fixture only the three digests it pins that changed (the bless would have added every
   later operation, which was not done), and the 016 digest with its comment. Closes G043-045.
 
+- **D043-150** (2026-11-15) Design 042 gives `sagat-application` `tokio` with `rt` alone, for one blocking parse of a blob
+  source (`collection_source.rs`). The runtime rule of D043-077 now allows exactly that (no default features, no feature
+  but `rt`) and also refuses any `tokio` in `run_input.rs` outside its tests, which is what D043-071 protects (G043-051).
+- **D043-151** (2026-11-15) Any refusal, a transient one too, first looks the key up: a retry with no room in the validator,
+  whose key holds a run, is answered with that run as before design 043 (re-review). Red first:
+  `a_retry_with_no_room_replays_the_run_its_key_holds` (503).
+- **D043-152** (2026-11-15) A recheck counts its refusal (`refused`, `schema_unusable`), and runs in the same
+  `run_input.check` span as a check. Red first: `a_refusing_recheck_is_counted`.
+- **D043-153** (2026-11-15) Each old CHECK is dropped in the `ALTER TABLE` that adds its `NOT VALID` successor (a
+  superset), and the second migration only validates; every later CHECK must be added `NOT VALID` (static test).
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
@@ -651,6 +661,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-045 | The OpenAPI operations of the start routes, the schedule writes, trigger-now and the publication do not describe the design 043 refusals in their own text (D043-135). | The pinned baselines of features 016 and 035 would have to be renewed by their owners; the shared `Error` schema and `errors.md` carry the contract. | Reopened and closed 2026-11-15 by OD-2026-11-15-3 (D043-149). |
 | G043-046 | `CONTINUATION_INPUT_INVALID` does not reach an SDK's run view: the SDK run and event views carry no run-level failure code, only the graph's node codes, so the conformance golden of `run-input-validation` shows the chain `FAILED` and the continuation node cancelled, while `CHILD_INPUT_INVALID` is shown on the parent's child node. | FR-043-015 is met for the child and not for the continuation; the run's stop code is in the journal (`run.stop_requested`) on the server. | Open |
 | G043-050 | Left after the review round of phase 2: integration tests of row 2 (an uploaded input), the batch `RERUN` item (`FAILED VALIDATION_FAILED`, deferred when there is no room), the synchronous reset and the pending reset left pending, and `RUN_INPUT_SCHEMA_UNUSABLE` on rows 3 to 5, 8 and 13 (on row 13 a schema outside the subset is refused at parse, `InvalidDefinition`); the D043-038 lookup (G043-043); the four fault tests (a crash between the delivery and the audit, two engines on one refused cron tick, a restart between the evaluation and the failure of a continuation, a crash before a schedule decision commits); the continuation statement budget; SC-043-004 through real starts (the counters are process-wide, so a parallel test binary cannot isolate them; the unit test of phase 1 stands); the sentinel on rows 2, 3, 5 to 8, 10, 12 to 14 and on the metrics text. | Not built in this round. | Open |
+| G043-051 | Designs 042 and 043 disagree on whether `sagat-application` may hold a runtime: 042 spawns a blocking task there for a blob source's array. D043-150 keeps both by allowing `tokio` with `rt` alone; moving the parse behind a port would restore the stricter rule. | For the owners of 042 and 043. | Open (owner) |
 
 ## 4. Owner questions
 

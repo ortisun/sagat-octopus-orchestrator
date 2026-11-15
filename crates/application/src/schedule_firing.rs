@@ -1027,10 +1027,7 @@ where
         // Design 043: the input is checked before the decision, so a refused action is never buffered or skipped; it is
         // acted on as `INPUT_INVALID`, and no room in the validator keeps the time owed (FR-043-006). A schedule with nothing
         // left to give is exhausted whatever its input (correctness review M2, D043-142): there is no action to check.
-        let exhausted = standing
-            .remaining
-            .is_some_and(|remaining| remaining.saturating_sub(standing.reserved) == 0);
-        let refusal = if exhausted {
+        let refusal = if standing.exhausted() {
             Ok(None)
         } else {
             self.input_refusal(&record, &principal, time, tick).await

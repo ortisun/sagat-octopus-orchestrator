@@ -1736,10 +1736,11 @@ where
         let input = match checked {
             Ok(input) => input,
             Err(refusal) => {
-                if refusal.is_final()
-                    && let Some(existing) = self
-                        .replay_start_authorized(principal, workflow.id(), &idempotency, ctx)
-                        .await?
+                // any refusal, a transient one too, first answers a run its key already holds, as a retry was answered
+                // before design 043 (D043-151)
+                if let Some(existing) = self
+                    .replay_start_authorized(principal, workflow.id(), &idempotency, ctx)
+                    .await?
                 {
                     // the request of the run its key holds is answered as any replay is (correctness review M1,
                     // D043-141): what a with-start delivered or applied, "already acted" for a schedule, "already

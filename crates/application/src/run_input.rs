@@ -493,15 +493,6 @@ impl RunInputGate {
     ///
     /// # Errors
     /// As [`Self::check`].
-    #[tracing::instrument(
-        name = "run_input.check",
-        skip_all,
-        fields(
-            sagat.run_input.creator = creator.as_str(),
-            sagat.run_input.outcome = tracing::field::Empty,
-            sagat.run_input.rule = tracing::field::Empty,
-        )
-    )]
     pub async fn check_schema(
         &self,
         tenant: TenantId,
@@ -542,6 +533,15 @@ impl RunInputGate {
         .await
     }
 
+    #[tracing::instrument(
+        name = "run_input.check",
+        skip_all,
+        fields(
+            sagat.run_input.creator = creator.as_str(),
+            sagat.run_input.outcome = tracing::field::Empty,
+            sagat.run_input.rule = tracing::field::Empty,
+        )
+    )]
     #[allow(clippy::too_many_arguments)]
     async fn checked(
         &self,
@@ -553,9 +553,12 @@ impl RunInputGate {
         policy: FieldPolicy,
         counted: bool,
     ) -> Result<CheckedRunInput, InputRefusal> {
+        // a recheck counts only what the check before it could not have counted: a refusal (D043-152)
         let count = |creator: Creator, outcome: &'static str| {
-            if counted {
+            if counted || matches!(outcome, "refused" | "schema_unusable") {
                 count(creator, outcome);
+            } else {
+                tracing::Span::current().record("sagat.run_input.outcome", outcome);
             }
         };
         let Some(schema) = schema else {
@@ -774,53 +777,6 @@ mod tests {
         }
     }
 
-    /// Review of phase 2 (D043-147): a schedule's action checked before its decision and checked again at its start is
-    /// one validation in `run_input_validations_total`, and the labels are the closed `creator` and `outcome` only.
-    #[test]
-    fn an_action_checked_before_its_decision_and_at_its_start_is_counted_once() {
-        use futures_util::FutureExt as _;
-
-        let counted = Arc::new(Counted::default());
-        let recorder = Recorder(Arc::clone(&counted));
-        let gate = RunInputGate::new(Arc::new(Scripted::default()), InputValidationMode::Enforce);
-        let definition_schema = schema();
-        metrics::with_local_recorder(&recorder, || {
-            let tenant = TenantId::generate();
-            let version = WorkflowVersionId::generate();
-            gate.check_schema(
-                tenant,
-                version,
-                Some(&definition_schema),
-                b"{}".to_vec(),
-                Creator::Schedule,
-                FieldPolicy::Show,
-            )
-            .now_or_never()
-            .unwrap()
-            .unwrap();
-            gate.checked(
-                tenant,
-                version,
-                Some(&definition_schema),
-                b"{}".to_vec(),
-                Creator::Schedule,
-                FieldPolicy::Show,
-                false,
-            )
-            .now_or_never()
-            .unwrap()
-            .unwrap();
-        });
-        let counts = counted.0.lock().unwrap().clone();
-        assert_eq!(
-            counts,
-            std::collections::BTreeMap::from([(
-                "run_input_validations_total{creator=schedule,outcome=accepted}".to_owned(),
-                1
-            )])
-        );
-    }
-
     fn schema() -> InputSchema {
         InputSchema::new(b"{\"type\":\"object\"}".to_vec(), [7; 32])
     }
@@ -851,6 +807,62 @@ mod tests {
             ],
             rule,
         })
+    }
+
+    /// Re-review item 2 (D043-152): a recheck that refuses (a version promoted after the check) is counted as a refusal,
+    /// so an action recorded `INPUT_INVALID` has its refusal in the metric beside the accepted check.
+    #[test]
+    fn a_refusing_recheck_is_counted() {
+        use futures_util::FutureExt as _;
+
+        let counted = Arc::new(Counted::default());
+        let recorder = Recorder(Arc::clone(&counted));
+        let gate = RunInputGate::new(
+            Arc::new(Scripted::answering([Ok(()), invalid(Rule::Required)])),
+            InputValidationMode::Enforce,
+        );
+        let definition_schema = schema();
+        metrics::with_local_recorder(&recorder, || {
+            let tenant = TenantId::generate();
+            let version = WorkflowVersionId::generate();
+            gate.check_schema(
+                tenant,
+                version,
+                Some(&definition_schema),
+                b"{}".to_vec(),
+                Creator::Schedule,
+                FieldPolicy::Show,
+            )
+            .now_or_never()
+            .unwrap()
+            .unwrap();
+            gate.checked(
+                tenant,
+                version,
+                Some(&definition_schema),
+                b"{}".to_vec(),
+                Creator::Schedule,
+                FieldPolicy::Show,
+                false,
+            )
+            .now_or_never()
+            .unwrap()
+            .unwrap_err();
+        });
+        let counts = counted.0.lock().unwrap().clone();
+        assert_eq!(
+            counts,
+            std::collections::BTreeMap::from([
+                (
+                    "run_input_validations_total{creator=schedule,outcome=accepted}".to_owned(),
+                    1
+                ),
+                (
+                    "run_input_validations_total{creator=schedule,outcome=refused}".to_owned(),
+                    1
+                ),
+            ])
+        );
     }
 
     #[tokio::test]

@@ -1036,6 +1036,18 @@ pub struct Standing {
     pub remaining: Option<u32>,
 }
 
+impl Standing {
+    /// Nothing is left to give: the remaining actions, if limited, are all kept by the actions that wait. `decide` answers
+    /// such a time `Exhausted`, and the firing does not check the input of an action it will not take (D043-142).
+    #[must_use]
+    pub const fn exhausted(&self) -> bool {
+        match self.remaining {
+            Some(remaining) => remaining.saturating_sub(self.reserved) == 0,
+            None => false,
+        }
+    }
+}
+
 /// What a due time becomes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
@@ -1075,9 +1087,7 @@ impl Decision {
 #[must_use]
 pub fn decide(policies: &Policies, standing: &Standing, ceilings: &Ceilings) -> Decision {
     let ceilings = ceilings.clamped();
-    if let Some(remaining) = standing.remaining
-        && remaining.saturating_sub(standing.reserved) == 0
-    {
+    if standing.exhausted() {
         return Decision::Exhausted;
     }
     let idle = standing.open_runs == 0 && standing.buffered == 0;

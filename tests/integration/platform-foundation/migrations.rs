@@ -204,9 +204,9 @@ fn every_forward_migration_has_a_rollback() {
     );
 }
 
-/// Design 043 (review of phase 2, D043-145): a constraint added `NOT VALID` is validated in a migration of its own. Each
-/// migration runs in one transaction, so validating in the one that added it would hold the `ACCESS EXCLUSIVE` lock of
-/// the `ADD` while the table is scanned. Applies from the migration of design 043 on; the older ones are immutable.
+/// Design 043 (D043-145, D043-153): from the migration of design 043 on, every CHECK is added `NOT VALID`, and none is
+/// validated in the migration that added it: each migration runs in one transaction, so validating there would scan the
+/// table under the `ACCESS EXCLUSIVE` lock of the `ADD`. The older migrations are immutable and not read.
 #[test]
 fn a_constraint_added_not_valid_is_validated_by_a_later_migration() {
     const FROM: i64 = 20_270_118_000_000;
@@ -224,6 +224,18 @@ fn a_constraint_added_not_valid_is_validated_by_a_later_migration() {
                 statement.contains("NOT VALID").then_some(name)
             })
             .collect();
+        for check in sql.split("ADD CONSTRAINT").skip(1) {
+            let statement = check.split(';').next().unwrap_or_default();
+            if statement.contains(" CHECK ") || statement.contains(" CHECK(") {
+                let tail = statement.split("\n    DROP").next().unwrap_or(statement);
+                assert!(
+                    tail.contains("NOT VALID"),
+                    "{}: a CHECK added without NOT VALID scans its table under the lock of the ADD: {}",
+                    migration.version,
+                    tail.lines().next().unwrap_or_default()
+                );
+            }
+        }
         for name in added {
             assert!(
                 !sql.contains(&format!("VALIDATE CONSTRAINT {name}")),

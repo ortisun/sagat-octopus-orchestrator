@@ -753,11 +753,27 @@ async fn a_trigger_now_refused_at_its_start_answers_422_and_records_nothing() {
         )
         .await
         .expect_err("refused");
-    assert!(
-        matches!(refused, AppError::InvalidRunInput { .. }),
-        "{refused:?}"
+    assert_eq!(
+        refused,
+        AppError::InvalidRunInput {
+            reason: "SCHEDULE_INPUT_INVALID",
+            field: Some("/".to_owned()),
+            rule: Some("other"),
+        },
+        "D043-144"
     );
     assert!(f.outcomes(&schedule).await.is_empty(), "nothing recorded");
+    let triggered: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE action = 'schedule.triggered' AND resource_id = $1",
+    )
+    .bind(schedule.id.to_string())
+    .fetch_one(&f.w.db.pool)
+    .await
+    .expect("audits");
+    assert_eq!(
+        triggered, 0,
+        "no trigger-now is audited for a request that did nothing"
+    );
 }
 
 /// Row 8 where the decision would buffer: an open run and `BUFFER_ONE`; the check comes first, so trigger-now answers
@@ -935,4 +951,119 @@ async fn row_6_no_room_keeps_the_time_owed_and_the_budget_is_final() {
         outcomes_of(&[("INPUT_INVALID", 1)])
     );
     assert!(f.runs(&schedule).await.is_empty());
+}
+
+/// Counts the counters of one test thread by name and labels.
+#[derive(Default)]
+struct Counted(std::sync::Mutex<std::collections::BTreeMap<String, u64>>);
+
+struct One(String, std::sync::Arc<Counted>);
+
+impl metrics::CounterFn for One {
+    fn increment(&self, value: u64) {
+        *self
+            .1
+            .0
+            .lock()
+            .expect("counts")
+            .entry(self.0.clone())
+            .or_default() += value;
+    }
+    fn absolute(&self, _: u64) {}
+}
+
+struct Recorder(std::sync::Arc<Counted>);
+
+impl metrics::Recorder for Recorder {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        let labels: Vec<String> = key
+            .labels()
+            .map(|l| format!("{}={}", l.key(), l.value()))
+            .collect();
+        metrics::Counter::from_arc(std::sync::Arc::new(One(
+            format!("{}{{{}}}", key.name(), labels.join(",")),
+            std::sync::Arc::clone(&self.0),
+        )))
+    }
+    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        metrics::Gauge::noop()
+    }
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        metrics::Histogram::noop()
+    }
+}
+
+/// Re-review items 1 and 3 (D043-147): one scheduled action of a version with an `inputSchema` is one validation in
+/// `run_input_validations_total{creator=schedule}`, though it is checked before its decision and again at its start; both
+/// checks run in a `run_input.check` span that records its outcome.
+#[tokio::test]
+async fn one_scheduled_action_is_one_validation_in_two_spans() {
+    let f = fixture().await;
+    let mut checked = flow("row-6-counted");
+    checked["inputSchema"] = json!({"type": "object"});
+    let (workflow, _) = f.w.publish(checked).await;
+    let schedule = f
+        .create(
+            "row-6-counted",
+            &hourly(),
+            &json!({}),
+            Some(target(workflow)),
+        )
+        .await;
+    f.clock.advance(Duration::hours(1) + Duration::seconds(1));
+    let counted = std::sync::Arc::new(Counted::default());
+    let recorder = Recorder(std::sync::Arc::clone(&counted));
+    let (_spans_guard, spans) = crate::support::logs::capture_with_spans(tracing::Level::TRACE);
+    {
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        assert_eq!(f.fire(&schedule).await, Fired::Acted);
+    }
+    assert_eq!(f.outcomes(&schedule).await, outcomes_of(&[("STARTED", 1)]));
+    let counts = counted.0.lock().expect("counts").clone();
+    let schedule_validations: u64 = counts
+        .iter()
+        .filter(|(name, _)| name.starts_with("run_input_validations_total{creator=schedule,"))
+        .map(|(_, n)| n)
+        .sum();
+    assert_eq!(schedule_validations, 1, "{counts:?}");
+    let text = spans.text();
+    assert!(
+        text.matches("run_input.check").count() >= 2
+            && text.contains("sagat.run_input.outcome=\"accepted\"")
+            || text.contains("sagat.run_input.outcome=accepted"),
+        "{text}"
+    );
+    let spans_with_outcome = text
+        .lines()
+        .filter(|line| line.contains("run_input.check") && line.contains("sagat.run_input.outcome"))
+        .count();
+    assert!(
+        spans_with_outcome >= 2,
+        "both checks record their outcome in their span: {text}"
+    );
 }

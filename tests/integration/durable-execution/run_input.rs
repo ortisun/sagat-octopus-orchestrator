@@ -329,3 +329,56 @@ async fn the_store_refuses_an_input_checked_against_another_version() {
     );
     assert_eq!(runs_of(&w, workflow).await, 1);
 }
+
+/// Re-review item 4 (D043-151): a retry refused because the validator had no room, whose key already holds a run, is
+/// answered with that run, as it was before design 043. The pool's one permit is held by the test (no sleep).
+#[tokio::test]
+async fn a_retry_with_no_room_replays_the_run_its_key_holds() {
+    use sagat_infra_schema::run_input::permits::Permits;
+
+    let w = world().await;
+    let (workflow, _) = w
+        .publish(with_schema(flow("replay-busy"), order_schema()))
+        .await;
+    let key = key();
+    let input = serde_json::to_vec(&json!({"orderId": "o-1"})).expect("json");
+    let request = StartRun {
+        namespace: "payments",
+        workflow,
+        version: None,
+        input: &input,
+        correlation_id: None,
+        deadline: None,
+        key: &key,
+    };
+    let first = w
+        .runs
+        .start(&w.admin, &request, &ctx())
+        .await
+        .expect("started");
+    let validator = Arc::new(RunInputValidator::with_permits(Permits::new(
+        1,
+        std::time::Duration::from_millis(20),
+    )));
+    let held = validator
+        .permits()
+        .acquire(w.admin.tenant_id())
+        .await
+        .expect("the only permit");
+    let saturated = RunService::new(
+        w.store.clone(),
+        SystemClock,
+        Engine::new(JsonEvaluator),
+        w.cache.clone(),
+    )
+    .with_run_inputs(Arc::new(RunInputGate::new(
+        validator.clone(),
+        InputValidationMode::Enforce,
+    )));
+    let again = saturated
+        .start(&w.admin, &request, &ctx())
+        .await
+        .expect("the run of the key, not a 503");
+    assert_eq!(again.info.run_id, first.info.run_id);
+    drop(held);
+}
