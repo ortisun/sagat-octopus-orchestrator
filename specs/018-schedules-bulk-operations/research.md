@@ -2048,3 +2048,4 @@ paragraphs below are kept as the question that was put.
   (D2252), which can record `schedules-v1` and nothing else; (b) the hook and the owner's credential as decided, with a `helm
   upgrade --timeout` longer than the wait and the owner Secret deleted after. **Recommended: (a).** ADR-0091 and T018-082 to
   T018-087 are written for (a).
+  **Answered 2026-11-14 (OD-2026-11-14-12): "Aceitar as duas"**: the plain Job per revision and the `sagat_handover` role, as D2251 and D2252 describe.
