@@ -729,7 +729,6 @@ pub fn descriptor_json(descriptor: &BlobDescriptor) -> Vec<u8> {
 }
 
 /// A body made of chunks that are already in memory (tests, small payloads).
-#[must_use]
 pub fn byte_stream(chunks: Vec<Result<Bytes, BlobIoError>>) -> ByteStream {
     Box::pin(Chunks(chunks.into_iter()))
 }
