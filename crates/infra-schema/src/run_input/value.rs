@@ -51,13 +51,43 @@ impl Num {
     pub(super) fn is_multiple_of(self, divisor: u64) -> bool {
         match self {
             Self::Int(value) => value % i128::from(divisor) == 0,
-            // An integral `f64` and an integral divisor below 2^53: `%` on them is exact in IEEE 754.
-            #[allow(clippy::cast_precision_loss)]
+            // An integral `f64` is `mantissa × 2^exponent`: its remainder is `(mantissa mod d) × (2^exponent mod d) mod
+            // d`, exact, and in steps logarithmic in the exponent. IEEE `%` is exact too, but loops over the exponent's bits
+            // (1.2 µs for 2^996 by 3 on the development machine), D043-108.
             Self::Float(value) => {
-                value.is_finite() && value.fract() == 0.0 && value % (divisor as f64) == 0.0
+                value.is_finite() && value.fract() == 0.0 && float_remainder(value, divisor) == 0
             }
         }
     }
+}
+
+/// The remainder of the integral, finite `value` by `divisor`, exactly.
+fn float_remainder(value: f64, divisor: u64) -> u64 {
+    let bits = value.abs().to_bits();
+    let biased = (bits >> 52) & 0x7ff;
+    let fraction = bits & ((1 << 52) - 1);
+    if biased == 0 {
+        // zero or a subnormal, and an integral subnormal is zero
+        return 0;
+    }
+    let mantissa = u128::from(fraction | (1 << 52));
+    let exponent = i64::try_from(biased).unwrap_or(0) - 1075;
+    let d = u128::from(divisor);
+    if exponent < 0 {
+        // below 2^53: the value is the mantissa shifted right by bits that are all zero (it is integral)
+        return u64::try_from((mantissa >> exponent.unsigned_abs()) % d).unwrap_or(1);
+    }
+    let mut power = 1u128 % d;
+    let mut base = 2u128 % d;
+    let mut rest = exponent.unsigned_abs();
+    while rest > 0 {
+        if rest & 1 == 1 {
+            power = power * base % d;
+        }
+        base = base * base % d;
+        rest >>= 1;
+    }
+    u64::try_from(mantissa % d * power % d).unwrap_or(1)
 }
 
 /// The order of an integer and a float, exactly: the float's integral part is compared as an integer, and its
@@ -98,28 +128,83 @@ pub(super) fn size(value: &Value) -> u64 {
     size_capped(value, u64::MAX)
 }
 
-/// [`size`], but the walk stops once it has counted `cap`, so measuring costs at most `cap` steps.
-pub(super) fn size_capped(value: &Value, cap: u64) -> u64 {
-    let mut total: u64 = 0;
+/// What a value keeps on the heap, estimated (D043-105): a `Value` per element and per member, the bytes of every string
+/// and key with an allocation's overhead, and a map node's share per member.
+pub(super) fn heap(value: &Value) -> usize {
+    const ALLOCATION: usize = 16;
+    const MAP_MEMBER: usize = 32;
+    let mut total = 0usize;
     let mut pending: Vec<&Value> = vec![value];
     while let Some(next) = pending.pop() {
+        match next {
+            Value::String(text) => total = total.saturating_add(text.len() + ALLOCATION),
+            Value::Array(items) => {
+                total =
+                    total.saturating_add(items.len() * std::mem::size_of::<Value>() + ALLOCATION);
+                pending.extend(items.iter());
+            }
+            Value::Object(members) => {
+                for (key, member) in members {
+                    total = total.saturating_add(
+                        key.len() + ALLOCATION + MAP_MEMBER + std::mem::size_of::<Value>(),
+                    );
+                    pending.push(member);
+                }
+            }
+            _ => {}
+        }
+    }
+    total
+}
+
+/// [`size`], but the walk stops once it has counted `cap`, so measuring costs at most `cap` steps. Also answers the steps
+/// the walk took (every value pushed or popped), which the validator counts as its primitive operations.
+pub(super) fn size_capped(value: &Value, cap: u64) -> u64 {
+    size_counted(value, cap).0
+}
+
+/// [`size_capped`] with the steps it took. Every value waiting on the stack will count at least one when it is popped,
+/// so the walk stops before a push that would bring what is counted and what waits to the cap (D043-100): measuring a
+/// long array against a small member pushes no more than the member's size.
+pub(super) fn size_counted(value: &Value, cap: u64) -> (u64, u64) {
+    let mut total: u64 = 0;
+    let mut steps: u64 = 0;
+    let mut pending: Vec<&Value> = vec![value];
+    let reached = |total: u64, pending: usize| total.saturating_add(pending as u64) >= cap;
+    while let Some(next) = pending.pop() {
+        steps += 1;
         total = total.saturating_add(1);
+        if total >= cap {
+            return (cap, steps);
+        }
         match next {
             Value::String(text) => total = total.saturating_add(text.len() as u64),
-            Value::Array(items) => pending.extend(items.iter()),
+            Value::Array(items) => {
+                for item in items {
+                    if reached(total, pending.len()) {
+                        return (cap, steps);
+                    }
+                    steps += 1;
+                    pending.push(item);
+                }
+            }
             Value::Object(members) => {
                 for (key, member) in members {
                     total = total.saturating_add(key.len() as u64);
+                    if reached(total, pending.len()) {
+                        return (cap, steps);
+                    }
+                    steps += 1;
                     pending.push(member);
                 }
             }
             _ => {}
         }
         if total >= cap {
-            return cap;
+            return (cap, steps);
         }
     }
-    total
+    (total, steps)
 }
 
 /// Whether two values are equal as JSON Schema defines it: numbers by value, everything else structurally. Each
@@ -178,5 +263,26 @@ mod tests {
         assert!(num("12").is_multiple_of(3) && !num("13").is_multiple_of(3));
         assert!(num("-12").is_multiple_of(4) && num("1e20").is_multiple_of(5));
         assert!(!num("7.5").is_multiple_of(1));
+        // the exact remainder agrees with IEEE `%`, which is exact, over large and small integral floats
+        for value in [
+            2f64.powi(996),
+            3.0 * 2f64.powi(990),
+            1e300,
+            3e300,
+            1e17,
+            6.0e18,
+            12.0,
+            4_503_599_627_370_497.0,
+        ] {
+            for divisor in [1u64, 2, 3, 7, 10, 1_000_003, 1 << 53] {
+                #[allow(clippy::cast_precision_loss)]
+                let ieee = value % (divisor as f64) == 0.0;
+                assert_eq!(
+                    Num::Float(value).is_multiple_of(divisor),
+                    ieee,
+                    "{value:e} by {divisor}"
+                );
+            }
+        }
     }
 }

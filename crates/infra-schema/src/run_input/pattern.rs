@@ -28,6 +28,8 @@ const MAX_PATTERN_NESTING: u32 = 64;
 pub(super) const HYBRID_CACHE_BYTES: usize = 64 * 1024;
 /// How many threads may match one pattern at once besides its owner: the regex keeps a cache for each (D043-064).
 const CONCURRENT_MATCHERS: usize = 4;
+// A pattern is matched only under a permit of the gate, so the caches its weight counts cover every matcher (D043-107).
+const _: () = assert!(super::RUN_INPUT_PERMITS <= 1 + CONCURRENT_MATCHERS);
 /// What `.` means in ECMA-262: any character but the four line terminators.
 const ECMA_DOT: &str = r"[^\n\r\x{2028}\x{2029}]";
 

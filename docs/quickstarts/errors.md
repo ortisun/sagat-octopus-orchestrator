@@ -356,6 +356,15 @@ A pattern of the inputSchema is outside the supported syntax (no \d, \w, \s, \b,
 
 The inputSchema is larger than 64 KiB. Move what repeats into $defs and refer to it, or check less of the input here.
 
+At publication a schema over 64 KiB, or nested deeper than 32, is answered `CLASSIFICATION_TOO_COMPLEX` instead: the
+classification bound of feature 016 reads every carrier first (G043-020, D043-112). The schema is refused either way;
+`INPUT_SCHEMA_TOO_LARGE` and `INPUT_SCHEMA_TOO_DEEP` are what the start gate and `control-plane input-schema-inventory`
+answer for a version already stored.
+
+### INPUT_SCHEMA_NAME_TOO_LONG
+
+A name under properties or required of the inputSchema is longer than 1 KiB. Use a shorter property name; a lookup compares names, and a long one costs every input that has it.
+
 ### INPUT_SCHEMA_TOO_DEEP
 
 The inputSchema nests deeper than 32 or applies schemas through more than 128 levels of $ref and combinators. Flatten it: refer to $defs instead of nesting, and shorten chains of references.

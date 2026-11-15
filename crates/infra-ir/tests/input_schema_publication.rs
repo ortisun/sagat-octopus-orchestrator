@@ -91,6 +91,11 @@ fn every_issue_has_its_closed_code_and_an_unannotated_schema_is_checked_too() {
         // `CLASSIFICATION_TOO_COMPLEX`; the validator's own `INPUT_SCHEMA_TOO_LARGE` is tested in infra-schema)
         (chain(128), "INPUT_SCHEMA_TOO_DEEP", "/inputSchema"),
         (
+            json!({"required": ["n".repeat(1_025)]}),
+            "INPUT_SCHEMA_NAME_TOO_LONG",
+            "/inputSchema/required/0",
+        ),
+        (
             json!({"multipleOf": 0.5}),
             "INPUT_SCHEMA_KEYWORD_UNSUPPORTED",
             "/inputSchema/multipleOf",

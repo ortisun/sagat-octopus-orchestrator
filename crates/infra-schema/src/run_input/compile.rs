@@ -14,7 +14,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::pattern::{self, Pattern};
-use super::value::{Num, size};
+use super::value::{Num, heap, size};
 use super::vocabulary::{self, Position};
 use super::{
     InputSchemaIssue, MAX_APPLICATION_PATH, MAX_PATTERN_PROGRAMS_BYTES, MAX_PATTERNS,
@@ -65,6 +65,8 @@ pub(super) struct Node {
     pub(super) required: Vec<Arc<str>>,
     /// Sorted by name, for a binary search.
     pub(super) properties: Vec<(Arc<str>, usize)>,
+    /// The length of the longest name of `properties`: what one comparison of a lookup can cost.
+    pub(super) longest_property: usize,
     pub(super) additional: Option<usize>,
     pub(super) all_of: Vec<usize>,
     pub(super) any_of: Vec<usize>,
@@ -72,6 +74,30 @@ pub(super) struct Node {
 }
 
 impl Node {
+    /// What the node keeps beyond its own size: its literals, its names and its lists (D043-105).
+    fn heap(&self) -> usize {
+        let literal = |literal: &Literal| std::mem::size_of::<Literal>() + heap(&literal.value);
+        let name = |name: &Arc<str>| name.len() + 16;
+        self.enumeration
+            .iter()
+            .flatten()
+            .map(literal)
+            .sum::<usize>()
+            + self.constant.iter().map(literal).sum::<usize>()
+            + self
+                .required
+                .iter()
+                .map(|n| name(n) + std::mem::size_of::<Arc<str>>())
+                .sum::<usize>()
+            + self
+                .properties
+                .iter()
+                .map(|(n, _)| name(n) + std::mem::size_of::<(Arc<str>, usize)>())
+                .sum::<usize>()
+            + (self.all_of.len() + self.any_of.len() + self.one_of.len())
+                * std::mem::size_of::<usize>()
+    }
+
     /// The nodes this one applies to the same or a child instance: its application edges.
     fn edges(&self) -> impl Iterator<Item = usize> + '_ {
         self.reference
@@ -136,7 +162,8 @@ impl CompiledInputSchema {
         let mut programs = 0usize;
         let mut weight = schema_bytes
             .saturating_mul(8)
-            .saturating_add(nodes.len().saturating_mul(std::mem::size_of::<Node>()));
+            .saturating_add(nodes.len().saturating_mul(std::mem::size_of::<Node>()))
+            .saturating_add(nodes.iter().map(Node::heap).sum::<usize>());
         for (count, (at, source)) in sources.into_iter().enumerate() {
             let pointer = format!("{}/pattern", positions[at].pointer);
             let refused =
@@ -178,6 +205,12 @@ impl CompiledInputSchema {
     #[must_use]
     pub const fn lower_bound(&self) -> u64 {
         self.bound
+    }
+
+    /// The NFA states of the first `pattern` of the schema, if it has one: what a match of it is charged per byte.
+    #[must_use]
+    pub fn pattern_states(&self) -> Option<u64> {
+        self.patterns.first().map(|pattern| pattern.states)
     }
 
     /// The estimated bytes this compiled schema keeps, its patterns' runtime caches included (D043-064).
@@ -303,6 +336,12 @@ fn node<'a>(
                 }
                 // The map is sorted by key already; sort again so nothing depends on the map type.
                 node.properties.sort_by(|a, b| a.0.cmp(&b.0));
+                node.longest_property = node
+                    .properties
+                    .iter()
+                    .map(|(name, _)| name.len())
+                    .max()
+                    .unwrap_or(0);
             }
             "items" => node.items = Some(child("items", "")?),
             "additionalProperties" => node.additional = Some(child("additionalProperties", "")?),
@@ -388,8 +427,9 @@ fn search(nodes: &[Node], positions: &[Position<'_>]) -> Result<(usize, u64), Un
 }
 
 /// What every input the node accepts pays there, at least (D043-069): the application, the target of its `$ref`, one
-/// unit per `type` name and per `enum` member, one for `const`, every `allOf` and `oneOf` branch, the cheapest `anyOf`
-/// branch. Every sum saturates. A refused input may stop earlier, at its first violation; an accepted one cannot.
+/// unit per `type` name and per `enum` member, one for `const`, every `allOf` branch, the cheapest `anyOf` branch, and the
+/// cheapest `oneOf` branch with two units for each of its others. Every sum saturates. A refused input may stop earlier,
+/// at its first violation; an accepted one cannot.
 fn lower_bound(node: &Node, bound: &[u64]) -> u64 {
     let mut total: u64 = 1;
     if let Some(target) = node.reference {
@@ -404,8 +444,17 @@ fn lower_bound(node: &Node, bound: &[u64]) -> u64 {
     if node.constant.is_some() {
         total = total.saturating_add(1);
     }
-    for branch in node.all_of.iter().chain(&node.one_of) {
+    for branch in &node.all_of {
         total = total.saturating_add(1).saturating_add(bound[*branch]);
+    }
+    // `oneOf` evaluates every branch, but all of them but the one that passes can fail at their first keyword: the
+    // cheapest branch whole, and two units (its branch and its application) for each of the others (D043-101).
+    if let Some(cheapest) = node.one_of.iter().map(|branch| bound[*branch]).min() {
+        let others = (node.one_of.len() as u64 - 1).saturating_mul(2);
+        total = total
+            .saturating_add(1)
+            .saturating_add(cheapest)
+            .saturating_add(others);
     }
     if let Some(cheapest) = node.any_of.iter().map(|branch| bound[*branch]).min() {
         total = total.saturating_add(1).saturating_add(cheapest);

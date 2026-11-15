@@ -60,6 +60,16 @@ pub(crate) struct CacheMetrics {
 
 pub(crate) type Outcome<V, E> = Result<Arc<V>, E>;
 
+/// The share of one cache a single owner may hold (D043-105): its owner (a tenant) read from the key, and the entries
+/// and estimated bytes it may keep. An entry heavier than the share is compiled for its call and not kept; a new entry
+/// of an owner at its share evicts that owner's own oldest, never another's.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Share<K> {
+    pub(crate) owner: fn(&K) -> u128,
+    pub(crate) entries: usize,
+    pub(crate) bytes: usize,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheStats {
     pub hits: u64,
@@ -204,6 +214,7 @@ pub(crate) struct Cache<K, V, E> {
     inflight: Mutex<HashMap<K, Arc<Flight<V, E>>>>,
     permits: Permits,
     limits: Limits,
+    share: Option<Share<K>>,
     metrics: CacheMetrics,
     /// What the followers of a compile that panicked are told (it is not remembered).
     panicked: E,
@@ -251,12 +262,26 @@ impl<K: Eq + Hash + Clone, V: Weighed, E: Clone> Cache<K, V, E> {
                 freed: Condvar::new(),
             },
             limits,
+            share: None,
             metrics,
             panicked,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             evictions: AtomicU64::new(0),
         }
+    }
+
+    /// What the followers of a compile that panicked are answered.
+    #[cfg(test)]
+    pub(crate) fn panicked_outcome(&self) -> E {
+        self.panicked.clone()
+    }
+
+    /// The cache with a share per owner.
+    #[must_use]
+    pub(crate) const fn with_share(mut self, share: Share<K>) -> Self {
+        self.share = Some(share);
+        self
     }
 
     pub(crate) fn stats(&self) -> CacheStats {
@@ -341,6 +366,40 @@ impl<K: Eq + Hash + Clone, V: Weighed, E: Clone> Cache<K, V, E> {
                     return;
                 }
                 let weight = compiled.weight();
+                if let Some(share) = &self.share {
+                    if weight > share.bytes {
+                        return;
+                    }
+                    let owner = (share.owner)(key);
+                    loop {
+                        let (count, held) = state
+                            .order
+                            .iter()
+                            .filter(|held| (share.owner)(held) == owner)
+                            .filter_map(|held| state.entries.get(held))
+                            .fold((0usize, 0usize), |(count, held), entry| {
+                                (count + 1, held.saturating_add(entry.weight()))
+                            });
+                        if count < share.entries && held.saturating_add(weight) <= share.bytes {
+                            break;
+                        }
+                        let Some(at) = state
+                            .order
+                            .iter()
+                            .position(|held| (share.owner)(held) == owner)
+                        else {
+                            break;
+                        };
+                        if let Some(oldest) = state.order.remove(at)
+                            && let Some(removed) = state.entries.remove(&oldest)
+                        {
+                            state.weight = state.weight.saturating_sub(removed.weight());
+                            self.evictions.fetch_add(1, Ordering::Relaxed);
+                            metrics::counter!(self.metrics.name, self.metrics.label => self.metrics.evict)
+                                .increment(1);
+                        }
+                    }
+                }
                 while state.entries.len() >= self.limits.entries
                     || state.weight.saturating_add(weight) > self.limits.bytes
                 {

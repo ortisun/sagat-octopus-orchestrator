@@ -32,7 +32,7 @@ use sagat_domain::workflow::InputSchema;
 pub use sagat_domain::workflow::InputSchemaIssue;
 
 use crate::classification::CacheStats;
-use crate::classification::cache::{Cache, CacheMetrics, Limits as CacheLimits, Weighed};
+use crate::classification::cache::{Cache, CacheMetrics, Limits as CacheLimits, Share, Weighed};
 
 pub use compile::CompiledInputSchema;
 pub use counter::{Counters, Limits};
@@ -49,6 +49,8 @@ pub const MAX_INPUT_SCHEMA_BYTES: usize = 64 * 1024;
 pub const MAX_INPUT_SCHEMA_DEPTH: usize = 32;
 /// The longest application path from the root, in schema nodes.
 pub const MAX_APPLICATION_PATH: usize = 128;
+/// The longest name of `properties` or `required`, in bytes: a lookup compares names, and is charged by their length.
+pub const MAX_NAME_BYTES: usize = 1024;
 /// The deepest an input may nest before it is refused with `maxDepth`.
 pub const MAX_INPUT_DEPTH: usize = 64;
 /// The most `pattern`s one schema may hold.
@@ -63,6 +65,11 @@ pub const MAX_PATTERN_PROGRAMS_BYTES: usize = 256 * 1024;
 pub const MAX_COMPILED_INPUT_SCHEMAS: usize = 256;
 /// Estimated bytes the compiled schemas of a process keep.
 pub const MAX_COMPILED_INPUT_SCHEMA_BYTES: usize = 64 * 1024 * 1024;
+/// One tenant holds at most this fraction of the compiled schemas, by count and by weight (D043-105).
+pub const TENANT_SHARE: usize = 4;
+/// Validations that run at once in a process: the permits of the gate (T043-3 builds them on this constant). The runtime
+/// caches of a pattern are sized for this many matchers, which a compile-time assertion of `pattern.rs` holds (D043-107).
+pub const RUN_INPUT_PERMITS: usize = 4;
 /// Unusable schemas a process remembers.
 pub const MAX_REMEMBERED_UNUSABLE_SCHEMAS: usize = 1_024;
 
@@ -82,7 +89,7 @@ impl Unusable {
         Self {
             issue,
             keyword: keyword.chars().take(64).collect(),
-            at: at.to_owned(),
+            at: truncated(at, MAX_POINTER_CHARS),
         }
     }
 }
@@ -95,6 +102,18 @@ impl std::fmt::Display for Unusable {
         }
         Ok(())
     }
+}
+
+/// The most characters of a pointer an [`Unusable`] keeps; a longer one ends in `…` (D043-104).
+pub const MAX_POINTER_CHARS: usize = 512;
+
+fn truncated(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(limit - 1).collect();
+    out.push('…');
+    out
 }
 
 /// The keyword that failed, from a closed set (D043-049): what a refusal says beside its pointer.
@@ -197,6 +216,8 @@ pub enum SchemaRefusal {
     WorkLimit,
     /// The backstop stopped it: transient, never remembered.
     Backstop,
+    /// The compile it waited for panicked: transient, never remembered (D043-106).
+    Interrupted,
 }
 
 /// The pre-check of design 043 on the canonical bytes of an `inputSchema`, as publication, `sagat validate` and the
@@ -224,7 +245,16 @@ struct Key {
 
 /// The compiled schemas of one process, by tenant and digest (T043-2, SC-043-004).
 pub struct InputSchemas {
-    cache: Cache<Key, CompiledInputSchema, Unusable>,
+    cache: Cache<Key, CompiledInputSchema, CompileFailure>,
+}
+
+/// Why no compiled schema was answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompileFailure {
+    /// The schema is outside the subset: final, remembered per key.
+    Unusable(Unusable),
+    /// The compile that this call waited for panicked: transient, never remembered (D043-106).
+    Interrupted,
 }
 
 impl Default for InputSchemas {
@@ -244,8 +274,13 @@ impl Default for InputSchemas {
                     evict: "evicted",
                     failure_hit: "failure_remembered",
                 },
-                Unusable::new(InputSchemaIssue::KeywordUnsupported, "", ""),
-            ),
+                CompileFailure::Interrupted,
+            )
+            .with_share(Share {
+                owner: |key: &Key| key.tenant.as_uuid().as_u128(),
+                entries: MAX_COMPILED_INPUT_SCHEMAS / TENANT_SHARE,
+                bytes: MAX_COMPILED_INPUT_SCHEMA_BYTES / TENANT_SHARE,
+            }),
         }
     }
 }
@@ -269,20 +304,21 @@ impl InputSchemas {
         tenant: TenantId,
         schema: &InputSchema,
         shared: bool,
-    ) -> Result<Arc<CompiledInputSchema>, Unusable> {
+    ) -> Result<Arc<CompiledInputSchema>, CompileFailure> {
+        let compile = || {
+            CompiledInputSchema::compile(schema.bytes())
+                .map(Arc::new)
+                .map_err(CompileFailure::Unusable)
+        };
         if !shared {
             metrics::counter!("run_input_schema_cache_total", "result" => "unshared").increment(1);
-            return CompiledInputSchema::compile(schema.bytes()).map(Arc::new);
+            return compile();
         }
         let key = Key {
             tenant,
             digest: *schema.digest(),
         };
-        self.cache.get_or_compile(
-            &key,
-            || {},
-            || CompiledInputSchema::compile(schema.bytes()).map(Arc::new),
-        )
+        self.cache.get_or_compile(&key, || {}, compile)
     }
 
     /// Checks `input` against `schema` for `tenant`.
@@ -298,7 +334,10 @@ impl InputSchemas {
     ) -> Result<(), SchemaRefusal> {
         let compiled = self
             .compiled(tenant, schema, shared)
-            .map_err(SchemaRefusal::Unusable)?;
+            .map_err(|failure| match failure {
+                CompileFailure::Unusable(unusable) => SchemaRefusal::Unusable(unusable),
+                CompileFailure::Interrupted => SchemaRefusal::Interrupted,
+            })?;
         compiled.validate(input)
     }
 
@@ -306,5 +345,33 @@ impl InputSchemas {
     #[must_use]
     pub fn cache_stats(&self) -> CacheStats {
         self.cache.stats()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// A compile that panics leaves its waiting callers a transient outcome, never a final `Unusable`, and nothing is
+    /// remembered for the key (D043-106).
+    #[test]
+    fn a_compile_that_panics_is_transient_for_those_who_waited() {
+        let schemas = InputSchemas::default();
+        let key = Key {
+            tenant: TenantId::generate(),
+            digest: [1; 32],
+        };
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = schemas
+                .cache
+                .get_or_compile(&key, || {}, || panic!("compiler bug"));
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(schemas.cache_stats().failures, 0, "nothing is remembered");
+        assert_eq!(
+            schemas.cache.panicked_outcome(),
+            CompileFailure::Interrupted
+        );
     }
 }

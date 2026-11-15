@@ -8,7 +8,9 @@
 use serde_json::{Map, Value};
 
 use super::pointer::escape;
-use super::{InputSchemaIssue, MAX_INPUT_SCHEMA_BYTES, MAX_INPUT_SCHEMA_DEPTH, Unusable};
+use super::{
+    InputSchemaIssue, MAX_INPUT_SCHEMA_BYTES, MAX_INPUT_SCHEMA_DEPTH, MAX_NAME_BYTES, Unusable,
+};
 
 /// `$schema` values with one meaning in the subset; `$schema` absent means the same.
 pub(super) const DIALECTS: [&str; 2] = [
@@ -50,28 +52,69 @@ pub(super) fn positions(schema_bytes: usize, root: &Value) -> Result<Vec<Positio
     Ok(walk.found)
 }
 
+/// What a value of the schema is to the depth check: a schema, a map of names to schemas, a list of schemas, data under
+/// a data keyword (with the keyword and its pointer), or the value of another keyword.
+#[derive(Clone)]
+enum Place {
+    Schema,
+    Names,
+    Schemas,
+    Data(String, String),
+    Other,
+}
+
+/// The keywords whose values are data, never schemas: a depth violation inside one names the keyword and its pointer,
+/// never the keys of the data (D043-104).
+const DATA: [&str; 5] = [
+    "default",
+    "examples",
+    "const",
+    "enum",
+    "x-sagat-classification",
+];
+
 /// Refuses a schema nested deeper than [`MAX_INPUT_SCHEMA_DEPTH`] (the root is depth 1), at the first value too deep.
 fn depth(root: &Value) -> Result<(), Unusable> {
-    let mut pending: Vec<(&Value, usize, String, String)> =
-        vec![(root, 1, String::new(), String::new())];
-    while let Some((value, level, pointer, key)) = pending.pop() {
+    let mut pending: Vec<(&Value, usize, String, String, Place)> =
+        vec![(root, 1, String::new(), String::new(), Place::Schema)];
+    while let Some((value, level, pointer, key, place)) = pending.pop() {
         if level > MAX_INPUT_SCHEMA_DEPTH {
-            return Err(Unusable::new(InputSchemaIssue::TooDeep, &key, &pointer));
+            return Err(match place {
+                Place::Data(keyword, at) => Unusable::new(InputSchemaIssue::TooDeep, &keyword, &at),
+                _ => Unusable::new(InputSchemaIssue::TooDeep, &key, &pointer),
+            });
         }
         match value {
             Value::Array(items) => {
                 for (index, item) in items.iter().enumerate().rev() {
-                    pending.push((item, level + 1, format!("{pointer}/{index}"), key.clone()));
+                    let inner = match &place {
+                        Place::Schemas => Place::Schema,
+                        other => other.clone(),
+                    };
+                    pending.push((
+                        item,
+                        level + 1,
+                        format!("{pointer}/{index}"),
+                        key.clone(),
+                        inner,
+                    ));
                 }
             }
             Value::Object(members) => {
                 for (name, member) in members.iter().rev() {
-                    pending.push((
-                        member,
-                        level + 1,
-                        format!("{pointer}/{}", escape(name)),
-                        name.clone(),
-                    ));
+                    let at = format!("{pointer}/{}", escape(name));
+                    let inner = match &place {
+                        Place::Schema => match name.as_str() {
+                            "properties" | "$defs" | "definitions" => Place::Names,
+                            "allOf" | "anyOf" | "oneOf" => Place::Schemas,
+                            "items" | "additionalProperties" => Place::Schema,
+                            data if DATA.contains(&data) => Place::Data(name.clone(), at.clone()),
+                            _ => Place::Other,
+                        },
+                        Place::Names => Place::Schema,
+                        other => other.clone(),
+                    };
+                    pending.push((member, level + 1, at, name.clone(), inner));
                 }
             }
             _ => {}
@@ -152,6 +195,9 @@ impl<'a> Walk<'a> {
             "type" => types(member).then_some(()).ok_or_else(unsupported),
             "properties" | "$defs" | "definitions" => {
                 let names = member.as_object().ok_or_else(unsupported)?;
+                if key == "properties" && names.keys().any(|name| name.len() > MAX_NAME_BYTES) {
+                    return Err(Unusable::new(InputSchemaIssue::NameTooLong, key, at));
+                }
                 for (name, schema) in names {
                     self.schema(schema, format!("{at}/{}", escape(name)), false)?;
                 }
@@ -175,11 +221,23 @@ impl<'a> Walk<'a> {
                 }
                 Ok(())
             }
-            "required" => member
-                .as_array()
-                .filter(|names| unique_strings(names))
-                .map(|_| ())
-                .ok_or_else(unsupported),
+            "required" => {
+                let names = member
+                    .as_array()
+                    .filter(|names| unique_strings(names))
+                    .ok_or_else(unsupported)?;
+                match names.iter().position(|name| {
+                    name.as_str()
+                        .is_some_and(|name| name.len() > MAX_NAME_BYTES)
+                }) {
+                    Some(index) => Err(Unusable::new(
+                        InputSchemaIssue::NameTooLong,
+                        key,
+                        &format!("{at}/{index}"),
+                    )),
+                    None => Ok(()),
+                }
+            }
             "enum" | "examples" => member.as_array().map(|_| ()).ok_or_else(unsupported),
             "const" | "default" | "x-sagat-classification" => Ok(()),
             // The numeric bounds are numbers (the boolean exclusive bounds of draft-04 are refused).

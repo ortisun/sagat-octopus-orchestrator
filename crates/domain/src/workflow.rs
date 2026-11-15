@@ -1071,6 +1071,8 @@ pub enum InputSchemaIssue {
     PatternUnsupported,
     /// More than 64 KiB of schema.
     TooLarge,
+    /// A name of `properties` or `required` longer than 1 KiB (D043-102).
+    NameTooLong,
     /// Nested deeper than 32, or an application path longer than 128.
     TooDeep,
     /// Every input the schema accepts would cost more than the work budget.
@@ -1086,6 +1088,7 @@ impl InputSchemaIssue {
             Self::ReferenceInvalid => "INPUT_SCHEMA_REFERENCE_INVALID",
             Self::PatternUnsupported => "INPUT_SCHEMA_PATTERN_UNSUPPORTED",
             Self::TooLarge => "INPUT_SCHEMA_TOO_LARGE",
+            Self::NameTooLong => "INPUT_SCHEMA_NAME_TOO_LONG",
             Self::TooDeep => "INPUT_SCHEMA_TOO_DEEP",
             Self::TooCostly => "INPUT_SCHEMA_TOO_COSTLY",
         }
@@ -1105,6 +1108,9 @@ impl InputSchemaIssue {
                 "the inputSchema has a pattern outside the supported syntax or its size and state bounds"
             }
             Self::TooLarge => "the inputSchema is larger than 64 KiB",
+            Self::NameTooLong => {
+                "the inputSchema has a name of properties or required longer than 1 KiB"
+            }
             Self::TooDeep => {
                 "the inputSchema nests deeper than 32 or applies schemas more than 128 deep"
             }

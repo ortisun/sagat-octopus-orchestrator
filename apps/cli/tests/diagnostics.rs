@@ -69,6 +69,7 @@ fn every_code_the_platform_returns_has_help_and_the_help_names_no_code_the_platf
         "INPUT_SCHEMA_REFERENCE_INVALID",
         "INPUT_SCHEMA_PATTERN_UNSUPPORTED",
         "INPUT_SCHEMA_TOO_LARGE",
+        "INPUT_SCHEMA_NAME_TOO_LONG",
         "INPUT_SCHEMA_TOO_DEEP",
         "INPUT_SCHEMA_TOO_COSTLY",
     ]

@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 
 use super::compile::{CompiledInputSchema, Node, types};
 use super::counter::{Counter, Counters, Limits, Stop};
-use super::value::{Num, equal, size_capped};
+use super::value::{Num, equal, size_counted};
 use super::{MAX_INPUT_DEPTH, PathSegment, Rule, SchemaRefusal};
 
 impl CompiledInputSchema {
@@ -160,8 +160,10 @@ impl Run<'_, '_> {
         }
         if let Some(members) = &node.enumeration {
             self.counter.charge(members.len() as u64)?;
-            let measured = size_capped(value, node.enumeration_largest);
-            self.counter.op(measured);
+            let (measured, steps) = size_counted(value, node.enumeration_largest);
+            self.counter.op(steps);
+            // the walk is bounded by the largest member, and charged (D043-100)
+            self.counter.charge(steps)?;
             let mut found = false;
             for member in members {
                 self.counter.charge(member.size.min(measured))?;
@@ -175,8 +177,9 @@ impl Run<'_, '_> {
             }
         }
         if let Some(constant) = &node.constant {
-            let measured = size_capped(value, constant.size);
-            self.counter.op(measured);
+            let (measured, steps) = size_counted(value, constant.size);
+            self.counter.op(steps);
+            self.counter.charge(steps)?;
             self.counter.charge(constant.size.min(measured).max(1))?;
             if !equal(&constant.value, value, self.counter) {
                 return self.fail(report, Rule::Const);
@@ -320,8 +323,10 @@ impl Run<'_, '_> {
             return self.fail(report, Rule::MaxProperties);
         }
         for name in &node.required {
-            self.counter.charge(1)?;
-            self.counter.op(log2(members.len()));
+            // a lookup compares the name with about log2(n) keys, each comparison up to the name's length (D043-102)
+            let comparisons = log2(members.len()) * (1 + name.len() as u64 / 64);
+            self.counter.charge(comparisons)?;
+            self.counter.op(comparisons);
             if !members.contains_key(name.as_ref()) {
                 if report {
                     // The missing name is the schema's, not the caller's.
@@ -339,8 +344,11 @@ impl Run<'_, '_> {
             let declared = if node.properties.is_empty() {
                 None
             } else {
-                self.counter.charge(1)?;
-                self.counter.op(log2(node.properties.len()));
+                // a binary search compares the key with about log2(n) names, each up to the shorter of the two
+                let comparisons = log2(node.properties.len())
+                    * (1 + key.len().min(node.longest_property) as u64 / 64);
+                self.counter.charge(comparisons)?;
+                self.counter.op(comparisons);
                 node.properties
                     .binary_search_by(|(name, _)| name.as_ref().cmp(key.as_str()))
                     .ok()

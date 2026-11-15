@@ -1047,6 +1047,17 @@ mod oracle {
                 Just("-36893488147419103232")
             ]
             .prop_map(|text| serde_json::from_str::<Value>(text).expect("a big integer")),
+            // the u64/f64 boundary pairs (review of 2026-11-15): an integer and the float nearest it are not equal
+            prop_oneof![
+                Just("18446744073709551615"),
+                Just("1.8446744073709552e19"),
+                Just("9223372036854775809"),
+                Just("9.223372036854776e18"),
+                Just("9223372036854775808"),
+                Just("-9223372036854775808"),
+                Just("-9.223372036854776e18"),
+            ]
+            .prop_map(|text| serde_json::from_str::<Value>(text).expect("a boundary number")),
         ]
     }
 
@@ -1176,6 +1187,20 @@ mod oracle {
                 ),
                 with("items", inner.clone().boxed()),
                 with("additionalProperties", inner.clone().boxed()),
+                // a node that holds both: a declared member goes to `properties`, every other to `additionalProperties`
+                (
+                    proptest::collection::btree_map(
+                        proptest::sample::select(&KEYS[..]).prop_map(str::to_owned),
+                        inner.clone(),
+                        1..3
+                    ),
+                    inner.clone()
+                )
+                    .prop_map(|(declared, other)| json!({
+                        "properties": Value::Object(declared.into_iter().collect()),
+                        "additionalProperties": other
+                    }))
+                    .boxed(),
                 with(
                     "allOf",
                     proptest::collection::vec(inner.clone(), 1..3)
@@ -1362,6 +1387,64 @@ fn measure_k_and_the_cost_of_a_full_budget() {
         haystack.len(),
         best.as_nanos() as f64 / charge
     );
+    // Review of 2026-11-15: the automaton's own work at the state cap, prefilter off, and IEEE `%` on a huge float.
+    for pattern in [
+        "a[ab]{12}c{100}d{100}e{100}f{100}g{50}",
+        "a(?:[ab]{100}){2}[ab]{20}c",
+    ] {
+        let raw = regex_automata::meta::Builder::new()
+            .configure(
+                regex_automata::meta::Config::new()
+                    .which_captures(regex_automata::nfa::thompson::WhichCaptures::None)
+                    .hybrid_cache_capacity(64 * 1024)
+                    .dfa(false)
+                    .onepass(false)
+                    .backtrack(false)
+                    .auto_prefilter(false),
+            )
+            .build(pattern)
+            .expect("pattern");
+        let states = compiled(&json!({"pattern": pattern}))
+            .pattern_states()
+            .expect("states") as f64;
+        let mut best = Duration::MAX;
+        for _ in 0..5 {
+            let started = Instant::now();
+            assert!(!raw.is_match(&haystack));
+            best = best.min(started.elapsed());
+        }
+        println!(
+            "measure raw pattern {pattern}: {states} states, ns per (byte × state) {:.4}",
+            best.as_nanos() as f64 / ((haystack.len() as f64 + 1.0) * states)
+        );
+    }
+    let huge = std::hint::black_box(2f64.powi(996));
+    let started = Instant::now();
+    let mut multiples = 0u32;
+    for _ in 0..1_000_000 {
+        if std::hint::black_box(huge) % 3.0 == 0.0 {
+            multiples += 1;
+        }
+    }
+    println!(
+        "measure fmod of 2^996 by 3: {:?} per operation ({multiples})",
+        started.elapsed() / 1_000_000
+    );
+    let fanned = compiled(&dag(json!({"multipleOf": 3}), 16, 2));
+    let input = bytes(&json!(3.0 * 2f64.powi(990)));
+    let mut best = Duration::MAX;
+    let mut units = 0;
+    for _ in 0..5 {
+        let started = Instant::now();
+        let (result, spent) = fanned.validate_with(&input, Limits::default());
+        assert_eq!(result, Ok(()));
+        best = best.min(started.elapsed());
+        units = spent.units;
+    }
+    println!(
+        "measure multipleOf of 3 × 2^990 behind a fan-out: units {units} time {best:?} ns/unit {:.2}",
+        best.as_nanos() as f64 / units as f64
+    );
 }
 
 #[test]
@@ -1375,4 +1458,270 @@ fn the_compiled_schema_is_shared_by_arc_for_the_gate() {
     assert!(Arc::ptr_eq(&a, &b));
     assert!(a.weight() > 0);
     let _: Option<PathSegment> = None;
+}
+
+// ------------------------------------------------------------------ the review of 2026-11-15 (D043-100 and after)
+
+/// Review finding 1: measuring the input for `enum` and `const` stops at the cap before it pushes more, so a long array
+/// under `{"const": null}` costs what is charged, behind a fan-out too.
+#[test]
+fn measuring_an_input_for_const_or_enum_stops_at_the_cap_instead_of_walking_it() {
+    let input = bytes(&json!(vec![0; 100_000]));
+    let (result, _, _, _) = adversarial(
+        "const null over a long array",
+        &json!({"anyOf": vec![json!({"const": null}); 30]}),
+        &input,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(SchemaRefusal::Invalid {
+                rule: Rule::AnyOf,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    for leaf in [
+        json!({"anyOf": [{"const": null}, {}]}),
+        json!({"anyOf": [{"enum": [null, true]}, {}]}),
+    ] {
+        let (result, _, _, _) =
+            adversarial("const or enum behind a fan-out", &dag(leaf, 8, 2), &input);
+        assert_eq!(result, Ok(()));
+    }
+}
+
+/// Review finding 2: `oneOf` counts its cheapest branch at publication, because every other one can fail at its first
+/// keyword: a `oneOf` of two costly branches guarded by `type` is publishable, and costs one branch.
+#[test]
+fn one_of_counts_its_cheapest_branch_at_publication() {
+    let members: Vec<u32> = (0..1_000).collect();
+    let mut schema = dag(json!({"enum": members}), 9, 2);
+    schema.as_object_mut().unwrap().remove("$ref");
+    schema["oneOf"] = json!([
+        {"type": "string", "allOf": [{"$ref": "#/$defs/t9"}]},
+        {"type": "number", "allOf": [{"$ref": "#/$defs/t9"}]}
+    ]);
+    let compiled = compiled(&schema);
+    assert!(
+        compiled.lower_bound() < RUN_INPUT_WORK_UNITS,
+        "{}",
+        compiled.lower_bound()
+    );
+    assert_eq!(compiled.validate(&bytes(&json!(5))), Ok(()));
+}
+
+/// Review finding 3: a name of `properties` or `required` is at most 1 KiB, and a lookup is charged by the length it
+/// compares, so long names sharing a prefix behind a fan-out stop at the budget with operations bounded by the units.
+#[test]
+fn a_name_past_1_kib_is_refused_and_long_names_are_charged_by_their_length() {
+    let long = "n".repeat(1_025);
+    let property = refused(&json!({"properties": {"a": {"properties": {long.clone(): {}}}}}));
+    assert_eq!(
+        (
+            property.issue,
+            property.keyword.as_str(),
+            property.at.as_str()
+        ),
+        (
+            InputSchemaIssue::NameTooLong,
+            "properties",
+            "/properties/a/properties"
+        )
+    );
+    let required = refused(&json!({"required": ["a", long.clone()]}));
+    assert_eq!(
+        (
+            required.issue,
+            required.keyword.as_str(),
+            required.at.as_str()
+        ),
+        (InputSchemaIssue::NameTooLong, "required", "/required/1")
+    );
+    precheck(&bytes(&json!({"required": ["n".repeat(1_024)]}))).expect("1 KiB is allowed");
+    let prefix = "p".repeat(1_000);
+    let declared: Vec<String> = (0..40).map(|i| format!("{prefix}{i:04}")).collect();
+    let present: serde_json::Map<String, Value> = (0..60)
+        .map(|i| (format!("{prefix}{i:04}"), json!(0)))
+        .collect();
+    let input = bytes(&Value::Object(present));
+    let properties: serde_json::Map<String, Value> =
+        declared.iter().map(|n| (n.clone(), json!({}))).collect();
+    for (name, leaf) in [
+        ("long required names", json!({"required": declared})),
+        ("long property names", json!({"properties": properties})),
+    ] {
+        let (result, _, _, _) = adversarial(name, &dag(leaf, 9, 2), &input);
+        assert_eq!(result, Err(SchemaRefusal::WorkLimit), "{name}");
+    }
+}
+
+/// Review: a data value nested too deep is named by its data keyword and pointer, never by the keys inside it, and a
+/// pointer is truncated.
+#[test]
+fn a_deep_data_value_is_named_by_its_keyword_never_by_its_keys_and_pointers_are_truncated() {
+    let mut deep = json!(1);
+    for i in 0..40 {
+        deep = json!({ format!("secretkey{i}"): deep });
+    }
+    let unusable = refused(&json!({"properties": {"a": {"default": deep}}}));
+    assert_eq!(
+        (
+            unusable.issue,
+            unusable.keyword.as_str(),
+            unusable.at.as_str()
+        ),
+        (
+            InputSchemaIssue::TooDeep,
+            "default",
+            "/properties/a/default"
+        )
+    );
+    assert!(
+        !format!("{unusable:?}").contains("secretkey"),
+        "{unusable:?}"
+    );
+    let mut nested = json!({"not": {}});
+    for i in 0..14 {
+        nested = json!({"properties": { format!("{}{i:02}", "q".repeat(1_000)): nested }});
+    }
+    let unusable = refused(&nested);
+    assert_eq!(
+        (unusable.issue, unusable.keyword.as_str()),
+        (InputSchemaIssue::KeywordUnsupported, "not")
+    );
+    assert!(unusable.at.chars().count() <= 512, "{}", unusable.at.len());
+    assert!(unusable.at.ends_with('…'));
+}
+
+/// Review: the weight of a cache entry counts its literals, and one tenant cannot evict another's schemas by filling
+/// the cache.
+#[test]
+fn the_weight_counts_literals_and_a_tenant_holds_only_its_share_of_the_cache() {
+    let zeros = vec![0; 20_000];
+    let heavy = compiled(&json!({"enum": zeros}));
+    assert!(
+        heavy.weight() >= 20_000 * (std::mem::size_of::<Value>() + std::mem::size_of::<u64>()),
+        "{}",
+        heavy.weight()
+    );
+    let schemas = InputSchemas::default();
+    let schema = |n: usize| {
+        let canonical = bytes(&json!({"maxLength": n}));
+        let digest = sha_of(&canonical);
+        InputSchema::new(canonical, digest)
+    };
+    let (quiet, noisy) = (TenantId::generate(), TenantId::generate());
+    schemas
+        .check(quiet, &schema(0), true, b"{}")
+        .expect("valid");
+    for n in 1..=300 {
+        schemas
+            .check(noisy, &schema(n), true, b"{}")
+            .expect("valid");
+    }
+    let before = schemas.cache_stats().misses;
+    schemas
+        .check(quiet, &schema(0), true, b"{}")
+        .expect("valid");
+    assert_eq!(
+        schemas.cache_stats().misses,
+        before,
+        "the quiet tenant's schema is still cached"
+    );
+    assert!(schemas.cache_stats().entries <= 256);
+}
+
+/// Review: `multipleOf` on a huge float is exact (it agrees with IEEE `%`, which is exact) and cheap: a fan-out of it
+/// over a float near 1e300 stops at the budget with operations bounded by the units.
+#[test]
+fn multiple_of_on_a_huge_float_is_exact_and_bounded_by_the_units() {
+    let three_times = 3.0 * 2f64.powi(990);
+    let power = 2f64.powi(996);
+    let samples = [
+        three_times,
+        power,
+        1e300,
+        3e300,
+        1.2e17,
+        1e17,
+        6.0e18,
+        9.007_199_254_740_994e15,
+        -three_times,
+    ];
+    for divisor in [1u32, 3, 7, 10, 1_000_003] {
+        for value in samples {
+            let schema = json!({"multipleOf": divisor});
+            let ours = compiled(&schema).validate(&bytes(&json!(value))).is_ok();
+            assert_eq!(
+                ours,
+                value % f64::from(divisor) == 0.0,
+                "{value:e} multipleOf {divisor}"
+            );
+        }
+    }
+    // 65,536 applications of the leaf: publishable, and every one of them divides a huge float
+    let schema = dag(json!({"multipleOf": 3}), 16, 2);
+    let (result, _, _, _) = adversarial("multipleOf over 2^996", &schema, &bytes(&json!(power)));
+    assert!(
+        matches!(
+            result,
+            Err(SchemaRefusal::Invalid {
+                rule: Rule::MultipleOf,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    let (result, units, _, _) = adversarial(
+        "multipleOf over 3 × 2^990",
+        &schema,
+        &bytes(&json!(three_times)),
+    );
+    assert_eq!(result, Ok(()), "after {units} units");
+}
+
+/// A pattern near the cap of 512 NFA states, which defeats the lazy DFA, and a haystack it scans to the end.
+fn costly_pattern() -> (String, String) {
+    // 466 states: past about 230 states of classes a pattern passes its 16 KiB program first
+    let pattern = "a[ab]{12}c{100}d{100}e{100}f{100}g{50}".to_owned();
+    let haystack: String = (0..64 * 1024u64)
+        .map(|i| {
+            if (i.wrapping_mul(2_654_435_761) >> 7) % 2 == 0 {
+                'b'
+            } else {
+                'a'
+            }
+        })
+        .collect();
+    (pattern, haystack)
+}
+
+/// Review: what a pattern match costs per unit it is charged, at the cap of 512 states (G043-030). In the unoptimised
+/// test build the charge of a whole budget runs well inside the 5 s backstop.
+#[test]
+fn a_pattern_at_the_state_cap_runs_its_charge_within_the_backstop() {
+    let (pattern, haystack) = costly_pattern();
+    let compiled = compiled(&json!({"pattern": pattern}));
+    let states = compiled.pattern_states().expect("one pattern");
+    assert!((400..=512).contains(&states), "{states} states");
+    let charge = (haystack.len() as u64 + 1) * states;
+    let started = Instant::now();
+    assert!(
+        compiled
+            .validate_with(
+                &bytes(&json!(haystack)),
+                Limits {
+                    units: charge,
+                    backstop: Duration::from_secs(5)
+                }
+            )
+            .0
+            .is_err()
+    );
+    let per_unit = started.elapsed().as_nanos() as f64 / charge as f64;
+    eprintln!("pattern at {states} states: {per_unit:.4} ns per charged unit");
+    let full_budget = Duration::from_nanos((per_unit * RUN_INPUT_WORK_UNITS as f64) as u64);
+    assert!(full_budget < Duration::from_secs(5), "{full_budget:?}");
 }
