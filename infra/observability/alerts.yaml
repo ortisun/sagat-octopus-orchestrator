@@ -268,6 +268,16 @@ groups:
           summary: The automatic handover of the cron triggers has been blocked for an hour; the reason is the series of trigger_schedule_handover_blocked at 1.
           runbook: docs/runbooks/schedules.md#63-why-a-handover-is-blocked
 
+      - alert: SagatTriggerHandoverAuditPending
+        # ADR-0091 decision 7, correctness review: a committed handover whose tenant audit could not be completed (AUDIT_CONFLICT, a
+        # failure after the commit). The job and the command exit 0 with a warning; this is what stays visible.
+        expr: max(trigger_schedule_handover_audit_pending) > 0
+        for: 30m
+        labels: {severity: warning}
+        annotations:
+          summary: The cron triggers were handed over, and tenants of the handover have had no audit record for thirty minutes.
+          runbook: docs/runbooks/schedules.md#63-why-a-handover-is-blocked
+
       - alert: SagatTriggerHandoverNotAttempted
         # D2270: a job that cannot log in (a pg_hba refusal, a missing role or password) writes no attempt row, so nothing above can
         # fire. While the deployment runs the job, the state is LEGACY, and the attempt row is missing or older than 15 minutes.

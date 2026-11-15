@@ -405,7 +405,12 @@ async fn the_reconciliation_cut_off_at_any_write_leaves_nothing_half_done_and_th
     // what an older control plane does, three ways: it adds a trigger, drops one, and the expression of one drifts. A make writes one
     // statement more since ADR-0091, the mark of the reconciliation (`reconciled_at`, D2258), with the accounting rows it moves; the
     // probe of each case can see a make of the triggers the cases before it left, and the matrix below cuts every write of it
-    for (case, position_limit) in [("create", 9usize), ("remove", 9), ("respec", 9)] {
+    // the writing statements of each change, exactly (correctness review): a make lost its mark, or gained a write, and this fails
+    for (case, position_limit, exact) in [
+        ("create", 9usize, 13usize),
+        ("remove", 9, 5),
+        ("respec", 9, 9),
+    ] {
         let trigger = Uuid::now_v7();
         match case {
             "create" => {
@@ -476,11 +481,13 @@ async fn the_reconciliation_cut_off_at_any_write_leaves_nothing_half_done_and_th
         wire.disarm().await;
         let writes = wire.writes().await;
         let transactions: BTreeSet<i64> = writes.iter().map(|(x, ..)| *x).collect();
-        let writes_of_the_change = transactions
-            .iter()
-            .map(|x| writes.iter().filter(|(y, ..)| y == x).count())
-            .max()
-            .expect("a transaction");
+        // the probe's own change is its last transaction (a make of a trigger an earlier case left can come before it)
+        let change = *transactions.iter().max().expect("a transaction");
+        let writes_of_the_change = writes.iter().filter(|(y, ..)| *y == change).count();
+        assert_eq!(
+            writes_of_the_change, exact,
+            "{case}: the change writes exactly {exact} statements: {writes:?}"
+        );
         assert!(
             writes_of_the_change >= 2 && writes_of_the_change <= position_limit + 4,
             "{case}: {writes_of_the_change} writes: {writes:?}"
@@ -564,113 +571,369 @@ async fn the_reconciliation_cut_off_at_any_write_leaves_nothing_half_done_and_th
 
 // --- the handover, cut off at each of its writes ------------------------------------------------------------------------
 
-#[tokio::test]
-async fn the_handover_cut_off_at_any_write_records_nothing_and_the_next_run_records_it_once() {
-    use crate::support::instances::registry;
+mod handover_cuts {
+    use std::collections::BTreeSet;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use sagat_application::instances::{
+        Capability, InstanceKind, InstanceStore as _, Registration,
+    };
     use sagat_control_plane::config::DatabaseConfig;
     use sagat_control_plane::handover::{
         HandoverOutcome, HandoverRequest, schedule_trigger_handover,
     };
-    let r = registry().await;
-    r.serving(
-        sagat_application::instances::InstanceKind::ExecutionEngine,
-        &[sagat_application::instances::Capability::SchedulesV1],
-    )
-    .await;
-    let wire = Tripwire::install(&r.db.pool).await;
-    let database = || DatabaseConfig {
-        url: r.db.url.clone(),
-        max_connections: 2,
-        statement_timeout: std::time::Duration::from_secs(5),
+    use sagat_control_plane::handover_auto::{
+        AutoOutcome, AutoRequest, Interrupt, Pace, Paced, auto_handover,
     };
-    let request = HandoverRequest {
-        operator: Some("ana".to_owned()),
-        expect_live: Some(1),
-        dry_run: false,
-    };
-    let recorded = || async {
-        let state: String = sqlx::query_scalar("SELECT state FROM schedule_trigger_handover")
-            .fetch_one(&r.db.pool)
-            .await
-            .expect("state");
-        let requirements: i64 = sqlx::query_scalar("SELECT count(*) FROM platform_requirements")
-            .fetch_one(&r.db.pool)
-            .await
-            .expect("requirements");
-        let history: i64 = sqlx::query_scalar("SELECT count(*) FROM platform_requirement_history")
-            .fetch_one(&r.db.pool)
-            .await
-            .expect("history");
-        let epoch: i64 = sqlx::query_scalar("SELECT epoch FROM platform_requirement_epoch")
-            .fetch_one(&r.db.pool)
-            .await
-            .expect("epoch");
-        (state, requirements, history, epoch)
-    };
+    use sqlx::PgPool;
+    use uuid::Uuid;
 
-    // how many writes the activation makes: watch it on a schema of its own
-    let probe = crate::support::instances::registry().await;
-    probe
-        .serving(
-            sagat_application::instances::InstanceKind::ExecutionEngine,
-            &[sagat_application::instances::Capability::SchedulesV1],
-        )
-        .await;
-    let probe_wire = Tripwire::install(&probe.db.pool).await;
-    probe_wire.watch().await;
-    schedule_trigger_handover(
-        &DatabaseConfig {
-            url: probe.db.url.clone(),
+    use crate::support::instances::TEST_TOKEN;
+    use crate::support::trigger_schedules::{Triggers, cron_workflow, triggers};
+    use crate::support::{HANDOVER_ROLE, HANDOVER_ROLE_PASSWORD};
+    use crate::tripwire::Tripwire;
+
+    /// The writing statements of the operator's activation and of the tenant audit after it, exactly (a write lost or gained fails
+    /// here first): the requirement, the epoch, the history, the census copy, the tenant set and the state; then the audit record
+    /// and the mark of the tenant's row, with the accounting each moves.
+    const ACTIVATION: usize = 6;
+    const AUDIT: usize = 2;
+
+    /// A platform with one cron trigger (so that the tenant set and the audit are written), one engine and one control plane, with
+    /// the tripwire installed.
+    async fn platform() -> (Triggers, Tripwire) {
+        let t = triggers().await;
+        t.publish(cron_workflow("cut-handover", "0 * * * *", "UTC"))
+            .await;
+        t.reconcile().await;
+        let store = sagat_infra_postgres::PgInstanceStore::new(t.w.db.pool.clone());
+        for (kind, capabilities) in [
+            (
+                InstanceKind::ExecutionEngine,
+                &[Capability::SchedulesV1][..],
+            ),
+            (InstanceKind::ControlPlane, &[][..]),
+        ] {
+            store
+                .register(&Registration {
+                    instance: Uuid::new_v4(),
+                    token: &TEST_TOKEN,
+                    kind,
+                    scheduler_owner: None,
+                    binary_version: "0.3.0-test",
+                    capabilities,
+                })
+                .await
+                .expect("register");
+        }
+        sqlx::query("UPDATE schedules SET reconciled_at = NULL")
+            .execute(&t.w.db.pool)
+            .await
+            .expect("no mark");
+        let wire = Tripwire::install(&t.w.db.pool).await;
+        (t, wire)
+    }
+
+    fn owner(t: &Triggers) -> DatabaseConfig {
+        DatabaseConfig {
+            url: t.w.db.url.clone(),
             max_connections: 2,
-            statement_timeout: std::time::Duration::from_secs(5),
-        },
-        &request,
-    )
-    .await
-    .expect("the probe");
-    probe_wire.disarm().await;
-    let writes = probe_wire.writes().await;
-    let tables: BTreeSet<&str> = writes.iter().map(|(_, _, t)| t.as_str()).collect();
-    for table in [
-        "platform_requirements",
-        "platform_requirement_epoch",
-        "platform_requirement_history",
-        "schedule_trigger_handover",
-    ] {
-        assert!(
-            tables.contains(table),
-            "the activation writes {table}: {writes:?}"
-        );
+            statement_timeout: Duration::from_secs(5),
+        }
     }
-    let transactions: BTreeSet<i64> = writes.iter().map(|(x, ..)| *x).collect();
-    assert_eq!(
-        transactions.len(),
-        1,
-        "the handover is one transaction: {writes:?}"
-    );
 
-    for position in 1..=writes.len() {
-        wire.arm(position).await;
-        let killed = schedule_trigger_handover(&database(), &request).await;
-        wire.disarm().await;
-        assert!(killed.is_err(), "cut off at write {position}: {killed:?}");
+    fn operator() -> HandoverRequest {
+        HandoverRequest {
+            operator: Some("ana".to_owned()),
+            expect_live: Some(1),
+            dry_run: false,
+        }
+    }
+
+    /// What the handover recorded: the state, the requirements, the history, the census epochs, the tenant set, the audit records,
+    /// and the tenant rows audited.
+    async fn recorded(pool: &PgPool) -> (String, i64, i64, i64, i64, i64, i64) {
+        sqlx::query_as(
+            "SELECT (SELECT state FROM schedule_trigger_handover), \
+                    (SELECT count(*) FROM platform_requirements), (SELECT count(*) FROM platform_requirement_history), \
+                    (SELECT count(DISTINCT epoch) FROM schedule_trigger_handover_census), \
+                    (SELECT count(*) FROM schedule_trigger_handover_tenants), \
+                    (SELECT count(*) FROM audit_records WHERE action = 'schedule.trigger_handover'), \
+                    (SELECT count(*) FROM schedule_trigger_handover_tenants WHERE audited_at IS NOT NULL)",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("recorded")
+    }
+
+    /// The transactions of a watched run, each as its statements' tables, in order.
+    fn transactions(writes: &[(i64, usize, String)]) -> Vec<Vec<String>> {
+        let ids: BTreeSet<i64> = writes.iter().map(|(x, ..)| *x).collect();
+        ids.into_iter()
+            .map(|x| {
+                writes
+                    .iter()
+                    .filter(|(y, ..)| *y == x)
+                    .map(|(_, _, t)| t.clone())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn the_one_writing<'a>(transactions: &'a [Vec<String>], table: &str) -> &'a Vec<String> {
+        let found: Vec<&Vec<String>> = transactions
+            .iter()
+            .filter(|tables| tables.iter().any(|t| t == table))
+            .collect();
         assert_eq!(
-            recorded().await,
-            ("LEGACY".to_owned(), 0, 0, 0),
-            "cut off at write {position}: neither the requirement, its history, the epoch nor the state"
+            found.len(),
+            1,
+            "one transaction writes {table}: {transactions:?}"
+        );
+        found[0]
+    }
+
+    #[tokio::test]
+    async fn the_operators_handover_cut_off_at_any_write_of_either_transaction_is_recorded_once() {
+        // the probe: what the two transactions write, exactly
+        let (probe, probe_wire) = platform().await;
+        probe_wire.watch().await;
+        let done = schedule_trigger_handover(&owner(&probe), &operator())
+            .await
+            .expect("the probe");
+        assert!(
+            matches!(done, HandoverOutcome::HandedOver { .. }),
+            "{done:?}"
+        );
+        probe_wire.disarm().await;
+        let probe_writes = transactions(&probe_wire.writes().await);
+        let activation = the_one_writing(&probe_writes, "platform_requirements").clone();
+        let audit = the_one_writing(&probe_writes, "audit_records").clone();
+        assert_eq!(
+            activation.len(),
+            ACTIVATION,
+            "the activation writes exactly: {activation:?}"
+        );
+        assert_eq!(audit.len(), AUDIT, "the audit writes exactly: {audit:?}");
+        for table in [
+            "platform_requirements",
+            "platform_requirement_epoch",
+            "platform_requirement_history",
+            "schedule_trigger_handover_census",
+            "schedule_trigger_handover_tenants",
+            "schedule_trigger_handover",
+        ] {
+            assert!(
+                activation.iter().any(|t| t == table),
+                "the activation writes {table}: {activation:?}"
+            );
+        }
+
+        let (t, wire) = platform().await;
+        // the activation, cut at each write: nothing at all is recorded
+        for (index, table) in activation.iter().enumerate() {
+            let position = index + 1;
+            wire.arm_on(table, position).await;
+            let killed = schedule_trigger_handover(&owner(&t), &operator()).await;
+            wire.disarm().await;
+            assert!(
+                killed.is_err(),
+                "cut off at write {position} ({table}): {killed:?}"
+            );
+            assert_eq!(
+                recorded(&t.w.db.pool).await,
+                ("LEGACY".to_owned(), 0, 0, 0, 0, 0, 0),
+                "cut off at write {position} ({table}): nothing of the handover"
+            );
+        }
+        // the audit after the commit, cut at each write: the handover is made (the command exits 0 with a warning), no record
+        for (index, table) in audit.iter().enumerate() {
+            let position = index + 1;
+            let kills = wire.kills().await;
+            wire.arm_on(table, position).await;
+            let said = schedule_trigger_handover(&owner(&t), &operator()).await;
+            wire.disarm().await;
+            assert_eq!(
+                wire.kills().await,
+                kills + 1,
+                "the audit was cut at write {position} ({table})"
+            );
+            assert!(said.is_ok(), "a committed handover exits 0: {said:?}");
+            assert_eq!(
+                recorded(&t.w.db.pool).await,
+                ("HANDED_OVER".to_owned(), 1, 1, 1, 1, 0, 0),
+                "cut off at write {position} ({table}) of the audit: the handover once, no audit record"
+            );
+        }
+        let done = schedule_trigger_handover(&owner(&t), &operator())
+            .await
+            .expect("the next run");
+        assert!(
+            matches!(done, HandoverOutcome::AlreadyHandedOver { .. }),
+            "{done:?}"
+        );
+        assert_eq!(
+            recorded(&t.w.db.pool).await,
+            ("HANDED_OVER".to_owned(), 1, 1, 1, 1, 1, 1),
+            "recorded once, audited once"
         );
     }
-    let done = schedule_trigger_handover(&database(), &request)
+
+    /// The waits of the job, instant, with the run's times moved back as the owner.
+    struct Instant {
+        owner: PgPool,
+        run: Uuid,
+        waits: Mutex<usize>,
+    }
+
+    impl Pace for Instant {
+        fn wait<'a>(&'a self, _wait: Duration, interrupt: &'a Interrupt) -> Paced<'a> {
+            Box::pin(async move {
+                sqlx::query(
+                    "UPDATE schedule_trigger_handover_attempts \
+                        SET first_round_at = least(first_round_at, clock_timestamp() - horizon - interval '1 minute'), \
+                            last_stable_at = last_stable_at - interval '16 seconds' WHERE run_id = $1",
+                )
+                .bind(self.run)
+                .execute(&self.owner)
+                .await
+                .expect("move the run back");
+                let mut waits = self.waits.lock().expect("waits");
+                *waits += 1;
+                if *waits > 60 {
+                    interrupt.raise();
+                }
+            })
+        }
+    }
+
+    async fn the_job(t: &Triggers) -> Result<AutoOutcome, sagat_control_plane::RunError> {
+        let run = Uuid::new_v4();
+        let request = AutoRequest {
+            ask: sagat_infra_postgres::AutoAsk {
+                run,
+                stable: 3,
+                horizon: Duration::from_secs(600),
+                min_live: 1,
+                wait: Duration::from_secs(7_200),
+            },
+            retire_role: false,
+            dry_run: false,
+            operator: None,
+            activation: sagat_infra_postgres::OperatorBounds::default(),
+        };
+        let pace = Instant {
+            owner: t.w.db.pool.clone(),
+            run,
+            waits: Mutex::new(0),
+        };
+        let database = DatabaseConfig {
+            url: t.w.db.url_without_password(HANDOVER_ROLE),
+            max_connections: 2,
+            statement_timeout: Duration::from_secs(5),
+        };
+        tokio::time::timeout(
+            Duration::from_secs(120),
+            auto_handover(
+                &database,
+                Some(HANDOVER_ROLE_PASSWORD),
+                &request,
+                &pace,
+                &Interrupt::default(),
+            ),
+        )
         .await
-        .expect("the next run");
-    assert!(
-        matches!(done, HandoverOutcome::HandedOver { live: 1, .. }),
-        "{done:?}"
-    );
-    let (state, requirements, history, epoch) = recorded().await;
-    assert_eq!(
-        (state.as_str(), requirements, history, epoch),
-        ("HANDED_OVER", 1, 1, 1),
-        "recorded once"
-    );
+        .expect("the job ends")
+    }
+
+    #[tokio::test]
+    async fn the_jobs_handover_cut_off_at_any_write_of_either_transaction_is_recorded_once_by_the_job_or_its_next_run()
+     {
+        let (probe, probe_wire) = platform().await;
+        probe_wire.watch().await;
+        let done = the_job(&probe).await.expect("the probe");
+        assert!(matches!(done, AutoOutcome::HandedOver { .. }), "{done:?}");
+        probe_wire.disarm().await;
+        let probe_writes = transactions(&probe_wire.writes().await);
+        let activation = the_one_writing(&probe_writes, "platform_requirements").clone();
+        let audit = the_one_writing(&probe_writes, "audit_records").clone();
+        assert_eq!(
+            activation.len(),
+            ACTIVATION,
+            "the wrapper writes what the operator's activation writes: {activation:?}"
+        );
+        assert_eq!(audit.len(), AUDIT, "{audit:?}");
+
+        // the activation through the wrapper, cut at each write: the job retries in the same run and records it once
+        for (index, table) in activation.iter().enumerate() {
+            let position = index + 1;
+            let (t, wire) = platform().await;
+            wire.arm_once_on(table, position).await;
+            let done = the_job(&t).await;
+            wire.disarm().await;
+            assert_eq!(
+                wire.kills().await,
+                1,
+                "cut off at write {position} ({table})"
+            );
+            assert!(
+                matches!(done, Ok(AutoOutcome::HandedOver { .. })),
+                "{position} ({table}): {done:?}"
+            );
+            assert_eq!(
+                recorded(&t.w.db.pool).await,
+                ("HANDED_OVER".to_owned(), 1, 1, 1, 1, 1, 1),
+                "cut off at write {position} ({table}): recorded once, audited once"
+            );
+        }
+        // the audit after the commit, cut at each write: the job exits 0 with the audit pending, its next run completes it once
+        let (t, wire) = platform().await;
+        for (index, table) in audit.iter().enumerate() {
+            let position = index + 1;
+            let kills = wire.kills().await;
+            wire.arm_once_on(table, position).await;
+            let done = the_job(&t).await;
+            wire.disarm().await;
+            assert_eq!(
+                wire.kills().await,
+                kills + 1,
+                "the audit was cut at write {position} ({table})"
+            );
+            assert!(
+                matches!(
+                    &done,
+                    Ok(AutoOutcome::HandedOver {
+                        audit_pending: true,
+                        ..
+                    } | AutoOutcome::AlreadyHandedOver {
+                        audit_pending: true,
+                        ..
+                    })
+                ),
+                "{done:?}"
+            );
+            assert_eq!(
+                recorded(&t.w.db.pool).await,
+                ("HANDED_OVER".to_owned(), 1, 1, 1, 1, 0, 0),
+                "cut off at write {position} ({table}) of the audit"
+            );
+        }
+        let done = the_job(&t).await.expect("the next run");
+        assert!(
+            matches!(
+                done,
+                AutoOutcome::AlreadyHandedOver {
+                    audit_pending: false,
+                    audited: 1,
+                    ..
+                }
+            ),
+            "{done:?}"
+        );
+        assert_eq!(
+            recorded(&t.w.db.pool).await,
+            ("HANDED_OVER".to_owned(), 1, 1, 1, 1, 1, 1)
+        );
+    }
 }

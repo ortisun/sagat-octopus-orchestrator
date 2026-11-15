@@ -40,12 +40,12 @@ spec:
   ttlSecondsAfterFinished: 3600
   podFailurePolicy:
     rules:
-      # a reason no wait cures: retrying it changes nothing
+      # a reason no wait cures, or the job's own deadline: retrying it changes nothing
       - action: FailJob
         onExitCodes:
           containerName: schedule-trigger-handover
           operator: In
-          values: [2]
+          values: [2, 3]
       # a drain or a preemption does not use up the retries
       - action: Ignore
         onPodConditions:
@@ -98,10 +98,12 @@ spec:
             # the role's URL without its password, and the password apart (D2273)
             - name: DATABASE_URL
               valueFrom:
-                secretKeyRef: {name: {{ $secret | quote }}, key: DATABASE_URL}
+                # optional: a Secret deleted after the handover makes the job exit 2 at once instead of a pod that never starts;
+                # set schedules.autoHandover.enabled: false once the triggers are handed over (architecture review Major 1)
+                secretKeyRef: {name: {{ $secret | quote }}, key: DATABASE_URL, optional: true}
             - name: SAGAT_HANDOVER_PASSWORD
               valueFrom:
-                secretKeyRef: {name: {{ $secret | quote }}, key: SAGAT_HANDOVER_PASSWORD}
+                secretKeyRef: {name: {{ $secret | quote }}, key: SAGAT_HANDOVER_PASSWORD, optional: true}
           resources:
             requests: {cpu: 20m, memory: 32Mi}
             limits: {cpu: 200m, memory: 128Mi}

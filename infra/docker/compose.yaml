@@ -100,6 +100,8 @@ services:
       # every run and, given this, sets its login from a SCRAM verifier, only while the triggers are not handed over and the role
       # was never retired. Empty: the role stays without a login and the job below exits 2 saying so.
       SAGAT_HANDOVER_PASSWORD: ${SAGAT_HANDOVER_PASSWORD:-}
+      # The owner's floor of the live engines the job counts with: a caller of its functions cannot ask for fewer.
+      SAGAT_HANDOVER_MIN_LIVE: ${SAGAT_HANDOVER_MIN_LIVE:-1}
     depends_on:
       postgres:
         condition: service_healthy

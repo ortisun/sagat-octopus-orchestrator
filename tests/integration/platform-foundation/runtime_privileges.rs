@@ -46,6 +46,7 @@ const CONTENT_USAGE: &str = "crates/infra-postgres/src/content_usage.rs";
 const INSTANCES: &str = "crates/infra-postgres/src/instances.rs";
 const TRIGGER_SCHEDULES: &str = "crates/infra-postgres/src/trigger_schedules.rs";
 const HANDOVER_AUTO: &str = "crates/infra-postgres/src/handover_auto.rs";
+const HANDOVER_OWNER: &str = "crates/infra-postgres/src/handover_role.rs";
 
 const ALLOWED: &[Allowed] = &[
     Allowed {
@@ -120,6 +121,21 @@ const ALLOWED: &[Allowed] = &[
     },
     Allowed {
         file: HANDOVER_AUTO,
+        need: "EXECUTE schedule_trigger_handover_note()",
+        reason: "T018-084, OD-2026-11-15-1: the stop note of the automatic handover (BUSY, CHECK_TOO_SLOW, INTERRUPTED, DEADLINE) is the job's, run as sagat_handover",
+    },
+    Allowed {
+        file: HANDOVER_OWNER,
+        need: "EXECUTE schedule_trigger_handover_set_floor()",
+        reason: "T018-084, D2291: migrate (the owner) sets the floor of the live engines the job counts with (SAGAT_HANDOVER_MIN_LIVE)",
+    },
+    Allowed {
+        file: HANDOVER_OWNER,
+        need: "EXECUTE schedule_trigger_handover_role_narrow()",
+        reason: "T018-084, security review M1: migrate (the owner) asks whether sagat_handover is narrow before it sets its login",
+    },
+    Allowed {
+        file: HANDOVER_AUTO,
         need: "EXECUTE schedule_trigger_handover_auto()",
         reason: "T018-084, ADR-0091 decision 9: the wrapper that records schedules-v1 and moves the state is sagat_handover's alone (and refuses any other session_user); trigger_auto_handover::the_wrapper_refuses_a_session_user_other_than_sagat_handover_even_a_member_of_it proves the runtime role is refused",
     },
@@ -134,27 +150,27 @@ const ALLOWED: &[Allowed] = &[
         reason: "T018-084, D2265: retiring sagat_handover is the job's (--retire-role) or the owner's",
     },
     Allowed {
-        file: HANDOVER_AUTO,
+        file: HANDOVER_OWNER,
         need: "EXECUTE schedule_trigger_handover_role_ensure()",
         reason: "T018-084, D2264: migrate (the owner) ensures the role of the automatic handover after the migrations",
     },
     Allowed {
-        file: HANDOVER_AUTO,
+        file: HANDOVER_OWNER,
         need: "EXECUTE schedule_trigger_handover_role_grants()",
         reason: "T018-084, D2264, D2275: migrate (the owner) grants the role of the automatic handover again at every run",
     },
     Allowed {
-        file: HANDOVER_AUTO,
+        file: HANDOVER_OWNER,
         need: "ROW LOCK schedule_trigger_handover",
         reason: "T018-084, D2269: migrate (the owner) reads the state under a share lock while it sets the login of sagat_handover",
     },
     Allowed {
-        file: HANDOVER_AUTO,
+        file: HANDOVER_OWNER,
         need: "SELECT schedule_trigger_handover_retirement",
         reason: "T018-084, D2269: migrate (the owner) reads the retirement of sagat_handover; the table is owner-only",
     },
     Allowed {
-        file: HANDOVER_AUTO,
+        file: HANDOVER_OWNER,
         need: "UNRESOLVED statement kind the audit does not model: ALTER",
         reason: "T018-084, D2272: migrate (the owner) sets the login of sagat_handover from a SCRAM verifier it computed; only a verifier reaches the statement (is_scram_verifier)",
     },
@@ -1089,29 +1105,9 @@ fn step_status_writer_inventory_is_explicit_before_capacity_activation() {
     );
 }
 
-/// What `sagat_handover` is not expected to run among the statements of the job's module: the owner side `migrate` runs.
-const HANDOVER_ALLOWED: &[(&str, &str)] = &[
-    (
-        "EXECUTE schedule_trigger_handover_role_ensure()",
-        "migrate (the owner) ensures the role, D2264",
-    ),
-    (
-        "EXECUTE schedule_trigger_handover_role_grants()",
-        "migrate (the owner) grants the role, D2264",
-    ),
-    (
-        "ROW LOCK schedule_trigger_handover",
-        "migrate (the owner) reads the state under a share lock while it sets the login, D2269",
-    ),
-    (
-        "SELECT schedule_trigger_handover_retirement",
-        "migrate (the owner) reads the retirement, D2269",
-    ),
-    (
-        "UNRESOLVED statement kind the audit does not model: ALTER",
-        "migrate (the owner) sets the login from a SCRAM verifier, D2272",
-    ),
-];
+/// What `sagat_handover` is not expected to run among the statements of the job's module: nothing. The owner's side, which
+/// `migrate` runs, is a module of its own (`handover_role.rs`), so no statement is excused by name (architecture review Major 2).
+const HANDOVER_ALLOWED: &[(&str, &str)] = &[];
 
 /// The privilege audit of the role of the automatic handover (ADR-0091, D2266), on the statements of the job's module: every one
 /// the job issues is within what `sagat_handover` holds, checked in the catalog and probed as the role, and the owner side that
@@ -1148,6 +1144,37 @@ async fn every_statement_the_handover_job_issues_is_within_sagat_handovers_privi
         }
     }
     assert!(checked >= 8, "the job's statements were found: {checked}");
+    // what the commit of the job's activation needs beyond its statements: ADR-0082's deferred check reads one column of the epoch,
+    // with the privileges of the session (OD-2026-11-15-1, D2289); the role holds exactly that column, and the check is not a definer
+    let (body, definer): (String, bool) = sqlx::query_as(
+        "SELECT prosrc, prosecdef FROM pg_proc WHERE oid = 'platform_requirements_epoch_moved()'::regprocedure",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("the deferred check");
+    assert!(!definer, "the check stays as ADR-0082 wrote it");
+    assert_eq!(
+        sql_needs::needs(&body)
+            .into_iter()
+            .map(|need| need.to_string())
+            .filter(|need| !need.starts_with("EXECUTE pg_"))
+            .collect::<Vec<_>>(),
+        vec!["SELECT platform_requirement_epoch".to_owned()],
+        "the check reads the epoch and nothing else"
+    );
+    let (column, table): (bool, bool) = sqlx::query_as(
+        "SELECT has_column_privilege($1, 'platform_requirement_epoch', 'changed_xact', 'SELECT'), \
+                has_table_privilege($1, 'platform_requirement_epoch', 'SELECT')",
+    )
+    .bind(HANDOVER_ROLE)
+    .fetch_one(&db.pool)
+    .await
+    .expect("privileges");
+    assert_eq!(
+        (column, table),
+        (true, false),
+        "SELECT on the one column the check reads, not the table"
+    );
     assert!(
         gaps.is_empty(),
         "statements of the job that {HANDOVER_ROLE} may not run:\n{}",

@@ -67,14 +67,17 @@ async fn sql(owner: &PgPool, statement: &str) {
 
 fn request(run: Uuid, retire_role: bool) -> AutoRequest {
     AutoRequest {
-        run,
-        stable: 3,
-        horizon: Duration::from_secs(600),
-        min_live: 1,
-        wait: Duration::from_secs(7_200),
+        ask: sagat_infra_postgres::AutoAsk {
+            run,
+            stable: 3,
+            horizon: Duration::from_secs(600),
+            min_live: 1,
+            wait: Duration::from_secs(7_200),
+        },
         retire_role,
         dry_run: false,
         operator: None,
+        activation: sagat_infra_postgres::OperatorBounds::default(),
     }
 }
 
@@ -109,6 +112,28 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
     assert!(!can_log_in(&owner).await, "created without a login");
     assert!(granted(&owner).await, "and granted");
 
+    // the migration's down takes back what it granted outside its functions (security nit), and up grants it again
+    sagat_infra_postgres::MIGRATOR
+        .undo(&owner, 20_270_116_000_000)
+        .await
+        .expect("down");
+    let (table, column): (bool, bool) = sqlx::query_as(
+        "SELECT has_table_privilege('sagat_handover', 'schedule_trigger_handover', 'SELECT'), \
+                has_column_privilege('sagat_handover', 'platform_requirement_epoch', 'changed_xact', 'SELECT')",
+    )
+    .fetch_one(&owner)
+    .await
+    .expect("privileges");
+    assert_eq!(
+        (table, column),
+        (false, false),
+        "down leaves the role nothing"
+    );
+    sagat_control_plane::run_migrations(&database(&url))
+        .await
+        .expect("up again");
+    assert!(granted(&owner).await);
+
     // created by hand after the migration that introduced it: the next migrate grants it
     sql(&owner, "DROP OWNED BY sagat_handover").await;
     sql(&owner, "DROP ROLE sagat_handover").await;
@@ -133,6 +158,11 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
             "CREATE ROLE wider_group NOLOGIN; GRANT wider_group TO sagat_handover",
             "DROP ROLE wider_group",
         ),
+        // a member that can act as the role (security review m6)
+        (
+            "CREATE ROLE acts_as_handover NOLOGIN; GRANT sagat_handover TO acts_as_handover",
+            "DROP ROLE acts_as_handover",
+        ),
     ] {
         for statement in widen.split("; ") {
             sql(&owner, statement).await;
@@ -143,6 +173,14 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
         assert!(
             !granted(&owner).await,
             "a wider role is refused its grants: {widen}"
+        );
+        // and migrate never logs a wider role in (security review M1)
+        sagat_control_plane::run_migrations_with(&database(&url), Some(PASSWORD))
+            .await
+            .expect("migrate goes on");
+        assert!(
+            !can_log_in(&owner).await,
+            "a wider role is not given a login: {widen}"
         );
         sql(&owner, narrow).await;
         sagat_control_plane::run_migrations(&database(&url))
@@ -186,6 +224,12 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
         "GRANT SELECT ON schedule_trigger_handover_retirement TO migrator",
     )
     .await;
+    // a migrating role that is not the owner reads what the owner's migrate reads
+    sql(
+        &owner,
+        "GRANT EXECUTE ON FUNCTION schedule_trigger_handover_role_narrow() TO migrator",
+    )
+    .await;
     let migrator = PgPoolOptions::new()
         .max_connections(1)
         .connect(&format!(
@@ -209,10 +253,33 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
     sql(&owner, "DROP ROLE sagat_handover").await;
     sql(&owner, "DROP ROLE creator").await;
 
-    // the password: a verifier, never the clear text, and a password with @, / and # connects apart from the URL
-    sagat_control_plane::run_migrations_with(&database(&url), Some(PASSWORD))
-        .await
-        .expect("migrate");
+    // the password: a verifier, never the clear text, and a password with @, / and # connects apart from the URL; the client logs no
+    // statement that carries the verifier either (security review m2)
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let writer = {
+        let captured = std::sync::Arc::clone(&captured);
+        move || Captured(std::sync::Arc::clone(&captured))
+    };
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(writer)
+        .finish();
+    {
+        let _guard = tracing::subscriber::set_default(subscriber);
+        sagat_control_plane::run_migrations_with(&database(&url), Some(PASSWORD))
+            .await
+            .expect("migrate");
+    }
+    let client_log = String::from_utf8_lossy(&captured.lock().expect("log")).into_owned();
+    assert!(
+        client_log.contains("sqlx"),
+        "the client logged its statements at all: the capture works"
+    );
+    assert!(
+        !client_log.contains("SCRAM-SHA-256$"),
+        "the client log never holds the verifier"
+    );
+    assert!(!client_log.contains(PASSWORD), "nor the password");
     assert!(
         can_log_in(&owner).await,
         "SAGAT_HANDOVER_PASSWORD lets it log in"
@@ -221,6 +288,45 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
         .await
         .expect("the password connects");
     job.close().await;
+    // a wrong password is not a retired role, even with --retire-role (correctness review): exit 2
+    let wrong_url = format!("postgres://sagat_handover@127.0.0.1:{port}/postgres");
+    let wrong = auto_handover(
+        &database(&wrong_url),
+        Some("a-wrong-password-for-it"),
+        &request(Uuid::new_v4(), true),
+        &Sleep,
+        &Interrupt::default(),
+    )
+    .await;
+    assert_eq!(
+        wrong
+            .as_ref()
+            .map_or_else(sagat_control_plane::RunError::exit_code, |_| 0),
+        2,
+        "28P01 is a wrong password, not a retirement: {wrong:?}"
+    );
+    // a member of the role that logs in as itself is refused by the wrapper (moved here: a member makes the role wider for every
+    // database of the cluster)
+    sql(
+        &owner,
+        "CREATE ROLE member_of_handover LOGIN PASSWORD 'member-password' IN ROLE sagat_handover",
+    )
+    .await;
+    let member = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&format!(
+            "postgres://member_of_handover:member-password@127.0.0.1:{port}/postgres"
+        ))
+        .await
+        .expect("member");
+    let refused = sqlx::query("SELECT * FROM schedule_trigger_handover_auto($1)")
+        .bind(Uuid::new_v4())
+        .execute(&member)
+        .await
+        .expect_err("a member is refused");
+    assert_eq!(crate::support::db_error(refused).0, "42501");
+    member.close().await;
+    sql(&owner, "DROP ROLE member_of_handover").await;
     let logged = String::from_utf8_lossy(&container.stderr_to_vec().await.expect("logs"))
         .into_owned()
         + &String::from_utf8_lossy(&container.stdout_to_vec().await.expect("logs"));
@@ -236,7 +342,7 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
     let job = as_handover(&base, PASSWORD).await.expect("connect");
     let run = Uuid::new_v4();
     for _ in 0..4 {
-        sqlx::query("SELECT * FROM schedule_trigger_handover_round($1, 3, interval '10 minutes', 1, interval '2 hours', NULL)")
+        sqlx::query("SELECT * FROM schedule_trigger_handover_round($1, 3, interval '10 minutes', 1, interval '2 hours')")
             .bind(run)
             .execute(&job)
             .await
@@ -250,7 +356,7 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
         .await
         .expect("age");
     }
-    sqlx::query("SELECT * FROM schedule_trigger_handover_round($1, 3, interval '10 minutes', 1, interval '2 hours', NULL)")
+    sqlx::query("SELECT * FROM schedule_trigger_handover_round($1, 3, interval '10 minutes', 1, interval '2 hours')")
         .bind(run)
         .execute(&job)
         .await
@@ -279,8 +385,17 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
     )
     .await;
 
-    // the job, with --retire-role: the audit, then the role cannot log in, and the retirement is recorded
+    // the job, with --retire-role: the audit, then the role cannot log in, has no password, its other sessions end, and the
+    // retirement is recorded (security review m5)
     let job_url = format!("postgres://sagat_handover@127.0.0.1:{port}/postgres");
+    let mut lingering = <sqlx::PgConnection as sqlx::Connection>::connect_with(
+        &PgConnectOptions::from_str(&base)
+            .expect("url")
+            .username("sagat_handover")
+            .password(PASSWORD),
+    )
+    .await
+    .expect("a session of the role");
     let done = auto_handover(
         &database(&job_url),
         Some(PASSWORD),
@@ -295,13 +410,52 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
         "{done:?}"
     );
     assert!(!can_log_in(&owner).await, "retired");
+    let no_password: bool = sqlx::query_scalar(
+        "SELECT rolpassword IS NULL FROM pg_authid WHERE rolname = 'sagat_handover'",
+    )
+    .fetch_one(&owner)
+    .await
+    .expect("password");
+    assert!(no_password, "no password left to try");
+    assert!(
+        sqlx::query("SELECT 1")
+            .execute(&mut lingering)
+            .await
+            .is_err(),
+        "the role's other sessions were ended"
+    );
     let retired_by: String =
         sqlx::query_scalar("SELECT retired_by FROM schedule_trigger_handover_retirement")
             .fetch_one(&owner)
             .await
             .expect("recorded");
     assert_eq!(retired_by, "sagat_handover");
-    // a later job that cannot log in: exit 0 with --retire-role, exit 2 without
+    // a later job: the retired role has no password, so the server answers 28P01 before it looks at the login, and 28P01 is never
+    // taken for a retirement (correctness review): exit 2 with or without --retire-role, which is why the runbook switches the job
+    // off after the handover (D2296)
+    for retire in [true, false] {
+        let later = auto_handover(
+            &database(&job_url),
+            Some(PASSWORD),
+            &request(Uuid::new_v4(), retire),
+            &Sleep,
+            &Interrupt::default(),
+        )
+        .await;
+        assert_eq!(
+            later
+                .as_ref()
+                .map_or_else(sagat_control_plane::RunError::exit_code, |_| 0),
+            2,
+            "{later:?}"
+        );
+    }
+    // a role retired by hand that kept its password answers 28000: with --retire-role that is a retired role, exit 0
+    sql(
+        &owner,
+        &format!("ALTER ROLE sagat_handover NOLOGIN PASSWORD '{verifier}'"),
+    )
+    .await;
     let later = auto_handover(
         &database(&job_url),
         Some(PASSWORD),
@@ -311,21 +465,6 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
     )
     .await;
     assert!(matches!(later, Ok(AutoOutcome::RoleRetired)), "{later:?}");
-    let later = auto_handover(
-        &database(&job_url),
-        Some(PASSWORD),
-        &request(Uuid::new_v4(), false),
-        &Sleep,
-        &Interrupt::default(),
-    )
-    .await;
-    assert_eq!(
-        later
-            .as_ref()
-            .map_or_else(sagat_control_plane::RunError::exit_code, |_| 0),
-        2,
-        "{later:?}"
-    );
 
     // retirement survives a later migrate with the password still given
     sagat_control_plane::run_migrations_with(&database(&url), Some(PASSWORD))
@@ -339,4 +478,18 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
         granted(&owner).await,
         "its grants stay, harmless without a login"
     );
+}
+
+/// A log writer the test reads back.
+struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("log").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

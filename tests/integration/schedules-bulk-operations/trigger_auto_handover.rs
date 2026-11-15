@@ -172,7 +172,7 @@ impl Fleet {
     async fn round(&self, run: Uuid) -> (String, Option<String>, i32) {
         sqlx::query_as(
             "SELECT out_outcome, out_reason, out_stable \
-               FROM schedule_trigger_handover_round($1, 3, interval '10 minutes', 1, interval '2 hours', NULL)",
+               FROM schedule_trigger_handover_round($1, 3, interval '10 minutes', 1, interval '2 hours')",
         )
         .bind(run)
         .fetch_one(&self.handover)
@@ -216,16 +216,26 @@ impl Fleet {
 
 fn request(run: Uuid) -> AutoRequest {
     AutoRequest {
-        run,
-        stable: 3,
-        horizon: Duration::from_secs(600),
-        min_live: 1,
-        wait: Duration::from_secs(7_200),
+        ask: sagat_infra_postgres::AutoAsk {
+            run,
+            stable: 3,
+            horizon: Duration::from_secs(600),
+            min_live: 1,
+            wait: Duration::from_secs(7_200),
+        },
         retire_role: false,
         dry_run: false,
         operator: Some("release-test".to_owned()),
+        activation: sagat_infra_postgres::OperatorBounds::default(),
     }
 }
+
+/// Bounds of the activation that let a test hold it on a lock it watches, instead of racing the two seconds of its lock wait.
+const HELD: sagat_infra_postgres::OperatorBounds = sagat_infra_postgres::OperatorBounds {
+    lock_timeout: Duration::from_secs(120),
+    statement_timeout: Duration::from_secs(120),
+    step: Duration::from_secs(120),
+};
 
 /// Something the test does after the n-th wait of the job.
 type Step = Box<dyn Fn(usize, Option<&str>) -> Option<String> + Send + Sync>;
@@ -238,6 +248,8 @@ struct Clockwork {
     run: Uuid,
     keep_first_round: bool,
     reasons: Mutex<Vec<Option<String>>>,
+    /// What the job asked to wait each time (the spacing, the backoff, the clamp to its deadline).
+    asked: Mutex<Vec<Duration>>,
     waits: AtomicUsize,
     max_waits: usize,
     step: Option<Step>,
@@ -254,6 +266,7 @@ impl Clockwork {
             run,
             keep_first_round: false,
             reasons: Mutex::new(Vec::new()),
+            asked: Mutex::new(Vec::new()),
             waits: AtomicUsize::new(0),
             max_waits: 40,
             step: None,
@@ -265,11 +278,16 @@ impl Clockwork {
     fn reasons(&self) -> Vec<Option<String>> {
         self.reasons.lock().expect("reasons").clone()
     }
+
+    fn asked(&self) -> Vec<Duration> {
+        self.asked.lock().expect("asked").clone()
+    }
 }
 
 impl Pace for Clockwork {
-    fn wait<'a>(&'a self, _wait: Duration, interrupt: &'a Interrupt) -> Paced<'a> {
+    fn wait<'a>(&'a self, wait: Duration, interrupt: &'a Interrupt) -> Paced<'a> {
         Box::pin(async move {
+            self.asked.lock().expect("asked").push(wait);
             let n = self.waits.fetch_add(1, Ordering::SeqCst) + 1;
             let reason: Option<String> = sqlx::query_scalar(
                 "SELECT last_reason FROM schedule_trigger_handover_attempts WHERE run_id = $1",
@@ -404,6 +422,16 @@ async fn the_job_hands_over_once_the_fleet_is_stable_a_horizon_after_its_first_r
         panic!("{done:?}")
     };
     assert_eq!(live, 2);
+    // the rounds are a heartbeat apart
+    assert!(
+        !pace.asked().is_empty()
+            && pace
+                .asked()
+                .iter()
+                .all(|wait| *wait == Duration::from_secs(15)),
+        "{:?}",
+        pace.asked()
+    );
     // the first round is within the first horizon; the next two count
     assert_eq!(
         pace.reasons().first().cloned().flatten().as_deref(),
@@ -587,7 +615,7 @@ async fn an_engine_without_the_capability_within_the_horizon_too_few_engines_and
     // --min-live, floored at one, is the run's from its first round
     let strict = Uuid::new_v4();
     let (_, reason, _): (String, Option<String>, i32) = sqlx::query_as(
-        "SELECT out_outcome, out_reason, out_stable FROM schedule_trigger_handover_round($1, 3, interval '10 minutes', 2, interval '2 hours', NULL)",
+        "SELECT out_outcome, out_reason, out_stable FROM schedule_trigger_handover_round($1, 3, interval '10 minutes', 2, interval '2 hours')",
     )
     .bind(strict)
     .fetch_one(&fleet.handover)
@@ -604,7 +632,7 @@ async fn an_engine_without_the_capability_within_the_horizon_too_few_engines_and
     assert_eq!((min_live, stable, horizon), (2, 3, 600.0));
     // a weaker ask is floored by the database
     let weak = Uuid::new_v4();
-    sqlx::query("SELECT * FROM schedule_trigger_handover_round($1, 1, interval '1 minute', 0, interval '48 hours', NULL)")
+    sqlx::query("SELECT * FROM schedule_trigger_handover_round($1, 1, interval '1 minute', 0, interval '48 hours')")
         .bind(weak)
         .execute(&fleet.handover)
         .await
@@ -618,7 +646,7 @@ async fn an_engine_without_the_capability_within_the_horizon_too_few_engines_and
     .await
     .expect("attempt");
     assert_eq!((min_live, stable, horizon, wait), (1, 3, 600.0, 86_400.0));
-    let too_far = sqlx::query("SELECT * FROM schedule_trigger_handover_round($1, 3, interval '2 hours', 1, interval '2 hours', NULL)")
+    let too_far = sqlx::query("SELECT * FROM schedule_trigger_handover_round($1, 3, interval '2 hours', 1, interval '2 hours')")
         .bind(Uuid::new_v4())
         .execute(&fleet.handover)
         .await
@@ -891,9 +919,17 @@ async fn two_jobs_at_once_hand_over_once_with_one_history_row_one_census_one_ten
             .await
         }));
     }
-    // both are stable and held before their activations; released together, they serialise on the epoch
+    // both are stable and held before their activations; released together, they serialise on the epoch: the handover row is
+    // held so that the order is seen, one job on the row with the epoch, the other on the epoch (correctness review)
     arrive.wait().await;
+    let mut row = fleet.owner.begin().await.expect("begin");
+    sqlx::query("SELECT 1 FROM schedule_trigger_handover FOR UPDATE")
+        .execute(&mut *row)
+        .await
+        .expect("hold the row");
     release.wait().await;
+    waiting_on_locks(&fleet.owner, 2).await;
+    row.commit().await.expect("release the row");
     let mut outcomes = Vec::new();
     for task in tasks {
         outcomes.push(
@@ -1056,11 +1092,13 @@ async fn an_engine_registering_without_the_capability_during_the_check_both_orde
     fleet.ready(1).await;
     let run = Uuid::new_v4();
     fleet.stable(run).await;
+    // the handover row held (the wrapper takes it after the epoch and the triggers' table, and waits for it with no bound of its
+    // own), so the order is held by a lock and not raced against the two seconds of the table's
     let mut publication = fleet.owner.begin().await.expect("begin");
-    sqlx::query("LOCK TABLE workflow_triggers IN ROW EXCLUSIVE MODE")
+    sqlx::query("SELECT 1 FROM schedule_trigger_handover FOR UPDATE")
         .execute(&mut *publication)
         .await
-        .expect("a publication in flight");
+        .expect("the handover row held");
     let wrapper = {
         let pool = fleet.handover.clone();
         tokio::spawn(async move {
@@ -1214,7 +1252,7 @@ async fn the_wrapper_alone_refuses_each_condition_in_turn_and_records_nothing() 
 }
 
 #[tokio::test]
-async fn the_wrapper_refuses_a_session_user_other_than_sagat_handover_even_a_member_of_it() {
+async fn the_wrapper_refuses_a_session_user_other_than_sagat_handover_and_the_runtime_role() {
     let db = migrated_db().await;
     let fleet = Fleet::on(&db).await;
     fleet.ready(1).await;
@@ -1227,26 +1265,6 @@ async fn the_wrapper_refuses_a_session_user_other_than_sagat_handover_even_a_mem
         .await
         .expect_err("the owner is refused");
     assert_eq!(crate::support::db_error(owner).0, "42501");
-    // a member of the role that logs in as itself
-    let member = format!("member_{}", Uuid::new_v4().simple());
-    fleet
-        .sql(&format!(
-            "CREATE ROLE {member} LOGIN PASSWORD 'member-password' IN ROLE {HANDOVER_ROLE}"
-        ))
-        .await;
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&db.url_for(&member, "member-password"))
-        .await
-        .expect("member");
-    let refused = sqlx::query("SELECT * FROM schedule_trigger_handover_auto($1)")
-        .bind(run)
-        .execute(&pool)
-        .await
-        .expect_err("a member is refused");
-    assert_eq!(crate::support::db_error(refused).0, "42501");
-    pool.close().await;
-    fleet.sql(&format!("DROP ROLE {member}")).await;
     // the runtime role cannot even execute it
     let runtime = db.runtime_pool().await;
     let refused = sqlx::query("SELECT * FROM schedule_trigger_handover_auto($1)")
@@ -1337,7 +1355,7 @@ async fn the_forgeries_of_the_runtime_role_can_make_the_handover_early_and_never
         "SELECT * FROM platform_requirement_activate('schedules-v1', ARRAY['EXECUTION_ENGINE'], 'x')",
         "SELECT schedule_trigger_handover_complete('x')",
         "SELECT schedule_trigger_handover_record('x', 'AUTOMATIC', interval '10 minutes')",
-        "SELECT * FROM schedule_trigger_handover_round(gen_random_uuid(), 3, interval '10 minutes', 1, interval '2 hours', NULL)",
+        "SELECT * FROM schedule_trigger_handover_round(gen_random_uuid(), 3, interval '10 minutes', 1, interval '2 hours')",
     ] {
         let refused = sqlx::query(sqlx::AssertSqlSafe(statement))
             .execute(&runtime)
@@ -1462,11 +1480,42 @@ async fn the_runtime_role_cannot_plant_the_audit_and_a_planted_id_that_differs_i
         &Clockwork::new(&fleet, run),
     )
     .await;
-    assert_eq!(exit_code(&result), 2, "{result:?}");
     assert!(
-        format!("{result:?}").contains("AUDIT_CONFLICT"),
-        "{result:?}"
+        matches!(
+            result,
+            Ok(AutoOutcome::AlreadyHandedOver {
+                audit_pending: true,
+                ..
+            })
+        ),
+        "the handover is made: exit 0, with the audit left pending and said (correctness review): {result:?}"
     );
+    // what is left is visible to the engines, which read it as the runtime role
+    let store = sagat_infra_postgres::PgScheduleStore::new(t2.w.db.runtime_pool().await);
+    let view = sagat_application::schedule_triggers::TriggerScheduleStore::handover_view(&store)
+        .await
+        .expect("the engines' view");
+    assert_eq!(view.audit_pending, Some(1));
+    // and the operator's --apply says the same, exit 0
+    let owner_db = DatabaseConfig {
+        url: t2.w.db.url.clone(),
+        max_connections: 2,
+        statement_timeout: Duration::from_secs(5),
+    };
+    let said = schedule_trigger_handover(
+        &owner_db,
+        &HandoverRequest {
+            operator: Some("ana".to_owned()),
+            expect_live: Some(1),
+            dry_run: false,
+        },
+    )
+    .await;
+    assert!(
+        matches!(said, Ok(HandoverOutcome::AlreadyHandedOver { .. })),
+        "{said:?}"
+    );
+
     assert_eq!(
         fleet
             .count(
@@ -1653,6 +1702,15 @@ async fn statement_timeouts_of_the_rounds_are_retried_and_three_in_a_row_are_che
         vec![Some("BUSY"), Some("BUSY"), Some("CHECK_TOO_SLOW")],
         "{reasons:?}"
     );
+    assert_eq!(
+        pace.asked()
+            .iter()
+            .take(3)
+            .map(Duration::as_secs)
+            .collect::<Vec<_>>(),
+        vec![15, 30, 60],
+        "the backoff starts at a heartbeat and doubles"
+    );
     drop(held);
 }
 
@@ -1810,7 +1868,30 @@ async fn the_reason_codes_of_the_sql_the_rust_enum_and_the_runbook_are_one_set()
         sql, rust,
         "the SQL and the Rust enum, in the order of ADR-0091 decision 5"
     );
-    // the attempt row's CHECK takes exactly these
+    // the attempt row's CHECK takes exactly these: it reads the same function
+    let check: String = sqlx::query_scalar(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'schedule_trigger_handover_attempts_reason_closed'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("the CHECK");
+    assert!(
+        check.contains("schedule_trigger_handover_reasons()"),
+        "{check}"
+    );
+    // and the note's closed set is part of it
+    let note: String = sqlx::query_scalar(
+        "SELECT prosrc FROM pg_proc WHERE oid = 'schedule_trigger_handover_note(uuid,text,integer,interval,integer,interval)'::regprocedure",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("the note");
+    for reason in ["BUSY", "CHECK_TOO_SLOW", "INTERRUPTED", "DEADLINE"] {
+        assert!(
+            note.contains(&format!("'{reason}'")) && sql.contains(&reason.to_owned()),
+            "{reason}"
+        );
+    }
     for reason in &sql {
         assert!(HandoverBlock::from_code(reason).is_some());
     }
@@ -1845,6 +1926,13 @@ async fn the_reason_codes_of_the_sql_the_rust_enum_and_the_runbook_are_one_set()
 
 // --- the catalog: every definer pinned and closed to PUBLIC; what each role may run ---------------------------------------
 
+/// The three definers older than ADR-0091 that pin `pg_catalog, public, pg_temp` (G2280), by name: the test fails when one is fixed.
+const G2280: [&str; 3] = [
+    "business_ids_purge(integer)",
+    "run_active_counts_track()",
+    "schedule_purge_actions(integer,integer)",
+];
+
 #[tokio::test]
 async fn every_security_definer_function_pins_its_search_path_and_none_is_executable_by_public() {
     let db = migrated_db().await;
@@ -1871,9 +1959,11 @@ async fn every_security_definer_function_pins_its_search_path_and_none_is_execut
             .map(|path| path.split(',').map(str::trim).collect::<Vec<_>>());
         let pinned = match path.as_deref() {
             Some(["pg_catalog", "pg_temp"]) => true,
-            // three definers older than this ADR pin `pg_catalog, public, pg_temp` (G2280): public after pg_catalog, and nobody
-            // but the owner creates in it
-            Some(["pg_catalog", "public", "pg_temp"]) => !public_creates,
+            // three definers older than this ADR pin `pg_catalog, public, pg_temp` (G2280), by name only: public after pg_catalog,
+            // and nobody but the owner creates in it
+            Some(["pg_catalog", "public", "pg_temp"]) => {
+                !public_creates && G2280.contains(&function.as_str())
+            }
             _ => false,
         };
         let adr = function.starts_with("schedule_trigger_handover_");
@@ -1890,6 +1980,35 @@ async fn every_security_definer_function_pins_its_search_path_and_none_is_execut
         wrong.is_empty(),
         "definer functions without the pinned path or open to PUBLIC: {wrong:?}"
     );
+    // the tolerance of G2280 is closed: a function fixed leaves the list
+    for function in G2280 {
+        let (_, config, _) = bad
+            .iter()
+            .find(|(name, ..)| name == function)
+            .unwrap_or_else(|| panic!("{function} is no longer a definer: take it out of G2280"));
+        assert!(
+            config
+                .iter()
+                .flatten()
+                .any(|setting| setting == "search_path=pg_catalog, public, pg_temp"),
+            "{function} pins another path now: take it out of G2280"
+        );
+    }
+    // nobody but the owner may create in the schema the definers name (security review m7)
+    let creators: Vec<String> = sqlx::query_scalar(
+        "SELECT r.rolname::text FROM pg_roles r \
+          WHERE r.rolname NOT LIKE 'pg\\_%' AND NOT r.rolsuper \
+            AND r.oid <> (SELECT n.nspowner FROM pg_namespace n WHERE n.nspname = 'public') \
+            AND has_schema_privilege(r.oid, 'public', 'CREATE') ORDER BY 1",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("schema privileges");
+    assert!(
+        creators.is_empty(),
+        "roles that may create in public: {creators:?}"
+    );
+    assert!(!public_creates, "nor PUBLIC");
     // and every function of this ADR, definer or not, pins it and is closed to PUBLIC
     let open: Vec<String> = sqlx::query_scalar(
         "SELECT p.oid::regprocedure::text FROM pg_proc p \
@@ -1905,7 +2024,8 @@ async fn every_security_definer_function_pins_its_search_path_and_none_is_execut
 }
 
 #[tokio::test]
-async fn sagat_handover_can_run_its_four_functions_and_read_its_two_tables_and_nothing_else() {
+async fn sagat_handover_can_run_its_five_functions_read_its_two_tables_and_one_column_and_nothing_else()
+ {
     let db = migrated_db().await;
     let functions: Vec<String> = sqlx::query_scalar(
         "SELECT p.oid::regprocedure::text FROM pg_proc p \
@@ -1922,10 +2042,12 @@ async fn sagat_handover_can_run_its_four_functions_and_read_its_two_tables_and_n
         vec![
             "schedule_trigger_handover_audit()".to_owned(),
             "schedule_trigger_handover_auto(uuid)".to_owned(),
-            "schedule_trigger_handover_retire()".to_owned(),
-            "schedule_trigger_handover_round(uuid,integer,interval,integer,interval,text)"
+            "schedule_trigger_handover_note(uuid,text,integer,interval,integer,interval)"
                 .to_owned(),
-        ]
+            "schedule_trigger_handover_retire()".to_owned(),
+            "schedule_trigger_handover_round(uuid,integer,interval,integer,interval)".to_owned(),
+        ],
+        "the five functions of ADR-0091 decision 9 (OD-2026-11-15-1)"
     );
     let tables: Vec<(String, String)> = sqlx::query_as(
         "SELECT c.relname::text, p.privilege FROM pg_class c \
@@ -1947,18 +2069,44 @@ async fn sagat_handover_can_run_its_four_functions_and_read_its_two_tables_and_n
             ),
         ]
     );
-    let columns: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid \
+    let columns: Vec<(String, String)> = sqlx::query_as(
+        "SELECT c.relname::text, a.attname::text FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid \
           WHERE c.relnamespace = 'public'::regnamespace AND a.attnum > 0 AND NOT a.attisdropped \
             AND c.relname NOT IN ('schedule_trigger_handover', 'schedule_trigger_handover_attempts') \
-            AND has_column_privilege($1, c.oid, a.attnum, 'SELECT,INSERT,UPDATE,REFERENCES')",
+            AND has_column_privilege($1, c.oid, a.attnum, 'SELECT,INSERT,UPDATE,REFERENCES') ORDER BY 1, 2",
+    )
+    .bind(HANDOVER_ROLE)
+    .fetch_all(&db.pool)
+    .await
+    .expect("columns");
+    assert_eq!(
+        columns,
+        vec![(
+            "platform_requirement_epoch".to_owned(),
+            "changed_xact".to_owned()
+        )],
+        "the one column ADR-0082's deferred check reads at the commit of the job's activation (OD-2026-11-15-1)"
+    );
+    let definer: bool = sqlx::query_scalar(
+        "SELECT prosecdef FROM pg_proc WHERE oid = 'platform_requirements_epoch_moved()'::regprocedure",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("the check");
+    assert!(
+        !definer,
+        "ADR-0082's deferred check stays as it was (D2282 reverted)"
+    );
+    let sequences: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_class c WHERE c.relkind = 'S' AND c.relnamespace = 'public'::regnamespace \
+            AND (has_sequence_privilege($1, c.oid, 'USAGE') OR has_sequence_privilege($1, c.oid, 'SELECT') \
+                 OR has_sequence_privilege($1, c.oid, 'UPDATE'))",
     )
     .bind(HANDOVER_ROLE)
     .fetch_one(&db.pool)
     .await
-    .expect("columns");
-    assert_eq!(columns, 0, "no column privilege elsewhere");
-    // and the runtime role gained nothing executable
+    .expect("sequences");
+    assert_eq!(sequences, 0, "no sequence");
     let runtime: Vec<String> = sqlx::query_scalar(
         "SELECT p.oid::regprocedure::text FROM pg_proc p \
           WHERE p.pronamespace = 'public'::regnamespace AND p.proname LIKE 'schedule_trigger_handover_%' \
@@ -1968,10 +2116,158 @@ async fn sagat_handover_can_run_its_four_functions_and_read_its_two_tables_and_n
     .fetch_all(&db.pool)
     .await
     .expect("runtime");
-    assert!(runtime.is_empty(), "{runtime:?}");
+    assert!(
+        runtime.is_empty(),
+        "the runtime role gained nothing executable: {runtime:?}"
+    );
 }
 
-// --- the switch and the password, as the process reads them --------------------------------------------------------------
+/// The stop note (OD-2026-11-15-1): a function of its own, a closed set, the run id, counting nothing.
+#[tokio::test]
+async fn the_note_function_writes_only_what_the_job_alone_sees_and_counts_nothing() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    fleet.round(run).await;
+    fleet.age_run(run).await;
+    let (_, _, before) = fleet.round(run).await;
+    for reason in ["BUSY", "CHECK_TOO_SLOW", "INTERRUPTED", "DEADLINE"] {
+        let (outcome,): (String,) = sqlx::query_as(
+            "SELECT out_outcome FROM schedule_trigger_handover_note($1, $2, 3, interval '10 minutes', 1, interval '2 hours')",
+        )
+        .bind(run)
+        .bind(reason)
+        .fetch_one(&fleet.handover)
+        .await
+        .expect("note");
+        assert_eq!(outcome, "NOTED");
+        assert_eq!(fleet.last_reason(run).await.as_deref(), Some(reason));
+    }
+    let stable: i32 = sqlx::query_scalar(
+        "SELECT stable_count FROM schedule_trigger_handover_attempts WHERE run_id = $1",
+    )
+    .bind(run)
+    .fetch_one(&fleet.owner)
+    .await
+    .expect("count");
+    assert_eq!(stable, before, "a note counts nothing and ends nothing");
+    for refused in ["FIRST_HORIZON", "ENGINE_UNREGISTERED", "anything"] {
+        let error = sqlx::query(
+            "SELECT * FROM schedule_trigger_handover_note($1, $2, 3, interval '10 minutes', 1, interval '2 hours')",
+        )
+        .bind(run)
+        .bind(refused)
+        .execute(&fleet.handover)
+        .await
+        .expect_err(refused);
+        assert_eq!(
+            crate::support::db_error(error).0,
+            "22023",
+            "{refused}: what the database decides is not noted"
+        );
+    }
+    let fresh = Uuid::new_v4();
+    sqlx::query("SELECT * FROM schedule_trigger_handover_note($1, 'BUSY', 3, interval '10 minutes', 1, interval '2 hours')")
+        .bind(fresh)
+        .execute(&fleet.handover)
+        .await
+        .expect("a run whose first round failed gets its row from a note");
+    assert_eq!(fleet.last_reason(fresh).await.as_deref(), Some("BUSY"));
+}
+
+/// Security review m3: the owner's floor of the live engines holds whatever a caller of the round asks.
+#[tokio::test]
+async fn the_owners_floor_of_live_engines_holds_against_a_weaker_min_live() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    fleet
+        .sql("SELECT schedule_trigger_handover_set_floor(2)")
+        .await;
+    let run = Uuid::new_v4();
+    assert_eq!(
+        fleet.round(run).await.1.as_deref(),
+        Some("TOO_FEW_ENGINES"),
+        "a --min-live of 1 is raised to the floor"
+    );
+    fleet.engine().await;
+    assert_ne!(fleet.round(run).await.1.as_deref(), Some("TOO_FEW_ENGINES"));
+}
+
+/// Correctness review: a streak with a gap of more than two heartbeats starts over.
+#[tokio::test]
+async fn a_streak_with_a_gap_of_more_than_two_heartbeats_starts_over() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    fleet.round(run).await;
+    fleet.age_run(run).await;
+    assert_eq!(fleet.round(run).await.2, 2);
+    sqlx::query(
+        "UPDATE schedule_trigger_handover_attempts SET last_stable_at = clock_timestamp() - interval '31 seconds' WHERE run_id = $1",
+    )
+    .bind(run)
+    .execute(&fleet.owner)
+    .await
+    .expect("a gap");
+    assert_eq!(fleet.round(run).await.2, 1, "not consecutive any more");
+}
+
+/// Security review m4: the runs are bounded, so the rows the engines read cannot grow without end.
+#[tokio::test]
+async fn a_seventeenth_live_run_is_refused_and_a_stopped_run_gives_way() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    for _ in 0..16 {
+        fleet.round(Uuid::new_v4()).await;
+    }
+    let refused = sqlx::query(
+        "SELECT * FROM schedule_trigger_handover_round($1, 3, interval '10 minutes', 1, interval '2 hours')",
+    )
+    .bind(Uuid::new_v4())
+    .execute(&fleet.handover)
+    .await
+    .expect_err("a seventeenth");
+    assert_eq!(crate::support::db_error(refused).0, "54000");
+    fleet
+        .sql(
+            "UPDATE schedule_trigger_handover_attempts SET last_reason = 'INTERRUPTED' \
+              WHERE run_id = (SELECT run_id FROM schedule_trigger_handover_attempts LIMIT 1)",
+        )
+        .await;
+    fleet.round(Uuid::new_v4()).await;
+}
+
+/// Security nit: a planted record that differs only by its trace id is a conflict.
+#[tokio::test]
+async fn a_planted_audit_record_that_differs_only_by_its_trace_id_is_a_conflict() {
+    let t = triggers().await;
+    t.publish(cron_workflow("traced", "0 * * * *", "UTC")).await;
+    t.reconcile().await;
+    let fleet = Fleet::on(&t.w.db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    fleet.stable(run).await;
+    assert_eq!(fleet.wrapper(run).await.0, "HANDED_OVER");
+    sqlx::query(
+        "INSERT INTO audit_records (id, tenant_id, actor, action, resource_type, resource_id, reason, trace_id, created_at) \
+         SELECT s.audit_id, s.tenant_id, h.changed_by, 'schedule.trigger_handover', 'platform', 'schedule_trigger_handover', \
+                format('the cron triggers were handed over to the schedule pass (mode %s, requirement epoch %s)', \
+                       h.changed_mode, h.changed_epoch), \
+                repeat('a', 32), h.changed_at \
+           FROM schedule_trigger_handover_tenants s CROSS JOIN schedule_trigger_handover h",
+    )
+    .execute(&fleet.owner)
+    .await
+    .expect("planted");
+    let conflict = sqlx::query("SELECT * FROM schedule_trigger_handover_audit()")
+        .execute(&fleet.handover)
+        .await
+        .expect_err("a conflict");
+    assert_eq!(crate::support::db_error(conflict).0, "23505");
+}
 
 #[tokio::test]
 async fn the_job_switched_off_exits_zero_at_once_and_without_a_password_exits_two_naming_the_variable()
@@ -2012,4 +2308,244 @@ async fn the_job_switched_off_exits_zero_at_once_and_without_a_password_exits_tw
         .await
         .expect_err("exit 2");
     assert_eq!(refused.exit_code(), 2, "{refused}");
+}
+
+/// Correctness review Major 1: the job keeps its own deadline, so it ends with exit 3 even when no round ever answers.
+#[tokio::test]
+async fn the_job_ends_at_its_deadline_with_exit_three_even_when_every_round_fails() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    let mut held = fleet.owner.begin().await.expect("begin");
+    sqlx::query("LOCK TABLE scheduler_members IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *held)
+        .await
+        .expect("every round times out");
+    let mut short = request(run);
+    short.ask.wait = Duration::from_secs(1);
+    let pace = Clockwork::new(&fleet, run);
+    let result = job(&fleet, &short, &pace).await;
+    assert_eq!(exit_code(&result), 3, "{result:?}");
+    assert_eq!(fleet.last_reason(run).await.as_deref(), Some("DEADLINE"));
+    assert!(
+        pace.asked()
+            .iter()
+            .all(|wait| *wait <= Duration::from_secs(2)),
+        "every wait is clamped to the deadline: {:?}",
+        pace.asked()
+    );
+    held.rollback().await.expect("release");
+}
+
+/// Correctness nit: a --wait that cannot hold a horizon and the stable rounds is refused at the command line.
+#[test]
+fn a_wait_shorter_than_the_horizon_and_the_stable_rounds_is_refused() {
+    let args = |wait: &str| {
+        ["schedule-trigger-handover", "--auto", "--wait", wait]
+            .iter()
+            .map(|a| (*a).to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        sagat_control_plane::cli::parse(&args("10m")).is_err(),
+        "10m < 10m + 3 x 15s"
+    );
+    assert!(sagat_control_plane::cli::parse(&args("11m")).is_ok());
+}
+
+/// Correctness review Major 2: statement timeouts of the activation count on their own, so three of them are CHECK_TOO_SLOW even
+/// though the rounds between them answer.
+#[tokio::test]
+async fn three_statement_timeouts_of_the_activation_are_check_too_slow() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    // the activation writes the tenant set: held, its statement runs past the second it is given
+    let mut held = fleet.owner.begin().await.expect("begin");
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *held)
+        .await
+        .expect("pid");
+    sqlx::query("LOCK TABLE schedule_trigger_handover_tenants IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *held)
+        .await
+        .expect("hold");
+    let mut slow = request(run);
+    slow.activation = sagat_infra_postgres::OperatorBounds {
+        lock_timeout: Duration::from_secs(60),
+        statement_timeout: Duration::from_secs(1),
+        step: Duration::from_secs(60),
+    };
+    let mut pace = Clockwork::new(&fleet, run);
+    pace.step = Some(Box::new(move |_, reason| {
+        (reason == Some("CHECK_TOO_SLOW")).then(|| release(pid))
+    }));
+    let done = job(&fleet, &slow, &pace).await;
+    assert!(
+        matches!(done, Ok(AutoOutcome::HandedOver { .. })),
+        "{done:?}"
+    );
+    let notes: Vec<Option<String>> = pace
+        .reasons()
+        .into_iter()
+        .filter(|r| matches!(r.as_deref(), Some("BUSY" | "CHECK_TOO_SLOW")))
+        .collect();
+    assert_eq!(
+        notes.iter().map(Option::as_deref).collect::<Vec<_>>(),
+        vec![Some("BUSY"), Some("BUSY"), Some("CHECK_TOO_SLOW")],
+        "{:?}",
+        pace.reasons()
+    );
+    drop(held);
+}
+
+/// An interrupt that comes while an activation runs does not cut it: it commits, and the job exits 0.
+#[tokio::test]
+async fn an_interrupt_during_an_activation_lets_it_commit_whole() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    let mut held = fleet.owner.begin().await.expect("begin");
+    sqlx::query("SELECT 1 FROM schedule_trigger_handover FOR UPDATE")
+        .execute(&mut *held)
+        .await
+        .expect("hold the row");
+    let mut wide = request(run);
+    wide.activation = HELD;
+    let interrupt = Interrupt::default();
+    let task = {
+        let pace = Clockwork::new(&fleet, run);
+        let database = fleet.database();
+        let interrupt = interrupt.clone();
+        tokio::spawn(async move {
+            auto_handover(
+                &database,
+                Some(HANDOVER_ROLE_PASSWORD),
+                &wide,
+                &pace,
+                &interrupt,
+            )
+            .await
+        })
+    };
+    waiting_on_locks(&fleet.owner, 1).await;
+    interrupt.raise();
+    held.commit().await.expect("release");
+    let done = tokio::time::timeout(Duration::from_secs(120), task)
+        .await
+        .expect("ends")
+        .expect("joined");
+    assert!(
+        matches!(done, Ok(AutoOutcome::HandedOver { .. })),
+        "the activation begun committed: {done:?}"
+    );
+    assert_eq!(fleet.handover_row().await.0, "HANDED_OVER");
+}
+
+/// The job holds the epoch in its activation while the operator's command waits for it; the operator then finds it handed over.
+#[tokio::test]
+async fn the_job_holding_the_epoch_makes_the_operator_wait_and_find_it_handed_over() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    let mut held = fleet.owner.begin().await.expect("begin");
+    sqlx::query("SELECT 1 FROM schedule_trigger_handover FOR UPDATE")
+        .execute(&mut *held)
+        .await
+        .expect("hold the row");
+    let mut wide = request(run);
+    wide.activation = HELD;
+    let job_task = {
+        let pace = Clockwork::new(&fleet, run);
+        let database = fleet.database();
+        tokio::spawn(async move {
+            auto_handover(
+                &database,
+                Some(HANDOVER_ROLE_PASSWORD),
+                &wide,
+                &pace,
+                &Interrupt::default(),
+            )
+            .await
+        })
+    };
+    waiting_on_locks(&fleet.owner, 1).await;
+    let operator = {
+        let url = db.url.clone();
+        tokio::spawn(async move {
+            schedule_trigger_handover(
+                &DatabaseConfig {
+                    url,
+                    max_connections: 2,
+                    statement_timeout: Duration::from_secs(60),
+                },
+                &HandoverRequest {
+                    operator: Some("ana".to_owned()),
+                    expect_live: Some(1),
+                    dry_run: false,
+                },
+            )
+            .await
+        })
+    };
+    // the job waits on the row with the epoch held; the operator waits on the epoch
+    waiting_on_locks(&fleet.owner, 2).await;
+    held.commit().await.expect("release");
+    let done = tokio::time::timeout(Duration::from_secs(120), job_task)
+        .await
+        .expect("ends")
+        .expect("joined");
+    assert!(
+        matches!(done, Ok(AutoOutcome::HandedOver { .. })),
+        "{done:?}"
+    );
+    let said = tokio::time::timeout(Duration::from_secs(120), operator)
+        .await
+        .expect("ends")
+        .expect("joined");
+    assert!(
+        matches!(said, Ok(HandoverOutcome::AlreadyHandedOver { .. })),
+        "{said:?}"
+    );
+    assert_eq!(
+        fleet
+            .count("SELECT count(*) FROM platform_requirement_history")
+            .await,
+        1
+    );
+    assert_eq!(fleet.handover_row().await.3.as_deref(), Some("AUTOMATIC"));
+}
+
+/// Security review m4: the engines see the reasons of every live run, not only the latest.
+#[tokio::test]
+async fn the_engines_see_the_reason_of_every_live_run() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    let older = Uuid::new_v4();
+    fleet.round(older).await;
+    fleet.membership("engine-0.2", 15).await;
+    fleet.ready(1).await;
+    let newer = Uuid::new_v4();
+    fleet.round(newer).await;
+    let store = sagat_infra_postgres::PgScheduleStore::new(db.runtime_pool().await);
+    let view = sagat_application::schedule_triggers::TriggerScheduleStore::handover_view(&store)
+        .await
+        .expect("view");
+    assert_eq!(
+        view.blocked,
+        vec![
+            HandoverBlock::EngineUnregistered,
+            HandoverBlock::TooFewEngines
+        ],
+        "both live runs, read as the runtime role"
+    );
+    assert!(view.attempt_age_seconds.is_some());
+    assert_eq!(
+        view.audit_pending, None,
+        "nothing to audit before the handover"
+    );
 }

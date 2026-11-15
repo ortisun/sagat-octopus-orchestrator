@@ -436,9 +436,10 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         // the scenario runs no control-plane process: one is registered, by the runtime role, as a control plane of this release does
         use sagat_application::instances::InstanceStore as _;
         let token = sagat_application::instances::InstanceToken::from_bytes([5; 32]);
+        let control_plane = Uuid::new_v4();
         sagat_infra_postgres::PgInstanceStore::new(db.runtime_pool().await)
             .register(&sagat_application::instances::Registration {
-                instance: Uuid::new_v4(),
+                instance: control_plane,
                 token: &token,
                 kind: sagat_application::instances::InstanceKind::ControlPlane,
                 scheduler_owner: None,
@@ -463,21 +464,25 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         assert!(said.starts_with("dry run: nothing stops the handover"), "{said}");
         // the job, not --apply: as sagat_handover, its waits instant and the database's times moved back as the owner
         let run = Uuid::new_v4();
-        let pace = auto::Backdate::new(pool.clone(), run);
+        // the control plane's row heartbeats at every wait of the job, as the process would (correctness review nit)
+        let pace = auto::Backdate::new(pool.clone(), run, control_plane, vec![5; 32]);
         let job_database = sagat_control_plane::config::DatabaseConfig {
             url: db.url_without_password(support::HANDOVER_ROLE),
             max_connections: 2,
             statement_timeout: Duration::from_secs(5),
         };
         let request = sagat_control_plane::handover_auto::AutoRequest {
-            run,
-            stable: 3,
-            horizon: Duration::from_secs(600),
-            min_live: 1,
-            wait: Duration::from_secs(7_200),
+            ask: sagat_infra_postgres::AutoAsk {
+                run,
+                stable: 3,
+                horizon: Duration::from_secs(600),
+                min_live: 1,
+                wait: Duration::from_secs(7_200),
+            },
             retire_role: false,
             dry_run: false,
             operator: Some("release-upgrade".to_owned()),
+            activation: sagat_infra_postgres::OperatorBounds::default(),
         };
         let done = bounded::within(
             "the automatic handover",
@@ -494,7 +499,10 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         .expect("the job hands over");
         assert!(matches!(done, sagat_control_plane::handover_auto::AutoOutcome::HandedOver { .. }), "{done:?}");
         let reasons = pace.reasons();
-        assert_eq!(reasons.first().cloned().flatten().as_deref(), Some("RECONCILIATION_RECENT"), "{reasons:?}");
+        // the backlog's marks first, and only them, then the rounds count to the handover
+        let blocked = reasons.iter().take_while(|reason| reason.as_deref() == Some("RECONCILIATION_RECENT")).count();
+        assert!(blocked >= 1, "{reasons:?}");
+        assert!(reasons[blocked..].iter().all(Option::is_none), "nothing but RECONCILIATION_RECENT, then counting: {reasons:?}");
         let (state, by, mode): (String, Option<String>, Option<String>) =
             sqlx::query_as("SELECT state, changed_by, changed_mode FROM schedule_trigger_handover").fetch_one(&pool).await.expect("handover");
         let actor = format!("system:handover-job:{run}");
@@ -555,14 +563,16 @@ mod auto {
     pub(super) struct Backdate {
         owner: PgPool,
         run: Uuid,
+        heartbeat: (Uuid, Vec<u8>),
         reasons: Mutex<Vec<Option<String>>>,
     }
 
     impl Backdate {
-        pub(super) fn new(owner: PgPool, run: Uuid) -> Self {
+        pub(super) fn new(owner: PgPool, run: Uuid, instance: Uuid, token: Vec<u8>) -> Self {
             Self {
                 owner,
                 run,
+                heartbeat: (instance, token),
                 reasons: Mutex::new(Vec::new()),
             }
         }
@@ -583,6 +593,12 @@ mod auto {
                 .await
                 .expect("reason")
                 .flatten();
+                sqlx::query("SELECT * FROM instance_heartbeat($1, $2)")
+                    .bind(self.heartbeat.0)
+                    .bind(&self.heartbeat.1)
+                    .execute(&self.owner)
+                    .await
+                    .expect("the control plane heartbeats");
                 let seen = {
                     let mut reasons = self.reasons.lock().expect("reasons");
                     reasons.push(reason);

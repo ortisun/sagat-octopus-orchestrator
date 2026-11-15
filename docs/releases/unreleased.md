@@ -52,7 +52,10 @@ cron trigger lacks its schedule ([schedules runbook](../runbooks/schedules.md#62
 - **What to do:** give `migrate` `SAGAT_HANDOVER_PASSWORD` (it creates and grants `sagat_handover` at every run and sets its login from a SCRAM
   verifier while the state is `LEGACY`), or create the login once; in Helm put `DATABASE_URL` (without the password) and `SAGAT_HANDOVER_PASSWORD`
   in the Secret `schedules.autoHandover.databaseSecret`. After the handover retire the role (`--retire-role`, `schedules.autoHandover.retireRole`,
-  `SAGAT_HANDOVER_RETIRE_ROLE`, or `ALTER ROLE sagat_handover NOLOGIN`) and delete the Secret.
+  `SAGAT_HANDOVER_RETIRE_ROLE`, or `ALTER ROLE sagat_handover NOLOGIN PASSWORD NULL`), **then switch the job off
+  (`schedules.autoHandover.enabled: false`, `SAGAT_SCHEDULES_AUTO_HANDOVER=false`)**, and only then delete the Secret: a later release would
+  otherwise run a job that cannot log in. Give `migrate` `SAGAT_HANDOVER_MIN_LIVE` (the engine's replicas or the autoscaler's minimum), the
+  floor the job counts live engines with.
 - **To keep it manual:** `schedules.autoHandover.enabled: false` (or `schedules.autoHandover: false`) in Helm, `SAGAT_SCHEDULES_AUTO_HANDOVER=false`
   in compose; then hand over with `--apply` as before.
 - **What is accepted:** an engine binary below the registry release that never registers keeps its legacy pass and ignores a pause (G2005); a

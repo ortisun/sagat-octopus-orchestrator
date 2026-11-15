@@ -114,3 +114,31 @@ tests:
       - eval_time: 50m
         alertname: SagatTriggerHandoverNotAttempted
         exp_alerts: []
+
+  # a committed handover with tenants left without their audit record: the alert fires after thirty minutes
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_handover_audit_pending{instance="engine-a:9091"}'
+        values: '2x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: SagatTriggerHandoverAuditPending
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: SagatTriggerHandoverAuditPending
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: The cron triggers were handed over, and tenants of the handover have had no audit record for thirty minutes.
+              runbook: docs/runbooks/schedules.md#63-why-a-handover-is-blocked
+
+  # the audit completed: silent
+  - interval: 1m
+    input_series:
+      - series: 'trigger_schedule_handover_audit_pending{instance="engine-a:9091"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: SagatTriggerHandoverAuditPending
+        exp_alerts: []

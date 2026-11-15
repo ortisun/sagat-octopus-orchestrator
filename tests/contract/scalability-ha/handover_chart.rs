@@ -54,7 +54,7 @@ fn the_job_is_a_plain_job_of_the_release_that_cannot_loop_and_runs_as_the_handov
     let rules = spec["podFailurePolicy"]["rules"].as_array().expect("rules");
     assert!(rules.iter().any(|rule| rule["action"] == "FailJob"
         && rule["onExitCodes"]["operator"] == "In"
-        && rule["onExitCodes"]["values"] == json!([2])
+        && rule["onExitCodes"]["values"] == json!([2, 3])
         && rule["onExitCodes"]["containerName"] == "schedule-trigger-handover"));
     assert!(rules.iter().any(|rule| rule["action"] == "Ignore"
         && rule["onPodConditions"][0]["type"] == "DisruptionTarget"));
@@ -112,9 +112,18 @@ fn the_job_is_a_plain_job_of_the_release_that_cannot_loop_and_runs_as_the_handov
         entry("DATABASE_URL")["valueFrom"]["secretKeyRef"]["name"],
         "sagat-handover"
     );
+    // a Secret deleted after the handover makes the pod exit 2 at once, never hang on its container's configuration
+    // (architecture review Major 1)
+    for key in ["DATABASE_URL", "SAGAT_HANDOVER_PASSWORD"] {
+        assert_eq!(
+            entry(key)["valueFrom"]["secretKeyRef"]["optional"],
+            true,
+            "{key}"
+        );
+    }
     assert_eq!(
         entry("SAGAT_HANDOVER_PASSWORD")["valueFrom"]["secretKeyRef"],
-        json!({"name": "sagat-handover", "key": "SAGAT_HANDOVER_PASSWORD"}),
+        json!({"name": "sagat-handover", "key": "SAGAT_HANDOVER_PASSWORD", "optional": true}),
         "the password apart from the URL"
     );
     // its pod answers nobody and reaches only DNS and PostgreSQL
