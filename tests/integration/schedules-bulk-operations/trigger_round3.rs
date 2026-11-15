@@ -514,6 +514,7 @@ async fn the_apply_path_of_the_command_hands_over_and_says_what_the_binary_print
         expect_live: Some(1),
         dry_run,
         apply,
+        ..HandoverArgs::default()
     };
     let db = database(&t);
 

@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 use sqlx::PgPool;
 
-use crate::support::{RUNTIME_ROLE, TestDb, migrated_db};
+use crate::support::{HANDOVER_ROLE, RUNTIME_ROLE, TestDb, migrated_db};
 use sql_needs::Need;
 
 /// A statement or trigger the runtime role is NOT expected to run, with the reason. Matching is on
@@ -45,6 +45,7 @@ const QUOTAS: &str = "crates/infra-postgres/src/quotas.rs";
 const CONTENT_USAGE: &str = "crates/infra-postgres/src/content_usage.rs";
 const INSTANCES: &str = "crates/infra-postgres/src/instances.rs";
 const TRIGGER_SCHEDULES: &str = "crates/infra-postgres/src/trigger_schedules.rs";
+const HANDOVER_AUTO: &str = "crates/infra-postgres/src/handover_auto.rs";
 
 const ALLOWED: &[Allowed] = &[
     Allowed {
@@ -111,6 +112,51 @@ const ALLOWED: &[Allowed] = &[
         file: TRIGGER_SCHEDULES,
         need: "EXECUTE schedule_trigger_handover_census()",
         reason: "T018-061: what the handover command tells the operator about the live engines is read by the owner's function (the runtime role reads the registry by column, and never its token); see the entry for schedule_trigger_handover_complete",
+    },
+    Allowed {
+        file: HANDOVER_AUTO,
+        need: "EXECUTE schedule_trigger_handover_round()",
+        reason: "T018-084, ADR-0091: the rounds of the automatic handover are the job's, run as sagat_handover (audited by every_statement_the_handover_job_issues_is_within_sagat_handovers_privileges); the runtime role writes rows the job decides on, so it must not count them",
+    },
+    Allowed {
+        file: HANDOVER_AUTO,
+        need: "EXECUTE schedule_trigger_handover_auto()",
+        reason: "T018-084, ADR-0091 decision 9: the wrapper that records schedules-v1 and moves the state is sagat_handover's alone (and refuses any other session_user); trigger_auto_handover::the_wrapper_refuses_a_session_user_other_than_sagat_handover_even_a_member_of_it proves the runtime role is refused",
+    },
+    Allowed {
+        file: HANDOVER_AUTO,
+        need: "EXECUTE schedule_trigger_handover_audit()",
+        reason: "T018-084, ADR-0091 decision 7: the tenant audit of the handover is written by the job (sagat_handover) or the operator (owner) after the commit, from the set only the owner can read",
+    },
+    Allowed {
+        file: HANDOVER_AUTO,
+        need: "EXECUTE schedule_trigger_handover_retire()",
+        reason: "T018-084, D2265: retiring sagat_handover is the job's (--retire-role) or the owner's",
+    },
+    Allowed {
+        file: HANDOVER_AUTO,
+        need: "EXECUTE schedule_trigger_handover_role_ensure()",
+        reason: "T018-084, D2264: migrate (the owner) ensures the role of the automatic handover after the migrations",
+    },
+    Allowed {
+        file: HANDOVER_AUTO,
+        need: "EXECUTE schedule_trigger_handover_role_grants()",
+        reason: "T018-084, D2264, D2275: migrate (the owner) grants the role of the automatic handover again at every run",
+    },
+    Allowed {
+        file: HANDOVER_AUTO,
+        need: "ROW LOCK schedule_trigger_handover",
+        reason: "T018-084, D2269: migrate (the owner) reads the state under a share lock while it sets the login of sagat_handover",
+    },
+    Allowed {
+        file: HANDOVER_AUTO,
+        need: "SELECT schedule_trigger_handover_retirement",
+        reason: "T018-084, D2269: migrate (the owner) reads the retirement of sagat_handover; the table is owner-only",
+    },
+    Allowed {
+        file: HANDOVER_AUTO,
+        need: "UNRESOLVED statement kind the audit does not model: ALTER",
+        reason: "T018-084, D2272: migrate (the owner) sets the login of sagat_handover from a SCRAM verifier it computed; only a verifier reaches the statement (is_scram_verifier)",
     },
     Allowed {
         file: CONTENT_USAGE,
@@ -314,7 +360,12 @@ fn identifier(name: &str) -> bool {
 }
 
 /// The catalog's answer: `Ok(())` when the role holds the privilege, `Err(why)` otherwise.
+/// The catalog's answer for the runtime role.
 async fn catalog(owner: &PgPool, need: &Need) -> Result<(), String> {
+    catalog_as(owner, RUNTIME_ROLE, need).await
+}
+
+async fn catalog_as(owner: &PgPool, role: &str, need: &Need) -> Result<(), String> {
     async fn relation_exists(owner: &PgPool, table: &str) -> bool {
         sqlx::query_scalar::<_, bool>("SELECT to_regclass($1) IS NOT NULL")
             .bind(table)
@@ -322,9 +373,9 @@ async fn catalog(owner: &PgPool, need: &Need) -> Result<(), String> {
             .await
             .expect("to_regclass")
     }
-    async fn table_privilege(owner: &PgPool, table: &str, privilege: &str) -> bool {
+    async fn table_privilege(owner: &PgPool, role: &str, table: &str, privilege: &str) -> bool {
         sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, to_regclass($2), $3)")
-            .bind(RUNTIME_ROLE)
+            .bind(role)
             .bind(table)
             .bind(privilege)
             .fetch_one(owner)
@@ -333,6 +384,7 @@ async fn catalog(owner: &PgPool, need: &Need) -> Result<(), String> {
     }
     async fn column_privilege(
         owner: &PgPool,
+        role: &str,
         table: &str,
         column: &str,
         privilege: &str,
@@ -352,7 +404,7 @@ async fn catalog(owner: &PgPool, need: &Need) -> Result<(), String> {
         Ok(sqlx::query_scalar::<_, bool>(
             "SELECT has_column_privilege($1, to_regclass($2), $3, $4)",
         )
-        .bind(RUNTIME_ROLE)
+        .bind(role)
         .bind(table)
         .bind(column)
         .bind(privilege)
@@ -373,31 +425,31 @@ async fn catalog(owner: &PgPool, need: &Need) -> Result<(), String> {
             "relation {table} does not exist in the migrated schema"
         ));
     }
-    let denied = |what: &str| Err(format!("{RUNTIME_ROLE} lacks {what}"));
+    let denied = |what: &str| Err(format!("{role} lacks {what}"));
     match need {
         Need::Select(t) => {
-            if table_privilege(owner, t, "SELECT").await {
+            if table_privilege(owner, role, t, "SELECT").await {
                 Ok(())
             } else {
                 denied(&format!("SELECT on {t}"))
             }
         }
         Need::Delete(t) => {
-            if table_privilege(owner, t, "DELETE").await {
+            if table_privilege(owner, role, t, "DELETE").await {
                 Ok(())
             } else {
                 denied(&format!("DELETE on {t}"))
             }
         }
         Need::Truncate(t) => {
-            if table_privilege(owner, t, "TRUNCATE").await {
+            if table_privilege(owner, role, t, "TRUNCATE").await {
                 Ok(())
             } else {
                 denied(&format!("TRUNCATE on {t}"))
             }
         }
         Need::Insert(t, columns) if columns.is_empty() => {
-            if table_privilege(owner, t, "INSERT").await {
+            if table_privilege(owner, role, t, "INSERT").await {
                 Ok(())
             } else {
                 denied(&format!("INSERT on {t}"))
@@ -405,14 +457,14 @@ async fn catalog(owner: &PgPool, need: &Need) -> Result<(), String> {
         }
         Need::Insert(t, columns) => {
             for column in columns {
-                if !column_privilege(owner, t, column, "INSERT").await? {
+                if !column_privilege(owner, role, t, column, "INSERT").await? {
                     return denied(&format!("INSERT on {t}.{column}"));
                 }
             }
             Ok(())
         }
         Need::Update(t, column) => {
-            if column_privilege(owner, t, column, "UPDATE").await? {
+            if column_privilege(owner, role, t, column, "UPDATE").await? {
                 Ok(())
             } else {
                 denied(&format!("UPDATE on {t}.{column}"))
@@ -423,7 +475,7 @@ async fn catalog(owner: &PgPool, need: &Need) -> Result<(), String> {
             let any = sqlx::query_scalar::<_, bool>(
                 "SELECT has_any_column_privilege($1, to_regclass($2), 'UPDATE')",
             )
-            .bind(RUNTIME_ROLE)
+            .bind(role)
             .bind(t)
             .fetch_one(owner)
             .await
@@ -442,7 +494,7 @@ async fn catalog(owner: &PgPool, need: &Need) -> Result<(), String> {
                  FROM pg_proc p WHERE p.proname = $2 \
                  AND p.pronamespace IN ('public'::regnamespace, 'pg_catalog'::regnamespace)",
             )
-            .bind(RUNTIME_ROLE)
+            .bind(role)
             .bind(name)
             .fetch_all(owner)
             .await
@@ -1034,5 +1086,81 @@ fn step_status_writer_inventory_is_explicit_before_capacity_activation() {
     assert_eq!(
         actual, expected,
         "step status SQL changed: inspect lease creation and chain/own-run guards before updating this inventory"
+    );
+}
+
+/// What `sagat_handover` is not expected to run among the statements of the job's module: the owner side `migrate` runs.
+const HANDOVER_ALLOWED: &[(&str, &str)] = &[
+    (
+        "EXECUTE schedule_trigger_handover_role_ensure()",
+        "migrate (the owner) ensures the role, D2264",
+    ),
+    (
+        "EXECUTE schedule_trigger_handover_role_grants()",
+        "migrate (the owner) grants the role, D2264",
+    ),
+    (
+        "ROW LOCK schedule_trigger_handover",
+        "migrate (the owner) reads the state under a share lock while it sets the login, D2269",
+    ),
+    (
+        "SELECT schedule_trigger_handover_retirement",
+        "migrate (the owner) reads the retirement, D2269",
+    ),
+    (
+        "UNRESOLVED statement kind the audit does not model: ALTER",
+        "migrate (the owner) sets the login from a SCRAM verifier, D2272",
+    ),
+];
+
+/// The privilege audit of the role of the automatic handover (ADR-0091, D2266), on the statements of the job's module: every one
+/// the job issues is within what `sagat_handover` holds, checked in the catalog and probed as the role, and the owner side that
+/// `migrate` runs is the only exception, by name.
+#[tokio::test]
+async fn every_statement_the_handover_job_issues_is_within_sagat_handovers_privileges() {
+    let db = migrated_db().await;
+    let extracted = extract_all();
+    let handover = db.handover_pool().await;
+    let mut checked = 0;
+    let mut gaps = Vec::new();
+    let mut used = vec![false; HANDOVER_ALLOWED.len()];
+    for (need, sites) in &extracted.needs {
+        if !sites.iter().any(|site| site.file == HANDOVER_AUTO) {
+            continue;
+        }
+        checked += 1;
+        let verdict = catalog_as(&db.pool, HANDOVER_ROLE, need).await;
+        if let Some(live) = probe(&handover, need).await {
+            assert_eq!(
+                live,
+                verdict.is_ok(),
+                "{need}: the catalog and the server disagree about {HANDOVER_ROLE}"
+            );
+        }
+        if let Err(why) = verdict {
+            match HANDOVER_ALLOWED
+                .iter()
+                .position(|(allowed, _)| *allowed == need.to_string())
+            {
+                Some(index) => used[index] = true,
+                None => gaps.push(format!("{need}: {why}")),
+            }
+        }
+    }
+    assert!(checked >= 8, "the job's statements were found: {checked}");
+    assert!(
+        gaps.is_empty(),
+        "statements of the job that {HANDOVER_ROLE} may not run:\n{}",
+        gaps.join("\n")
+    );
+    let stale: Vec<&str> = HANDOVER_ALLOWED
+        .iter()
+        .zip(&used)
+        .filter(|(_, used)| !**used)
+        .map(|((need, _), _)| *need)
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "HANDOVER_ALLOWED entries that excuse nothing: {stale:?}"
     );
 }

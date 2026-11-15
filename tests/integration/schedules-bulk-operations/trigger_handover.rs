@@ -417,6 +417,7 @@ fn the_command_line_is_parsed_with_its_flags_and_refuses_what_it_does_not_know()
             expect_live: Some(3),
             dry_run: true,
             apply: false,
+            ..HandoverArgs::default()
         }))
     );
     assert_eq!(
@@ -577,6 +578,7 @@ fn the_irreversible_run_is_made_only_when_apply_is_given() {
         expect_live: Some(2),
         dry_run,
         apply,
+        ..HandoverArgs::default()
     };
     assert!(
         request_of(&args(false, false)).dry_run,
