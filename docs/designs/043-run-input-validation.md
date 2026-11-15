@@ -32,7 +32,7 @@ and the owner then answered its questions (`docs/owner-decisions.md`):
   (`RUN_INPUT_SCHEMA_UNUSABLE`), permanently for the creators nobody waits for; a rerun or reset of a run from before
   0.3.0 is validated like any start.
 
-The registers are in `specs/043-run-input-validation/research.md` (D043-001 to D043-041, G043-001 to G043-014,
+The registers are in `specs/043-run-input-validation/research.md` (D043-001 to D043-045, G043-001 to G043-014,
 O043-001 to O043-004). The rule is ADR-0090.
 
 ## The Problem
@@ -84,8 +84,9 @@ What makes it more than a check in `start_with`:
   13 an integration test starts with an input the schema refuses and observes the row's outcome and no new `runs` row,
   then with a matching input and observes the run; rows 11 and 12 also with a parent or predecessor created before the
   check was on.
-- **FR-043-002** A version without `inputSchema` MUST accept any input that passes today's checks (object, size). With
-  a schema the dialect is: `$schema` if present, else draft 2020-12; `format`, `contentMediaType` and
+- **FR-043-002** A version without `inputSchema` MUST accept any input that passes today's checks (object, size). A
+  schema with any recursion, a non-pointer or non-local reference, a dynamic reference or a nested `$id` is unusable
+  (D043-042). With a usable schema the dialect is: `$schema` if present, else draft 2020-12; `format`, `contentMediaType` and
   `contentEncoding` never assert, under every draft; no reference is resolved outside the document (the retriever
   refuses every URI, `file:` and `https:` included, in `$ref` and in `$schema`); patterns use the linear-time engine;
   `x-sagat-classification` does not change the result. *Acceptance:* unit tests in `crates/infra-schema`, one per draft
@@ -130,7 +131,8 @@ What makes it more than a check in `start_with`:
 - **FR-043-011** A stored `inputSchema` that does not compile within the bounds of D043-021 MUST refuse every start of
   its version with `RUN_INPUT_SCHEMA_UNUSABLE` (OD-2026-11-14-11). The failure is remembered: one compile attempt per
   process, tenant and schema while the entry stays cached, except on row 13, which compiles on each start. *Acceptance:* a version stored with an external `$ref`, one with a
-  cycle of `$ref`, one deeper than 32 and one with 33 patterns (inserted by the test as the owner role, since publish
+  cycle of `$ref`, one recursive tree schema (`{"$ref": "#"}` under `properties`), one deeper than 32 and one with 33
+  patterns (inserted by the test as the owner role, since publish
   refuses them after FR-043-012) are each refused on every row, by counter one compile each on rows 1 to 12 and 14.
 - **FR-043-012** Publish (and `sagat validate`) MUST refuse a new version whose `inputSchema`, annotated or not, does
   not compile within the same bounds, and MUST warn (a `DefinitionWarning`, not a refusal) when a version has an
@@ -163,7 +165,7 @@ What makes it more than a check in `start_with`:
   `ContinuationSelection` and `EvaluatedChainHandoffCommand.input` (`crates/application/src/chain_progress.rs:246`) hold a
   `CheckedRunInput`, whose fields and only non-test constructor are private to `crates/application/src/run_input.rs`; a
   fourth rule fails on a struct expression or an associated function call of `CheckedRunInput` in any other file
-  outside test paths. *Acceptance:* a negative fixture for each of the four rules in `scripts/tests/`.
+  outside test paths, and on a `Default` or `Deserialize` derive or impl for it anywhere (D043-045). *Acceptance:* a negative fixture for each of the four rules in `scripts/tests/`.
 - **FR-043-017** A `CheckedRunInput` carries the version id it was checked against. `PgRunStore::create` and
   `continue_evaluated` MUST refuse one whose version is not the run's (`StoreError::Internal`, logged without the value).
   *Acceptance:* a unit test of each store against a mismatched input.
@@ -275,7 +277,9 @@ one cites it in an `Owner-gate:` line.
 *   **Given**: 0.3.0 installed, the requirement `run-input-validation-v1` not yet recorded, and a production caller
     that sends an input its version refuses.
 *   **When**: the operator sets `SAGAT_RUN_INPUT_VALIDATION=report` on every replica and restarts them.
-*   **Then**: the starts are admitted again, each counted `reported` and audited once. When the caller is fixed, the
+*   **Then**: the starts are admitted again, each counted `reported` and audited once. The final outcomes recorded
+    before the switch (an `INPUT_INVALID` action, a failed child step, a trigger's delivery without a run) stay as they
+    were recorded; `report` changes only what happens from then on. When the caller is fixed, the
     operator restarts every replica in `enforce` and records the requirement. Recording is refused while any live
     replica still runs in `report` (ADR-0082 decision 2); once it is recorded, a replica restarted in `report` stays up
     with its gate closed.
@@ -362,28 +366,43 @@ enum FieldPolicy { Show, Root }      // Show only when the caller's view of the 
 - **The type** carries the version id; `PgRunStore::create` (`crates/infra-postgres/src/execution.rs:1108`) compares it
   with `NewRun.info.version_id`, and `continue_evaluated` with the predecessor's version (FR-043-017). The existing
   `RunInputChecker` (`crates/application/src/blobs.rs:284`) is removed.
-- **The bound on the work is the walk, not the clock** (D043-033). Before validating, the adapter charges the
-  classification projection's instance-aware `Walk` (`crates/infra-schema/src/classification/walk.rs`: every expanded
-  subschema charged once per instance node it applies to) against the input, with `MAX_WALK_STEPS` (4,000,000). An
-  input whose walk passes the bound is refused with `rule` `workLimit` and `field` `/`: deterministic for the same
-  schema and input, so final on every row.
+- **The bound on the work is the walk, not the clock** (D043-033, D043-042). Before validating, the adapter charges an
+  instance-aware walk against the input, with `MAX_WALK_STEPS` (4,000,000). It is the classification projection's
+  `Walk` (`crates/infra-schema/src/classification/walk.rs`) made exact for the schemas the run input path accepts: the
+  schema has no recursion (Technical Plan 4, References), so every `$ref` is followed to a finite expansion; every
+  applicator keyword is walked at each instance node it applies to (`contains`, `if`/`then`/`else`,
+  `dependentSchemas`, `dependencies`, `unevaluatedProperties`, `unevaluatedItems`, `additionalItems` and
+  `propertyNames` included, which the classification walk charges only by literal size, `walk.rs:180-182`); and a
+  declared key is charged for every `patternProperties` entry that also matches it (the classification walk stops at
+  the declared property, `walk.rs:474-479`). The charge is then an upper bound on what `jsonschema` evaluates: T043-2
+  holds it against the count of output units of `Validator::evaluate(...).list()` over adversarial cases. An input past
+  the bound is refused with `rule` `workLimit` and `field` `/`: deterministic for the same schema and input, so final on
+  every row.
 - **Permits and fairness** (D043-034). One `Arc<tokio::sync::Semaphore>` of four permits per process, and per tenant at
   most one shared-cache permit and one ad hoc permit in flight (a bounded map of per-tenant semaphores of one), because
   the caller chooses an ad hoc document (`crates/application/src/runs/ad_hoc.rs:400-405`). A tenant holds at most two of
-  the four. The gate acquires the tenant permit and then a global `OwnedSemaphorePermit`, and moves both into the
+  the four. A per-tenant entry is evicted from the map only when nobody holds or awaits it (its `Arc` is held by the map
+  alone and its permit is free), so eviction never hands a tenant a second semaphore (D043-044). The gate acquires the tenant permit and then a global `OwnedSemaphorePermit`, and moves both into the
   `spawn_blocking` closure: a thread that outlives its caller's deadline keeps its permits until it ends, so no more
   than four blocking threads ever run validation, and a slow tenant does not take the others' permits. The validator's
   cache waits on its single-flight `Condvar` only there, never on a Tokio worker (as `off_worker` in
   `crates/infra-postgres/src/payload_disclosure.rs:561` keeps disclosure work off the workers).
-- **The deadline is a backstop** (D043-035). `MAX_PROJECTION_DURATION` (`crates/application/src/classification.rs:18`,
-  5 s) covers acquiring the permits and the work. A missed deadline is never cached as `Unusable`. The gate remembers
-  it in a bounded in-process map keyed by `(tenant, schema digest, input digest)` (4,096 entries, least recently used
-  out). The first miss of a key is transient: `503 UNAVAILABLE`, retryable, for a caller; for rows 4 to 12 a refusal
+- **The deadline is a backstop** (D043-035, D043-043). Two clocks, each of `MAX_PROJECTION_DURATION`
+  (`crates/application/src/classification.rs:18`, 5 s). Waiting for the permits has its own timeout, and a timeout
+  there is always transient and never counted: a burst of one tenant's own valid actions queues, it does not become
+  `INPUT_INVALID`. The work deadline starts when the blocking closure signals that it holds its permits and has begun;
+  only a miss of that deadline counts. A missed deadline is never cached as `Unusable`. The gate remembers work misses
+  in a bounded in-process map (4,096 entries, least recently used out) keyed by `(tenant, schema digest, input
+  digest)`, and for row 10 by `(tenant, schema digest, tick identity)` (`tick_identity`, `events.rs:801`), because a
+  cron input carries `firedAt` = now (`schedule_triggers.rs:113`, `events.rs:802`) and its digest changes on every
+  retry. The first counted miss of a key is transient: `503 UNAVAILABLE`, retryable, for a caller; for rows 4 to 12 a refusal
   of the platform that is tried again (a batch item defers, `batch_executor.rs:540`; a pending reset stays pending,
   since `failure_of` answers `None` for it, `reset_completion.rs:237`; a schedule keeps the time owed; a trigger's event
   is retried; a child or a continuation waits for the next pass). **The second miss of the same key is final**:
   `RUN_INPUT_INVALID` with `rule` `workLimit` on every row, with the outcomes of Technical Plan 1. The memory is per
-  process, so across processes and restarts a key can be tried at most twice per process lifetime (G043-013).
+  process and evicts: a key reaches its final refusal after two counted misses in one process while it stays in the
+  memory. A restart, another process, or eviction past 4,096 keys with misses starts its count again, so a key that
+  misses in every process can be tried twice per process and per stay in the memory (G043-013).
 - **Input depth.** Before validating, the input is parsed with a depth limit of 64. A deeper input, and one deeper than
   `serde_json` parses (its recursion limit is 128), is `Invalid` with `rule` `maxDepth` and `field` `/`, never an
   internal error. A version without a schema keeps today's checks only.
@@ -399,16 +418,17 @@ enum FieldPolicy { Show, Root }      // Show only when the caller's view of the 
   `compile_carrier`): at most `MAX_CARRIER_BYTES` (64 KiB) of schema, `MAX_SCHEMA_DEPTH` (32), `MAX_CARRIER_PATTERNS`
   (32), and the dry `Walk` with `MAX_WALK_STEPS` (4,000,000) for the expansion bound. Any failure is
   `SchemaRefusal::Unusable`.
-- **References** (D043-036). The control on remote references is the retriever: `build` resolves every `$ref`,
-  `$dynamicRef` and `$schema` through it, wherever they sit, and it refuses every URI. The dry walk sees only what is
-  reachable from the root, so it is not that control. Two checks of the whole document run before `build`: every
-  reference is document-local (`#`, `#/...`, or a `$anchor` the document defines), and the graph of applicator edges
-  that consume no input (`$ref`, `allOf`, `anyOf`, `oneOf`, `not`, `if`, `then`, `else`, `dependentSchemas`) has no
-  cycle. Recursion through a keyword that moves to a child instance (`properties`, `patternProperties`,
-  `additionalProperties`, `items`, `prefixItems`, `contains`, `propertyNames`) is allowed: a tree schema
-  `{"$ref": "#"}` under `properties` stays usable. The shared `Walk` refuses `#` and anchors (`walk.rs:139`); the run
-  input path calls it with a reference policy that resolves them, and the classification path keeps its policy
-  unchanged. `$dynamicRef` and `$recursiveRef` are refused as unusable (G043-014).
+- **References** (D043-042, which replaces the recursion allowance of D043-036). The control on remote references is
+  the retriever: `build` resolves every `$ref`, `$dynamicRef` and `$schema` through it, wherever they sit, and it
+  refuses every URI. A walk of the whole document before `build` refuses, as `SchemaRefusal::Unusable`, as the
+  classification path already does (`walk.rs:139`): a `$ref` that is not a JSON pointer into the document (`#/...`), so
+  `{"$ref": "#"}` and anchors too; any `$ref` cycle, through any keyword, consuming input or not; `$dynamicRef`,
+  `$recursiveRef`, `$dynamicAnchor` and `$recursiveAnchor`; a `$id` anywhere but the root (the walk resolves against the
+  root, while `jsonschema` would resolve inside the nested resource); and a `$ref` reachable under a keyword the walk does
+  not walk. With no recursion, every applicator walked and every `$ref` followed, the walk of Technical Plan 3 is an
+  upper bound. The cost: recursive schemas (trees, linked lists) are unusable; a published version that has one
+  refuses every start, and the inventory query lists such versions (G043-014, O043-001's `report` path covers the
+  time to republish).
 - **Cache.** The classification cache (`crates/infra-schema/src/classification/cache.rs`) made generic over key and
   value, keyed by `(tenant, digest)`: identical schemas of one tenant share an entry, two tenants never do. 256 entries
   and 64 MiB, each weighed with the real per-pattern limit (64 KiB, so 128 KiB per pattern for program and lazy DFA);
@@ -532,6 +552,7 @@ exists.
 | Triggers on versions whose schema describes a manual input stop starting runs (G043-004) | A delivery and an audit row per refused event, the metric, the publish warning, the inventory query in the release notes and the runbook, `report` mode while callers are fixed |
 | A run started before the upgrade fails at a child or a continuation (OD-2026-11-14-9) | Stated in the release notes with the query that lists the versions at risk; the failure code names the cause; accepted by the owner as a deviation from principle IV |
 | A schema the platform did not write costs CPU or memory | The pre-checks before `build`, the weighed cache, the instance-aware walk before validating, four permits held by the blocking thread until it ends, the input depth limit and the deadline as a backstop (NFR-043-BOUND) |
+| Customers' published recursive schemas (trees, linked lists) become unusable (D043-042) | The inventory query of the release notes lists versions whose schema fails the compile, recursion included; `report` mode while they republish (G043-014) |
 | One tenant starves the others, for example with ad hoc documents it writes | At most one shared and one ad hoc permit per tenant (D043-034); T043-21 serves a second tenant while the first holds its permit |
 | A missed deadline repeats without end | Never cached as `Unusable`; the second miss of the same schema and input is final (D043-035); per process only (G043-013) |
 | The first upgraded engine records final outcomes before the operator chose `report` | The runbook runs the inventory and sets `report` in every manifest before migrating (D043-040) |
@@ -566,6 +587,7 @@ exists.
 | A narrow port and a gate in `application` | The policy (mode, metrics, the type) must not live in the adapter, and the adapter must not see the domain | One trait that does everything: the adapter would own the mode and build the type |
 | The schema bytes and digest in `WorkflowDefinition` | Continue-as-new holds the definition, not the document; no statement may be added | Reading the document on a cache miss: an extra statement on the continuation path |
 | A second compiled-validator cache keyed by tenant and digest | Compile once per schema; never under a lock; never shared across tenants | Compiling per start, as the blob check does today; keying by version, which ad hoc floods |
+| Refusing every recursive schema, nested `$id` and dynamic reference | It is what makes the walk an upper bound on `jsonschema`'s work and closes a same-instance recursion that can overflow the stack (`{"dependencies": {"a": {"$ref": "#"}}}`) | Allowing recursion through input-consuming keywords with a patched walk: two review rounds found work it did not charge; no proof that it bounds |
 | A blocking pool with global and per-tenant permits, an instance-aware walk and a deadline with a miss memory | Compile and validation are CPU work on schemas and inputs the platform did not write; `spawn_blocking` cannot be cancelled | Running them on the async worker (the cache's `Condvar` would block a Tokio thread); dropping the permit at the deadline (threads pile up); a deadline alone (repeats forever) |
 | A schedule action outcome and a migration | A refused action must be visible and must not loop | Reusing `ADMISSION_RETRY` (`NotAllowed`): retries forever |
 | A capability and a strict variable | Replicas must not answer differently once the operator decides | A per-process flag alone: nothing stops one replica in `report` beside others in `enforce` |
@@ -609,10 +631,14 @@ come first; T043-21 to T043-23 land with the tasks they test; T043-5 to T043-13 
   Files: `crates/infra-schema/src/run_input.rs` (new), `crates/infra-schema/src/lib.rs`,
   `crates/infra-schema/src/classification/cache.rs` (generic over key and value), `crates/infra-schema/src/classification.rs`
   (the shared pre-checks); tests `crates/infra-schema/tests/run_input.rs` (one per draft for `format` and `content*`; `$ref`
-  and `$schema` with `file:` and `https:`, at the root and nested under `properties`; each bound; a cycle of
-  non-consuming applicators refused; a recursive tree schema with `{"$ref": "#"}` and an `$anchor` under `properties`
-  accepted; the instance-aware walk's `workLimit`; a proptest that no generated value or key appears in a refusal).
-  The reference policy of the shared `Walk` is a parameter; the classification path keeps its policy.
+  and `$schema` with `file:` and `https:`, at the root and nested under `properties`; each bound; each refused
+  reference form (`#`, an anchor, a cycle through `properties`, a cycle through `allOf`, `$dynamicRef`, a nested `$id`,
+  a `$ref` under an unwalked keyword); the instance-aware walk's `workLimit`; the upper-bound test: the walk's charge is
+  at least the number of output units of `Validator::evaluate(...).list()`, over adversarial cases that include
+  `{"items": {...}, "contains": {...}}` on nested arrays, `dependencies` and `dependentSchemas`, `if`/`then`/`else`
+  chains, `unevaluated*`, and a declared key that also matches several `patternProperties`, plus a proptest over
+  generated schemas and inputs within the bounds; a proptest that no generated value or key appears in a refusal). The
+  walk of the run input path is its own mode of the shared `Walk`; the classification path keeps its behaviour.
   Refs: FR-043-002, FR-043-011, FR-043-014, NFR-043-BOUND, NFR-043-SEC, SC-043-004
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11
 - [ ] T043-3 Build the `RunInputGate` and `CheckedRunInput` (version id, fields and constructor private to
@@ -652,7 +678,8 @@ come first; T043-21 to T043-23 land with the tasks they test; T043-5 to T043-13 
   Files: `crates/scheduler/src/events.rs`, `crates/application/src/dispatch.rs` (a `DeliveryRef` without a run and the
   store call), `crates/infra-postgres/src/execution.rs` (that call), `crates/domain/src/audit.rs` (`RunInputRefused`);
   tests in `tests/integration/events-webhooks-messaging/`
-  (`a_cron_trigger_whose_input_is_refused_starts_nothing_and_audits_the_tick` for row 10),
+  (`a_cron_trigger_whose_input_is_refused_starts_nothing_and_audits_the_tick` for row 10, and
+  `a_cron_tick_whose_validation_misses_twice_is_final_although_fired_at_changed` for the tick-identity key),
   `tests/fault/events-webhooks-messaging/` (a retry after another consumer fails, a crash between the two writes, and
   `two_engines_on_one_refused_cron_tick_audit_it_at_most_twice_with_the_tick_key` for G043-002).
   Refs: FR-043-001, FR-043-007
@@ -747,10 +774,12 @@ come first; T043-21 to T043-23 land with the tasks they test; T043-5 to T043-13 
   Refs: SC-043-001
   Owner-gate: OD-2026-11-14-2
 - [ ] T043-21 Test the missed deadline on every row with the `test-support` validator double held by a barrier: the
-  first miss transient (`503`, a batch item deferred, a pending reset left pending, a schedule time owed, an event
+  first counted miss transient (`503`, a batch item deferred, a pending reset left pending, a schedule time owed, an event
   retried, a child or a continuation left for the next pass), the second miss of the same schema and input final with
-  `workLimit`, the permits returned only when the held thread ends, no more than four blocking threads, and a second
-  tenant served while the first holds its permit.
+  `workLimit`, a timeout while waiting for a permit never counted (a burst of one tenant's valid schedule actions held
+  behind the barrier stays owed and never becomes `INPUT_INVALID`), the permits returned only when the held thread
+  ends, no more than four blocking threads, a second tenant served while the first holds its permit, and a per-tenant
+  entry not evicted while held.
   Files: tests in `tests/integration/durable-execution/`, `tests/integration/schedules-bulk-operations/`,
   `tests/integration/events-webhooks-messaging/`, `tests/integration/workflow-primitives/`, and unit tests in
   `crates/application/src/run_input.rs`.

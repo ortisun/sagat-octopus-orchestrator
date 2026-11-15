@@ -184,7 +184,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 - **D043-032** (2026-11-14) The fields and the only non-test constructor of `CheckedRunInput` are private to
   `crates/application/src/run_input.rs`, not `pub(crate)`. A fourth architecture rule fails on a struct expression or an
   associated function call of `CheckedRunInput` in any other file outside test paths.
-- **D043-033** (2026-11-14) The bound on validation work is the classification projection's instance-aware `Walk`
+- **D043-033** (2026-11-14; made an upper bound by D043-042) The bound on validation work is the classification projection's instance-aware `Walk`
   (`crates/infra-schema/src/classification/walk.rs`), charged against the input before `iter_errors` with
   `MAX_WALK_STEPS` (4,000,000). Past it the input is refused with `RUN_INPUT_INVALID`, `rule` `workLimit`, `field` `/`:
   deterministic for a schema and an input, so final on every row. `workLimit` joins the closed rule enum.
@@ -193,7 +193,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   (`crates/application/src/runs/ad_hoc.rs:400-405`). The tenant permit and an `OwnedSemaphorePermit` of the global
   semaphore move into the `spawn_blocking` closure, so a thread that outlives its caller's deadline keeps them until it
   ends: at most four blocking threads, and a slow tenant holds at most two permits.
-- **D043-035** (2026-11-14) The deadline (`MAX_PROJECTION_DURATION`, 5 s) covers acquiring the permits and the work. A miss
+- **D043-035** (2026-11-14; the two clocks and the cron key by D043-043) The deadline (`MAX_PROJECTION_DURATION`, 5 s) covers acquiring the permits and the work. A miss
   is never cached as `Unusable`. A bounded in-process memory (4,096 entries, least recently used out) keyed by
   `(tenant, schema digest, input digest)` counts misses: **the first miss is transient, the second is final**, answered
   as `RUN_INPUT_INVALID` with `workLimit` on every row. A first miss is `503` for a caller, a deferral for a batch item
@@ -201,7 +201,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   `crates/application/src/reset_completion.rs:237`), an owed schedule time, a retried event, and a child or continuation
   left for the next pass. The threshold of two lets a single slow moment pass and stops an input that is slow every
   time.
-- **D043-036** (2026-11-14) References. The retriever that refuses every URI is the control on remote references: `build`
+- **D043-036** (2026-11-14; the recursion allowance reverted by D043-042; the retriever as the control stays) References. The retriever that refuses every URI is the control on remote references: `build`
   resolves every `$ref`, `$dynamicRef` and `$schema` through it, wherever they are. The dry walk sees only what is
   reachable from the root and is not that control. Before `build`, a walk of the whole document checks that every
   reference is document-local and that the graph of non-consuming applicator edges has no cycle; recursion through a
@@ -225,6 +225,32 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 - **D043-041** (2026-11-14) `SchemaValidator::check` takes the `SchemaKey`, the `&InputSchema` and the input. The gate builds
   the key from the tenant, the digest that `InputSchema` carries and the creator (`shared` is false for `Creator::AdHoc`).
 
+### Fourth draft, after the third review (2026-11-14, at `4d2c13cb`)
+
+- **D043-042** (2026-11-14) **No recursion: simplify rather than patch the walk.** The run input path refuses as
+  `SchemaUnusable`, before `build`, by a walk of the whole document: a `$ref` that is not a JSON pointer into the document
+  (`#/...`), so `#` and anchors; any `$ref` cycle, consuming input or not; `$dynamicRef`, `$recursiveRef`,
+  `$dynamicAnchor`, `$recursiveAnchor`; a `$id` other than at the root (the walk resolves against the root, `jsonschema`
+  within the nested resource); a `$ref` reachable under a keyword the walk does not walk. The instance-aware walk follows
+  every `$ref`, walks every applicator (`contains`, `if`/`then`/`else`, `dependentSchemas`, `dependencies`,
+  `unevaluated*`, `additionalItems`, `propertyNames`, which the classification walk charges by literal size,
+  `walk.rs:180-182`) and charges a declared key for every matching `patternProperties` entry (the classification walk
+  does not, `walk.rs:474-479`). With those, its charge is an upper bound on `jsonschema`'s evaluation, and a test holds
+  it against the output units of `Validator::evaluate(...).list()`. Reason: the third review found an exponential case
+  (`{"items":{"$ref":"#"},"contains":{"$ref":"#"}}` on 64-deep arrays) and a same-instance recursion that can overflow
+  the stack (`{"dependencies":{"a":{"$ref":"#"}}}` with `{"a":1}`), both reachable only because D043-036 allowed `#`.
+  The cost is that recursive schemas customers published are unusable (G043-014); the release-notes inventory lists
+  them, and `report` mode (OD-2026-11-14-8) covers the time to republish.
+- **D043-043** (2026-11-14) Two clocks: waiting for the permits has its own timeout, always transient and never counted, so
+  a queue of a tenant's own valid actions never becomes `INPUT_INVALID`; the work deadline starts when the blocking
+  closure holds its permits and only its miss counts. For row 10 the miss memory is keyed by `(tenant, schema digest,
+  tick identity)`, because a cron input carries `firedAt` = now (`crates/application/src/schedule_triggers.rs:113`,
+  `crates/scheduler/src/events.rs:802`) and its digest changes on every retry.
+- **D043-044** (2026-11-14) A per-tenant semaphore leaves its map only when the map holds the only `Arc` and its permit is
+  free; eviction never runs while it is held or awaited.
+- **D043-045** (2026-11-14) `CheckedRunInput` has no `Default` and no `Deserialize`, by derive or impl; the fourth
+  architecture rule fails on either.
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
@@ -241,8 +267,8 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-010 | Until the operator records `run-input-validation-v1`, replicas may run different modes and a 0.2.x control plane admits what a new one refuses; the first upgraded engine runs `enforce` unless the manifest said `report` before the migration. | D043-040: the runbook sets the mode before migrating; the requirement can only be recorded once every live process is in `enforce` (ADR-0082 decision 2). | Open (documented) |
 | G043-011 | A validation that misses its deadline under load is refused for a while: transient once, final the second time for the same schema and input. A final refusal caused by load, not by the input, is possible. | D043-035; the instance-aware walk (D043-033) bounds the work, so a miss means a starved machine. Counted `outcome="deadline"`. The deadline value is not measured (G043-006). | Open |
 | G043-012 | A rerun or reset refused for its input answers `field` `/` to a caller who may not read the source run's input, which says less than the caller needs to fix it. | Accepted: the field names a property of a payload the caller may not see. | Open (accepted by design) |
-| G043-013 | The miss memory of D043-035 is per process: across processes and restarts a slow input can be tried at most twice per process lifetime before it is final there. | A durable memory would add a statement on the refusal path and a table; not worth it for a backstop. | Open (accepted by design) |
-| G043-014 | `$dynamicRef` and `$recursiveRef` make a schema unusable, so a published schema that uses them refuses every start of its version. | D043-036; the inventory query lists versions whose schema fails the compile. | Open (documented) |
+| G043-013 | The miss memory of D043-035 is per process and evicts: a key is final after two counted work misses in one process while it stays in the memory; a restart, another process, or eviction past 4,096 keys with misses starts its count again. | A durable count would add a statement on the refusal path and a table; not worth it for a backstop behind the walk's bound (D043-042). | Open (accepted by design, bound restated 2026-11-14) |
+| G043-014 | Recursive schemas (`#`, anchors, any `$ref` cycle), dynamic references and nested `$id` make a schema unusable, so a published version that uses them refuses every start. | D043-042; the release-notes inventory query lists versions whose schema fails the compile; `report` mode covers the time to republish. | Open (documented) |
 
 ## 4. Owner questions
 

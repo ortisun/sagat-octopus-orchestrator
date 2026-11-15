@@ -29,25 +29,27 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
    called outside tests.
 2. The creation input of a run (`NewRun.input`, `ContinuationSelection`, `EvaluatedChainHandoffCommand.input`) MUST be a
    `CheckedRunInput` that names the version it was checked against. Outside tests it MUST be built only inside the
-   gate's module; the stores MUST refuse one whose version is not the run's.
+   gate's module, and it MUST NOT implement `Default` or `Deserialize`; the stores MUST refuse one whose version is
+   not the run's.
 3. The gate MUST call a narrow `SchemaValidator` port that takes the schema and input bytes and answers accept or a
    refusal; the policy (mode, metrics, the type) MUST stay in the gate.
 4. The schema MUST come from the parsed definition of that version, which carries the schema's canonical bytes and
    their digest. In `enforce` mode the check MUST NOT add a SQL statement to a start, a triggered start, a child start or
    a continuation. Compiling and validating MUST NOT run inside a database transaction or on an async worker thread.
    They run on blocking threads that hold their permits until they end: at most four per process, and at most one
-   shared and one ad hoc permit per tenant. The bound on the work MUST be the instance-aware walk charged against the
-   input before validating; an input past it is refused (`workLimit`). A deadline over acquiring the permits and the
-   work is a backstop: a miss MUST NOT be remembered as an unusable schema; the first miss of a schema and input is
-   transient and the second is final.
+   shared and one ad hoc permit per tenant. The bound on the work MUST be an instance-aware walk charged against the
+   input before validating, which follows every `$ref` and walks every applicator, so that its charge is an upper bound
+   on the validator's evaluation; an input past it is refused (`workLimit`). The deadline is a backstop: a timeout while
+   waiting for a permit is always transient; a miss of the work deadline MUST NOT be remembered as an unusable schema,
+   and the second such miss of a schema and input (of a schema and tick, for a cron trigger) is final.
 5. A compiled validator MUST be cached by tenant and schema digest, never shared across tenants, with bounded entries
    and memory and a remembered failure. An ad hoc start MUST NOT use the shared cache.
 6. A schema MUST be compiled within the bounds of the classification compile (schema size, depth, number and size of
    patterns, expansion steps), with `format` and `content*` never asserting under every draft. The retriever MUST refuse
-   every URI: it is the control on remote references, wherever they sit in the document. Every reference MUST be
-   document-local (`#`, a JSON pointer, a `$anchor` of the document), and the non-consuming applicator graph of the whole
-   document MUST have no cycle; recursion through a keyword that moves to a child instance is allowed. A schema outside
-   these is unusable.
+   every URI: it is the control on remote references, wherever they sit in the document. Every `$ref` MUST be a JSON
+   pointer into the document; the schema MUST have no `$ref` cycle of any kind, no dynamic or recursive reference or
+   anchor, no `$id` below the root, and no `$ref` under a keyword the walk does not walk. A schema outside these is
+   unusable: recursive schemas are not supported.
 7. A version without `inputSchema` accepts any input that passes the existing object and size checks. A version whose
    schema is unusable MUST refuse every start with `RUN_INPUT_SCHEMA_UNUSABLE`.
 8. A refusal MUST name a closed reason, the failing keyword from a closed enum obtained by an exhaustive match, and a
@@ -92,6 +94,8 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
 - **Runs in progress are affected**, an accepted deviation from constitution principle IV (OD-2026-11-14-9): a run
   started before the upgrade can fail at the step that creates a child or continues, when that new run's input does not
   match its version's schema. The release notes say so.
+- Recursive schemas are unusable: a published version whose schema recurses refuses every start until a version
+  without recursion is published (G043-014). The release notes' inventory lists them.
 - `WorkflowDefinition` grows by the schema bytes; the definition cache's byte budget counts them.
 - A second compiled-validator cache, a blocking pool and an in-process memory of missed deadlines per process. A load
   spike can make a slow input final after two misses in one process (G043-011, G043-013).
@@ -104,7 +108,7 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
 ## Evidence
 
 - Design: `docs/designs/043-run-input-validation.md`; registers: `specs/043-run-input-validation/research.md`
-  (D043-001 to D043-041, G043-001 to G043-014, O043-001 to O043-004).
+  (D043-001 to D043-045, G043-001 to G043-014, O043-001 to O043-004).
 - Background: G1955 and G2081 in `specs/018-schedules-bulk-operations/research.md`.
 - Existing tests this builds on: `crates/infra-schema/tests/annotation_is_inert.rs`;
   `claim_check_schema_validation_refuses_external_refs_without_exposing_payloads` in `crates/infra-schema/src/lib.rs`;
