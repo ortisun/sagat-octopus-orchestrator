@@ -621,6 +621,18 @@ path (`validated_stored_document_in`, `:344`) does not, so a version already sto
 instead (FR-043-011). A `DefinitionWarning` is also added when a version has an `inputSchema` and a non-manual trigger.
 The versioning diff already reports a tighter `inputSchema` as breaking (`crates/infra-ir/src/diff.rs:178`).
 
+**Amendments after the review of phase 1** (2026-11-15, `specs/043-run-input-validation/research.md`):
+
+- At publication an `inputSchema` over 64 KiB or nested deeper than 32 is answered `CLASSIFICATION_TOO_COMPLEX`, not
+  `INPUT_SCHEMA_TOO_LARGE` or `INPUT_SCHEMA_TOO_DEEP`: the classification bound of feature 016 reads every carrier before
+  the pre-check (D043-112, G043-020). The start gate and the inventory answer the validator's own codes. The OpenAPI
+  description of the publication's `422` that T043-14 writes says so.
+- A seventh issue code, `INPUT_SCHEMA_NAME_TOO_LONG`, refuses a name of `properties` or `required` longer than 1 KiB, and
+  a lookup is charged by the length it compares (D043-102).
+- The lower bound of step 4 of the pre-check counts, for `oneOf`, its cheapest branch and two units for each other
+  branch, not the sum of the branches: every branch but the one that passes can fail at its first keyword (D043-101).
+- The inventory also exits 2 when a stored document cannot be read (D043-111).
+
 **The inventory** (D043-052) is a command of the control plane, `control-plane input-schema-inventory`, beside
 `migrate` and `schedule-trigger-handover` (`apps/control-plane/src/cli.rs:57-62`). It runs with the owner's credentials,
 as `migrate` does, reads `workflow_versions` page by page, runs the same pre-check on each stored `inputSchema` and
@@ -874,8 +886,10 @@ come first; T043-21 to T043-24 land with the tasks they test; T043-5 to T043-13 
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-14
 - [ ] T043-14 Update the contracts: OpenAPI (outcome, reasons, `422` descriptions, the `details.rule` enum,
   `RUN_INPUT_SCHEMA_UNUSABLE`), the new `errors.md` with the publication issue codes `INPUT_SCHEMA_KEYWORD_UNSUPPORTED`,
-  `INPUT_SCHEMA_REFERENCE_INVALID`, `INPUT_SCHEMA_PATTERN_UNSUPPORTED`, `INPUT_SCHEMA_TOO_LARGE`, `INPUT_SCHEMA_TOO_DEEP`
-  and `INPUT_SCHEMA_TOO_COSTLY` (and the same closed list in the OpenAPI description of the publication's `422`), the 018
+  `INPUT_SCHEMA_REFERENCE_INVALID`, `INPUT_SCHEMA_PATTERN_UNSUPPORTED`, `INPUT_SCHEMA_TOO_LARGE`, `INPUT_SCHEMA_TOO_DEEP`,
+  `INPUT_SCHEMA_TOO_COSTLY` and `INPUT_SCHEMA_NAME_TOO_LONG` (and the same closed list in the OpenAPI description of the
+  publication's `422`, which also says that a schema over 64 KiB or 32 deep is answered `CLASSIFICATION_TOO_COMPLEX`,
+  D043-112), the 018
   `errors.md` row, the remediation lines; record the subset in the IR schema (`inputSchema` at
   `workflow.schema.json:47`, today `{"type": "object"}`, gets a description and a reference to the subset's keyword
   list) and in `sdks/SPEC.md` (the `.inputSchema(schema)` builder, `:501`); confirm AsyncAPI is unchanged.

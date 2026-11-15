@@ -479,6 +479,58 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   Iceberg write whose input schema has tuple positions is therefore publishable in 0.3.0 only in `report` mode
   (OD-2026-11-14-14).
 
+
+### After the review of phase 1 by the security and correctness reviewers (2026-11-15)
+
+- **D043-100** (2026-11-15) Measuring the input for `enum` and `const` stops before a push that would bring what it
+  counted and what waits on its stack to the cap, and the steps of the walk are charged: a long array under
+  `{"const": null}` was walked whole for free (about 4 to 10 s behind an `anyOf` fan-out, ending in a transient backstop
+  where a final answer was due).
+- **D043-101** (2026-11-15) Supersedes the `oneOf` term of D043-069: the lower bound counts the cheapest `oneOf` branch,
+  plus two units (its branch and its application) for each other branch, which can fail at its first keyword. The sum
+  refused good schemas with `INPUT_SCHEMA_TOO_COSTLY`.
+- **D043-102** (2026-11-15) A name of `properties` or `required` is at most 1 KiB (`MAX_NAME_BYTES`), refused past it with a
+  seventh issue code, `INPUT_SCHEMA_NAME_TOO_LONG` (the keyword and the pointer of the map, or of the `required` entry). A
+  lookup is charged `log2(n) × (1 + length / 64)` units, the comparisons it makes and the bytes each compares (the name's
+  length for `required`, the shorter of the key and the longest declared name for `properties`); one unit per lookup
+  let long shared prefixes behind a fan-out compare gigabytes within budget.
+- **D043-103** (2026-11-15) The oracle also generates the u64/f64 boundary pairs (`18446744073709551615` and
+  `1.8446744073709552e19`, `9223372036854775809` and `9.223372036854776e18`, `±2^63`) and nodes that hold both `properties`
+  and `additionalProperties`. Its runs are recorded in `validation-report.md`.
+- **D043-104** (2026-11-15) The depth check knows the data keywords (`default`, `examples`, `const`, `enum`,
+  `x-sagat-classification`): a value too deep inside one is reported with that keyword and its pointer, never with the
+  keys of the data. Every `Unusable` pointer is truncated to 512 characters, ending in `…` (`MAX_POINTER_CHARS`).
+- **D043-105** (2026-11-15) The weight of a compiled schema also counts the heap of its literals (a `Literal` and its
+  value: a `Value` per element and member, the bytes of strings and keys with an allocation's overhead), its names and its
+  lists. One tenant holds at most a quarter of the run-input cache (`TENANT_SHARE`), by count and by weight: an entry of a
+  tenant at its share evicts that tenant's own oldest, and an entry heavier than the share is compiled for its call and
+  not kept. The classification cache has no share and is unchanged.
+- **D043-106** (2026-11-15) A compile that panics answers the callers that waited for it `CompileFailure::Interrupted`,
+  which the check maps to `SchemaRefusal::Interrupted`: transient, never remembered, like the backstop. It used to answer a
+  final `KeywordUnsupported`.
+- **D043-107** (2026-11-15) `RUN_INPUT_PERMITS` (4) is the constant the gate's permits of T043-3 are built on; a
+  compile-time assertion of `pattern.rs` holds the matchers a pattern's weight counts (`1 + CONCURRENT_MATCHERS`) to at
+  least that many. The weight is right only while every match runs under a permit (G043-031).
+- **D043-108** (2026-11-15) `multipleOf` on an integral float computes the remainder as `(mantissa mod d) × (2^exponent mod
+  d) mod d`, exact and logarithmic in the exponent. IEEE `%` is exact too, but measured 1.16 µs for 2^996 by 3 (release,
+  Apple M3 Max), about 150 times the dearest unit; behind a fan-out it is now 8.7 ns per unit.
+- **D043-109** (2026-11-15) The publication half of T043-12: the control plane reads `SAGAT_RUN_INPUT_VALIDATION` strictly
+  (unset or empty is `enforce`, `enforce` and `report` are themselves, anything else stops the process naming the
+  variable), logs it, and passes it to `DefinitionService` and `PublishingService`. The registry capability is left to
+  phase 2. No manifest under `infra/` or `examples/` sets `report` (`no_shipped_manifest_sets_run_input_validation_to_report`).
+  Closes G043-021.
+- **D043-110** (2026-11-15) Refines D043-095: the Iceberg egress tests publish in `enforce` whatever is inside the subset,
+  and fall back to `report` only when `enforce` refused the document for `prefixItems`.
+- **D043-111** (2026-11-15) The inventory exits 2 also when a stored document is not a JSON object (it cannot say what that
+  version would do); it still lists what it could read. Its `keyword` and `at` fields are printed in double quotes, with
+  `"` and `\` escaped. Its cursor starts after the nil uuid, in one statement.
+- **D043-112** (2026-11-15) G043-020 is written down: `docs/quickstarts/errors.md`, the design (Technical Plan 8 and
+  T043-14, for the OpenAPI description) say that publication answers `CLASSIFICATION_TOO_COMPLEX` for a schema over
+  64 KiB or nested deeper than 32.
+- **D043-113** (2026-11-15) Refines D043-094: a lookup counts as many primitive operations as it is charged units (D043-102),
+  and the size walk counts its real steps (D043-100), so "operations ≤ k × units" is a check of the charges. The time per
+  charged unit of a pattern at the state cap is measured separately (G043-030).
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
@@ -499,10 +551,12 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-014 | A published schema with a keyword outside the subset (recursion, `patternProperties`, `not`, `if`, `unevaluated*`, ...) refuses every start of its version in `enforce`. | OD-2026-11-14-14; `control-plane input-schema-inventory` lists them (D043-052); `report` mode covers the time to republish. | Open (documented) |
 | G043-015 | `multipleOf` accepts only positive integers, so a schema with `multipleOf: 0.01` (a money amount) is outside the subset. | Floating-point remainders differ between implementations; an exact decimal rule can be added later. | Open (documented) |
 | G043-016 | `pattern` refuses Perl classes and their negations, word boundaries, Unicode and POSIX classes, flags and named groups, which authors use often; they write `[0-9]` and the like instead. Characters are code points, as in the `jsonschema` crate, not the UTF-16 units of ECMA-262 without the `u` flag, so an astral character counts as one. | D043-055; the publication issue `INPUT_SCHEMA_PATTERN_UNSUPPORTED` names the pattern's pointer. | Open (documented) |
-| G043-017 | The constant k per keyword (primitive operations per unit) and the pattern divisor (work per byte per state on this machine) are not measured; a full budget's time is not measured either. | Measured 2026-11-15 by `every_adversarial_case_stops_at_the_budget_with_operations_bounded_by_the_units` and `measure_k_and_the_cost_of_a_full_budget` (`crates/infra-schema/tests/run_input.rs`, release build, Apple M3 Max, 16 cores, rustc 1.100.0), each case stopping at `workLimit`. k (operations per unit, D043-094): `required` 12.98, `properties` 8.48, `items` 3.00, `allOf` 3.00, `anyOf` 2.33, `oneOf` 2.33, `type` 1.44, `const` 1.34, `minLength` 1.00, `additionalProperties` 0.67, `pattern` 0.06, `enum` 0.02; the test holds every case to k ≤ 32. Time per unit: `required` 63 ns, `properties` 36 ns, `const` 9.5 ns, `items` 4.1 ns, `additionalProperties` 3.5 ns, `allOf` 3.0 ns, `anyOf`/`oneOf` 2.7 ns, `type` 1.9 ns, `minLength` 0.36 ns, `pattern` (a 2 KiB string matched 28 times) 0.09 ns, `enum` 0.07 ns. **A full budget costs at most 63 ms** on this machine (the `required` case; 302 ms in the unoptimised test build). Pattern: `a[ab]{12}c` (17 NFA states, lazy DFA past its 64 KiB cache, prefilter off) scans 256 KiB in 0.38 ms, 0.086 ns per (byte × state): no divisor is set (D043-090). Not measured on the CI machine nor in production (G043-006). | Closed (measured on the development machine) |
+| G043-017 | The constant k per keyword (primitive operations per unit) and the pattern divisor (work per byte per state on this machine) are not measured; a full budget's time is not measured either. | Measured 2026-11-15 by `every_adversarial_case_stops_at_the_budget_with_operations_bounded_by_the_units` and `measure_k_and_the_cost_of_a_full_budget` (`crates/infra-schema/tests/run_input.rs`, release build, Apple M3 Max, 16 cores, rustc 1.100.0), each case stopping at `workLimit`. k (operations per unit, D043-094): `required` 12.98, `properties` 8.48, `items` 3.00, `allOf` 3.00, `anyOf` 2.33, `oneOf` 2.33, `type` 1.44, `const` 1.34, `minLength` 1.00, `additionalProperties` 0.67, `pattern` 0.06, `enum` 0.02; the test holds every case to k ≤ 32. Time per unit: `required` 63 ns, `properties` 36 ns, `const` 9.5 ns, `items` 4.1 ns, `additionalProperties` 3.5 ns, `allOf` 3.0 ns, `anyOf`/`oneOf` 2.7 ns, `type` 1.9 ns, `minLength` 0.36 ns, `pattern` (a 2 KiB string matched 28 times) 0.09 ns, `enum` 0.07 ns. **A full budget costs at most 63 ms** on this machine (the `required` case; 302 ms in the unoptimised test build). Pattern: `a[ab]{12}c` (17 NFA states, lazy DFA past its 64 KiB cache, prefilter off) scans 256 KiB in 0.38 ms, 0.086 ns per (byte × state): no divisor is set (D043-090). Not measured on the CI machine nor in production (G043-006). Re-measured 2026-11-15 after D043-100 and D043-102: a lookup is charged by its comparisons, so `required` costs 5.8 ns per unit (k 1.00) and `properties` 6.2 ns (k 1.42); the dearest unit is `const` at 7.5 ns and `multipleOf` on a huge float at 8.7 ns (D043-108), and **a full budget costs at most 7.5 ms** on this machine. | Closed (measured on the development machine) |
 | G043-020 | At publication, an `inputSchema` past 64 KiB or nested past 32 is refused by the classification bound of feature 016 first (`CLASSIFICATION_TOO_COMPLEX`, `crates/infra-ir/src/classification_check.rs`), not with `INPUT_SCHEMA_TOO_LARGE` or `INPUT_SCHEMA_TOO_DEEP`; the start gate and the inventory answer the validator's own code. | The schema is refused either way; only the code differs. Seen in `every_issue_has_its_closed_code_and_an_unannotated_schema_is_checked_too`. Left as it is: changing the order would change what feature 016 answers. | Open (accepted) |
-| G043-021 | The control plane publishes in `enforce` mode whatever `SAGAT_RUN_INPUT_VALIDATION` says: the parameter exists (D043-089) and nothing reads the variable yet. | T043-12 reads it strictly and passes it to `DefinitionService::with_input_validation` and `PublishingService::with_input_validation`. | Open |
+| G043-021 | The control plane publishes in `enforce` mode whatever `SAGAT_RUN_INPUT_VALIDATION` says: the parameter exists (D043-089) and nothing reads the variable yet. | Closed 2026-11-15 by D043-109: the control plane reads it strictly and passes it to publication; tests `the_run_input_validation_mode_is_read_strictly_and_enforce_by_default` and `no_shipped_manifest_sets_run_input_validation_to_report` (`apps/control-plane/tests/config.rs`). The registry capability is phase 2 (T043-12). | Closed |
 | G043-022 | The oracle property test generates references only to `$defs` entries with plain names and strings from a small alphabet; percent-encoded and `~`-escaped pointers, and `.` against line terminators, are covered by unit tests, not by the oracle. | Regression check, not a proof (D043-060); the unit tests `a_reference_must_name_a_schema_position_of_the_document` and `the_pattern_allowlist_refuses_what_ecma_262_and_the_regex_engine_read_differently` cover them. | Open (documented) |
+| G043-030 | Matching a pattern at the cap of 512 NFA states costs, per charged unit, what this machine measured and no more is known. | Measured 2026-11-15 (release, Apple M3 Max): with the production configuration, `a[ab]{12}c{100}d{100}e{100}f{100}g{50}` (466 states, the most a pattern reaches before its 16 KiB program) costs 0.06 ns per charged unit in the test build; the raw automaton with the prefilter off costs 0.0032 ns per (byte × state) at 466 states and 0.0144 at 225 states of classes, against 5.8 to 8.7 ns per unit for the dearest keywords. `a_pattern_at_the_state_cap_runs_its_charge_within_the_backstop` holds a whole budget of it within the 5 s backstop. Not measured on the CI machine. | Open (measured on the development machine) |
+| G043-031 | The run-input cache bounds compiles with four permits, but a key that is not shared (an ad hoc start) compiles outside the cache and its permits, and a pattern's weight counts `1 + 4` matchers only while every match runs under one of the gate's permits. | The gate of T043-3 must hold every compile and every validation, ad hoc ones included, under `RUN_INPUT_PERMITS` (D043-107). | Open (phase 2) |
 
 ## 4. Owner questions
 
