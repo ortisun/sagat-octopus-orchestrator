@@ -403,6 +403,82 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 - **D043-077** (2026-11-14) A sixth architecture rule fails when `tokio` is a normal (not a dev) dependency of
   `sagat-application`, with a negative fixture, so the layering of D043-071 holds.
 
+### Phase 1 of the build, T043-1, T043-2, T043-13 and T043-24 (2026-11-15, on `feature/043-validator`)
+
+- **D043-080** (2026-11-15) A boolean is a schema at every schema position, as both drafts read it: `true` accepts, `false`
+  refuses with `rule` `other` (with `additionalProperties` when it is the value of that keyword). The root of an
+  `inputSchema` is an object, as the IR requires.
+- **D043-081** (2026-11-15) Only a new version is refused for an `inputSchema` outside the subset. A parse of a document
+  that is already a version (the replay of a publication, an activation, the "already active" check of a promotion, the
+  digest of a draft compared with a version) runs in `report` mode, so a version published in `report` mode stays
+  reachable and a replay never turns into an internal error. A promotion into another namespace publishes a new version
+  and is checked in the mode of the service.
+- **D043-082** (2026-11-15) The strings of the oracle property test have no `\r`, U+2028 or U+2029: `jsonschema` 0.58.6
+  hands `.` to the `regex` crate unchanged (any character but `\n`), while the subset compiles it with its ECMA-262
+  meaning. The meaning of `.` against the four line terminators is a unit test of the validator instead.
+- **D043-083** (2026-11-15) The forms the subset accepts for its keywords: the lengths and counts are JSON integers
+  (`as_u64`, so `2.0` is refused); `multipleOf` is an integer in 1..=2^53 (past 2^53 an `f64` no longer holds every
+  integer); `required` is a list of distinct strings; `type` a name or a non-empty list of distinct names; `allOf`, `anyOf`
+  and `oneOf` non-empty lists; `title`, `description`, `$comment` and `format` strings and `examples` a list, as the
+  meta-schemas say. A keyword of the subset in another form is `INPUT_SCHEMA_KEYWORD_UNSUPPORTED`, named with its pointer.
+- **D043-084** (2026-11-15) A JSON depth past 32 is `INPUT_SCHEMA_TOO_DEEP` (with the key and the pointer of the first
+  value too deep), as an application path past 128 is (at the node whose path passes it, the root for a chain that starts
+  there). Cycles and paths are checked over every node of the arena, an unused definition included. A cycle is
+  `INPUT_SCHEMA_REFERENCE_INVALID` at the first `$ref` on it.
+- **D043-085** (2026-11-15) The lower bound of D043-069 is a bound on what every input the node **accepts** pays: a refused
+  input may stop at its first violation (an `allOf` stops at its first failing branch, a node at its first failing
+  keyword). `INPUT_SCHEMA_TOO_COSTLY` therefore says that no input can be accepted within the budget. So that it holds,
+  `enum` charges its members and `type` its names before comparing, and every branch evaluated of `allOf`, `anyOf` and
+  `oneOf` costs one unit beside its application.
+- **D043-086** (2026-11-15) Two charges the design did not list: `enum` and `const` measure the input's size only up to
+  the largest member (a walk that costs no more than the comparisons it bounds), and the numeric bounds, `minItems`,
+  `maxItems`, `minProperties` and `maxProperties` are constant-time checks paid by the application's unit. A violation
+  under `additionalProperties` names the object and the rule `additionalProperties`, never what failed beneath: a
+  pointer below would start at a key the caller chose.
+- **D043-087** (2026-11-15) The pre-check runs in `IrCodec::parse_with(document, mode)` after the conversion, on the
+  bytes the definition carries; `parse` is the `enforce` mode, `parse_private` runs it in `enforce`, `parse_stored` and
+  `parse_stored_private` never. Every other codec keeps the default `parse_with`, which ignores the mode.
+- **D043-088** (2026-11-15) The refusal is a typed `IrError::InputSchema { issue, keyword, path }` rather than new fields
+  of `IrIssue`: `problems_of` answers the issue's closed code and its pointer, the API answers `reason` `SCHEMA` with one
+  issue that carries `code`, `keyword`, `path` and the message, and the `report` warning is
+  `DefinitionWarning::InputSchemaOutsideSubset` with the same fields. The issue codes are `InputSchemaIssue` of the
+  domain; the trigger warning is `DefinitionWarning::InputSchemaAppliesToTriggers` (`INPUT_SCHEMA_APPLIES_TO_TRIGGERS`).
+- **D043-089** (2026-11-15) The publication mode is a parameter of `DefinitionService` and `PublishingService`
+  (`with_input_validation`), `enforce` by default. Reading `SAGAT_RUN_INPUT_VALIDATION` in the control plane and passing it
+  there is left to T043-12, with the strict parse, the capability and the engine's twin, so that one change gives the
+  variable its whole meaning (G043-021).
+- **D043-090** (2026-11-15) The pattern charge keeps no divisor (D043-063). Measured on an Apple M3 Max in release, a match
+  that defeats the lazy DFA costs 0.086 ns per (byte × state), below every other unit measured (the dearest, a
+  `required` lookup among 6,000 names, is 63 ns): `(bytes + 1) × states` over-counts by far, and is kept as the
+  conservative choice (G043-017).
+- **D043-091** (2026-11-15) The compiled-schema cache of the classification carriers is generic over its key, value,
+  failure, bounds and metric names; the carriers keep theirs (`classification_cache_total{outcome}`). The run-input
+  instance keys by `(tenant, digest)`, keeps 256 entries, 64 MiB and 1,024 remembered `Unusable`, and counts
+  `run_input_schema_cache_total{result}` with `hit`, `miss`, `evicted`, `failure_remembered` and `unshared`. An entry weighs
+  8 bytes per schema byte, its nodes, and for each pattern its programs plus 5 × (its PikeVM cache after a warm-up + 2 ×
+  64 KiB of lazy DFA).
+- **D043-092** (2026-11-15) The inventory's integration test is
+  `tests/integration/gitops-versioning/input_schema.rs` (real PostgreSQL through the shared Testcontainers support),
+  not `apps/control-plane/tests/inventory.rs`, which has no database fixture; the exit status 2 is tested through
+  `inventory::exit_code`, the function `main` uses. A stored document that is not a JSON object is listed as
+  `unreadable` and does not fail the command.
+- **D043-093** (2026-11-15) `sagat validate` and `sagat workflow validate` take `--input-validation enforce|report`
+  (`enforce` when absent, anything else a usage error); the CLI's help catalog and `docs/quickstarts/errors.md` explain
+  the seven codes, which the CLI's consistency test lists among those returned through a closed table of the domain.
+- **D043-094** (2026-11-15) The primitive operations the adversarial tests hold to `k × units` (`K` = 32 in the test) are
+  counted under the `test-support` feature of `sagat-infra-schema`: one per application, per `type` name, per node
+  measured or compared (plus one per 64 bytes of a string compared), five per number checked, one per code point of a
+  length check, one per byte a pattern scans, and `log2(n)` per lookup among `n` names. It is a model of the work that
+  shows proportionality; the time of a unit is measured separately (G043-017).
+
+- **D043-095** (2026-11-15) Two existing tests of `crates/infra-ir` published `inputSchema`s outside the subset and are
+  changed with the rule, never the check loosened: `production_compiles_annotated_root_schemas_but_preserves_unannotated_legacy_roots`
+  now expects the unannotated root `{"type": "not-a-json-schema-type"}` refused by a new publication in `enforce`,
+  published in `report` and restored from storage; the Iceberg egress tests of `iceberg_egress.rs`, whose records schemas
+  use `prefixItems`, publish in `report` mode, since the levels a write sends out are read the same in either mode. An
+  Iceberg write whose input schema has tuple positions is therefore publishable in 0.3.0 only in `report` mode
+  (OD-2026-11-14-14).
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
@@ -423,7 +499,10 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-014 | A published schema with a keyword outside the subset (recursion, `patternProperties`, `not`, `if`, `unevaluated*`, ...) refuses every start of its version in `enforce`. | OD-2026-11-14-14; `control-plane input-schema-inventory` lists them (D043-052); `report` mode covers the time to republish. | Open (documented) |
 | G043-015 | `multipleOf` accepts only positive integers, so a schema with `multipleOf: 0.01` (a money amount) is outside the subset. | Floating-point remainders differ between implementations; an exact decimal rule can be added later. | Open (documented) |
 | G043-016 | `pattern` refuses Perl classes and their negations, word boundaries, Unicode and POSIX classes, flags and named groups, which authors use often; they write `[0-9]` and the like instead. Characters are code points, as in the `jsonschema` crate, not the UTF-16 units of ECMA-262 without the `u` flag, so an astral character counts as one. | D043-055; the publication issue `INPUT_SCHEMA_PATTERN_UNSUPPORTED` names the pattern's pointer. | Open (documented) |
-| G043-017 | The constant k per keyword (primitive operations per unit) and the pattern divisor (work per byte per state on this machine) are not measured; a full budget's time is not measured either. | Measured by the adversarial tests of T043-2 and recorded here per keyword with the commit and the machine; until then the pattern charge uses no divisor (D043-063). G043-006 for the time. | Open |
+| G043-017 | The constant k per keyword (primitive operations per unit) and the pattern divisor (work per byte per state on this machine) are not measured; a full budget's time is not measured either. | Measured 2026-11-15 by `every_adversarial_case_stops_at_the_budget_with_operations_bounded_by_the_units` and `measure_k_and_the_cost_of_a_full_budget` (`crates/infra-schema/tests/run_input.rs`, release build, Apple M3 Max, 16 cores, rustc 1.100.0), each case stopping at `workLimit`. k (operations per unit, D043-094): `required` 12.98, `properties` 8.48, `items` 3.00, `allOf` 3.00, `anyOf` 2.33, `oneOf` 2.33, `type` 1.44, `const` 1.34, `minLength` 1.00, `additionalProperties` 0.67, `pattern` 0.06, `enum` 0.02; the test holds every case to k ≤ 32. Time per unit: `required` 63 ns, `properties` 36 ns, `const` 9.5 ns, `items` 4.1 ns, `additionalProperties` 3.5 ns, `allOf` 3.0 ns, `anyOf`/`oneOf` 2.7 ns, `type` 1.9 ns, `minLength` 0.36 ns, `pattern` (a 2 KiB string matched 28 times) 0.09 ns, `enum` 0.07 ns. **A full budget costs at most 63 ms** on this machine (the `required` case; 302 ms in the unoptimised test build). Pattern: `a[ab]{12}c` (17 NFA states, lazy DFA past its 64 KiB cache, prefilter off) scans 256 KiB in 0.38 ms, 0.086 ns per (byte × state): no divisor is set (D043-090). Not measured on the CI machine nor in production (G043-006). | Closed (measured on the development machine) |
+| G043-020 | At publication, an `inputSchema` past 64 KiB or nested past 32 is refused by the classification bound of feature 016 first (`CLASSIFICATION_TOO_COMPLEX`, `crates/infra-ir/src/classification_check.rs`), not with `INPUT_SCHEMA_TOO_LARGE` or `INPUT_SCHEMA_TOO_DEEP`; the start gate and the inventory answer the validator's own code. | The schema is refused either way; only the code differs. Seen in `every_issue_has_its_closed_code_and_an_unannotated_schema_is_checked_too`. Left as it is: changing the order would change what feature 016 answers. | Open (accepted) |
+| G043-021 | The control plane publishes in `enforce` mode whatever `SAGAT_RUN_INPUT_VALIDATION` says: the parameter exists (D043-089) and nothing reads the variable yet. | T043-12 reads it strictly and passes it to `DefinitionService::with_input_validation` and `PublishingService::with_input_validation`. | Open |
+| G043-022 | The oracle property test generates references only to `$defs` entries with plain names and strings from a small alphabet; percent-encoded and `~`-escaped pointers, and `.` against line terminators, are covered by unit tests, not by the oracle. | Regression check, not a proof (D043-060); the unit tests `a_reference_must_name_a_schema_position_of_the_document` and `the_pattern_allowlist_refuses_what_ecma_262_and_the_regex_engine_read_differently` cover them. | Open (documented) |
 
 ## 4. Owner questions
 
