@@ -86,8 +86,8 @@ pub use handover_auto::{
     may_auto_hand_over, read_handover_mode, retire_handover_role,
 };
 pub use handover_role::{
-    LoginSet, RoleEnsured, RoleGrants, ensure_handover_role, is_scram_verifier, set_handover_floor,
-    set_handover_login,
+    HANDOVER_ROLE_LOCK, LoginSet, RoleEnsured, RoleGrants, ensure_handover_role, is_scram_verifier,
+    set_handover_floor, set_handover_login,
 };
 pub use identity::PgIdentityStore;
 pub use instances::{FeatureStep, OperatorBounds, PgInstanceStore};

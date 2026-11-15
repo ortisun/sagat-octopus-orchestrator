@@ -493,3 +493,71 @@ impl std::io::Write for Captured {
         Ok(())
     }
 }
+
+/// Every `migrate` ensures the role and grants it again (D2264), and several runners may start at once (`e2e_platform_foundation`
+/// `us03` starts four). Two `GRANT`s on the same objects at once fail with `tuple concurrently updated`, so the step holds an
+/// advisory lock of its own for its transaction: a runner that comes second waits on it, and both succeed. The barrier is the lock:
+/// held here, the second runner is seen waiting on it in `pg_locks` before it is let go.
+#[tokio::test]
+async fn concurrent_runners_take_turns_on_the_role_step_and_both_succeed() {
+    let container = bounded::within(
+        "start a PostgreSQL of its own",
+        bounded::START_LIMIT,
+        Postgres::default().with_tag("16-alpine").start(),
+    )
+    .await
+    .expect("start PostgreSQL (is Docker running?)");
+    let port = bounded::mapped_port(&container, 5432).await;
+    let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let owner = loop {
+        if let Ok(pool) = PgPoolOptions::new().max_connections(4).connect(&url).await
+            && sqlx::query("SELECT 1").execute(&pool).await.is_ok()
+        {
+            break pool;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    sagat_control_plane::run_migrations(&database(&url))
+        .await
+        .expect("first migrate");
+
+    // hold the lock of the role step, as a runner inside it would
+    let mut holder = owner.begin().await.expect("begin");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(sagat_infra_postgres::HANDOVER_ROLE_LOCK)
+        .execute(&mut *holder)
+        .await
+        .expect("hold the role lock");
+
+    let second = tokio::spawn({
+        let url = url.clone();
+        async move { sagat_control_plane::run_migrations(&database(&url)).await }
+    });
+    bounded::within("the second runner waits on the role lock", Duration::from_secs(60), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted)",
+            )
+            .fetch_one(&owner)
+            .await
+            .expect("pg_locks");
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(!second.is_finished(), "it waits while the lock is held");
+
+    holder.rollback().await.expect("release");
+    bounded::within(
+        "the second runner finishes",
+        Duration::from_secs(60),
+        second,
+    )
+    .await
+    .expect("joined")
+    .expect("the second runner succeeds");
+    assert!(granted(&owner).await, "the role keeps its grants");
+}

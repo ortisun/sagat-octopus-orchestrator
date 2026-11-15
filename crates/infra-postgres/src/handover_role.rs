@@ -31,17 +31,34 @@ fn unknown(what: &str, outcome: &str) -> sqlx::Error {
     ))
 }
 
+/// The key of the advisory lock the role step of `migrate` holds for its transaction (`hashtextextended(key, 0)`): every `migrate`
+/// ensures the role and grants it again, and two `GRANT`s on the same objects at once fail with `tuple concurrently updated`.
+pub const HANDOVER_ROLE_LOCK: &str = "sagat.migrate.handover-role";
+
+/// Takes the lock of the role step for the transaction: a concurrent `migrate` waits here instead of failing its `GRANT` or
+/// `ALTER ROLE` with `tuple concurrently updated`.
+async fn lock_role_step(tx: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(HANDOVER_ROLE_LOCK)
+        .execute(tx)
+        .await?;
+    Ok(())
+}
+
 /// Ensures `sagat_handover` and grants it everything it needs, every run (D2264).
 ///
 /// # Errors
 /// The driver's; an outcome this build does not know is an error, never a default.
 pub async fn ensure_handover_role(pool: &PgPool) -> Result<(RoleEnsured, RoleGrants), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    lock_role_step(&mut tx).await?;
     let ensured: String = sqlx::query_scalar("SELECT schedule_trigger_handover_role_ensure()")
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
     let granted: String = sqlx::query_scalar("SELECT schedule_trigger_handover_role_grants()")
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
+    tx.commit().await?;
     let ensured = match ensured.as_str() {
         "CREATED" => RoleEnsured::Created,
         "NOT_PERMITTED" => RoleEnsured::NotPermitted,
@@ -63,10 +80,13 @@ pub async fn ensure_handover_role(pool: &PgPool) -> Result<(RoleEnsured, RoleGra
 /// # Errors
 /// The driver's; a floor outside 1 to 1000 is refused by the database (`22023`).
 pub async fn set_handover_floor(pool: &PgPool, min_live: u32) -> Result<u32, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    lock_role_step(&mut tx).await?;
     let floor: i32 = sqlx::query_scalar("SELECT schedule_trigger_handover_set_floor($1)")
         .bind(i32::try_from(min_live).unwrap_or(i32::MAX))
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(u32::try_from(floor).unwrap_or(0))
 }
 
@@ -138,6 +158,7 @@ pub async fn set_handover_login(pool: &PgPool, verifier: &str) -> Result<LoginSe
         .connect()
         .await?;
     let mut tx = conn.begin().await?;
+    lock_role_step(&mut tx).await?;
     let state: String = sqlx::query_scalar("SELECT state FROM schedule_trigger_handover FOR SHARE")
         .fetch_one(&mut *tx)
         .await?;
