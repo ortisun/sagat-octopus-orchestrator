@@ -279,6 +279,9 @@ pub struct Options {
     /// How the run service treats an input its version refuses (design 043): `enforce`, as production does by default; a
     /// suite that needs a run admitted before 0.3.0 (an input its schema refuses) serves in `report`.
     pub run_input_validation: sagat_application::run_input::InputValidationMode,
+    /// A `forEach` may be published with `operators` (`SAGAT_COLLECTION_OPERATORS_ENABLED`, design 042). Off, as in
+    /// production, unless a test turns it on.
+    pub collection_operators: bool,
 }
 
 impl Default for Options {
@@ -317,6 +320,7 @@ impl Default for Options {
 
             lake: false,
             run_input_validation: sagat_application::run_input::InputValidationMode::Enforce,
+            collection_operators: false,
         }
     }
 }
@@ -567,18 +571,22 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         state,
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
-            .with_lake_enabled(options.lake),
+            .with_lake_enabled(options.lake)
+            .with_collection_operators_enabled(options.collection_operators),
         runs,
     )
     .with_blob_transfer(sagat_api_http::HttpBlobTransfer {
         max_concurrent: options.blob_transfer.max_concurrent,
         timeout: options.blob_transfer.timeout,
     })
-    .with_publishing(sagat_application::publishing::PublishingService::new(
-        executions.clone(),
-        SystemClock,
-        JsonIrCodec,
-    ))
+    .with_publishing(
+        sagat_application::publishing::PublishingService::new(
+            executions.clone(),
+            SystemClock,
+            JsonIrCodec,
+        )
+        .with_collection_operators_enabled(options.collection_operators),
+    )
     .with_database_results(Arc::new(
         sagat_application::database_results::DatabaseResultService::new(
             executions.clone(),

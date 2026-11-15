@@ -217,6 +217,20 @@ public final class WorkflowBuilder {
         return this;
     }
 
+    /** {@link Flow#forEach(String, String, String, String, CollectionOptions, Operators)} on the top flow. */
+    public WorkflowBuilder forEach(String id, String items, String bodyName, String result, CollectionOptions options,
+            Operators operators) {
+        body.forEach(id, items, bodyName, result, options, operators);
+        return this;
+    }
+
+    /** {@link Flow#map(String, String, String, String, CollectionOptions, Operators)} on the top flow. */
+    public WorkflowBuilder map(String id, String items, String bodyName, String result, CollectionOptions options,
+            Operators operators) {
+        body.map(id, items, bodyName, result, options, operators);
+        return this;
+    }
+
     public WorkflowBuilder whileLoop(String id, String condition, String bodyName, String initial, String carry, LoopOptions options) {
         body.whileLoop(id, condition, bodyName, initial, carry, options);
         return this;

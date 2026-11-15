@@ -1121,6 +1121,9 @@
         "items": {
           "$ref": "#/$defs/expression"
         },
+        "operators": {
+          "$ref": "#/$defs/collectionOperators"
+        },
         "body": {
           "$ref": "#/$defs/nodeId"
         },
@@ -1147,6 +1150,178 @@
         "maxItems",
         "maxConcurrency",
         "next"
+      ]
+    },
+    "collectionOperators": {
+      "description": "Stages applied once, when the collection is entered, to the list `items` yields; the body runs for each element of the last stage's output (design 042, ADR-0087). One to eight stages, in any order, each over the list the previous one produced. Stage expressions read `element` (the current element of the stage's input), `position` (its 0-based index in that input), `input`, `steps`, `run` and `state`; they never read `item`, `index`, `iteration`, `carry` or `bodyResult`. The body's `index` is the position in the output. Publication needs the deployment's collection-operators switch. `debounce` and `ignoreElements` are trigger operators and are refused here.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/collectionOperatorStage"
+      }
+    },
+    "collectionOperatorStage": {
+      "description": "One stage: an object with exactly one property, the operator's name, whose value is that operator's parameters.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "filter"
+          ],
+          "description": "Keeps the elements for which `where` is true; any other value, false included, drops the element, and a value that is not a boolean is an error.",
+          "properties": {
+            "filter": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "where"
+              ],
+              "properties": {
+                "where": {
+                  "$ref": "#/$defs/expression"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "map"
+          ],
+          "description": "Replaces each element by the value of `select`.",
+          "properties": {
+            "map": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "select"
+              ],
+              "properties": {
+                "select": {
+                  "$ref": "#/$defs/expression"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "flatMap"
+          ],
+          "description": "`select` yields a list for each element; the lists are concatenated in order, one level deep.",
+          "properties": {
+            "flatMap": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "select"
+              ],
+              "properties": {
+                "select": {
+                  "$ref": "#/$defs/expression"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "skip"
+          ],
+          "description": "Drops the first `count` elements.",
+          "properties": {
+            "skip": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "count"
+              ],
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "take"
+          ],
+          "description": "Keeps the first `count` elements.",
+          "properties": {
+            "take": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "count"
+              ],
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "distinct"
+          ],
+          "description": "Keeps the first element of each canonical value of `by`, or of the element itself when `by` is absent.",
+          "properties": {
+            "distinct": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [],
+              "properties": {
+                "by": {
+                  "$ref": "#/$defs/expression"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "window"
+          ],
+          "description": "Replaces the list by consecutive lists of `count` elements, the last one possibly shorter.",
+          "properties": {
+            "window": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "count"
+              ],
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                }
+              }
+            }
+          }
+        }
       ]
     },
     "while": {

@@ -10,6 +10,7 @@ Typed workflow primitives, state definitions and logical database and Iceberg-ap
 - State authoring exposes DisclosurePolicy, QueryDefinition, UpdateDefinition, StateDefinition and Builder::state. Database authoring exposes ConnectionRef, DatabaseOperation/Type/Value/Parameter/Options and Builder::database. [state.rs:DisclosurePolicy] [state.rs:StateDefinition] [state.rs:state] [database.rs:ConnectionRef] [database.rs:DatabaseOptions] [database.rs:database]
 - Iceberg authoring exposes IcebergTable, IcebergRecords (inline, blobs or databaseResult), IcebergMapping, IcebergLimits, IcebergCompensation, IcebergWriteOptions and Builder::iceberg_write; the mode is always append. [iceberg.rs:IcebergWriteOptions] [iceberg.rs:iceberg_write]
 - The parent workflow module supplies Builder, activity/retry/saga options, base node methods, build/json and canonical_json. [../workflow.rs:Builder] [../workflow.rs:canonical_json]
+- Module ops is the collection operator factory (filter, map, flat_map, skip, take, distinct, distinct_by, window) returning ops::Operator; Builder::for_each_with_operators and map_with_operators carry a chain, and an empty one writes no operators (design 042). [ops.rs:Operator] [primitives.rs:for_each_with_operators]
 
 ## Invariants
 

@@ -4,8 +4,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
-  ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, body, flow, reconcile, workflow,
-  type ActivityContext, type BatchJob, type Body, type Flow, type Reset, type Run, type Schedule,
+  ActivityFailure, BlobOutput, SDK_VERSION, SagatClient, SagatError, WorkerHost, body, flow, ops, reconcile, workflow,
+  type ActivityContext, type CollectionOptions, type Operator, type BatchJob, type Body, type Flow, type Reset, type Run, type Schedule,
   type ScheduleBackfill, type StateDefinition, type UpdateWithStartReceipt, type WorkflowBuilder,
 } from '../src/index.js';
 import { FaultPlan, type Fault } from './faults.js';
@@ -28,6 +28,28 @@ function templated<T>(value: T, unique: string): T {
 
 // ----------------------------------------------------------------------------------------- builders
 
+/** One stage of a scenario's `operators`, built through the public operator factory. */
+function operator(stage: Obj): Operator {
+  const [name, ...others] = Object.keys(stage);
+  if (name === undefined || others.length > 0) throw new Error(`a stage has exactly one operator: ${JSON.stringify(stage)}`);
+  const p = stage[name] as Obj;
+  switch (name) {
+    case 'filter': return ops.filter(p['where']);
+    case 'map': return ops.map(p['select']);
+    case 'flatMap': return ops.flatMap(p['select']);
+    case 'skip': return ops.skip(p['count']);
+    case 'take': return ops.take(p['count']);
+    case 'distinct': return ops.distinct(p['by']);
+    case 'window': return ops.window(p['count']);
+    default: throw new Error(`unknown operator ${name}`);
+  }
+}
+
+function collectionOptions(op: Obj): CollectionOptions {
+  const options = { maxItems: op['maxItems'], maxConcurrency: op['maxConcurrency'] };
+  return op['operators'] === undefined ? options : { ...options, operators: (op['operators'] as Obj[]).map(operator) };
+}
+
 function apply(target: Flow, ops: Obj[]): void {
   for (const op of ops) {
     switch (op['op']) {
@@ -40,8 +62,8 @@ function apply(target: Flow, ops: Obj[]): void {
       case 'invokeChild': target.invokeChild(op['id'], op['workflow'], op['options']); break;
       case 'condition': target.condition(op['id'], op['expression'], op['ifTrue'], op['ifFalse']); break;
       case 'switch': target.switch(op['id'], op['cases'], op['default']); break;
-      case 'forEach': target.forEach(op['id'], op['items'], op['body'], op['result'], { maxItems: op['maxItems'], maxConcurrency: op['maxConcurrency'] }); break;
-      case 'map': target.map(op['id'], op['items'], op['body'], op['result'], { maxItems: op['maxItems'], maxConcurrency: op['maxConcurrency'] }); break;
+      case 'forEach': target.forEach(op['id'], op['items'], op['body'], op['result'], collectionOptions(op)); break;
+      case 'map': target.map(op['id'], op['items'], op['body'], op['result'], collectionOptions(op)); break;
       case 'while': target.while(op['id'], op['condition'], op['body'], op['initial'], op['carry'], { maxIterations: op['maxIterations'], timeoutMs: op['timeoutMs'], delayMs: op['delayMs'], onError: op['onError'] }); break;
       case 'repeatUntil': target.repeatUntil(op['id'], op['condition'], op['body'], op['initial'], op['carry'], { maxIterations: op['maxIterations'], timeoutMs: op['timeoutMs'], delayMs: op['delayMs'], onError: op['onError'] }); break;
       case 'approval': target.approval(op['id'], { policy: op['policy'], timeoutMs: op['timeoutMs'], onApprove: op['onApprove'], onReject: op['onReject'], onExpire: op['onExpire'] }); break;

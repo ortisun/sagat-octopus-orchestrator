@@ -478,6 +478,24 @@ class TheApplicationHoldsNoRuntime(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("must not have `tokio` as a normal dependency", out)
 
+    def test_rt_alone_without_default_features_passes_and_any_more_is_refused(self):
+        def tokio(features, defaults=False):
+            packages = self.packages("tokio")
+            packages[1]["dependencies"][1].update({"features": features, "uses_default_features": defaults})
+            return packages
+        code, out = run_input_check({"mod.rs": VALIDATOR}, tokio(["rt"]))
+        self.assertEqual(code, 0, out)
+        for refused in (tokio(["rt", "sync"]), tokio(["time"]), tokio(["rt"], defaults=True)):
+            code, out = run_input_check({"mod.rs": VALIDATOR}, refused)
+            self.assertEqual(code, 1, out)
+
+    def test_the_gate_naming_a_runtime_is_refused(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/application/src/run_input.rs": GATE + "async fn f() { tokio::task::yield_now().await; }\n",
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("the gate names `tokio`", out)
+
     def test_a_build_dependency_is_refused(self):
         code, out = run_input_check({"mod.rs": VALIDATOR}, self.packages(("tokio", "build")))
         self.assertEqual(code, 1, out)

@@ -20,10 +20,13 @@ metrics.workspace = true
 ring = { version = "0.17", default-features = false }
 sagat-domain.workspace = true
 sagat-telemetry.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
 thiserror.workspace = true
 time = { workspace = true, features = ["formatting", "parsing"] }
+# A blob source's array is parsed in a blocking task (design 042 review).
+tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true, features = ["attributes"] }
 uuid.workspace = true
 

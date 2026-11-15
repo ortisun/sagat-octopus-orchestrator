@@ -565,3 +565,38 @@ fn an_error_never_names_a_key_that_came_from_the_data() {
     let error = named.eval(&env).expect_err("missing");
     assert!(format!("{error}").contains("missing"), "{error}");
 }
+
+/// Design 042 review (security): one evaluation may copy what the run's data holds only a bounded number of times. A
+/// 256-token expression can name a 256 KiB value more than a hundred times; without a bound that is hundreds of MiB for
+/// a boolean answer no ceiling of the caller sees.
+#[test]
+fn the_bytes_one_evaluation_copies_are_bounded() {
+    use sagat_infra_expr::limits::MAX_COPIED_BYTES;
+    // A string whose compact JSON is 256 KiB, the largest payload a run holds.
+    let big = Value::String("x".repeat(256 * 1024 - 2));
+    let env = Env::new()
+        .with("e", big.clone())
+        .with("l", Value::Array(vec![big.clone(), big]));
+    let eval = |source: &str| Compiled::compile(source).expect("compiles").eval(&env);
+    assert_eq!(
+        eval("size([e, e]) == 2"),
+        Ok(json!(true)),
+        "two copies are within the bound"
+    );
+    assert_eq!(eval("size([e, e, e]) == 3"), Err(ExprError::ResultTooLarge));
+    // The scenario of the review: about 120 references to the element, nested to fit the list literal limit.
+    let sixty = vec!["e"; 60].join(", ");
+    assert_eq!(
+        eval(&format!("size([[{sixty}], [{sixty}]]) > 0")),
+        Err(ExprError::ResultTooLarge)
+    );
+    assert_eq!(
+        eval("size(l + l) == 4"),
+        Err(ExprError::ResultTooLarge),
+        "concatenation copies too"
+    );
+    assert_eq!(eval("string(e) + 'y'"), Err(ExprError::ResultTooLarge));
+    // Reading a value does not copy it: only what an evaluation builds is counted.
+    assert_eq!(eval("e.size() > 0 && l[1].size() > 0"), Ok(json!(true)));
+    const { assert!(MAX_COPIED_BYTES >= 2 * 256 * 1024 && MAX_COPIED_BYTES < 3 * 256 * 1024) };
+}

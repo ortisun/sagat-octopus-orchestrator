@@ -40,12 +40,37 @@ pub mod worker;
 /// A sibling Cargo binary from the same target and profile as the running integration test.
 /// This also works with an external CARGO_TARGET_DIR or a target triple directory.
 pub fn built_binary(name: &str) -> std::path::PathBuf {
-    std::env::current_exe()
-        .expect("test executable")
+    target_profile_dir().join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// The profile directory of the Cargo target this test was built in (`<target>/debug`), where `cargo build` puts the
+/// binaries. Found as the ancestor of the test executable whose parent is the target directory (the one Cargo marks with
+/// `CACHEDIR.TAG`), not by a fixed number of levels: Cargo 1.100 builds a test executable in
+/// `<target>/debug/build/<package>/<hash>/out/`, where Cargo before it used `<target>/debug/deps/`.
+pub fn target_profile_dir() -> std::path::PathBuf {
+    let executable = std::env::current_exe().expect("test executable");
+    executable
+        .ancestors()
+        .skip(1)
+        .find(|dir| {
+            dir.parent()
+                .is_some_and(|target| target.join("CACHEDIR.TAG").is_file())
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no Cargo target directory (one with CACHEDIR.TAG) above {}",
+                executable.display()
+            )
+        })
+        .to_owned()
+}
+
+/// The Cargo target directory this test was built in: the parent of [`target_profile_dir`].
+pub fn target_dir() -> std::path::PathBuf {
+    target_profile_dir()
         .parent()
-        .and_then(std::path::Path::parent)
-        .expect("Cargo test profile directory")
-        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+        .expect("the profile directory is inside the target directory")
+        .to_owned()
 }
 
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, Weak};

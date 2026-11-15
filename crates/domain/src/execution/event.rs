@@ -284,6 +284,13 @@ impl FailureCode {
         Self::system("BLOB_UNAVAILABLE")
     }
 
+    /// A collection's operator chain crossed one of its running ceilings at scope entry (design 042, FR-042-007): more
+    /// than 1,000 input or stage elements, an element over 256 KiB, a stage over 4 MiB, or the 1-second wall time.
+    #[must_use]
+    pub fn collection_operator_budget() -> Self {
+        Self::system("COLLECTION_OPERATOR_BUDGET")
+    }
+
     /// The bytes of a blob are not the bytes that were stored (size or digest differ).
     #[must_use]
     pub fn blob_corrupt() -> Self {

@@ -192,6 +192,12 @@ public sealed record CollectionOptions
 
     /// <summary>Largest number of admitted iterations, from 1 through 256.</summary>
     public required int MaxConcurrency { get; init; }
+
+    /// <summary>
+    /// Stages applied once, when the collection is entered, to the list <c>items</c> yields, built with <see cref="Ops"/> (design 042).
+    /// Null or empty, the node has no <c>operators</c>. The server validates the chain.
+    /// </summary>
+    public IReadOnlyList<OperatorStage>? Operators { get; init; }
 }
 
 /// <summary>Required bounds and optional routing of a sequential workflow loop.</summary>

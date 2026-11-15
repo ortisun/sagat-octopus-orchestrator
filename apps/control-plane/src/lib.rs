@@ -755,7 +755,8 @@ pub async fn serve_with_admin(
     );
     let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec)
         .with_lake_enabled(serve.lake_enabled)
-        .with_input_validation(serve.run_input_validation);
+        .with_input_validation(serve.run_input_validation)
+        .with_collection_operators_enabled(serve.collection_operators_enabled);
     let mut runs = run_service(executions.clone(), cache, serve);
     if let Some(settings) = &serve.blobs {
         let backend = sagat_infra_blobstore::build_backend(&settings.store, settings.part_size)
@@ -782,7 +783,8 @@ pub async fn serve_with_admin(
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
             .with_lake_enabled(serve.lake_enabled)
-            .with_input_validation(serve.run_input_validation),
+            .with_input_validation(serve.run_input_validation)
+            .with_collection_operators_enabled(serve.collection_operators_enabled),
         runs,
     )
     .with_database_results(Arc::new(database_results))

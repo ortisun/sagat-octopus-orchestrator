@@ -228,7 +228,8 @@ pub async fn serve(
     )
     .with_run_inputs(Arc::clone(&run_inputs))
     .with_children(cache.clone())
-    .with_placement(placement.clone());
+    .with_placement(placement.clone())
+    .with_pass_interval(engine.tick_interval);
     // A collection whose items live in a blob (T014-016) is read through the same store; without
     // a blob store configured no blob can exist, so the scheduler needs no source.
     if let Some(blobs) = &blobs {

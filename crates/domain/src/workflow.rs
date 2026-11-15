@@ -712,6 +712,9 @@ pub enum NodeKind {
     /// Invokes one closed body for each captured collection element.
     ForEach {
         items: Expression,
+        /// The stages applied once, at scope entry, to the list `items` yields (design 042, ADR-0087); the body runs
+        /// for each element of their output. `None` is today's collection, unchanged (FR-042-012).
+        operators: Option<crate::operators::OperatorChain>,
         body: NodeId,
         result: Expression,
         max_items: u32,
@@ -2326,7 +2329,20 @@ fn check_graph_kind(node: &Node, kind: GraphKind) -> Result<(), WorkflowError> {
             NodeKind::Switch { cases, .. } => cases.iter().map(SwitchCase::when).collect(),
             NodeKind::Child { input, .. } => input.iter().collect(),
             NodeKind::End { output } => output.iter().collect(),
-            NodeKind::ForEach { items, result, .. } => vec![items, result],
+            NodeKind::ForEach {
+                items,
+                operators,
+                result,
+                ..
+            } => [items, result]
+                .into_iter()
+                .chain(
+                    operators
+                        .iter()
+                        .flat_map(crate::operators::OperatorChain::expressions)
+                        .map(|(_, _, expression)| expression),
+                )
+                .collect(),
             NodeKind::While {
                 condition,
                 initial,

@@ -145,6 +145,13 @@ pub fn run_input_validation(
     }
 }
 
+/// `SAGAT_COLLECTION_OPERATORS_ENABLED` (design 042): whether a `forEach` may be published with `operators`. Off unless
+/// the deployment says so; before turning it on, every scheduler and control-plane replica must run this release
+/// (`docs/runbooks/workflow-primitives.md`, the fleet rule).
+fn collection_operators(get: Lookup<'_>) -> Result<bool, ConfigError> {
+    flag(get, "SAGAT_COLLECTION_OPERATORS_ENABLED")
+}
+
 /// Variables of the per-tenant request budget: (requests per second, burst).
 pub const TENANT_RATE_VARS: (&str, &str) = ("SAGAT_RATE_LIMIT_RPS", "SAGAT_RATE_LIMIT_BURST");
 /// Variables of the per-subject request budget: (requests per second, burst).
@@ -413,6 +420,10 @@ pub struct ServeConfig {
     /// 043, FR-043-013): `enforce` unless the operator says `report`. The instance-registry capability that keeps
     /// replicas from answering differently comes with the start gate (T043-12).
     pub run_input_validation: sagat_application::definitions::InputValidationMode,
+    /// Whether a `forEach` may declare `operators` (`SAGAT_COLLECTION_OPERATORS_ENABLED`, design 042). Off by default.
+    /// With it off, publishing such a workflow is refused with `COLLECTION_OPERATORS_DISABLED`; a stored one stays
+    /// readable and its runs apply their chain.
+    pub collection_operators_enabled: bool,
     /// Native TLS identity is required for the mTLS webhook profile; no forwarded headers are trusted.
     pub tls: Option<sagat_api_http::HttpTlsConfig>,
     pub webhook_oidc: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -617,6 +628,7 @@ impl ServeConfig {
             reset_cancel_source_enabled: flag(get, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")?,
             lake_enabled: flag(get, "SAGAT_LAKE_ENABLED")?,
             run_input_validation: run_input_validation(get)?,
+            collection_operators_enabled: collection_operators(get)?,
             tls,
             webhook_oidc,
             webhook_oidc_development: environment == Environment::Dev,

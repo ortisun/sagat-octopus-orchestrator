@@ -89,6 +89,36 @@ pub struct IrIssue {
     pub message: String,
 }
 
+/// Why publication refuses one stage of an operator chain (design 042, FR-042-001/002/005). Closed; the API words it as
+/// `details.refusal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorRefusal {
+    /// The name is not an operator at all.
+    Unknown,
+    /// The operator exists, but on another surface (`debounce` and `ignoreElements` are a trigger's).
+    Surface,
+    /// A parameter outside its range (`window {count: 0}`, `skip {count: 1001}`).
+    Range,
+    /// An expression is over its limits or does not compile in the bounded language.
+    Expression,
+    /// An expression reads a variable a stage does not see (`item`, `index`, `iteration`, `carry`, `bodyResult`, or a name
+    /// outside `element`, `position`, `input`, `steps`, `run`, `state`).
+    Variable,
+}
+
+impl OperatorRefusal {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "UNKNOWN",
+            Self::Surface => "SURFACE",
+            Self::Range => "RANGE",
+            Self::Expression => "EXPRESSION",
+            Self::Variable => "VARIABLE",
+        }
+    }
+}
+
 /// Why a workflow document cannot be published.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IrError {
@@ -132,6 +162,23 @@ pub enum IrError {
         node: String,
         refusal: sagat_domain::database::LakeRefusal,
     },
+    /// A stage of a `forEach` operator chain that publication refuses (design 042). It names the node, the stage index and
+    /// the operator, never a value of a run; `operator` is the name the document wrote, clipped.
+    #[error("node '{node}', operators[{stage}] ('{operator}'): {message}")]
+    Operator {
+        node: String,
+        stage: usize,
+        operator: String,
+        refusal: OperatorRefusal,
+        message: String,
+    },
+    /// The definition holds a `forEach` with `operators` and this deployment has not turned collection operators on
+    /// (`collection-operators`, off by default; the contract code is `COLLECTION_OPERATORS_DISABLED`). Checked at
+    /// publication only: a stored definition stays readable (FR-042-003).
+    #[error(
+        "node '{node}' is a collection with operators, and this deployment has not enabled collection operators"
+    )]
+    CollectionOperatorsDisabled { node: String },
     #[error("declaration '{field}' is not supported yet: {reason}")]
     UnsupportedDeclaration {
         field: &'static str,
@@ -336,6 +383,15 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
             vec![Problem::error("LAKE_DISABLED", error.to_string()).at_node(node.clone())]
         }
         IrError::LakeWriteRefused { node, refusal } => lake_refusal_problems(node, refusal),
+        // As for an expression, the message names the stage: `path` is a pointer into the document, and the codec knows
+        // the node by its id.
+        IrError::Operator { node, .. } => {
+            vec![Problem::error("INVALID_OPERATOR", error.to_string()).at_node(node.clone())]
+        }
+        IrError::CollectionOperatorsDisabled { node } => vec![
+            Problem::error("COLLECTION_OPERATORS_DISABLED", error.to_string())
+                .at_node(node.clone()),
+        ],
         IrError::UnsupportedDeclaration { field, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_path(format!("/{field}"))]
         }
@@ -728,6 +784,15 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Sen
             }
         }
     }
+    /// Reads the committed result of a publication with the same key and fingerprint. Never
+    /// validates the current draft, moves the active pointer or writes another audit record.
+    fn replay_publication(
+        &self,
+        tenant: TenantId,
+        workflow: WorkflowId,
+        idempotency: &Idempotency,
+    ) -> impl Future<Output = Result<Option<VersionRecord>, StoreError>> + Send;
+
     /// Resolves a namespace by slug inside `tenant`.
     fn find_namespace_by_slug(
         &self,
@@ -873,6 +938,9 @@ pub struct DefinitionService<S, C, X> {
     lake_enabled: bool,
     /// What publication does with an `inputSchema` outside the supported subset (design 043): the process's mode.
     input_validation: InputValidationMode,
+    /// `collection-operators` (design 042): whether a `forEach` may declare `operators`. Off unless the deployment says
+    /// so. Checked at publication only; a stored definition stays readable whatever it is (FR-042-003).
+    collection_operators_enabled: bool,
 }
 
 impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
@@ -883,6 +951,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             codec,
             lake_enabled: false,
             input_validation: InputValidationMode::Enforce,
+            collection_operators_enabled: false,
         }
     }
 
@@ -900,6 +969,37 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
     pub const fn with_lake_enabled(mut self, enabled: bool) -> Self {
         self.lake_enabled = enabled;
         self
+    }
+
+    /// Lets a `forEach` declare `operators` (the deployment's `collection-operators`, design 042).
+    #[must_use]
+    pub const fn with_collection_operators_enabled(mut self, enabled: bool) -> Self {
+        self.collection_operators_enabled = enabled;
+        self
+    }
+
+    /// The first collection with a chain that this deployment may not publish, if there is one: in the root graph or in a
+    /// body.
+    fn refused_collection_operator_node<'a>(
+        &self,
+        definition: &'a WorkflowDefinition,
+    ) -> Option<&'a NodeId> {
+        if self.collection_operators_enabled {
+            return None;
+        }
+        definition
+            .nodes()
+            .chain(definition.bodies().flat_map(|body| body.nodes()))
+            .find(|node| {
+                matches!(
+                    node.kind(),
+                    sagat_domain::workflow::NodeKind::ForEach {
+                        operators: Some(_),
+                        ..
+                    }
+                )
+            })
+            .map(sagat_domain::workflow::Node::id)
     }
 
     /// The first Iceberg write of a definition that this deployment may not publish, if there is one.
@@ -1155,6 +1255,13 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 },
             )));
         }
+        if let Some(node) = self.refused_collection_operator_node(&parsed.definition) {
+            return Err(AppError::InvalidDefinition(Box::new(
+                IrError::CollectionOperatorsDisabled {
+                    node: node.as_str().to_owned(),
+                },
+            )));
+        }
         self.check_secrets(principal, &record, &parsed.definition, ctx)
             .await?;
         let database_check = self
@@ -1192,7 +1299,27 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
     ) -> Result<Published, AppError> {
         principal.authorize(Permission::DefinitionPublish)?;
         check_release_notes(release_notes)?;
-        let (_, parsed) = self.prepare(principal, id, draft_revision, ctx).await?;
+        let (_, parsed) = match self.prepare(principal, id, draft_revision, ctx).await {
+            Ok(prepared) => prepared,
+            // D042-105: a publication asked again with its own key after the switch was turned off is answered by
+            // the store's replay, as it would have been with the switch on; only a new publication reads the switch.
+            Err(AppError::InvalidDefinition(error))
+                if matches!(*error, IrError::CollectionOperatorsDisabled { .. }) =>
+            {
+                return self
+                    .replay_refused(
+                        principal,
+                        id,
+                        draft_revision,
+                        release_notes,
+                        key,
+                        ctx,
+                        error,
+                    )
+                    .await;
+            }
+            Err(error) => return Err(error),
+        };
         let declared_state = self
             .codec
             .declared_state_publication(&parsed.canonical)
@@ -1267,6 +1394,40 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         }
     }
 
+    /// The answer to a publication the switch refused: the version an earlier publication with the same key and
+    /// fingerprint committed, or the refusal itself when there is none (D042-105).
+    #[allow(clippy::too_many_arguments)]
+    async fn replay_refused(
+        &self,
+        principal: &Principal,
+        id: WorkflowId,
+        draft_revision: u64,
+        release_notes: Option<&str>,
+        key: &str,
+        ctx: &RequestContext,
+        refusal: Box<IrError>,
+    ) -> Result<Published, AppError> {
+        let record = self.get_workflow(principal, id, ctx).await?;
+        let parsed = self
+            .codec
+            .parse(&record.draft)
+            .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
+        let idempotency =
+            publication_idempotency(id, draft_revision, parsed.digest, release_notes, key);
+        match self
+            .store
+            .replay_publication(principal.tenant_id(), id, &idempotency)
+            .await?
+        {
+            Some(stored) => Ok(Published {
+                version: stored.version,
+                created: false,
+                warnings: parsed.warnings,
+            }),
+            None => Err(AppError::InvalidDefinition(refusal)),
+        }
+    }
+
     /// A dry run of what [`Self::publish`] checks: the document given (or, with none, the stored
     /// draft) against the schema, the graph rules, the expressions, the secrets the caller may use
     /// and the scripts that were built. Nothing is stored, nothing is audited, and a document that
@@ -1327,6 +1488,11 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         problems.extend(self.unknown_scripts(principal, &parsed.definition).await?);
         if let Some(node) = self.refused_lake_node(&parsed.definition) {
             problems.extend(problems_of(&IrError::LakeDisabled {
+                node: node.as_str().to_owned(),
+            }));
+        }
+        if let Some(node) = self.refused_collection_operator_node(&parsed.definition) {
+            problems.extend(problems_of(&IrError::CollectionOperatorsDisabled {
                 node: node.as_str().to_owned(),
             }));
         }

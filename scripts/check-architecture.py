@@ -350,12 +350,33 @@ def application_runtime_errors(pkgs):
         if p["name"] != APPLICATION_PACKAGE:
             continue
         for d in p["dependencies"]:
+            # Design 042 parses a blob source's array in a blocking task (`collection_source.rs`), the one use the
+            # application makes of a runtime: `tokio` with no feature but `rt` is that and nothing more (D043-150, G043-051).
+            # The gate of design 043 holds no runtime whatever this allows: `run_input.rs` names none (`run_input_runtime_errors`).
+            features = set(d.get("features") or [])
+            if d["name"] == "tokio" and d.get("kind") in (None, "normal") and not d.get("uses_default_features", True) \
+                    and features <= {"rt"}:
+                continue
             if d["name"] == "tokio" and d.get("kind") in (None, "normal", "build"):
                 errors.append(
                     f"'{APPLICATION_PACKAGE}' must not have `tokio` as a {d.get('kind') or 'normal'} dependency: the gate is plain async "
                     f"code over its port and the runtime lives in the adapter (D043-071, D043-077); a dev-dependency is fine"
                 )
     return errors
+
+
+def run_input_runtime_errors(root):
+    """`crates/application/src/run_input.rs` names no runtime outside its tests (D043-071, D043-150)."""
+    path = pathlib.Path(root) / "crates" / "application" / "src" / "run_input.rs"
+    if not path.exists():
+        return []
+    text = path.read_text()
+    masked = without_test_modules(rust_literals(text)[0])
+    return [
+        f"crates/application/src/run_input.rs:{text.count(chr(10), 0, m.start()) + 1}: the gate names `tokio`: it is plain async "
+        f"code over its port, and the runtime lives in the adapter (D043-071)"
+        for m in re.finditer(r"\btokio\b", masked)
+    ]
 
 
 # --- every run is created with a checked input (design 043, FR-043-016) -------------------------------------------------------
@@ -573,6 +594,7 @@ def main(argv):
     errors.extend(run_input_errors(run_input_src))
     errors.extend(application_runtime_errors(pkgs))
     errors.extend(run_creator_errors(rust_root))
+    errors.extend(run_input_runtime_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
 
     # Cycle detection over workspace members (DFS, three colours).

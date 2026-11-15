@@ -404,6 +404,7 @@ fn kind_of(
         },
         "forEach" => NodeKind::ForEach {
             items: expression(text(node, "items", at)?, &format!("{at}/items"))?,
+            operators: crate::operators::decode(node, id, at)?,
             body: node_id(text(node, "body", at)?, &format!("{at}/body"))?,
             result: expression(text(node, "result", at)?, &format!("{at}/result"))?,
             max_items: integer_u32(node, "maxItems", at)?,

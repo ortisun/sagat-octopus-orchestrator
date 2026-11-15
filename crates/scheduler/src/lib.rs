@@ -32,7 +32,8 @@ pub use monitor::{Monitor, MonitorRound, MonitorSettings};
 pub use outbox::{DispatchSettings, Dispatched, OutboxDispatcher};
 pub use passes::{
     CollectionAdvance, CollectionAdvanceError, ContinuationAdvanceError, LoopAdvance,
-    LoopAdvanceError, Report, Scheduler, SchedulerSettings,
+    LoopAdvanceError, MAX_CHAINED_ENTRIES_PER_TICK, MAX_CONCURRENT_CHAINS, Report, Scheduler,
+    SchedulerSettings,
 };
 pub use resets::{Backoff, ResetPass, ResetRound, ResetSettings, delay_after};
 pub use schedules::{SchedulePass, ScheduleRound, ScheduleSettings};

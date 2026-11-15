@@ -584,6 +584,29 @@ express one uniformly (the conformance runners of Go, Java and C# ignore it when
 options type refuses it when decoded).
 The shared scenario is `iceberg-write-builders` (build only: it claims neither publication nor execution).
 
+### 7.3 Collection operators (feature 042)
+
+A `forEach` (and `map`, which writes the same node) may carry `operators`, the stages applied once to the list
+`items` yields when the collection is entered. Each SDK builds a stage with one factory and the same names, in its own
+casing: `filter(where)`, `map(select)`, `flatMap(select)`, `skip(count)`, `take(count)`, `distinct(by?)` and
+`window(count)`. A stage is an object with exactly one key, the operator's name: `{"filter":{"where":"…"}}`, and
+`distinct` without `by` is `{"distinct":{}}`. The chain is carried without breaking a present call:
+
+| SDK | Chain | Factory |
+|---|---|---|
+| TypeScript | optional `operators` of `CollectionOptions` | `ops.filter(…)`, `ops.flatMap(…)`, … (type `Operator`) |
+| Go | variadic `operators ...ops.Operator` after `maxConcurrency` in `ForEach` and `Map` | package `workflow/ops`: `ops.Filter`, `ops.FlatMap`, `ops.Distinct()`, `ops.DistinctBy(by)`, … |
+| Python | keyword-only `operators=None` of `for_each` and `map` | module `ops`: `ops.filter`, `ops.flat_map`, … (type `Operator`) |
+| C# | optional init property `Operators` of `CollectionOptions` | static class `Ops` (type `OperatorStage`) |
+| Java | overloads `forEach(…, CollectionOptions, Operators)` and `map(…)`; the record keeps its two components | class `Ops`; `Operators.of(…)` gathers the stages |
+| Rust | `for_each_with_operators` and `map_with_operators`; `CollectionOptions` is unchanged | module `workflow::ops`: `ops::filter`, `ops::flat_map`, `ops::distinct()`, `ops::distinct_by(by)`, … |
+
+An absent or empty chain writes no `operators`, so every document built before the field existed is unchanged. The
+builders only assemble the list, in the order given: the chain's length (one to eight), the ranges of the counts, the
+operators allowed on a collection and the variables a stage expression reads (`element`, `position`, `input`, `steps`,
+`run`, `state`) are checked by the server at publication. A stage the factory did not build is `VALIDATION_FAILED`
+where the language can express one. The shared scenario is `collection-operators` (build only).
+
 ## 8. Serialization
 
 - JSON only. Integers up to 2^63-1 round-trip where the language can hold them; TypeScript holds up to

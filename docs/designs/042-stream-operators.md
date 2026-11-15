@@ -432,7 +432,11 @@ canonical encoding and a `chain_digest`.
 field with `IrError::CollectionOperatorsDisabled { node }` (and its trigger twin), in the same place `refused_lake_node`
 is checked. Nothing in `convert::*` looks at a switch, because `parse_stored` goes through it: switching a capability off
 stops new publications and never makes a stored definition unreadable (tested through `parse_stored` with the switch
-off).
+off). Amended after the S0 review (D042-105, D042-106): only a new publication reads a switch. A publication asked again
+with its own idempotency key is answered by the store's replay before the switch is read, and activating, rolling back
+or promoting to a namespace that already runs the document move a pointer to an existing version and never read it.
+Until T042-8 applies a chain at entry, the control plane refuses to start with `collection-operators` on, and the
+scheduler fails a chained `forEach` closed at entry with `COLLECTION_OPERATORS_UNSUPPORTED` (D042-103, G042-100).
 
 **Old readers.** The schema is closed, so a binary without the field fails `parse_stored` with `IrError::Schema`: it
 refuses, it does not ignore. That is why section 10 forbids a mixed fleet.
@@ -483,7 +487,10 @@ is called on the materialised elements instead of evaluating `items` again; the 
 **Stage by stage, bounded while produced.** Each stage consumes its whole input before the next starts. While a stage
 produces, the running count and the running serialised bytes are checked after every element; the first crossing stops
 the chain. Each element is serialised once, when it is produced, which both measures it and gives the bytes the
-snapshot stores. Peak memory is the environment plus two stage lists of at most 4 MiB serialised each.
+snapshot stores. Peak memory is the environment plus two stage lists of at most 4 MiB serialised each, each element held
+both as a value and as its bytes: several times the serialised size (T042-9 measured the resident memory; see the
+validation report). A replica evaluates at most two chains at once and one tick enters at most four (D042-153); an
+element nests at most 120 levels and one evaluation copies at most about 512 KiB (D042-151, D042-155).
 
 | Ceiling | Value | Code | Where |
 |---|---|---|---|

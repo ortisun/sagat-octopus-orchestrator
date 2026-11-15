@@ -47,6 +47,9 @@ import dev.sagatoctopusorchestrator.sdk.workflow.CollectionOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.ChainPolicy;
 import dev.sagatoctopusorchestrator.sdk.workflow.Flow;
 import dev.sagatoctopusorchestrator.sdk.workflow.LoopOptions;
+import dev.sagatoctopusorchestrator.sdk.workflow.Operator;
+import dev.sagatoctopusorchestrator.sdk.workflow.Operators;
+import dev.sagatoctopusorchestrator.sdk.workflow.Ops;
 import dev.sagatoctopusorchestrator.sdk.workflow.QueryDefinition;
 import dev.sagatoctopusorchestrator.sdk.workflow.DatabaseOptions;
 import dev.sagatoctopusorchestrator.sdk.workflow.IcebergWriteOptions;
@@ -125,6 +128,32 @@ public final class Runner {
                 throw new IllegalArgumentException("the runner does not know the option " + name + " of " + what);
             }
         }
+    }
+
+    /** A scenario's chain, built through the public operator factory; absent, there is none. */
+    private static Operators operatorsOf(JsonNode stages) {
+        if (stages == null || stages.isNull()) {
+            return null;
+        }
+        List<Operator> chain = new ArrayList<>();
+        for (JsonNode stage : stages) {
+            if (stage.size() != 1) {
+                throw new IllegalArgumentException("a stage has exactly one operator: " + stage);
+            }
+            String name = stage.fieldNames().next();
+            JsonNode p = stage.get(name);
+            chain.add(switch (name) {
+                case "filter" -> Ops.filter(p.path("where").asText(null));
+                case "map" -> Ops.map(p.path("select").asText(null));
+                case "flatMap" -> Ops.flatMap(p.path("select").asText(null));
+                case "skip" -> Ops.skip(p.path("count").asInt());
+                case "take" -> Ops.take(p.path("count").asInt());
+                case "distinct" -> p.has("by") ? Ops.distinct(p.path("by").asText(null)) : Ops.distinct();
+                case "window" -> Ops.window(p.path("count").asInt());
+                default -> throw new IllegalArgumentException("unknown operator " + name);
+            });
+        }
+        return Operators.of(chain);
     }
 
     private static <E extends Enum<E>> E enumOf(Class<E> type, JsonNode value) {
@@ -367,13 +396,15 @@ public final class Runner {
                         op.path("items").asText(null),
                         op.path("body").asText(null),
                         op.path("result").asText(null),
-                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()));
+                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()),
+                        operatorsOf(op.get("operators")));
                 case "map" -> target.map(
                         id,
                         op.path("items").asText(null),
                         op.path("body").asText(null),
                         op.path("result").asText(null),
-                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()));
+                        CollectionOptions.of(op.path("maxItems").asInt(), op.path("maxConcurrency").asInt()),
+                        operatorsOf(op.get("operators")));
                 case "while" -> target.whileLoop(
                         id, op.path("condition").asText(null), op.path("body").asText(null),
                         op.path("initial").asText(null), op.path("carry").asText(null), loopOptions(op));

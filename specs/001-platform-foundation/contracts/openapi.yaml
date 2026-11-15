@@ -4983,6 +4983,10 @@ components:
             `UNKNOWN_CONNECTION_KIND`, `BROKER_SOURCE_NOT_INLINE`, `FILTER_TOO_DEEP` (more than 8 levels or 64
             comparisons), `LAKE_DISABLED` (the deployment's lake switch is off) and `CREDENTIAL_IN_URI` (a connection
             URI that carries user information or query credentials);
+            collection operators (design 042) refine `VALIDATION_FAILED` with `COLLECTION_OPERATORS_DISABLED`
+            (the deployment's collection-operators switch is off; `node`) and `INVALID_OPERATOR` (a stage of a
+            `forEach` chain is refused; `node`, `stage`, `operator` and `refusal`, one of `UNKNOWN`, `SURFACE`,
+            `RANGE`, `EXPRESSION` and `VARIABLE`);
             they do not add a new `Error.code` value. An `UNSUPPORTED_NODE` for a combination the design accepts
             but whose prerequisite is not built yet also carries `dependency`, a closed name of what has to exist
             first (`SCOPED_COMPENSATION`: an approval inside a collection or loop body), next to `node` and `kind`.

@@ -97,6 +97,27 @@ admitted, and its step leased, only by a process that has the same setting: set 
 the credentials of the step to the lake runner. A lake runner is handed the step and its credentials, but the runner that carries out
 the attempt is not built yet, so a deployment should not turn the lake on to write to a table.
 
+### COLLECTION_OPERATORS_DISABLED
+
+This deployment has not enabled collection operators, so a forEach cannot declare operators. Ask the operator to turn on SAGAT_COLLECTION_OPERATORS_ENABLED once every replica runs 0.3.0, or shape the list in an activity before the collection.
+
+The switch is read by publication only (design 042): with it off, a version published while it was on stays readable,
+can be activated, rolled back and promoted where it already runs, and its runs apply their chain at scope entry. The
+fleet rule and the ceilings of a chain are in `docs/runbooks/workflow-primitives.md` ("Collection operators").
+
+At run time, a chained collection that crosses one of its running ceilings at scope entry fails the run with the
+failure code `COLLECTION_OPERATOR_BUDGET`, before any iteration starts and without truncating anything: 1,000 elements
+in the chain's input and in each stage's output, 256 KiB per element, 4 MiB per stage, 1 second of wall time. The reason
+label of `scheduler_collection_source_failures_total` names which. A stage expression that fails, a `filter` that is not
+boolean and a `flatMap` that is not a list fail the run with `EXPRESSION_ERROR` instead.
+
+### INVALID_OPERATOR
+
+A stage of a forEach's operators is refused at the index shown. A collection has filter, map, flatMap, skip, take, distinct and window (debounce and ignoreElements are a trigger's); a stage expression reads element, position, input, steps, run and state, never item, index, iteration, carry or bodyResult.
+
+The details say which stage (`stage`, from 0), which `operator`, and why (`refusal`: `UNKNOWN`, `SURFACE`, `RANGE`,
+`EXPRESSION` or `VARIABLE`). The body still sees `item` and `index`, the element's position in the chain's output.
+
 ### INVALID_ICEBERG_NODE
 
 Check the connection reference, the table, the record source (exactly one of inline, blobs or a database result), the mapping and the limits. A database result must name a database step that runs before the write. An Apache Iceberg write cannot declare its own retries or effect, impersonate an ordinary activity, or name a field and a column twice.

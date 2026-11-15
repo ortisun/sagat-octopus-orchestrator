@@ -205,6 +205,7 @@ ENVIRONMENT (serve):
     SAGAT_LAKE_ENABLED                let a workflow hold an Apache Iceberg write (publication still waits for its checks) [false]
     SAGAT_RUN_INPUT_VALIDATION        enforce | report: what publication does with an inputSchema outside the supported
                                       subset (refuse it, or publish it with a warning); anything else stops the process [enforce]
+    SAGAT_COLLECTION_OPERATORS_ENABLED  let a forEach declare operators; every replica must run this release first [false]
     SAGAT_SECRETS_KEYS                key ring that seals secrets: id:base64,id2:base64; without it the
                                       secret routes do not exist. The engine needs the same ring
     SAGAT_API_ALLOW_PLAINTEXT_SECRETS  with a key ring, outside dev, say that TLS is terminated in

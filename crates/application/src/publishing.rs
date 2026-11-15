@@ -30,8 +30,7 @@ use time::OffsetDateTime;
 
 use crate::clock::Clock;
 use crate::definitions::{
-    DefinitionService, DefinitionStore, Idempotency, IrCodec, PublishContext, Published,
-    VersionRecord, publication_idempotency,
+    DefinitionService, DefinitionStore, IrCodec, PublishContext, Published, publication_idempotency,
 };
 use crate::dispatch::{TriggerRegistration, triggers_of};
 use crate::error::{AppError, Refusal, StoreError};
@@ -158,15 +157,6 @@ pub struct Activation {
 
 /// The storage port of publishing. Every method takes the tenant and applies it to every statement.
 pub trait PublishingStore: DefinitionStore {
-    /// Reads the committed result of a publication with the same key and fingerprint. Never
-    /// validates the current draft, moves the active pointer or writes another audit record.
-    fn replay_publication(
-        &self,
-        tenant: TenantId,
-        workflow: WorkflowId,
-        idempotency: &Idempotency,
-    ) -> impl Future<Output = Result<Option<VersionRecord>, StoreError>> + Send;
-
     fn namespace_by_id(
         &self,
         tenant: TenantId,
@@ -326,6 +316,13 @@ where
     #[must_use]
     pub fn with_input_validation(mut self, mode: crate::definitions::InputValidationMode) -> Self {
         self.definitions = self.definitions.with_input_validation(mode);
+        self
+    }
+
+    /// Lets a `forEach` declare `operators` (the deployment's `collection-operators`, design 042).
+    #[must_use]
+    pub fn with_collection_operators_enabled(mut self, enabled: bool) -> Self {
+        self.definitions = self.definitions.with_collection_operators_enabled(enabled);
         self
     }
 

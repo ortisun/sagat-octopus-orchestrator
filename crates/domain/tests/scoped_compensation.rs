@@ -120,6 +120,7 @@ fn collection_definition(nodes: Vec<Node>, max_concurrency: u16) -> WorkflowDefi
                 id("lines"),
                 NodeKind::ForEach {
                     items: expr("input.items"),
+                    operators: None,
                     body: id("line"),
                     result: expr("bodyResult"),
                     max_items: 8,
