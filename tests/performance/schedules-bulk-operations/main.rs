@@ -7,7 +7,7 @@
 //! by a pull request (the CI runs this target without `--ignored`, so only the unit tests of the helpers in `measure.rs` run there).
 //! The sizes default to a smoke run (a hundred schedules, a few hundred runs); the sizes of the report are set by the environment
 //! (`SAGAT_PERF_SCHEDULES`, `SAGAT_PERF_BATCH_RUNS`, `SAGAT_PERF_BATCH_SELECTION`, `SAGAT_PERF_BATCH_EACH`,
-//! `SAGAT_PERF_CLAIM_ROUNDS`, `SAGAT_PERF_RESET_EVENTS`, `SAGAT_PERF_TRIGGERS`, `SAGAT_PERF_TRIGGER_SECONDS`,
+//! `SAGAT_PERF_CLAIM_ROUNDS`, `SAGAT_PERF_RESET_EVENTS`, `SAGAT_PERF_TRIGGERS`, `SAGAT_PERF_TRIGGER_TENANTS`, `SAGAT_PERF_TRIGGER_SECONDS`,
 //! `SAGAT_PERF_IDLE_TENANTS`, `SAGAT_PERF_IDLE_SECONDS`, `SAGAT_PERF_THROUGHPUT_RUNS`, `SAGAT_PERF_THROUGHPUT_PAIRS`) and
 //! `tests/performance/schedules-bulk-operations/run.sh` sets them, starts a PostgreSQL of its own with the configuration the report
 //! declares, repeats each scenario and writes the fragments the report is made from.
@@ -189,6 +189,21 @@ async fn trigger_handover_backlog_after_an_upgrade() {
         "triggers-backlog",
         &sizes("SAGAT_PERF_TRIGGERS", &[1_000]),
         Duration::from_secs(u64::try_from(seconds).expect("small")),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "benchmark: a real PostgreSQL, up to minutes; run on purpose (run.sh)"]
+async fn trigger_handover_tenant_set_under_the_lock() {
+    let tenants = sizes("SAGAT_PERF_TRIGGER_TENANTS", &[100])
+        .first()
+        .copied()
+        .unwrap_or(100);
+    triggers::tenant_sets(
+        "triggers-tenant-set",
+        &sizes("SAGAT_PERF_TRIGGERS", &[1_000]),
+        tenants,
     )
     .await;
 }

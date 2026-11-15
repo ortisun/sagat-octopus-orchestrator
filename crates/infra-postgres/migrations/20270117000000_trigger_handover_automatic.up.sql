@@ -210,7 +210,10 @@ BEGIN
         RAISE EXCEPTION 'the horizon is at most an hour: expired scheduler memberships are deleted after one'
             USING ERRCODE = 'invalid_parameter_value';
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM public.schedule_trigger_handover_attempts t WHERE t.run_id = p_run) THEN
+    -- once handed over the cap is not looked at: every later run is answered HANDED_OVER and completes the audit, however many
+    -- restarts drew new run ids (correctness review of 2026-11-15, m2)
+    IF NOT EXISTS (SELECT 1 FROM public.schedule_trigger_handover_attempts t WHERE t.run_id = p_run)
+       AND (SELECT h.state FROM public.schedule_trigger_handover h) = 'LEGACY' THEN
         PERFORM pg_advisory_xact_lock(hashtextextended('sagat:schedule_trigger_handover_attempts:open', 0));
         IF (SELECT count(*) FROM public.schedule_trigger_handover_attempts o
              WHERE o.run_id <> p_run AND o.deadline > v_now
@@ -739,7 +742,14 @@ BEGIN
        OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.relowner = r.oid)
        OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p WHERE p.proowner = r.oid)
        OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspowner = r.oid)
-       OR EXISTS (SELECT 1 FROM pg_catalog.pg_type y WHERE y.typowner = r.oid) THEN
+       OR EXISTS (SELECT 1 FROM pg_catalog.pg_type y WHERE y.typowner = r.oid)
+       -- owning a database makes it a member of pg_database_owner there (security review of 2026-11-15, finding 1)
+       OR EXISTS (SELECT 1 FROM pg_catalog.pg_database d WHERE d.datdba = r.oid)
+       -- a schema it may create in, its own or PUBLIC's (a database first made before PostgreSQL 15 keeps PUBLIC's CREATE on
+       -- public): an object it puts there can shadow one that a definer with that schema on its search_path calls (finding 1)
+       OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n
+                   WHERE n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'
+                     AND pg_catalog.has_schema_privilege(r.oid, n.oid, 'CREATE')) THEN
         RETURN 'WIDER';
     END IF;
     RETURN 'NARROW';
@@ -769,6 +779,13 @@ BEGIN
         REVOKE ALL ON FUNCTION public.schedule_trigger_handover_retire() FROM sagat_handover;
         REVOKE ALL PRIVILEGES ON public.schedule_trigger_handover, public.schedule_trigger_handover_attempts FROM sagat_handover;
         REVOKE ALL PRIVILEGES (changed_xact) ON public.platform_requirement_epoch FROM sagat_handover;
+        -- a role found wider keeps no login either: the credential in the deployment would be live with the wider rights
+        -- (security review of 2026-11-15, finding 2); a migrating role that may not alter it leaves it to the operator
+        BEGIN
+            ALTER ROLE sagat_handover NOLOGIN PASSWORD NULL;
+        EXCEPTION WHEN insufficient_privilege THEN
+            NULL;
+        END;
         RETURN 'WIDER';
     END IF;
     GRANT EXECUTE ON FUNCTION public.schedule_trigger_handover_round(uuid, integer, interval, integer, interval)

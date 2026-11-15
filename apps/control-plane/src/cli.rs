@@ -54,6 +54,9 @@ pub struct HandoverArgs {
     pub wait: Option<std::time::Duration>,
     /// `--retire-role`: after the handover and its audit, take the login of `sagat_handover` away.
     pub retire_role: bool,
+    /// `--run-id UUID`: the run (ADR-0091 decision 1); `SAGAT_HANDOVER_RUN_ID` is its environment form, and without either the
+    /// run id is drawn at start.
+    pub run_id: Option<uuid::Uuid>,
 }
 
 /// The defaults and bounds of `--auto` (ADR-0091 decisions 2 and 3).
@@ -175,6 +178,14 @@ fn parse_handover<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<Command
                     ))
                 })?);
             }
+            "--run-id" => {
+                let text = value("--run-id")?;
+                parsed.run_id = Some(uuid::Uuid::parse_str(text.trim()).map_err(|_| {
+                    UsageError(format!(
+                        "--run-id needs a uuid (in Kubernetes, the Job's UID), not '{text}'"
+                    ))
+                })?);
+            }
             "--horizon" => {
                 let text = value("--horizon")?;
                 parsed.horizon = Some(parse_duration("--horizon", &text)?);
@@ -206,11 +217,12 @@ fn check_auto(parsed: &HandoverArgs) -> Result<(), UsageError> {
         || parsed.horizon.is_some()
         || parsed.min_live.is_some()
         || parsed.wait.is_some()
-        || parsed.retire_role;
+        || parsed.retire_role
+        || parsed.run_id.is_some();
     if !parsed.auto {
         if auto_only {
             return Err(UsageError(
-                "--stable, --horizon, --min-live, --wait and --retire-role go with --auto"
+                "--stable, --horizon, --min-live, --wait, --retire-role and --run-id go with --auto"
                     .to_owned(),
             ));
         }
@@ -273,7 +285,7 @@ COMMANDS:
     schedule-trigger-handover  Hand the cron triggers over from the legacy cron pass to the schedule pass; audited, once, with the
                   owner role: schedule-trigger-handover --operator NAME [--expect-live N] [--dry-run | --apply];
                   the deployment's job: schedule-trigger-handover --auto [--stable N] [--horizon D] [--min-live N]
-                  [--wait D] [--retire-role] [--dry-run], as sagat_handover
+                  [--wait D] [--retire-role] [--run-id UUID] [--dry-run], as sagat_handover
     script-key    Print a new Ed25519 key for SAGAT_SCRIPT_SIGNING_KEY (it signs the artifacts of scripts)
     healthcheck   Probe the local API (GET /v1/health); exit 0 when healthy
     version       Print the version
@@ -387,6 +399,8 @@ ENVIRONMENT (schedule-trigger-handover):
     --min-live N          the fewest live engines it hands over with [1]
     --wait D              how long it waits in all [2h, at most 24h]
     --retire-role         after the handover and its audit, take the login of sagat_handover away
+    --run-id UUID         the run id (a uuid; in Kubernetes the Job's UID); SAGAT_HANDOVER_RUN_ID is the same, and the two
+                          must agree when both are given; drawn at start when neither is
     SAGAT_HANDOVER_PASSWORD   the password of sagat_handover, given apart from DATABASE_URL (required with --auto); for
                           migrate, the password it sets (from a SCRAM verifier it computes) while the state is LEGACY and the
                           role was never retired
@@ -401,3 +415,41 @@ ENVIRONMENT (healthcheck):
     SAGAT_HEALTHCHECK_TLS_SERVER_NAME certificate DNS name/SNI when native TLS is configured [localhost]
     SAGAT_HEALTHCHECK_TLS_CA_FILE     optional server trust roots, PEM, at most 256 KiB
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn handover(args: &[&str]) -> Result<Command, UsageError> {
+        let mut all = vec!["schedule-trigger-handover".to_owned()];
+        all.extend(args.iter().map(|arg| (*arg).to_owned()));
+        parse(&all)
+    }
+
+    const RUN: &str = "0b7c4c1e-2f4d-4f7a-9a0e-3c1b2d4e5f60";
+
+    #[test]
+    fn the_run_id_is_a_flag_of_the_job_and_a_uuid() {
+        let Ok(Command::ScheduleTriggerHandover(args)) = handover(&["--auto", "--run-id", RUN])
+        else {
+            panic!("--auto --run-id UUID is understood");
+        };
+        assert_eq!(args.run_id, Some(uuid::Uuid::parse_str(RUN).expect("uuid")));
+        let Ok(Command::ScheduleTriggerHandover(inline)) =
+            handover(&["--auto", &format!("--run-id={RUN}")])
+        else {
+            panic!("--run-id=UUID is understood");
+        };
+        assert_eq!(inline.run_id, args.run_id);
+        let not_a_uuid = handover(&["--auto", "--run-id", "job-7"]).expect_err("not a uuid");
+        assert!(
+            not_a_uuid.0.contains("--run-id needs a uuid"),
+            "{not_a_uuid:?}"
+        );
+        let operator = handover(&["--operator", "ana", "--apply", "--run-id", RUN])
+            .expect_err("the operator's handover has no run");
+        assert!(operator.0.contains("--run-id"), "{operator:?}");
+        let missing = handover(&["--auto", "--run-id"]).expect_err("a value is needed");
+        assert!(missing.0.contains("--run-id"), "{missing:?}");
+    }
+}

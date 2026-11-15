@@ -239,9 +239,24 @@ fn the_compose_service_of_the_handover_is_one_shot_with_the_role_apart_from_its_
             .expect("switch")
             .contains(":-true")
     );
+    // the job starts after the control plane and the engine are healthy (G2247): both images have a HEALTHCHECK (their
+    // `healthcheck` subcommand), so compose can wait on it instead of on their start
+    let dockerfile =
+        std::fs::read_to_string(repo().join("infra/docker/Dockerfile")).expect("Dockerfile");
     for after in ["control-plane", "execution-engine"] {
-        assert!(!service["depends_on"][after].is_null(), "after {after}");
+        assert_eq!(
+            service["depends_on"][after]["condition"], "service_healthy",
+            "after {after} is healthy"
+        );
+        assert!(
+            dockerfile.contains(&format!(
+                "CMD [\"/usr/local/bin/{after}\", \"healthcheck\"]"
+            )),
+            "the image of {after} has the health check compose waits on"
+        );
     }
+    // the job's container is not a server: the image's probe of an API it does not serve is switched off for it
+    assert_eq!(service["healthcheck"]["disable"], true);
     assert!(compose["services"]["migrate"]["environment"]["SAGAT_HANDOVER_PASSWORD"].is_string());
     assert!(
         compose["services"]["execution-engine"]["environment"]["SAGAT_SCHEDULES_AUTO_HANDOVER"]

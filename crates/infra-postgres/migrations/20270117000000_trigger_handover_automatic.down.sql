@@ -4,7 +4,7 @@ LOCK TABLE schedule_trigger_handover IN ACCESS EXCLUSIVE MODE;
 DO $guard$
 BEGIN
     IF EXISTS (SELECT 1 FROM schedule_trigger_handover WHERE changed_mode IS NOT NULL OR state <> 'LEGACY') THEN
-        RAISE EXCEPTION 'the cron triggers were handed over to the schedule pass; keep a compatible reader'
+        RAISE EXCEPTION 'the cron triggers were handed over to the schedule pass: a handover with a mode was recorded (20270117000000); keep a compatible reader'
             USING ERRCODE = 'object_not_in_prerequisite_state';
     END IF;
 END $guard$;
@@ -55,7 +55,9 @@ $$;
 REVOKE ALL ON FUNCTION schedule_trigger_handover_complete(text) FROM PUBLIC;
 
 -- The role `sagat_handover` is a role of the cluster, not of this schema, and may serve another database: it is left as it is,
--- with nothing to execute here once the functions are gone.
+-- with nothing to execute here once the functions are gone. Its login, if it has one, is the operator's to take away
+-- (docs/runbooks/schedules.md 6.4; security review of 2026-11-15, finding 3, D2306): a down that altered a role of the cluster
+-- would act on every database the role serves.
 -- what the role was granted outside the functions dropped below (the functions take their grants with them)
 DO $revoke$
 BEGIN

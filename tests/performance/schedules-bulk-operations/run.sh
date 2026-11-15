@@ -142,6 +142,8 @@ scenario claim                 business_id_claim_thirty_two_way                 
 scenario reset                 reset_at_the_sizes_of_the_ceiling                    SAGAT_PERF_RESET_EVENTS=1000,5000,20000
 scenario triggers-steady       trigger_handover_steady_state                        SAGAT_PERF_TRIGGERS=10000,100000
 scenario triggers-backlog      trigger_handover_backlog_after_an_upgrade            SAGAT_PERF_TRIGGERS=10000,100000 SAGAT_PERF_TRIGGER_SECONDS=60
+# The tenant set of the automatic handover's audit under the lock (G2248): 100,000 converged cron triggers of 1,000 tenants.
+scenario triggers-tenant-set   trigger_handover_tenant_set_under_the_lock           SAGAT_PERF_TRIGGERS=100000 SAGAT_PERF_TRIGGER_TENANTS=1000
 
 # Between the two sizes of the steady state, where the handover check on a converged fleet was found to depend on the size.
 scenario triggers-steady-mid   trigger_handover_steady_state                        SAGAT_PERF_TRIGGERS=20000,50000

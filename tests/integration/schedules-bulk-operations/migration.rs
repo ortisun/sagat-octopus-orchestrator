@@ -766,3 +766,135 @@ async fn migrating_an_empty_database_creates_the_same_schema_as_migrating_step_b
             .expect("recorded");
     assert_eq!(count, 1);
 }
+
+/// The migration of the automatic handover (`T018-082`, ADR-0091 decision 7, G2303) and the one before it.
+const AUTOMATIC_HANDOVER: i64 = 20_270_117_000_000;
+const BEFORE_AUTOMATIC_HANDOVER: i64 = 20_270_116_000_000;
+
+async fn column_exists(pool: &PgPool, table: &str, column: &str) -> bool {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+          WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2)",
+    )
+    .bind(table)
+    .bind(column)
+    .fetch_one(pool)
+    .await
+    .expect("information_schema")
+}
+
+/// A row handed over by the operator's function as migration `20270114000000` wrote it (the 0.3 command before the automatic
+/// handover) gets `changed_mode = 'OPERATOR'` and the epoch of the activation from the migration's backfill; then the new
+/// migration's own `down` refuses, by its own message, and leaves it applied.
+#[tokio::test]
+async fn a_row_handed_over_before_the_automatic_handover_is_backfilled_operator_and_its_down_refuses_by_its_own_message()
+ {
+    let db = migrated_db().await;
+    undo_to(&db, BEFORE_AUTOMATIC_HANDOVER)
+        .await
+        .expect("the down of the automatic handover on a LEGACY row");
+    assert!(
+        !column_exists(&db.pool, "schedule_trigger_handover", "changed_mode").await,
+        "the schema is the one before the automatic handover"
+    );
+
+    // the handover as the operator's command made it then: the requirement through the registry and the state through the
+    // function of 20270114000000, in one transaction, as the owner
+    let mut tx = db.pool.begin().await.expect("transaction");
+    let (outcome, epoch): (String, Option<i64>) = sqlx::query_as(
+        "SELECT out_outcome, out_epoch \
+           FROM platform_requirement_activate('schedules-v1', ARRAY['EXECUTION_ENGINE'], 'operator-before-0091')",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("activate");
+    assert_eq!(outcome, "RECORDED");
+    let epoch = epoch.expect("the epoch of the activation");
+    let moved: String =
+        sqlx::query_scalar("SELECT schedule_trigger_handover_complete('operator-before-0091')")
+            .fetch_one(&mut *tx)
+            .await
+            .expect("the function of 20270114000000");
+    assert_eq!(moved, "HANDED_OVER");
+    tx.commit().await.expect("commit");
+    // the epoch moves on after the handover, so that the backfill must take the activation's and not the current one
+    let mut tx = db.pool.begin().await.expect("transaction");
+    let (later, _): (String, Option<i64>) = sqlx::query_as(
+        "SELECT out_outcome, out_epoch \
+           FROM platform_requirement_activate('payload-encoding-v1', ARRAY['CONTROL_PLANE'], 'operator-before-0091')",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .expect("a later activation");
+    assert_eq!(later, "RECORDED");
+    tx.commit().await.expect("commit");
+
+    migrate(&db.pool)
+        .await
+        .expect("the automatic handover's migration on a handed-over row");
+    let (state, by, mode, changed_epoch): (String, Option<String>, Option<String>, Option<i64>) =
+        sqlx::query_as(
+            "SELECT state, changed_by, changed_mode, changed_epoch FROM schedule_trigger_handover",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("handover");
+    assert_eq!(state, "HANDED_OVER");
+    assert_eq!(by.as_deref(), Some("operator-before-0091"));
+    assert_eq!(mode.as_deref(), Some("OPERATOR"), "the backfill");
+    assert_eq!(
+        changed_epoch,
+        Some(epoch),
+        "the epoch of the activation of schedules-v1, not the epoch now"
+    );
+
+    let refused = undo_to(&db, BEFORE_AUTOMATIC_HANDOVER)
+        .await
+        .expect_err("a handover with a mode is one-way");
+    assert!(
+        refused
+            .to_string()
+            .contains("a handover with a mode was recorded (20270117000000)"),
+        "the refusal of the new down, not of 20270114000000's: {refused}"
+    );
+    let applied: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM _sqlx_migrations WHERE version = $1)")
+            .bind(AUTOMATIC_HANDOVER)
+            .fetch_one(&db.pool)
+            .await
+            .expect("_sqlx_migrations");
+    assert!(applied, "the refused down left the migration applied");
+    assert!(column_exists(&db.pool, "schedule_trigger_handover", "changed_mode").await);
+}
+
+/// The new `down` refuses for either mode, before anything of it runs (ADR-0091 decision 10).
+#[tokio::test]
+async fn the_down_of_the_automatic_handover_refuses_for_either_mode() {
+    for mode in ["OPERATOR", "AUTOMATIC"] {
+        let db = migrated_db().await;
+        let mut tx = db.pool.begin().await.expect("transaction");
+        sqlx::query("SELECT set_config('sagat.handover_change', 'handover', true)")
+            .execute(&mut *tx)
+            .await
+            .expect("the guard's flag");
+        sqlx::query(
+            "UPDATE schedule_trigger_handover SET state = 'HANDED_OVER', changed_by = 'operator', changed_at = now(), \
+                    changed_db_role = 'owner', changed_mode = $1, changed_epoch = 0",
+        )
+        .bind(mode)
+        .execute(&mut *tx)
+        .await
+        .expect("handover");
+        tx.commit().await.expect("commit");
+        let refused = undo_to(&db, BEFORE_AUTOMATIC_HANDOVER)
+            .await
+            .expect_err("handed over");
+        assert!(
+            refused
+                .to_string()
+                .contains("a handover with a mode was recorded (20270117000000)"),
+            "{mode}: {refused}"
+        );
+        assert!(column_exists(&db.pool, "schedule_trigger_handover", "changed_mode").await);
+    }
+}

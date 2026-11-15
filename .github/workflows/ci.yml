@@ -206,8 +206,11 @@ jobs:
         run: |
           docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .
           docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
-      - name: build isolated database executor for process tests
-        run: cargo build -p sagat-database-runner --bin database-runner --locked
+      # The automatic handover's tests send real signals to the built control plane and scrape a built engine (G2283, G2286).
+      - name: build isolated database executor, control plane and engine for process tests
+        run: |
+          cargo build -p sagat-database-runner --bin database-runner --locked
+          cargo build -p sagat-control-plane --bin control-plane -p sagat-execution-engine --bin execution-engine --locked
       - name: this shard's integration suites
         env:
           TARGETS: ${{ needs.changes.outputs.targets }}

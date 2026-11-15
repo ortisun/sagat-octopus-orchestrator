@@ -100,8 +100,9 @@ services:
       # every run and, given this, sets its login from a SCRAM verifier, only while the triggers are not handed over and the role
       # was never retired. Empty: the role stays without a login and the job below exits 2 saying so.
       SAGAT_HANDOVER_PASSWORD: ${SAGAT_HANDOVER_PASSWORD:-}
-      # The owner's floor of the live engines the job counts with: a caller of its functions cannot ask for fewer.
-      SAGAT_HANDOVER_MIN_LIVE: ${SAGAT_HANDOVER_MIN_LIVE:-1}
+      # The owner's floor of the live engines the job counts with: a caller of its functions cannot ask for fewer. Empty writes
+      # nothing, so a floor set before is kept (the database's own default is 1; architecture review of 2026-11-15, m5).
+      SAGAT_HANDOVER_MIN_LIVE: ${SAGAT_HANDOVER_MIN_LIVE:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -215,8 +216,8 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # The automatic handover of the cron triggers (feature 018, ADR-0091): a one-shot job, after the control plane and the engines have
-  # started (they have no health check, G2247), that waits, bounded, until the database finds the fleet stable and converged and
+  # The automatic handover of the cron triggers (feature 018, ADR-0091): a one-shot job, after the control plane and the engines are
+  # healthy (the health checks of their images, G2247), that waits, bounded, until the database finds the fleet stable and converged and
   # hands over as the role sagat_handover. Its URL carries no password: SAGAT_HANDOVER_PASSWORD is given apart (D2273), and without
   # it the job exits 2. SAGAT_SCHEDULES_AUTO_HANDOVER=false makes it exit 0 at once (the handover is then the operator's:
   # docs/runbooks/schedules.md, 6.2). Compose does not retry it; its run id is drawn when it starts. `docker compose up
@@ -232,11 +233,14 @@ services:
       SAGAT_ENV: ${SAGAT_ENV:-dev}
       SAGAT_LOG_FORMAT: ${SAGAT_LOG_FORMAT:-json}
       SAGAT_DB_MAX_CONNECTIONS: "2"
+    # the image's probe is of an API this one-shot job does not serve
+    healthcheck:
+      disable: true
     depends_on:
       control-plane:
-        condition: service_started
+        condition: service_healthy
       execution-engine:
-        condition: service_started
+        condition: service_healthy
     restart: "no"
 
   # The sandbox runner (profile `sandbox`, not started by default): it builds and runs scripts in

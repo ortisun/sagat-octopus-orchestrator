@@ -137,7 +137,7 @@ const ALLOWED: &[Allowed] = &[
     Allowed {
         file: HANDOVER_AUTO,
         need: "EXECUTE schedule_trigger_handover_auto()",
-        reason: "T018-084, ADR-0091 decision 9: the wrapper that records schedules-v1 and moves the state is sagat_handover's alone (and refuses any other session_user); trigger_auto_handover::the_wrapper_refuses_a_session_user_other_than_sagat_handover_even_a_member_of_it proves the runtime role is refused",
+        reason: "T018-084, ADR-0091 decision 9: the wrapper that records schedules-v1 and moves the state is sagat_handover's alone (and refuses any other session_user); trigger_auto_handover::the_wrapper_refuses_a_session_user_other_than_sagat_handover_and_the_runtime_role proves the runtime role is refused, and trigger_handover_role::the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_for_good a member of the role",
     },
     Allowed {
         file: HANDOVER_AUTO,

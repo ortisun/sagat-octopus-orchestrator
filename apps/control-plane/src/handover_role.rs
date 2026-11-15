@@ -142,8 +142,9 @@ pub async fn set_login(pool: &PgPool, password: &str) -> Result<LoginSet, RunErr
         LoginSet::Wider => tracing::error!(
             role = "sagat_handover",
             "the role sagat_handover is wider than the automatic handover allows (an attribute beyond LOGIN, a membership in a \
-             role, a member that can act as it, or an object it owns): migrate gives it no login and no grants; make it narrow and \
-             run migrate again (docs/runbooks/schedules.md, 6.1)"
+             role, a member that can act as it, an object or a database it owns, or a schema it may create in, such as public on a \
+             database first made before PostgreSQL 15: REVOKE CREATE ON SCHEMA public FROM PUBLIC): migrate takes its login and \
+             its grants away; make it narrow and run migrate again (docs/runbooks/schedules.md, 6.1)"
         ),
         LoginSet::NotPermitted => tracing::warn!(
             role = "sagat_handover",

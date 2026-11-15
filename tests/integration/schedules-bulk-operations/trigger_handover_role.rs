@@ -324,7 +324,18 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
         .execute(&member)
         .await
         .expect_err("a member is refused");
-    assert_eq!(crate::support::db_error(refused).0, "42501");
+    let sqlx::Error::Database(refused) = refused else {
+        panic!("a database error: {refused:?}")
+    };
+    assert_eq!(refused.code().as_deref(), Some("42501"));
+    // by the wrapper's check of session_user, not for want of EXECUTE, which gives the same code (security review nit)
+    assert!(
+        refused
+            .message()
+            .contains("made only by the role sagat_handover"),
+        "{}",
+        refused.message()
+    );
     member.close().await;
     sql(&owner, "DROP ROLE member_of_handover").await;
     let logged = String::from_utf8_lossy(&container.stderr_to_vec().await.expect("logs"))
@@ -560,4 +571,102 @@ async fn concurrent_runners_take_turns_on_the_role_step_and_both_succeed() {
     .expect("joined")
     .expect("the second runner succeeds");
     assert!(granted(&owner).await, "the role keeps its grants");
+}
+
+/// The security review of 2026-11-15 (findings 1 to 3): a role that can create objects in a schema (PUBLIC's `CREATE` on `public`,
+/// which a database first made before PostgreSQL 15 keeps) or that owns the database is wider than the design and is given
+/// nothing, and a role found wider loses its login; the migration's `down` leaves the login to the operator's statement (D2306).
+#[tokio::test]
+async fn a_role_that_can_create_in_a_schema_or_owns_the_database_is_wider_and_loses_its_login() {
+    let container = bounded::within(
+        "start a PostgreSQL of its own",
+        bounded::START_LIMIT,
+        Postgres::default().with_tag("16-alpine").start(),
+    )
+    .await
+    .expect("start PostgreSQL (is Docker running?)");
+    let port = bounded::mapped_port(&container, 5432).await;
+    let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+    let owner = loop {
+        if let Ok(pool) = PgPoolOptions::new().max_connections(4).connect(&url).await
+            && sqlx::query("SELECT 1").execute(&pool).await.is_ok()
+        {
+            break pool;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    sagat_control_plane::run_migrations_with(&database(&url), Some(PASSWORD))
+        .await
+        .expect("migrate with the password");
+    assert!(
+        granted(&owner).await && can_log_in(&owner).await,
+        "narrow, granted and logged in"
+    );
+
+    for (widen, narrow) in [
+        (
+            "GRANT CREATE ON SCHEMA public TO PUBLIC",
+            "REVOKE CREATE ON SCHEMA public FROM PUBLIC",
+        ),
+        (
+            "CREATE SCHEMA open_schema; GRANT CREATE ON SCHEMA open_schema TO sagat_handover",
+            "DROP SCHEMA open_schema",
+        ),
+        (
+            "ALTER DATABASE postgres OWNER TO sagat_handover",
+            "ALTER DATABASE postgres OWNER TO postgres",
+        ),
+    ] {
+        for statement in widen.split("; ") {
+            sql(&owner, statement).await;
+        }
+        let narrowness: String =
+            sqlx::query_scalar("SELECT schedule_trigger_handover_role_narrow()")
+                .fetch_one(&owner)
+                .await
+                .expect("narrow");
+        assert_eq!(narrowness, "WIDER", "{widen}");
+        sagat_control_plane::run_migrations_with(&database(&url), Some(PASSWORD))
+            .await
+            .expect("migrate goes on");
+        assert!(
+            !granted(&owner).await,
+            "a wider role is refused its grants: {widen}"
+        );
+        assert!(
+            !can_log_in(&owner).await,
+            "a role found wider loses the login it had: {widen}"
+        );
+        for statement in narrow.split("; ") {
+            sql(&owner, statement).await;
+        }
+        sagat_control_plane::run_migrations_with(&database(&url), Some(PASSWORD))
+            .await
+            .expect("migrate");
+        assert!(
+            granted(&owner).await && can_log_in(&owner).await,
+            "narrow again, granted and logged in again: {narrow}"
+        );
+    }
+
+    // the down of the automatic handover's migration leaves the login of a role of the cluster to the operator (D2306): the
+    // runbook gives the statement, which this test runs as the operator would
+    sagat_infra_postgres::MIGRATOR
+        .undo(&owner, 20_270_116_000_000)
+        .await
+        .expect("down");
+    let runbook = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/runbooks/schedules.md"),
+    )
+    .expect("the runbook");
+    let statement = "ALTER ROLE sagat_handover NOLOGIN PASSWORD NULL";
+    assert!(runbook.contains(statement), "the rollback of 6.4 names it");
+    sql(&owner, statement).await;
+    assert!(!can_log_in(&owner).await);
+    assert!(
+        as_handover(&format!("postgres://127.0.0.1:{port}/postgres"), PASSWORD)
+            .await
+            .is_err(),
+        "the password no longer logs in"
+    );
 }

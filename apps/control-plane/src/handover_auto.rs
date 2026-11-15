@@ -95,8 +95,37 @@ impl Interrupt {
 }
 
 /// Raises `interrupt` on SIGTERM or SIGINT (a drained node, `helm rollback`, `docker compose stop`, Ctrl-C).
+///
+/// The handlers are installed before this returns, not when the task that waits on them is first polled (G2283): once the job
+/// has made a round, a signal is the interrupt and never the default action that kills the process without `INTERRUPTED`.
 pub fn raise_on_signals(interrupt: &Interrupt) {
     let interrupt = interrupt.clone();
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let terminate = signal(SignalKind::terminate());
+        let ctrl_c = signal(SignalKind::interrupt());
+        tokio::spawn(async move {
+            match (terminate, ctrl_c) {
+                (Ok(mut terminate), Ok(mut ctrl_c)) => {
+                    tokio::select! {
+                        _ = terminate.recv() => {}
+                        _ = ctrl_c.recv() => {}
+                    }
+                }
+                // a handler the system refused: the one that is installed still raises, as `shutdown_signal` does
+                (Ok(mut one), Err(_)) | (Err(_), Ok(mut one)) => {
+                    one.recv().await;
+                }
+                (Err(_), Err(_)) => std::future::pending::<()>().await,
+            }
+            tracing::warn!(
+                "SIGTERM or SIGINT: the automatic handover starts no activation and stops after this round"
+            );
+            interrupt.raise();
+        });
+    }
+    #[cfg(not(unix))]
     tokio::spawn(async move {
         crate::shutdown_signal().await;
         tracing::warn!(
@@ -278,6 +307,7 @@ fn declined(message: impl Into<String>) -> RunError {
 }
 
 fn denied() -> RunError {
+    // refusal test: the_dry_run_checks_the_wrappers_privilege_and_says_the_last_reason
     declined(
         "permission denied: the automatic handover runs as sagat_handover logged in as itself, with the grants migrate gives it \
          (run migrate again; a role wider than the design is given none). The owner's handover is --apply. Nothing was changed.",
@@ -330,22 +360,18 @@ pub async fn run_auto_command(
             .into());
         }
     }
-    let Some(password) = env("SAGAT_HANDOVER_PASSWORD").filter(|password| !password.is_empty())
+    let Some(password) = env("SAGAT_HANDOVER_PASSWORD")
+        .filter(|password| !password.is_empty())
+        .map(zeroize::Zeroizing::new)
     else {
+        // refusal test: the_job_switched_off_exits_zero_at_once_and_without_a_password_exits_two_naming_the_variable
         return Err(declined(
             "SAGAT_HANDOVER_PASSWORD is not set: the automatic handover logs in as sagat_handover with that password, given apart \
              from DATABASE_URL. Set it (and give it to migrate, which sets the role's login), or switch the job off with \
              SAGAT_SCHEDULES_AUTO_HANDOVER=false. Nothing was changed.",
         ));
     };
-    let run = match env("SAGAT_HANDOVER_RUN_ID").filter(|id| !id.is_empty()) {
-        Some(id) => Uuid::parse_str(id.trim()).map_err(|_| ConfigError::Invalid {
-            name: "SAGAT_HANDOVER_RUN_ID",
-            reason: "must be a uuid (in Kubernetes, the Job's UID from the downward API)"
-                .to_owned(),
-        })?,
-        None => Uuid::new_v4(),
-    };
+    let run = run_id(args.run_id, env)?;
     let mut request = AutoRequest::of(args, run);
     // compose cannot add a flag on a condition: the setting stands for `--retire-role` (D2265)
     match env("SAGAT_HANDOVER_RETIRE_ROLE").as_deref().map(str::trim) {
@@ -359,9 +385,39 @@ pub async fn run_auto_command(
             .into());
         }
     }
-    auto_handover(db, Some(&password), &request, &Sleep, interrupt)
+    auto_handover(db, Some(password.as_str()), &request, &Sleep, interrupt)
         .await
         .map(|outcome| outcome.to_string())
+}
+
+/// The run id: `--run-id`, or its environment form `SAGAT_HANDOVER_RUN_ID` (in Kubernetes the Job's UID from the downward API),
+/// or drawn at start (compose, which does not retry the job). Two that differ are refused: which run a retried pod resumes must
+/// not depend on which of them a deployment happens to set.
+///
+/// # Errors
+/// [`RunError::Config`] (exit 2) for a variable that is not a uuid or one that differs from the flag.
+pub fn run_id(flag: Option<Uuid>, env: &dyn Fn(&str) -> Option<String>) -> Result<Uuid, RunError> {
+    let variable = match env("SAGAT_HANDOVER_RUN_ID").filter(|id| !id.trim().is_empty()) {
+        Some(id) => Some(
+            Uuid::parse_str(id.trim()).map_err(|_| ConfigError::Invalid {
+                name: "SAGAT_HANDOVER_RUN_ID",
+                reason: "must be a uuid (in Kubernetes, the Job's UID from the downward API)"
+                    .to_owned(),
+            })?,
+        ),
+        None => None,
+    };
+    match (flag, variable) {
+        (Some(flag), Some(variable)) if flag != variable => Err(ConfigError::Invalid {
+            name: "--run-id",
+            reason:
+                "differs from SAGAT_HANDOVER_RUN_ID: give one of them, or the same uuid in both"
+                    .to_owned(),
+        }
+        .into()),
+        (Some(id), _) | (None, Some(id)) => Ok(id),
+        (None, None) => Ok(Uuid::new_v4()),
+    }
 }
 
 /// The automatic handover.
@@ -390,6 +446,7 @@ pub async fn auto_handover(
                 return Ok(AutoOutcome::RoleRetired);
             }
             Err(HandoverDbError::CannotLogIn | HandoverDbError::WrongPassword) => {
+                // refusal test: the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_for_good
                 return Err(declined(
                     "sagat_handover cannot log in (SQLSTATE 28000: no login or a pg_hba refusal; 28P01: a wrong password): give \
                      migrate SAGAT_HANDOVER_PASSWORD so that it sets the login, put the same password in the job's Secret, check \
@@ -399,11 +456,13 @@ pub async fn auto_handover(
             // the database cannot be reached: tried again with the backoff while --wait lasts
             Err(HandoverDbError::Unavailable(detail)) => {
                 if clock.passed() {
+                    // refusal test: a_database_the_job_cannot_reach_ends_it_at_its_deadline_with_three_or_at_an_interrupt_with_four
                     return Err(deadline_unreached(&detail));
                 }
                 tracing::warn!(%detail, "the database of the automatic handover cannot be reached; trying again");
                 pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
                 if interrupt.is_raised() {
+                    // refusal test: a_database_the_job_cannot_reach_ends_it_at_its_deadline_with_three_or_at_an_interrupt_with_four
                     return Err(interrupted());
                 }
             }
@@ -468,6 +527,7 @@ async fn dry_run(pool: &PgPool) -> Result<AutoOutcome, RunError> {
         .await
         .map_err(|error| database(&error))?
     {
+        // refusal test: the_dry_run_checks_the_wrappers_privilege_and_says_the_last_reason
         return Err(denied());
     }
     let (state, mode, _) = read_handover_mode(pool)
@@ -531,10 +591,12 @@ async fn drive(
     loop {
         if interrupt.is_raised() {
             note(pool, &ask, HandoverBlock::Interrupted).await;
+            // refusal test: a_fleet_with_no_backlog_waits_a_horizon_after_the_first_round_and_an_interrupt_ends_it_with_nothing_changed
             return Err(interrupted());
         }
         if clock.passed() {
             note(pool, &ask, HandoverBlock::Deadline).await;
+            // refusal test: the_job_ends_at_its_deadline_with_exit_three_even_when_every_round_fails
             return Err(deadline(last));
         }
         let round = match handover_round(pool, &ask).await {
@@ -562,21 +624,25 @@ async fn drive(
                 continue;
             }
             Err(HandoverDbError::TooManyRuns) => {
+                // refusal test: a_seventeenth_live_run_is_refused_and_a_stopped_run_gives_way
                 return Err(declined(
                     "TOO_MANY_RUNS: sixteen runs of the automatic handover are before their deadline; another job is running. \
                      Nothing was changed.",
                 ));
             }
+            // refusal test: a_role_other_than_sagat_handover_is_refused_at_the_round_or_at_the_activation_with_exit_two
             Err(HandoverDbError::Denied) => return Err(denied()),
             Err(error) => return Err(database(&error)),
         };
         match round.outcome {
             RoundOutcome::HandedOver => return finish(pool, request, None).await,
             RoundOutcome::UnknownState => {
+                // refusal test: a_state_this_build_does_not_know_stops_the_job_at_its_activation_or_its_round_with_exit_two
                 return Err(declined(
                     "the handover state is one this build does not know: run the handover with the build that wrote it",
                 ));
             }
+            // refusal test: a_run_whose_deadline_the_database_says_has_passed_ends_with_exit_three
             RoundOutcome::Deadline => return Err(deadline(round.reason.or(last))),
             RoundOutcome::Blocked | RoundOutcome::Counting => {
                 if round.reason.is_some() {
@@ -591,11 +657,13 @@ async fn drive(
             RoundOutcome::Stable => {
                 if interrupt.is_raised() {
                     note(pool, &ask, HandoverBlock::Interrupted).await;
+                    // refusal test: an_interrupt_during_the_stable_round_starts_no_activation_and_exits_four
                     return Err(interrupted());
                 }
                 pace.before_activation().await;
                 if interrupt.is_raised() {
                     note(pool, &ask, HandoverBlock::Interrupted).await;
+                    // refusal test: an_interrupt_between_the_stable_round_and_the_activation_starts_no_activation_and_exits_four
                     return Err(interrupted());
                 }
                 // an activation begun is not cut by an interrupt: it commits or rolls back within its bounds
@@ -615,22 +683,26 @@ async fn drive(
                         pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
                     }
                     Ok(AutoActivated::KindsDiffer) => {
+                        // refusal test: schedules_v1_required_of_other_kinds_ends_the_job_with_exit_two
                         return Err(declined(
                             "schedules-v1 is already required of other kinds of instance; remove that requirement first. \
                              Nothing was changed.",
                         ));
                     }
                     Ok(AutoActivated::UnknownState) => {
+                        // refusal test: a_state_this_build_does_not_know_stops_the_job_at_its_activation_or_its_round_with_exit_two
                         return Err(declined(
                             "the handover state is one this build does not know: run the handover with the build that wrote it",
                         ));
                     }
-                    Err(HandoverDbError::LockTimeout | HandoverDbError::StepBound) => {
+                    Err(HandoverDbError::LockTimeout) => {
                         note(pool, &ask, HandoverBlock::Busy).await;
                         last = Some(HandoverBlock::Busy);
                         pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
                     }
-                    Err(HandoverDbError::StatementTimeout) => {
+                    // the step bound and the statement timeout end the same slow activation (both 3 s, and the client's clock
+                    // fires first): three of either in a row are CHECK_TOO_SLOW (correctness review of 2026-11-15, m1)
+                    Err(HandoverDbError::StatementTimeout | HandoverDbError::StepBound) => {
                         let reason = activation_timeouts.one_more();
                         note(pool, &ask, reason).await;
                         last = Some(reason);
@@ -640,6 +712,7 @@ async fn drive(
                         tracing::warn!(%detail, "the activation lost its connection and rolled back; trying again");
                         pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
                     }
+                    // refusal test: a_role_other_than_sagat_handover_is_refused_at_the_round_or_at_the_activation_with_exit_two
                     Err(HandoverDbError::Denied) => return Err(denied()),
                     Err(error) => return Err(database(&error)),
                 }
@@ -759,6 +832,93 @@ mod tests {
         );
     }
 
+    /// G2307, ADR-0091 decision 5: each call site of a refusal, in the operator's command and in the job, names on the line above it
+    /// the test that reaches that site and holds its exit code (`// refusal test: NAME`), or says why no honest test can
+    /// (`// refusal test: none — why`), and the named test exists. A new site without a marker fails here, and so does a marker whose
+    /// test was renamed or removed.
+    #[test]
+    fn every_refusal_call_site_names_a_test_that_exists() {
+        const CALLS: [&str; 5] = [
+            "declined(",
+            "denied()",
+            "deadline(",
+            "deadline_unreached(",
+            "interrupted()",
+        ];
+        const MARKER: &str = "// refusal test: ";
+        let sources = [
+            ("handover.rs", include_str!("handover.rs")),
+            ("handover_auto.rs", include_str!("handover_auto.rs")),
+        ];
+        let mut sites = 0;
+        let mut named: Vec<(&str, usize, String)> = Vec::new();
+        for (file, text) in sources {
+            let code = text.split("#[cfg(test)]").next().unwrap_or_default();
+            let lines: Vec<&str> = code.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                let trimmed = line.trim_start();
+                let a_site = !trimmed.starts_with("//")
+                    && !trimmed.split_whitespace().any(|word| word == "fn")
+                    && CALLS.iter().any(|call| line.contains(call));
+                if !a_site {
+                    continue;
+                }
+                sites += 1;
+                let above = index.checked_sub(1).map_or("", |i| lines[i].trim());
+                let Some(name) = above.strip_prefix(MARKER) else {
+                    panic!(
+                        "{file}:{}: a refusal without `{MARKER}NAME` on the line above it: {}",
+                        index + 1,
+                        line.trim()
+                    );
+                };
+                if let Some(why) = name.strip_prefix("none \u{2014} ") {
+                    assert!(
+                        !why.trim().is_empty(),
+                        "{file}:{}: none, and why?",
+                        index + 1
+                    );
+                    continue;
+                }
+                assert!(
+                    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                    "{file}:{}: `{name}` is not the name of a test",
+                    index + 1
+                );
+                named.push((file, index + 1, name.to_owned()));
+            }
+        }
+        assert_eq!(
+            sites, 32,
+            "the refusal call sites of handover.rs and handover_auto.rs: a new one needs its marker and its test"
+        );
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut corpus = String::new();
+        let mut pending = vec![root.join("src"), root.join("../../tests")];
+        while let Some(dir) = pending.pop() {
+            let entries = std::fs::read_dir(&dir)
+                .unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
+            for entry in entries {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    corpus.push_str(
+                        &std::fs::read_to_string(&path)
+                            .unwrap_or_else(|error| panic!("{}: {error}", path.display())),
+                    );
+                    corpus.push('\n');
+                }
+            }
+        }
+        for (file, line, name) in named {
+            assert!(
+                corpus.contains(&format!("fn {name}(")),
+                "{file}:{line}: no test `{name}` in apps/control-plane/src or tests"
+            );
+        }
+    }
+
     #[test]
     fn the_deadline_names_the_last_reason_and_its_runbook_row() {
         let said = deadline(Some(HandoverBlock::ReconciliationRecent)).to_string();
@@ -768,6 +928,45 @@ mod tests {
             "{said}"
         );
         assert!(deadline(None).to_string().contains("none recorded"));
+    }
+
+    #[test]
+    fn the_run_id_is_the_flag_or_the_variable_and_never_two_that_differ() {
+        let flag = Uuid::from_u128(7);
+        let other = Uuid::from_u128(8);
+        let none = |_: &str| None;
+        let variable = |text: &'static str| {
+            move |name: &str| (name == "SAGAT_HANDOVER_RUN_ID").then(|| text.to_owned())
+        };
+        assert_eq!(run_id(Some(flag), &none).expect("the flag"), flag);
+        assert_eq!(
+            run_id(None, &variable("00000000-0000-0000-0000-000000000008")).expect("the variable"),
+            other
+        );
+        assert_eq!(
+            run_id(
+                Some(flag),
+                &variable("00000000-0000-0000-0000-000000000007")
+            )
+            .expect("the same twice"),
+            flag
+        );
+        let differ = run_id(
+            Some(flag),
+            &variable("00000000-0000-0000-0000-000000000008"),
+        )
+        .expect_err("two run ids");
+        assert_eq!(differ.exit_code(), 2);
+        assert!(differ.to_string().contains("--run-id"), "{differ}");
+        let bad = run_id(None, &variable("job-7")).expect_err("not a uuid");
+        assert_eq!(bad.exit_code(), 2);
+        assert!(bad.to_string().contains("SAGAT_HANDOVER_RUN_ID"), "{bad}");
+        let drawn = run_id(None, &variable("")).expect("drawn");
+        assert_ne!(
+            drawn,
+            run_id(None, &none).expect("drawn again"),
+            "drawn at start, new each time"
+        );
     }
 
     #[tokio::test]

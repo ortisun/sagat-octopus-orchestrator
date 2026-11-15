@@ -746,3 +746,32 @@ python3 -I tests/performance/schedules-bulk-operations/summarize.py <the directo
 (`SAGAT_PERF_PG_STATEMENTS=0` turns that off: the statement figures are then `n/a` and the bounds on them are reported broken, not
 held). The unit tests of the helpers (the parsers of `ps`, `/proc` and `cpu.stat`, the delta of the statements, the rates and their
 excess, the alternation of the pairs, the engine's switch) run without `--ignored`.
+
+## The tenant set of the automatic handover under the lock (2026-11-15, G2248, D2307)
+
+ADR-0091 decision 7 records, under the table lock of the activation, one row per tenant that has a cron trigger, each with a
+random audit id; G2248 asked for its cost at 100,000 triggers of 1,000 tenants, and for the owner to be asked if it added more than
+100 ms under the lock. The scenario `triggers-tenant-set` (`triggers.rs`, `tenant_set`) seeds 100,000 cron triggers over 1,000
+invented tenants with a schedule equal to each (the steady seeding, then every straggler converged), and in 20 transactions that are
+rolled back times the tenant set's statement alone and the whole move (`schedule_trigger_handover_record`: the census copy, the
+unconverged check, the tenant set and the state, after `platform_requirement_activate` records `schedules-v1`); then 20 runs of the
+unconverged check alone (the wrapper makes it once before the move: the correctness review's M1), and, after a handover committed,
+the completion of every tenant's audit record, which is one statement (M2).
+
+**Environment, not the one of the sections above:** the debug build of the target, run three times from its binary
+(`SAGAT_TEST_AS_RUNTIME_ROLE=1 SAGAT_PERF_TRIGGERS=100000 SAGAT_PERF_TRIGGER_TENANTS=1000 … --ignored trigger_handover_tenant_set`)
+against the PostgreSQL 16.15 container of the suites (`shared_buffers` 160 MB, `fsync` on, `pg_stat_statements` preloaded), on the
+16-CPU machine of the report while another session built and tested (load average 7.1 to 8.5). `run.sh` lists the scenario but was
+not used: its release build takes hours on this shared machine. Every statement measured runs in PostgreSQL; the client's build
+changes nothing of it but the round trip.
+
+| Run | Tenant set p50 / p95 / max (ms) | Move p50 / p95 / max (ms) | Unconverged check p50 / p95 / max (ms) | Audit of 1,000 tenants (ms) |
+|---|---|---|---|---|
+| 1 | 13.7 / 15.4 / 19.4 | 272.3 / 350.7 / 355.4 | 266.5 / 339.6 / 339.9 | 43.6 |
+| 2 | 14.0 / 15.4 / 15.8 | 303.8 / 352.8 / 358.7 | 284.8 / 344.5 / 349.3 | 43.6 |
+| 3 | 13.8 / 15.3 / 15.4 | 329.3 / 368.3 / 368.9 | 299.7 / 340.0 / 340.9 | 43.4 |
+
+Bounds, each held in 3 of 3: the tenant set's p95 within 100 ms (G2248: above it the owner is asked; it is not); the slowest move
+within the activation's 3 s step bound (ADR-0091 decision 4); the audit within the job's 5 s statement timeout. The move is almost
+all the unconverged check (the figures of G2049 after its fix: 263 ms at 100,000); with the wrapper's own check the activation
+spends about 0.7 s of its 3 s at this size. Not measured: more than 1,000 tenants (G2309), a release build, a quiet machine.

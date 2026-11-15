@@ -595,3 +595,32 @@ fn the_irreversible_run_is_made_only_when_apply_is_given() {
         (Some("ana"), Some(2))
     );
 }
+
+/// G2307: `schedules-v1` recorded for other kinds of instance is the registry's refusal (`KindsDiffer`), told in words with exit
+/// 2, and nothing is handed over.
+#[tokio::test]
+async fn schedules_v1_required_of_other_kinds_refuses_the_handover_in_words() {
+    let r = registry().await;
+    engine(&r, true).await;
+    r.require(
+        Capability::SchedulesV1,
+        &[InstanceKind::ExecutionEngine, InstanceKind::ControlPlane],
+    )
+    .await
+    .expect("recorded for two kinds, with no control plane live");
+    let history = r.history().await;
+
+    let refused = hand_over(&r, &request(Some("ana"), Some(1), false)).await;
+    assert_eq!(
+        refused.as_ref().map_or_else(RunError::exit_code, |_| 0),
+        2,
+        "{refused:?}"
+    );
+    let message = declined(refused);
+    assert!(
+        message.contains("already required of other kinds"),
+        "{message}"
+    );
+    assert_eq!(state(&r).await.0, "LEGACY", "nothing was handed over");
+    assert_eq!(r.history().await, history, "nothing more was recorded");
+}

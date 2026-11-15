@@ -442,6 +442,16 @@ pub async fn serve(
     // which of the optional passes run is decided once, by a function of the configuration that a test reads (D2009)
     let optional = settings::optional_passes(engine);
     tracing::info!(passes = ?optional, "the optional passes of this replica");
+    // ADR-0091 decision 5 (D2270): whether the deployment runs the job of the automatic handover, exported for the alert on a
+    // job that never writes, by every engine, the ones without the schedule pass included (correctness review of 2026-11-15,
+    // m3); nothing here depends on it
+    metrics::gauge!("trigger_schedule_auto_handover_expected").set(
+        if engine.auto_handover_expected {
+            1.0
+        } else {
+            0.0
+        },
+    );
     if optional.contains(&settings::PASS_SCHEDULES) {
         // A schedule's run is admitted as the schedule's own subject, so the pass needs the same
         // run service the API has; it holds a store of its own over the shared pool.
@@ -468,15 +478,6 @@ pub async fn serve(
         // The cron triggers become schedules (`FR-018-017`): publication makes them, and this pass makes the ones it did
         // not (an older control plane, the triggers older than the feature). It runs in the processes that run the
         // schedule pass, in `LEGACY` and after the handover alike.
-        // ADR-0091 decision 5 (D2270): whether the deployment runs the job of the automatic handover, exported for the alert on a
-        // job that never writes; nothing here depends on it
-        metrics::gauge!("trigger_schedule_auto_handover_expected").set(
-            if engine.auto_handover_expected {
-                1.0
-            } else {
-                0.0
-            },
-        );
         let triggers: Arc<EngineTriggers> = Arc::new(TriggerPass::new(
             TriggerReconciler::new(
                 PgScheduleStore::new(pool.clone()),

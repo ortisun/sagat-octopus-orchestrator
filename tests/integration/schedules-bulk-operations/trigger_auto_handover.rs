@@ -2231,6 +2231,19 @@ async fn a_seventeenth_live_run_is_refused_and_a_stopped_run_gives_way() {
     .await
     .expect_err("a seventeenth");
     assert_eq!(crate::support::db_error(refused).0, "54000");
+    // the job of a seventeenth run is refused at its first round, in words, with exit 2 (G2307)
+    let seventeenth = Uuid::new_v4();
+    let refused = job(
+        &fleet,
+        &request(seventeenth),
+        &Clockwork::new(&fleet, seventeenth),
+    )
+    .await;
+    assert_eq!(exit_code(&refused), 2, "{refused:?}");
+    assert!(
+        matches!(&refused, Err(RunError::Declined(message)) if message.contains("TOO_MANY_RUNS")),
+        "{refused:?}"
+    );
     fleet
         .sql(
             "UPDATE schedule_trigger_handover_attempts SET last_reason = 'INTERRUPTED' \
@@ -2547,5 +2560,709 @@ async fn the_engines_see_the_reason_of_every_live_run() {
     assert_eq!(
         view.audit_pending, None,
         "nothing to audit before the handover"
+    );
+}
+
+// --- each refusal site of the job, reached (G2307, ADR-0091 decision 5) -----------------------------------------------------
+
+/// Stands for SIGTERM during the first wait of the job.
+struct InterruptOnWait;
+
+impl Pace for InterruptOnWait {
+    fn wait<'a>(&'a self, _wait: Duration, interrupt: &'a Interrupt) -> Paced<'a> {
+        Box::pin(async move {
+            interrupt.raise();
+        })
+    }
+}
+
+/// A database the job cannot reach is tried again while `--wait` lasts: at its end the job exits 3, and an interrupt during the wait
+/// between two tries exits 4. No database is reached: the URL points nowhere.
+#[tokio::test]
+async fn a_database_the_job_cannot_reach_ends_it_at_its_deadline_with_three_or_at_an_interrupt_with_four()
+ {
+    let nowhere = DatabaseConfig {
+        url: "postgres://sagat_handover@127.0.0.1:1/none".to_owned(),
+        max_connections: 1,
+        statement_timeout: Duration::from_secs(1),
+    };
+    let mut over = request(Uuid::new_v4());
+    over.ask.wait = Duration::ZERO;
+    let ended = auto_handover(
+        &nowhere,
+        Some("a-password-long-enough"),
+        &over,
+        &InterruptOnWait,
+        &Interrupt::default(),
+    )
+    .await;
+    assert_eq!(exit_code(&ended), 3, "{ended:?}");
+    assert!(
+        matches!(&ended, Err(RunError::Deadline(message)) if message.contains("could not reach the database")),
+        "{ended:?}"
+    );
+    let stopped = auto_handover(
+        &nowhere,
+        Some("a-password-long-enough"),
+        &request(Uuid::new_v4()),
+        &InterruptOnWait,
+        &Interrupt::default(),
+    )
+    .await;
+    assert_eq!(exit_code(&stopped), 4, "{stopped:?}");
+    assert!(
+        matches!(&stopped, Err(RunError::Interrupted(_))),
+        "{stopped:?}"
+    );
+}
+
+/// The job run as a role other than `sagat_handover` exits 2: the runtime role at its first round (it may not execute the round),
+/// the owner at its activation (the wrapper requires `session_user` to be `sagat_handover`). Nothing is handed over.
+#[tokio::test]
+async fn a_role_other_than_sagat_handover_is_refused_at_the_round_or_at_the_activation_with_exit_two()
+ {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    let as_role = |url: String| DatabaseConfig {
+        url,
+        max_connections: 2,
+        statement_timeout: Duration::from_secs(5),
+    };
+    let denied = |result: &Result<AutoOutcome, RunError>| matches!(result, Err(RunError::Declined(message)) if message.contains("permission denied"));
+
+    let run = Uuid::new_v4();
+    let pace = Clockwork::new(&fleet, run);
+    let runtime = as_role(db.url_for(RUNTIME_ROLE, crate::support::RUNTIME_ROLE_PASSWORD));
+    let refused = auto_handover(&runtime, None, &request(run), &pace, &Interrupt::default()).await;
+    assert_eq!(exit_code(&refused), 2, "{refused:?}");
+    assert!(denied(&refused), "{refused:?}");
+    assert!(
+        pace.asked().is_empty(),
+        "refused at its first round, before any wait"
+    );
+
+    let run = Uuid::new_v4();
+    let pace = Clockwork::new(&fleet, run);
+    let owner = as_role(db.url.clone());
+    let refused = tokio::time::timeout(
+        Duration::from_secs(240),
+        auto_handover(&owner, None, &request(run), &pace, &Interrupt::default()),
+    )
+    .await
+    .expect("the job ends");
+    assert_eq!(exit_code(&refused), 2, "{refused:?}");
+    assert!(denied(&refused), "{refused:?}");
+    assert!(
+        !pace.asked().is_empty(),
+        "the owner's rounds ran until the fleet was stable: the activation refused it"
+    );
+    assert_eq!(fleet.handover_row().await.0, "LEGACY");
+    assert_eq!(
+        fleet
+            .count("SELECT count(*) FROM platform_requirement_history")
+            .await,
+        0
+    );
+}
+
+/// A state a newer build wrote stops the job with exit 2: written between the stable round and the activation, the wrapper refuses
+/// it; found by the first round of a later run, the round does.
+#[tokio::test]
+async fn a_state_this_build_does_not_know_stops_the_job_at_its_activation_or_its_round_with_exit_two()
+ {
+    let t = triggers().await;
+    let fleet = Fleet::on(&t.w.db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    let arrive = Arc::new(tokio::sync::Barrier::new(2));
+    let release = Arc::new(tokio::sync::Barrier::new(2));
+    let mut pace = Clockwork::new(&fleet, run);
+    pace.gate = Some((Arc::clone(&arrive), Arc::clone(&release)));
+    let not_known = |result: &Result<AutoOutcome, RunError>| matches!(result, Err(RunError::Declined(message)) if message.contains("one this build does not know"));
+    let asked = request(run);
+    let (refused, ()) = tokio::join!(job(&fleet, &asked, &pace), async {
+        arrive.wait().await;
+        // a newer build knows another state: the check that lists the two is dropped, as its migration would drop it
+        fleet
+            .sql("ALTER TABLE schedule_trigger_handover DROP CONSTRAINT schedule_trigger_handover_state_valid")
+            .await;
+        t.force_handover_row("ARMED", Some("a newer build")).await;
+        release.wait().await;
+    });
+    assert_eq!(exit_code(&refused), 2, "{refused:?}");
+    assert!(not_known(&refused), "{refused:?}");
+
+    let later = Uuid::new_v4();
+    let later_pace = Clockwork::new(&fleet, later);
+    let refused = job(&fleet, &request(later), &later_pace).await;
+    assert_eq!(exit_code(&refused), 2, "{refused:?}");
+    assert!(not_known(&refused), "{refused:?}");
+    assert!(later_pace.asked().is_empty(), "refused at its first round");
+    assert_eq!(fleet.handover_row().await.0, "ARMED");
+    assert_eq!(
+        fleet
+            .count("SELECT count(*) FROM platform_requirement_history")
+            .await,
+        0
+    );
+}
+
+/// A retried pod of a run whose `--wait` ended: the job's own clock has time left, the run's deadline (kept by the database) has
+/// none, and the round says so: exit 3.
+#[tokio::test]
+async fn a_run_whose_deadline_the_database_says_has_passed_ends_with_exit_three() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    fleet.round(run).await;
+    sqlx::query(
+        "UPDATE schedule_trigger_handover_attempts \
+            SET first_round_at = clock_timestamp() - interval '3 hours', deadline = clock_timestamp() - interval '1 hour' \
+          WHERE run_id = $1",
+    )
+    .bind(run)
+    .execute(&fleet.owner)
+    .await
+    .expect("the run's deadline passed");
+    let pace = Clockwork::new(&fleet, run);
+    let ended = job(&fleet, &request(run), &pace).await;
+    assert_eq!(exit_code(&ended), 3, "{ended:?}");
+    assert!(matches!(&ended, Err(RunError::Deadline(_))), "{ended:?}");
+    assert!(pace.asked().is_empty(), "ended by its first round");
+    assert_eq!(fleet.last_reason(run).await.as_deref(), Some("DEADLINE"));
+    assert_eq!(fleet.handover_row().await.0, "LEGACY");
+}
+
+/// An interrupt raised while the stable round runs (held on the run's row, a lock and not a time) starts no activation: exit 4.
+#[tokio::test]
+async fn an_interrupt_during_the_stable_round_starts_no_activation_and_exits_four() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    fleet.stable(run).await;
+    let mut held = fleet.owner.begin().await.expect("begin");
+    sqlx::query("SELECT 1 FROM schedule_trigger_handover_attempts WHERE run_id = $1 FOR UPDATE")
+        .bind(run)
+        .execute(&mut *held)
+        .await
+        .expect("hold the run's row");
+    let interrupt = Interrupt::default();
+    let pace = Clockwork::new(&fleet, run);
+    let asked = request(run);
+    let (result, ()) = tokio::join!(job_with(&fleet, &asked, &pace, &interrupt), async {
+        waiting_on_locks(&fleet.owner, 1).await;
+        interrupt.raise();
+        held.rollback().await.expect("release the run's row");
+    });
+    assert_eq!(exit_code(&result), 4, "{result:?}");
+    assert!(
+        pace.asked().is_empty(),
+        "the round it was held in was its first"
+    );
+    assert_eq!(fleet.last_reason(run).await.as_deref(), Some("INTERRUPTED"));
+    assert_eq!(fleet.handover_row().await.0, "LEGACY");
+    assert_eq!(
+        fleet
+            .count("SELECT count(*) FROM platform_requirements")
+            .await,
+        0
+    );
+}
+
+/// `schedules-v1` recorded for other kinds of instance is refused by the activation (`KINDS_DIFFER`), which no wait cures: exit 2.
+#[tokio::test]
+async fn schedules_v1_required_of_other_kinds_ends_the_job_with_exit_two() {
+    use sagat_application::instances::Activation;
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.engine().await;
+    // the control plane lists schedules-v1 too, so that it may be required of both kinds
+    fleet
+        .register(InstanceKind::ControlPlane, None, &[Capability::SchedulesV1])
+        .await;
+    let actor = sagat_domain::identity::Subject::parse("somebody").expect("subject");
+    PgInstanceStore::new(fleet.owner.clone())
+        .activate(
+            Activation {
+                capability: Capability::SchedulesV1,
+                kinds: &[InstanceKind::ExecutionEngine, InstanceKind::ControlPlane],
+                actor: &actor,
+            },
+            |_| Box::pin(async { Ok(()) }),
+        )
+        .await
+        .expect("recorded by hand for two kinds");
+    let run = Uuid::new_v4();
+    let pace = Clockwork::new(&fleet, run);
+    let refused = job(&fleet, &request(run), &pace).await;
+    assert_eq!(exit_code(&refused), 2, "{refused:?}");
+    assert!(
+        matches!(&refused, Err(RunError::Declined(message)) if message.contains("already required of other kinds")),
+        "{refused:?}"
+    );
+    assert!(
+        !pace.asked().is_empty(),
+        "its rounds ran until the fleet was stable: the activation refused it"
+    );
+    assert_eq!(fleet.handover_row().await.0, "LEGACY");
+}
+
+// --- the built binaries (G2283, G2286) ------------------------------------------------------------------------------------
+
+/// A binary of the workspace, built before this suite (`cargo build -p sagat-control-plane -p sagat-execution-engine`), or the
+/// one the variable names.
+#[cfg(unix)]
+fn binary(name: &str, variable: &str) -> std::path::PathBuf {
+    let path = std::env::var_os(variable)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| crate::support::built_binary(name));
+    assert!(
+        path.is_file(),
+        "first run cargo build -p sagat-control-plane --bin control-plane -p sagat-execution-engine --bin execution-engine \
+         (or set {variable}): {} is missing",
+        path.display()
+    );
+    path
+}
+
+/// Waits, bounded, until the run has an attempt row whose last reason is `reason`: the job made its round, so it installed its
+/// signal handlers (they are installed before the first round) and is now in its wait of one heartbeat.
+#[cfg(unix)]
+async fn attempt_says(fleet: &Fleet, run: Uuid, reason: &str) {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if fleet.last_reason(run).await.as_deref() == Some(reason) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the job's first round never wrote {reason}"));
+}
+
+/// A real SIGTERM and a real SIGINT sent to the built `control-plane` binary in `--auto`, in its wait after a round: it starts
+/// no activation, writes `INTERRUPTED`, exits 4, and nothing is recorded (ADR-0091 decision 1, G2283). The run id is given by
+/// `--run-id`.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_real_sigterm_or_sigint_to_the_built_binary_between_its_rounds_exits_four_with_interrupted_and_nothing_recorded()
+ {
+    let control_plane = binary("control-plane", "SAGAT_CONTROL_PLANE_BIN");
+    for signal in ["TERM", "INT"] {
+        let db = migrated_db().await;
+        let fleet = Fleet::on(&db).await;
+        fleet.ready(1).await;
+        let run = Uuid::new_v4();
+        let child = tokio::process::Command::new(&control_plane)
+            .args([
+                "schedule-trigger-handover",
+                "--auto",
+                "--operator",
+                "signal-test",
+                "--run-id",
+                &run.to_string(),
+            ])
+            .env_clear()
+            .env("DATABASE_URL", &fleet.url)
+            .env("SAGAT_HANDOVER_PASSWORD", HANDOVER_ROLE_PASSWORD)
+            .env("SAGAT_ENV", "dev")
+            .env("SAGAT_LOG_FORMAT", "json")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("start the job");
+        let pid = child.id().expect("a running job");
+        // the barrier: its first round is written (FIRST_HORIZON: the run has just begun), and it waits one heartbeat
+        attempt_says(&fleet, run, "FIRST_HORIZON").await;
+        let sent = std::process::Command::new("kill")
+            .arg(format!("-{signal}"))
+            .arg(pid.to_string())
+            .status()
+            .expect("kill");
+        assert!(sent.success(), "SIG{signal} was sent");
+        let output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+            .await
+            .expect("the job ends at the signal, not after its wait")
+            .expect("the job's output");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "SIG{signal}: exit 4, not the signal's default action; stderr: {stderr}; stdout: {stdout}"
+        );
+        assert!(stderr.contains("INTERRUPTED"), "SIG{signal}: {stderr}");
+        assert_eq!(
+            fleet.last_reason(run).await.as_deref(),
+            Some("INTERRUPTED"),
+            "SIG{signal}"
+        );
+        assert_eq!(fleet.handover_row().await.0, "LEGACY", "SIG{signal}");
+        assert_eq!(
+            fleet
+                .count("SELECT count(*) FROM platform_requirements")
+                .await,
+            0,
+            "SIG{signal}: nothing recorded"
+        );
+    }
+}
+
+/// The built `execution-engine`, its admin address read from its own log line.
+#[cfg(unix)]
+struct EngineProcess {
+    child: tokio::process::Child,
+    admin: String,
+}
+
+#[cfg(unix)]
+impl EngineProcess {
+    async fn start(db: &TestDb, idp: &crate::support::oidc::TestIdp, expected: &str) -> Self {
+        Self::start_with(db, idp, expected, &[]).await
+    }
+
+    async fn start_with(
+        db: &TestDb,
+        idp: &crate::support::oidc::TestIdp,
+        expected: &str,
+        extra: &[(&str, &str)],
+    ) -> Self {
+        use tokio::io::AsyncBufReadExt as _;
+        let engine = binary("execution-engine", "SAGAT_EXECUTION_ENGINE_BIN");
+        let mut settings = vec![
+            ("SAGAT_GRPC_ADDR", "127.0.0.1:0"),
+            ("SAGAT_ADMIN_ADDR", "127.0.0.1:0"),
+            ("SAGAT_LOG_FORMAT", "json"),
+            ("SAGAT_SCHEDULES_AUTO_HANDOVER", expected),
+        ];
+        settings.extend_from_slice(extra);
+        let env = crate::support::worker::engine_env(db, idp, &settings);
+        let mut child = tokio::process::Command::new(&engine)
+            .env_clear()
+            .envs(env)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("start the engine");
+        let mut lines = tokio::io::BufReader::new(child.stdout.take().expect("stdout")).lines();
+        let pattern = regex::Regex::new(r#""addr":"(127\.0\.0\.1:[0-9]+)""#).expect("pattern");
+        let admin = tokio::time::timeout(Duration::from_secs(60), async {
+            while let Some(line) = lines.next_line().await.expect("the engine's log") {
+                if line.contains("admin listener")
+                    && let Some(found) = pattern.captures(&line)
+                {
+                    return found[1].to_owned();
+                }
+            }
+            panic!("the engine ended before it served its admin listener");
+        })
+        .await
+        .expect("the engine says where its admin listener is");
+        // the rest of the log is read and dropped, so that a full pipe never stops the engine
+        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+        Self { child, admin }
+    }
+
+    async fn page(&self) -> String {
+        reqwest::get(format!("http://{}/metrics", self.admin))
+            .await
+            .expect("the engine's /metrics")
+            .text()
+            .await
+            .expect("text")
+    }
+
+    /// Scrapes until `holds` is true of the page (the engine reads the handover every 15 s), bounded.
+    async fn until(&self, what: &str, holds: impl Fn(&str) -> bool) -> String {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            let page = self.page().await;
+            if holds(&page) {
+                return page;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the engine's page never showed {what}:\n{page}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    async fn stop(mut self) {
+        if let Some(pid) = self.child.id() {
+            let _ = std::process::Command::new("kill")
+                .arg("-TERM")
+                .arg(pid.to_string())
+                .status();
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(30), self.child.wait()).await;
+    }
+}
+
+/// The value of one series of `name` (with `label`, or none) on a Prometheus page.
+#[cfg(unix)]
+fn sample(page: &str, name: &str, label: Option<(&str, &str)>) -> Option<f64> {
+    let series = match label {
+        Some((key, value)) => format!("{name}{{{key}=\"{value}\"}}"),
+        None => name.to_owned(),
+    };
+    page.lines().find_map(|line| {
+        line.strip_prefix(series.as_str())
+            .and_then(|rest| rest.strip_prefix(' '))
+            .and_then(|value| value.trim().parse::<f64>().ok())
+    })
+}
+
+#[cfg(unix)]
+fn blocked(page: &str) -> Vec<(&'static str, Option<f64>)> {
+    HandoverBlock::ALL
+        .iter()
+        .map(|reason| {
+            (
+                reason.code(),
+                sample(
+                    page,
+                    "trigger_schedule_handover_blocked",
+                    Some(("reason", reason.code())),
+                ),
+            )
+        })
+        .collect()
+}
+
+/// The gauges of the handover read from the `/metrics` page of a running `execution-engine` binary (G2286, ADR-0091 decision 5):
+/// every reason and mode series at zero and the age absent before a round, the expectation as the deployment says, the job's
+/// last reason at 1 while `LEGACY`, then the mode `AUTOMATIC` and every reason at zero after the wrapper hands over.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_gauges_of_the_handover_are_read_from_a_running_engines_page_before_during_and_after_the_job()
+ {
+    let db = migrated_db().await;
+    let idp = crate::support::oidc::TestIdp::start().await;
+    let engine = EngineProcess::start(&db, &idp, "true").await;
+    let before = engine
+        .until("the series of the handover at zero", |page| {
+            blocked(page).iter().all(|(_, value)| *value == Some(0.0))
+                && sample(
+                    page,
+                    "trigger_schedule_handover_mode",
+                    Some(("mode", "AUTOMATIC")),
+                ) == Some(0.0)
+        })
+        .await;
+    assert_eq!(
+        sample(
+            &before,
+            "trigger_schedule_handover_mode",
+            Some(("mode", "OPERATOR"))
+        ),
+        Some(0.0)
+    );
+    assert_eq!(
+        sample(&before, "trigger_schedule_auto_handover_expected", None),
+        Some(1.0)
+    );
+    assert_eq!(
+        sample(
+            &before,
+            "trigger_schedule_handover_attempt_age_seconds",
+            None
+        ),
+        None,
+        "absent while no attempt row exists"
+    );
+    assert_eq!(
+        sample(&before, "trigger_schedule_handover_audit_pending", None),
+        Some(0.0)
+    );
+
+    // a round of the job, as sagat_handover: the engine itself is the live engine with schedules-v1
+    let fleet = Fleet::on(&db).await;
+    fleet.control_plane().await;
+    let run = Uuid::new_v4();
+    let (_, reason, _) = fleet.round(run).await;
+    assert_eq!(reason.as_deref(), Some("FIRST_HORIZON"));
+    let during = engine
+        .until("FIRST_HORIZON at 1 and an attempt age", |page| {
+            sample(
+                page,
+                "trigger_schedule_handover_blocked",
+                Some(("reason", "FIRST_HORIZON")),
+            ) == Some(1.0)
+                && sample(page, "trigger_schedule_handover_attempt_age_seconds", None).is_some()
+        })
+        .await;
+    for (code, value) in blocked(&during) {
+        if code != "FIRST_HORIZON" {
+            assert_eq!(value, Some(0.0), "{code}");
+        }
+    }
+
+    fleet.stable(run).await;
+    let (outcome, reason) = fleet.wrapper(run).await;
+    assert_eq!(outcome, "HANDED_OVER", "{reason:?}");
+    let after = engine
+        .until("the mode AUTOMATIC", |page| {
+            sample(
+                page,
+                "trigger_schedule_handover_mode",
+                Some(("mode", "AUTOMATIC")),
+            ) == Some(1.0)
+        })
+        .await;
+    assert_eq!(
+        sample(
+            &after,
+            "trigger_schedule_handover_mode",
+            Some(("mode", "OPERATOR"))
+        ),
+        Some(0.0)
+    );
+    assert!(
+        blocked(&after).iter().all(|(_, value)| *value == Some(0.0)),
+        "no reason after the handover: {:?}",
+        blocked(&after)
+    );
+    engine.stop().await;
+
+    // an engine of a deployment that does not run the job says so
+    let unexpected = EngineProcess::start(&db, &idp, "false").await;
+    unexpected
+        .until("the job not expected", |page| {
+            sample(page, "trigger_schedule_auto_handover_expected", None) == Some(0.0)
+        })
+        .await;
+    unexpected.stop().await;
+}
+
+// --- the correctness review of 2026-11-15 ---------------------------------------------------------------------------------
+
+/// Correctness review m1: with the shipped bounds the step bound (3 s) and the statement timeout (3 s) end the same slow
+/// activation, and the step bound, on the client's clock, comes first: three in a row are `CHECK_TOO_SLOW` too, not `BUSY` for
+/// ever. Here the statement timeout is the longer one, so that the step bound ends each try; the statement timeout then ends the
+/// server's side of the abandoned call a second later, as the shipped bounds (equal) end it at once, so that it does not hold
+/// the run's row against the next round.
+#[tokio::test]
+async fn three_step_bounds_of_the_activation_in_a_row_are_check_too_slow() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    let mut held = fleet.owner.begin().await.expect("begin");
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *held)
+        .await
+        .expect("pid");
+    sqlx::query("LOCK TABLE schedule_trigger_handover_tenants IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *held)
+        .await
+        .expect("hold");
+    let mut slow = request(run);
+    slow.activation = sagat_infra_postgres::OperatorBounds {
+        lock_timeout: Duration::from_secs(60),
+        statement_timeout: Duration::from_secs(2),
+        step: Duration::from_secs(1),
+    };
+    let mut pace = Clockwork::new(&fleet, run);
+    pace.step = Some(Box::new(move |_, reason| {
+        (reason == Some("CHECK_TOO_SLOW")).then(|| release(pid))
+    }));
+    let done = job(&fleet, &slow, &pace).await;
+    assert!(
+        matches!(done, Ok(AutoOutcome::HandedOver { .. })),
+        "{done:?}"
+    );
+    let notes: Vec<Option<String>> = pace
+        .reasons()
+        .into_iter()
+        .filter(|r| matches!(r.as_deref(), Some("BUSY" | "CHECK_TOO_SLOW")))
+        .collect();
+    assert_eq!(
+        notes.iter().map(Option::as_deref).collect::<Vec<_>>(),
+        vec![Some("BUSY"), Some("BUSY"), Some("CHECK_TOO_SLOW")],
+        "{:?}",
+        pace.reasons()
+    );
+    drop(held);
+}
+
+/// Correctness review m2: once handed over, a round of any run answers `HANDED_OVER` before the cap of sixteen live runs is
+/// looked at, so a seventeenth restart of a job (compose draws a new run id each time) exits 0 and completes the audit; and the
+/// runs that saw the handover do not hold places of the cap.
+#[tokio::test]
+async fn after_the_handover_a_seventeenth_run_is_answered_handed_over_and_not_too_many_runs() {
+    let db = migrated_db().await;
+    let fleet = Fleet::on(&db).await;
+    fleet.ready(1).await;
+    let run = Uuid::new_v4();
+    fleet.stable(run).await;
+    let (outcome, reason) = fleet.wrapper(run).await;
+    assert_eq!(outcome, "HANDED_OVER", "{reason:?}");
+    for n in 0..20 {
+        let (outcome, reason, _) = fleet.round(Uuid::new_v4()).await;
+        assert_eq!(outcome, "HANDED_OVER", "round of the run {n}: {reason:?}");
+    }
+    let late = Uuid::new_v4();
+    let done = job(&fleet, &request(late), &Clockwork::new(&fleet, late)).await;
+    assert!(
+        matches!(done, Ok(AutoOutcome::AlreadyHandedOver { .. })),
+        "{done:?}"
+    );
+}
+
+/// Correctness review m3: an engine that does not run the schedule pass still says whether the deployment runs the job, so the
+/// alert on a job that never writes sees a fleet whose engines all have `SAGAT_SCHEDULES_ENABLED=false`.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_engine_without_the_schedule_pass_still_exports_whether_the_job_is_expected() {
+    let db = migrated_db().await;
+    let idp = crate::support::oidc::TestIdp::start().await;
+    let engine =
+        EngineProcess::start_with(&db, &idp, "true", &[("SAGAT_SCHEDULES_ENABLED", "false")]).await;
+    engine
+        .until("the job expected", |page| {
+            sample(page, "trigger_schedule_auto_handover_expected", None) == Some(1.0)
+        })
+        .await;
+    engine.stop().await;
+}
+
+/// Architecture review of 2026-11-15, M2: the wrapper recomputes every condition but takes the run's stable count and first round
+/// from its attempt row, so only the definers may write the handover's tables: the runtime role may read the handover row, the
+/// attempt rows and the count of the audit left, and nothing else of them (no write, no other table of the handover).
+#[tokio::test]
+async fn the_runtime_role_may_only_read_the_handover_row_the_attempt_rows_and_the_audit_count() {
+    let db = migrated_db().await;
+    let tables: Vec<(String, String)> = sqlx::query_as(
+        "SELECT c.relname::text, p.privilege FROM pg_class c \
+           CROSS JOIN unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) AS p(privilege) \
+          WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'v', 'm', 'p') \
+            AND c.relname LIKE 'schedule\\_trigger\\_handover%' \
+            AND has_table_privilege($1, c.oid, p.privilege) ORDER BY 1, 2",
+    )
+    .bind(RUNTIME_ROLE)
+    .fetch_all(&db.pool)
+    .await
+    .expect("tables");
+    assert_eq!(
+        tables,
+        vec![
+            ("schedule_trigger_handover".to_owned(), "SELECT".to_owned()),
+            (
+                "schedule_trigger_handover_attempts".to_owned(),
+                "SELECT".to_owned()
+            ),
+            (
+                "schedule_trigger_handover_audit_pending".to_owned(),
+                "SELECT".to_owned()
+            ),
+        ],
+        "what the runtime role may do with the handover's tables"
     );
 }
