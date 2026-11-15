@@ -84,6 +84,8 @@ Compatibility with runs in flight: none changes; the gate of the legacy pass, th
 
 **Rollback.** Before the handover: the opt-out, or a release rolled back (which deletes the Job) and the schema `down`. After it: not supported, as today.
 
+- **The job is switched off after the handover** (OD-2026-11-15-2, text only). Once the state is `HANDED_OVER` and the tenant audit is complete, the operator sets `schedules.autoHandover.enabled: false` (Helm) or `SAGAT_SCHEDULES_AUTO_HANDOVER=false` (compose), before deleting the role's Secret. Left on, every later release renders the Job again: with the role retired it has no password and the job exits 2 (`28P01`), and with the Secret deleted the pod cannot start. The procedure is in `docs/runbooks/schedules.md` section 6 and in the release notes; G2288 is closed by this line.
+
 ## Test plan (T018-085; every test written first and seen failing for the right reason)
 
 Races are held by an open transaction or a held lock and watched in `pg_stat_activity` (`wait_event_type = 'Lock'`), never timed.
