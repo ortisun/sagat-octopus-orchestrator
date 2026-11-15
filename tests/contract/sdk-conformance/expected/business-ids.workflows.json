@@ -1,0 +1,50 @@
+{
+  "canonical": {
+    "hold": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"hold\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"An activity nobody serves: the run stays open and holds its business identifier.\",\"name\":\"business-hold\"},\"nodes\":[{\"activity\":\"business.hold\",\"id\":\"hold\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "quick": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"One activity the worker serves: the run ends, and its identifier is remembered.\",\"name\":\"business-quick\"},\"nodes\":[{\"activity\":\"business.work\",\"id\":\"work\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "hold": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "hold",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "An activity nobody serves: the run stays open and holds its business identifier.",
+        "name": "business-hold"
+      },
+      "nodes": [
+        {
+          "activity": "business.hold",
+          "id": "hold",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "quick": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "One activity the worker serves: the run ends, and its identifier is remembered.",
+        "name": "business-quick"
+      },
+      "nodes": [
+        {
+          "activity": "business.work",
+          "id": "work",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

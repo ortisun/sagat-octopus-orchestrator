@@ -710,7 +710,7 @@ const MAX_NOMINAL_TIME_FIELD_CHARS: usize = 64;
 
 /// What a target declares; [`ScheduleTarget::new`] checks it. The input of the run is a payload
 /// stored beside the revision, not part of the target.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TargetParts {
     pub workflow: WorkflowId,
     pub version: VersionPolicy,
@@ -721,6 +721,24 @@ pub struct TargetParts {
     pub business_id_prefix: Option<String>,
     pub business_id_conflict: ConflictPolicy,
     pub business_id_reuse: ReusePolicy,
+}
+
+/// The prefix is customer text and stays out of logs: the debug text says whether there is one, not what it is.
+impl fmt::Debug for TargetParts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TargetParts")
+            .field("workflow", &self.workflow)
+            .field("version", &self.version)
+            .field("nominal_time_field", &self.nominal_time_field)
+            .field("run_timeout_ms", &self.run_timeout_ms)
+            .field(
+                "business_id_prefix",
+                &self.business_id_prefix.as_ref().map(|_| ".."),
+            )
+            .field("business_id_conflict", &self.business_id_conflict)
+            .field("business_id_reuse", &self.business_id_reuse)
+            .finish()
+    }
 }
 
 /// The business id an action gives its run, and what happens when it is taken.
@@ -1005,6 +1023,9 @@ pub struct Standing {
     pub open_runs: u32,
     /// Actions in `BUFFERED`, oldest first in the store.
     pub buffered: u32,
+    /// Of those, the ones that will use a remaining action up: the scheduled ones. A waiting trigger-now or a waiting step of a
+    /// backfill never uses one up (`FR-018-012`), so it keeps none for itself (D2190; `G1017`).
+    pub reserved: u32,
     /// `None` when the schedule has no limit.
     pub remaining: Option<u32>,
 }
@@ -1042,14 +1063,14 @@ impl Decision {
 
 /// Decides a due `SCHEDULED` time.
 ///
-/// An action that is waiting goes before a new one (a new time never starts ahead of it), and it
-/// keeps one of the remaining actions for itself (D1042). `CANCEL_OTHER` keeps one action waiting
-/// whatever the buffer limit (D1041).
+/// An action that is waiting goes before a new one (a new time never starts ahead of it), and a waiting scheduled action
+/// keeps one of the remaining actions for itself (D1042): a waiting trigger-now or backfill step uses none up, so it keeps
+/// none (D2190). `CANCEL_OTHER` keeps one action waiting whatever the buffer limit (D1041).
 #[must_use]
 pub fn decide(policies: &Policies, standing: &Standing, ceilings: &Ceilings) -> Decision {
     let ceilings = ceilings.clamped();
     if let Some(remaining) = standing.remaining
-        && remaining.saturating_sub(standing.buffered) == 0
+        && remaining.saturating_sub(standing.reserved) == 0
     {
         return Decision::Exhausted;
     }
@@ -1108,7 +1129,7 @@ pub enum Release {
     Nothing,
     /// Tracked runs are still open.
     Wait,
-    /// Start the oldest waiting action. Its remaining action was reserved when it was buffered.
+    /// Start the oldest waiting action. A scheduled one had its remaining action reserved when it was buffered.
     StartOldest,
 }
 

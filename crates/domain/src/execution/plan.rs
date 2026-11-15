@@ -297,6 +297,11 @@ pub fn plan(
     if state.is_paused() {
         return Ok(Plan::Idle);
     }
+    // A start delay holds the entry: nothing is released, no timer starts, no wait begins until the
+    // release (a stop is handled above, so a delayed run can still be cancelled or time out).
+    if state.is_start_delayed() {
+        return Ok(Plan::Idle);
+    }
     if let Some(action) = start_pending(def, state, now)? {
         return Ok(action);
     }

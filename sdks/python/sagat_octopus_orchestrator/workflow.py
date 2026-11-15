@@ -90,6 +90,9 @@ class UpdateDefinition:
     result_schema: Mapping[str, Any]
     disclosure: DisclosurePolicy
     validate: str | None = None
+    # Keeps the arguments of every applied instance so a reset can validate and apply them again. It is written
+    # into the document only when true; a server publishes it only when its capability is on.
+    reapply_on_reset: bool = False
 
 
 @dataclass(frozen=True)
@@ -871,6 +874,8 @@ class WorkflowBuilder(Flow):
                     raise invalid(f"update {name} is required")
                 if update.disclosure != "declared-business-result-v1":
                     raise invalid(f"update {name} needs disclosure declared-business-result-v1")
+                if not isinstance(update.reapply_on_reset, bool):
+                    raise invalid(f"update {name}.reapplyOnReset must be a boolean")
                 declared_updates[name] = _add(
                     {
                         "argsSchema": _args_schema(update.args_schema, f"update {name}"),
@@ -884,6 +889,8 @@ class WorkflowBuilder(Flow):
                         if update.validate is not None
                         else None
                     ),
+                    # the default is not written, so a document that does not opt in is the one made before
+                    reapplyOnReset=True if update.reapply_on_reset else None,
                 )
             state["updates"] = declared_updates
         self._state = state

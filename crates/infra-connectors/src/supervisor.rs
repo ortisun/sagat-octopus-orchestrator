@@ -70,6 +70,9 @@ pub struct Supervisor<R, G, S, F> {
     holder: String,
     /// How often the connectors are looked at.
     refresh: Duration,
+    /// Whether the replica may serve (the instance-capability registry, `FR-018-052`): while the gate is closed every
+    /// consumer is wound down and none is started; when it opens they are started again. `None`: no registry.
+    serving: Option<Arc<sagat_application::instances::ServingGate>>,
 }
 
 impl<R, G, S, F> Supervisor<R, G, S, F>
@@ -117,7 +120,19 @@ where
             evaluator,
             holder,
             refresh,
+            serving: None,
         }
+    }
+
+    /// Makes the supervisor obey the gate of the replica's membership of the instance registry: a replica that may not
+    /// serve admits no event from a broker (`Ingest::judge` -> `runtime.admit`), so its consumers are wound down.
+    #[must_use]
+    pub fn with_serving_gate(
+        mut self,
+        gate: Arc<sagat_application::instances::ServingGate>,
+    ) -> Self {
+        self.serving = Some(gate);
+        self
     }
 
     pub fn with_secret_provider(
@@ -132,6 +147,19 @@ where
     pub async fn run(self: Arc<Self>, mut stop: watch::Receiver<bool>) {
         let mut running: HashMap<ConnectorId, Running> = HashMap::new();
         loop {
+            if self.serving.as_ref().is_some_and(|gate| !gate.is_open()) {
+                // every consumer is told at once and given the same time; none is started while the gate is closed
+                futures_util::future::join_all(
+                    running.drain().map(|(_, r)| wind_down(r, WIND_DOWN)),
+                )
+                .await;
+                metrics::gauge!("connectors_running").set(0.0);
+                tokio::select! {
+                    () = stopped(&mut stop) => break,
+                    () = tokio::time::sleep(self.refresh.min(Duration::from_secs(1))) => {}
+                }
+                continue;
+            }
             match self.runtime.active_connectors().await {
                 Ok(active) => {
                     let wanted: HashMap<ConnectorId, &ConnectorRecord> =

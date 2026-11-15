@@ -8,8 +8,8 @@ use sagat_domain::execution::{
     ApprovalDecision, ApprovalReasonCode, ApprovalReceiptId, ApprovalRequestId, ChildOutcome,
     CollectionDrainReason, CollectionOutcome, CorrelationKey, ExecutionInstanceId, FailureCode,
     Fence, InstancePath, JoinOutcome, LoopContinuation, LoopDrainReason, LoopKind, LoopOutcome,
-    PlannedEntry, ReconcileResult, ReviewOutcome, RunEvent, RunId, RunStatus, ScopedPlannedEntry,
-    StopReason, SwitchSelection,
+    PlannedEntry, ReconcileResult, ResetReapply, ReviewOutcome, RunEvent, RunId, RunStatus,
+    ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,
 };
 use sagat_domain::identity::Subject;
 use sagat_domain::saga::{ReconcileVerdict, SagaOutcome};
@@ -135,12 +135,21 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             before_revision,
             after_revision,
             state_digest,
-        } => json!({
-            "operation": operation.as_str(),
-            "before_revision": before_revision,
-            "after_revision": after_revision,
-            "state_digest": state_digest.to_hex(),
-        }),
+            arguments_retained,
+        } => {
+            let mut detail = json!({
+                "operation": operation.as_str(),
+                "before_revision": before_revision,
+                "after_revision": after_revision,
+                "state_digest": state_digest.to_hex(),
+            });
+            // written once the journal says whether the arguments were kept; an older row has no such key and
+            // an event that does not know it is written back exactly as it was
+            if let (Some(retained), Some(detail)) = (arguments_retained, detail.as_object_mut()) {
+                detail.insert("retained".to_owned(), json!(retained));
+            }
+            detail
+        }
         RunEvent::RunContinued {
             successor,
             input_digest,
@@ -407,10 +416,15 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
             ReviewOutcome::Failed(code) => json!({ "outcome": "failed", "code": code.as_str() }),
         },
         RunEvent::RunFinished { status } => json!({ "status": status.as_str() }),
+        // what satisfied the wait; a row written before the journal said so has no detail, and the event that
+        // does not know it is written back as it was
+        RunEvent::WaitSatisfied { via, .. } => match via {
+            Some(via) => json!({ "via": via.as_str() }),
+            None => json!({}),
+        },
         RunEvent::StepReleased { .. }
         | RunEvent::StepRetryDue { .. }
         | RunEvent::TimerFired { .. }
-        | RunEvent::WaitSatisfied { .. }
         | RunEvent::EndReached { .. }
         | RunEvent::StepCancelRequested { .. }
         | RunEvent::StepCancelled { .. }
@@ -419,6 +433,23 @@ pub(crate) fn encode(event: &RunEvent) -> Encoded {
         | RunEvent::StepSkipped { .. }
         | RunEvent::RunPaused
         | RunEvent::RunResumed => json!({}),
+        // the instant the entry is held until, in microseconds like the other instants of a detail
+        RunEvent::StartDelayed { until_us } | RunEvent::StartReleased { until_us } => {
+            json!({ "until_us": until_us })
+        }
+        // the closed detail of a reset (feature 018): where the prefix came from, how far it goes, the digest
+        // of its canonical encoding and what was delivered again
+        RunEvent::RunReset {
+            source_run_id,
+            source_sequence,
+            prefix_digest,
+            reapply,
+        } => json!({
+            "source_run_id": source_run_id.to_string(),
+            "source_sequence": source_sequence,
+            "prefix_sha256": prefix_digest.to_hex(),
+            "reapply": reapply.as_str(),
+        }),
     };
     Encoded {
         event_type: event.name(),
@@ -564,6 +595,7 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
                 before_revision,
                 after_revision,
                 state_digest: Digest::from_hex(text(d, "state_digest")?)?,
+                arguments_retained: d.get("retained").and_then(Value::as_bool),
             }
         }
         "timer.started" => RunEvent::TimerStarted {
@@ -576,7 +608,11 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
             correlation_key: CorrelationKey::parse(text(d, "correlation_key")?).ok()?,
             deadline: time_of(d, "deadline_us")?,
         },
-        "wait.satisfied" => RunEvent::WaitSatisfied { node: node_id()? },
+        "wait.satisfied" => RunEvent::WaitSatisfied {
+            node: node_id()?,
+            // a name this version does not know (a later one wrote it) is not a reason to lose the row
+            via: text(d, "via").and_then(WaitVia::parse),
+        },
         "wait.timed_out" => RunEvent::WaitTimedOut {
             node: node_id()?,
             handled: d.get("handled")?.as_bool()?,
@@ -774,6 +810,18 @@ pub(crate) fn decode(event_type: &str, node: Option<&str>, detail: &Value) -> Op
         "step.cancelled" => RunEvent::StepCancelled { node: node_id()? },
         "run.paused" => RunEvent::RunPaused,
         "run.resumed" => RunEvent::RunResumed,
+        "run.start_delayed" => RunEvent::StartDelayed {
+            until_us: d.get("until_us")?.as_i64()?,
+        },
+        "run.start_released" => RunEvent::StartReleased {
+            until_us: d.get("until_us")?.as_i64()?,
+        },
+        "run.reset" => RunEvent::RunReset {
+            source_run_id: text(d, "source_run_id")?.parse::<RunId>().ok()?,
+            source_sequence: number(d, "source_sequence")?,
+            prefix_digest: Digest::from_hex(text(d, "prefix_sha256")?)?,
+            reapply: ResetReapply::parse(text(d, "reapply")?)?,
+        },
         "saga.entered" => RunEvent::SagaEntered {
             node: node_id()?,
             begin: NodeId::parse_stored(text(d, "begin")?).ok()?,
@@ -1287,6 +1335,7 @@ mod tests {
             before_revision: 8,
             after_revision: 9,
             state_digest: Digest::new([23; 32]),
+            arguments_retained: None,
         };
         let encoded = encode(&event);
         assert_eq!(encoded.event_type, "state.updated");
@@ -1308,6 +1357,142 @@ mod tests {
                 }),
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn a_state_update_says_whether_its_arguments_were_kept_and_an_older_row_says_nothing() {
+        let update = |arguments_retained| RunEvent::StateUpdated {
+            operation: ActivityName::parse("balance.credit").expect("operation"),
+            before_revision: 8,
+            after_revision: 9,
+            state_digest: Digest::new([23; 32]),
+            arguments_retained,
+        };
+        for retained in [true, false] {
+            let event = update(Some(retained));
+            let encoded = encode(&event);
+            assert_eq!(encoded.detail["retained"], json!(retained));
+            assert_eq!(encoded.detail.as_object().expect("detail").len(), 5);
+            assert_eq!(
+                decode(encoded.event_type, None, &encoded.detail),
+                Some(event)
+            );
+        }
+        // a row written before the journal said so decodes with no answer, and is written back as it was,
+        // so a replay of the older journal is byte-identical
+        let before = update(None);
+        let encoded = encode(&before);
+        assert!(encoded.detail.get("retained").is_none());
+        assert_eq!(
+            decode(encoded.event_type, None, &encoded.detail),
+            Some(before)
+        );
+        // a value that is not a boolean is no answer either
+        let odd = json!({
+            "operation": "balance.credit",
+            "before_revision": 8,
+            "after_revision": 9,
+            "state_digest": Digest::new([23; 32]).to_hex(),
+            "retained": "maybe",
+        });
+        assert_eq!(decode("state.updated", None, &odd), Some(update(None)));
+    }
+
+    #[test]
+    fn a_reset_event_has_a_closed_detail_and_round_trips() {
+        use sagat_domain::execution::ResetReapply;
+        let source = sagat_domain::execution::RunId::generate();
+        for reapply in [
+            ResetReapply::None,
+            ResetReapply::Signals,
+            ResetReapply::Updates,
+            ResetReapply::All,
+        ] {
+            let event = RunEvent::RunReset {
+                source_run_id: source,
+                source_sequence: 12,
+                prefix_digest: Digest::new([9; 32]),
+                reapply,
+            };
+            let encoded = encode(&event);
+            assert_eq!(encoded.event_type, "run.reset");
+            assert_eq!(encoded.node, None);
+            assert_eq!(
+                encoded.detail,
+                json!({
+                    "source_run_id": source.to_string(),
+                    "source_sequence": 12,
+                    "prefix_sha256": Digest::new([9; 32]).to_hex(),
+                    "reapply": reapply.as_str(),
+                })
+            );
+            assert_eq!(
+                decode(encoded.event_type, None, &encoded.detail),
+                Some(event)
+            );
+        }
+        // a row that does not say all of it is not a reset: the event is not guessed
+        for missing in [
+            "source_run_id",
+            "source_sequence",
+            "prefix_sha256",
+            "reapply",
+        ] {
+            let mut detail = json!({
+                "source_run_id": source.to_string(),
+                "source_sequence": 12,
+                "prefix_sha256": Digest::new([9; 32]).to_hex(),
+                "reapply": "ALL",
+            });
+            detail.as_object_mut().expect("object").remove(missing);
+            assert!(decode("run.reset", None, &detail).is_none(), "{missing}");
+        }
+    }
+
+    #[test]
+    fn a_satisfied_wait_names_what_satisfied_it_and_an_older_row_decodes_unchanged() {
+        use sagat_domain::execution::WaitVia;
+        let node = NodeId::parse("approval-signal").expect("node");
+        for (via, name) in [
+            (WaitVia::Signal, "signal"),
+            (WaitVia::Event, "event"),
+            (WaitVia::SignalWithStart, "signal_with_start"),
+        ] {
+            let event = RunEvent::WaitSatisfied {
+                node: node.clone(),
+                via: Some(via),
+            };
+            let encoded = encode(&event);
+            assert_eq!(encoded.event_type, "wait.satisfied");
+            assert_eq!(encoded.detail, json!({ "via": name }));
+            assert_eq!(
+                decode(encoded.event_type, encoded.node.as_deref(), &encoded.detail),
+                Some(event)
+            );
+        }
+
+        // a row written before the journal said so has no detail and keeps decoding, and the same event
+        // is written back as it was, so a replay of the old journal is byte-identical
+        let before = RunEvent::WaitSatisfied {
+            node: node.clone(),
+            via: None,
+        };
+        let encoded = encode(&before);
+        assert_eq!(encoded.detail, json!({}));
+        assert_eq!(
+            decode("wait.satisfied", Some("approval-signal"), &json!({})),
+            Some(before)
+        );
+
+        // a name a later version adds is not a reason to lose the row
+        assert_eq!(
+            decode(
+                "wait.satisfied",
+                Some("approval-signal"),
+                &json!({ "via": "a-later-source" })
+            ),
+            Some(RunEvent::WaitSatisfied { node, via: None })
         );
     }
 

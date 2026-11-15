@@ -213,6 +213,21 @@ pub struct Held {
     pub holder: HolderStatus,
 }
 
+impl Held {
+    /// When a closed holder stops being remembered: its finish plus the window the binding was made
+    /// with. `None` while the holder is open (and if the instant cannot be represented, which keeps
+    /// the id held rather than freeing it on a gap).
+    #[must_use]
+    pub fn reusable_after(&self) -> Option<OffsetDateTime> {
+        match self.holder {
+            HolderStatus::Open => None,
+            HolderStatus::Closed { finished_at, .. } => finished_at.checked_add(Duration::seconds(
+                i64::from(self.binding.window().seconds()),
+            )),
+        }
+    }
+}
+
 /// What a start with a business id becomes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Admission {
@@ -252,14 +267,8 @@ pub fn admit(
             ConflictPolicy::Fail => Admission::InUse,
             ConflictPolicy::UseExisting => Admission::UseExisting,
         },
-        HolderStatus::Closed {
-            status,
-            finished_at,
-        } => {
-            let window = Duration::seconds(i64::from(held.binding.window().seconds()));
-            let free = finished_at
-                .checked_add(window)
-                .is_some_and(|until| now >= until);
+        HolderStatus::Closed { status, .. } => {
+            let free = held.reusable_after().is_some_and(|until| now >= until);
             if free {
                 return Admission::Bind;
             }

@@ -13,7 +13,7 @@ use time::OffsetDateTime;
 use super::error::ExecutionError;
 use super::event::{
     AddressedRunEvent, ChildOutcome, CorrelationKey, FailureCode, Fence, ReconcileResult,
-    ReviewOutcome, RunEvent, StopReason, SwitchSelection,
+    ResetReapply, ReviewOutcome, RunEvent, StopReason, SwitchSelection, WaitVia,
 };
 use super::instance::ExecutionInstanceId;
 use super::path_state::PathExecutionState;
@@ -21,7 +21,7 @@ use super::plan::{AddressedPlan, Evaluation, Plan, after, plan, plan_addressed, 
 use super::sagas::policies;
 use super::state::{RunId, RunState, StepState, StepStatus, WaitingOn};
 use crate::saga::{NodeOrigin, OnCompensationFailure, ReconcileVerdict};
-use crate::workflow::{NodeId, NodeKind, Scope, WorkflowDefinition};
+use crate::workflow::{Digest, NodeId, NodeKind, Scope, WorkflowDefinition};
 
 /// The events a command produced and, if the planner got stuck on one, the evaluation it needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -306,6 +306,74 @@ pub fn start_run(
     state.apply(&started)?;
     let progress = settle(def, &mut state, now, vec![started])?;
     Ok((state, progress))
+}
+
+/// Creates the state of a new run whose entry is held until `until_us` (microseconds since the
+/// epoch): `run.started` and `run.start_delayed`, and nothing released (feature 018, `FR-018-023`).
+///
+/// # Errors
+/// [`ExecutionError`] only on an internal inconsistency.
+pub fn start_run_delayed(
+    def: &WorkflowDefinition,
+    run_id: RunId,
+    now: OffsetDateTime,
+    until_us: i64,
+) -> Result<(RunState, Progress), ExecutionError> {
+    let mut state = RunState::new(run_id);
+    let started = RunEvent::RunStarted {
+        entrypoint: def.entrypoint().clone(),
+    };
+    state.apply(&started)?;
+    let delayed = RunEvent::StartDelayed { until_us };
+    state.apply(&delayed)?;
+    let progress = settle(def, &mut state, now, vec![started, delayed])?;
+    Ok((state, progress))
+}
+
+/// Releases the entry of a delayed run, as `start_run` would have released it at the start.
+///
+/// # Errors
+/// [`ExecutionError::Invariant`] when the run is not held by a start delay.
+pub fn release_start(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    let until_us = state
+        .start_delayed_until_us()
+        .ok_or(ExecutionError::Invariant(
+            "only a delayed run is released, at the instant it waits for",
+        ))?;
+    apply_then_settle(def, state, now, RunEvent::StartReleased { until_us })
+}
+
+/// Records that this run is the result of a reset and goes on from the restored prefix (feature 018,
+/// `FR-018-037`): the events `1..=source_sequence` of the source were applied to `state` first, so the
+/// settle reduction releases the successors of the point the reset was made at.
+///
+/// # Errors
+/// [`ExecutionError::Invariant`] when the prefix is not there (the run has not started, is not open or is
+/// stopping) or is empty; the errors of the settle reduction.
+pub fn record_reset(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+    source_run_id: RunId,
+    source_sequence: u64,
+    prefix_digest: Digest,
+    reapply: ResetReapply,
+) -> Result<Progress, ExecutionError> {
+    apply_then_settle(
+        def,
+        state,
+        now,
+        RunEvent::RunReset {
+            source_run_id,
+            source_sequence,
+            prefix_digest,
+            reapply,
+        },
+    )
 }
 
 /// Grants the lease on a ready step. The caller must already hold the run's row lock.
@@ -1945,12 +2013,16 @@ pub fn satisfy_wait(
     state: &mut RunState,
     node: &NodeId,
     now: OffsetDateTime,
+    via: Option<WaitVia>,
 ) -> Result<Progress, ExecutionError> {
     apply_then_settle(
         def,
         state,
         now,
-        RunEvent::WaitSatisfied { node: node.clone() },
+        RunEvent::WaitSatisfied {
+            node: node.clone(),
+            via,
+        },
     )
 }
 

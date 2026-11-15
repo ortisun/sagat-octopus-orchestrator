@@ -57,7 +57,7 @@ public static class RunStatuses
 public sealed record ParentRun(string RunId, string Node, string CancelPolicy);
 
 /// <summary>A run of a workflow. <see cref="Raw"/> keeps the answer as the server sent it, so a field of a newer server is reachable.</summary>
-public sealed record Run
+public record Run
 {
     /// <summary>The id of the run.</summary>
     public required string RunId { get; init; }
@@ -115,11 +115,47 @@ public sealed record Run
     /// <summary>The ended run this one was started again from (<see cref="RunAction.RerunAsNew"/>); <c>null</c> for a run that is not a rerun.</summary>
     public string? RerunOf { get; init; }
 
+    /// <summary>The business identifier the run was started under, exactly as it was given; <c>null</c> for a run that has none.</summary>
+    public string? BusinessId { get; init; }
+
+    /// <summary>
+    /// The instant (UTC) the entry of a run started with a delay is held until; <c>null</c> once it is released, or if it was never held.
+    /// </summary>
+    public DateTimeOffset? StartDelayedUntil { get; init; }
+
+    /// <summary>The schedule action that started the run; <c>null</c> for a run no schedule started.</summary>
+    public RunSchedule? Schedule { get; init; }
+
+    /// <summary>
+    /// The run a reset made this one from, and the journal sequence of it that this run keeps; <c>null</c> for a run no reset made
+    /// (a rerun has <see cref="RerunOf"/> and not this).
+    /// </summary>
+    public RunResetFrom? ResetFrom { get; init; }
+
     /// <summary>The answer as the server sent it.</summary>
     public JsonElement Raw { get; init; }
 
     /// <summary>True when <see cref="Status"/> is final.</summary>
     public bool IsTerminal => RunStatuses.IsTerminal(Status);
+}
+
+/// <summary>
+/// A run as <see cref="ISagatClient.StartAsync{TInput}"/> answers it. <see cref="Started"/> is false when an open run already held the
+/// business identifier and <see cref="BusinessIdConflictPolicies.UseExisting"/> was asked: the server answered 200 with that run, and this call
+/// created nothing.
+/// </summary>
+public sealed record StartedRun : Run
+{
+    /// <summary>Copies a run and says whether the call created it.</summary>
+    [System.Diagnostics.CodeAnalysis.SetsRequiredMembers]
+    internal StartedRun(Run run, bool started)
+        : base(run)
+    {
+        Started = started;
+    }
+
+    /// <summary>Whether this call created the run (HTTP 202); false when it answered an existing one (HTTP 200).</summary>
+    public bool Started { get; init; }
 }
 
 /// <summary>Where a run sits in its continuation chain.</summary>
@@ -128,6 +164,18 @@ public sealed record Run
 /// <param name="CompletionKind"><c>CONTINUED</c> or <c>FINAL</c>; <c>null</c> while the segment is open.</param>
 /// <param name="SuccessorRunId">The next segment when the run was continued.</param>
 public sealed record RunChainSegment(string ChainId, int SegmentIndex, string? CompletionKind, string? SuccessorRunId);
+
+/// <summary>Which schedule started a run, for which nominal time, by which kind of action and under which revision of the schedule.</summary>
+/// <param name="ScheduleId">The schedule.</param>
+/// <param name="NominalTime">The nominal time of the action (UTC): the time the schedule calculated, or for a trigger the instant of the action. <c>Run.Raw</c> holds the exact text.</param>
+/// <param name="Kind"><c>SCHEDULED</c>, <c>TRIGGERED</c> or <c>BACKFILL</c>, or another string a newer server sends: the set only grows, and a value this SDK does not know is kept as it came.</param>
+/// <param name="Revision">The revision of the schedule the action ran under (the first is 1).</param>
+public sealed record RunSchedule(string ScheduleId, DateTimeOffset NominalTime, string Kind, long Revision);
+
+/// <summary>The run a reset made a run from, and the journal sequence of that run the new run keeps as its own.</summary>
+/// <param name="RunId">The run that was reset.</param>
+/// <param name="Sequence">The journal sequence (1 or more) of <paramref name="RunId"/> up to which the new run keeps the history.</param>
+public sealed record RunResetFrom(string RunId, long Sequence);
 
 /// <summary>A page of runs.</summary>
 public sealed record RunPage(IReadOnlyList<Run> Items, string? NextCursor);
@@ -424,6 +472,24 @@ public sealed record StartOptions
 
     /// <summary>An explicit W3C <c>traceparent</c>; it wins over the ambient <see cref="System.Diagnostics.Activity"/>.</summary>
     public string? Traceparent { get; init; }
+
+    /// <summary>
+    /// The caller's own identifier for the run (1 to 200 visible ASCII characters), sent exactly as given: no trimming, no case folding, no local
+    /// check. At most one open execution of a namespace holds it. Not used by <see cref="ISagatClient.StartWithBlobAsync"/>.
+    /// </summary>
+    public string? BusinessId { get; init; }
+
+    /// <summary>What to do when an open execution holds <see cref="BusinessId"/>: see <see cref="BusinessIdConflictPolicies"/> (<c>FAIL</c> by default).</summary>
+    public string? BusinessIdConflictPolicy { get; init; }
+
+    /// <summary>What to do when a closed execution still remembers <see cref="BusinessId"/>: see <see cref="BusinessIdReusePolicies"/>.</summary>
+    public string? BusinessIdReusePolicy { get; init; }
+
+    /// <summary>
+    /// Holds the entry of the run for this long. Converted once, before the first attempt, to whole milliseconds (a fraction of a millisecond is
+    /// dropped, toward zero); the range (1 ms to 366 days) is the server's to judge. Not used by <see cref="ISagatClient.StartWithBlobAsync"/>.
+    /// </summary>
+    public TimeSpan? StartDelay { get; init; }
 }
 
 /// <summary>Options of <see cref="ISagatClient.ListAsync"/>.</summary>

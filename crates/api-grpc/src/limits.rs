@@ -526,9 +526,25 @@ struct Shared {
     /// The longest a call other than a blob transfer may take. The transport's own timeout has to
     /// allow the longest transfer, so this is where the shorter limit of everything else is kept.
     unary_timeout_ms: AtomicU64,
+    /// Whether the process may serve (the instance-capability registry, `FR-018-052`): while the gate is closed every
+    /// call is refused `UNAVAILABLE`. Set once, by the process that owns the registry membership; none is a process
+    /// with no registry, which serves.
+    serving: std::sync::OnceLock<Arc<sagat_application::instances::ServingGate>>,
 }
 
 impl Shared {
+    /// The refusal of every call while the gate of the instance registry is closed: `UNAVAILABLE`, naming the capability
+    /// only when one is missing (a gate closed for want of an answer names none).
+    fn not_serving(&self) -> Option<ApiError> {
+        let gate = self.serving.get().filter(|gate| !gate.is_open())?;
+        let refusal = ApiError::unavailable_after(10);
+        Some(if gate.missing().is_empty() {
+            refusal
+        } else {
+            refusal.with_reason(sagat_application::instances::REASON_CAPABILITY_MISSING)
+        })
+    }
+
     fn admit(self: &Arc<Self>, class: Class) -> Option<Ticket> {
         let limit = match class {
             Class::Discovery => self.discovery_max.load(Ordering::Acquire),
@@ -580,8 +596,20 @@ impl Admission {
                 unary_timeout_ms: AtomicU64::new(
                     u64::try_from(unary_timeout.as_millis()).unwrap_or(u64::MAX),
                 ),
+                serving: std::sync::OnceLock::new(),
             }),
         }
+    }
+
+    /// Makes the admission refuse every call while `gate` is closed. The first gate set is the one that counts.
+    pub(crate) fn set_serving_gate(&self, gate: Arc<sagat_application::instances::ServingGate>) {
+        let _ = self.shared.serving.set(gate);
+    }
+
+    /// The refusal a call is answered with while the replica may not serve, if it may not (the producer of a task stream
+    /// asks it before every claim, so that a stream open when the gate closes stops leasing at once).
+    pub(crate) fn not_serving(&self) -> Option<ApiError> {
+        self.shared.not_serving()
     }
 
     /// Reconciles the shared gate with the server's runtime configuration before it accepts calls.
@@ -639,6 +667,11 @@ where
 
     fn call(&mut self, request: http::Request<B>) -> Self::Future {
         let class = Class::of(request.uri().path());
+        if let Some(refusal) = self.shared.not_serving() {
+            // not load shedding: the replica may not serve (the instance registry), see the runbook
+            metrics::counter!("grpc_shed_total", "class" => "not_serving").increment(1);
+            return Box::pin(std::future::ready(Ok(to_status(&refusal).into_http())));
+        }
         let Some(ticket) = self.shared.admit(class) else {
             metrics::counter!("grpc_shed_total", "class" => class.label()).increment(1);
             let shed = to_status(&ApiError::rate_limited(SHED_RETRY)).into_http();

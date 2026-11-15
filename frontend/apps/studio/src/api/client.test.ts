@@ -93,6 +93,17 @@ describe('ApiClient', () => {
     expect([e2.code, e2.retryable, e2.retryAfterMs]).toEqual(['RATE_LIMITED', true, 3000]);
   });
 
+  it('tells the caller the status of a success, and only of a success', async () => {
+    const seen: number[] = [];
+    const ok = client(() => json({ runId: 'r' }, 200));
+    await ok.api.post('/runs', { body: {}, onStatus: (status) => seen.push(status) });
+    const accepted = client(() => json({ runId: 'r' }, 202));
+    await accepted.api.post('/runs', { body: {}, onStatus: (status) => seen.push(status) });
+    const refused = client(() => json({ code: 'CONFLICT', message: 'held', retryable: false }, 409));
+    await expect(refused.api.post('/runs', { body: {}, onStatus: (status) => seen.push(status) })).rejects.toMatchObject({ status: 409 });
+    expect(seen).toEqual([200, 202]);
+  });
+
   it('does not call a 200 with a page in it a success', async () => {
     const { api } = client(() => new Response('<html>login</html>', { status: 200, headers: { 'content-type': 'text/html' } }));
     await expect(api.get('/x')).rejects.toMatchObject({ code: 'INTERNAL' });
