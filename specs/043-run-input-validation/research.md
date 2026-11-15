@@ -121,22 +121,22 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   computed once at parse and carried by `InputSchema` (an `Arc<[u8]>` and the digest). Identical schemas of one tenant
   share an entry; two tenants never do. Ad hoc starts (`crates/application/src/runs/ad_hoc.rs:459`, a new version id per
   call) compile and validate outside the shared cache, under their own single permit.
-- **D043-021** (2026-11-14; references and cycles refined by D043-036) Compile bounds, applied before `build` and again at publish: the classification
+- **D043-021** (2026-11-14; superseded by D043-048: the subset's pre-check is the compile bound) Compile bounds, applied before `build` and again at publish: the classification
   pre-checks (`MAX_CARRIER_BYTES` 64 KiB of schema, 64 KiB per pattern, `MAX_SCHEMA_DEPTH` 32, `MAX_CARRIER_PATTERNS` 32,
   the dry `Walk` with `MAX_WALK_STEPS` 4,000,000), a refusal of applicator `$ref` cycles, and a retriever that refuses
   every URI. A failure is `SchemaUnusable`, remembered per key. Cache entries are weighed with the real per-pattern
   limit.
-- **D043-022** (2026-11-14; the permits and the deadline superseded by D043-033 to D043-035) Validation budget: the gate runs the validator in `spawn_blocking` behind a
+- **D043-022** (2026-11-14; superseded by D043-033 to D043-035, then by D043-047 and D043-050) Validation budget: the gate runs the validator in `spawn_blocking` behind a
   `tokio::sync::Semaphore` of four permits, under the deadline `MAX_PROJECTION_DURATION` (5 s); the cache's `Condvar`
   is waited on only on the blocking pool. A missed deadline is `503 UNAVAILABLE` (retryable) for a caller and a
   transient refusal for the engine's creators. The input is parsed with a depth limit of 64 before validation; a deeper
   input, or one deeper than `serde_json` parses (recursion limit 128), is `RUN_INPUT_INVALID` with `rule` `maxDepth` and
   `field` `/`.
-- **D043-023** (2026-11-14) `format`, `contentMediaType` and `contentEncoding` never assert, under every draft:
+- **D043-023** (2026-11-14; applies now only to the oracle of the property test, D043-047) `format`, `contentMediaType` and `contentEncoding` never assert, under every draft:
   `should_validate_formats(false)`, `without_content_media_type_support("application/json")`,
   `without_content_encoding_support("base64")`. Under drafts 4, 6 and 7 `jsonschema` 0.58.6 would otherwise assert them
   (`src/compiler.rs:66-68`, `:538-541`; `src/keywords/mod.rs:473-480`).
-- **D043-024** (2026-11-14; the field of repeats refined by D043-037; `workLimit` added to the enum by D043-033) Error text: the rule comes from a `match` on `ValidationErrorKind` that names every variant
+- **D043-024** (2026-11-14; the rule mapping superseded by D043-049; the field of repeats by D043-037) Error text: the rule comes from a `match` on `ValidationErrorKind` that names every variant
   (no `_` arm), into a closed enum (`type`, `required`, `enum`, `const`, `minimum`, `maximum`, `exclusiveMinimum`,
   `exclusiveMaximum`, `multipleOf`, `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`, `uniqueItems`,
   `contains`, `minProperties`, `maxProperties`, `additionalProperties`, `unevaluatedProperties`, `unevaluatedItems`,
@@ -184,16 +184,16 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 - **D043-032** (2026-11-14) The fields and the only non-test constructor of `CheckedRunInput` are private to
   `crates/application/src/run_input.rs`, not `pub(crate)`. A fourth architecture rule fails on a struct expression or an
   associated function call of `CheckedRunInput` in any other file outside test paths.
-- **D043-033** (2026-11-14; made an upper bound by D043-042) The bound on validation work is the classification projection's instance-aware `Walk`
+- **D043-033** (2026-11-14; superseded by D043-047: the validator's own counter is the bound) The bound on validation work is the classification projection's instance-aware `Walk`
   (`crates/infra-schema/src/classification/walk.rs`), charged against the input before `iter_errors` with
   `MAX_WALK_STEPS` (4,000,000). Past it the input is refused with `RUN_INPUT_INVALID`, `rule` `workLimit`, `field` `/`:
   deterministic for a schema and an input, so final on every row. `workLimit` joins the closed rule enum.
-- **D043-034** (2026-11-14) Permits: four global per process; per tenant at most one shared-cache permit and one ad hoc
+- **D043-034** (2026-11-14; the per-tenant permits removed by D043-050) Permits: four global per process; per tenant at most one shared-cache permit and one ad hoc
   permit in flight (a bounded map of per-tenant semaphores of one), because the caller chooses an ad hoc document
   (`crates/application/src/runs/ad_hoc.rs:400-405`). The tenant permit and an `OwnedSemaphorePermit` of the global
   semaphore move into the `spawn_blocking` closure, so a thread that outlives its caller's deadline keeps them until it
   ends: at most four blocking threads, and a slow tenant holds at most two permits.
-- **D043-035** (2026-11-14; the two clocks and the cron key by D043-043) The deadline (`MAX_PROJECTION_DURATION`, 5 s) covers acquiring the permits and the work. A miss
+- **D043-035** (2026-11-14; the miss memory and the second-miss threshold removed by D043-050) The deadline (`MAX_PROJECTION_DURATION`, 5 s) covers acquiring the permits and the work. A miss
   is never cached as `Unusable`. A bounded in-process memory (4,096 entries, least recently used out) keyed by
   `(tenant, schema digest, input digest)` counts misses: **the first miss is transient, the second is final**, answered
   as `RUN_INPUT_INVALID` with `workLimit` on every row. A first miss is `503` for a caller, a deferral for a batch item
@@ -201,7 +201,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   `crates/application/src/reset_completion.rs:237`), an owed schedule time, a retried event, and a child or continuation
   left for the next pass. The threshold of two lets a single slow moment pass and stops an input that is slow every
   time.
-- **D043-036** (2026-11-14; the recursion allowance reverted by D043-042; the retriever as the control stays) References. The retriever that refuses every URI is the control on remote references: `build`
+- **D043-036** (2026-11-14; superseded by D043-042, then by D043-048) References. The retriever that refuses every URI is the control on remote references: `build`
   resolves every `$ref`, `$dynamicRef` and `$schema` through it, wherever they are. The dry walk sees only what is
   reachable from the root and is not that control. Before `build`, a walk of the whole document checks that every
   reference is document-local and that the graph of non-consuming applicator edges has no cycle; recursion through a
@@ -227,7 +227,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 
 ### Fourth draft, after the third review (2026-11-14, at `4d2c13cb`)
 
-- **D043-042** (2026-11-14) **No recursion: simplify rather than patch the walk.** The run input path refuses as
+- **D043-042** (2026-11-14; superseded by D043-046 and D043-048) **No recursion: simplify rather than patch the walk.** The run input path refuses as
   `SchemaUnusable`, before `build`, by a walk of the whole document: a `$ref` that is not a JSON pointer into the document
   (`#/...`), so `#` and anchors; any `$ref` cycle, consuming input or not; `$dynamicRef`, `$recursiveRef`,
   `$dynamicAnchor`, `$recursiveAnchor`; a `$id` other than at the root (the walk resolves against the root, `jsonschema`
@@ -241,15 +241,55 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   the stack (`{"dependencies":{"a":{"$ref":"#"}}}` with `{"a":1}`), both reachable only because D043-036 allowed `#`.
   The cost is that recursive schemas customers published are unusable (G043-014); the release-notes inventory lists
   them, and `report` mode (OD-2026-11-14-8) covers the time to republish.
-- **D043-043** (2026-11-14) Two clocks: waiting for the permits has its own timeout, always transient and never counted, so
+- **D043-043** (2026-11-14; removed by D043-050) Two clocks: waiting for the permits has its own timeout, always transient and never counted, so
   a queue of a tenant's own valid actions never becomes `INPUT_INVALID`; the work deadline starts when the blocking
   closure holds its permits and only its miss counts. For row 10 the miss memory is keyed by `(tenant, schema digest,
   tick identity)`, because a cron input carries `firedAt` = now (`crates/application/src/schedule_triggers.rs:113`,
   `crates/scheduler/src/events.rs:802`) and its digest changes on every retry.
-- **D043-044** (2026-11-14) A per-tenant semaphore leaves its map only when the map holds the only `Arc` and its permit is
+- **D043-044** (2026-11-14; removed with the per-tenant permits by D043-050) A per-tenant semaphore leaves its map only when the map holds the only `Arc` and its permit is
   free; eviction never runs while it is held or awaited.
 - **D043-045** (2026-11-14) `CheckedRunInput` has no `Default` and no `Deserialize`, by derive or impl; the fourth
   architecture rule fails on either.
+
+### Fifth draft, the supported subset (2026-11-14, OD-2026-11-14-14, after the review at `72331b38`)
+
+- **D043-046** (2026-11-14) The subset of OD-2026-11-14-14, with the same meaning for `$schema` absent, draft-07 and
+  2020-12 (any other `$schema` refused): `type`, `properties`, `required`, `items` (one schema), `enum`, `const`,
+  `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` (numbers), `multipleOf` (a positive integer), `minLength`,
+  `maxLength`, `minItems`, `maxItems`, `minProperties`, `maxProperties`, `pattern` (the `regex` crate, 64 KiB limits, at
+  most 32, without `\d`, `\w`, `\s`, `\b`), `additionalProperties` (boolean or schema), `allOf`, `anyOf`, `oneOf`, a local
+  `$ref` (a JSON pointer, no cycle, no sibling keyword but annotations), `$defs` and `definitions`; ignored: `title`,
+  `description`, `default`, `examples`, `$comment`, `format`, `$schema`, a root `$id`; and `x-sagat-classification`,
+  the only `x-` keyword the platform reads in a schema (`crates/infra-ir/src/carrier_schema_check.rs:8`). **Left out:**
+  `patternProperties`, `uniqueItems` and `not`. Each could be bounded by the counter (a charge per key and pattern;
+  n·log n; one application), but each adds semantics the oracle test must cover, the platform's own documents need none,
+  and adding one later breaks no published schema. Every other keyword is out as well.
+- **D043-047** (2026-11-14) A validator of the platform, `InputSchemas` in `crates/infra-schema/src/run_input/`, over
+  `serde_json::Value`, with a work counter: one unit per keyword applied at an instance node and per element or member
+  visited, the length in bytes plus one per `pattern` match, the length in code points per length check, the size of the
+  compared values for `enum` and `const`, and a nesting limit of 128 schema applications. It stops at
+  `RUN_INPUT_WORK_UNITS` (1,000,000) with `workLimit`, which is final the first time on every row. The counter counts what
+  the validator does, so no static estimate is made. `jsonschema` is a test oracle only on this path.
+- **D043-048** (2026-11-14) The pre-check, at publication, at start (cached) and in the inventory: at most 64 KiB and a
+  depth of 32; every keyword in the vocabulary; every `$ref` a local JSON pointer, decoded once by the validator's own
+  resolver (RFC 6901 with percent-decoding), that resolves; no cycle in the `$ref` graph; every pattern within its syntax
+  and size. The first violation is `Unusable { keyword, at }`. There is no walk.
+- **D043-049** (2026-11-14) The validator names its own rule (the subset's keywords, `workLimit`, `maxDepth`, `other`) and
+  builds its own pointer: a segment for a member matched through `properties` and an index matched through `items`,
+  nothing under `additionalProperties`; `required` appends the missing name. No library error is read or formatted.
+- **D043-050** (2026-11-14) Simplified, because the counter makes a budget miss deterministic: removed the per-tenant
+  permits and their eviction rule (D043-034, D043-044), the miss memory, the tick-identity key, the two clocks and the
+  second-miss threshold (D043-035, D043-043), and `spawn_blocking` (D043-022). Kept: four permits per process, acquired
+  within 5 s; the work through `block_in_place` holding its permit; a backstop in the counter that reads the clock every
+  4,096 units and stops past 5 s. A permit not obtained and a backstop stop are transient (`503`, or a retry of the
+  platform), never cached and never final.
+- **D043-051** (2026-11-14) Publication runs the pre-check on every `inputSchema`: in `enforce` a violation refuses with a
+  typed issue (`INPUT_SCHEMA_KEYWORD_UNSUPPORTED`, `INPUT_SCHEMA_REFERENCE_INVALID`, `INPUT_SCHEMA_TOO_LARGE`) that names
+  the keyword and its pointer; in `report` it is a warning with the same fields.
+- **D043-052** (2026-11-14) The inventory is `control-plane input-schema-inventory`, run with the owner's credentials as
+  `migrate` is: a paged read of `workflow_versions`, the pre-check on each stored schema, one line per version that would
+  be refused (ids, keyword, pointer), no schema text, nothing written. It replaces the release-notes query, which could
+  not tell whether a schema would be refused.
 
 ## 3. Gaps
 
@@ -258,17 +298,19 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-001 | A control plane of 0.2.x running beside new engines during the upgrade meets the new outcome `INPUT_INVALID`. The action listing reads the outcome as a string by design (`crates/application/src/schedules.rs:634-635`, `crates/infra-postgres/src/schedules.rs:547`), so it passes through; the outcome filter parses the name strictly (`crates/api-http/src/routes/schedules.rs:275`) and an old binary answers `422` to a filter on `INPUT_INVALID`. | Read in the code, not yet tested: T043-11 adds the test of an action list with an unknown outcome. The filter case is stated in the release notes. | Open |
 | G043-002 | A trigger refusal could be audited again on every retry of its event. | Closed for inbox events by D043-027 (the delivery row), proven by T043-7. Left: two engines that reach the same cron tick at once can both audit it; the reason names the tick key, so the duplicate is recognisable. | Open (narrowed 2026-11-14) |
 | G043-003 | `details.field` names property names declared in the schema to a caller with `run:start`. | Closed 2026-11-14: every role that holds `run:start` also holds `definition:read` (`crates/domain/src/identity.rs:607-691`), so the caller may read the schema the names come from. T043-23 adds the unit test that keeps it so for every `Role`. | Closed (by reading; test in T043-23) |
-| G043-004 | A published version with a non-manual trigger and an `inputSchema` that describes a manual input (and not the event envelope `{event, data}`) refuses every triggered start after the upgrade. | The release notes and the runbook carry a query that lists versions with both (OD-2026-11-14-8); it cannot tell which schemas accept the envelope without real events. `report` mode covers the time to fix them. | Open |
-| G043-005 | `format`, `contentMediaType` and `contentEncoding` are not asserted under any draft, so a schema that relies on them to refuse an input does not refuse it. | D043-023; documented in the runbook. | Open (documented) |
+| G043-004 | A published version with a non-manual trigger and an `inputSchema` that describes a manual input (and not the event envelope `{event, data}`) refuses every triggered start after the upgrade. | `control-plane input-schema-inventory` and the publication warning list versions with both (D043-052); it cannot tell which schemas accept the envelope without real events. `report` mode covers the time to fix them. | Open |
+| G043-005 | `format` is an annotation, so a schema that relies on it to refuse an input does not refuse it. | D043-046; documented in the runbook. | Open (documented) |
 | G043-006 | The CPU cost of validating a 256 KiB input on the API path is not measured. | Counters, not timers, prove the compile count; a benchmark is not a target of this design. | Open |
 | G043-007 | Inputs stored before the upgrade (schedules, pending resets) are not checked at the upgrade; they are refused at action time. | By design: the action time is the authority (D043-008). Stated in the release notes. | Open (documented) |
 | G043-008 | Signals, Updates, worker results and activity outputs are not validated against a schema by this feature. | Out of scope: OD-2026-11-14-2 is about starts. | Open (out of scope) |
 | G043-009 | `infra-schema::validate` (scripts, feature 005) reports instance paths that can hold caller-chosen keys. | Observed while reading the code; not changed here (another feature's contract). Reported to the owner. | Open |
 | G043-010 | Until the operator records `run-input-validation-v1`, replicas may run different modes and a 0.2.x control plane admits what a new one refuses; the first upgraded engine runs `enforce` unless the manifest said `report` before the migration. | D043-040: the runbook sets the mode before migrating; the requirement can only be recorded once every live process is in `enforce` (ADR-0082 decision 2). | Open (documented) |
-| G043-011 | A validation that misses its deadline under load is refused for a while: transient once, final the second time for the same schema and input. A final refusal caused by load, not by the input, is possible. | D043-035; the instance-aware walk (D043-033) bounds the work, so a miss means a starved machine. Counted `outcome="deadline"`. The deadline value is not measured (G043-006). | Open |
+| G043-011 | A validation under load can be refused for a while. | Superseded 2026-11-14 by D043-050: only a permit not obtained or the backstop is transient, and a budget miss is deterministic and final. | Closed (by design) |
 | G043-012 | A rerun or reset refused for its input answers `field` `/` to a caller who may not read the source run's input, which says less than the caller needs to fix it. | Accepted: the field names a property of a payload the caller may not see. | Open (accepted by design) |
-| G043-013 | The miss memory of D043-035 is per process and evicts: a key is final after two counted work misses in one process while it stays in the memory; a restart, another process, or eviction past 4,096 keys with misses starts its count again. | A durable count would add a statement on the refusal path and a table; not worth it for a backstop behind the walk's bound (D043-042). | Open (accepted by design, bound restated 2026-11-14) |
-| G043-014 | Recursive schemas (`#`, anchors, any `$ref` cycle), dynamic references and nested `$id` make a schema unusable, so a published version that uses them refuses every start. | D043-042; the release-notes inventory query lists versions whose schema fails the compile; `report` mode covers the time to republish. | Open (documented) |
+| G043-013 | The miss memory of D043-035 was per process and evicted. | Removed by D043-050: there is no miss memory. | Closed (by design) |
+| G043-014 | A published schema with a keyword outside the subset (recursion, `patternProperties`, `not`, `if`, `unevaluated*`, ...) refuses every start of its version in `enforce`. | OD-2026-11-14-14; `control-plane input-schema-inventory` lists them (D043-052); `report` mode covers the time to republish. | Open (documented) |
+| G043-015 | `multipleOf` accepts only positive integers, so a schema with `multipleOf: 0.01` (a money amount) is outside the subset. | Floating-point remainders differ between implementations; an exact decimal rule can be added later. | Open (documented) |
+| G043-016 | `pattern` refuses `\d`, `\w`, `\s` and `\b`, which authors use often; they write `[0-9]` and the like instead. | The `regex` crate reads them as Unicode classes and ECMA-262 as ASCII; refusing them keeps one meaning. The publication issue names the pattern's pointer. | Open (documented) |
 
 ## 4. Owner questions
 
