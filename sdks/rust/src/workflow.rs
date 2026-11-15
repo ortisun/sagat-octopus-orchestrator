@@ -9,6 +9,7 @@ use std::{
 };
 mod primitives;
 pub use primitives::*;
+pub mod ops;
 mod state;
 pub use state::*;
 mod database;

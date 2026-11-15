@@ -11,6 +11,7 @@ import (
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflow"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflow/ops"
 )
 
 type doc = map[string]any
@@ -625,5 +626,50 @@ func TestTheCanonicalTextRefusesAWholeNumberBeyond2To53MinusOneWhateverWayItWasW
 		if _, err := workflow.New("safe-flow").InputSchema(doc{"type": "object", "maximum": value}).Step("a", "x.y").JSON(); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+func TestForEachAndMapCarryTheOperatorsInTheOrderGiven(t *testing.T) {
+	line := workflow.Flow().Step("price", "line.price").Return("return", "steps.price.output")
+	text, err := workflow.New("chained-flow").Body("line", line).
+		ForEach("lines", "input.lines", "line", "bodyResult", 9, 2, ops.Filter("element.ok"), ops.Distinct(), ops.Window(2)).
+		Map("prices", "input.lines", "line", "bodyResult", 9, 2, ops.Take(3)).
+		End("done").JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"maxConcurrency":2,"maxItems":9,"next":"prices","operators":[{"filter":{"where":"element.ok"}},{"distinct":{}},{"window":{"count":2}}],"result":"bodyResult","type":"forEach"`,
+		`"next":"done","operators":[{"take":{"count":3}}],"result":"bodyResult","type":"forEach"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("%s\nlacks %s", text, want)
+		}
+	}
+}
+
+func TestEveryPresentCollectionCallStillBuildsWithoutOperators(t *testing.T) {
+	line := workflow.Flow().Step("price", "line.price").Return("return", "steps.price.output")
+	none := []ops.Operator{}
+	text, err := workflow.New("plain-flow").Body("line", line).
+		ForEach("lines", "input.lines", "line", "bodyResult", 17, 3).
+		Map("prices", "input.lines", "line", "bodyResult", 17, 3).
+		ForEach("empty", "input.lines", "line", "bodyResult", 17, 3, none...).
+		End("done").JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text, "operators") {
+		t.Errorf("an unchained collection wrote operators: %s", text)
+	}
+}
+
+func TestTheZeroOperatorIsAValidationFailure(t *testing.T) {
+	line := workflow.Flow().Step("price", "line.price").Return("return", "steps.price.output")
+	_, err := workflow.New("zero-flow").Body("line", line).
+		ForEach("lines", "input.lines", "line", "bodyResult", 2, 1, ops.Take(1), ops.Operator{}).
+		End("done").Build()
+	if !sagat.IsCode(err, sagat.CodeValidationFailed) || !strings.Contains(err.Error(), "forEach lines operator 1") {
+		t.Fatalf("got %v", err)
 	}
 }

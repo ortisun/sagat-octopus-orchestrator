@@ -62,6 +62,7 @@ fn definition_with_policy(retry: RetryPolicy, high_risk: bool, lookup: bool) -> 
                 id("items"),
                 NodeKind::ForEach {
                     items: Expression::parse("input.items").expect("items"),
+                    operators: None,
                     body: id("body"),
                     result: Expression::parse("bodyResult").expect("aggregate"),
                     max_items: 10_000,
@@ -194,6 +195,7 @@ fn nested_forward_retry_is_refused_when_an_outer_scope_is_draining() {
                 id("inner"),
                 NodeKind::ForEach {
                     items: Expression::parse("item").expect("items"),
+                    operators: None,
                     body: id("body"),
                     result: Expression::parse("bodyResult").expect("result"),
                     max_items: 10,
@@ -218,6 +220,7 @@ fn nested_forward_retry_is_refused_when_an_outer_scope_is_draining() {
                 id("items"),
                 NodeKind::ForEach {
                     items: Expression::parse("input.items").expect("items"),
+                    operators: None,
                     body: id("outer"),
                     result: Expression::parse("bodyResult").expect("result"),
                     max_items: 10,

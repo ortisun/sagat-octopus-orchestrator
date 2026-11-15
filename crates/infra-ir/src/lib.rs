@@ -9,7 +9,9 @@ mod payload_projection;
 pub use payload_projection::JsonPayloadProjector;
 mod canonical;
 mod capabilities;
+mod collection_chain;
 pub use capabilities::{reset_reapply_enabled, set_reset_reapply};
+pub use collection_chain::distinct_form;
 mod carrier_schema_check;
 mod classification_check;
 mod continuation;
@@ -29,7 +31,10 @@ pub mod lake_receipt;
 pub use lake_probe_result::JsonLakeProbeCodec;
 pub use lake_receipt::JsonLakeReceiptCodec;
 mod operation_evaluator;
+mod operators;
 mod schema;
+
+pub use operators::{canonical_chain, chain_digest};
 
 pub use continuation::{ChainPolicyDefinition, ContinueAsNewDefinition, ParsedContinuation};
 pub use declared_state::{
@@ -312,6 +317,7 @@ fn read_document(document: &[u8]) -> Result<Value, IrError> {
 }
 
 fn check_ir_structure(value: &Value, mode: schema::Mode) -> Result<(), IrError> {
+    operators::check_surfaces(value)?;
     let issues = schema::issues(value, mode);
     if !issues.is_empty() {
         return Err(IrError::Schema(issues));
@@ -461,8 +467,16 @@ fn check_node_expressions<'a>(
                 Template::compile(template.as_str())
                     .map_err(|e| expression_error(id, "idempotencyTemplate", e))?;
             }
-            NodeKind::ForEach { items, result, .. } => {
+            NodeKind::ForEach {
+                items,
+                operators,
+                result,
+                ..
+            } => {
                 Compiled::compile(items.as_str()).map_err(|e| expression_error(id, "items", e))?;
+                if let Some(chain) = operators {
+                    operators::check_expressions(node.id(), chain)?;
+                }
                 Compiled::compile(result.as_str())
                     .map_err(|e| expression_error(id, "result", e))?;
             }

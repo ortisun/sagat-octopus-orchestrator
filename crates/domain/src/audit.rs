@@ -43,6 +43,9 @@ pub enum AuditAction {
     RunStorageQuotaExceeded,
     /// An output could not be retained under the run data ceiling.
     RunDataLimitExceeded,
+    /// A collection's operator chain failed at scope entry and stopped the run (design 042); the reason names the
+    /// stage, the operator and the position, never a value.
+    RunCollectionChainFailed,
     RunCancelRequested,
     RunPaused,
     RunResumed,
@@ -328,6 +331,7 @@ impl AuditAction {
             Self::LeafCollectionSuccessCertified => "collection.leaf_success_certified",
             Self::RunStorageQuotaExceeded => "run.storage_quota_exceeded",
             Self::RunDataLimitExceeded => "run.data_limit_exceeded",
+            Self::RunCollectionChainFailed => "run.collection_chain_failed",
             Self::RunCancelRequested => "run.cancel_requested",
             Self::RunPaused => "run.paused",
             Self::RunResumed => "run.resumed",

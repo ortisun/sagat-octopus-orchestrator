@@ -66,6 +66,7 @@ fn definition() -> WorkflowDefinition {
                 node("items"),
                 NodeKind::ForEach {
                     items: Expression::parse("input.items").expect("items expression"),
+                    operators: None,
                     body: node("line"),
                     result: Expression::parse("bodyResult").expect("collection result"),
                     max_items: 2,

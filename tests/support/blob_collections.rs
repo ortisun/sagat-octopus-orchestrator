@@ -28,6 +28,19 @@ pub type Sched = Scheduler<PgRunStore, JsonEvaluator, SystemEntropy>;
 pub const MIB: usize = 1024 * 1024;
 
 pub async fn platform() -> Platform {
+    platform_of(Options::default()).await
+}
+
+/// As [`platform`], with `SAGAT_COLLECTION_OPERATORS_ENABLED` on (design 042).
+pub async fn platform_with_operators() -> Platform {
+    platform_of(Options {
+        collection_operators: true,
+        ..Options::default()
+    })
+    .await
+}
+
+async fn platform_of(options: Options) -> Platform {
     let platform = platform_with(Options {
         runtime_role: true,
         blobs: Some(BlobLimits {
@@ -35,7 +48,7 @@ pub async fn platform() -> Platform {
             max_pending: 64,
             ..BlobLimits::default()
         }),
-        ..Options::default()
+        ..options
     })
     .await;
     let (status, body) = platform

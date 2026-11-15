@@ -57,6 +57,7 @@ fn definition(control: NodeKind) -> WorkflowDefinition {
                 id("lines"),
                 NodeKind::ForEach {
                     items: Expression::parse("input.lines").expect("items"),
+                    operators: None,
                     body: id("body"),
                     result: Expression::parse("bodyResult").expect("aggregate"),
                     max_items: 3,

@@ -162,6 +162,7 @@ fn structured_collection_can_be_validated_canonicalized_and_published() {
         lines.kind(),
         NodeKind::ForEach {
             max_items: 17,
+            operators: None,
             max_concurrency: 3,
             ..
         }

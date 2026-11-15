@@ -11,6 +11,7 @@ REST client, workflow/database authoring, shared transport utilities and optiona
 - The package entry point exports client/worker/activity APIs, error/retry/trace/JSON helpers, workflow factories and database types. ClientConfig, TlsOptions and TokenSource define caller configuration; SagatError and CATALOG define canonical failures. [index.ts:SagatClient] [config.ts:ClientConfig] [config.ts:TlsOptions] [config.ts:TokenSource] [errors.ts:SagatError] [catalog.ts:CATALOG]
 - Flow, Body, WorkflowBuilder and workflow/flow/body factories author activities, scripts, databases, timers, events, children, decisions, collections, loops, approvals, continuations, parallel/saga, terminal nodes, state operations and chain policies. [workflow.ts:Flow] [workflow.ts:Body] [workflow.ts:WorkflowBuilder] [database.ts:databaseNode]
 - The separate OpenTelemetryBridge API adapts traceContext and onEvent; trace helpers validate or generate W3C traceparent values. [opentelemetry.ts:OpenTelemetryBridge] [traceparent.ts:isTraceparent] [traceparent.ts:checkTraceparent] [traceparent.ts:newTraceparent]
+- `ops` is the collection operator factory (`filter`, `map`, `flatMap`, `skip`, `take`, `distinct`, `window`) returning `Operator`; `CollectionOptions.operators` carries the chain, and absent or empty writes no `operators` (design 042). [ops.ts:ops] [workflow.ts:CollectionOptions]
 
 - [worker](./worker/README.md) — component contract.
 

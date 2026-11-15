@@ -123,6 +123,13 @@ pub fn flag(get: Lookup<'_>, name: &'static str) -> Result<bool, ConfigError> {
     }
 }
 
+/// `SAGAT_COLLECTION_OPERATORS_ENABLED` (design 042): whether a `forEach` may be published with `operators`. Off unless
+/// the deployment says so; before turning it on, every scheduler and control-plane replica must run this release
+/// (`docs/runbooks/workflow-primitives.md`, the fleet rule).
+fn collection_operators(get: Lookup<'_>) -> Result<bool, ConfigError> {
+    flag(get, "SAGAT_COLLECTION_OPERATORS_ENABLED")
+}
+
 /// Variables of the per-tenant request budget: (requests per second, burst).
 pub const TENANT_RATE_VARS: (&str, &str) = ("SAGAT_RATE_LIMIT_RPS", "SAGAT_RATE_LIMIT_BURST");
 /// Variables of the per-subject request budget: (requests per second, burst).
@@ -387,6 +394,10 @@ pub struct ServeConfig {
     /// With it off, publishing such a workflow is refused with `LAKE_DISABLED`. With it on, publication still
     /// waits for the checks of access, allowed modes and data classification.
     pub lake_enabled: bool,
+    /// Whether a `forEach` may declare `operators` (`SAGAT_COLLECTION_OPERATORS_ENABLED`, design 042). Off by default.
+    /// With it off, publishing such a workflow is refused with `COLLECTION_OPERATORS_DISABLED`; a stored one stays
+    /// readable and its runs apply their chain.
+    pub collection_operators_enabled: bool,
     /// Native TLS identity is required for the mTLS webhook profile; no forwarded headers are trusted.
     pub tls: Option<sagat_api_http::HttpTlsConfig>,
     pub webhook_oidc: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -590,6 +601,7 @@ impl ServeConfig {
             reset_reapply_enabled: flag(get, "SAGAT_RESET_REAPPLY_ENABLED")?,
             reset_cancel_source_enabled: flag(get, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")?,
             lake_enabled: flag(get, "SAGAT_LAKE_ENABLED")?,
+            collection_operators_enabled: collection_operators(get)?,
             tls,
             webhook_oidc,
             webhook_oidc_development: environment == Environment::Dev,

@@ -1120,3 +1120,24 @@ Delivery-1 tests, contracts, metrics and demos have recorded evidence through th
 [plan](../specs/037-compensation-safety/plan.md), [tasks](../specs/037-compensation-safety/tasks.md)
 and [34-requirement coverage](../specs/037-compensation-safety/analysis.md). Only the
 [validation report](../specs/037-compensation-safety/validation-report.md) records results. US04 remains open.
+
+## 042 collection operators — slice S1, server half (2026-11-14)
+
+[Design 042](designs/042-stream-operators.md), section 3 (ADR-0087). The SDK factories and the three conformance
+scenarios (T042-10, T042-11) are another worktree's and are not traced here. No checkbox of the design is ticked by
+this entry; the evidence is in the [validation report](../specs/042-stream-operators/validation-report.md).
+
+| Requirement | State | Evidence |
+|---|---|---|
+| FR-042-004 the seven operators over a list, in any order; an empty output | Built | `sagat-infra-ir` `collection_chain::tests::each_operator_shapes_the_list_as_declared`, `an_empty_output_is_an_empty_collection`, and the property test `a_chain_gives_what_the_reference_gives`; `collection_operators::an_empty_output_succeeds_with_an_empty_result` |
+| FR-042-005 `element` and `position`; the body's `index` in the output | Built | `collection_chain::tests::stages_see_element_position_and_what_items_sees`; `collection_operators::a_chain_shapes_the_membership_and_the_body_index_has_no_gap` |
+| FR-042-006 one port call, one environment, stage by stage, a blocking task with a 1 s deadline | Built | `ExpressionEvaluator::collection_chain`; `every_element_of_a_stage_runs_before_the_next_stage_and_the_first_failure_is_named`; `the_wall_time_is_checked_between_elements`; one call per inline entry asserted in the integration tests |
+| FR-042-007 running ceilings, one code each | Built | One test across and one at each ceiling, in the evaluator (`the_input_holds_exactly_1000_elements_and_not_1001` and three more) and at the store (`collection_operators::a_chain_at_each_byte_ceiling_reaches_the_store_with_a_valid_entry`, `the_chain_input_holds_1000_elements_and_fails_the_run_at_1001`, `a_stage_holds_1000_elements_and_fails_the_run_at_1001`, `the_wall_time_fails_the_run_with_the_budget_code`) |
+| FR-042-008 a failing chain fails the run, `onError` not taken | Built | `collection_operators::an_expression_error_fails_the_run_and_on_error_is_not_taken` |
+| FR-042-009 recorded once; nothing evaluates again after entry; re-entries backed off and counted | Built | `after_entry_an_inline_chain_is_never_evaluated_again_across_a_restart`, `a_blob_source_with_a_chain_records_a_chained_manifest_and_its_output` (panicking evaluator after a restart); races in `collection_operators_races`; back-off in `passes::collection_chain::tests` (G042-110) |
+| FR-042-010 the chained manifest of a blob source | Built | `a_blob_source_with_a_chain_records_a_chained_manifest_and_its_output`, `a_blob_source_with_a_chain_is_materialised_within_the_chain_input_ceiling`; `collection_source::tests::a_chained_manifest_round_trips_under_its_own_key_and_an_old_reader_does_not_take_it` |
+| FR-042-011 the canonical form of `distinct` | Built | `the_canonical_form_writes_integral_doubles_as_integers_and_sorts_keys`, `values_that_compare_equal_have_one_canonical_form`, `integers_and_integral_doubles_within_2_pow_53_share_a_form` |
+| FR-042-012 a `forEach` without operators unchanged | Built | `collection_operators_unchanged::collection_entry_without_operators_is_unchanged` (statements, transactions, rows and snapshot bytes measured at `0e94bf0e`) |
+| FR-042-025 collection telemetry and codes | Built | `operator_elements_total`, `collection_chain_reentries_total`, `COLLECTION_OPERATOR_BUDGET` in `WorkflowPrimitiveRejectionCode::ALL`, `events.asyncapi.yaml` and `docs/sdk-compatibility.md`; `elements_are_counted_per_operator_and_no_value_reaches_a_log_a_span_or_a_label` |
+| FR-042-003, NFR-042-004 old readers refuse, never misread | Built | `collection_operators_old_reader` (the v0.2.0 reader as a fixture, D042-121); the fleet rule in [workflow-primitives.md](runbooks/workflow-primitives.md) |
+| NFR-042-001 the cost of a chain at entry | Measured | T042-9 in the validation report |

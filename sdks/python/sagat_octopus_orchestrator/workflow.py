@@ -18,6 +18,7 @@ from ._json import canonical_json
 from .database import ConnectionRef, DatabaseLimits, DatabaseParameter, database_node
 from .errors import invalid
 from .iceberg import IcebergLimits, IcebergMapping, IcebergRecords, IcebergTable, iceberg_write_node
+from .ops import Operator
 
 _NAME = re.compile(r"[a-z][a-z0-9-]{2,63}")
 _OPERATION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
@@ -500,25 +501,36 @@ class Flow:
         *,
         max_items: int,
         max_concurrency: int,
+        operators: Sequence[Operator] | None = None,
     ) -> _F:
-        """Invokes a named body once for every item captured from ``items``."""
+        """Invokes a named body once for every item captured from ``items``.
+
+        ``operators``, built with :mod:`ops`, are applied once to that list when the collection is entered
+        (design 042); absent or empty, the node has none. The server validates the chain.
+        """
         if not items or not body or not result:
             raise invalid(f"forEach {node_id} needs items, body and result expressions")
         if isinstance(max_items, bool) or not isinstance(max_items, int) or not 1 <= max_items <= 10_000:
             raise invalid(f"forEach {node_id} maxItems must be between 1 and 10000")
         if isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int) or not 1 <= max_concurrency <= 256:
             raise invalid(f"forEach {node_id} maxConcurrency must be between 1 and 256")
-        self._push(
-            {
-                "id": node_id,
-                "type": "forEach",
-                "items": items,
-                "body": body,
-                "result": result,
-                "maxItems": max_items,
-                "maxConcurrency": max_concurrency,
-            }
-        )
+        node: Node = {
+            "id": node_id,
+            "type": "forEach",
+            "items": items,
+            "body": body,
+            "result": result,
+            "maxItems": max_items,
+            "maxConcurrency": max_concurrency,
+        }
+        stages: list[dict[str, Any]] = []
+        for position, operator in enumerate(operators or ()):
+            if not isinstance(operator, Operator):
+                raise invalid(f"forEach {node_id} operator {position} is not an operator: build it with ops")
+            stages.append(operator.to_json())
+        if stages:
+            node["operators"] = stages
+        self._push(node)
         return self
 
     def map(
@@ -530,9 +542,18 @@ class Flow:
         *,
         max_items: int,
         max_concurrency: int,
+        operators: Sequence[Operator] | None = None,
     ) -> _F:
         """Value-returning collection authoring; emits the same durable ``forEach`` node."""
-        return self.for_each(node_id, items, body, result, max_items=max_items, max_concurrency=max_concurrency)
+        return self.for_each(
+            node_id,
+            items,
+            body,
+            result,
+            max_items=max_items,
+            max_concurrency=max_concurrency,
+            operators=operators,
+        )
 
     def while_loop(
         self: _F,

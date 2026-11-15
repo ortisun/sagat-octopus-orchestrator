@@ -132,6 +132,7 @@ fn loop_body() -> BodyDefinition {
 fn for_each() -> NodeKind {
     NodeKind::ForEach {
         items: expr("input.items"),
+        operators: None,
         body: id("iteration"),
         result: expr("bodyResult"),
         max_items: 4,

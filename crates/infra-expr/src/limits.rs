@@ -22,3 +22,7 @@ pub const MAX_LIST_ELEMENTS: usize = 4096;
 pub const MAX_TEMPLATE_PARTS: usize = 8;
 /// Longest rendered template (an idempotency key).
 pub const MAX_RENDERED_BYTES: usize = 512;
+/// Most bytes one evaluation may copy out of its environment or build by copying (list literals, list concatenation,
+/// `string()`), counted on the compact JSON size of what is copied: twice the largest payload a run holds (256 KiB),
+/// and a little room for the literals around them. Reading a value through a field or an index copies nothing.
+pub const MAX_COPIED_BYTES: usize = 2 * 256 * 1024 + 4 * 1024;

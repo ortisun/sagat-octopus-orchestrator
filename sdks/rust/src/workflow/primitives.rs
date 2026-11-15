@@ -271,6 +271,9 @@ impl Builder {
         self.push(json!({"id":id,"type":"switch","cases":cases,"default":default_target}))
     }
     pub fn for_each(&self, id: &str, options: CollectionOptions) -> &Self {
+        self.collection(id, options, Vec::new())
+    }
+    fn collection(&self, id: &str, options: CollectionOptions, stages: Vec<Value>) -> &Self {
         if options.items.is_empty() || options.body.is_empty() || options.result.is_empty() {
             return self.fail("forEach needs items, body and result expressions");
         }
@@ -280,10 +283,38 @@ impl Builder {
         if !(1..=256).contains(&options.max_concurrency) {
             return self.fail("forEach maxConcurrency must be between 1 and 256");
         }
-        self.options(json!({"id":id,"type":"forEach"}), options)
+        let mut node = json!({"id":id,"type":"forEach"});
+        if !stages.is_empty() {
+            node["operators"] = Value::Array(stages);
+        }
+        self.options(node, options)
     }
     pub fn map(&self, id: &str, options: CollectionOptions) -> &Self {
         self.for_each(id, options)
+    }
+    /// A `forEach` whose `operators`, built with [`ops`](super::ops), are applied once to the list
+    /// `items` yields when the collection is entered (design 042). No operator writes no `operators`,
+    /// exactly as [`Builder::for_each`]. The server validates the chain.
+    pub fn for_each_with_operators(
+        &self,
+        id: &str,
+        options: CollectionOptions,
+        operators: impl IntoIterator<Item = super::ops::Operator>,
+    ) -> &Self {
+        let stages = operators
+            .into_iter()
+            .map(|stage| stage.to_value())
+            .collect();
+        self.collection(id, options, stages)
+    }
+    /// Value-returning collection authoring with operators; it writes the same `forEach` node.
+    pub fn map_with_operators(
+        &self,
+        id: &str,
+        options: CollectionOptions,
+        operators: impl IntoIterator<Item = super::ops::Operator>,
+    ) -> &Self {
+        self.for_each_with_operators(id, options, operators)
     }
     fn loop_node(&self, id: &str, kind: &str, options: LoopOptions) -> &Self {
         if options.condition.is_empty()

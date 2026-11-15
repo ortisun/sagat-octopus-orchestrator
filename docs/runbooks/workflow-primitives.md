@@ -364,6 +364,92 @@ and approvals over the live scheduler replicas) and `scheduler_tick_seconds` (ho
 both are in `docs/runbooks/scaling.md`. A collection's real
 bound is the smaller of its `maxItems` and what the tenant's quotas leave: raise a quota, not the published ceiling.
 
+## Collection operators (0.3.0, design 042)
+
+A `forEach` may declare `operators`: one to eight stages (`filter`, `map`, `flatMap`, `skip`, `take`, `distinct`,
+`window`) that shape the list `items` yields before any iteration runs. The scheduler applies the chain once, at scope
+entry, by one call of the evaluator in a blocking task, and the entry transaction records its output as the
+collection's membership. Once that entry commits nothing evaluates the chain again: not a retry, a restart, a takeover
+by another replica or a read (FR-042-009, ADR-0087). The body sees `item` and `index` as before; `index` is the
+element's position in the chain's *output*, so after a `filter` or a `skip` the indices are 0 to n-1 with no gap.
+
+**Before turning it on.** Publication is gated by `SAGAT_COLLECTION_OPERATORS_ENABLED` on the control plane (off by
+default). Turn it on only when every scheduler (execution-engine) and control-plane replica runs 0.3.0 (the fleet rule,
+D042-028): a replica of an earlier release refuses a chained definition with a schema error and a chained blob scope with
+an invalid-storage error, and leaves the run alone; it never misreads either
+(`collection_operators_old_reader` in `integration_workflow_primitives`). Turning the switch off again stops new
+publications only: stored chained versions stay readable, and their runs still apply their chain.
+
+**Ceilings and codes.** Each ceiling is checked while a stage produces, at the first crossing, and before
+`enter_collection`, so the store never answers a chained entry with an untyped refusal. A chain that fails at entry
+fails the run; the collection's `onError` is not taken (G042-008), and nothing is truncated.
+
+| Ceiling | Value | Run code | `scheduler_collection_source_failures_total{reason}` |
+|---|---|---|---|
+| Elements of the chain's input (the inline list, or the blob's elements; the blob is read with this bound instead of `maxItems`) | 1,000 | `COLLECTION_OPERATOR_BUDGET` | `operator_input` |
+| Elements one stage produces | 1,000 | `COLLECTION_OPERATOR_BUDGET` | `operator_stage_elements` |
+| One element, as compact JSON | 256 KiB | `COLLECTION_OPERATOR_BUDGET` | `operator_element_bytes` |
+| One stage in all (the sum of its elements) | 4 MiB | `COLLECTION_OPERATOR_BUDGET` | `operator_stage_bytes` |
+| Wall time of the chain, checked between elements | 1 s | `COLLECTION_OPERATOR_BUDGET` | `wall_time` |
+| Nesting of one element (lists and maps) | 120 levels | `COLLECTION_OPERATOR_BUDGET` | `operator_element_depth` |
+| What one expression evaluation copies (any expression, not only a stage's) | about 512 KiB | `EXPRESSION_ERROR` | `operator_expression` (a stage), `expression` (`items`) |
+| A stage expression fails, a `filter` is not boolean, a `flatMap` is not a list | | `EXPRESSION_ERROR` | `operator_expression`, `operator_not_boolean`, `operator_not_a_list` |
+| The output has more elements than `maxItems` | `maxItems` | `ITERATION_LIMIT` | |
+| An inline source's output snapshot | 256 KiB | `RUN_DATA_LIMIT` | |
+| A blob source: the blob, one source element, all of them | 8 MiB, 256 KiB, 4 MiB | `RUN_DATA_LIMIT` | `too_large` |
+
+`COLLECTION_OPERATOR_BUDGET` is also counted as `workflow_primitive_rejections_total{kind="collection",code=...}`, as is
+the `EXPRESSION_ERROR` of a stage. A failure names the stage, the operator and the position, never a value: the
+warning `a collection source was refused` carries them as the fields `stage`, `operator` and `position` beside `code`
+and `reason`, and the stop records them as the run's failure detail in an audit record:
+
+```sql
+SELECT reason FROM audit_records WHERE resource_id = '<run id>' AND action = 'run.collection_chain_failed';
+-- operators[1] (filter) failed at position 0 (expression)
+```
+
+**Load on a replica.** A replica evaluates at most two chains at once, each in a blocking task, and one tick enters at
+most four chained collections; the others wait for the next tick (`scheduler_actions_total{kind="collection",
+outcome="skipped"}`). At the ceilings a chain costs about 15 ms of evaluation (p95, release build) and about 60 MB of resident memory, so
+the chains of one tick add at most about 60 ms of evaluation to `scheduler_tick_seconds` (four of them, two at a time),
+and a replica holds at most about 120 MB for chains. These are computed from the measurements of the validation
+report (2026-11-15), not measured as a whole tick.
+
+**What the scope stores.** An inline source's output is today's snapshot array. A blob source with a chain stores a
+chained manifest under a key of its own, `{"$collectionChainSource": {"blob", "chainSha256", "count", "itemsSha256",
+"sourceCount", "sourceSha256"}}`: `count` and `itemsSha256` describe the output items stored per item, which entry and
+restore check; the source fields are provenance, since the restore never reads the blob again. To look at one:
+
+```sql
+SELECT scope.item_count, convert_from(payload.content, 'UTF8') AS snapshot
+FROM iteration_scopes scope JOIN payloads payload
+  ON payload.tenant_id = scope.tenant_id AND payload.digest = scope.snapshot_digest
+WHERE scope.run_id = '...';
+```
+
+**Metrics.** `operator_elements_total{surface="collection",operator,outcome}` counts, per stage of an entry that
+committed, the elements `kept` and `dropped` (`filter`, `skip`, `take`, `distinct`) or `produced` (`map`, `flatMap`,
+`window`). `collection_chain_reentries_total{reason}` counts an entry tried again after one that did not commit, by why
+it did not: `fence` (the shard lease moved), `revision` (the run changed, a cancellation for example),
+`source_unavailable` (the blob store could not be read) or `storage_quota`. An entry that waited for storage quota rests
+before it is evaluated again: one pass interval (`SAGAT_SCHEDULER_INTERVAL_MS`) the first time, doubling up to 30
+seconds, held per replica as a hint (G042-012); a replica that restarts forgets the rest and evaluates once more, with
+the same result. A steady rise of `reason="fence"` with `scheduler_fenced_total` is a lease problem, not a chain one.
+`scheduler_tick_seconds` includes the chain's evaluation: the worst case measured is in
+`specs/042-stream-operators/validation-report.md`.
+
+| Symptom | Likely cause | Check |
+|---|---|---|
+| `FAILED`/`COLLECTION_OPERATOR_BUDGET` before the collection started | A chain crossed a ceiling of the table above | The `reason` of `scheduler_collection_source_failures_total`; shape the list with fewer elements, or earlier with a `take` or a `filter` |
+| `FAILED`/`COLLECTION_OPERATOR_BUDGET` with `reason="wall_time"` on one replica only | A starved replica (G042-009): the 1-second budget depends on the machine | `scheduler_tick_seconds` and the replica's CPU; a defect to explain, not to retry |
+| A chained collection does not start and `collection_chain_reentries_total{reason="storage_quota"}` rises | The tenant's content quota is full and the run could not be stopped yet | `scheduler_quota_stops_total`; free or raise the quota |
+| Publication refused with `COLLECTION_OPERATORS_DISABLED` | The switch is off on the control plane that answered | The deployment's `SAGAT_COLLECTION_OPERATORS_ENABLED`, and the fleet rule above |
+
+```sh
+cargo test -p sagat-infra-ir --lib collection_chain
+cargo test -p sagat-tests --test integration_workflow_primitives --locked -- collection_operators
+```
+
 ## Rollback and compatibility
 
 Disable publication and starts of any newly enabled primitive before rolling back its writer.

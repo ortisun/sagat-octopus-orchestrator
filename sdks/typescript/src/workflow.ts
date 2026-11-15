@@ -2,6 +2,7 @@ import { SagatError, invalid } from './errors.js';
 import { canonicalJson } from './json.js';
 import { databaseNode, type DatabaseOptions } from './database.js';
 import { icebergWriteNode, type IcebergWriteOptions } from './iceberg.js';
+import type { Operator } from './ops.js';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Node = Record<string, Json>;
@@ -106,6 +107,11 @@ export interface SwitchCase {
 export interface CollectionOptions {
   readonly maxItems: number;
   readonly maxConcurrency: number;
+  /**
+   * Stages applied once, when the collection is entered, to the list `items` yields, built with `ops`
+   * (design 042). Absent or empty, the node has no `operators`. The server validates the chain.
+   */
+  readonly operators?: readonly Operator[];
 }
 
 export interface LoopOptions {
@@ -373,9 +379,11 @@ export class Flow {
     if (!Number.isInteger(options.maxConcurrency) || options.maxConcurrency < 1 || options.maxConcurrency > 256) {
       throw invalid(`forEach ${id} maxConcurrency must be between 1 and 256`);
     }
+    const operators = options.operators ?? [];
     return this.push({
       id, type: 'forEach', items, body, result,
       maxItems: options.maxItems, maxConcurrency: options.maxConcurrency,
+      ...(operators.length === 0 ? {} : { operators: operators.map((stage) => copyJson(stage as unknown as Json)) }),
     });
   }
 

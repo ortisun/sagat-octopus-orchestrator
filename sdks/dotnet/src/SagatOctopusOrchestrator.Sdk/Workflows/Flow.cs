@@ -256,7 +256,7 @@ public abstract partial class FlowBase<TSelf>
             throw Invalid($"forEach {id} maxConcurrency must be between 1 and 256");
         }
 
-        return Push(new JsonObject
+        var node = new JsonObject
         {
             ["id"] = id,
             ["type"] = "forEach",
@@ -265,7 +265,20 @@ public abstract partial class FlowBase<TSelf>
             ["result"] = result,
             ["maxItems"] = options.MaxItems,
             ["maxConcurrency"] = options.MaxConcurrency,
-        });
+        };
+        if (options.Operators is { Count: > 0 } operators)
+        {
+            var stages = new JsonArray();
+            for (var position = 0; position < operators.Count; position++)
+            {
+                var stage = operators[position] ?? throw Invalid($"forEach {id} operator {position} is null: build it with Ops");
+                stages.Add(stage.ToJsonObject());
+            }
+
+            node["operators"] = stages;
+        }
+
+        return Push(node);
     }
 
     /// <summary>Value-returning collection authoring; emits the same durable <c>forEach</c> node.</summary>

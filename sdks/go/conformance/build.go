@@ -9,7 +9,45 @@ import (
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflow"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflow/ops"
 )
+
+// operators builds a scenario's chain through the public operator factory; absent, there is none.
+func operators(value any) []ops.Operator {
+	var chain []ops.Operator
+	for _, item := range asList(value) {
+		stage := asObject(item)
+		if len(stage) != 1 {
+			panic(fmt.Sprintf("a stage has exactly one operator: %v", stage))
+		}
+		for name, raw := range stage {
+			p := asObject(raw)
+			switch name {
+			case "filter":
+				chain = append(chain, ops.Filter(asString(p["where"])))
+			case "map":
+				chain = append(chain, ops.Map(asString(p["select"])))
+			case "flatMap":
+				chain = append(chain, ops.FlatMap(asString(p["select"])))
+			case "skip":
+				chain = append(chain, ops.Skip(asInt(p["count"])))
+			case "take":
+				chain = append(chain, ops.Take(asInt(p["count"])))
+			case "distinct":
+				if by, ok := p["by"]; ok {
+					chain = append(chain, ops.DistinctBy(asString(by)))
+				} else {
+					chain = append(chain, ops.Distinct())
+				}
+			case "window":
+				chain = append(chain, ops.Window(asInt(p["count"])))
+			default:
+				panic(fmt.Sprintf("unknown operator %s", name))
+			}
+		}
+	}
+	return chain
+}
 
 func asObject(value any) object {
 	obj, _ := value.(object)
@@ -234,9 +272,9 @@ func apply(b *workflow.Builder, ops []any) {
 			}
 			b.Switch(id, cases, asString(op["default"]))
 		case "forEach":
-			b.ForEach(id, asString(op["items"]), asString(op["body"]), asString(op["result"]), asInt(op["maxItems"]), asInt(op["maxConcurrency"]))
+			b.ForEach(id, asString(op["items"]), asString(op["body"]), asString(op["result"]), asInt(op["maxItems"]), asInt(op["maxConcurrency"]), operators(op["operators"])...)
 		case "map":
-			b.Map(id, asString(op["items"]), asString(op["body"]), asString(op["result"]), asInt(op["maxItems"]), asInt(op["maxConcurrency"]))
+			b.Map(id, asString(op["items"]), asString(op["body"]), asString(op["result"]), asInt(op["maxItems"]), asInt(op["maxConcurrency"]), operators(op["operators"])...)
 		case "while", "repeatUntil":
 			var opts []workflow.LoopOption
 			if op["delayMs"] != nil {
