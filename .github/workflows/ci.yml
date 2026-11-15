@@ -176,15 +176,53 @@ jobs:
             cargo test "${args[@]}" --locked --no-fail-fast
           fi
         timeout-minutes: 60
-      - name: integration suites that touch the change
-        if: needs.changes.outputs.any == 'true'
+  # The integration suites run in three jobs at once: with every suite selected (a release, a change of this workflow or
+  # of the shared test support) they took more than the 110 minutes one step was given (pull request 226). Each job takes
+  # every third selected target, in the order the change detection lists them, so a job's share does not depend on the
+  # others; together they run every selected target once.
+  integration:
+    name: integration suites that touch the change (shard ${{ matrix.shard }} of 3)
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: free disk space the build needs
+        # As in the rust job: every integration target of `sagat-tests` is compiled here.
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: integration
+          cache-on-failure: true
+      - name: isolated C# compiler and runtime images
+        run: |
+          docker build -f runners/dotnet/Dockerfile.builder -t sagat/dotnet-builder:10.0.401 .
+          docker build -f runners/dotnet/Dockerfile.runtime -t sagat/dotnet-runtime:10.0.12 .
+      - name: build isolated database executor for process tests
+        run: cargo build -p sagat-database-runner --bin database-runner --locked
+      - name: this shard's integration suites
         env:
           TARGETS: ${{ needs.changes.outputs.targets }}
+          SHARD: ${{ matrix.shard }}
         run: |
           args=()
-          for target in $TARGETS; do args+=(--test "$target"); done
+          index=0
+          for target in $TARGETS; do
+            if [ $(( index % 3 + 1 )) -eq "$SHARD" ]; then args+=(--test "$target"); fi
+            index=$(( index + 1 ))
+          done
+          if [ ${#args[@]} -eq 0 ]; then echo "no target falls to this shard"; exit 0; fi
+          echo "shard $SHARD of 3 runs: ${args[*]}"
           cargo test -p sagat-tests --locked --no-fail-fast "${args[@]}"
-        timeout-minutes: 110
+        timeout-minutes: 120
 
   released-upgrade:
     name: released v0.2 upgrade compatibility
@@ -617,12 +655,12 @@ jobs:
       # Every rule test in the directory, so that a new one cannot be left out (G2022).
       - name: promtool test rules (the alerts fire and stay silent when they should)
         run: |
-          tests=$(cd infra/observability/tests && ls *_test.yaml | sed 's|^|/tests/|')
-          test -n "$tests"
+          mapfile -t tests < <(find infra/observability/tests -maxdepth 1 -name '*_test.yaml' -printf '/tests/%f\n' | sort)
+          test "${#tests[@]}" -gt 0
           docker run --rm --entrypoint promtool \
             -v "$PWD/infra/observability:/rules:ro" \
             -v "$PWD/infra/observability/tests:/tests:ro" \
-            prom/prometheus:v3.15.0 test rules $tests
+            prom/prometheus:v3.15.0 test rules "${tests[@]}"
       - name: OpenTelemetry Collector validate
         run: |
           docker run --rm \
