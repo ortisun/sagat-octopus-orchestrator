@@ -172,8 +172,10 @@ const PINNED_REFUSALS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// (documents decoded, documents with a collection).
-const PINNED_COUNTS: (usize, usize) = (121, 27);
+/// (documents decoded, documents with a collection). 121 when this was written; the 15 workflows of the feature-018 goldens
+/// (schedules, batch operations, business ids, reset, Signal- and Update-with-Start, start delay, state operations) made it
+/// 136, none with a collection, all decoded.
+const PINNED_COUNTS: (usize, usize) = (136, 27);
 
 const fn variant(error: &IrError) -> &'static str {
     match error {
