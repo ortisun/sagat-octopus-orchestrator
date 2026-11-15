@@ -13,13 +13,19 @@ Reads `cargo metadata` and fails when:
     with `SKIP LOCKED` (the keeper, which never waits); `partitioning.rs` names no run table; and the two fences stay `FOR SHARE`;
   * a `run.finished` body written by the PostgreSQL adapter (the message subscribers are sent when a run ends) is built after
     `add_schedule_origin`, in the same function (FR-018-046, D2143): a writer that forgets it tells the subscribers of a run a
-    schedule started nothing about the schedule, and nothing else would fail.
+    schedule started nothing about the schedule, and nothing else would fail;
+  * the run-input validator (`crates/infra-schema/src/run_input/`, design 043) names `jsonschema` (a `use`, an `extern crate` or
+    a qualified path): it is the oracle of a test only, never on the path (D043-074, ADR-0090);
+  * `tokio` is a normal or build dependency of `sagat-application` (a dev-dependency is fine): the runtime of the run-input gate
+    lives in the adapter behind the port (D043-071, D043-077).
 
-Usage: python3 scripts/check-architecture.py [--metadata FILE] [--postgres-src DIR]
+Usage: python3 scripts/check-architecture.py [--metadata FILE] [--postgres-src DIR] [--run-input-src DIR]
   --metadata FILE     read a saved `cargo metadata --format-version 1` JSON instead of
                       running cargo (used by the negative tests).
   --postgres-src DIR  the source directory of the PostgreSQL adapter (default: crates/infra-postgres/src of this repository;
                       the negative tests give a small tree of their own).
+  --run-input-src DIR the source directory of the run-input validator (default: crates/infra-schema/src/run_input of this
+                      repository; the negative tests give their own).
 """
 import json
 import pathlib
@@ -298,12 +304,60 @@ def run_finished_errors(src):
     return errors
 
 
+# --- the run-input validator is the platform's own (design 043, D043-074) -----------------------------------------------------
+# `jsonschema` is the oracle of the validator's property test and the compiler of the scripts' schemas; on the path of a run input it
+# would bring back what four reviews could not bound. Any mention of it in the code of the module (comments and strings aside) fails.
+JSONSCHEMA_NAME = re.compile(r"\bjsonschema\b")
+
+
+def run_input_errors(src):
+    """The errors of the `jsonschema` rule over the run-input validator's source directory `src`."""
+    root = pathlib.Path(src)
+    files = sorted(root.rglob("*.rs")) if root.is_dir() else []
+    if not files:
+        return [f"the run-input validator is named by the jsonschema rule and {src} holds no Rust source: the rule would check nothing"]
+    errors = []
+    for path in files:
+        text = path.read_text()
+        masked, _ = rust_literals(text)
+        for m in JSONSCHEMA_NAME.finditer(masked):
+            line = text.count(chr(10), 0, m.start()) + 1
+            errors.append(
+                f"crates/infra-schema/src/run_input/{path.relative_to(root).as_posix()}:{line}: the run-input validator names "
+                f"`jsonschema`; it is the oracle of a test only, never on the path (D043-074, ADR-0090)"
+            )
+    return errors
+
+
+# --- the application holds no runtime (D043-071, D043-077) --------------------------------------------------------------------
+APPLICATION_PACKAGE = "sagat-application"
+
+
+def application_runtime_errors(pkgs):
+    errors = []
+    for p in pkgs.values():
+        if p["name"] != APPLICATION_PACKAGE:
+            continue
+        for d in p["dependencies"]:
+            if d["name"] == "tokio" and d.get("kind") in (None, "normal", "build"):
+                errors.append(
+                    f"'{APPLICATION_PACKAGE}' must not have `tokio` as a {d.get('kind') or 'normal'} dependency: the gate is plain async "
+                    f"code over its port and the runtime lives in the adapter (D043-071, D043-077); a dev-dependency is fine"
+                )
+    return errors
+
+
 def main(argv):
     metadata_file = argv[argv.index("--metadata") + 1] if "--metadata" in argv else None
     postgres_src = (
         argv[argv.index("--postgres-src") + 1]
         if "--postgres-src" in argv
         else str(pathlib.Path(__file__).resolve().parents[1] / "crates" / "infra-postgres" / "src")
+    )
+    run_input_src = (
+        argv[argv.index("--run-input-src") + 1]
+        if "--run-input-src" in argv
+        else str(pathlib.Path(__file__).resolve().parents[1] / "crates" / "infra-schema" / "src" / "run_input")
     )
     md = load(metadata_file)
     root = md["workspace_root"]
@@ -373,6 +427,8 @@ def main(argv):
 
     errors.extend(lease_row_errors(postgres_src))
     errors.extend(run_finished_errors(postgres_src))
+    errors.extend(run_input_errors(run_input_src))
+    errors.extend(application_runtime_errors(pkgs))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -402,7 +458,8 @@ def main(argv):
         for e in errors:
             print(f"  - {e}")
         return 1
-    print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule)")
+    print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
+          f"no jsonschema in the run-input validator, no runtime in the application)")
     return 0
 
 

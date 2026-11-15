@@ -387,3 +387,103 @@ class EveryRunFinishedBodySaysItsSchedule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def run_input_check(files, packages=None):
+    """The checker over a run-input validator tree made of `files` ({name: source}), and a dependency graph of `packages`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = pathlib.Path(tmp) / "run_input"
+        src.mkdir()
+        for name, source in files.items():
+            (src / name).write_text(source)
+        packages = packages or [pkg("d", "crates/domain", [])]
+        metadata = {
+            "workspace_root": "/r",
+            "workspace_members": [p["id"] for p in packages],
+            "packages": packages,
+        }
+        meta = pathlib.Path(tmp) / "metadata.json"
+        meta.write_text(json.dumps(metadata))
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--metadata", str(meta), "--run-input-src", str(src)],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode, result.stdout
+
+
+VALIDATOR = "pub fn validate(input: &[u8]) -> bool { let _ = input; true }\n"
+
+
+class TheRunInputValidatorIsThePlatformsOwn(unittest.TestCase):
+    """Design 043, D043-074: `jsonschema` stays out of `crates/infra-schema/src/run_input/`."""
+
+    def test_the_validator_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("no jsonschema in the run-input validator", result.stdout)
+
+    def test_a_validator_without_it_passes(self):
+        code, out = run_input_check({"mod.rs": VALIDATOR})
+        self.assertEqual(code, 0, out)
+
+    def test_a_use_of_jsonschema_is_refused_and_named(self):
+        code, out = run_input_check({"mod.rs": VALIDATOR, "validate.rs": "use jsonschema::Validator;\nfn f() {}\n"})
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/infra-schema/src/run_input/validate.rs:1", out)
+        self.assertIn("D043-074", out)
+
+    def test_a_qualified_path_and_an_extern_crate_are_refused(self):
+        for source in (
+            "fn f(s: &serde_json::Value) -> bool {\n    ::jsonschema::is_valid(s, s)\n}\n",
+            "extern crate jsonschema;\n",
+            "fn f() { let o = jsonschema :: options(); }\n",
+        ):
+            with self.subTest(source=source):
+                code, out = run_input_check({"compile.rs": source})
+                self.assertEqual(code, 1, out)
+                self.assertIn("compile.rs", out)
+
+    def test_the_name_in_a_comment_or_a_string_is_not_a_use(self):
+        code, out = run_input_check({
+            "mod.rs": "//! `jsonschema` is the oracle of a test only.\n/* jsonschema */\nconst A: &str = \"jsonschema\";\n" + VALIDATOR,
+        })
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_over_a_directory_with_no_source_is_an_error_and_not_a_pass(self):
+        code, out = run_input_check({})
+        self.assertEqual(code, 1, out)
+        self.assertIn("the rule would check nothing", out)
+
+
+class TheApplicationHoldsNoRuntime(unittest.TestCase):
+    """Design 043, D043-077: `tokio` is at most a dev-dependency of `sagat-application`."""
+
+    def packages(self, tokio):
+        """A workspace whose application has `tokio` as `tokio` says: a dependency name or a (name, kind) pair."""
+        return [
+            pkg("sagat-domain", "crates/domain", []),
+            pkg("sagat-application", "crates/application", ["sagat-domain", tokio]),
+            # named by the lake-runner rule whenever the application is in the graph
+            pkg("sagat-database-runner", "apps/database-runner", ["sagat-application"]),
+            pkg("sagat-infra-lake", "crates/infra-lake", ["sagat-application"]),
+        ]
+
+    def test_a_dev_dependency_passes(self):
+        code, out = run_input_check({"mod.rs": VALIDATOR}, self.packages(("tokio", "dev")))
+        self.assertEqual(code, 0, out)
+
+    def test_a_normal_dependency_is_refused(self):
+        code, out = run_input_check({"mod.rs": VALIDATOR}, self.packages("tokio"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("must not have `tokio` as a normal dependency", out)
+
+    def test_a_build_dependency_is_refused(self):
+        code, out = run_input_check({"mod.rs": VALIDATOR}, self.packages(("tokio", "build")))
+        self.assertEqual(code, 1, out)
+        self.assertIn("as a build dependency", out)
+
+    def test_the_application_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("no runtime in the application", result.stdout)
