@@ -591,6 +591,32 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   enum, `details.field`), in the schedule action outcome enum, and in `specs/043-run-input-validation/contracts/errors.md`
   (G043-045).
 
+### After the review of phase 2 (2026-11-15)
+
+- **D043-140** (2026-11-15) The waiter's guard owns the receiver of its grant, and `dispatch` no longer takes a grant back:
+  a release between the end of a wait and the drop of its guard was counted twice, so the pool grew past four
+  (security review). Red first: `a_release_in_the_gap_of_a_timed_out_waiter_is_not_counted_twice` (free 2 of 1).
+- **D043-141** (2026-11-15) A final refusal whose key holds a run goes through the `Admitted::Replayed` branch of
+  `finish_start` (with-start receipts, "already acted", "already completed"), for `start_with` and `start_private`
+  (correctness M1). Red first: the four `*_the_gate_refuses_*` tests (500, `[]` delivered, `Ok` twice).
+- **D043-142** (2026-11-15) An exhausted schedule (`remaining - reserved == 0`) is not checked: `decide` answers it
+  `Exhausted` (correctness M2). Red first: `an_exhausted_schedule_records_no_input_invalid_*` (3 `INPUT_INVALID`).
+- **D043-143** (2026-11-15) `continue_evaluated` writes the `report` audit in the hand-off transaction. Red first.
+- **D043-144** (2026-11-15) Trigger-now answers `/` and `other`: the stored input of a schedule comes out only through the
+  audited read of FR-018-042, which trigger-now is not; the disclosure check itself is not evaluated there. Red first.
+- **D043-145** (2026-11-15) The migration is split: `20270118000000` adds the CHECKs `NOT VALID`, `20270118000100`
+  validates them and drops the old ones; a static test keeps every later migration so. Red first.
+- **D043-146** (2026-11-15) A manual admission refused at its start (a version promoted after the check) returns the
+  refusal and records nothing. Red first: it answered 200 with an `INPUT_INVALID` action.
+- **D043-147** (2026-11-15) `RunInputGate::recheck` checks without counting: a schedule's action is counted by its check
+  before the decision, the buffered release included (now checked before it starts), and not again at the start. Its
+  test was written with the new method and was not seen red.
+- **D043-148** (2026-11-15) A private rerun (row 13) answers `/` and `other`. Red first.
+- **D043-149** (2026-11-15) OD-2026-11-15-3: the six start operations (`startRun`, `signalWithStart`, `updateWithStart`,
+  `operateRun`, `resetRun`, `startDatabaseExecution`) describe their `422`. The baselines are re-pinned this once after
+  reading the diff: in the 035 fixture only the three digests it pins that changed (the bless would have added every
+  later operation, which was not done), and the 016 digest with its comment. Closes G043-045.
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
@@ -622,7 +648,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-042 | Rows without an integration test of their own: the uploaded-input start (row 2), Update-with-Start (row 3), the batch `RERUN` item (row 4), reset and pending reset (row 5), the ad hoc start (row 13); and `RUN_INPUT_SCHEMA_UNUSABLE` on rows 3 to 5, 8 and 13. They go through the paths the tested rows use (`start_with`, `start_private`) and the mappings have unit tests (`a_rerun_refused_for_its_input_fails_with_validation_failed`, `a_pending_reset_refused_for_its_input_ends_admission_refused_and_no_room_is_retried`). | SC-043-001 is not yet met for these rows. | Open |
 | G043-043 | The lookup of an existing child before a parent step is failed (D043-038, D043-132) has no integration test: it needs a child created by a peer between the reservation and the check. | Built; untested. | Open |
 | G043-044 | Not built in phase 2: the fault tests of T043-7, T043-9 and T043-11 (a crash between the delivery and the audit, two engines on one refused cron tick, a restart between the evaluation and the failure, a crash before the schedule decision commits); the budget of a child start and a continuation (T043-18 has the start and the triggered start); the cache counters of SC-043-004 as an integration test; the problem-shape assertions in `contract_rest_durable_execution`; the metric-label check of `integration_observability_operations`; the sentinel on rows 2, 3, 5 to 8, 10, 12 to 14 (T043-17 covers rows 1, 4, 9 and 11, the answers, logs, spans and audit rows, not the metrics text). | Phase 3. | Open |
-| G043-045 | The OpenAPI operations of the start routes, the schedule writes, trigger-now and the publication do not describe the design 043 refusals in their own text (D043-135). | The pinned baselines of features 016 and 035 would have to be renewed by their owners; the shared `Error` schema and `errors.md` carry the contract. | Open (owner) |
+| G043-045 | The OpenAPI operations of the start routes, the schedule writes, trigger-now and the publication do not describe the design 043 refusals in their own text (D043-135). | The pinned baselines of features 016 and 035 would have to be renewed by their owners; the shared `Error` schema and `errors.md` carry the contract. | Reopened and closed 2026-11-15 by OD-2026-11-15-3 (D043-149). |
 | G043-046 | `CONTINUATION_INPUT_INVALID` does not reach an SDK's run view: the SDK run and event views carry no run-level failure code, only the graph's node codes, so the conformance golden of `run-input-validation` shows the chain `FAILED` and the continuation node cancelled, while `CHILD_INPUT_INVALID` is shown on the parent's child node. | FR-043-015 is met for the child and not for the continuation; the run's stop code is in the journal (`run.stop_requested`) on the server. | Open |
 
 ## 4. Owner questions
