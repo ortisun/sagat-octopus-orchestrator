@@ -65,6 +65,13 @@ and validation errors without publishing or executing a collection. The fixture 
 named bodies that reuse local node IDs and covers `forEach`, its `map` alias and bounded options.
 It does not count as collection runtime conformance.
 
+`collection-operators.json` checks the operators of a `forEach` and of its `map` alias in the six SDKs (design 042,
+FR-042-028). It is build-only: each runner translates the scenario's stages into its SDK's operator factory, and the
+reviewed golden holds one collection with a chain of every operator (`distinct` with and without `by`, eight stages),
+one `map` with a short chain and one collection without operators. The server's canonical encoding is the reference:
+`contract_workflow_primitives` decodes the golden on publication and compares its canonical text and its chain. The
+runtime behaviour is `collection-operators-runtime` and `collection-operators-limits`, not written yet.
+
 `loop-builders.json` checks additive v1 `while` and `repeatUntil` authoring in the five SDKs.
 It is build-only while durable loop execution remains disabled. The reviewed fixture covers pre-test
 and post-test shapes, the maximum iteration and duration bounds, optional durable delay/error routing,

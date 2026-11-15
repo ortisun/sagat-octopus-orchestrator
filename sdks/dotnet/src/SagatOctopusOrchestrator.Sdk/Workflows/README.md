@@ -9,6 +9,7 @@ Fluent workflow, nested-flow and body authoring with local state/database valida
 - `FlowBase<TSelf>`, Flow, Body, WorkflowBuilder and Workflow construct documents; Database extends flow authoring and SwitchCase models branching. [Flow.cs:FlowBase] [Flow.cs:WorkflowBuilder] [Flow.cs:Workflow] [FlowDatabase.cs:Database] [SwitchCase.cs:SwitchCase]
 - Database contracts include ConnectionRef, DatabaseOperation, DatabaseType, DatabaseParameter and DatabaseOptions. [DatabaseOptions.cs:ConnectionRef] [DatabaseOptions.cs:DatabaseOptions]
 - WorkflowOptions supplies retry/step/script/event/child/workflow/parallel/saga/collection/loop/approval/chain options, state/query/update/disclosure definitions and trigger kinds/values. StateDefinitionValidator.Build is the internal state-validation boundary. [WorkflowOptions.cs:StepOptions] [WorkflowOptions.cs:ScriptOptions] [WorkflowOptions.cs:CollectionOptions] [WorkflowOptions.cs:ApprovalOptions] [WorkflowOptions.cs:ChainPolicyOptions] [WorkflowOptions.cs:StateDefinition] [WorkflowOptions.cs:Trigger] [StateDefinitionValidator.cs:Build]
+- Ops is the collection operator factory (Filter, Map, FlatMap, Skip, Take, Distinct, Window) returning OperatorStage; CollectionOptions.Operators carries the chain, and null or empty writes no operators (design 042). [Ops.cs:Ops] [Ops.cs:OperatorStage] [WorkflowOptions.cs:CollectionOptions]
 
 ## Invariants
 

@@ -14,6 +14,7 @@ Typed async/blocking REST facade, local workflow/database authoring and optional
 
 - [_proto](./_proto/README.md) — component contract.
 - [worker](./worker/README.md) — component contract.
+- Module ops is the collection operator factory (filter, map, flat_map, skip, take, distinct, window) returning Operator; for_each and map take operators= as a keyword, and None or empty writes no operators (design 042). [ops.py:Operator] [workflow.py:for_each]
 
 ## Invariants
 

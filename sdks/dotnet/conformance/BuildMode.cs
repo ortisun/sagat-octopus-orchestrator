@@ -226,6 +226,7 @@ internal static class BuildMode
                     {
                         MaxItems = (int)op["maxItems"]!,
                         MaxConcurrency = (int)op["maxConcurrency"]!,
+                        Operators = OperatorsOf(op["operators"]),
                     });
                     break;
                 case "map":
@@ -233,6 +234,7 @@ internal static class BuildMode
                     {
                         MaxItems = (int)op["maxItems"]!,
                         MaxConcurrency = (int)op["maxConcurrency"]!,
+                        Operators = OperatorsOf(op["operators"]),
                     });
                     break;
                 case "while":
@@ -382,6 +384,41 @@ internal static class BuildMode
     private static DatabaseType DatabaseTypeOf(JsonNode? node) => Enum.TryParse<DatabaseType>((string?)node, true, out var type) ? type : (DatabaseType)(-1);
 
     private static TimeSpan Ms(JsonNode? value) => TimeSpan.FromMilliseconds((long)value!);
+
+    /// <summary>A scenario's chain, built through the public operator factory; absent, there is none.</summary>
+    private static List<OperatorStage>? OperatorsOf(JsonNode? stages)
+    {
+        if (stages is not JsonArray list)
+        {
+            return null;
+        }
+
+        var chain = new List<OperatorStage>();
+        foreach (var item in list)
+        {
+            var stage = (JsonObject)item!;
+            if (stage.Count != 1)
+            {
+                throw new InvalidOperationException($"a stage has exactly one operator: {stage.ToJsonString()}");
+            }
+
+            var (name, value) = stage.First();
+            var p = (JsonObject)value!;
+            chain.Add(name switch
+            {
+                "filter" => Ops.Filter((string)p["where"]!),
+                "map" => Ops.Map((string)p["select"]!),
+                "flatMap" => Ops.FlatMap((string)p["select"]!),
+                "skip" => Ops.Skip((int)p["count"]!),
+                "take" => Ops.Take((int)p["count"]!),
+                "distinct" => Ops.Distinct((string?)p["by"]),
+                "window" => Ops.Window((int)p["count"]!),
+                _ => throw new InvalidOperationException($"unknown operator {name}"),
+            });
+        }
+
+        return chain;
+    }
 
     private static LoopOptions LoopOptionsOf(JsonObject op) => new()
     {

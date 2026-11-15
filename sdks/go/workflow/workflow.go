@@ -25,6 +25,7 @@ import (
 
 	sagat "github.com/ortisun/sagat-octopus-orchestrator/sdks/go"
 	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/internal/jsonx"
+	"github.com/ortisun/sagat-octopus-orchestrator/sdks/go/workflow/ops"
 )
 
 type node = map[string]any
@@ -337,8 +338,10 @@ func (b *Builder) Switch(id string, cases []SwitchCase, defaultTarget string) *B
 	return b.push(node{"id": id, "type": "switch", "cases": copied, "default": defaultTarget})
 }
 
-// ForEach invokes a named body once for every item captured from items.
-func (b *Builder) ForEach(id, items, body, result string, maxItems, maxConcurrency int) *Builder {
+// ForEach invokes a named body once for every item captured from items. The operators, built with
+// package ops, are applied once to that list when the collection is entered (design 042); none, the
+// node has no operators. The server validates the chain.
+func (b *Builder) ForEach(id, items, body, result string, maxItems, maxConcurrency int, operators ...ops.Operator) *Builder {
 	if b.err != nil {
 		return b
 	}
@@ -351,12 +354,23 @@ func (b *Builder) ForEach(id, items, body, result string, maxItems, maxConcurren
 	if maxConcurrency < 1 || maxConcurrency > 256 {
 		return b.fail(sagat.Invalid("forEach %s maxConcurrency must be between 1 and 256", id))
 	}
-	return b.push(node{"id": id, "type": "forEach", "items": items, "body": body, "result": result, "maxItems": maxItems, "maxConcurrency": maxConcurrency})
+	n := node{"id": id, "type": "forEach", "items": items, "body": body, "result": result, "maxItems": maxItems, "maxConcurrency": maxConcurrency}
+	if len(operators) > 0 {
+		stages := make([]any, 0, len(operators))
+		for position, operator := range operators {
+			if operator.Name() == "" {
+				return b.fail(sagat.Invalid("forEach %s operator %d is empty: build it with package ops", id, position))
+			}
+			stages = append(stages, operator.Stage())
+		}
+		n["operators"] = stages
+	}
+	return b.push(n)
 }
 
 // Map is value-returning collection authoring; it emits the same durable forEach node.
-func (b *Builder) Map(id, items, body, result string, maxItems, maxConcurrency int) *Builder {
-	return b.ForEach(id, items, body, result, maxItems, maxConcurrency)
+func (b *Builder) Map(id, items, body, result string, maxItems, maxConcurrency int, operators ...ops.Operator) *Builder {
+	return b.ForEach(id, items, body, result, maxItems, maxConcurrency, operators...)
 }
 
 // While invokes a named body sequentially while a pre-test condition is true.
