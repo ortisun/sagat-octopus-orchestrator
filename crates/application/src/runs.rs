@@ -1708,18 +1708,32 @@ where
         } else {
             crate::run_input::FieldPolicy::Show
         };
-        let input = match self
-            .run_inputs
-            .check(
-                principal.tenant_id(),
-                version.version.id(),
-                &definition,
-                input,
-                creator,
-                policy,
-            )
-            .await
-        {
+        // a schedule's action was checked, and counted, by the firing before its decision (`check_scheduled`): checked
+        // again here, against the version resolved now, and not counted twice (D043-147)
+        let checked = if scheduled.is_some() {
+            self.run_inputs
+                .recheck(
+                    principal.tenant_id(),
+                    version.version.id(),
+                    &definition,
+                    input,
+                    creator,
+                    policy,
+                )
+                .await
+        } else {
+            self.run_inputs
+                .check(
+                    principal.tenant_id(),
+                    version.version.id(),
+                    &definition,
+                    input,
+                    creator,
+                    policy,
+                )
+                .await
+        };
+        let input = match checked {
             Ok(input) => input,
             Err(refusal) => {
                 if refusal.is_final()

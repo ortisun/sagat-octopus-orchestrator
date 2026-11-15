@@ -512,7 +512,12 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
                 &parsed.definition,
                 request.input.to_vec(),
                 crate::run_input::Creator::AdHoc,
-                crate::run_input::FieldPolicy::Show,
+                // a private rerun says nothing of the source's input, as every repeat (review of phase 2, D043-148)
+                if rerun.is_some() {
+                    crate::run_input::FieldPolicy::Root
+                } else {
+                    crate::run_input::FieldPolicy::Show
+                },
             )
             .await
         {

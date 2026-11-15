@@ -359,7 +359,10 @@ async fn rerun_source_and_cleanup_barrier(
         SystemClock,
         Engine::new(JsonEvaluator),
         w.cache.clone(),
-    );
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ));
     let context = ctx();
     let reason = "repeat retained managed query";
     let key = "retention-rerun-lock-order";

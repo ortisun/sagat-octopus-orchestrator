@@ -46,6 +46,20 @@ fn continuation_document(name: &str, max_segments: u16) -> Value {
 
 /// A scheduler that holds every shard, the way one replica of the engine does.
 pub(crate) async fn scheduler(world: &World, label: &str) -> Sched {
+    scheduler_in(
+        world,
+        label,
+        sagat_application::run_input::InputValidationMode::Enforce,
+    )
+    .await
+}
+
+/// As [`scheduler`], whose children and continuations are checked in `mode` (design 043).
+pub(crate) async fn scheduler_in(
+    world: &World,
+    label: &str,
+    mode: sagat_application::run_input::InputValidationMode,
+) -> Sched {
     let placement = Placement::new(format!("chains-{label}-{}", Uuid::now_v7()));
     Keeper::new(
         world.store.clone(),
@@ -64,9 +78,7 @@ pub(crate) async fn scheduler(world: &World, label: &str) -> Sched {
         SchedulerSettings::default(),
     )
     // every child and continuation is checked against its version's inputSchema (design 043)
-    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
-        sagat_application::run_input::InputValidationMode::Enforce,
-    ))
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(mode))
     .with_children(world.cache.clone())
     .with_placement(placement)
 }

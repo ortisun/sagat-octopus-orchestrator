@@ -2007,6 +2007,13 @@ impl ChainProgressStore for PgChainProgressStore {
             .map_err(store_error)?;
         }
         insert_audit(&mut tx, command.audit()).await?;
+        // `report` mode: a refusal is audited with the hand-off that admitted it, once (D043-039, D043-143)
+        if let Some(reported) = prepared
+            .checked_input()
+            .reported_audit(command.audit(), command.successor())
+        {
+            insert_audit(&mut tx, &reported).await?;
+        }
         mark_telemetry(
             &mut tx,
             command.scope().tenant_id(),

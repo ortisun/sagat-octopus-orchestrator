@@ -206,3 +206,40 @@ async fn row_12_a_refused_continuation_fails_its_run_and_creates_no_successor() 
         );
     }
 }
+
+/// Both reviewers of phase 2: in `report` mode a continuation whose input is refused hands off, and the refusal is
+/// audited once, in the hand-off transaction (D043-039).
+#[tokio::test]
+async fn report_mode_audits_a_refused_continuation_with_its_hand_off() {
+    let w = world().await;
+    let name = format!("row-12-report-{}", Uuid::now_v7());
+    let (workflow, _) = w
+        .publish(rolling(
+            &name,
+            json!({"type": "object", "required": ["segment"], "properties": {"segment": {"type": "integer"}}}),
+        ))
+        .await;
+    let chain = w
+        .start(workflow, &json!({"segment": 1, "next": {"segment": "two"}}))
+        .await;
+    let scheduler =
+        crate::chains::scheduler_in(&w, "row-12-report", InputValidationMode::Report).await;
+    let session = w.session(&["segment.work"]).await;
+    let task = w.one_task(&session).await;
+    w.complete(&session, &task, &json!({}))
+        .await
+        .expect("complete");
+    scheduler.tick().await;
+    assert_ne!(
+        head(&w, chain).await,
+        chain.as_uuid(),
+        "the successor was created"
+    );
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE action = 'run.input_refused' AND reason LIKE 'reported: RUN_INPUT_INVALID%'",
+    )
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("audits");
+    assert_eq!(audits, 1);
+}

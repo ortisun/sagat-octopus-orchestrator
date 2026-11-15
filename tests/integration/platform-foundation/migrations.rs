@@ -204,6 +204,36 @@ fn every_forward_migration_has_a_rollback() {
     );
 }
 
+/// Design 043 (review of phase 2, D043-145): a constraint added `NOT VALID` is validated in a migration of its own. Each
+/// migration runs in one transaction, so validating in the one that added it would hold the `ACCESS EXCLUSIVE` lock of
+/// the `ADD` while the table is scanned. Applies from the migration of design 043 on; the older ones are immutable.
+#[test]
+fn a_constraint_added_not_valid_is_validated_by_a_later_migration() {
+    const FROM: i64 = 20_270_118_000_000;
+    for migration in MIGRATOR
+        .iter()
+        .filter(|m| m.migration_type.is_up_migration() && m.version >= FROM)
+    {
+        let sql = migration.sql.as_str().to_owned();
+        let added: Vec<String> = sql
+            .split("ADD CONSTRAINT")
+            .skip(1)
+            .filter_map(|rest| {
+                let name = rest.split_whitespace().next()?.to_owned();
+                let statement = rest.split(';').next().unwrap_or_default();
+                statement.contains("NOT VALID").then_some(name)
+            })
+            .collect();
+        for name in added {
+            assert!(
+                !sql.contains(&format!("VALIDATE CONSTRAINT {name}")),
+                "{}: {name} is added NOT VALID and validated in the same transaction",
+                migration.version
+            );
+        }
+    }
+}
+
 /// The stamp of the migration before the one that gives a worker binding its profile (D035-136).
 const BEFORE_BINDING_PROFILE: i64 = 20_261_231_000_000;
 

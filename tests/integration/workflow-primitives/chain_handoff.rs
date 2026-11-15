@@ -900,6 +900,27 @@ async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
     );
     let cache = DefinitionCache::new(Arc::new(ContinuationCodec), 8);
     let store = PgChainProgressStore::new(world.db.pool.clone(), cache);
+    // FR-043-017: an input checked against another version than the predecessor's is refused, and nothing is written
+    let mismatched = EvaluatedChainHandoffCommand::new(
+        command.clone(),
+        sagat_domain::workflow::NodeId::parse("rollover").expect("rollover node"),
+        sagat_application::run_input::CheckedRunInput::unchecked(
+            sagat_domain::definition::WorkflowVersionId::generate(),
+            selected_input.clone(),
+        ),
+        None,
+        None,
+    )
+    .expect("prepared continuation");
+    assert!(
+        matches!(
+            store.continue_evaluated(&mismatched).await,
+            Err(ChainProgressError::Storage(
+                sagat_application::error::StoreError::Internal { .. }
+            ))
+        ),
+        "an input checked against another version"
+    );
     let prepared = EvaluatedChainHandoffCommand::new(
         command,
         sagat_domain::workflow::NodeId::parse("rollover").expect("rollover node"),

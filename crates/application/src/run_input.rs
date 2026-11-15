@@ -511,6 +511,53 @@ impl RunInputGate {
         creator: Creator,
         policy: FieldPolicy,
     ) -> Result<CheckedRunInput, InputRefusal> {
+        self.checked(tenant, version, schema, input, creator, policy, true)
+            .await
+    }
+
+    /// As [`Self::check`], for the start of an input the creator already checked, and counted, a moment before (a
+    /// schedule's action, checked before its decision): the result is the same, the validation is counted once
+    /// (review of phase 2, D043-147).
+    ///
+    /// # Errors
+    /// As [`Self::check`].
+    pub async fn recheck(
+        &self,
+        tenant: TenantId,
+        version: WorkflowVersionId,
+        definition: &WorkflowDefinition,
+        input: Vec<u8>,
+        creator: Creator,
+        policy: FieldPolicy,
+    ) -> Result<CheckedRunInput, InputRefusal> {
+        self.checked(
+            tenant,
+            version,
+            definition.input_schema(),
+            input,
+            creator,
+            policy,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn checked(
+        &self,
+        tenant: TenantId,
+        version: WorkflowVersionId,
+        schema: Option<&InputSchema>,
+        input: Vec<u8>,
+        creator: Creator,
+        policy: FieldPolicy,
+        counted: bool,
+    ) -> Result<CheckedRunInput, InputRefusal> {
+        let count = |creator: Creator, outcome: &'static str| {
+            if counted {
+                count(creator, outcome);
+            }
+        };
         let Some(schema) = schema else {
             count(creator, "no_schema");
             return Ok(CheckedRunInput {
@@ -663,6 +710,116 @@ pub mod test_support {
 mod tests {
     use super::test_support::Scripted;
     use super::*;
+
+    /// Counts `run_input_validations_total` by its labels, for one test.
+    #[derive(Default)]
+    struct Counted(std::sync::Mutex<std::collections::BTreeMap<String, u64>>);
+
+    struct One(String, Arc<Counted>);
+
+    impl metrics::CounterFn for One {
+        fn increment(&self, value: u64) {
+            *self.1.0.lock().unwrap().entry(self.0.clone()).or_default() += value;
+        }
+        fn absolute(&self, _: u64) {}
+    }
+
+    struct Recorder(Arc<Counted>);
+
+    impl metrics::Recorder for Recorder {
+        fn describe_counter(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn describe_gauge(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn describe_histogram(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn register_counter(
+            &self,
+            key: &metrics::Key,
+            _: &metrics::Metadata<'_>,
+        ) -> metrics::Counter {
+            let labels: Vec<String> = key
+                .labels()
+                .map(|l| format!("{}={}", l.key(), l.value()))
+                .collect();
+            metrics::Counter::from_arc(Arc::new(One(
+                format!("{}{{{}}}", key.name(), labels.join(",")),
+                Arc::clone(&self.0),
+            )))
+        }
+        fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+            metrics::Gauge::noop()
+        }
+        fn register_histogram(
+            &self,
+            _: &metrics::Key,
+            _: &metrics::Metadata<'_>,
+        ) -> metrics::Histogram {
+            metrics::Histogram::noop()
+        }
+    }
+
+    /// Review of phase 2 (D043-147): a schedule's action checked before its decision and checked again at its start is
+    /// one validation in `run_input_validations_total`, and the labels are the closed `creator` and `outcome` only.
+    #[test]
+    fn an_action_checked_before_its_decision_and_at_its_start_is_counted_once() {
+        use futures_util::FutureExt as _;
+
+        let counted = Arc::new(Counted::default());
+        let recorder = Recorder(Arc::clone(&counted));
+        let gate = RunInputGate::new(Arc::new(Scripted::default()), InputValidationMode::Enforce);
+        let definition_schema = schema();
+        metrics::with_local_recorder(&recorder, || {
+            let tenant = TenantId::generate();
+            let version = WorkflowVersionId::generate();
+            gate.check_schema(
+                tenant,
+                version,
+                Some(&definition_schema),
+                b"{}".to_vec(),
+                Creator::Schedule,
+                FieldPolicy::Show,
+            )
+            .now_or_never()
+            .unwrap()
+            .unwrap();
+            gate.checked(
+                tenant,
+                version,
+                Some(&definition_schema),
+                b"{}".to_vec(),
+                Creator::Schedule,
+                FieldPolicy::Show,
+                false,
+            )
+            .now_or_never()
+            .unwrap()
+            .unwrap();
+        });
+        let counts = counted.0.lock().unwrap().clone();
+        assert_eq!(
+            counts,
+            std::collections::BTreeMap::from([(
+                "run_input_validations_total{creator=schedule,outcome=accepted}".to_owned(),
+                1
+            )])
+        );
+    }
 
     fn schema() -> InputSchema {
         InputSchema::new(b"{\"type\":\"object\"}".to_vec(), [7; 32])

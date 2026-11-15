@@ -827,7 +827,22 @@ where
                 backfill: None,
                 trigger: self.trigger_tick(&record, false).await?,
             };
-            return self.start(&record, &principal, admission, now, &ctx).await;
+            // checked again at its release, and counted, as any action is before it starts (D043-026, D043-147)
+            return match self
+                .input_refusal(&record, &principal, waiting.nominal_at, admission.trigger)
+                .await
+            {
+                Ok(Some(refused)) => self.fired(
+                    self.record_input_invalid(&record, &admission, refused.reason)
+                        .await,
+                ),
+                Ok(None) => self.start(&record, &principal, admission, now, &ctx).await,
+                Err(AppError::Unavailable) => {
+                    self.owed(&record, waiting.kind, waiting.nominal_at, now)
+                        .await
+                }
+                Err(other) => Err(other),
+            };
         }
 
         // a waiting action that an open run still holds back is looked at again soon; with none
@@ -1385,9 +1400,23 @@ where
             }
             // design 043: the version refused the input after the check before the decision passed it (a buffered action
             // released later, a version promoted meanwhile): the time is acted on as `INPUT_INVALID`, never retried
-            Err(AppError::InvalidRunInput { reason, field, .. }) => {
+            Err(AppError::InvalidRunInput {
+                reason,
+                field,
+                rule,
+            }) => {
                 let reason =
                     action_reason(reason, field.as_deref(), record.target.nominal_time_field());
+                // a manual request (trigger-now) answers its caller and records nothing, as when the check before the
+                // decision refuses it (security review of phase 2, D043-146)
+                if decided.manual.is_some() {
+                    return Err(InputRefused {
+                        reason,
+                        field,
+                        rule,
+                    }
+                    .into_error());
+                }
                 self.record_input_invalid(record, &decided, reason).await
             }
             Err(other) => Err(other),
@@ -1768,13 +1797,13 @@ struct InputRefused {
 }
 
 impl InputRefused {
-    /// What trigger-now answers: `422` with the reason, the pointer into the action's input and the rule; nothing is
-    /// recorded.
+    /// What trigger-now answers: `422` with the reason, nothing recorded. The stored input of a schedule comes out only through the audited read of FR-018-042, which trigger-now is not,
+    /// so neither the pointer nor the rule is told: `/` and `other` (security review of phase 2, D043-144).
     fn into_error(self) -> AppError {
         AppError::InvalidRunInput {
             reason: self.reason,
-            field: self.field,
-            rule: self.rule,
+            field: self.field.map(|_| "/".to_owned()),
+            rule: self.rule.map(|_| crate::run_input::Rule::Other.as_str()),
         }
     }
 }

@@ -287,8 +287,9 @@ async fn row_8_trigger_now_answers_422_and_records_nothing() {
         refused,
         AppError::InvalidRunInput {
             reason: "SCHEDULE_INPUT_INVALID",
-            field: Some("/orderId".to_owned()),
-            rule: Some("required"),
+            // the stored input comes out only through the audited read of FR-018-042: nothing of it is told here
+            field: Some("/".to_owned()),
+            rule: Some("other"),
         }
     );
     assert!(f.outcomes(&schedule).await.is_empty(), "nothing recorded");
@@ -650,4 +651,145 @@ async fn an_exhausted_schedule_records_no_input_invalid_for_a_version_that_refus
         "nothing is left to give: no time is decided, refused or not"
     );
     assert_eq!(f.read(&schedule).await.next_action_at, None);
+}
+
+/// Starts whose check before the decision passes and whose start refuses: a version promoted between the two.
+#[derive(Clone)]
+struct PromotedBetween {
+    refusing: std::sync::Arc<crate::support::engine::Runs>,
+}
+
+impl sagat_application::schedule_firing::ScheduledStarts for PromotedBetween {
+    async fn start_scheduled(
+        &self,
+        principal: &sagat_domain::identity::Principal,
+        request: &sagat_application::schedule_firing::ScheduledStart<'_>,
+        admission: sagat_application::schedules::ScheduleAdmission,
+        ctx: &RequestContext,
+    ) -> Result<sagat_application::schedule_firing::ScheduledRun, AppError> {
+        sagat_application::schedule_firing::ScheduledStarts::start_scheduled(
+            self.refusing.as_ref(),
+            principal,
+            request,
+            admission,
+            ctx,
+        )
+        .await
+    }
+
+    async fn check_scheduled(
+        &self,
+        _: &sagat_domain::identity::Principal,
+        _: &sagat_application::schedule_firing::ScheduledStart<'_>,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    async fn cancel_run(
+        &self,
+        _: &sagat_domain::identity::Principal,
+        _: uuid::Uuid,
+        _: &str,
+        _: &str,
+        _: &RequestContext,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
+}
+
+/// Security review of phase 2: a trigger-now whose start is refused after its check passed (a version promoted between
+/// the two) answers `422` and records nothing, as one refused by the check does.
+#[tokio::test]
+async fn a_trigger_now_refused_at_its_start_answers_422_and_records_nothing() {
+    let f = fixture().await;
+    let mut checked = flow("row-8-promoted");
+    checked["inputSchema"] = json!({"type": "object"});
+    let (workflow, _) = f.w.publish(checked).await;
+    let schedule = f
+        .create(
+            "row-8-promoted",
+            &hourly(),
+            &json!({}),
+            Some(target(workflow)),
+        )
+        .await;
+    let firing = sagat_application::schedule_firing::ScheduleFiring::new(
+        sagat_infra_postgres::PgScheduleStore::new(f.w.db.pool.clone()),
+        sagat_infra_ir::schedule_calendar::SpecCalendar,
+        f.clock.clone(),
+        sagat_infra_postgres::PgIdentityStore::new(f.w.db.pool.clone()),
+        PromotedBetween {
+            refusing: std::sync::Arc::new(refusing(&f.w)),
+        },
+        sagat_domain::schedules::Ceilings::default(),
+    );
+    let refused = firing
+        .trigger(
+            &f.w.admin,
+            schedule.id,
+            &TriggerRequest {
+                overlap: None,
+                key: "trigger-row-8-promoted",
+            },
+            &RequestContext::default(),
+        )
+        .await
+        .expect_err("refused");
+    assert!(
+        matches!(refused, AppError::InvalidRunInput { .. }),
+        "{refused:?}"
+    );
+    assert!(f.outcomes(&schedule).await.is_empty(), "nothing recorded");
+}
+
+/// Row 8 where the decision would buffer: an open run and `BUFFER_ONE`; the check comes first, so trigger-now answers
+/// `422` instead of `BUFFERED`.
+#[tokio::test]
+async fn row_8_trigger_now_answers_422_where_the_decision_would_buffer() {
+    let f = fixture().await;
+    let (workflow, _) = f.w.publish(flow("row-8-buffer")).await;
+    let schedule = f
+        .create(
+            "row-8-buffer",
+            &hourly(),
+            &json!({"overlap": "BUFFER_ONE"}),
+            Some(target(workflow)),
+        )
+        .await;
+    let ctx = RequestContext::default();
+    let first = TriggerRequest {
+        overlap: None,
+        key: "trigger-buffer-0001",
+    };
+    let second = TriggerRequest {
+        overlap: None,
+        key: "trigger-buffer-0002",
+    };
+    f.firing
+        .trigger(&f.w.admin, schedule.id, &first, &ctx)
+        .await
+        .expect("starts a run that stays open");
+    assert_eq!(f.outcomes(&schedule).await, outcomes_of(&[("STARTED", 1)]));
+    f.w.publish_new_version(workflow, with_schema(flow("row-8-buffer"), order_schema()))
+        .await;
+    let refused = f
+        .firing
+        .trigger(&f.w.admin, schedule.id, &second, &ctx)
+        .await
+        .expect_err("refused, not buffered");
+    assert!(
+        matches!(
+            refused,
+            AppError::InvalidRunInput {
+                reason: "SCHEDULE_INPUT_INVALID",
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        f.outcomes(&schedule).await,
+        outcomes_of(&[("STARTED", 1)]),
+        "no BUFFERED"
+    );
 }

@@ -243,6 +243,9 @@ fn without_cancel_source(
         Engine::new(sagat_infra_ir::JsonEvaluator),
         f.w.cache.clone(),
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .with_reset_reapply(true)
 }
 
@@ -1697,6 +1700,9 @@ async fn a_pending_reset_delivers_again_what_the_source_received_though_the_engi
         Engine::new(sagat_infra_ir::JsonEvaluator),
         f.w.cache.clone(),
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator));
     let by_the_engine = ResetCompleter::new(
         f.w.store.clone(),

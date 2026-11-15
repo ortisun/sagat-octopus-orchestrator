@@ -12,8 +12,8 @@ are the ones `crates/api-http/src/error.rs` answers.
 | --- | --- | --- | --- | --- | --- |
 | `VALIDATION_FAILED` | 422 | `RUN_INPUT_INVALID` | no | `POST /runs`, the uploaded-input start, Signal-with-Start and Update-with-Start (also with an open holder), `RERUN_AS_NEW`, reset, the ad hoc database execution | Fix the input at `details.field`: `details.rule` names the keyword of the input schema it fails (no excerpt). |
 | `VALIDATION_FAILED` | 422 | `RUN_INPUT_SCHEMA_UNUSABLE` | no | the same, and the schedule writes and trigger-now | The version's input schema is outside the supported subset; publish a version within it (`control-plane input-schema-inventory` lists them). |
-| `VALIDATION_FAILED` | 422 | `SCHEDULE_INPUT_INVALID` | no | schedule create and update (`details.field` under `/action/input`), trigger-now | The input does not match the target version's input schema (no excerpt). |
-| `VALIDATION_FAILED` | 422 | `NOMINAL_TIME_FIELD_INVALID` | no | schedule create and update (`details.field` `/action/nominalTimeField`) | The field is not a declared top-level string property of the input schema. |
+| `VALIDATION_FAILED` | 422 | `SCHEDULE_INPUT_INVALID` | no | schedule create and update (`details.field` under `/action/input`), trigger-now (`details.field` `/`, `details.rule` `other`: the stored input is read only through FR-018-042) | The input does not match the target version's input schema (no excerpt). |
+| `VALIDATION_FAILED` | 422 | `NOMINAL_TIME_FIELD_INVALID` | no | schedule create and update (`details.field` `/action/nominalTimeField`), trigger-now (`details.field` `/`) | The field is not a declared top-level string property of the input schema. |
 | `UNAVAILABLE` | 503 | (none) | yes | any of the above when the validator had no permit within 5 s or its backstop stopped it | The service cannot serve this call now: try again. |
 
 `details.field` is a JSON pointer whose segments are only names the schema declares under `properties` and array
