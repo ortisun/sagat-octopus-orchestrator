@@ -1,8 +1,8 @@
 //! The `collection-operators` switch of design 042 (T042-47, FR-042-003, D042-105, D042-106), against real PostgreSQL
 //! and the real codec. With it off, publication refuses a `forEach` chain; what was published while it was on stays
 //! readable, can be activated, rolled back and promoted where it already runs, and a publication retried with its own
-//! key gets its version back. Until the scheduler applies a chain (T042-8) a chained run fails closed at entry with
-//! `COLLECTION_OPERATORS_UNSUPPORTED` instead of running the body over the list `items` yields (G042-100).
+//! key gets its version back. The switch is read by publication only: a stored chained version's runs apply their
+//! chain at entry whatever it says (T042-8 lifted the fail-closed entry of S0, G042-100).
 
 use sagat_application::definitions::{IrCodec, IrError};
 use sagat_application::error::AppError;
@@ -124,8 +124,8 @@ async fn a_stored_chain_parses_through_parse_stored_while_the_switch_is_off() {
     }
     assert_eq!(restored.digest, *published.version.digest());
 
-    // The run starts (its restore knows no switch), and its scheduler fails it closed at entry: no body runs over the
-    // three elements a `take 2` would never let through (G042-100).
+    // The run starts (its restore knows no switch), and its scheduler applies the chain at entry: the switch is read by
+    // publication only (T042-8 lifted the fail-closed entry of S0, G042-100).
     crate::limits::allow_iterations(&w, 4).await;
     let scheduler = crate::limits::scheduler(&w, "collection-operators").await;
     let run = w.start(workflow, &json!({"lines": [1, 2, 3]})).await;
@@ -139,26 +139,17 @@ async fn a_stored_chain_parses_through_parse_stored_while_the_switch_is_off() {
         )
         .await;
     assert!(
-        matches!(
-            first,
-            Err(sagat_scheduler::CollectionAdvanceError::OperatorsUnsupported)
-        ),
+        matches!(first, Ok(sagat_scheduler::CollectionAdvance::Entered)),
         "{first:?}"
     );
-    scheduler.tick().await;
-    assert_eq!(
-        status_and_code(&w, run.as_uuid()).await,
-        (
-            "FAILED".to_owned(),
-            Some("COLLECTION_OPERATORS_UNSUPPORTED".to_owned())
-        )
-    );
-    let scopes: i64 = sqlx::query_scalar("SELECT count(*) FROM iteration_scopes WHERE run_id = $1")
-        .bind(run.as_uuid())
-        .fetch_one(&w.db.pool)
-        .await
-        .expect("scope count");
-    assert_eq!(scopes, 0, "the collection was never entered");
+    let count: i32 =
+        sqlx::query_scalar("SELECT item_count FROM iteration_scopes WHERE run_id = $1")
+            .bind(run.as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("the scope");
+    assert_eq!(count, 2, "`take 2` of the three elements the filter keeps");
+    assert_eq!(status_and_code(&w, run.as_uuid()).await.1, None);
 }
 
 /// D042-105: a publication asked again with its own key after the switch was turned off is answered by the store's
