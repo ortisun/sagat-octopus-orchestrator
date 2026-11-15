@@ -333,11 +333,11 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 
 ### Seventh draft, after the sixth review (2026-11-14, at `9fb12386`)
 
-- **D043-061** (2026-11-14) Per-tenant fairness waits instead of refusing: a `tokio::sync::Semaphore(2)` per tenant, in a map
+- **D043-061** (2026-11-14; superseded by D043-068) Per-tenant fairness waits instead of refusing: a `tokio::sync::Semaphore(2)` per tenant, in a map
   whose entry leaves only when the map holds its only `Arc` and both permits are free, is awaited before the global
   permit, within the same 5 s deadline; both are owned guards, so a future dropped while it waits releases its tenant
   permit. Refusing at once (D043-053) made a single tenant on an idle process get `503` for its own third concurrent start.
-- **D043-062** (2026-11-14) The marked DFS stores, when a node turns black, its longest application path and its
+- **D043-062** (2026-11-14; the count superseded by D043-069) The marked DFS stores, when a node turns black, its longest application path and its
   input-independent application count (itself, plus its `$ref` target and its `allOf`/`anyOf`/`oneOf` branches), so the
   pass is linear. A count past `RUN_INPUT_WORK_UNITS` is refused at publication (`INPUT_SCHEMA_TOO_COSTLY`) and listed by
   the inventory, so a ×2 DAG of depth 20 cannot be published and then refuse every input.
@@ -357,6 +357,22 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   `~~`) and a nested bracket, which ECMA-262 reads as literals.
 - **D043-067** (2026-11-14) A budget stop ends the whole validation with `workLimit`; it is never the failure of one branch.
   `oneOf: [cheap match, costly match]` is refused, not accepted.
+
+### Eighth draft, after the seventh review (2026-11-14, at `846c570f`)
+
+- **D043-068** (2026-11-14) Fairness is work-conserving. Under one mutex the gate keeps the permits each tenant holds and a
+  FIFO queue of waiters; a free permit goes to the waiter whose tenant holds the fewest (FIFO among equals), and a tenant
+  may hold more than two only while no other tenant waits. A lone tenant uses all four; a newcomer is served first as
+  permits return; nothing held is taken away. A waiter's guard leaves the queue or returns its permit when the future is
+  dropped; the deadline stays 5 s. The `Semaphore(2)` of D043-061 left two permits idle while a lone tenant's third
+  start waited and could get `503`.
+- **D043-069** (2026-11-14) The publication count is a lower bound in units of what any input pays, stored per node when it
+  turns black: the application, its `$ref` target's bound, one unit per `type` name and per `enum` member, one for
+  `const`, the sum over `allOf` and `oneOf` branches, the minimum over `anyOf` branches; every sum saturates. A root bound
+  past the budget is `INPUT_SCHEMA_TOO_COSTLY`. Counting applications instead let a ×2 `allOf` tree of depth 10 over a
+  1,000-member `enum` publish and then refuse every input; summing `anyOf` over-counted; a plain sum could overflow.
+- **D043-070** (2026-11-14) The pattern allowlist refuses a `]` as the first item of a class (`[]a]`) and `[^]`: ECMA-262
+  reads `[]` as an empty class and `[^]` as any character, `regex-syntax` reads both as classes holding `]`.
 
 ## 3. Gaps
 
