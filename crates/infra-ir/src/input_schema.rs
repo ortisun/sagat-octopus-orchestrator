@@ -54,3 +54,36 @@ pub(crate) fn precheck(
         }
     }
 }
+
+/// The `inputSchema` of a stored document as a creator would read it, without parsing the rest of the document:
+/// `control-plane input-schema-inventory` pre-checks it and reads the kinds of its triggers (T043-24).
+///
+/// # Errors
+/// [`IrError::Malformed`] when the document is not a JSON object.
+pub fn stored_input_schema(document: &[u8]) -> Result<StoredInputSchema, IrError> {
+    let value: Value = serde_json::from_slice(document).map_err(|_| IrError::Malformed)?;
+    if !value.is_object() {
+        return Err(IrError::Malformed);
+    }
+    let triggered = value
+        .get("triggers")
+        .and_then(Value::as_array)
+        .is_some_and(|triggers| {
+            triggers
+                .iter()
+                .any(|trigger| trigger.get("kind").and_then(Value::as_str) != Some("manual"))
+        });
+    Ok(StoredInputSchema {
+        schema: of(&value),
+        triggered,
+    })
+}
+
+/// What [`stored_input_schema`] reads of a stored document.
+#[derive(Debug, Clone)]
+pub struct StoredInputSchema {
+    /// The canonical `inputSchema`, when the document has one.
+    pub schema: Option<InputSchema>,
+    /// Whether the document has a trigger other than a manual start.
+    pub triggered: bool,
+}

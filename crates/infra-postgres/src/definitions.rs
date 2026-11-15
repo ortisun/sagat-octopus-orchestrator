@@ -1012,3 +1012,58 @@ async fn insert_saga_plan(
     }
     Ok(())
 }
+
+/// One stored version as `control-plane input-schema-inventory` reads it (design 043, T043-24, FR-043-018): its ids and
+/// its canonical document. Nothing else of the version, and nothing of any run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredVersion {
+    pub tenant: TenantId,
+    pub namespace: NamespaceId,
+    pub workflow: WorkflowId,
+    pub version: WorkflowVersionId,
+    pub number: i32,
+    /// Whether the workflow is one the platform writes for itself (ADR-0080).
+    pub internal: bool,
+    pub document: Vec<u8>,
+}
+
+/// The stored versions of every tenant whose id is after `after`, ascending by id, at most `limit`: a page of the
+/// inventory, which runs with the owner's credentials as `migrate` does. It reads and writes nothing else.
+///
+/// # Errors
+/// [`StoreError`] when the read fails.
+pub async fn stored_versions_page(
+    pool: &PgPool,
+    after: Option<WorkflowVersionId>,
+    limit: u32,
+) -> Result<Vec<StoredVersion>, StoreError> {
+    // tenant, namespace, workflow, version, number, internal, document
+    type Row = (Uuid, Uuid, Uuid, Uuid, i32, bool, Vec<u8>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT v.tenant_id, w.namespace_id, v.workflow_id, v.id, v.version_number, w.internal, v.document \
+           FROM workflow_versions v \
+           JOIN workflows w ON w.tenant_id = v.tenant_id AND w.id = v.workflow_id \
+          WHERE $1::uuid IS NULL OR v.id > $1 \
+          ORDER BY v.id \
+          LIMIT $2",
+    )
+    .bind(after.map(|id| id.as_uuid()))
+    .bind(i64::from(limit))
+    .fetch_all(pool)
+    .await
+    .map_err(store_error)?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(tenant, namespace, workflow, version, number, internal, document)| StoredVersion {
+                tenant: TenantId::new(tenant),
+                namespace: NamespaceId::new(namespace),
+                workflow: WorkflowId::new(workflow),
+                version: WorkflowVersionId::new(version),
+                number,
+                internal,
+                document,
+            },
+        )
+        .collect())
+}

@@ -72,7 +72,7 @@ pub use capacity_vacate::PgCapacityVacateStore;
 pub use chain_progress::{PgChainProgressStore, initialize_chain_in_transaction};
 pub use clock::DatabaseClock;
 pub use declared_operations::PgDeclaredOperationStore;
-pub use definitions::PgDefinitionStore;
+pub use definitions::{PgDefinitionStore, StoredVersion, stored_versions_page};
 /// The scan of the pending resets whose source did not end within the window, exposed so a test can check its plan.
 #[doc(hidden)]
 pub use execution::EXPIRED_RESETS_SQL;

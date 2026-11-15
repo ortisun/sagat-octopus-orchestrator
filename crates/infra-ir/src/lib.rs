@@ -23,6 +23,7 @@ pub use database_result::JsonDatabaseResultValidator;
 mod diff;
 mod evaluator;
 mod input_schema;
+pub use input_schema::{StoredInputSchema, stored_input_schema};
 mod lake;
 mod lake_egress;
 pub mod lake_probe_result;

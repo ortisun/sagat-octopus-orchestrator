@@ -1,9 +1,14 @@
 //! Design 043 against a real PostgreSQL: publication runs the pre-check of the run-input subset on every new
-//! `inputSchema` in the mode it is given (T043-13, FR-043-012).
+//! `inputSchema` in the mode it is given (T043-13, FR-043-012), and `control-plane input-schema-inventory` lists the
+//! stored versions that would refuse every start (T043-24, FR-043-018).
+
+use std::time::Duration;
 
 use sagat_application::clock::SystemClock;
 use sagat_application::definitions::{DefinitionService, InputValidationMode, IrError};
 use sagat_application::error::AppError;
+use sagat_control_plane::config::DatabaseConfig;
+use sagat_control_plane::inventory::{exit_code, input_schema_inventory};
 use sagat_domain::workflow::{DefinitionWarning, InputSchemaIssue};
 use sagat_infra_ir::JsonIrCodec;
 use serde_json::{Value, json};
@@ -117,4 +122,87 @@ async fn publication_refuses_a_schema_outside_the_subset_in_enforce_and_warns_in
         triggered,
         vec![DefinitionWarning::InputSchemaAppliesToTriggers]
     );
+}
+
+fn database(url: String) -> DatabaseConfig {
+    DatabaseConfig {
+        url,
+        max_connections: 2,
+        statement_timeout: Duration::from_secs(5),
+    }
+}
+
+#[tokio::test]
+async fn the_inventory_lists_the_versions_that_would_be_refused_and_exits_by_what_it_found() {
+    let w = world().await;
+    // one version inside the subset with an event trigger: information only
+    publish_in(
+        &w,
+        InputValidationMode::Enforce,
+        &with_schema(
+            "envelope-flow",
+            json!({"type": "object", "required": ["orderId"]}),
+            Some(json!([{"kind": "event", "eventType": "order.created"}])),
+        ),
+    )
+    .await
+    .expect("inside the subset");
+    let only_inside = input_schema_inventory(&database(w.db.url.clone())).await;
+    let inventory = only_inside.as_ref().expect("the inventory runs");
+    assert!(inventory.refused.is_empty(), "{inventory:?}");
+    assert_eq!(inventory.triggered.len(), 1, "{inventory:?}");
+    assert_eq!(exit_code(&only_inside), 0, "nothing would be refused");
+
+    // one with patternProperties, stored the way 0.2.x stored it (here: a publication in report mode)
+    let secret_pattern = "^x-sentinel-";
+    let mut schema = outside();
+    schema["patternProperties"] = json!({secret_pattern: {"const": "sentinel-value"}});
+    publish_in(
+        &w,
+        InputValidationMode::Report,
+        &with_schema("legacy-flow", schema, None),
+    )
+    .await
+    .expect("stored");
+    let found = input_schema_inventory(&database(w.db.url.clone())).await;
+    let inventory = found.as_ref().expect("the inventory runs");
+    assert_eq!(
+        exit_code(&found),
+        1,
+        "at least one version would be refused"
+    );
+    assert_eq!(inventory.refused.len(), 1, "{inventory:?}");
+    let refused = &inventory.refused[0];
+    assert_eq!(
+        (refused.issue, refused.keyword.as_str(), refused.at.as_str()),
+        (
+            InputSchemaIssue::KeywordUnsupported,
+            "patternProperties",
+            "/inputSchema/patternProperties"
+        )
+    );
+    assert_eq!(refused.ids.tenant, w.admin.tenant_id());
+    assert_eq!(
+        inventory.triggered.len(),
+        1,
+        "the version with the trigger stays informational"
+    );
+    assert!(inventory.scanned >= 2);
+    let printed = inventory.to_string();
+    assert!(printed.contains("refused tenant="), "{printed}");
+    assert!(
+        printed.contains(&refused.ids.version.to_string()),
+        "{printed}"
+    );
+    assert!(printed.contains("issue=INPUT_SCHEMA_KEYWORD_UNSUPPORTED keyword=patternProperties at=/inputSchema/patternProperties"), "{printed}");
+    assert!(printed.contains("information tenant="), "{printed}");
+    assert!(!printed.contains("sentinel"), "no schema text: {printed}");
+    assert!(!printed.contains("orderId"), "no schema text: {printed}");
+
+    let unreachable = input_schema_inventory(&database(
+        "postgres://sagat:none@127.0.0.1:1/none".to_owned(),
+    ))
+    .await;
+    assert!(unreachable.is_err(), "{unreachable:?}");
+    assert_eq!(exit_code(&unreachable), 2, "the command failed");
 }
