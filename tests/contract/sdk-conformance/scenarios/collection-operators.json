@@ -1,0 +1,84 @@
+{
+  "name": "collection-operators",
+  "buildOnly": true,
+  "description": "Builder-only parity for the operators of a forEach (design 042, FR-042-028): every collection operator, built from each SDK's operator factory and carried by its collection options, gives the same document and canonical text. The builders only assemble the chain; the server validates it. The harness does not publish or execute these workflows; runtime behaviour is collection-operators-runtime and collection-operators-limits.",
+  "workflows": {
+    "for-each": {
+      "name": "collection-operators-for-each",
+      "bodies": {
+        "line": {
+          "program": [
+            { "op": "step", "id": "price", "activity": "line.price" },
+            { "op": "return", "id": "return-price", "result": "steps.price.output" }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "forEach",
+          "id": "lines",
+          "items": "input.orders",
+          "body": "line",
+          "result": "bodyResult",
+          "maxItems": 100,
+          "maxConcurrency": 4,
+          "operators": [
+            { "filter": { "where": "element.total > 0 && position < 900" } },
+            { "map": { "select": "element.lines" } },
+            { "flatMap": { "select": "element" } },
+            { "skip": { "count": 0 } },
+            { "take": { "count": 1000 } },
+            { "distinct": { "by": "element.sku" } },
+            { "distinct": {} },
+            { "window": { "count": 25 } }
+          ]
+        },
+        { "op": "end", "id": "done", "options": { "outputExpr": "steps.lines.output" } }
+      ]
+    },
+    "map": {
+      "name": "collection-operators-map",
+      "bodies": {
+        "line": {
+          "program": [
+            { "op": "step", "id": "price", "activity": "line.price" },
+            { "op": "return", "id": "return-price", "result": "steps.price.output" }
+          ]
+        },
+        "plain": {
+          "program": [
+            { "op": "step", "id": "price", "activity": "plain.price" },
+            { "op": "return", "id": "return-price", "result": "steps.price.output" }
+          ]
+        }
+      },
+      "program": [
+        {
+          "op": "map",
+          "id": "prices",
+          "items": "input.lines",
+          "body": "line",
+          "result": "bodyResult.amount",
+          "maxItems": 10000,
+          "maxConcurrency": 256,
+          "operators": [
+            { "skip": { "count": 2 } },
+            { "take": { "count": 0 } },
+            { "window": { "count": 1 } }
+          ]
+        },
+        {
+          "op": "forEach",
+          "id": "unchained",
+          "items": "input.lines",
+          "body": "plain",
+          "result": "bodyResult",
+          "maxItems": 10,
+          "maxConcurrency": 1
+        },
+        { "op": "end", "id": "done", "options": { "outputExpr": "steps.prices.output" } }
+      ]
+    }
+  },
+  "steps": []
+}

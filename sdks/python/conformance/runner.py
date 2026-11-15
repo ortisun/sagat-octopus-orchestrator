@@ -42,6 +42,7 @@ from sagat_octopus_orchestrator import (
     Body,
     ClientConfig,
     Flow,
+    Operator,
     QueryDefinition,
     Reset,
     RetryPolicy,
@@ -71,6 +72,7 @@ from sagat_octopus_orchestrator import (
     body,
     flow,
     format_instant,
+    ops,
     trace_id_of,
     workflow,
 )
@@ -106,6 +108,34 @@ def snake(options: Obj | None) -> Obj:
 # ----------------------------------------------------------------------------------------- builders
 
 
+def operators(stages: list[Obj] | None) -> list[Operator] | None:
+    """A scenario's chain, built through the public operator factory; absent, there is none."""
+    if stages is None:
+        return None
+    chain: list[Operator] = []
+    for stage in stages:
+        if len(stage) != 1:
+            raise ValueError(f"a stage has exactly one operator: {stage}")
+        ((name, p),) = stage.items()
+        if name == "filter":
+            chain.append(ops.filter(p["where"]))
+        elif name == "map":
+            chain.append(ops.map(p["select"]))
+        elif name == "flatMap":
+            chain.append(ops.flat_map(p["select"]))
+        elif name == "skip":
+            chain.append(ops.skip(p["count"]))
+        elif name == "take":
+            chain.append(ops.take(p["count"]))
+        elif name == "distinct":
+            chain.append(ops.distinct(p.get("by")))
+        elif name == "window":
+            chain.append(ops.window(p["count"]))
+        else:
+            raise ValueError(f"unknown operator {name}")
+    return chain
+
+
 def apply(target: Flow, ops: list[Obj]) -> None:
     for op in ops:
         kind = op["op"]
@@ -139,6 +169,7 @@ def apply(target: Flow, ops: list[Obj]) -> None:
                 op["result"],
                 max_items=op["maxItems"],
                 max_concurrency=op["maxConcurrency"],
+                operators=operators(op.get("operators")),
             )
         elif kind == "map":
             target.map(
@@ -148,6 +179,7 @@ def apply(target: Flow, ops: list[Obj]) -> None:
                 op["result"],
                 max_items=op["maxItems"],
                 max_concurrency=op["maxConcurrency"],
+                operators=operators(op.get("operators")),
             )
         elif kind == "while":
             target.while_loop(
