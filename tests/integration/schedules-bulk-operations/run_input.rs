@@ -1067,3 +1067,114 @@ async fn one_scheduled_action_is_one_validation_in_two_spans() {
         "both checks record their outcome in their span: {text}"
     );
 }
+
+/// `RUN_INPUT_SCHEMA_UNUSABLE` on rows 3, 4 and 8: a Signal-with-Start, a rerun and a trigger-now of a version whose schema
+/// is outside the subset are refused with it (OD-2026-11-14-11).
+#[tokio::test]
+async fn an_unusable_schema_refuses_with_start_rerun_and_trigger_now() {
+    let f = fixture().await;
+    let unusable = AppError::InvalidRunInput {
+        reason: "RUN_INPUT_SCHEMA_UNUSABLE",
+        field: None,
+        rule: None,
+    };
+    // row 3
+    let mut waiter = document(
+        &format!("row-3-unusable-{}", uuid::Uuid::now_v7()),
+        "w",
+        vec![
+            crate::support::engine::with(
+                crate::support::engine::wait_node(
+                    "w",
+                    crate::with_start::SIGNAL,
+                    "input.k",
+                    300_000,
+                    None,
+                ),
+                "next",
+                json!("notify"),
+            ),
+            activity("notify"),
+        ],
+    );
+    waiter["inputSchema"] = unusable_schema();
+    let (with_start, _) = publish_in(&f.w, InputValidationMode::Report, &waiter).await;
+    assert_eq!(
+        signal(&f, &f.w.runs, with_start, &crate::business_ids::key())
+            .await
+            .expect_err("refused"),
+        unusable
+    );
+    // row 4: a run of the version admitted before the check, started again
+    let (workflow, _) = publish_in(
+        &f.w,
+        InputValidationMode::Report,
+        &with_schema(flow("row-4-unusable"), unusable_schema()),
+    )
+    .await;
+    let source = crate::support::run_input::start_in_report(&f.w, workflow, &json!({})).await;
+    crate::business_ids::cancel(&f, source).await;
+    let refused =
+        f.w.runs
+            .rerun(
+                &f.w.admin,
+                source,
+                "start it again after the fix",
+                &crate::business_ids::key(),
+                &crate::support::engine::ctx(),
+            )
+            .await
+            .expect_err("refused");
+    assert_eq!(refused, unusable);
+    // row 8: a schedule written while its target was usable, whose target then took a version outside the subset
+    let (later, _) = f.w.publish(flow("row-8-later")).await;
+    let schedule = f
+        .create("row-8-unusable", &hourly(), &json!({}), Some(target(later)))
+        .await;
+    let defs = sagat_application::definitions::DefinitionService::new(
+        f.w.store.clone(),
+        sagat_application::clock::SystemClock,
+        sagat_infra_ir::JsonIrCodec,
+    )
+    .with_input_validation(InputValidationMode::Report);
+    let record = defs
+        .get_workflow(&f.w.admin, later, &crate::support::engine::ctx())
+        .await
+        .expect("workflow");
+    let draft = defs
+        .update_draft(
+            &f.w.admin,
+            later,
+            record.workflow.draft_revision(),
+            &serde_json::to_vec(&with_schema(flow("row-8-later"), unusable_schema()))
+                .expect("json"),
+            &crate::support::engine::ctx(),
+        )
+        .await
+        .expect("draft");
+    defs.publish(
+        &f.w.admin,
+        later,
+        draft.workflow.draft_revision(),
+        None,
+        "publish-unusable-row-8",
+        &crate::support::engine::ctx(),
+    )
+    .await
+    .expect("published in report mode");
+    let refused = f
+        .firing
+        .trigger(
+            &f.w.admin,
+            schedule.id,
+            &TriggerRequest {
+                overlap: None,
+                key: "trigger-unusable-01",
+            },
+            &RequestContext::default(),
+        )
+        .await
+        .expect_err("refused");
+    assert_eq!(refused, unusable);
+    assert!(f.outcomes(&schedule).await.is_empty());
+}

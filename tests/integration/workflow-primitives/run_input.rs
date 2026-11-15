@@ -413,3 +413,61 @@ async fn row_12_no_room_waits_and_the_budget_is_final() {
         json!("CONTINUATION_INPUT_INVALID")
     );
 }
+
+/// D043-038, G043-043: a child a peer created between this replica's read of the reservation and its check (a 0.2.x engine,
+/// or one in `report`) is answered as created, and the parent step is not failed, though this replica's gate refuses it.
+#[tokio::test]
+async fn a_child_a_peer_created_before_the_check_is_not_failed_by_the_refusal() {
+    use sagat_application::run_input::{PathSegment, Rule, SchemaRefusal};
+    use std::sync::Arc;
+
+    let w = Arc::new(world().await);
+    let kid = format!("row-11-peer-kid-{}", Uuid::now_v7());
+    w.publish(with_schema(
+        document(&kid, "a", vec![activity("a")]),
+        json!({"type": "object"}),
+    ))
+    .await;
+    let (parent_workflow, _) = w
+        .publish(document(
+            &format!("row-11-peer-{}", Uuid::now_v7()),
+            "c",
+            vec![child_node("c", &kid, None)],
+        ))
+        .await;
+    let parent = w.start(parent_workflow, &json!({})).await;
+    // the peer: a scheduler in `report` mode starts the child of the same reservation
+    let peer = Arc::new(crate::support::engine::scheduler_in_report(&w));
+    let hook_peer = Arc::clone(&peer);
+    let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook_ran = Arc::clone(&ran);
+    let hook: sagat_scheduler::BeforeChildCheck = Arc::new(move |_child| {
+        let peer = Arc::clone(&hook_peer);
+        let ran = Arc::clone(&hook_ran);
+        Box::pin(async move {
+            if !ran.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                peer.tick().await;
+            }
+        })
+    });
+    let refusing = scheduler_with(
+        &w,
+        vec![Err(SchemaRefusal::Invalid {
+            segments: vec![PathSegment::Property("k".into())],
+            rule: Rule::Type,
+        })],
+    )
+    .with_before_child_check(hook);
+    refusing.tick().await;
+    let child = child_run_id(parent, &NodeId::parse("c").expect("node"));
+    assert!(
+        w.run_record(child).await.is_some(),
+        "the peer created the child"
+    );
+    assert_eq!(
+        step_code(&w, parent, "c").await,
+        None,
+        "the step is not failed"
+    );
+    assert_ne!(w.step_status(parent, "c").await, Some(StepStatus::Failed));
+}

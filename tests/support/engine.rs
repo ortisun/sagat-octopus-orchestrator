@@ -1214,3 +1214,18 @@ fn unique_worker_name() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     format!("test-worker-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
+
+/// A scheduler of `w` whose children and continuations are checked in `report` mode: an engine that admits what an
+/// `enforce` one refuses, as a peer during the upgrade may (design 043).
+pub fn scheduler_in_report(w: &World) -> Sched {
+    Scheduler::new(
+        w.store.clone(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Report,
+    ))
+    .with_children(w.cache.clone())
+}

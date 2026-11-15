@@ -643,6 +643,12 @@ impl View {
     }
 }
 
+/// What a test runs right before a reserved child's input is checked: given the child's id, it may create the child, as a
+/// peer would (design 043, D043-038).
+pub type BeforeChildCheck = Arc<
+    dyn Fn(RunId) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
+>;
+
 /// The scheduler over a store, an evaluator and a source of jitter.
 pub struct Scheduler<S, E, R> {
     store: S,
@@ -661,6 +667,9 @@ pub struct Scheduler<S, E, R> {
     rests: std::sync::Mutex<std::collections::BTreeMap<&'static str, Instant>>,
     /// Checks the input of every child and every continuation against its version's schema (design 043, rows 11, 12).
     run_inputs: Arc<RunInputGate>,
+    /// Called with the reserved child's id right before its input is checked: what a test does there is what a peer did
+    /// between this replica's read of the reservation and its check (design 043, D043-038, G043-043).
+    before_child_check: Option<BeforeChildCheck>,
     /// How often the passes run: the first rest of a chained collection that waits for storage quota.
     pass_interval: Duration,
     /// The running ceilings of a collection's operator chain (design 042).
@@ -702,6 +711,7 @@ where
             item_source: None,
             rests: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             run_inputs: RunInputGate::unwired(),
+            before_child_check: None,
             pass_interval: Duration::from_millis(500),
             chain_ceilings: ChainCeilings::COLLECTION,
             reentries: collection_chain::Reentries::new(),
@@ -723,6 +733,15 @@ where
     #[must_use]
     pub const fn with_chain_ceilings(mut self, ceilings: ChainCeilings) -> Self {
         self.chain_ceilings = ceilings;
+        self
+    }
+
+    /// Runs `hook` with the reserved child's id right before its input is checked (design 043, G043-043): the place where a
+    /// peer may create the child first. For the tests of that race.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_before_child_check(mut self, hook: BeforeChildCheck) -> Self {
+        self.before_child_check = Some(hook);
         self
     }
 
@@ -5803,6 +5822,9 @@ where
             .into_iter()
             .flatten()
             .min();
+        if let Some(hook) = &self.before_child_check {
+            hook(pending.child).await;
+        }
         // Design 043, row 11: the input the parent's node evaluated is checked against the child's version. A refusal fails
         // the parent step, unless the child already exists (created by a peer, a 0.2.x engine or one in `report`, D043-038).
         let input = match self
