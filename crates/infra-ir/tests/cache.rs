@@ -147,3 +147,106 @@ fn stored_parsing_keeps_structural_validation_and_current_canonical_bytes() {
         "restoration still rejects unsupported IR"
     );
 }
+
+/// T043-1, FR-043-001: the parsed definition carries the canonical bytes of its `inputSchema` and their SHA-256,
+/// whatever the spacing and key order of the document, on publication and on restore, so every creator that holds
+/// the definition holds the schema (no creator reads the database for it).
+#[test]
+fn the_parsed_definition_carries_the_canonical_input_schema_and_its_sha256() {
+    use sagat_application::definitions::IrCodec;
+    use sha2::{Digest as _, Sha256};
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&chain("input-schema", 2)).expect("workflow");
+    assert!(
+        JsonIrCodec
+            .parse(&serde_json::to_vec(&value).expect("bytes"))
+            .expect("parses")
+            .definition
+            .input_schema()
+            .is_none(),
+        "a document without an inputSchema has none"
+    );
+    let written = r#"{ "required" : ["orderId"],"type":"object",
+        "properties": {"orderId": {"type": "string", "maxLength": 64}} }"#;
+    value["inputSchema"] = serde_json::from_str(written).expect("schema");
+    let bytes = serde_json::to_vec(&value).expect("bytes");
+    let canonical =
+        br#"{"properties":{"orderId":{"maxLength":64,"type":"string"}},"required":["orderId"],"type":"object"}"#;
+    let expected: [u8; 32] = Sha256::digest(canonical).into();
+    for parsed in [
+        JsonIrCodec.parse(&bytes).expect("publication"),
+        JsonIrCodec.parse_stored(&bytes).expect("restore"),
+    ] {
+        let schema = parsed
+            .definition
+            .input_schema()
+            .expect("the definition carries the schema");
+        assert_eq!(schema.bytes(), canonical, "the canonical bytes");
+        assert_eq!(schema.digest(), &expected, "their SHA-256");
+        assert!(
+            !format!("{schema:?}").contains("orderId"),
+            "the debug form shows the size and digest, not the schema"
+        );
+    }
+    let cache = DefinitionCache::new(Arc::new(JsonIrCodec), 8);
+    let restored = cache
+        .get_or_parse(WorkflowVersionId::generate(), &bytes)
+        .expect("restores");
+    assert_eq!(
+        restored.input_schema().map(|schema| schema.digest()),
+        Some(&expected),
+        "the definition cache hands the schema to every creator"
+    );
+}
+
+/// T043-1: a continuation document (continue-as-new holds the definition and not the document) carries it too.
+#[test]
+fn a_continuation_definition_carries_its_input_schema() {
+    use sagat_application::definitions::IrCodec;
+    let document = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+        "metadata": {"name": "continuation-schema"}, "entrypoint": "work",
+        "inputSchema": {"type": "object", "required": ["next"]},
+        "nodes": [
+            {"id": "work", "type": "activity", "activity": "segment.work", "next": "rollover"},
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next"}
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 86_400_000}
+    });
+    let bytes = serde_json::to_vec(&document).expect("bytes");
+    for parsed in [
+        JsonIrCodec.parse(&bytes).expect("publication"),
+        JsonIrCodec.parse_stored(&bytes).expect("restore"),
+    ] {
+        assert_eq!(
+            parsed.definition.input_schema().map(|s| s.bytes().to_vec()),
+            Some(br#"{"required":["next"],"type":"object"}"#.to_vec())
+        );
+    }
+}
+
+/// T043-1, NFR-043-PERF: the schema bytes are counted by the footprint, so the byte budget of the definition cache
+/// still bounds memory when definitions carry large schemas.
+#[test]
+fn the_input_schema_is_counted_by_the_definition_footprint() {
+    use sagat_application::definitions::IrCodec;
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&chain("footprint-schema", 2)).expect("workflow");
+    let without = JsonIrCodec
+        .parse(&serde_json::to_vec(&value).expect("bytes"))
+        .expect("parses")
+        .definition
+        .footprint();
+    let names: Vec<String> = (0..2_000).map(|i| format!("field{i:05}")).collect();
+    value["inputSchema"] = json!({"type": "object", "required": names});
+    let parsed = JsonIrCodec
+        .parse(&serde_json::to_vec(&value).expect("bytes"))
+        .expect("parses");
+    let schema_len = parsed.definition.input_schema().expect("schema").len();
+    assert!(schema_len > 20_000, "{schema_len}");
+    assert!(
+        parsed.definition.footprint() >= without + schema_len,
+        "footprint {} must count the {schema_len} schema bytes over {without}",
+        parsed.definition.footprint()
+    );
+}

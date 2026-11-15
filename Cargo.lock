@@ -6005,8 +6005,11 @@ dependencies = [
  "jsonschema",
  "metrics",
  "proptest",
+ "regex-automata",
+ "regex-syntax",
  "sagat-application",
  "sagat-domain",
+ "sagat-infra-schema",
  "serde",
  "serde_json",
 ]

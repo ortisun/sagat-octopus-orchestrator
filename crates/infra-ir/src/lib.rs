@@ -22,6 +22,7 @@ pub mod schedule_calendar;
 pub use database_result::JsonDatabaseResultValidator;
 mod diff;
 mod evaluator;
+mod input_schema;
 mod lake;
 mod lake_egress;
 pub mod lake_probe_result;
@@ -353,7 +354,7 @@ fn converted_document(
 ) -> Result<ParsedDefinition, IrError> {
     // The levels of what an Iceberg write sends out are read from the schemas of this document, once, for publication and
     // for the restore that admission relies on; they are derived, so they never reach the canonical bytes.
-    let definition = lake_egress::attach(value, convert(value)?);
+    let definition = input_schema::attach(value, lake_egress::attach(value, convert(value)?));
     check_expressions(&definition)?;
     let canonical = canonical::canonical_json(value);
     let digest = canonical::digest_of(&canonical);

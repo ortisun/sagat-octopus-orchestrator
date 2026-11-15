@@ -4,6 +4,7 @@
 
 pub mod bundle;
 pub mod classification;
+pub mod run_input;
 
 use sagat_application::scripts::{SchemaChecker, SchemaProblem};
 use sagat_domain::scripts::MAX_SCHEMA_BYTES;

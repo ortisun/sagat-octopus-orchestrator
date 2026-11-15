@@ -4,8 +4,13 @@
 //! transaction holds locks, and it must not serialise unrelated versions: one key compiles once
 //! while its other callers wait for that result, different keys compile concurrently up to a small
 //! number of permits, and a cached entry (or a remembered compile failure) is a map lookup.
+//!
+//! The cache is generic over its key, its compiled value and its failure (design 043, T043-2): the
+//! classification carriers and the run-input schemas each have one, with their own bounds and metric
+//! names. What a failure is and how much an entry weighs is the caller's; the cache never reads either.
 
 use std::collections::{HashMap, VecDeque};
+use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
@@ -19,7 +24,41 @@ use super::CompiledCarrier;
 /// Compiles that may run at once. More would turn a burst of cold versions into a memory spike.
 const MAX_CONCURRENT_COMPILES: usize = 4;
 
-pub(super) type Outcome = Result<Arc<CompiledCarrier>, ProjectionFailure>;
+/// What one cached entry keeps in memory, in estimated bytes: what the cache budget is spent on.
+pub(crate) trait Weighed {
+    fn weight(&self) -> usize;
+}
+
+impl Weighed for CompiledCarrier {
+    fn weight(&self) -> usize {
+        self.weight
+    }
+}
+
+/// The bounds of one cache.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Limits {
+    /// Compiled entries kept at most.
+    pub(crate) entries: usize,
+    /// Estimated compiled bytes kept at most.
+    pub(crate) bytes: usize,
+    /// Failures remembered at most.
+    pub(crate) failures: usize,
+}
+
+/// The names under which one cache counts what it does. Every label value is a closed name.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CacheMetrics {
+    pub(crate) name: &'static str,
+    pub(crate) label: &'static str,
+    pub(crate) hit: &'static str,
+    pub(crate) miss: &'static str,
+    pub(crate) evict: &'static str,
+    /// A remembered failure was served.
+    pub(crate) failure_hit: &'static str,
+}
+
+pub(crate) type Outcome<V, E> = Result<Arc<V>, E>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheStats {
@@ -34,35 +73,54 @@ pub struct CacheStats {
     pub failures: usize,
 }
 
-#[derive(Default)]
-struct State {
-    entries: HashMap<ClassificationCacheKey, Arc<CompiledCarrier>>,
-    order: VecDeque<ClassificationCacheKey>,
+struct State<K, V, E> {
+    entries: HashMap<K, Arc<V>>,
+    order: VecDeque<K>,
     weight: usize,
-    failures: HashMap<ClassificationCacheKey, ProjectionFailure>,
-    failure_order: VecDeque<ClassificationCacheKey>,
+    failures: HashMap<K, E>,
+    failure_order: VecDeque<K>,
 }
 
-impl State {
-    fn lookup(&mut self, key: &ClassificationCacheKey) -> Option<Outcome> {
+impl<K, V, E> Default for State<K, V, E> {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            weight: 0,
+            failures: HashMap::new(),
+            failure_order: VecDeque::new(),
+        }
+    }
+}
+
+impl<K: Eq + Hash + Clone, V, E: Clone> State<K, V, E> {
+    fn lookup(&mut self, key: &K) -> Option<Outcome<V, E>> {
         if let Some(entry) = self.entries.get(key).cloned() {
             self.order.retain(|candidate| candidate != key);
             self.order.push_back(key.clone());
             return Some(Ok(entry));
         }
-        self.failures.get(key).map(|failure| Err(*failure))
+        self.failures.get(key).map(|failure| Err(failure.clone()))
     }
 }
 
 /// The result of one compile, shared with everyone who asked for the same key meanwhile.
-#[derive(Default)]
-struct Flight {
-    outcome: Mutex<Option<Outcome>>,
+struct Flight<V, E> {
+    outcome: Mutex<Option<Outcome<V, E>>>,
     ready: Condvar,
 }
 
-impl Flight {
-    fn wait(&self) -> Outcome {
+impl<V, E> Default for Flight<V, E> {
+    fn default() -> Self {
+        Self {
+            outcome: Mutex::new(None),
+            ready: Condvar::new(),
+        }
+    }
+}
+
+impl<V, E: Clone> Flight<V, E> {
+    fn wait(&self) -> Outcome<V, E> {
         let mut outcome = lock(&self.outcome);
         loop {
             if let Some(done) = outcome.as_ref() {
@@ -75,7 +133,7 @@ impl Flight {
         }
     }
 
-    fn complete(&self, outcome: Outcome) {
+    fn complete(&self, outcome: Outcome<V, E>) {
         *lock(&self.outcome) = Some(outcome);
         self.ready.notify_all();
     }
@@ -110,19 +168,19 @@ impl Drop for Permit<'_> {
 }
 
 /// Completes a flight even when the compiler panics, so followers never wait forever.
-struct Finish<'a> {
-    cache: &'a CarrierCache,
-    key: &'a ClassificationCacheKey,
-    flight: &'a Flight,
+struct Finish<'a, K: Eq + Hash + Clone, V, E: Clone> {
+    cache: &'a Cache<K, V, E>,
+    key: &'a K,
+    flight: &'a Flight<V, E>,
     completed: bool,
 }
 
-impl Finish<'_> {
-    fn complete(mut self, outcome: Outcome) {
+impl<K: Eq + Hash + Clone, V, E: Clone> Finish<'_, K, V, E> {
+    fn complete(mut self, outcome: Outcome<V, E>) {
         self.finish(outcome);
     }
 
-    fn finish(&mut self, outcome: Outcome) {
+    fn finish(&mut self, outcome: Outcome<V, E>) {
         self.completed = true;
         // The result is cached before the flight leaves the table, so a caller that no longer
         // finds the flight finds the entry.
@@ -131,25 +189,60 @@ impl Finish<'_> {
     }
 }
 
-impl Drop for Finish<'_> {
+impl<K: Eq + Hash + Clone, V, E: Clone> Drop for Finish<'_, K, V, E> {
     fn drop(&mut self) {
         if !self.completed {
-            self.finish(Err(ProjectionFailure::SchemaUnusable));
+            let failure = self.cache.panicked.clone();
+            self.finish(Err(failure));
         }
     }
 }
 
-pub(super) struct CarrierCache {
-    state: Mutex<State>,
-    inflight: Mutex<HashMap<ClassificationCacheKey, Arc<Flight>>>,
+/// A bounded cache of compiled values `V` keyed by `K`, remembering failures `E`.
+pub(crate) struct Cache<K, V, E> {
+    state: Mutex<State<K, V, E>>,
+    inflight: Mutex<HashMap<K, Arc<Flight<V, E>>>>,
     permits: Permits,
+    limits: Limits,
+    metrics: CacheMetrics,
+    /// What the followers of a compile that panicked are told (it is not remembered).
+    panicked: E,
     hits: AtomicU64,
     misses: AtomicU64,
     evictions: AtomicU64,
 }
 
+/// The classification carriers' cache (feature 016): its bounds, its metric and its behaviour are those it always had.
+pub(super) type CarrierCache = Cache<ClassificationCacheKey, CompiledCarrier, ProjectionFailure>;
+
 impl Default for CarrierCache {
     fn default() -> Self {
+        Cache::new(
+            Limits {
+                entries: MAX_CLASSIFICATION_CACHE_ENTRIES,
+                bytes: MAX_CLASSIFICATION_CACHE_BYTES,
+                failures: MAX_CLASSIFICATION_FAILURE_ENTRIES,
+            },
+            CacheMetrics {
+                name: "classification_cache_total",
+                label: "outcome",
+                hit: "hit",
+                miss: "miss",
+                evict: "evict",
+                failure_hit: "hit",
+            },
+            ProjectionFailure::SchemaUnusable,
+        )
+    }
+}
+
+enum Role<V, E> {
+    Leader(Arc<Flight<V, E>>),
+    Follower(Arc<Flight<V, E>>),
+}
+
+impl<K: Eq + Hash + Clone, V: Weighed, E: Clone> Cache<K, V, E> {
+    pub(crate) fn new(limits: Limits, metrics: CacheMetrics, panicked: E) -> Self {
         Self {
             state: Mutex::new(State::default()),
             inflight: Mutex::new(HashMap::new()),
@@ -157,20 +250,16 @@ impl Default for CarrierCache {
                 available: Mutex::new(MAX_CONCURRENT_COMPILES),
                 freed: Condvar::new(),
             },
+            limits,
+            metrics,
+            panicked,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             evictions: AtomicU64::new(0),
         }
     }
-}
 
-enum Role {
-    Leader(Arc<Flight>),
-    Follower(Arc<Flight>),
-}
-
-impl CarrierCache {
-    pub(super) fn stats(&self) -> CacheStats {
+    pub(crate) fn stats(&self) -> CacheStats {
         let state = lock(&self.state);
         CacheStats {
             hits: self.hits.load(Ordering::Relaxed),
@@ -182,21 +271,21 @@ impl CarrierCache {
         }
     }
 
-    /// Returns the cached carrier, joins a compile already running for `key`, or compiles it.
+    /// Returns the cached value, joins a compile already running for `key`, or compiles it.
     /// `before_admission` runs once the cache has missed and before the caller can lead or join a
     /// flight; tests use it to line callers up.
-    pub(super) fn get_or_compile<Before, Compile>(
+    pub(crate) fn get_or_compile<Before, Compile>(
         &self,
-        key: &ClassificationCacheKey,
+        key: &K,
         before_admission: Before,
         compile: Compile,
-    ) -> Outcome
+    ) -> Outcome<V, E>
     where
         Before: FnOnce(),
-        Compile: FnOnce() -> Outcome,
+        Compile: FnOnce() -> Outcome<V, E>,
     {
         if let Some(outcome) = self.lookup(key) {
-            self.record_hit();
+            self.record_hit(outcome.is_err());
             return outcome;
         }
         before_admission();
@@ -204,7 +293,7 @@ impl CarrierCache {
             let mut inflight = lock(&self.inflight);
             if let Some(outcome) = self.lookup(key) {
                 drop(inflight);
-                self.record_hit();
+                self.record_hit(outcome.is_err());
                 return outcome;
             }
             match inflight.get(key) {
@@ -219,7 +308,7 @@ impl CarrierCache {
         match role {
             Role::Follower(flight) => {
                 let outcome = flight.wait();
-                self.record_hit();
+                self.record_hit(outcome.is_err());
                 outcome
             }
             Role::Leader(flight) => {
@@ -240,32 +329,32 @@ impl CarrierCache {
         }
     }
 
-    fn lookup(&self, key: &ClassificationCacheKey) -> Option<Outcome> {
+    fn lookup(&self, key: &K) -> Option<Outcome<V, E>> {
         lock(&self.state).lookup(key)
     }
 
-    fn remember(&self, key: &ClassificationCacheKey, outcome: &Outcome) {
+    fn remember(&self, key: &K, outcome: &Outcome<V, E>) {
         let mut state = lock(&self.state);
         match outcome {
             Ok(compiled) => {
                 if state.entries.contains_key(key) {
                     return;
                 }
-                let weight = compiled.weight;
-                while state.entries.len() >= MAX_CLASSIFICATION_CACHE_ENTRIES
-                    || state.weight.saturating_add(weight) > MAX_CLASSIFICATION_CACHE_BYTES
+                let weight = compiled.weight();
+                while state.entries.len() >= self.limits.entries
+                    || state.weight.saturating_add(weight) > self.limits.bytes
                 {
                     let Some(oldest) = state.order.pop_front() else {
                         break;
                     };
                     if let Some(removed) = state.entries.remove(&oldest) {
-                        state.weight = state.weight.saturating_sub(removed.weight);
+                        state.weight = state.weight.saturating_sub(removed.weight());
                         self.evictions.fetch_add(1, Ordering::Relaxed);
-                        metrics::counter!("classification_cache_total", "outcome" => "evict")
+                        metrics::counter!(self.metrics.name, self.metrics.label => self.metrics.evict)
                             .increment(1);
                     }
                 }
-                if weight <= MAX_CLASSIFICATION_CACHE_BYTES {
+                if weight <= self.limits.bytes {
                     state.weight = state.weight.saturating_add(weight);
                     state.order.push_back(key.clone());
                     state.entries.insert(key.clone(), Arc::clone(compiled));
@@ -276,26 +365,31 @@ impl CarrierCache {
                 if state.failures.contains_key(key) {
                     return;
                 }
-                while state.failures.len() >= MAX_CLASSIFICATION_FAILURE_ENTRIES {
+                while state.failures.len() >= self.limits.failures {
                     let Some(oldest) = state.failure_order.pop_front() else {
                         break;
                     };
                     state.failures.remove(&oldest);
                 }
                 state.failure_order.push_back(key.clone());
-                state.failures.insert(key.clone(), *failure);
+                state.failures.insert(key.clone(), failure.clone());
             }
         }
     }
 
-    fn record_hit(&self) {
+    fn record_hit(&self, failure: bool) {
         self.hits.fetch_add(1, Ordering::Relaxed);
-        metrics::counter!("classification_cache_total", "outcome" => "hit").increment(1);
+        let value = if failure {
+            self.metrics.failure_hit
+        } else {
+            self.metrics.hit
+        };
+        metrics::counter!(self.metrics.name, self.metrics.label => value).increment(1);
     }
 
     fn record_miss(&self) {
         self.misses.fetch_add(1, Ordering::Relaxed);
-        metrics::counter!("classification_cache_total", "outcome" => "miss").increment(1);
+        metrics::counter!(self.metrics.name, self.metrics.label => self.metrics.miss).increment(1);
     }
 
     #[cfg(test)]
@@ -309,17 +403,15 @@ impl CarrierCache {
 
         let state = lock(&self.state);
         assert_eq!(state.order.len(), state.entries.len());
-        assert_eq!(
-            state.order.iter().cloned().collect::<HashSet<_>>(),
-            state.entries.keys().cloned().collect::<HashSet<_>>(),
-            "an LRU key appears exactly once"
-        );
+        let order: HashSet<&K> = state.order.iter().collect();
+        let keys: HashSet<&K> = state.entries.keys().collect();
+        assert!(order == keys, "an LRU key appears exactly once");
         assert_eq!(
             state.weight,
             state
                 .entries
                 .values()
-                .map(|entry| entry.weight)
+                .map(|entry| entry.weight())
                 .sum::<usize>()
         );
         assert_eq!(state.failure_order.len(), state.failures.len());
