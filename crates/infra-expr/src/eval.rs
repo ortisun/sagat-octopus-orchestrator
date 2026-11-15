@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::error::{ExprError, clip};
-use crate::limits::{MAX_LIST_ELEMENTS, MAX_STRING_BYTES};
+use crate::limits::{MAX_COPIED_BYTES, MAX_LIST_ELEMENTS, MAX_STRING_BYTES};
 use crate::parser::{BinOp, Expr, Function, Method, parse};
 
 /// The variables an expression can see (`input`, `steps`, `run`, ...).
@@ -36,6 +36,11 @@ impl Env {
     /// environment built once, without copying the rest.
     pub fn set(&mut self, name: &str, value: Value) {
         self.vars.insert(name.to_owned(), value);
+    }
+
+    /// Adds every variable of `other`, replacing those of the same name: how an environment built in parts is joined.
+    pub fn absorb(&mut self, other: Self) {
+        self.vars.extend(other.vars);
     }
 
     /// Unbinds `name` and gives its value back, so a bound element can be moved out again instead of copied.
@@ -94,7 +99,7 @@ impl Compiled {
     /// # Errors
     /// An [`ExprError`] when evaluation fails or exceeds its budget.
     pub fn eval(&self, env: &Env) -> Result<Value, ExprError> {
-        Run { env }.eval(&self.root).map(Cow::into_owned)
+        Run { env, copied: 0 }.eval(&self.root).map(Cow::into_owned)
     }
 
     /// Evaluates to a boolean.
@@ -169,11 +174,52 @@ fn number_value(f: f64) -> Result<Value, ExprError> {
 
 /// Evaluation visits every node at most once (there are no loops or macros), so its cost is linear
 /// in the expression, which [`crate::limits::MAX_TOKENS`] bounds; no separate step budget is needed.
+/// What it copies is bounded apart, by [`MAX_COPIED_BYTES`]: a node is visited once, but a variable
+/// it names may be large, and an expression may name it many times.
 struct Run<'e> {
     env: &'e Env,
+    /// Bytes copied so far (compact JSON size of what was copied).
+    copied: usize,
+}
+
+/// The compact JSON size of `value`, near enough to bound what copying it costs.
+fn json_size(value: &Value) -> usize {
+    match value {
+        Value::Null => 4,
+        Value::Bool(_) => 5,
+        Value::Number(_) => 8,
+        Value::String(text) => text.len() + 2,
+        Value::Array(items) => items.iter().map(|item| json_size(item) + 1).sum::<usize>() + 2,
+        Value::Object(map) => {
+            map.iter()
+                .map(|(key, item)| key.len() + 4 + json_size(item))
+                .sum::<usize>()
+                + 2
+        }
+    }
 }
 
 impl<'e> Run<'e> {
+    /// Charges a copy of `bytes` to this evaluation.
+    fn charge(&mut self, bytes: usize) -> Result<(), ExprError> {
+        self.copied = self.copied.saturating_add(bytes);
+        if self.copied > MAX_COPIED_BYTES {
+            return Err(ExprError::ResultTooLarge);
+        }
+        Ok(())
+    }
+
+    /// `value` owned, charging the copy when it was borrowed from the environment.
+    fn owned(&mut self, value: Cow<'e, Value>) -> Result<Value, ExprError> {
+        match value {
+            Cow::Owned(value) => Ok(value),
+            Cow::Borrowed(value) => {
+                self.charge(json_size(value))?;
+                Ok(value.clone())
+            }
+        }
+    }
+
     /// A thin dispatcher: the recursion goes through here, so its frame must stay small. Each arm's
     /// real work lives in a helper that returns before the next recursive call, which keeps the
     /// stack cost per nesting level to a few hundred bytes even in a debug build.
@@ -215,7 +261,8 @@ impl<'e> Run<'e> {
     {
         let mut out = Vec::with_capacity(items.len());
         for item in items {
-            out.push(self.eval(item)?.into_owned());
+            let value = self.eval(item)?;
+            out.push(self.owned(value)?);
         }
         Ok(Cow::Owned(Value::Array(out)))
     }
@@ -319,6 +366,12 @@ impl<'e> Run<'e> {
     {
         let left = self.eval(left)?;
         let right = self.eval(right)?;
+        // Concatenating two lists copies both.
+        if op == BinOp::Add
+            && let (Value::Array(_), Value::Array(_)) = (left.as_ref(), right.as_ref())
+        {
+            self.charge(json_size(&left).saturating_add(json_size(&right)))?;
+        }
         binary(op, &left, &right).map(Cow::Owned)
     }
 
@@ -332,6 +385,12 @@ impl<'e> Run<'e> {
         'x: 'e,
     {
         let value = self.eval(arg)?;
+        // `string()` of a string copies it.
+        if function == Function::String
+            && let Value::String(text) = value.as_ref()
+        {
+            self.charge(text.len() + 2)?;
+        }
         call(function, &value).map(Cow::Owned)
     }
 
