@@ -337,8 +337,8 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   reconciliation pass MUST keep trigger-owned schedules equal to the cron triggers in force. A rolling
   upgrade MUST NOT start a tick twice.
   *Amended 2026-11-14 (OD-2026-11-14-4, OD-2026-11-14-5, D2240, ADR-0091, proposed):* the handover is made by that
-  operator command, run by the operator or **by a one-shot job the deployment runs after it** with the owner's credentials
-  (FR-018-053); "until an audited operator handover" reads "until the handover, by either". Both are audited (D2246) and
+  operator command, run by the operator or **by a one-shot job the deployment runs after it** with the narrow role
+  `sagat_handover` (FR-018-053); "until an audited operator handover" reads "until the handover, by either". Both are audited (D2246) and
   one-way.
 
 **Business identifiers and start options**
@@ -511,19 +511,23 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   activation; features 029 and 031 activate through the same registry.
 - **FR-018-053 — Automatic handover of the cron triggers.** Unless the deployment switches it off
   (`schedules.autoHandover: false` in Helm, `SAGAT_SCHEDULES_AUTO_HANDOVER=false` in compose; on by default,
-  OD-2026-11-14-6), a one-shot job with the schema owner's credentials MUST run after a deployment (a compose service; a
-  Helm `post-install,post-upgrade` hook) the operator command of FR-018-017 with `--auto`, which MUST hand over only after
+  OD-2026-11-14-6), a one-shot job MUST run after a deployment (a compose service; a plain Helm Job of the release named by
+  its revision, so that a rollback deletes it) the operator command of FR-018-017 with `--auto`, as the login role
+  `sagat_handover`, which may record `schedules-v1` for the engines and nothing else; it MUST start no activation after
+  SIGTERM, and MUST hand over no sooner than one horizon (at most 1 h) after its first round and only after
   `--stable` consecutive rounds, read with no transaction open between them, in which: every execution engine seen within
   `--horizon` lists `schedules-v1`; the set of live engines is unchanged and has at least `--min-live` members; no
   scheduler membership seen within the horizon belongs to an engine the registry does not list; the reconciliation made,
-  revived or removed no trigger-owned schedule within the horizon; a control plane is live; and no cron trigger is
+  revived, respecified, resumed or removed no trigger-owned schedule within the horizon; a control plane is live; and no cron trigger is
   unconverged; and then only through the command's own activation transaction, with the live count of the rounds as its
-  expectation. It MUST give up after `--wait` (bounded) with the last of a closed set of reasons; lock and statement timeouts
-  MUST be a retried `BUSY`. The last reason MUST be readable by the engines, which export it
-  (`trigger_schedule_handover_blocked{reason}`; alert `SagatTriggerHandoverBlocked` after an hour whatever the reason). A
-  handover MUST record its mode and epoch and a copy of the census in its transaction, and, after the commit, one audit
-  record per tenant that has a cron trigger, idempotent by the epoch (OD-2026-11-14-7). The runtime role gains no
-  privilege; requirements stay the operator's command's (FR-018-052). (OD-2026-11-14-4 to -7; D2240 to D2250; ADR-0091.)
+  expectation. It MUST give up after `--wait` (bounded) with the last of a closed set of typed reasons; what a wait cures (lock and
+  statement timeouts among them) MUST be retried with a backoff. The last reason MUST be readable by the engines, which export
+  it (`trigger_schedule_handover_blocked{reason}`; alert `SagatTriggerHandoverBlocked` after an hour whatever the reason) with
+  the recorded mode (`trigger_schedule_handover_mode{mode}`). A handover MUST record its mode, its epoch, a copy of the census
+  and the set of tenants that have a cron trigger, each with a random audit id, in its transaction, and, after the commit,
+  one audit record per tenant of that set with the handover row's actor, mode and time, refusing a planted record
+  (OD-2026-11-14-7). The runtime role gains no privilege; requirements stay the operator's command's (FR-018-052), run with
+  the owner or with `sagat_handover`. (OD-2026-11-14-4 to -7; D2240 to D2258; ADR-0091.)
 
 ### Non-functional requirements
 
@@ -579,7 +583,7 @@ All evidence below is future evidence; none exists yet.
 | SC-018-016 | A barrier test runs every run-driven transition (completion, timer, wait timeout, deadline, terminal, handoff) against each aggregate path; `pg_locks` never shows a run-driven transaction holding a schedule, business-id, job, item, obligation or pending-reset row, and no deadlock occurs. | FR-018-007, FR-018-021, FR-018-030 |
 | SC-018-017 | An activation racing a registering instance that lacks the capability never leaves that instance serving (a running one that was silent at the activation stops within about 12 s of its first answer); an instance whose capability is missing after an activation answers `BINARY_CAPABILITY_MISSING` (API) or stops its passes (engine); an instance silent for 30 s no longer blocks an activation. | FR-018-052, FR-018-017 |
 | SC-018-018 | A job whose selection always fails survives ten failed rounds, each after the wait of a refused item, and ends `FAILED` `SELECTION_FAILED` at the eleventh with one audit record; one failed round followed by a pick does not fail the job and resets the count; the count and the wait survive a restart and a move of the lease; a cancel that commits while a failure is recorded is not overwritten; the record is cut at each of its writes and counts the failure once; the error text (a canary quoted by a database error) reaches no log, span, metric or table; a job that waits leaves the scan so the jobs behind it are reached. | FR-018-029, FR-018-033 |
-| SC-018-019 | With the job on, a released-v0.2 upgrade (migrate, engines, control planes) is handed over by the job once the 0.2 memberships are older than the horizon, a 0.3.0 control plane is live, the reconciliation has made no schedule within the horizon, the fleet held still for the stable rounds and the view is empty, and not before; each failed condition is reported with its reason and changes nothing; an engine registering without `schedules-v1`, a publication in flight, the operator's command and an engine leaving are held by barriers in both orders and never leave the platform handed over with an engine lacking the capability or a trigger without its schedule; timeouts are retried as `BUSY`; a crash at each wait records nothing and a crash after the commit leaves tenant rows that the next run completes once; the job exits 0, 2 or 3 as specified; `helm template` renders the Job and leaves it out when switched off; one tick starts one run throughout. | FR-018-053, FR-018-017, FR-018-052 |
+| SC-018-019 | With the job on, a released-v0.2 upgrade (migrate, engines, control planes) is handed over by the job once the 0.2 memberships are older than the horizon, a 0.3.0 control plane is live, the reconciliation has made no schedule within the horizon, the fleet held still for the stable rounds and the view is empty, and not before; each failed condition is reported with its reason and changes nothing; an engine registering without `schedules-v1`, a publication in flight, the operator's command and an engine leaving are held by barriers in both orders and never leave the platform handed over with an engine lacking the capability or a trigger without its schedule; what a wait cures is retried; a SIGTERM before an activation starts none; a crash at each wait records nothing and a crash after the commit leaves tenant rows that the next run completes once, from the recorded set; a record the runtime role planted is refused; the job exits 0, 2, 3 or 4 as specified; `helm template` renders a plain Job named by the revision with its own service account and required Secret, and nothing when switched off; one tick starts one run throughout. | FR-018-053, FR-018-017, FR-018-052 |
 
 ## Assumptions
 
@@ -627,5 +631,5 @@ schedules that start anything other than a workflow run.
 See [research.md §5](research.md#5-owner-questions-the-plan-implements-the-recommended-defaults):
 O1000 (schedule authority after access loss — recommended: pause), O1001 (business-id reuse window —
 recommended: 30 days, up to 366), O1002 (who holds `run:batch` — recommended: admin and operator).
-Since 2026-11-14 (FR-018-053): O1954 and O1955 answered (OD-2026-11-14-6 and -7); O1956 open (may the Helm hook
-that waits for the handover fail the release — recommended: yes, with `helm upgrade --timeout` longer than its wait).
+Since 2026-11-14 (FR-018-053): O1954 and O1955 answered (OD-2026-11-14-6 and -7); O1956 withdrawn (the Job is no longer a
+hook); O1957 open (a plain Job and the role `sagat_handover` instead of the letter of OD-2026-11-14-5 — recommended: yes).
