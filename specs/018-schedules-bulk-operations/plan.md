@@ -69,6 +69,17 @@ Design checks, not implementation approval. Re-evaluated after the Phase 1 desig
 | VII — inbox/outbox, redeliverable hints | Pass | Pass | Every run admission writes its outbox in the causing transaction; passes find due work by index scan, not by broker message; lost-hint tests T018-020, T018-046. |
 | VIII — failure tests, honest results | Pass | Pass | Failure matrix below maps each rule-9 case to a task; ceilings are design values pending T018-072. |
 
+*Re-checked 2026-11-14 for FR-018-053 (the automatic handover, ADR-0091, proposed):* **I** — the handover stays the
+command's one bounded transaction and one-way; no transaction is open across the job's wait (D2249). **V** — the runtime role
+gains no privilege; the job runs as `sagat_handover`, which can record `schedules-v1` and nothing else, and its Secret is
+deleted after the handover (D2252); it decides on rows the runtime role can write and can be delayed, hurried or misled by them,
+not made to record (G2243); tenant audit ids are random and owner-only (D2253). **VI** — the handover is recorded with its mode, epoch
+and census in its transaction and audited per tenant after it, idempotently; a blocked handover is a reason in a row the
+engines export, with an alert that does not restart (D2245, D2246). **VIII** — barrier races in both orders, the departure
+case, the detectors and their forgeries, SIGTERM before an activation, a crash at each wait and after the commit, a planted audit
+record, the exit codes, `helm template`, a compose smoke test and a
+released-v0.2 upgrade (T018-085).
+
 ## Project Structure
 
 ### Documentation (this feature)
@@ -313,6 +324,14 @@ decision on alerts): `SCHEDULE_PAUSED_BY_SYSTEM`, `BATCH_STALLED` as additive al
    accept pause, resume and trigger. A later engine without `schedules-v1` refuses to run passes
    (registry rule 3); only a binary older than the registry release could still start (G1011, G1607,
    runbook).
+   *Amended 2026-11-14 (OD-2026-11-14-4 to -7, ADR-0091, proposed; T018-082 to T018-087):* the handover is also made
+   **automatically**, by a one-shot job with the narrow role `sagat_handover` (a compose service, a plain Helm Job of the
+   release named by its revision) that runs `schedule-trigger-handover --auto` after a deployment (FR-018-053), in the same release that ships the
+   registry. Step 1 of this list said the registry ships "in a release before the handover can be used"; that is no longer so,
+   and what replaces the operator's attestation is the job's reading, through owner-defined functions, of the scheduler memberships within a
+   horizon (D2242) and of the reconciliation's recent work (D2243), with a live control plane and stable rounds (D2241, D2244).
+   The upgrade order is migrate, engines, control planes (OD-2026-11-14-3); one `helm upgrade` rolls the last two together
+   (G2246). `migrate` does not make the handover: it must finish before the engines start (D2240).
 3. **Clients.** New request fields are optional; old SDKs never see `200 USE_EXISTING` because they
    never send the policy; new response fields are optional and ignored by old clients.
 4. **Rollback.** Disable new schedule, batch, with-start and reset admission with configuration;
