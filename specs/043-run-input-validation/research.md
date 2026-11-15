@@ -376,7 +376,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 
 ### Ninth draft, after the architecture review (2026-11-14, at `c1cedefa`)
 
-- **D043-071** (2026-11-14) Option (b) of the review: `crates/application` stays free of a runtime (tokio remains its
+- **D043-071** (2026-11-14; the port's shape by D043-076; the defaults are constants of the adapter) Option (b) of the review: `crates/application` stays free of a runtime (tokio remains its
   dev-dependency, `crates/application/Cargo.toml:30-32`). `SchemaValidator::check` is an async port; the permits, the
   work-conserving fair queue, the wait, `block_in_place` and the backstop are in `crates/infra-schema`, which gains tokio
   (`sync`, `time`, `rt-multi-thread`) as a normal dependency and its own `off_worker` (the one in
@@ -392,6 +392,16 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   for the scripts of feature 005.
 - **D043-075** (2026-11-14) The digest of `InputSchema` is computed by `infra-ir` at parse; the domain stores a `[u8; 32]`
   (`sha2` is not in `DOMAIN_ALLOWED`).
+
+### Tenth draft, after the architecture review at `d7577f18` (2026-11-14)
+
+- **D043-076** (2026-11-14) `SchemaValidator::check` returns `Pin<Box<dyn Future<Output = ...> + Send + 'a>>`, so the trait is
+  object-safe and held as `Arc<dyn SchemaValidator>`, as the checker it replaces is (`crates/application/src/runs.rs:822`).
+  `RunInputGate` is not generic; creators hold an `Arc<RunInputGate>`, so no type parameter spreads through the thirteen
+  creators. The wait and the backstop are the adapter's constants `RUN_INPUT_PERMIT_WAIT` and `RUN_INPUT_BACKSTOP`, 5 s
+  each; the adapter does not read an `application` constant for them.
+- **D043-077** (2026-11-14) A sixth architecture rule fails when `tokio` is a normal (not a dev) dependency of
+  `sagat-application`, with a negative fixture, so the layering of D043-071 holds.
 
 ## 3. Gaps
 

@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** owner: that every start is validated in 0.3.0 (OD-2026-11-14-2), the mode (OD-2026-11-14-8), runs in progress (OD-2026-11-14-9), with-start (OD-2026-11-14-10), schemas that do not compile (OD-2026-11-14-11) and the supported subset with a validator of the platform (OD-2026-11-14-14). The mechanism is an agent's proposal, revised after four rounds of architecture, security and correctness review of design 043 on 2026-11-14.
 **Refines / supersedes:** none. It makes the `inputSchema` of the IR (feature 001) binding, replaces the blob-only `RunInputChecker`, and adds a capability to the instance registry of ADR-0050 decision 9 and ADR-0082.
-**Enforced by:** the type `CheckedRunInput` (its fields and constructor are private to the gate's module, it carries the version id, and `PgRunStore::create` and `continue_evaluated` refuse a mismatch); `scripts/check-architecture.py`, which fails on an `INSERT INTO runs` outside its three places, on `.continue_as_new(` outside tests, on the `test-support` feature outside `[dev-dependencies]`, and on a construction of `CheckedRunInput` outside its module; a rule of `scripts/check-architecture.py` that rejects `jsonschema` under the run-input validator module, with its negative fixture; the oracle property test of the validator against `jsonschema` and its adversarial budget cases (regression checks, not proofs); the vocabulary test and `control-plane input-schema-inventory`'s test; the backstop tests with a validator double held by a barrier; `no_shipped_manifest_sets_run_input_validation_to_report`; the per-row integration tests and the sentinel test of design 043 (`integration_payload_classification`); the statement budget of `integration_claim_transition_efficiency`.
+**Enforced by:** the type `CheckedRunInput` (its fields and constructor are private to the gate's module, it carries the version id, and `PgRunStore::create` and `continue_evaluated` refuse a mismatch); `scripts/check-architecture.py`, which fails on an `INSERT INTO runs` outside its three places, on `.continue_as_new(` outside tests, on the `test-support` feature outside `[dev-dependencies]`, and on a construction of `CheckedRunInput` outside its module; a rule of `scripts/check-architecture.py` that rejects `jsonschema` under the run-input validator module, with its negative fixture, and a rule that fails when `tokio` becomes a normal dependency of `sagat-application`; the oracle property test of the validator against `jsonschema` and its adversarial budget cases (regression checks, not proofs); the vocabulary test and `control-plane input-schema-inventory`'s test; the backstop tests with a validator double held by a barrier; `no_shipped_manifest_sets_run_input_validation_to_report`; the per-row integration tests and the sentinel test of design 043 (`integration_payload_classification`); the statement budget of `integration_claim_transition_efficiency`.
 
 ## Context
 
@@ -32,8 +32,9 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
    `CheckedRunInput` that names the version it was checked against. Outside tests it MUST be built only inside the
    gate's module, and it MUST NOT implement `Default` or `Deserialize`; the stores MUST refuse one whose version is
    not the run's.
-3. The gate MUST call a narrow `SchemaValidator` port that takes the schema and input bytes and answers accept or a
-   refusal; the policy (mode, metrics, the type) MUST stay in the gate.
+3. The gate MUST call a narrow, object-safe `SchemaValidator` port, held as `Arc<dyn SchemaValidator>`, whose `check`
+   takes the key, the schema and the input bytes and returns a boxed future of accept or a refusal; the policy (mode,
+   metrics, the type) MUST stay in the gate, which is not generic over the validator.
 4. The schema MUST come from the parsed definition of that version, which carries the schema's canonical bytes and
    their digest. In `enforce` mode the check MUST NOT add a SQL statement to a start, a triggered start, a child start or
    a continuation, and MUST NOT run inside a database transaction or on the async scheduler. The adapter behind the
@@ -90,7 +91,8 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
 1. **A documented subset validated by a validator of the platform with a work counter, behind a gate in `application`,
    with a type only the gate builds** — chosen (OD-2026-11-14-14). The bound holds by construction, because the counter
    counts what the validator does; the static pre-check only checks the vocabulary, the references and their cycles; the
-   compiler and five architecture rules keep a new creator from skipping the check and `jsonschema` off the path.
+   compiler and six architecture rules keep a new creator from skipping the check, `jsonschema` off the path and the
+   runtime out of `application`.
 2. **The `jsonschema` library with a static walk as the bound on its work** — rejected after four review rounds, each of
    which found work the walk did not charge or a reference it resolved differently.
 3. **Validation in an isolated process with a timeout** — it bounds the damage without bounding the work, adds a round
@@ -126,7 +128,7 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
 ## Evidence
 
 - Design: `docs/designs/043-run-input-validation.md`; registers: `specs/043-run-input-validation/research.md`
-  (D043-001 to D043-075, G043-001 to G043-017, O043-001 to O043-004).
+  (D043-001 to D043-077, G043-001 to G043-017, O043-001 to O043-004).
 - Background: G1955 and G2081 in `specs/018-schedules-bulk-operations/research.md`.
 - Existing tests this builds on: `crates/infra-schema/tests/annotation_is_inert.rs`;
   `claim_check_schema_validation_refuses_external_refs_without_exposing_payloads` in `crates/infra-schema/src/lib.rs`;

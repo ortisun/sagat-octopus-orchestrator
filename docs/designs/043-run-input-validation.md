@@ -38,7 +38,7 @@ and the owner then answered its questions (`docs/owner-decisions.md`):
 - OD-2026-11-14-14 ("Subconjunto suportado"), after four review rounds of a static bound on `jsonschema`: the subset
   and the platform's own validator with a work counter. This is the seventh draft; `research.md` dates each one.
 
-The registers are in `specs/043-run-input-validation/research.md` (D043-001 to D043-075, G043-001 to G043-017,
+The registers are in `specs/043-run-input-validation/research.md` (D043-001 to D043-077, G043-001 to G043-017,
 O043-001 to O043-004). The rule is ADR-0090.
 
 ## The Problem
@@ -177,8 +177,9 @@ What makes it more than a check in `start_with`:
   `CheckedRunInput`, whose fields and only non-test constructor are private to `crates/application/src/run_input.rs`; a
   fourth rule fails on a struct expression or an associated function call of `CheckedRunInput` in any other file
   outside test paths, and on a `Default` or `Deserialize` derive or impl for it anywhere (D043-045); a fifth rule fails on
-  `jsonschema` (a dependency path, a `use` or a qualified path) under `crates/infra-schema/src/run_input/` (D043-074).
-  *Acceptance:* a negative fixture for each of the five rules in `scripts/tests/`.
+  `jsonschema` (a dependency path, a `use` or a qualified path) under `crates/infra-schema/src/run_input/` (D043-074);
+  a sixth fails when `tokio` is a normal dependency of `sagat-application` rather than a dev-dependency (D043-077).
+  *Acceptance:* a negative fixture for each of the six rules in `scripts/tests/`.
 - **FR-043-017** A `CheckedRunInput` carries the version id it was checked against. `PgRunStore::create` and
   `continue_evaluated` MUST refuse one whose version is not the run's (`StoreError::Internal`, logged without the value).
   *Acceptance:* a unit test of each store against a mismatched input.
@@ -199,7 +200,8 @@ What makes it more than a check in `start_with`:
 - **NFR-043-BOUND** A compile is bounded by the pre-check (64 KiB of schema, depth 32, an application path of at most
   128, an input-independent count within the budget, at most 32 patterns of 16 KiB and 512 NFA states each, 256 KiB of programs in all); a validation by the
   validator's own counter of `RUN_INPUT_WORK_UNITS` (1,000,000) and an input depth of 64, with a 5 s backstop; at most four
-  validations run at once per process and two per tenant, awaited within the same deadline.
+  validations run at once per process, shared among tenants by the work-conserving queue of D043-068 within the same
+  wait.
 - **NFR-043-SEC** No new grant, role membership or `SECURITY DEFINER` function for the runtime role. No tenant code runs
   in the control plane or the engine; no reference is resolved; a compiled schema is shared only within its tenant.
 - **NFR-043-COMPAT** The upgrade order of OD-2026-11-14-3 (migrate, engines, control planes) holds; until the operator
@@ -231,7 +233,7 @@ What makes it more than a check in `start_with`:
 
 ## Goals
 
-- One rule for every run creator, enforced by the type system and five architecture checks rather than by
+- One rule for every run creator, enforced by the type system and six architecture checks rather than by
   convention.
 - A refusal that a person or an operator can act on, with no input value in it, that is never retried when it cannot
   pass.
@@ -355,17 +357,17 @@ Two pieces, so that the port is narrow and the policy is in one place (D043-017)
 
 ```
 // crates/application/src/run_input.rs — the port, implemented in crates/infra-schema
-trait SchemaValidator: Send + Sync {
+trait SchemaValidator: Send + Sync {          // object-safe: held as Arc<dyn SchemaValidator> (D043-076)
     // async; the adapter owns the permits, the wait, the off-worker step and the backstop (D043-071)
-    fn check(&self, key: SchemaKey, schema: &InputSchema, input: &[u8])
-        -> impl Future<Output = Result<(), SchemaRefusal>> + Send;
+    fn check<'a>(&'a self, key: SchemaKey, schema: &'a InputSchema, input: &'a [u8])
+        -> Pin<Box<dyn Future<Output = Result<(), SchemaRefusal>> + Send + 'a>>;
 }
 struct SchemaKey { tenant: TenantId, digest: [u8; 32], shared: bool }   // built by the gate; shared = creator != AdHoc
 enum SchemaRefusal { Invalid { segments: Vec<PathSegment>, rule: Rule }, Unusable { keyword: Keyword, at: Pointer },
                      TooDeep, WorkLimit, Busy, Backstop }   // Busy: no permit within the wait
 
 // crates/application/src/run_input.rs — the concrete gate
-struct RunInputGate<V: SchemaValidator> { validator: V, mode: Mode }      // no runtime, no timer, no permit
+struct RunInputGate { validator: Arc<dyn SchemaValidator>, mode: Mode }   // no runtime, no timer, no permit; not generic
 impl RunInputGate {
     async fn check(&self, tenant, version: WorkflowVersionId, definition: &WorkflowDefinition,
                    input: Vec<u8>, creator: Creator, field_policy: FieldPolicy)
@@ -402,14 +404,14 @@ enum FieldPolicy { Show, Root }      // Show only when the caller's view of the 
   waiter whose tenant holds the fewest permits (FIFO among equals), and a tenant may hold more than two only while no
   other tenant is waiting. A tenant alone on the process can therefore use all four; when a second tenant arrives, it is
   served first as permits come back, and nothing held is taken away (each validation is bounded by the counter, so it
-  returns soon). A waiter waits at most `MAX_PROJECTION_DURATION` (by default 5 s,
-  `crates/application/src/classification.rs:18`, a constant `infra-schema` already reads);
+  returns soon). A waiter waits at most `RUN_INPUT_PERMIT_WAIT`, a constant of the adapter (5 s by default; the
+  backstop is the adapter's `RUN_INPUT_BACKSTOP`, also 5 s);
   its guard removes it from the queue, or returns its permit, when its future is dropped. A tenant's bookkeeping entry
   leaves the map when it holds nothing and waits for nothing, so nothing in use is evicted. The validator then runs
   through the
   adapter's `off_worker`: `block_in_place` on a multi-thread
   runtime, and in place on a current-thread runtime (where `block_in_place` would panic, and where there is no other
-  worker to protect). It holds both permits until the validator returns. The validator's cache waits on its
+  worker to protect). It holds its permit until the validator returns. The validator's cache waits on its
   single-flight `Condvar` only there. The work is bounded by the counter, so nothing has to be cancelled and no thread
   outlives its caller.
 - **The backstop** (D043-050). The counter also reads the clock every 4,096 units; past 5 s of work it stops with
@@ -680,7 +682,7 @@ exists.
 | I. State and retry semantics are explicit and durable | Pass | The check runs before the creation transaction and writes nothing; a schedule refusal, its pause, its audit and the backfill's end are one decision under the schedule's fence; a trigger refusal is one transaction (delivery, then audit); a continuation refusal ends the predecessor through the existing fenced path |
 | II. Modular domain, ports and adapters | Pass | The domain holds opaque bytes and a digest computed by `infra-ir`; the port and the gate are in `application`, which stays free of a runtime (tokio remains a dev-dependency there); the permits, the wait, `block_in_place` and the backstop are in the adapter `infra-schema` behind the port, which gains tokio as a normal dependency (option (b) of the architecture review, D043-071); no new edge into `application` or the domain (`scripts/check-architecture.py`), and a rule keeps `jsonschema` out of the validator module (D043-074) |
 | III. External effects are at-least-once; sagas compensate | n/a | No external effect is added; a refused run has none |
-| IV. Compatibility is versioned and pinned | Pass with conditions | Published versions are not changed and contracts change additively. Two accepted deviations: an input that was accepted is refused (OD-2026-11-14-2), and runs in progress can fail at the step that creates a child or continues (OD-2026-11-14-9). Both in Complexity Tracking |
+| IV. Compatibility is versioned and pinned | Pass with conditions | Published versions are not changed. Three deviations, each accepted by the owner: an input that was accepted is refused (OD-2026-11-14-2); runs in progress can fail at the step that creates a child or continues (OD-2026-11-14-9); a document that publishes today can be refused by 0.3.0 publication, because the subset narrows `inputSchema` (OD-2026-11-14-14). All three in Complexity Tracking |
 | V. Code, tenant boundary and secrets are isolated | Pass | No tenant code runs; a schema is data validated by the platform's own bounded validator; no reference resolved outside the document; a compiled schema is shared only within its tenant; bounded compile and validation off the async workers; no grant (NFR-043-SEC); values never in errors or telemetry (FR-043-014) |
 | VI. Observability and audit are part of the feature | Pass | Metrics with closed labels, span attributes, an audit of every asynchronous refusal and of every reported one (Technical Plan 7) |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | A trigger refusal is a delivery record: a redelivery finds it and repeats nothing (D043-027) |
@@ -694,8 +696,8 @@ exists.
 | A refusal where an input used to be accepted (principle IV) | The owner's decision OD-2026-11-14-2; published versions stay as they are, only the admission of new runs changes | Deferring validation, as first recommended: the owner refused it |
 | A document that publishes today can be refused tomorrow (principle IV: contracts versioned, a change MUST NOT break) | OD-2026-11-14-14: the subset narrows what `inputSchema` may contain, so a schema accepted by 0.2.x publication is refused by 0.3.0 publication in `enforce`, and a stored one refuses its starts. Recorded in `workflow.schema.json` and `sdks/SPEC.md` (T043-14); listed by the inventory | Accepting any JSON Schema with the library: rejected after four reviews (OD-2026-11-14-14) |
 | Children and continuations of runs in progress are checked (principle IV: a change MUST NOT break runs in progress) | OD-2026-11-14-9, against the recommendation: a child or a successor is a new run, and the owner wants every new run checked | Exempting runs created before the upgrade (the recommendation): the owner refused it. The release notes say an old run can fail there |
-| `CheckedRunInput`, a `test-support` feature and five architecture rules | Thirteen creating paths in three crates; the next one must not skip the check, and the test constructor must not reach a build | A code review rule: how G1955 came to exist |
-| A narrow port and a gate in `application` | The policy (mode, metrics, the type) must not live in the adapter, and the adapter must not see the domain | One trait that does everything: the adapter would own the mode and build the type |
+| `CheckedRunInput`, a `test-support` feature and six architecture rules | Thirteen creating paths in three crates; the next one must not skip the check, and the test constructor must not reach a build | A code review rule: how G1955 came to exist |
+| A narrow port and a gate in `application` | The policy (mode, metrics, the type) must not live in the adapter; the adapter sees only the domain identifiers it needs (`TenantId` in `SchemaKey`) and never builds `CheckedRunInput` | One trait that does everything: the adapter would own the mode and build the type |
 | The schema bytes and digest in `WorkflowDefinition` | Continue-as-new holds the definition, not the document; no statement may be added | Reading the document on a cache miss: an extra statement on the continuation path |
 | A second compiled-validator cache keyed by tenant and digest | Compile once per schema; never under a lock; never shared across tenants | Compiling per start, as the blob check does today; keying by version, which ad hoc floods |
 | A validator of the platform for a documented subset, with a work counter (OD-2026-11-14-14) | The bound on the work holds by construction: the counter counts what the validator does and stops at a budget. Four review rounds found work that `jsonschema` does and a static walk did not charge (`unevaluated*`, percent-encoded pointers, value-sized keywords) | `jsonschema` with a static walk as the bound: rejected after four reviews; validation in an isolated process with a timeout: rejected for latency and operations |
@@ -788,7 +790,9 @@ come first; T043-21 to T043-24 land with the tasks they test; T043-5 to T043-13 
 - [ ] T043-4 Make `NewRun.input`, `ContinuationSelection` and `EvaluatedChainHandoffCommand.input` a `CheckedRunInput`;
   refuse a version mismatch in `create` and `continue_evaluated`, with a store test of each (FR-043-017); add the four
   architecture rules with negative fixtures, and a fifth that rejects a `jsonschema` dependency, `use` or path under
-  `crates/infra-schema/src/run_input/` (D043-074), with its negative fixture; wire the gate in both composition roots.
+  `crates/infra-schema/src/run_input/` (D043-074), and a sixth that fails when `tokio` becomes a normal dependency of
+  `sagat-application` (D043-077), each with its negative fixture; wire the gate, held as `Arc<RunInputGate>` over an
+  `Arc<dyn SchemaValidator>`, in both composition roots.
   Files: `crates/application/src/runs.rs` (`NewRun`), `crates/application/src/chain_progress.rs`,
   `crates/infra-postgres/src/execution.rs`, `crates/infra-postgres/src/chain_progress.rs`, `scripts/check-architecture.py`,
   `scripts/tests/` fixtures, `apps/control-plane/src/lib.rs` (`:746`), `apps/execution-engine/src/lib.rs` (`:531`, the
