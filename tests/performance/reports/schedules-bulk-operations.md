@@ -618,8 +618,8 @@ The lone job stays at 18.3 items a second, as the first design gave (18.3 and 18
 
 `SAGAT_SCHEDULES_ENABLED` is on by default since 0.3.0 (OD-2026-11-13-8), so every engine runs the schedule pass and the
 reconciliation of trigger schedules whether anybody made a schedule or not. G2050 left that cost unmeasured; this section measures it.
-**These are, as above, observations of one machine on one day, not promises** (NFR-018-005). Decisions D2270 to D2273 and gaps
-G2270 to G2272 are in `specs/018-schedules-bulk-operations/research.md`.
+**These are, as above, observations of one machine on one day, not promises** (NFR-018-005). Decisions D2300 to D2303 and gaps
+G2300 to G2302 are in `specs/018-schedules-bulk-operations/research.md`.
 
 **What it concludes.** On a database with no schedule and no cron trigger, the two loops together add **5.2 statements a second**
 (5.11 to 5.21 over three repetitions at 2 tenants, 5.06 to 5.11 at 100), **0.18 ms of database execution a second** (0.12 to 0.23),
@@ -630,12 +630,12 @@ database and under a minute of the engine's CPU. The cost does not grow with ten
 (`SAGAT_SCHEDULER_DISCOVERY_REST_MS`) runs only when the first page of due schedules is full, which an empty table never is
 (`fairness::select`). **Beside a load of runs the effect is below what this machine can resolve**: with the passes on, the median pair
 ran at 1.04 times the rate it ran at with them off (nine pairs, 0.90 to 1.39, at a load average of 18 to 22), and the idle figures put
-the passes at 3.9 transactions a second beside at least 165 of that load (an estimate, not a measurement: G2271). Every bound held in 3 of 3 repetitions. No engine code was changed, and no
-cost problem was found that needs a fix (D2272).
+the passes at 3.9 transactions a second beside at least 165 of that load (an estimate, not a measurement: G2301). Every bound held in 3 of 3 repetitions. No engine code was changed, and no
+cost problem was found that needs a fix (D2302).
 
 **Environment.** The machine, the Docker VM, the image (by digest), PostgreSQL 16.15 and its settings are those of the section
 "Environment" above, with one addition: `run.sh` started the server with `-c shared_preload_libraries=pg_stat_statements`, which it
-now does only when the selection names `idle` (D2271), so the other scenarios keep the server of the report. rustc 1.100.0, release
+now does only when the selection names `idle` (D2301), so the other scenarios keep the server of the report. rustc 1.100.0, release
 profile, the runtime role `sagat_app`, commit `49abdbc6` with a clean tree (`status: 0 changed paths`; every fragment says
 `dirty: false`). Run on 2026-11-14 from 22:10 to 22:54 local time (01:10 to 01:54 UTC on the 15th) with
 `SAGAT_PERF_REPS=3 SAGAT_PERF_ONLY=idle` and `CARGO_BUILD_JOBS=2`. One commit cost 0.48 to 0.62 ms at the median in the idle repetitions and 0.72 to 0.81 ms in the throughput ones (0.5 ms on
@@ -649,7 +649,7 @@ throughput**, which is why the throughput figures are noisy.
 worker services use, driven by `loops::run_schedules` (poll `schedule_poll`, 1,000 ms) and `loops::run_triggers` (`TRIGGER_POLL`,
 5,000 ms), every round through `loops::schedule_round` and `loops::trigger_round`. The configuration is `EngineConfig::from_lookup`
 over the process's environment; "on" is `SAGAT_SCHEDULES_ENABLED` absent (the default, asserted to give `schedules_enabled`), "off"
-is `false`, and whether the passes run at all is decided by `settings::optional_passes` (D2270). One placement holds the 64 shards.
+is `false`, and whether the passes run at all is decided by `settings::optional_passes` (D2300). One placement holds the 64 shards.
 - *Idle*: a world (two tenants; 98 more provisioned through the identity store for the 100-tenant variant), no schedule and no cron
   trigger (both counted and asserted zero), 12 s of warm-up of both loops, then five windows of 60 s: nothing, the schedule pass
   alone, the reconciliation alone, both, nothing. At the start and the end of every window: `pg_stat_statements` of this database
@@ -704,27 +704,27 @@ is the largest in total (0.08 ms a call); the convergence count is the dearest a
 Read honestly, the throughput scenario shows that turning the passes on does not cost a measurable share of the run rate on this
 machine, and nothing finer: a pair varies by -10% to +39% at a load average of 18 to 22, the same spread as two segments of the same
 mode (48.9 to 63.6 runs a second with the passes off), so it cannot see an effect of a few percent; the bound of 95% held in 3 of 3,
-but two repetitions were within 1.5% of it, so the noise decides it, not the passes (G2271). The figure that bounds the cost is the
+but two repetitions were within 1.5% of it, so the noise decides it, not the passes (G2301). The figure that bounds the cost is the
 idle one: 3.9 transactions, 5.2 statements and 0.18 ms of execution a second (0.03 ms a statement), against a load that at 55 runs
 a second commits at least 165 transactions a second (a start and two completions a run, without the polls). That puts the passes at
 most at about 2% of the load's transactions and far less of its database time; the statements of the load were not counted.
 
-**Whether the idle cost is acceptable.** Yes, for the default of 0.3.0 (D2272): about 0.07% of one core of the engine, 0.02% of one
+**Whether the idle cost is acceptable.** Yes, for the default of 0.3.0 (D2302): about 0.07% of one core of the engine, 0.02% of one
 core of database execution and about 0.1% of one core of the database container, 5 statements a second of index scans that find nothing,
 independent of the number of tenants, with no lock taken and no write. The cost is per replica: each engine polls every second
 whatever shards it holds, so a fleet of R engines pays R times it (about 52 statements a second for ten engines), which was not run
-here (G2270). A deployment that wants none of it sets `SAGAT_SCHEDULES_ENABLED=false`, which starts neither loop (asserted by the
+here (G2300). A deployment that wants none of it sets `SAGAT_SCHEDULES_ENABLED=false`, which starts neither loop (asserted by the
 scenario through `optional_passes`). Nothing in the data calls for a change of the engine; the one cost that grows is not idle: the
-convergence count and the drift scan grow with the cron triggers and are run by every replica (G2272, from the trigger scenarios above).
+convergence count and the drift scan grow with the cron triggers and are run by every replica (G2302, from the trigger scenarios above).
 
-**Not measured** (G2270). More than one engine replica on the database; the engine as its own process (`serve`): here the engine is
+**Not measured** (G2300). More than one engine replica on the database; the engine as its own process (`serve`): here the engine is
 the test process and its CPU is the passes' (nothing else of `serve` runs), so the cost is measured, but the other loops of `serve`
 are not beside it; a quiet machine and a database on another host or another version; idle with schedules that exist but are not
 due, or with cron triggers that are converged (the trigger scenarios above cover the reconciliation's statements at 5,000 to 100,000
 triggers, not their cost a second); the operational monitor's schedule aggregates (`scheduler_lag_seconds{pass="schedules"}`), which
 run whether the passes are on or off and so are not part of the difference; the overhead of `pg_stat_statements` itself, present in
 both modes; the network between an engine and a database on separate hosts (one round trip for each of the 5 statements a second);
-and a throughput comparison precise to a few percent (G2271).
+and a throughput comparison precise to a few percent (G2301).
 
 ### Repetitions and their exit status, and the load of the machine
 
