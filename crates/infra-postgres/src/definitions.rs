@@ -1043,11 +1043,12 @@ pub async fn stored_versions_page(
         "SELECT v.tenant_id, w.namespace_id, v.workflow_id, v.id, v.version_number, w.internal, v.document \
            FROM workflow_versions v \
            JOIN workflows w ON w.tenant_id = v.tenant_id AND w.id = v.workflow_id \
-          WHERE $1::uuid IS NULL OR v.id > $1 \
+          WHERE v.id > $1 \
           ORDER BY v.id \
           LIMIT $2",
     )
-    .bind(after.map(|id| id.as_uuid()))
+    // the first page starts after the nil uuid, which no version has (ids are UUIDv7)
+    .bind(after.map_or(Uuid::nil(), |id| id.as_uuid()))
     .bind(i64::from(limit))
     .fetch_all(pool)
     .await

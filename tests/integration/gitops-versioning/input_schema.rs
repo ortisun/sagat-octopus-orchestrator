@@ -147,6 +147,20 @@ async fn the_inventory_lists_the_versions_that_would_be_refused_and_exits_by_wha
     )
     .await
     .expect("inside the subset");
+    // more versions than one page of the inventory (64), so its keyset cursor is crossed (review of 2026-11-15)
+    for n in 0..70 {
+        publish_in(
+            &w,
+            InputValidationMode::Enforce,
+            &with_schema(
+                &format!("plain-flow-{n:02}"),
+                json!({"type": "object"}),
+                None,
+            ),
+        )
+        .await
+        .expect("inside the subset");
+    }
     let only_inside = input_schema_inventory(&database(w.db.url.clone())).await;
     let inventory = only_inside.as_ref().expect("the inventory runs");
     assert!(inventory.refused.is_empty(), "{inventory:?}");
@@ -187,17 +201,56 @@ async fn the_inventory_lists_the_versions_that_would_be_refused_and_exits_by_wha
         1,
         "the version with the trigger stays informational"
     );
-    assert!(inventory.scanned >= 2);
+    assert!(
+        inventory.scanned >= 72,
+        "every page is read: {}",
+        inventory.scanned
+    );
     let printed = inventory.to_string();
     assert!(printed.contains("refused tenant="), "{printed}");
     assert!(
         printed.contains(&refused.ids.version.to_string()),
         "{printed}"
     );
-    assert!(printed.contains("issue=INPUT_SCHEMA_KEYWORD_UNSUPPORTED keyword=patternProperties at=/inputSchema/patternProperties"), "{printed}");
+    assert!(
+        printed.contains(
+            r#"issue=INPUT_SCHEMA_KEYWORD_UNSUPPORTED keyword="patternProperties" at="/inputSchema/patternProperties""#
+        ),
+        "the fields are quoted: {printed}"
+    );
     assert!(printed.contains("information tenant="), "{printed}");
     assert!(!printed.contains("sentinel"), "no schema text: {printed}");
     assert!(!printed.contains("orderId"), "no schema text: {printed}");
+
+    // a stored document that is not a JSON object: the command cannot tell what it would do, so it fails (exit 2)
+    let legacy: (uuid::Uuid, uuid::Uuid) =
+        sqlx::query_as("SELECT tenant_id, id FROM workflows WHERE name = 'legacy-flow'")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("the legacy workflow");
+    sqlx::query(
+        "INSERT INTO workflow_versions (id, tenant_id, workflow_id, version_number, digest, document, published_by, published_at) \
+         VALUES ($1, $2, $3, 99, repeat('0', 64), convert_to('not json', 'UTF8'), 'test', now())",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(legacy.0)
+    .bind(legacy.1)
+    .execute(&w.db.pool)
+    .await
+    .expect("an unreadable stored document, written as the owner");
+    let unreadable = input_schema_inventory(&database(w.db.url.clone())).await;
+    let inventory = unreadable.as_ref().expect("the inventory runs");
+    assert_eq!(inventory.unreadable.len(), 1, "{inventory:?}");
+    assert_eq!(
+        inventory.refused.len(),
+        1,
+        "and still lists what it could read"
+    );
+    assert_eq!(
+        exit_code(&unreadable),
+        2,
+        "an unreadable document fails the command"
+    );
 
     let unreachable = input_schema_inventory(&database(
         "postgres://sagat:none@127.0.0.1:1/none".to_owned(),

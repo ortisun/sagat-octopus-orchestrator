@@ -70,10 +70,15 @@ pub struct Inventory {
 }
 
 impl Inventory {
-    /// 0 when no version would be refused, 1 when at least one would (D043-072).
+    /// 0 when no version would be refused, 1 when at least one would (D043-072), and 2 when a stored document could
+    /// not be read, because the command cannot say what that version would do (D043-111).
     #[must_use]
     pub fn exit_code(&self) -> u8 {
-        u8::from(!self.refused.is_empty())
+        if !self.unreadable.is_empty() {
+            2
+        } else {
+            u8::from(!self.refused.is_empty())
+        }
     }
 }
 
@@ -94,12 +99,8 @@ impl fmt::Display for Inventory {
                 "refused {} issue={} keyword={} at={}",
                 refused.ids,
                 refused.issue.as_str(),
-                if refused.keyword.is_empty() {
-                    "-".to_owned()
-                } else {
-                    shown(&refused.keyword)
-                },
-                shown(&refused.at)
+                quoted(&refused.keyword),
+                quoted(&refused.at)
             )?;
         }
         for ids in &self.triggered {
@@ -111,7 +112,7 @@ impl fmt::Display for Inventory {
         for ids in &self.unreadable {
             writeln!(
                 f,
-                "unreadable {ids} the stored document is not a JSON object"
+                "unreadable {ids} the stored document is not a JSON object: what this version would do is unknown"
             )?;
         }
         write!(
@@ -123,6 +124,15 @@ impl fmt::Display for Inventory {
             self.triggered.len()
         )
     }
+}
+
+/// A field of the schema as it is printed: in double quotes, with `"` and `\` escaped and every character that could
+/// rewrite the line shown as `?` (D043-111), so a keyword or a pointer cannot pass for another field.
+fn quoted(text: &str) -> String {
+    format!(
+        "\"{}\"",
+        shown(text).replace('\\', "\\\\").replace('"', "\\\"")
+    )
 }
 
 /// Reads every stored version and pre-checks its `inputSchema`.
