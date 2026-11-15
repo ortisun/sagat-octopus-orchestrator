@@ -65,3 +65,50 @@ twice.
 
 Not measured here: a release build of the whole engine at the ceilings, several chained entries in one tick (the pass
 runs up to `concurrency` candidates at once, each in its own blocking task), and a separate database host.
+
+## 2026-11-15 — after the review of S1
+
+**Environment.** As on 2026-11-14 (Apple M3 Max, 16 cores, 48 GiB, macOS 26.3, shared machine; Rust 1.100.0;
+PostgreSQL 16 in Docker), branch `feature/042-s1-review-fixes`.
+
+**FR-042-012, the entry of a `forEach` without operators** (`collection_operators_unchanged`). The input is now a raw
+JSON document, `{"lines": [{"v": 1, "k": "a"}, 2, "x", [1.0, -0], -0, -0.0, 1e2]}`, so that `-0` reaches the codec
+(the `json!` macro writes it as the integer `0`); `serde_json` reads `-0` as the double `-0.0`. The test was run on
+three trees, each with the same test file and nothing else changed:
+
+```sh
+# at each commit: git checkout <commit> -- crates apps tests Cargo.lock Cargo.toml, then the test file of this branch
+RUST_TEST_THREADS=1 cargo test -p sagat-tests --test integration_workflow_primitives -- collection_operators_unchanged --nocapture
+```
+
+| Tree | Statements | Transactions | Rows written | Snapshot bytes |
+|---|---|---|---|---|
+| `a4f6e9db` (develop before design 042) | 69 | 2 | 22 | `[{"k":"a","v":1},2,"x",[1.0,-0.0],-0.0,-0.0,100.0]` |
+| `0e94bf0e` (slice S0) | 69 | 2 | 22 | the same |
+| this branch | 69 | 2 | 22 | the same |
+
+The 63, 2 and 17 of 2026-11-14 were the same measurement over four elements; the pin now holds the seven above.
+
+**Resident memory of a chain at the ceilings** (release build of the `sagat-infra-ir` test binary, measured with
+`/usr/bin/time -l` on the binary itself):
+
+```sh
+B=$(cargo test -p sagat-infra-ir --lib --release --no-run 2>&1 | grep -o '/Users[^)]*sagat_infra_ir-[a-f0-9]*')
+/usr/bin/time -l $B --exact collection_chain::tests::an_empty_output_is_an_empty_collection
+/usr/bin/time -l $B --exact collection_chain::tests::measure_the_chain_at_its_ceilings --ignored --nocapture
+```
+
+| Process | Maximum resident set size |
+|---|---|
+| The test binary running a chain over an empty list (the baseline) | 7.8 MB |
+| The measurement: eight `map` stages of 4 MiB, twenty times each, sixteen 256 KiB and 1,000 4 KiB elements | 66.9 MB |
+
+About 59 MB above the baseline for a chain whose stages are 4 MiB: about fourteen times the stage's serialised size,
+since an element is held as a `serde_json::Value` and as its bytes, for the stage's input and its output. With two
+chains at once per replica (D042-153) that is about 120 MB a replica may hold for chains. The evaluator's times in the
+same run: eight stages over 1,000 small elements p95 1.04 ms; eight `map` stages of 4 MiB p95 15.16 ms (sixteen
+elements) and 16.33 ms (1,000 elements).
+
+**A tick's hold-up.** One tick enters at most four chained collections, two evaluated at a time (D042-153). From the
+numbers above, the chains of one tick hold it for at most about 60 ms of evaluation in a release build; this is computed,
+not measured as a whole tick.

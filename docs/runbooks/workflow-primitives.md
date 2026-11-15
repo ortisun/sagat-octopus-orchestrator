@@ -391,14 +391,29 @@ fails the run; the collection's `onError` is not taken (G042-008), and nothing i
 | One element, as compact JSON | 256 KiB | `COLLECTION_OPERATOR_BUDGET` | `operator_element_bytes` |
 | One stage in all (the sum of its elements) | 4 MiB | `COLLECTION_OPERATOR_BUDGET` | `operator_stage_bytes` |
 | Wall time of the chain, checked between elements | 1 s | `COLLECTION_OPERATOR_BUDGET` | `wall_time` |
+| Nesting of one element (lists and maps) | 120 levels | `COLLECTION_OPERATOR_BUDGET` | `operator_element_depth` |
+| What one expression evaluation copies (any expression, not only a stage's) | about 512 KiB | `EXPRESSION_ERROR` | `operator_expression` (a stage), `expression` (`items`) |
 | A stage expression fails, a `filter` is not boolean, a `flatMap` is not a list | | `EXPRESSION_ERROR` | `operator_expression`, `operator_not_boolean`, `operator_not_a_list` |
 | The output has more elements than `maxItems` | `maxItems` | `ITERATION_LIMIT` | |
 | An inline source's output snapshot | 256 KiB | `RUN_DATA_LIMIT` | |
 | A blob source: the blob, one source element, all of them | 8 MiB, 256 KiB, 4 MiB | `RUN_DATA_LIMIT` | `too_large` |
 
 `COLLECTION_OPERATOR_BUDGET` is also counted as `workflow_primitive_rejections_total{kind="collection",code=...}`, as is
-the `EXPRESSION_ERROR` of a stage. A failure names the stage, the operator and the position, never a value; the
-warning `a collection source was refused` carries the run, the code and the reason only.
+the `EXPRESSION_ERROR` of a stage. A failure names the stage, the operator and the position, never a value: the
+warning `a collection source was refused` carries them as the fields `stage`, `operator` and `position` beside `code`
+and `reason`, and the stop records them as the run's failure detail in an audit record:
+
+```sql
+SELECT reason FROM audit_records WHERE resource_id = '<run id>' AND action = 'run.collection_chain_failed';
+-- operators[1] (filter) failed at position 0 (expression)
+```
+
+**Load on a replica.** A replica evaluates at most two chains at once, each in a blocking task, and one tick enters at
+most four chained collections; the others wait for the next tick (`scheduler_actions_total{kind="collection",
+outcome="skipped"}`). At the ceilings a chain costs about 15 ms of evaluation (p95, release build) and about 60 MB of resident memory, so
+the chains of one tick add at most about 60 ms of evaluation to `scheduler_tick_seconds` (four of them, two at a time),
+and a replica holds at most about 120 MB for chains. These are computed from the measurements of the validation
+report (2026-11-15), not measured as a whole tick.
 
 **What the scope stores.** An inline source's output is today's snapshot array. A blob source with a chain stores a
 chained manifest under a key of its own, `{"$collectionChainSource": {"blob", "chainSha256", "count", "itemsSha256",

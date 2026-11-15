@@ -487,7 +487,10 @@ is called on the materialised elements instead of evaluating `items` again; the 
 **Stage by stage, bounded while produced.** Each stage consumes its whole input before the next starts. While a stage
 produces, the running count and the running serialised bytes are checked after every element; the first crossing stops
 the chain. Each element is serialised once, when it is produced, which both measures it and gives the bytes the
-snapshot stores. Peak memory is the environment plus two stage lists of at most 4 MiB serialised each.
+snapshot stores. Peak memory is the environment plus two stage lists of at most 4 MiB serialised each, each element held
+both as a value and as its bytes: several times the serialised size (T042-9 measured the resident memory; see the
+validation report). A replica evaluates at most two chains at once and one tick enters at most four (D042-153); an
+element nests at most 120 levels and one evaluation copies at most about 512 KiB (D042-151, D042-155).
 
 | Ceiling | Value | Code | Where |
 |---|---|---|---|
