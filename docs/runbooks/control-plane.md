@@ -15,7 +15,7 @@ code in this repository; what is **not** covered is listed at the end so nobody 
 | Quota ceilings | `control-plane quota-ceiling` with `SAGAT_CEILING_TENANT_ID`, `SAGAT_CEILING_RESOURCE`, `SAGAT_CEILING_VALUE` (a number, or `default` to withdraw) | The most a tenant's administrators may set for a quota; only this command raises it. Audited as `system:operator`. See `docs/runbooks/security-governance.md` |
 | OIDC provider | `SAGAT_OIDC_JWKS_URI` (HTTPS) | Only its public keys are fetched; no token is ever sent to it |
 
-Two database roles exist on purpose. The **owner** role runs `migrate`, `provision-tenant` and `schedule-trigger-handover` (the audited handover of the cron triggers to the schedule pass, [`schedules.md`](schedules.md) section 6). The
+Three database roles exist on purpose. The **owner** role runs `migrate`, `provision-tenant` and `schedule-trigger-handover --apply` (the audited handover of the cron triggers to the schedule pass, [`schedules.md`](schedules.md) section 6). **`sagat_handover`** runs only the deployment's job `schedule-trigger-handover --auto`: `migrate` creates and grants it at every run, it can call four functions and read two tables, and it is retired after the handover (ADR-0091; [`schedules.md`](schedules.md) 6.1). The
 API serves requests as **`sagat_app`**, which owns nothing, cannot alter or delete audit rows and
 cannot change the schema. Never point the API at the owner role: outside `SAGAT_ENV=dev`, `serve`
 checks the role it is connected as and **refuses to start** (exit code 2, before it listens) when

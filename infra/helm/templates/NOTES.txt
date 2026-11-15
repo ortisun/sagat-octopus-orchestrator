@@ -9,3 +9,14 @@ The scheduler's work is split in 64 shards held by the {{ .Values.engine.replica
   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "sagat.fullname" . }}-engine | grep -i "scheduler shards"
 
 Migrations are not run by this chart. Before an upgrade, run them as the database owner (see docs/runbooks/scaling.md#upgrade).
+{{- if eq (include "sagat.autoHandover.enabled" .) "true" }}
+
+The automatic handover of the cron triggers runs as the Job {{ include "sagat.autoHandover.jobName" . }} with the role
+sagat_handover (docs/runbooks/schedules.md, section 6). Give migrate SAGAT_HANDOVER_PASSWORD (or create the login once), and
+after the handover retire the role and delete the Secret {{ .Values.schedules.autoHandover.databaseSecret }}. Watch it with:
+
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "sagat.autoHandover.jobName" . }}
+{{- else }}
+
+The automatic handover of the cron triggers is off: hand them over with schedule-trigger-handover --apply (docs/runbooks/schedules.md, 6.2).
+{{- end }}
