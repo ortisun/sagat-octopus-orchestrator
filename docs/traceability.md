@@ -1120,3 +1120,16 @@ Delivery-1 tests, contracts, metrics and demos have recorded evidence through th
 [plan](../specs/037-compensation-safety/plan.md), [tasks](../specs/037-compensation-safety/tasks.md)
 and [34-requirement coverage](../specs/037-compensation-safety/analysis.md). Only the
 [validation report](../specs/037-compensation-safety/validation-report.md) records results. US04 remains open.
+
+## 043 run input validation — phase 2 built on `feature/043-creators` (2026-11-15)
+
+| Requirement / criterion | Status | Evidence / remaining work |
+|---|---|---|
+| FR-043-001, FR-043-003 to FR-043-011, FR-043-016, FR-043-017 — every creator through the gate | Built; rows 1, 3, 4, 6 to 12 and 14 have their own integration test | `RunInputGate` and `CheckedRunInput` (`crates/application/src/run_input.rs`), the permits of the adapter (`crates/infra-schema/src/run_input/permits.rs`); tests `tests/integration/{durable-execution,schedules-bulk-operations,events-webhooks-messaging,workflow-primitives}/run_input.rs`; four architecture rules with negative fixtures in `scripts/tests/test_check_architecture.py`. Rows 2, 5 and 13 and Update-with-Start have no test of their own (G043-042); the child lookup of D043-038 is untested (G043-043). |
+| FR-043-013 — the mode and the registry | Built and tested | `SAGAT_RUN_INPUT_VALIDATION` in both apps, `run-input-validation-v1` listed only in `enforce`; `the_run_input_requirement_is_refused_while_an_engine_reports_and_closes_one_started_in_report_after`, `apps/execution-engine/tests/registry.rs`, `report_mode_*` in the durable and events suites. |
+| FR-043-014, SC-043-002 — no value leaks | Partial | `no_sentinel_reaches_an_answer_a_log_a_span_or_an_audit_row_on_any_row` covers rows 1, 4, 9 and 11 (G043-044). |
+| FR-043-015, SC-043-005 — SDKs, CLI, Studio | Built; the conformance golden is written by its first reviewed run | `field` and `rule` in the six SDK errors with a unit test each; `run-input-validation.json`. |
+| SC-043-003 — no statement on the hot path | Partial | `a_checked_start_costs_what_an_unchecked_one_does`, `a_checked_triggered_start_costs_what_an_unchecked_one_does`; a child start and a continuation are not budgeted yet (G043-044). |
+
+Feature 018's G1955 and G2081 (the schedule input check) are closed by design 043: rows 6 to 8 and 14, the outcome
+`INPUT_INVALID` and `NOMINAL_TIME_FIELD_INVALID` (`specs/043-run-input-validation/research.md`, D043-123 to D043-126).

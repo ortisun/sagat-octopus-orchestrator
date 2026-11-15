@@ -794,6 +794,10 @@ async fn a_start_once(
 /// parsed definition and the check runs before the creation transaction, writing nothing.
 async fn a_checked_start_costs_what_an_unchecked_one_does_once() -> Result<(), Evicted> {
     let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("statement accounting");
     let (plain, _) = w
         .publish(document("budget-plain", "a", vec![activity("a")]))
         .await;
@@ -853,6 +857,10 @@ async fn a_triggered_start_once(w: &World, kind: &str) -> Result<Work, Evicted> 
 /// SC-043-003 for a triggered start: the envelope checked against an `inputSchema` costs nothing more.
 async fn a_checked_triggered_start_costs_what_an_unchecked_one_does_once() -> Result<(), Evicted> {
     let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("statement accounting");
     let mut plain = document("budget-trigger-plain", "a", vec![activity("a")]);
     plain["triggers"] = json!([{"kind": "event", "eventType": "budget.plain"}]);
     w.publish(plain).await;
