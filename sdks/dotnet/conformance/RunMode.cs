@@ -929,7 +929,7 @@ internal sealed partial class RunMode : IAsyncDisposable
     {
         if (error is SagatException sagat)
         {
-            return new JsonObject
+            var fields = new JsonObject
             {
                 ["code"] = sagat.Code.ToWireName(),
                 ["status"] = sagat.HttpStatus is { } http ? http : sagat.GrpcStatus,
@@ -940,6 +940,19 @@ internal sealed partial class RunMode : IAsyncDisposable
                 ["remediation"] = sagat.Remediation,
                 ["message"] = sagat.Message,
             };
+
+            // design 043: only when the server sent them, so every other refusal reads as it always has
+            // the field is compared with the rule of a refused run input, not for the other reasons
+            if (sagat.Rule is { } rule)
+            {
+                fields["rule"] = rule;
+                if (sagat.Field is { } field)
+                {
+                    fields["field"] = field;
+                }
+            }
+
+            return fields;
         }
 
         return new JsonObject { ["code"] = "UNEXPECTED", ["message"] = error.GetType().Name };

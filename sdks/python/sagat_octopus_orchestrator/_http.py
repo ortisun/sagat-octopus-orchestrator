@@ -220,6 +220,11 @@ class HttpTransport:
         retryable = env.get("retryable")
         envelope_trace = env.get("traceId")
         reason = raw_reason if isinstance(raw_reason, str) else None
+        # design 043: the pointer and the closed rule of a refused run input, passed through as the server sent them
+        raw_field = details.get("field") if isinstance(details, dict) else None
+        raw_rule = details.get("rule") if isinstance(details, dict) else None
+        field = raw_field[:512] if isinstance(raw_field, str) and given else None
+        rule = raw_rule[:64] if isinstance(raw_rule, str) and given else None
         if (
             status == 501
             or (status == 404 and (given is None or reason == "ROUTE_NOT_FOUND"))
@@ -238,6 +243,8 @@ class HttpTransport:
             trace_id=_valid_trace(envelope_trace) if isinstance(envelope_trace, str) else trace_id,
             reason=reason,
             retry_after_ms=retry_after_ms(headers.get("retry-after")),
+            field=field,
+            rule=rule,
         )
 
 

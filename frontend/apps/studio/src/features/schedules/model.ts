@@ -340,6 +340,7 @@ const OUTCOME: Record<string, StatusView> = {
   ALREADY_ACTED: { label: 'Already acted on', symbol: '≡', tone: 'idle', help: 'The time was already acted on: a backfill found it done, or a run already held its business id. Nothing was started.' },
   AUTHORITY_REVOKED: { label: 'Not allowed', symbol: '✕', tone: 'bad', help: 'The person who authorized the schedule may no longer start the run.' },
   BUSINESS_ID_CONFLICT: { label: 'Business id conflict', symbol: '✕', tone: 'bad', help: 'The business id of the run was held by an open run, or remembered by a closed one, and the policy refused it. Nothing was started.' },
+  INPUT_INVALID: { label: 'Input refused', symbol: '✕', tone: 'bad', help: "The target version's input schema refused the input of the action. Nothing was started, and the time is not tried again." },
 };
 
 /** An outcome in words; one this version does not know is "another outcome". */
@@ -357,6 +358,9 @@ const REASON: Record<string, string> = {
   BUFFER_FULL: 'The waiting times were at their limit.',
   BUSINESS_ID_IN_USE: 'The business id was held by an open run.',
   BUSINESS_ID_REUSE_REJECTED: 'A closed run still remembers the id and the reuse policy refuses it.',
+  SCHEDULE_INPUT_INVALID: "The input does not match the target version's input schema.",
+  NOMINAL_TIME_FIELD_INVALID: "The nominal time field is not a declared string property of the target version's input schema.",
+  RUN_INPUT_SCHEMA_UNUSABLE: "The target version's input schema is outside the supported subset; publish a version within it.",
 };
 
 export function reasonText(code: string | null | undefined): string {

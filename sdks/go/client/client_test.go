@@ -1365,3 +1365,29 @@ func TestTheRunsOfAChainArePagedInSegmentOrderFollowingTheServerCursor(t *testin
 		t.Fatal("a namespace id is a UUID")
 	}
 }
+
+// Design 043 (FR-043-015): a refused run input carries Field and Rule beside Reason, as the server sent them.
+func TestARefusedRunInputCarriesTheFieldAndTheRuleBesideTheReason(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 422, map[string]any{
+			"code": "VALIDATION_FAILED", "message": "the run input does not match", "retryable": false,
+			"details": map[string]any{"reason": "RUN_INPUT_INVALID", "field": "/orderId", "rule": "type"},
+		})
+	})
+	_, err := newClient(t, f).Get(context.Background(), runUUID)
+	se := asSagat(t, err)
+	if se.Code != sagat.CodeValidationFailed || se.Reason != "RUN_INPUT_INVALID" || se.Field != "/orderId" || se.Rule != "type" {
+		t.Errorf("%+v", se)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 422, map[string]any{
+			"code": "VALIDATION_FAILED", "message": "unusable", "retryable": false,
+			"details": map[string]any{"reason": "RUN_INPUT_SCHEMA_UNUSABLE"},
+		})
+	})
+	_, err = newClient(t, f).Get(context.Background(), runUUID)
+	if se := asSagat(t, err); se.Field != "" || se.Rule != "" {
+		t.Errorf("%+v", se)
+	}
+}

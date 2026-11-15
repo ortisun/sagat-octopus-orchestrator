@@ -188,7 +188,7 @@ impl ErrorCode {
                 "The input does not match the target version's input schema (no excerpt)."
             }
             (Self::ValidationFailed, "NOMINAL_TIME_FIELD_INVALID") => {
-                "`nominalTimeField` must name a top-level string property the target version's input schema declares."
+                "The field is not a declared top-level string property of the input schema."
             }
             // design 043: the sentences of `specs/043-run-input-validation/contracts/errors.md`
             (Self::ValidationFailed, "RUN_INPUT_INVALID") => {

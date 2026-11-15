@@ -8,6 +8,14 @@ the canonical IR. Rust joins the common conformance matrix and local `.crate`/co
 The coordinated release and its final gates remain tracked by features 014, 033 and 034.
 Registry publication remains disabled.
 
+Design 043 adds `field` and `rule` to the error type of every SDK, beside `reason`: the server's `details.field` (a JSON
+pointer whose segments are names the version's `inputSchema` declares and array indices, never a value) and
+`details.rule` (the closed keyword of the schema that failed). A start the schema refuses is `VALIDATION_FAILED` with the
+reason `RUN_INPUT_INVALID` or `RUN_INPUT_SCHEMA_UNUSABLE`; the failure codes `CHILD_INPUT_INVALID`,
+`CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE` and the schedule outcome `INPUT_INVALID` reach a run or a
+schedule view unchanged. An SDK checks nothing of a schema locally. `field` is also filled for the other refusals whose
+server answer names one (a schedule spec, a start option).
+
 Feature 018 adds to every SDK the client surface for schedules (create, describe, list, update, delete, pause,
 resume, trigger, backfill and the history), business identifiers on `start` and their lookup, a start delay,
 `signalWithStart` and `updateWithStart`, batch jobs over runs (preview, create, read, list, cancel and items) and the

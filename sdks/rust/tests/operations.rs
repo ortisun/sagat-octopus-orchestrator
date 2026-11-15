@@ -1296,11 +1296,13 @@ async fn a_refused_business_id_prefix_is_the_servers_validation_failed_with_its_
     assert_eq!(error.code, "VALIDATION_FAILED");
     assert_eq!(error.status, Some(400));
     assert_eq!(error.reason(), Some("SCHEDULE_SPEC_INVALID"));
-    // The SDK keeps the server's sub-reason only (SPEC section 2): `details.field` is not carried.
+    // The SDK keeps the server's sub-reason and, since design 043, its `details.field` (SPEC section 2): a pointer, never the
+    // value sent.
     assert_eq!(
         error.details,
-        Box::new(json!({"reason": "SCHEDULE_SPEC_INVALID"}))
+        Box::new(json!({"reason": "SCHEDULE_SPEC_INVALID", "field": "/action/businessIdPrefix"}))
     );
+    assert_eq!(error.field(), Some("/action/businessIdPrefix"));
     assert!(!error.to_string().contains("businessIdPrefix"));
     // The empty prefix reached the server as the empty string: one request, nothing refused here.
     assert_eq!(server.only().body()["action"]["businessIdPrefix"], "");

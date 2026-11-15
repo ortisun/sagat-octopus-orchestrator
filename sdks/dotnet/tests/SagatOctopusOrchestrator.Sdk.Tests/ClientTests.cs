@@ -824,6 +824,25 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ARefusedRunInputCarriesTheFieldAndTheRuleBesideTheReason()
+    {
+        // design 043 (FR-043-015): field and rule beside reason, as the server sent them, and nothing of the value
+        var envelope = Envelope("VALIDATION_FAILED", "the run input does not match", retryable: false);
+        envelope["details"] = new JsonObject { ["reason"] = "RUN_INPUT_INVALID", ["field"] = "/orderId", ["rule"] = "type" };
+        server.Handler = _ => Reply(422, envelope);
+        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().StartAsync(Workflow, new { orderId = 42 }));
+        Assert.Equal(SagatErrorCode.ValidationFailed, error.Code);
+        Assert.Equal("RUN_INPUT_INVALID", error.Reason);
+        Assert.Equal("/orderId", error.Field);
+        Assert.Equal("type", error.Rule);
+
+        server.Handler = _ => Reply(422, Envelope("VALIDATION_FAILED", "unusable", retryable: false, reason: "RUN_INPUT_SCHEMA_UNUSABLE"));
+        var unusable = await Assert.ThrowsAsync<SagatException>(() => NewClient().StartAsync(Workflow, new { orderId = "o" }));
+        Assert.Null(unusable.Field);
+        Assert.Null(unusable.Rule);
+    }
+
+    [Fact]
     public async Task AnErrorNeverRepeatsTheTokenOrThePayloadItWasGiven()
     {
         server.Handler = _ => Reply(422, Envelope("VALIDATION_FAILED", "an input field is invalid", retryable: false));

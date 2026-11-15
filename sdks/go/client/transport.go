@@ -221,6 +221,13 @@ func errorOf(resp *http.Response, data []byte, traceID string) *sagat.Error {
 		if details, err := jsonx.Object(envelope["details"]); err == nil {
 			reason, _ := jsonx.String(details, "reason")
 			e.Reason = bound.Text(reason, bound.MaxReason)
+			// design 043: the pointer and the closed rule of a refused run input, as the server sent them
+			if given != "" {
+				field, _ := jsonx.String(details, "field")
+				e.Field = bound.Text(field, bound.MaxMessage)
+				rule, _ := jsonx.String(details, "rule")
+				e.Rule = bound.Text(rule, bound.MaxReason)
+			}
 		}
 	}
 	// A call the server does not have (an older server, sdks/SPEC.md section 9) is told from a resource that is

@@ -620,7 +620,11 @@ def batch_request_of(raw: Obj) -> BatchRequest:
 
 def error_json(error: BaseException) -> Obj:
     if isinstance(error, SagatError):
-        return error.to_dict()
+        fields = error.to_dict()
+        # design 043: the field of an error is compared with the rule of a refused run input, not for the other reasons
+        if "rule" not in fields:
+            fields.pop("field", None)
+        return fields
     sys.stderr.write("".join(traceback.format_exception(error)))
     return {"code": "UNEXPECTED", "message": type(error).__name__}
 

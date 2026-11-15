@@ -488,7 +488,16 @@ if tokio::time::Instant::now()>=end{return Err(SagatError::validation("the scena
                 observation["result"] = result;
             }
             Ok(None) => {}
-            Err(error) => observation["error"] = error.as_json(),
+            Err(error) => {
+                let mut fields = error.as_json();
+                // design 043: the field is compared with the rule of a refused run input, not for the other reasons
+                if fields.get("rule").is_none()
+                    && let Some(map) = fields.as_object_mut()
+                {
+                    map.remove("field");
+                }
+                observation["error"] = fields;
+            }
         }
         observations.push(observation);
     }
