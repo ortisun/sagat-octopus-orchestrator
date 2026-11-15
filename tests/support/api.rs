@@ -276,6 +276,9 @@ pub struct Options {
 
     /// The lake is on: Iceberg writes are published, admitted and leased, and the worker service completes them (feature 035).
     pub lake: bool,
+    /// How the run service treats an input its version refuses (design 043): `enforce`, as production does by default; a
+    /// suite that needs a run admitted before 0.3.0 (an input its schema refuses) serves in `report`.
+    pub run_input_validation: sagat_application::run_input::InputValidationMode,
 }
 
 impl Default for Options {
@@ -313,6 +316,7 @@ impl Default for Options {
             serving_gate: None,
 
             lake: false,
+            run_input_validation: sagat_application::run_input::InputValidationMode::Enforce,
         }
     }
 }
@@ -550,7 +554,7 @@ async fn start_on_ready_db(db: TestDb, options: Options, supplied_pool: Option<P
         cache,
     )
     .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
-        sagat_application::run_input::InputValidationMode::Enforce,
+        options.run_input_validation,
     ))
     .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
     .with_reset_reapply(options.reset_reapply)

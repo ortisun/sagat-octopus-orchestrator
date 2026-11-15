@@ -98,3 +98,39 @@ pub async fn audits(w: &World, action: &str, needle: &str) -> i64 {
 pub fn leaks(text: &str) -> bool {
     text.contains(SENTINEL)
 }
+
+/// Starts a run of `workflow` with `input` through a run service in `report` mode: a run admitted before the check was
+/// on, as a version stored before 0.3.0 would have, whatever its schema says of the input.
+pub async fn start_in_report(
+    w: &World,
+    workflow: WorkflowId,
+    input: &Value,
+) -> sagat_domain::execution::RunId {
+    let bytes = serde_json::to_vec(input).expect("json");
+    sagat_application::runs::RunService::new(
+        w.store.clone(),
+        SystemClock,
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        w.cache.clone(),
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        InputValidationMode::Report,
+    ))
+    .start(
+        &w.admin,
+        &sagat_application::runs::StartRun {
+            namespace: "payments",
+            workflow,
+            version: None,
+            input: &bytes,
+            correlation_id: None,
+            deadline: None,
+            key: &format!("start-{}", Uuid::now_v7()),
+        },
+        &ctx(),
+    )
+    .await
+    .expect("admitted in report mode")
+    .info
+    .run_id
+}
