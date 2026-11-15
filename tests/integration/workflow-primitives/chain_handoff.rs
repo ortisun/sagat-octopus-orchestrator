@@ -903,7 +903,7 @@ async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
     let prepared = EvaluatedChainHandoffCommand::new(
         command,
         sagat_domain::workflow::NodeId::parse("rollover").expect("rollover node"),
-        selected_input,
+        sagat_application::run_input::CheckedRunInput::unchecked(version, selected_input.clone()),
         None,
         None,
     )
@@ -985,7 +985,10 @@ async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
             successor_outbox,
         ),
         sagat_domain::workflow::NodeId::parse("rollover").expect("rollover node"),
-        conflicting_input,
+        sagat_application::run_input::CheckedRunInput::unchecked(
+            version,
+            conflicting_input.clone(),
+        ),
         None,
         None,
     )
@@ -1131,7 +1134,7 @@ async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
             Uuid::now_v7(),
         ),
         sagat_domain::workflow::NodeId::parse("rollover").expect("rollover node"),
-        third_input,
+        sagat_application::run_input::CheckedRunInput::unchecked(version, third_input.clone()),
         None,
         None,
     )
@@ -1215,7 +1218,7 @@ async fn prepared_continuation_commits_replays_and_rolls_back_atomically() {
             Uuid::now_v7(),
         ),
         sagat_domain::workflow::NodeId::parse("rollover").expect("rollover node"),
-        foreign_input,
+        sagat_application::run_input::CheckedRunInput::unchecked(version, foreign_input.clone()),
         None,
         None,
     )

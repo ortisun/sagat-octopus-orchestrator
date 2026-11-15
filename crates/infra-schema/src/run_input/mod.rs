@@ -13,12 +13,15 @@
 //! `scripts/check-architecture.py`).
 //!
 //! [`InputSchemas`] keeps compiled schemas by tenant and schema digest, never shared across tenants, with bounded
-//! entries and memory and a remembered [`Unusable`]. The permits, the wait, the off-worker step and the async port are
-//! the gate's task (T043-3); this module is synchronous.
+//! entries and memory and a remembered [`Unusable`]. [`RunInputValidator`] implements the gate's async port
+//! (`sagat_application::run_input::SchemaValidator`, T043-3): it waits for one of [`RUN_INPUT_PERMITS`] permits, shared
+//! among tenants by the fair queue of [`permits`], then compiles and validates off the async workers holding it, so
+//! that every compile and every validation, an ad hoc one included, runs under a permit (D043-071, G043-031).
 
 mod compile;
 mod counter;
 mod pattern;
+pub mod permits;
 mod pointer;
 mod validate;
 mod value;
@@ -73,152 +76,9 @@ pub const RUN_INPUT_PERMITS: usize = 4;
 /// Unusable schemas a process remembers.
 pub const MAX_REMEMBERED_UNUSABLE_SCHEMAS: usize = 1_024;
 
-/// Why a schema is outside the subset: the closed issue, the keyword and its JSON pointer in the schema. Both come
-/// from the schema, which is author vocabulary; neither ever holds an input.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Unusable {
-    pub issue: InputSchemaIssue,
-    /// The keyword that is refused (empty for the size, a depth or the cost of the whole schema).
-    pub keyword: String,
-    /// Where, as a JSON pointer into the schema (empty for the root).
-    pub at: String,
-}
-
-impl Unusable {
-    pub(crate) fn new(issue: InputSchemaIssue, keyword: &str, at: &str) -> Self {
-        Self {
-            issue,
-            keyword: keyword.chars().take(64).collect(),
-            at: truncated(at, MAX_POINTER_CHARS),
-        }
-    }
-}
-
-impl std::fmt::Display for Unusable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.issue.message())?;
-        if !self.keyword.is_empty() {
-            write!(f, " (keyword '{}')", self.keyword)?;
-        }
-        Ok(())
-    }
-}
-
-/// The most characters of a pointer an [`Unusable`] keeps; a longer one ends in `…` (D043-104).
-pub const MAX_POINTER_CHARS: usize = 512;
-
-fn truncated(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        return text.to_owned();
-    }
-    let mut out: String = text.chars().take(limit - 1).collect();
-    out.push('…');
-    out
-}
-
-/// The keyword that failed, from a closed set (D043-049): what a refusal says beside its pointer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Rule {
-    Type,
-    Required,
-    Enum,
-    Const,
-    Minimum,
-    Maximum,
-    ExclusiveMinimum,
-    ExclusiveMaximum,
-    MultipleOf,
-    MinLength,
-    MaxLength,
-    Pattern,
-    MinItems,
-    MaxItems,
-    MinProperties,
-    MaxProperties,
-    AdditionalProperties,
-    AnyOf,
-    OneOf,
-    /// The validation reached the work budget.
-    WorkLimit,
-    /// The input nests deeper than [`MAX_INPUT_DEPTH`].
-    MaxDepth,
-    /// A `false` schema, or what names nothing more precise.
-    Other,
-}
-
-impl Rule {
-    /// The keyword's name, as `details.rule` carries it.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Type => "type",
-            Self::Required => "required",
-            Self::Enum => "enum",
-            Self::Const => "const",
-            Self::Minimum => "minimum",
-            Self::Maximum => "maximum",
-            Self::ExclusiveMinimum => "exclusiveMinimum",
-            Self::ExclusiveMaximum => "exclusiveMaximum",
-            Self::MultipleOf => "multipleOf",
-            Self::MinLength => "minLength",
-            Self::MaxLength => "maxLength",
-            Self::Pattern => "pattern",
-            Self::MinItems => "minItems",
-            Self::MaxItems => "maxItems",
-            Self::MinProperties => "minProperties",
-            Self::MaxProperties => "maxProperties",
-            Self::AdditionalProperties => "additionalProperties",
-            Self::AnyOf => "anyOf",
-            Self::OneOf => "oneOf",
-            Self::WorkLimit => "workLimit",
-            Self::MaxDepth => "maxDepth",
-            Self::Other => "other",
-        }
-    }
-}
-
-/// One segment of the instance pointer of a violation: a name declared under `properties` (the schema's), or an
-/// array index.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PathSegment {
-    Property(Arc<str>),
-    Index(usize),
-}
-
-/// The JSON pointer of `segments` (`/` for none).
-#[must_use]
-pub fn pointer_of(segments: &[PathSegment]) -> String {
-    if segments.is_empty() {
-        return "/".to_owned();
-    }
-    segments
-        .iter()
-        .map(|segment| match segment {
-            PathSegment::Property(name) => format!("/{}", pointer::escape(name)),
-            PathSegment::Index(index) => format!("/{index}"),
-        })
-        .collect()
-}
-
-/// Why an input was not accepted (the port's `SchemaRefusal` of design 043 but `Busy`, which comes with the permits).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SchemaRefusal {
-    /// The input does not satisfy the schema: the first violation.
-    Invalid {
-        segments: Vec<PathSegment>,
-        rule: Rule,
-    },
-    /// The schema is outside the subset.
-    Unusable(Unusable),
-    /// The input nests deeper than [`MAX_INPUT_DEPTH`]: `maxDepth`, final.
-    TooDeep,
-    /// The validation reached the budget: `workLimit`, final the first time (it is deterministic).
-    WorkLimit,
-    /// The backstop stopped it: transient, never remembered.
-    Backstop,
-    /// The compile it waited for panicked: transient, never remembered (D043-106).
-    Interrupted,
-}
+pub use sagat_application::run_input::{
+    MAX_POINTER_CHARS, PathSegment, Rule, SchemaRefusal, Unusable, pointer_of,
+};
 
 /// The pre-check of design 043 on the canonical bytes of an `inputSchema`, as publication, `sagat validate` and the
 /// inventory run it.
@@ -290,6 +150,84 @@ impl std::fmt::Debug for InputSchemas {
         f.debug_struct("InputSchemas")
             .field("cache", &self.cache.stats())
             .finish()
+    }
+}
+
+/// The platform's validator behind the gate's port: the compiled schemas of the process and its permits.
+#[derive(Debug, Default)]
+pub struct RunInputValidator {
+    schemas: InputSchemas,
+    permits: permits::Permits,
+}
+
+impl RunInputValidator {
+    /// The validator of this process: one cache and one pool of [`RUN_INPUT_PERMITS`] permits however many services
+    /// hold it, so that "four validations at once per process" holds (NFR-043-BOUND).
+    #[must_use]
+    pub fn process() -> Arc<Self> {
+        static PROCESS: std::sync::OnceLock<Arc<RunInputValidator>> = std::sync::OnceLock::new();
+        Arc::clone(PROCESS.get_or_init(|| Arc::new(Self::default())))
+    }
+
+    /// A gate over the validator of this process, in `mode` (design 043): what a composition root wires.
+    #[must_use]
+    pub fn gate(
+        mode: sagat_application::run_input::InputValidationMode,
+    ) -> Arc<sagat_application::run_input::RunInputGate> {
+        Arc::new(sagat_application::run_input::RunInputGate::new(
+            Self::process(),
+            mode,
+        ))
+    }
+
+    /// A validator whose permits are `permits` (the tests' pools; [`Self::default`] is the process's).
+    #[must_use]
+    pub fn with_permits(permits: permits::Permits) -> Self {
+        Self {
+            schemas: InputSchemas::default(),
+            permits,
+        }
+    }
+
+    #[must_use]
+    pub const fn schemas(&self) -> &InputSchemas {
+        &self.schemas
+    }
+
+    #[must_use]
+    pub const fn permits(&self) -> &permits::Permits {
+        &self.permits
+    }
+}
+
+impl sagat_application::run_input::SchemaValidator for RunInputValidator {
+    fn check<'a>(
+        &'a self,
+        key: sagat_application::run_input::SchemaKey,
+        schema: &'a InputSchema,
+        input: &'a [u8],
+    ) -> sagat_application::run_input::SchemaCheck<'a> {
+        Box::pin(async move {
+            let Ok(permit) = self.permits.acquire(key.tenant).await else {
+                return Err(SchemaRefusal::Busy);
+            };
+            let answer = off_worker(|| self.schemas.check(key.tenant, schema, key.shared, input));
+            drop(permit);
+            answer
+        })
+    }
+}
+
+/// Runs `work` where it does not hold an async worker: through `block_in_place` on a multi-thread runtime, in place
+/// on a current-thread one (where `block_in_place` would panic and there is no other worker to protect) and outside a
+/// runtime. The twin of the private helper of `crates/infra-postgres/src/payload_disclosure.rs` (D043-071). The work is
+/// bounded by the counter and its backstop, so nothing has to be cancelled.
+fn off_worker<T>(work: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
     }
 }
 

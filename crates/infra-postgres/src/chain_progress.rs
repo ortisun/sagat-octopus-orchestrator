@@ -1500,6 +1500,19 @@ impl ChainProgressStore for PgChainProgressStore {
         let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
         let chain = lock_chain(&mut tx, command).await?;
         let run = lock_run(&mut tx, command).await?;
+        // The successor runs the predecessor's version: an input checked against another would be an input nobody
+        // checked for it (design 043, FR-043-017). Logged without the value.
+        if prepared.checked_input().version() != run.version_id {
+            tracing::error!(
+                chain = %command.chain_id(),
+                version = %run.version_id,
+                checked_against = %prepared.checked_input().version(),
+                "a continuation input checked against another version was refused"
+            );
+            return Err(ChainProgressError::Storage(StoreError::Internal {
+                detail: "the continuation input was checked against another version".into(),
+            }));
+        }
         check_scheduler_fence(&mut tx, command).await?;
         if chain.current_run_id != command.expected_head() {
             let result = replay_handoff(&mut tx, command, &chain).await?;

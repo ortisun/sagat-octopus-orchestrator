@@ -1107,8 +1107,21 @@ impl RunStore for PgRunStore {
 
     async fn create(&self, mut new: NewRun) -> Result<Admitted<PgRunTx>, StoreError> {
         let tenant = new.info.tenant_id;
+        // The input was checked against the schema of one version: a run of another would hold an input nobody
+        // checked for it (design 043, FR-043-017). Logged without the value.
+        if new.input.version() != new.info.version_id {
+            tracing::error!(
+                run = %new.info.run_id,
+                version = %new.info.version_id,
+                checked_against = %new.input.version(),
+                "a run input checked against another version was refused"
+            );
+            return Err(StoreError::Internal {
+                detail: "the run input was checked against another version".into(),
+            });
+        }
         let hash = hash(&new.idempotency.fingerprint);
-        let input_digest = Sha256::digest(&new.input).to_vec();
+        let input_digest = Sha256::digest(new.input.bytes()).to_vec();
         for _ in 0..2 {
             let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
             if let Some(existing) = replay(&mut tx, tenant, &new.idempotency, &hash).await? {
@@ -1217,7 +1230,7 @@ impl RunStore for PgRunStore {
                 })?;
             let initial_state = self
                 .cache
-                .initial_declared_state(&version_document, &new.input)
+                .initial_declared_state(&version_document, new.input.bytes())
                 .map_err(|error| {
                     tracing::warn!(%error, version = %new.info.version_id, "declared initial state evaluation failed");
                     StoreError::Internal {
@@ -1335,7 +1348,7 @@ impl RunStore for PgRunStore {
             )
             .bind(tenant.as_uuid())
             .bind(&input_digest)
-            .bind(&new.input)
+            .bind(new.input.bytes())
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -1465,6 +1478,10 @@ impl RunStore for PgRunStore {
                 return Err(error);
             }
             insert_audit(&mut tx, &new.audit).await?;
+            // `report` mode: the refusal is audited with the run it admitted, once across a retry and a replay (D043-039).
+            if let Some(reported) = new.input.reported_audit(&new.audit, info.run_id) {
+                insert_audit(&mut tx, &reported).await?;
+            }
             if remember(
                 &mut tx,
                 tenant,
@@ -1493,7 +1510,7 @@ impl RunStore for PgRunStore {
                     persisted: 0,
                     data: Some(RunData {
                         run_id: Some(new.info.run_id),
-                        input: new.input.clone(),
+                        input: new.input.bytes().to_vec(),
                         input_blob,
                         state: initial_state.as_ref().map(|value| value.content().to_vec()),
                         state_revision: initial_state.as_ref().map(|_| 0),

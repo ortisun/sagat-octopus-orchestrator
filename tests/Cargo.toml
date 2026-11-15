@@ -43,7 +43,7 @@ regex = "1"
 reqwest = { workspace = true, features = ["json", "form"] }
 sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
-sagat-application.workspace = true
+sagat-application = { workspace = true, features = ["test-support"] }
 sagat-cli.workspace = true
 sagat-dev-idp.workspace = true
 sagat-control-plane.workspace = true

@@ -1283,18 +1283,18 @@ async fn the_capabilities_and_kinds_in_code_are_the_closed_values_of_the_schema_
         }
     };
     assert_eq!(
-        quoted(&definition("serving_instances_capabilities_closed").await)
+        quoted(&definition("serving_instances_capabilities_known").await)
             .into_iter()
             .filter(|v| v.ends_with("-v1") || v.contains("-v"))
             .collect::<BTreeSet<_>>(),
         in_code
     );
     assert_eq!(
-        quoted(&definition("platform_requirements_capability_valid").await),
+        quoted(&definition("platform_requirements_capability_known").await),
         in_code
     );
     assert_eq!(
-        quoted(&definition("platform_requirement_history_capability_valid").await),
+        quoted(&definition("platform_requirement_history_capability_known").await),
         in_code
     );
     assert_eq!(

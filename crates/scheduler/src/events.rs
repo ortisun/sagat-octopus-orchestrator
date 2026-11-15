@@ -24,6 +24,7 @@ use sagat_application::execution::{
     MAX_RUN_OUTPUT_BYTES, PathExecutionStore, PathExecutionTx, RunInfo, RunTx,
 };
 use sagat_application::quotas::RunLimits;
+use sagat_application::run_input::{Creator, FieldPolicy, InputRefusal, RunInputGate};
 use sagat_application::runs::{Admitted, Lock, NewRun, RunStore};
 use sagat_application::schedule_triggers::{
     HandoverCache, cron_document, tick_identity, tick_reason,
@@ -128,6 +129,8 @@ pub struct EventDispatcher<S, E, R> {
     scan_cursor: Mutex<Option<WaitingStep>>,
     /// Whether the cron triggers were handed over to the schedule pass, remembered between rounds.
     handover: HandoverCache,
+    /// Checks the input of every run a trigger starts against its version's schema (design 043, rows 9 and 10).
+    run_inputs: Arc<RunInputGate>,
     /// How many reads of the handover state failed in a row: a pass that cannot read it goes on firing (a tick fired twice
     /// starts once; one not fired is lost), so the run of failures is what an operator is told (D2075).
     handover_failures: AtomicU32,
@@ -163,7 +166,16 @@ where
             scan_cursor: Mutex::new(None),
             handover: HandoverCache::new(HandoverCache::LEGACY_BOUND),
             handover_failures: AtomicU32::new(0),
+            run_inputs: RunInputGate::unwired(),
         }
+    }
+
+    /// The gate the input of every run a trigger starts goes through (design 043). Without it a trigger of a version with
+    /// an `inputSchema` is retried as transient, never started unchecked.
+    #[must_use]
+    pub fn with_run_inputs(mut self, gate: Arc<RunInputGate>) -> Self {
+        self.run_inputs = gate;
+        self
     }
 
     /// Measures lag and age against another clock (a test's).
@@ -425,6 +437,29 @@ where
             .map_err(|_| StoreError::Internal {
                 detail: "a stored version no longer parses".into(),
             })?;
+        // Design 043, rows 9 and 10: the envelope is checked against the schema of the version the trigger names before
+        // anything is written. A refusal starts nothing and is recorded once; a transient one retries the event.
+        let input = match self
+            .run_inputs
+            .check(
+                tenant,
+                trigger.version_id,
+                &definition,
+                document.to_vec(),
+                Creator::Trigger,
+                FieldPolicy::Show,
+            )
+            .await
+        {
+            Ok(input) => input,
+            Err(InputRefusal::Unavailable) => {
+                return Err(StoreError::Unavailable {
+                    detail: "the run input could not be checked now".into(),
+                }
+                .into());
+            }
+            Err(refusal) => return self.refuse(trigger, firing, &refusal).await,
+        };
         let run_id = RunId::generate();
         let now = OffsetDateTime::now_utc();
         // The run continues the trace of the event that started it when its publisher sent one
@@ -472,7 +507,7 @@ where
             limits,
             info,
             definition: Arc::clone(&definition),
-            input: document.to_vec(),
+            input,
             input_blob: None,
             audit,
             idempotency: Idempotency {
@@ -529,6 +564,59 @@ where
             }
             Err(other) => Err(other.into()),
         }
+    }
+
+    /// Records that `trigger` started nothing for `firing` because its version refused the input (`FR-043-007`): for an
+    /// event, its delivery to the trigger with no run and, only when that delivery is new, one value-free audit record,
+    /// in one transaction, so a redelivery repeats neither; for a cron tick, which has no inbox event, the audit names the
+    /// tick's key (two dispatchers that reach one tick at once may both write it, G043-002). Then the metric, and the
+    /// other consumers of the event are still served.
+    async fn refuse(
+        &self,
+        trigger: &StoredTrigger,
+        firing: &Firing<'_>,
+        refusal: &InputRefusal,
+    ) -> Result<Started, EngineError> {
+        let audit = AuditRecord::engine(
+            trigger.tenant_id,
+            AuditAction::RunInputRefused,
+            ResourceType::WorkflowVersion,
+            trigger.version_id.to_string(),
+            match firing.event {
+                Some(_) => format!(
+                    "{} via trigger {}",
+                    refusal.summary(),
+                    trigger.registration.id
+                ),
+                None => format!(
+                    "{} via trigger {} at tick {}",
+                    refusal.summary(),
+                    trigger.registration.id,
+                    firing.key
+                ),
+            },
+            None,
+            OffsetDateTime::now_utc(),
+        );
+        match firing.event {
+            Some(event) => {
+                let delivery = DeliveryRef::refused_at_trigger(event, trigger.registration.id);
+                self.store
+                    .record_refused_delivery(trigger.tenant_id, &delivery, &audit)
+                    .await?;
+            }
+            None => RunStore::record_refusal(&self.store, &audit).await?,
+        }
+        // once per dispatch (CUJ 3): a redelivery counts again and records nothing again
+        metrics::counter!(
+            "trigger_events_total",
+            "outcome" => match refusal {
+                InputRefusal::SchemaUnusable => "input_schema_unusable",
+                _ => "input_invalid",
+            }
+        )
+        .increment(1);
+        Ok(Started::No)
     }
 
     /// Wakes `step` with `event`, once.

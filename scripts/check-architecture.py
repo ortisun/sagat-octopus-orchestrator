@@ -17,15 +17,26 @@ Reads `cargo metadata` and fails when:
   * the run-input validator (`crates/infra-schema/src/run_input/`, design 043) names `jsonschema` (a `use`, an `extern crate` or
     a qualified path): it is the oracle of a test only, never on the path (D043-074, ADR-0090);
   * `tokio` is a normal or build dependency of `sagat-application` (a dev-dependency is fine): the runtime of the run-input gate
-    lives in the adapter behind the port (D043-071, D043-077).
+    lives in the adapter behind the port (D043-071, D043-077);
+  * an `INSERT INTO runs` is written outside its three places (`create` in `crates/infra-postgres/src/execution.rs`,
+    `continue_as_new` and `continue_evaluated` in `crates/infra-postgres/src/chain_progress.rs`), counted per function
+    (FR-043-016): every run row is written where the input of the run is a `CheckedRunInput`;
+  * the legacy continue-as-new (`.continue_as_new(`, which carries an input nobody checked) is called outside the tests, other
+    than by a forwarder of the same name (FR-043-016, D043-122);
+  * the `test-support` feature of `sagat-application` (the constructor of `CheckedRunInput` that skips the gate) is enabled
+    anywhere but a `[dev-dependencies]` entry (FR-043-016);
+  * a `CheckedRunInput` is built (a struct expression or an associated function call) outside
+    `crates/application/src/run_input.rs` and the tests, or has a `Default` or a `Deserialize` anywhere (FR-043-016, D043-045).
 
-Usage: python3 scripts/check-architecture.py [--metadata FILE] [--postgres-src DIR] [--run-input-src DIR]
+Usage: python3 scripts/check-architecture.py [--metadata FILE] [--postgres-src DIR] [--run-input-src DIR] [--rust-root DIR]
   --metadata FILE     read a saved `cargo metadata --format-version 1` JSON instead of
                       running cargo (used by the negative tests).
   --postgres-src DIR  the source directory of the PostgreSQL adapter (default: crates/infra-postgres/src of this repository;
                       the negative tests give a small tree of their own).
   --run-input-src DIR the source directory of the run-input validator (default: crates/infra-schema/src/run_input of this
                       repository; the negative tests give their own).
+  --rust-root DIR     the root whose `crates/*/src` and `apps/*/src` the rules of the run creators read (default: this
+                      repository; the negative tests give a small tree of their own).
 """
 import json
 import pathlib
@@ -347,6 +358,133 @@ def application_runtime_errors(pkgs):
     return errors
 
 
+# --- every run is created with a checked input (design 043, FR-043-016) -------------------------------------------------------
+RUN_INSERT = re.compile(r"\bINSERT\s+INTO\s+runs\b", re.IGNORECASE)
+# (file, function) -> how many `INSERT INTO runs` it may hold: counted per function, so that a moved line is not a failure.
+RUN_INSERT_PLACES = {
+    ("crates/infra-postgres/src/execution.rs", "create"): 1,
+    ("crates/infra-postgres/src/chain_progress.rs", "continue_as_new"): 1,
+    ("crates/infra-postgres/src/chain_progress.rs", "continue_evaluated"): 1,
+}
+LEGACY_CONTINUATION = re.compile(r"\.\s*continue_as_new\s*\(")
+CHECKED_INPUT = "CheckedRunInput"
+CHECKED_INPUT_HOME = "crates/application/src/run_input.rs"
+TEST_SUPPORT_FEATURE = "test-support"
+
+
+def without_test_modules(masked):
+    """The masked source with every `#[cfg(test)]` item (a module, a function) blanked, newlines kept."""
+    out = list(masked)
+    for m in re.finditer(r"#\[cfg\(test\)\]", masked):
+        i = masked.find("{", m.end())
+        semi = masked.find(";", m.end())
+        if i < 0 or (0 <= semi < i):
+            continue
+        depth = 0
+        for j in range(i, len(masked)):
+            if masked[j] == "{":
+                depth += 1
+            elif masked[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    for k in range(m.start(), j + 1):
+                        if out[k] != "\n":
+                            out[k] = " "
+                    break
+    return "".join(out)
+
+
+def production_sources(root):
+    """`(relative path, text, masked without test modules, literals)` of the Rust sources under `crates/*/src` and `apps/*/src`."""
+    base = pathlib.Path(root)
+    for top in ("crates", "apps"):
+        for path in sorted(base.glob(f"{top}/*/src/**/*.rs")):
+            text = path.read_text()
+            masked, literals = rust_literals(text)
+            yield path.relative_to(base).as_posix(), text, without_test_modules(masked), literals
+
+
+def run_creator_errors(root):
+    """The errors of the rules that keep every run created with a checked input, over the tree at `root`."""
+    errors = []
+    counts = {}
+    for rel, text, masked, literals in production_sources(root):
+        for offset, sql in literals:
+            # a literal inside a test module was blanked with it, its opening quote included
+            if not RUN_INSERT.search(sql) or masked[offset - 1] != '"':
+                continue
+            inside = enclosing_function(masked, offset)
+            key = (rel, inside[0] if inside else None)
+            counts[key] = counts.get(key, 0) + 1
+            if counts[key] > RUN_INSERT_PLACES.get(key, 0):
+                errors.append(
+                    f"{rel}:{text.count(chr(10), 0, offset) + 1}: an `INSERT INTO runs` outside its three places (in "
+                    f"`{key[1]}`): a run row is written only where its input is a `CheckedRunInput` (FR-043-016, ADR-0090)"
+                )
+        for m in LEGACY_CONTINUATION.finditer(masked):
+            inside = enclosing_function(masked, m.start())
+            if inside is not None and inside[0] == "continue_as_new":
+                continue  # a forwarder of the trait method to its implementation
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: the legacy continue-as-new is called outside the tests: it "
+                f"carries an input nobody checked; use the evaluated continuation (FR-043-016, ADR-0090 decision 1)"
+            )
+        for m in re.finditer(r"\b" + CHECKED_INPUT + r"\b", masked):
+            line = text.count(chr(10), 0, m.start()) + 1
+            after = masked[m.end():m.end() + 64]
+            # the path that qualifies the name (`crate::run_input::`) is not what decides whether it is a construction
+            before = re.sub(r"(?:\b\w+\s*::\s*)+$", "", masked[max(0, m.start() - 96):m.start()]).rstrip()
+            associated = re.match(r"\s*::\s*[A-Za-z_]", after)
+            struct_expression = re.match(r"\s*\{", after) and not re.search(
+                r"(->|\bimpl|\bfor|\bstruct|\benum|\btrait|\bdyn|&|<|,|:)$", before
+            )
+            if (associated or struct_expression) and rel != CHECKED_INPUT_HOME:
+                errors.append(
+                    f"{rel}:{line}: a `{CHECKED_INPUT}` is built outside {CHECKED_INPUT_HOME}: only the gate builds one "
+                    f"(FR-043-016, D043-032)"
+                )
+        for m in re.finditer(r"#\[derive\(([^)]*)\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?struct\s+" + CHECKED_INPUT + r"\b", masked):
+            if re.search(r"\b(Default|Deserialize)\b", m.group(1)):
+                errors.append(
+                    f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{CHECKED_INPUT}` derives `Default` or `Deserialize`: an "
+                    f"input that no gate checked could be made from nothing or from bytes (D043-045)"
+                )
+        for m in re.finditer(r"\bimpl\b[^{;]*\b(Default|Deserialize)\b[^{;]*\bfor\s+(?:[\w:]+::)?" + CHECKED_INPUT + r"\b", masked):
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{CHECKED_INPUT}` implements `{m.group(1)}`: an input that "
+                f"no gate checked could be made from nothing or from bytes (D043-045)"
+            )
+    for key, allowed in RUN_INSERT_PLACES.items():
+        if counts.get(key, 0) == 0 and (pathlib.Path(root) / key[0]).exists():
+            errors.append(
+                f"`{key[1]}` ({key[0]}) is named by the run-insert rule and holds no `INSERT INTO runs`: the rule would check "
+                f"nothing (rename it in RUN_INSERT_PLACES)"
+            )
+    if not any((pathlib.Path(root) / key[0]).exists() for key in RUN_INSERT_PLACES):
+        errors.append(f"no file named by the run-insert rule is under {root}: the rule would check nothing")
+    return errors
+
+
+def test_support_errors(pkgs):
+    """`sagat-application`'s `test-support` feature enabled outside `[dev-dependencies]`, as a dependency or by a feature."""
+    errors = []
+    for p in pkgs.values():
+        for d in p["dependencies"]:
+            if d["name"] == APPLICATION_PACKAGE and TEST_SUPPORT_FEATURE in d.get("features", []) and d.get("kind") != "dev":
+                errors.append(
+                    f"'{p['name']}' enables `{APPLICATION_PACKAGE}/{TEST_SUPPORT_FEATURE}` as a {d.get('kind') or 'normal'} "
+                    f"dependency: it builds a `CheckedRunInput` no gate checked, and belongs in `[dev-dependencies]` only (FR-043-016)"
+                )
+        for feature, enables in (p.get("features") or {}).items():
+            for item in enables:
+                if item.replace("?", "") == f"{APPLICATION_PACKAGE}/{TEST_SUPPORT_FEATURE}":
+                    errors.append(
+                        f"'{p['name']}' feature `{feature}` enables `{APPLICATION_PACKAGE}/{TEST_SUPPORT_FEATURE}`: it belongs in "
+                        f"`[dev-dependencies]` only (FR-043-016)"
+                    )
+    return errors
+
+
 def main(argv):
     metadata_file = argv[argv.index("--metadata") + 1] if "--metadata" in argv else None
     postgres_src = (
@@ -358,6 +496,11 @@ def main(argv):
         argv[argv.index("--run-input-src") + 1]
         if "--run-input-src" in argv
         else str(pathlib.Path(__file__).resolve().parents[1] / "crates" / "infra-schema" / "src" / "run_input")
+    )
+    rust_root = (
+        argv[argv.index("--rust-root") + 1]
+        if "--rust-root" in argv
+        else str(pathlib.Path(__file__).resolve().parents[1])
     )
     md = load(metadata_file)
     root = md["workspace_root"]
@@ -429,6 +572,8 @@ def main(argv):
     errors.extend(run_finished_errors(postgres_src))
     errors.extend(run_input_errors(run_input_src))
     errors.extend(application_runtime_errors(pkgs))
+    errors.extend(run_creator_errors(rust_root))
+    errors.extend(test_support_errors(pkgs))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -459,7 +604,7 @@ def main(argv):
             print(f"  - {e}")
         return 1
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
-          f"no jsonschema in the run-input validator, no runtime in the application)")
+          f"no jsonschema in the run-input validator, no runtime in the application, every run created with a checked input)")
     return 0
 
 

@@ -73,6 +73,7 @@ mod release_upgrade_callback_cutover;
 mod release_upgrade_cutover;
 #[cfg(unix)]
 mod release_upgrade_inflight;
+mod run_input;
 mod scope_compensation_http;
 mod scope_frontier;
 mod scoped_blob_completion;

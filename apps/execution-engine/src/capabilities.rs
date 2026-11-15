@@ -22,5 +22,9 @@ pub fn capabilities(config: &EngineConfig) -> Vec<Capability> {
     if passes.contains(&PASS_SCHEDULES) {
         listed.push(Capability::SchedulesV1);
     }
+    // design 043: only an engine that refuses every input its version refuses promises it (FR-043-013)
+    if config.run_input_validation == sagat_application::run_input::InputValidationMode::Enforce {
+        listed.push(Capability::RunInputValidationV1);
+    }
     listed
 }

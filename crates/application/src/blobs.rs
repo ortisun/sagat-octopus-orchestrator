@@ -279,12 +279,6 @@ pub enum RunInputBinding {
     Inherit(RunId),
 }
 
-/// Checks a bounded descriptor against the input schema in an immutable workflow document.
-/// Implemented by the existing JSON Schema adapter; errors must contain no payload values.
-pub trait RunInputChecker: Send + Sync {
-    fn check(&self, workflow: &[u8], input: &[u8]) -> Result<(), &'static str>;
-}
-
 impl BlobCommit {
     #[must_use]
     pub fn new(scope: BlobScope, descriptor: &BlobDescriptor) -> Self {

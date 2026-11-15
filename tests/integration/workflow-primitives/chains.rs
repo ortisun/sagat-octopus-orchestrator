@@ -63,6 +63,10 @@ pub(crate) async fn scheduler(world: &World, label: &str) -> Sched {
         SystemEntropy,
         SchedulerSettings::default(),
     )
+    // every child and continuation is checked against its version's inputSchema (design 043)
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .with_children(world.cache.clone())
     .with_placement(placement)
 }
@@ -213,8 +217,8 @@ impl Boundary {
     ) -> sagat_application::chain_progress::EvaluatedChainHandoffCommand {
         let tenant = self.world.admin.tenant_id();
         let scope = claimed;
-        let (revision, version): (i64, i64) = sqlx::query_as(
-            "SELECT chain.revision,run.run_version FROM execution_chains chain \
+        let (revision, version, pinned): (i64, i64, Uuid) = sqlx::query_as(
+            "SELECT chain.revision,run.run_version,run.workflow_version_id FROM execution_chains chain \
                JOIN runs run ON run.tenant_id=chain.tenant_id AND run.id=chain.current_run_id \
              WHERE chain.tenant_id=$1 AND chain.chain_id=$2",
         )
@@ -236,7 +240,10 @@ impl Boundary {
         .expect("scheduler fence");
         let selection = ContinuationSelection::new(
             boundary_node(),
-            serde_json::to_vec(&json!({"segment": 2})).expect("input"),
+            sagat_application::run_input::CheckedRunInput::unchecked(
+                sagat_domain::definition::WorkflowVersionId::new(pinned),
+                serde_json::to_vec(&json!({"segment": 2})).expect("input"),
+            ),
             None,
             None,
         )

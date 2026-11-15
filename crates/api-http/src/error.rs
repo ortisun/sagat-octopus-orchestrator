@@ -187,6 +187,16 @@ impl ErrorCode {
             (Self::ValidationFailed, "SCHEDULE_INPUT_INVALID") => {
                 "The input does not match the target version's input schema (no excerpt)."
             }
+            (Self::ValidationFailed, "NOMINAL_TIME_FIELD_INVALID") => {
+                "`nominalTimeField` must name a top-level string property the target version's input schema declares."
+            }
+            // design 043: the sentences of `specs/043-run-input-validation/contracts/errors.md`
+            (Self::ValidationFailed, "RUN_INPUT_INVALID") => {
+                "Fix the input at `details.field`: `details.rule` names the keyword of the input schema it fails (no excerpt)."
+            }
+            (Self::ValidationFailed, "RUN_INPUT_SCHEMA_UNUSABLE") => {
+                "The version's input schema is outside the supported subset; publish a version within it (`control-plane input-schema-inventory` lists them)."
+            }
             (Self::ValidationFailed, "BACKFILL_RANGE_INVALID") => {
                 "`start` must be before `end` and `end` not after now."
             }
@@ -849,6 +859,25 @@ impl ApiError {
                     Some(field) => json!({ "reason": reason, "field": field }),
                     None => json!({ "reason": reason }),
                 });
+                e
+            }
+            // design 043: the reason, the pointer and the closed rule; never a value of the input
+            AppError::InvalidRunInput {
+                reason,
+                field,
+                rule,
+            } => {
+                let mut e = Self::validation(format!(
+                    "the run input does not match the workflow's input schema: {reason}"
+                ));
+                let mut details = json!({ "reason": reason });
+                if let Some(field) = field {
+                    details["field"] = json!(field);
+                }
+                if let Some(rule) = rule {
+                    details["rule"] = json!(rule);
+                }
+                e.parts.details = Some(details);
                 e
             }
             AppError::InvalidStart { reason, field } => {

@@ -265,6 +265,16 @@ impl DeliveryRef {
         })
     }
 
+    /// The delivery of `event` to the trigger `id` that started no run: the trigger's version refused the run's input
+    /// (design 043, D043-027). A redelivery finds it and repeats nothing.
+    #[must_use]
+    pub fn refused_at_trigger(event: &ClaimedEvent, id: Uuid) -> Self {
+        Self {
+            run_id: None,
+            ..Self::to_trigger(event, id, RunId::new(Uuid::nil()))
+        }
+    }
+
     /// The delivery of `event` to the trigger `id`, which starts `run`.
     #[must_use]
     pub fn to_trigger(event: &ClaimedEvent, id: Uuid, run: RunId) -> Self {
@@ -290,6 +300,16 @@ pub trait EventDispatchStore: Send + Sync {
         limit: u32,
         lease: Duration,
     ) -> impl Future<Output = Result<Vec<ClaimedEvent>, StoreError>> + Send;
+
+    /// Records, in one transaction, the delivery of an event to a trigger that started no run because its input was
+    /// refused (design 043, `FR-043-007`) and, only when that delivery is new, `audit`. `false` when the delivery was
+    /// recorded before: nothing is written again.
+    fn record_refused_delivery(
+        &self,
+        tenant: TenantId,
+        delivery: &DeliveryRef,
+        audit: &sagat_domain::audit::AuditRecord,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// The event has been delivered to everything it was due to reach.
     fn finish_event(

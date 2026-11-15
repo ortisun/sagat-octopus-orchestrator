@@ -123,6 +123,14 @@ impl ScheduledStarts for FinishesFirst {
             .await
     }
 
+    async fn check_scheduled(
+        &self,
+        principal: &Principal,
+        request: &ScheduledStart<'_>,
+    ) -> Result<(), AppError> {
+        self.inner.check_scheduled(principal, request).await
+    }
+
     async fn cancel_run(
         &self,
         principal: &Principal,

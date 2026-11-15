@@ -45,6 +45,13 @@ fn handoff(input: Digest, state: Option<Digest>) -> ChainHandoffCommand {
     )
 }
 
+fn checked(input: &[u8]) -> sagat_application::run_input::CheckedRunInput {
+    sagat_application::run_input::CheckedRunInput::unchecked(
+        sagat_domain::definition::WorkflowVersionId::generate(),
+        input.to_vec(),
+    )
+}
+
 #[test]
 fn evaluated_handoff_binds_bytes_digests_and_state_revision() {
     let input = br#"{"segment":2}"#.to_vec();
@@ -52,7 +59,7 @@ fn evaluated_handoff_binds_bytes_digests_and_state_revision() {
     let prepared = EvaluatedChainHandoffCommand::new(
         handoff(digest(&input), Some(digest(&state))),
         NodeId::parse("rollover").expect("node"),
-        input.clone(),
+        checked(&input),
         Some(state.clone()),
         Some(4),
     )
@@ -71,7 +78,7 @@ fn evaluated_handoff_rejects_changed_content_or_unpinned_state() {
         EvaluatedChainHandoffCommand::new(
             handoff(Digest::new([1; 32]), None),
             NodeId::parse("rollover").expect("node"),
-            input.clone(),
+            checked(&input),
             None,
             None,
         ),
@@ -81,7 +88,7 @@ fn evaluated_handoff_rejects_changed_content_or_unpinned_state() {
         EvaluatedChainHandoffCommand::new(
             handoff(digest(&input), Some(digest(b"7"))),
             NodeId::parse("rollover").expect("node"),
-            input,
+            checked(&input),
             Some(b"7".to_vec()),
             None,
         ),

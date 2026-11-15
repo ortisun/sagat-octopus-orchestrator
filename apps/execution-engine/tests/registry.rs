@@ -29,8 +29,54 @@ fn config(extra: &[(&str, &str)]) -> EngineConfig {
 }
 
 #[test]
-fn the_default_engine_runs_no_schedule_pass_and_lists_no_capability() {
-    assert_eq!(capabilities(&config(&[])), Vec::<Capability>::new());
+fn the_default_engine_runs_no_schedule_pass_and_lists_only_run_input_validation() {
+    // design 043: `enforce` is the default, and an engine in `enforce` promises `run-input-validation-v1`
+    assert_eq!(
+        capabilities(&config(&[])),
+        vec![Capability::RunInputValidationV1]
+    );
+}
+
+/// FR-043-013: the capability is listed only in `enforce`, so a replica in `report` is refused once it is required.
+#[test]
+fn an_engine_in_report_mode_does_not_list_run_input_validation() {
+    for (mode, listed) in [("enforce", true), ("", true), ("report", false)] {
+        let list = capabilities(&config(&[
+            ("SAGAT_SCHEDULES_ENABLED", "true"),
+            ("SAGAT_RUN_INPUT_VALIDATION", mode),
+        ]));
+        let mut expected = vec![Capability::SchedulesV1];
+        if listed {
+            expected.push(Capability::RunInputValidationV1);
+        }
+        assert_eq!(list, expected, "SAGAT_RUN_INPUT_VALIDATION={mode:?}");
+    }
+}
+
+/// The variable is parsed strictly: anything but `enforce`, `report` or empty stops the engine naming it.
+#[test]
+fn the_run_input_validation_mode_of_the_engine_is_read_strictly() {
+    for wrong in ["Report", "ENFORCE", " report", "off", "true"] {
+        let values = [
+            ("SAGAT_OIDC_ISSUER", "https://idp.example/"),
+            ("SAGAT_OIDC_AUDIENCE", "sagat"),
+            ("SAGAT_OIDC_JWKS_URI", "https://idp.example/jwks.json"),
+            ("SAGAT_RUN_INPUT_VALIDATION", wrong),
+        ];
+        let lookup = move |name: &str| {
+            values
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        };
+        let error = EngineConfig::from_lookup(&lookup, Environment::Dev)
+            .err()
+            .expect("refused");
+        assert!(
+            error.to_string().contains("SAGAT_RUN_INPUT_VALIDATION"),
+            "{wrong:?}: {error}"
+        );
+    }
 }
 
 #[test]
@@ -48,9 +94,9 @@ fn an_engine_lists_schedules_v1_when_and_only_when_its_configuration_runs_the_sc
         assert_eq!(
             list,
             if listed {
-                vec![Capability::SchedulesV1]
+                vec![Capability::SchedulesV1, Capability::RunInputValidationV1]
             } else {
-                Vec::new()
+                vec![Capability::RunInputValidationV1]
             },
             "SAGAT_SCHEDULES_ENABLED={flag:?}"
         );
@@ -63,13 +109,16 @@ fn the_other_passes_do_not_make_an_engine_list_the_capability_of_the_schedule_pa
         ("SAGAT_BATCHES_ENABLED", "true"),
         ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"),
     ]));
-    assert!(list.is_empty(), "{list:?}");
+    assert_eq!(list, vec![Capability::RunInputValidationV1], "{list:?}");
     let all = capabilities(&config(&[
         ("SAGAT_SCHEDULES_ENABLED", "true"),
         ("SAGAT_BATCHES_ENABLED", "true"),
         ("SAGAT_RESET_CANCEL_SOURCE_ENABLED", "true"),
     ]));
-    assert_eq!(all, vec![Capability::SchedulesV1]);
+    assert_eq!(
+        all,
+        vec![Capability::SchedulesV1, Capability::RunInputValidationV1]
+    );
 }
 
 #[test]

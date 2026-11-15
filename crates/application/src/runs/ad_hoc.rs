@@ -501,13 +501,43 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
                 QuotaResource::Workflows,
             )
             .await?;
+        // Design 043, row 13: the document's own `inputSchema`, compiled for this call alone (its version is new on every
+        // call) under the same permits as every other row (G043-031). A refused start replays a run of its key first
+        // (D043-029).
+        let input = match self
+            .run_inputs
+            .check(
+                principal.tenant_id(),
+                info.version_id,
+                &parsed.definition,
+                request.input.to_vec(),
+                crate::run_input::Creator::AdHoc,
+                crate::run_input::FieldPolicy::Show,
+            )
+            .await
+        {
+            Ok(input) => input,
+            Err(refusal) => {
+                if refusal.is_final()
+                    && let Some(existing) = self
+                        .replay_start_authorized(principal, info.workflow_id, &idempotency, ctx)
+                        .await?
+                {
+                    return self
+                        .replayed_start(principal, &existing)
+                        .await
+                        .map(|started| started.run);
+                }
+                return Err(refusal.into());
+            }
+        };
         let new = NewRun {
             schedule: None,
             business: None,
             limits: RunLimits::of(&self.store, principal.tenant_id(), request.namespace).await?,
             info,
             definition: Arc::new(parsed.definition),
-            input: request.input.to_vec(),
+            input,
             input_blob: None,
             audit,
             idempotency,

@@ -60,6 +60,7 @@ mod reset_rest;
 mod reset_telemetry;
 mod rest;
 mod retained_arguments;
+mod run_input;
 mod run_provenance;
 mod scheduled_business_ids;
 mod schedules;

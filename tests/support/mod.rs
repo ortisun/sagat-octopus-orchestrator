@@ -28,6 +28,7 @@ pub mod logs;
 pub mod nats;
 pub mod oidc;
 pub mod receiver;
+pub mod run_input;
 pub mod scale;
 pub mod schedules;
 pub mod scope_flow;

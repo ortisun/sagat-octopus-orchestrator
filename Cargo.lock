@@ -5656,6 +5656,7 @@ dependencies = [
  "hmac 0.13.0",
  "metrics",
  "ring",
+ "sagat-application",
  "sagat-domain",
  "sagat-telemetry",
  "serde_json",
@@ -5794,6 +5795,7 @@ dependencies = [
  "sagat-infra-ir",
  "sagat-infra-nats",
  "sagat-infra-postgres",
+ "sagat-infra-schema",
  "sagat-infra-secrets",
  "sagat-scheduler",
  "sagat-telemetry",
@@ -6012,6 +6014,7 @@ dependencies = [
  "sagat-infra-schema",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

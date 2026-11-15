@@ -41,6 +41,7 @@ use sagat_application::primitives::{
     PrimitiveInputError, PrimitiveStoreError, SchedulerAuthority,
 };
 use sagat_application::quotas::RunLimits;
+use sagat_application::run_input::{Creator, FieldPolicy, InputRefusal, RunInputGate};
 use sagat_application::runs::{Admitted, Lock, NewRun, RunStore};
 use sagat_application::scope_frontier::{
     CollectionFrontier, LoopFrontier, ScopeFrontierStore, ScopeMember,
@@ -279,6 +280,13 @@ pub enum ContinuationAdvanceError {
     Expression,
     #[error("the continuation expression failed and finalized the chain")]
     ExpressionFinalized,
+    /// The evaluated input was refused by the schema of the run's version and the run ended `FAILED` (design 043,
+    /// `FR-043-009`).
+    #[error("the continuation input was refused and finalized the chain")]
+    InputFinalized,
+    /// The evaluated input could not be checked now (no room in the validator): the boundary is tried again.
+    #[error("the continuation input could not be checked now")]
+    InputUnavailable,
     #[error("the continuation boundary exhausted its segment limit and finalized the chain")]
     ChainLimitFinalized,
     #[error(transparent)]
@@ -289,6 +297,41 @@ pub enum ContinuationAdvanceError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Engine(#[from] EngineError),
+}
+
+/// Why a continuation cannot go on: the failure code the predecessor ends with, its audit reason and its metric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContinuationFailure {
+    Expression,
+    InputInvalid,
+    SchemaUnusable,
+}
+
+impl ContinuationFailure {
+    fn code(self) -> FailureCode {
+        match self {
+            Self::Expression => FailureCode::expression_error(),
+            Self::InputInvalid => FailureCode::continuation_input_invalid(),
+            Self::SchemaUnusable => FailureCode::run_input_schema_unusable(),
+        }
+    }
+
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::Expression => "continuation expression failed",
+            Self::InputInvalid => "continuation input refused: CONTINUATION_INPUT_INVALID",
+            Self::SchemaUnusable => "continuation input refused: RUN_INPUT_SCHEMA_UNUSABLE",
+        }
+    }
+
+    const fn metric(self) -> &'static str {
+        match self {
+            Self::Expression => "scheduler_continuation_expression_failures_total",
+            Self::InputInvalid | Self::SchemaUnusable => {
+                "scheduler_continuation_input_refusals_total"
+            }
+        }
+    }
 }
 
 impl Report {
@@ -553,6 +596,8 @@ pub struct Scheduler<S, E, R> {
     item_source: Option<Arc<dyn CollectionItemSource>>,
     /// Until when each pass rests its search for other tenants (see [`SchedulerSettings::discovery_rest`]).
     rests: std::sync::Mutex<std::collections::BTreeMap<&'static str, Instant>>,
+    /// Checks the input of every child and every continuation against its version's schema (design 043, rows 11, 12).
+    run_inputs: Arc<RunInputGate>,
 }
 
 impl<S, E, R> std::fmt::Debug for Scheduler<S, E, R> {
@@ -573,7 +618,7 @@ where
     E: ExpressionEvaluator,
     R: Entropy,
 {
-    pub const fn new(store: S, engine: Engine<E>, entropy: R, settings: SchedulerSettings) -> Self {
+    pub fn new(store: S, engine: Engine<E>, entropy: R, settings: SchedulerSettings) -> Self {
         Self {
             store,
             engine,
@@ -583,7 +628,16 @@ where
             placement: None,
             item_source: None,
             rests: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            run_inputs: RunInputGate::unwired(),
         }
+    }
+
+    /// The gate the input of every child and continuation goes through (design 043). Without it a child or a
+    /// continuation of a version with an `inputSchema` is left for the next pass, never created unchecked.
+    #[must_use]
+    pub fn with_run_inputs(mut self, gate: Arc<RunInputGate>) -> Self {
+        self.run_inputs = gate;
+        self
     }
 
     /// Lets the scheduler materialize collection items from blob references (T014-016).
@@ -798,7 +852,7 @@ where
         let info = tx.info().clone();
         let occurred_at = tx.now();
         let data = tx.data().await?.clone();
-        let (input_expression, state_expression, entry_correlation, expected_run_version) = {
+        let (input_expression, state_expression, entry_correlation, expected_run_version, schema) = {
             let (definition, state) = tx.parts();
             let step = state
                 .step(boundary)
@@ -827,6 +881,8 @@ where
                 next.clone(),
                 entry_correlation,
                 state.version(),
+                // the successor runs this version: its schema is read here, under the run's lock, with no statement
+                definition.input_schema().cloned(),
             )
         };
         tx.commit().await?;
@@ -873,11 +929,46 @@ where
                     lease,
                     expected_run_version,
                     &info,
+                    ContinuationFailure::Expression,
                 )
                 .await?;
                 return Err(ContinuationAdvanceError::ExpressionFinalized);
             }
             Err(error) => return Err(error),
+        };
+        // Design 043, row 12: the evaluated input is checked against the schema of the version the successor runs, after
+        // the lock is released and before the hand-off is written. A refusal ends the predecessor `FAILED`.
+        let input = match self
+            .run_inputs
+            .check_schema(
+                tenant,
+                info.version_id,
+                schema.as_ref(),
+                input,
+                Creator::Continuation,
+                FieldPolicy::Show,
+            )
+            .await
+        {
+            Ok(input) => input,
+            Err(InputRefusal::Unavailable) => {
+                return Err(ContinuationAdvanceError::InputUnavailable);
+            }
+            Err(refusal) => {
+                self.finalize_continuation_expression(
+                    view,
+                    chain,
+                    lease,
+                    expected_run_version,
+                    &info,
+                    match refusal {
+                        InputRefusal::SchemaUnusable => ContinuationFailure::SchemaUnusable,
+                        _ => ContinuationFailure::InputInvalid,
+                    },
+                )
+                .await?;
+                return Err(ContinuationAdvanceError::InputFinalized);
+            }
         };
         if state.is_some() != data.state_revision.is_some() {
             return Err(ContinuationAdvanceError::NotContinuation);
@@ -979,6 +1070,7 @@ where
         }
     }
 
+    /// Ends the predecessor `FAILED` with `failure`'s code, through the fenced path of a continuation that cannot go on.
     async fn finalize_continuation_expression(
         &self,
         view: &View,
@@ -986,6 +1078,7 @@ where
         lease: Lease,
         expected_run_version: u64,
         info: &RunInfo,
+        failure: ContinuationFailure,
     ) -> Result<(), ContinuationAdvanceError>
     where
         S: ChainCommandStore + ChainProgressStore,
@@ -1014,7 +1107,7 @@ where
             AuditAction::RunFinished,
             ResourceType::Run,
             observed.head().to_string(),
-            "continuation expression failed",
+            failure.reason(),
             info.trace_id.clone(),
             tx.now(),
         ));
@@ -1026,14 +1119,14 @@ where
                         definition,
                         state,
                         StopReason::Failed,
-                        Some(FailureCode::expression_error()),
+                        Some(failure.code()),
                         now,
                     )?,
                 ))
             })
             .await?;
         tx.commit().await?;
-        metrics::counter!("scheduler_continuation_expression_failures_total").increment(1);
+        metrics::counter!(failure.metric()).increment(1);
         Ok(())
     }
 
@@ -4465,8 +4558,19 @@ where
                     Ok(_)
                     | Err(
                         ContinuationAdvanceError::ChainLimitFinalized
-                        | ContinuationAdvanceError::ExpressionFinalized,
+                        | ContinuationAdvanceError::ExpressionFinalized
+                        | ContinuationAdvanceError::InputFinalized,
                     ) => Outcome::Done,
+                    // no room in the validator: not a failure, the boundary is examined again
+                    Err(ContinuationAdvanceError::InputUnavailable) => {
+                        metrics::counter!(
+                            "scheduler_continuation_waits_total",
+                            "blocker" => "input_check"
+                        )
+                        .increment(1);
+                        waiting = true;
+                        Outcome::Skipped
+                    }
                     Err(ContinuationAdvanceError::Waiting(blocker)) => {
                         metrics::counter!(
                             "scheduler_continuation_waits_total",
@@ -5242,6 +5346,55 @@ where
             .into_iter()
             .flatten()
             .min();
+        // Design 043, row 11: the input the parent's node evaluated is checked against the child's version. A refusal fails
+        // the parent step, unless the child already exists (created by a peer, a 0.2.x engine or one in `report`, D043-038).
+        let input = match self
+            .run_inputs
+            .check(
+                tenant,
+                version_record.version.id(),
+                &definition,
+                pending.input.clone(),
+                Creator::Child,
+                FieldPolicy::Show,
+            )
+            .await
+        {
+            Ok(input) => input,
+            // no room to check it now: the reservation stays and the next pass tries again
+            Err(InputRefusal::Unavailable) => return Ok((Outcome::Skipped, false)),
+            Err(refusal) => {
+                let created = Idempotency {
+                    scope: format!("child:{parent_id}"),
+                    key: format!("child-start:{node}"),
+                    fingerprint: pending.child.as_uuid().as_bytes().to_vec(),
+                };
+                if self
+                    .store
+                    .replay_start(tenant, Subject::engine().as_str(), &created)
+                    .await?
+                    .is_some()
+                {
+                    return Ok((Outcome::Skipped, false));
+                }
+                let code = match refusal {
+                    InputRefusal::SchemaUnusable => FailureCode::run_input_schema_unusable(),
+                    _ => FailureCode::child_input_invalid(),
+                };
+                return Ok((
+                    self.finish_with(
+                        view,
+                        tenant,
+                        parent_id,
+                        node.clone(),
+                        pending.child,
+                        ChildOutcome::Failed(code),
+                    )
+                    .await,
+                    true,
+                ));
+            }
+        };
         let child_id = pending.child;
         let info = RunInfo {
             origin: None,
@@ -5285,7 +5438,7 @@ where
             limits,
             info,
             definition: std::sync::Arc::clone(&definition),
-            input: pending.input.clone(),
+            input,
             input_blob: Some(sagat_application::blobs::RunInputBinding::Inherit(
                 parent_id,
             )),

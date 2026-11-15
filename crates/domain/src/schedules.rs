@@ -944,6 +944,10 @@ pub enum Outcome {
     AlreadyActed,
     AuthorityRevoked,
     BusinessIdConflict,
+    /// The target version refused the action's input (design 043, `FR-043-006`): the time is acted on, nothing starts,
+    /// nothing is retried. The reason is `SCHEDULE_INPUT_INVALID`, `NOMINAL_TIME_FIELD_INVALID` or
+    /// `RUN_INPUT_SCHEMA_UNUSABLE`.
+    InputInvalid,
 }
 
 impl Outcome {
@@ -960,6 +964,7 @@ impl Outcome {
             Self::AlreadyActed => "ALREADY_ACTED",
             Self::AuthorityRevoked => "AUTHORITY_REVOKED",
             Self::BusinessIdConflict => "BUSINESS_ID_CONFLICT",
+            Self::InputInvalid => "INPUT_INVALID",
         }
     }
 
@@ -992,6 +997,7 @@ impl FromStr for Outcome {
             "ALREADY_ACTED" => Self::AlreadyActed,
             "AUTHORITY_REVOKED" => Self::AuthorityRevoked,
             "BUSINESS_ID_CONFLICT" => Self::BusinessIdConflict,
+            "INPUT_INVALID" => Self::InputInvalid,
             _ => return Err(()),
         })
     }

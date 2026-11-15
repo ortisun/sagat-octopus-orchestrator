@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
 use sagat_domain::identity::{NamespaceId, Permission, Principal, TenantId};
@@ -621,6 +622,8 @@ pub struct BackfillProgress {
     pub outcome: Option<&'static str>,
     /// There is no time left: the backfill is complete.
     pub finished: bool,
+    /// The backfill ends `CANCELLED` with this decision: the input of its action was refused (design 043, `FR-043-006`).
+    pub cancelled: bool,
 }
 
 /// A decision of a schedule, as read back.
@@ -734,6 +737,17 @@ pub trait ScheduleStore: Send + Sync {
         namespace: NamespaceId,
         target: &ScheduleTarget,
     ) -> impl Future<Output = Result<TargetCheck, StoreError>> + Send;
+
+    /// The version a target would start now (the pinned one, or the workflow's active one) and its stored document, for
+    /// the check of a schedule's input at write (design 043, row 14). `None` when there is none.
+    fn target_version(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        target: &ScheduleTarget,
+    ) -> impl Future<
+        Output = Result<Option<(sagat_domain::definition::WorkflowVersionId, Vec<u8>)>, StoreError>,
+    > + Send;
 
     /// Stores a new schedule and its first revision with its audit record, counting it against the
     /// namespace's quota (`limit`, active and paused ones). `Conflict(ScheduleName)` when the name
@@ -1104,6 +1118,22 @@ fn calendar_error(error: CalendarFailure) -> AppError {
     }
 }
 
+/// Whether `schema` declares `name` as a top-level property whose `type` is or includes `"string"` (D043-008).
+fn declares_string(schema: &[u8], name: &str) -> bool {
+    let Ok(schema) = serde_json::from_slice::<Value>(schema) else {
+        return false;
+    };
+    match schema
+        .get("properties")
+        .and_then(|p| p.get(name))
+        .and_then(|p| p.get("type"))
+    {
+        Some(Value::String(kind)) => kind == "string",
+        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind == "string"),
+        _ => false,
+    }
+}
+
 /// The input as the payload that is stored: an object of at most [`MAX_INPUT_BYTES`].
 fn stored_input(input: &Value) -> Result<StoredInput, AppError> {
     if !input.is_object() {
@@ -1203,6 +1233,12 @@ pub struct ScheduleService<S, K, C> {
     calendar: K,
     clock: C,
     ceilings: Ceilings,
+    /// Checks a schedule's input at write against the version it targets (design 043, row 14). The check at action time
+    /// is the authority (D043-008); without this one a write is checked only there (D043-125).
+    run_inputs: Option<(
+        Arc<crate::run_input::RunInputGate>,
+        crate::execution::DefinitionCache,
+    )>,
 }
 
 impl<S, K, C> ScheduleService<S, K, C>
@@ -1218,7 +1254,20 @@ where
             calendar,
             clock,
             ceilings: ceilings.clamped(),
+            run_inputs: None,
         }
+    }
+
+    /// Checks the input of every write against the version its target names, through `gate`, parsing the version with
+    /// `definitions` (design 043, row 14).
+    #[must_use]
+    pub fn with_run_inputs(
+        mut self,
+        gate: Arc<crate::run_input::RunInputGate>,
+        definitions: crate::execution::DefinitionCache,
+    ) -> Self {
+        self.run_inputs = Some((gate, definitions));
+        self
     }
 
     /// The ceilings a document is decoded against.
@@ -1267,7 +1316,104 @@ where
         self.calendar
             .validate(&write.spec, now, &self.ceilings)
             .map_err(calendar_error)?;
-        stored_input(&write.input)
+        let stored = stored_input(&write.input)?;
+        self.check_input(principal, namespace, write, &stored, now)
+            .await?;
+        Ok(stored)
+    }
+
+    /// Design 043, row 14: the input is checked against the version the target names now, with `nominalTimeField` filled
+    /// as an action fills it; `nominalTimeField` must be a declared top-level string property when the version has an
+    /// `inputSchema` (`NOMINAL_TIME_FIELD_INVALID`, D043-008). The pointer of a refusal is under `/action/input`.
+    async fn check_input(
+        &self,
+        principal: &Principal,
+        namespace: NamespaceId,
+        write: &ScheduleWrite,
+        stored: &StoredInput,
+        now: OffsetDateTime,
+    ) -> Result<(), AppError> {
+        let Some((gate, definitions)) = &self.run_inputs else {
+            return Ok(());
+        };
+        let Some((version, document)) = self
+            .store
+            .target_version(principal.tenant_id(), namespace, &write.target)
+            .await?
+        else {
+            // a workflow with no published version yet: the action is checked when it acts (D043-008)
+            return Ok(());
+        };
+        let definition = definitions
+            .get_or_parse(version, &document)
+            .map_err(|error| {
+                tracing::error!(%error, %version, "a stored version no longer parses");
+                AppError::Internal
+            })?;
+        let Some(schema) = definition.input_schema() else {
+            return Ok(());
+        };
+        let field = write.target.nominal_time_field();
+        if let Some(field) = field
+            && !declares_string(schema.bytes(), field)
+        {
+            return Err(invalid(
+                "NOMINAL_TIME_FIELD_INVALID",
+                "/action/nominalTimeField",
+            ));
+        }
+        let mut input = stored.bytes.clone();
+        if let Some(field) = field {
+            let mut value: Value =
+                serde_json::from_slice(&input).map_err(|_| AppError::Internal)?;
+            if let Some(map) = value.as_object_mut() {
+                let text = now
+                    .to_offset(time::UtcOffset::UTC)
+                    .replace_nanosecond(0)
+                    .ok()
+                    .and_then(|at| {
+                        at.format(&time::format_description::well_known::Rfc3339)
+                            .ok()
+                    })
+                    .ok_or(AppError::Internal)?;
+                map.insert(field.to_owned(), Value::String(text));
+            }
+            input = serde_json::to_vec(&value).map_err(|_| AppError::Internal)?;
+        }
+        match gate
+            .check(
+                principal.tenant_id(),
+                version,
+                &definition,
+                input,
+                crate::run_input::Creator::Schedule,
+                crate::run_input::FieldPolicy::Show,
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(crate::run_input::InputRefusal::Invalid { field: at, rule }) => {
+                let pointer = if at == "/" {
+                    "/action/input".to_owned()
+                } else {
+                    format!("/action/input{at}")
+                };
+                let nominal =
+                    field.map(|name| format!("/{}", name.replace('~', "~0").replace('/', "~1")));
+                if nominal.as_deref() == Some(at.as_str()) {
+                    return Err(invalid(
+                        "NOMINAL_TIME_FIELD_INVALID",
+                        "/action/nominalTimeField",
+                    ));
+                }
+                Err(AppError::InvalidRunInput {
+                    reason: "SCHEDULE_INPUT_INVALID",
+                    field: Some(pointer),
+                    rule: Some(rule.as_str()),
+                })
+            }
+            Err(refusal) => Err(refusal.into()),
+        }
     }
 
     fn audit(

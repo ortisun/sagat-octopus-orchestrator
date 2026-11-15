@@ -212,12 +212,21 @@ pub async fn serve(
         );
         scheduler_settings.concurrency = room.max(1);
     }
+    // every run this replica creates (children, continuations, triggered runs, schedule actions, batch items, pending
+    // resets) is checked against its version's inputSchema through one gate over the process's validator (design 043)
+    tracing::info!(
+        mode = engine.run_input_validation.as_str(),
+        "run inputs are checked against their version's inputSchema in this mode"
+    );
+    let run_inputs =
+        sagat_infra_schema::run_input::RunInputValidator::gate(engine.run_input_validation);
     let mut scheduler = Scheduler::new(
         store.clone(),
         Engine::new(JsonEvaluator),
         SystemEntropy,
         scheduler_settings,
     )
+    .with_run_inputs(Arc::clone(&run_inputs))
     .with_children(cache.clone())
     .with_placement(placement.clone());
     // A collection whose items live in a blob (T014-016) is read through the same store; without
@@ -234,6 +243,7 @@ pub async fn serve(
             cache.clone(),
             engine.events,
         )
+        .with_run_inputs(Arc::clone(&run_inputs))
         .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar)),
     );
     // Anonymous broker destinations must run without a secret backend. The default reader
@@ -459,7 +469,8 @@ pub async fn serve(
                     SystemClock,
                     Engine::new(JsonEvaluator),
                     cache.clone(),
-                ),
+                )
+                .with_run_inputs(Arc::clone(&run_inputs)),
                 Ceilings::default(),
             ),
             placement.clone(),
@@ -537,6 +548,7 @@ pub async fn serve(
                     Engine::new(JsonEvaluator),
                     cache.clone(),
                 )
+                .with_run_inputs(Arc::clone(&run_inputs))
                 .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator)),
                 PgIdentityStore::new(pool.clone()),
                 database_clock.clone(),
@@ -591,6 +603,7 @@ pub async fn serve(
                     Engine::new(JsonEvaluator),
                     cache.clone(),
                 )
+                .with_run_inputs(Arc::clone(&run_inputs))
                 .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator)),
                 PgIdentityStore::new(pool.clone()),
                 database_clock.clone(),

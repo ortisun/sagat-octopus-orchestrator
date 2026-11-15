@@ -487,3 +487,158 @@ class TheApplicationHoldsNoRuntime(unittest.TestCase):
         result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("no runtime in the application", result.stdout)
+
+
+def creator_check(files, packages=None):
+    """The checker over a tree of Rust sources `files` ({relative path: source}) and a dependency graph of `packages`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp) / "repo"
+        for rel, source in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(source)
+        run_input = pathlib.Path(tmp) / "run_input"
+        run_input.mkdir()
+        (run_input / "mod.rs").write_text(VALIDATOR)
+        packages = packages or [pkg("d", "crates/domain", [])]
+        metadata = {
+            "workspace_root": "/r",
+            "workspace_members": [p["id"] for p in packages],
+            "packages": packages,
+        }
+        meta = pathlib.Path(tmp) / "metadata.json"
+        meta.write_text(json.dumps(metadata))
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--metadata", str(meta), "--run-input-src", str(run_input), "--rust-root", str(root)],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode, result.stdout
+
+
+EXECUTION = 'async fn create() {\n    sqlx::query("INSERT INTO runs (id) VALUES ($1)");\n}\n'
+CHAINS = (
+    'async fn continue_as_new() {\n    let q = "INSERT INTO runs (id) VALUES ($1)";\n}\n'
+    'async fn continue_evaluated() {\n    let q = "INSERT INTO runs \\\n     (id) VALUES ($1)";\n}\n'
+)
+GATE = "pub struct CheckedRunInput { version: u8 }\nfn check() -> CheckedRunInput { CheckedRunInput { version: 1 } }\n"
+
+
+def creator_tree(**extra):
+    files = {
+        "crates/infra-postgres/src/execution.rs": EXECUTION,
+        "crates/infra-postgres/src/chain_progress.rs": CHAINS,
+        "crates/application/src/run_input.rs": GATE,
+    }
+    files.update(extra)
+    return files
+
+
+class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
+    """Design 043, FR-043-016: the run-insert, legacy-continuation, test-support and construction rules."""
+
+    def test_the_three_places_and_the_gate_pass(self):
+        code, out = creator_check(creator_tree())
+        self.assertEqual(code, 0, out)
+        self.assertIn("every run created with a checked input", out)
+
+    def test_an_insert_in_another_function_is_refused_and_a_test_module_is_not_read(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/src/other.rs": 'fn shortcut() { let q = "insert into runs (id) values ($1)"; }\n',
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/infra-postgres/src/other.rs:1", out)
+        self.assertIn("FR-043-016", out)
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/src/other.rs": '#[cfg(test)]\nmod tests {\n    fn f() { let q = "INSERT INTO runs (id)"; }\n}\n',
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_second_insert_in_an_allowed_function_is_refused_and_a_moved_one_is_not(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/src/execution.rs": EXECUTION.replace("}\n", '    let again = "INSERT INTO runs (id)";\n}\n'),
+        }))
+        self.assertEqual(code, 1, out)
+        code, out = creator_check(creator_tree(**{"crates/infra-postgres/src/execution.rs": "\n\n\n" + EXECUTION}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_place_that_is_gone_is_an_error_and_not_a_pass(self):
+        code, out = creator_check(creator_tree(**{"crates/infra-postgres/src/execution.rs": "async fn create() {}\n"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("the rule would check nothing", out)
+
+    def test_the_legacy_continuation_is_refused_outside_the_tests_but_a_forwarder_passes(self):
+        code, out = creator_check(creator_tree(**{"crates/scheduler/src/passes.rs": "async fn go(s: S) { s.continue_as_new(&c).await; }\n"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/scheduler/src/passes.rs:1: the legacy continue-as-new", out)
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/src/forward.rs": "async fn continue_as_new(&self, c: &C) { self.inner.continue_as_new(c).await }\n",
+            "crates/scheduler/src/passes.rs": "#[cfg(test)]\nmod tests { fn t() { s.continue_as_new(&c); } }\n",
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_checked_input_built_outside_the_gate_is_refused(self):
+        for source in (
+            "fn f() -> X { CheckedRunInput { version: 1 } }\n",
+            "fn f() -> X { sagat_application::run_input::CheckedRunInput { version: 1 } }\n",
+            "fn f() -> X { CheckedRunInput::unchecked(v, b) }\n",
+            "fn f() -> X { crate::run_input::CheckedRunInput :: unchecked(v, b) }\n",
+        ):
+            with self.subTest(source=source):
+                code, out = creator_check(creator_tree(**{"crates/scheduler/src/events.rs": source}))
+                self.assertEqual(code, 1, out)
+                self.assertIn("crates/scheduler/src/events.rs:1: a `CheckedRunInput` is built outside", out)
+
+    def test_naming_the_type_is_not_building_it(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/application/src/runs.rs": (
+                "pub struct NewRun { pub input: crate::run_input::CheckedRunInput, }\n"
+                "fn input(&self) -> &crate::run_input::CheckedRunInput { &self.input }\n"
+                "fn f(x: Vec<CheckedRunInput>) {}\n"
+                "#[cfg(test)]\nmod tests { fn t() { let _ = CheckedRunInput::unchecked(v, b); } }\n"
+            ),
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_default_or_a_deserialize_is_refused_even_in_the_gate(self):
+        for source in (
+            "#[derive(Clone, Default)]\npub struct CheckedRunInput { version: u8 }\n",
+            "#[derive(serde::Deserialize)]\n#[serde(deny_unknown_fields)]\npub struct CheckedRunInput { version: u8 }\n",
+            GATE + "impl Default for CheckedRunInput { fn default() -> Self { todo!() } }\n",
+            GATE + "impl<'de> serde::Deserialize<'de> for CheckedRunInput { }\n",
+        ):
+            with self.subTest(source=source):
+                code, out = creator_check(creator_tree(**{"crates/application/src/run_input.rs": source}))
+                self.assertEqual(code, 1, out)
+                self.assertIn("D043-045", out)
+
+    def test_the_test_support_feature_belongs_in_dev_dependencies_only(self):
+        def packages(dependency, features=None):
+            application = pkg("sagat-application", "crates/application", [])
+            user = pkg("sagat-tests", "tests", [])
+            user["dependencies"] = [dependency]
+            user["features"] = features or {}
+            # named by the lake-runner rule whenever the application is in the graph
+            return [
+                application,
+                user,
+                pkg("sagat-database-runner", "apps/database-runner", ["sagat-application"]),
+                pkg("sagat-infra-lake", "crates/infra-lake", ["sagat-application"]),
+            ]
+
+        dev = {"name": "sagat-application", "kind": "dev", "features": ["test-support"]}
+        code, out = creator_check(creator_tree(), packages(dev))
+        self.assertEqual(code, 0, out)
+        normal = {"name": "sagat-application", "kind": None, "features": ["test-support"]}
+        code, out = creator_check(creator_tree(), packages(normal))
+        self.assertEqual(code, 1, out)
+        self.assertIn("as a normal dependency", out)
+        plain = {"name": "sagat-application", "kind": None, "features": []}
+        code, out = creator_check(creator_tree(), packages(plain, {"testing": ["sagat-application/test-support"]}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("feature `testing` enables", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
+

@@ -173,6 +173,9 @@ pub async fn world_with_breaker(
         // `SAGAT_RESET_REAPPLY_ENABLED`), so that the suites can exercise it. The production default is proved by
         // `reapply::the_service_the_control_plane_builds_refuses_the_reapply_unless_the_operator_set_it`.
         runs: RunService::new(store.clone(), SystemClock, engine.clone(), cache.clone())
+            .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+                sagat_application::run_input::InputValidationMode::Enforce,
+            ))
             .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
             .with_reset_reapply(true)
             // ON here, like the reapply, so that the suites can exercise it; the production default is proved by
@@ -238,6 +241,9 @@ pub async fn world_with_breaker(
             SystemEntropy,
             SchedulerSettings::default(),
         )
+        .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+            sagat_application::run_input::InputValidationMode::Enforce,
+        ))
         .with_children(cache.clone()),
         dispatcher: EventDispatcher::new(
             store.clone(),
@@ -246,6 +252,9 @@ pub async fn world_with_breaker(
             cache.clone(),
             EventDispatchSettings::default(),
         )
+        .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+            sagat_application::run_input::InputValidationMode::Enforce,
+        ))
         .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar)),
         cache,
         worker: Principal::new(t.admin_a.tenant_id(), subject("worker-1"), Role::Worker),
@@ -567,6 +576,9 @@ impl World {
             self.cache.clone(),
             settings,
         )
+        .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+            sagat_application::run_input::InputValidationMode::Enforce,
+        ))
         .with_cron(Arc::new(sagat_infra_ir::cron::CronCalendar))
     }
 
@@ -760,7 +772,10 @@ impl World {
                 SystemClock,
                 Engine::new(JsonEvaluator),
                 cache,
-            ),
+            )
+            .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+                sagat_application::run_input::InputValidationMode::Enforce,
+            )),
             workers: WorkerService::new(
                 store.clone(),
                 SystemClock,

@@ -179,6 +179,38 @@ impl EventDispatchStore for PgRunStore {
         Ok(events)
     }
 
+    async fn record_refused_delivery(
+        &self,
+        tenant: TenantId,
+        delivery: &sagat_application::dispatch::DeliveryRef,
+        audit: &sagat_domain::audit::AuditRecord,
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        // The primary key is (event, consumer): a redelivery inserts nothing and audits nothing (D043-027).
+        let inserted = sqlx::query(
+            "INSERT INTO event_deliveries \
+             (tenant_id, namespace_id, source, event_id, consumer, run_id, node, trigger_id, delivered_at) \
+             VALUES ($1, $2, $3, $4, $5, NULL, NULL, $6, clock_timestamp()) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant.as_uuid())
+        .bind(delivery.namespace_id.as_uuid())
+        .bind(&delivery.source)
+        .bind(&delivery.event_id)
+        .bind(&delivery.consumer)
+        .bind(delivery.trigger_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected()
+            > 0;
+        if inserted {
+            crate::identity::insert_audit(&mut tx, audit).await?;
+        }
+        tx.commit().await.map_err(store_error)?;
+        Ok(inserted)
+    }
+
     async fn finish_event(&self, event: &ClaimedEvent) -> Result<(), StoreError> {
         sqlx::query(
             "UPDATE inbox_events SET status = 'DISPATCHED', dispatched_at = clock_timestamp(), \
