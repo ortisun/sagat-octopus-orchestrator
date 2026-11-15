@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 
 use sagat_application::clock::Clock;
 use sagat_application::schedule_triggers::{
-    DriftWindow, Reconciled, ScanCursor, TriggerReconciler, TriggerScheduleStore,
+    DriftWindow, HandoverBlock, HandoverMode, HandoverState, HandoverView, Reconciled, ScanCursor,
+    TriggerReconciler, TriggerScheduleStore,
 };
 use sagat_application::schedules::{ScheduleCalendar, ShardFence};
 use sagat_domain::sharding::Shard;
@@ -235,6 +236,34 @@ fn register_alert_series() {
     metrics::counter!("trigger_schedule_reconcile_failures_total").absolute(0);
     metrics::counter!("cron_legacy_fires_after_handover_total", "source" => "legacy_pass")
         .absolute(0);
+    export_handover(None);
+}
+
+/// How often an engine reads the handover's mode and the job's last attempt for its gauges: a heartbeat of the job.
+pub const HANDOVER_VIEW_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The gauges of the automatic handover (ADR-0091 decision 5, D2255, D2270), every series of a closed label created at zero:
+/// `trigger_schedule_handover_blocked{reason}` is 1 for the job's last reason while the state is `LEGACY`;
+/// `trigger_schedule_handover_mode{mode}` is 1 for the mode the row records; `trigger_schedule_handover_attempt_age_seconds` is the
+/// age of the job's last round, and absent while the job has written none. `None` (nothing read yet) sets every series to zero.
+pub fn export_handover(view: Option<&HandoverView>) {
+    let legacy = view.is_some_and(|view| view.state == HandoverState::Legacy);
+    let blocked = view
+        .and_then(|view| view.attempt)
+        .and_then(|attempt| attempt.reason)
+        .filter(|_| legacy);
+    for reason in HandoverBlock::ALL {
+        metrics::gauge!("trigger_schedule_handover_blocked", "reason" => reason.code())
+            .set(if blocked == Some(reason) { 1.0 } else { 0.0 });
+    }
+    let mode = view.and_then(|view| view.mode);
+    for each in HandoverMode::ALL {
+        metrics::gauge!("trigger_schedule_handover_mode", "mode" => each.code())
+            .set(if mode == Some(each) { 1.0 } else { 0.0 });
+    }
+    if let Some(attempt) = view.and_then(|view| view.attempt) {
+        metrics::gauge!("trigger_schedule_handover_attempt_age_seconds").set(attempt.age_seconds);
+    }
 }
 
 /// The pass over the triggers of the shards a replica owns.
@@ -250,6 +279,8 @@ pub struct TriggerPass<S, K, C> {
     legacy_seen: Mutex<Option<Option<time::OffsetDateTime>>>,
     /// Where the sweep over the triggers has got to.
     cursor: Mutex<Option<ScanCursor>>,
+    /// When the handover's gauges were last read.
+    viewed: Mutex<Option<Instant>>,
 }
 
 impl<S, K, C> TriggerPass<S, K, C>
@@ -272,6 +303,28 @@ where
             rounds: AtomicU64::new(0),
             legacy_seen: Mutex::new(None),
             cursor: Mutex::new(None),
+            viewed: Mutex::new(None),
+        }
+    }
+
+    /// Reads the handover's mode and the job's last attempt for the gauges, at most every [`HANDOVER_VIEW_EVERY`]; a failure is
+    /// logged and leaves the gauges as they were.
+    async fn view_handover(&self, now: Instant) {
+        {
+            let mut viewed = self
+                .viewed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if viewed.is_some_and(|at| now.saturating_duration_since(at) < HANDOVER_VIEW_EVERY) {
+                return;
+            }
+            *viewed = Some(now);
+        }
+        match self.reconciler.store().handover_view().await {
+            Ok(view) => export_handover(Some(&view)),
+            Err(error) => {
+                tracing::warn!(%error, "could not read the automatic handover's last attempt for the gauges");
+            }
         }
     }
 
@@ -372,6 +425,7 @@ where
         let owned = snapshot.shards(now);
         let shards: Vec<Shard> = owned.iter().collect();
         let mut round = TriggerRound::default();
+        self.view_handover(now).await;
         if shards.is_empty() {
             // a replica that holds no shard has a loop that is alive: the alert on a loop that died reads this, and a replica
             // that has nothing to do is not one (D2075)

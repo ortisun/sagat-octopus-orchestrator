@@ -468,6 +468,15 @@ pub async fn serve(
         // The cron triggers become schedules (`FR-018-017`): publication makes them, and this pass makes the ones it did
         // not (an older control plane, the triggers older than the feature). It runs in the processes that run the
         // schedule pass, in `LEGACY` and after the handover alike.
+        // ADR-0091 decision 5 (D2270): whether the deployment runs the job of the automatic handover, exported for the alert on a
+        // job that never writes; nothing here depends on it
+        metrics::gauge!("trigger_schedule_auto_handover_expected").set(
+            if engine.auto_handover_expected {
+                1.0
+            } else {
+                0.0
+            },
+        );
         let triggers: Arc<EngineTriggers> = Arc::new(TriggerPass::new(
             TriggerReconciler::new(
                 PgScheduleStore::new(pool.clone()),
