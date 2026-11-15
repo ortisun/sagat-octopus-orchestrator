@@ -478,3 +478,176 @@ async fn row_4_a_rerun_of_an_input_the_version_refuses_says_the_root_and_other()
         }
     );
 }
+
+/// A run service whose gate refuses every input it is asked about, final: a start that the check would refuse today,
+/// retried under the key of a run created before the check was on (design 043, correctness review M1).
+pub(crate) fn refusing(w: &crate::support::engine::World) -> crate::support::engine::Runs {
+    use std::sync::Arc;
+
+    use sagat_application::run_input::test_support::Scripted;
+    use sagat_application::run_input::{PathSegment, Rule, RunInputGate, SchemaRefusal};
+
+    let refusals = (0..16).map(|_| {
+        Err(SchemaRefusal::Invalid {
+            segments: vec![PathSegment::Property("k".into())],
+            rule: Rule::Type,
+        })
+    });
+    sagat_application::runs::RunService::new(
+        w.store.clone(),
+        sagat_application::clock::SystemClock,
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        w.cache.clone(),
+    )
+    .with_run_inputs(Arc::new(RunInputGate::new(
+        Arc::new(Scripted::answering(refusals)),
+        InputValidationMode::Enforce,
+    )))
+    .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
+    .with_reset_reapply(true)
+    .with_reset_cancel_source(true)
+}
+
+/// M1 for Signal-with-Start: the retry answers what the first request did, the signal delivered at creation included.
+#[tokio::test]
+async fn a_signal_with_start_retry_the_gate_refuses_replays_what_the_first_request_delivered() {
+    let f = fixture().await;
+    let mut waiter = document(
+        &format!("row-3-replay-{}", uuid::Uuid::now_v7()),
+        "w",
+        vec![
+            crate::support::engine::with(
+                crate::support::engine::wait_node(
+                    "w",
+                    crate::with_start::SIGNAL,
+                    "input.k",
+                    300_000,
+                    None,
+                ),
+                "next",
+                json!("notify"),
+            ),
+            activity("notify"),
+        ],
+    );
+    waiter["inputSchema"] = json!({"type": "object"});
+    let (workflow, _) = f.w.publish(waiter).await;
+    let key = crate::business_ids::key();
+    let first = signal(&f, &f.w.runs, workflow, &key)
+        .await
+        .expect("started and signalled");
+    let again = signal(&f, &refusing(&f.w), workflow, &key)
+        .await
+        .expect("a replay of the first request");
+    assert_eq!(again.run.info.run_id, first.run.info.run_id);
+    assert_eq!(again.started, first.started);
+    assert_eq!(
+        again.delivered_to, first.delivered_to,
+        "what the first request delivered"
+    );
+}
+
+async fn signal(
+    f: &Fixture,
+    runs: &crate::support::engine::Runs,
+    workflow: sagat_domain::definition::WorkflowId,
+    key: &str,
+) -> Result<sagat_application::runs::SignalStarted, AppError> {
+    runs.signal_with_start(
+        &f.w.admin,
+        &sagat_application::runs::StartRun {
+            namespace: "payments",
+            workflow,
+            version: None,
+            input: br#"{"k": "s"}"#,
+            correlation_id: None,
+            deadline: None,
+            key,
+        },
+        crate::with_start::business(
+            "row-3-replay",
+            sagat_domain::business_ids::ReusePolicy::AllowDuplicate,
+        ),
+        sagat_application::runs::SignalAtStart {
+            name: crate::with_start::SIGNAL,
+            payload: b"{}",
+        },
+        &crate::support::engine::ctx(),
+    )
+    .await
+}
+
+/// M1 for a pending reset: an engine whose gate refuses the source's input, completing an entry another engine
+/// completed first, is told `RESET_ALREADY_COMPLETED`, as it is when nothing is refused.
+#[tokio::test]
+async fn a_pending_reset_the_gate_refuses_after_another_engine_completed_it_is_already_completed() {
+    use sagat_application::reset_completion::{Completed, PendingResetStore as _};
+    use sagat_application::runs::RESET_ALREADY_COMPLETED;
+
+    let f = fixture().await;
+    let open =
+        crate::cancel_source::open_chain_with_schema(&f, "", Some(json!({"type": "object"}))).await;
+    let made = crate::cancel_source::request(
+        &f,
+        open.run,
+        crate::cancel_source::asking(open.after_a, true),
+        &crate::business_ids::key(),
+    )
+    .await
+    .expect("the request");
+    crate::cancel_source::end(&f, &open).await;
+    let stale =
+        f.w.store
+            .pending_reset(f.w.admin.tenant_id(), made.reset.id)
+            .await
+            .expect("read")
+            .expect("it is pending");
+    assert_eq!(
+        crate::cancel_source::completer(&f)
+            .step(&crate::cancel_source::due_of(&f, made.reset.id), None)
+            .await
+            .expect("the other engine"),
+        Completed::Created
+    );
+    let refused = refusing(&f.w)
+        .complete_reset(&f.w.admin, &stale, None, &crate::support::engine::ctx())
+        .await;
+    assert!(
+        matches!(refused, Err(AppError::StateConflict(reason)) if reason == RESET_ALREADY_COMPLETED),
+        "{refused:?}"
+    );
+}
+
+/// Correctness review M2: a schedule whose remaining actions are used up is exhausted at its next time even when a later
+/// version refuses its input; it records no `INPUT_INVALID`, then or afterwards.
+#[tokio::test]
+async fn an_exhausted_schedule_records_no_input_invalid_for_a_version_that_refuses_its_input() {
+    let f = fixture().await;
+    let (workflow, _) = f.w.publish(flow("row-6-exhausted")).await;
+    let mut write = f.write_of(
+        "row-6-exhausted",
+        &hourly(),
+        &json!({}),
+        Some(target(workflow)),
+    );
+    write.remaining_actions = Some(sagat_domain::schedules::RemainingActions::new(1).expect("one"));
+    let schedule = f.try_create(write).await.expect("created");
+    f.clock.advance(Duration::hours(1) + Duration::seconds(1));
+    f.drain(&schedule).await;
+    assert_eq!(f.outcomes(&schedule).await, outcomes_of(&[("STARTED", 1)]));
+    f.w.publish_new_version(
+        workflow,
+        with_schema(flow("row-6-exhausted"), order_schema()),
+    )
+    .await;
+    for _ in 0..3 {
+        f.clock.advance(Duration::hours(1));
+        f.drain(&schedule).await;
+    }
+    assert_eq!(
+        f.outcomes(&schedule).await,
+        outcomes_of(&[("STARTED", 1)]),
+        "nothing is left to give: no time is decided, refused or not"
+    );
+    assert_eq!(f.read(&schedule).await.next_action_at, None);
+}

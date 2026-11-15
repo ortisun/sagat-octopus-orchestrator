@@ -523,8 +523,20 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
                         .replay_start_authorized(principal, info.workflow_id, &idempotency, ctx)
                         .await?
                 {
+                    // answered as any replay of a private start is (D043-141)
                     return self
-                        .replayed_start(principal, &existing)
+                        .finish_start(
+                            principal,
+                            run_id,
+                            Admitted::Replayed(existing),
+                            false,
+                            false,
+                            None,
+                            None,
+                            None,
+                            rerun.and_then(|rerun| rerun.item),
+                            ctx,
+                        )
                         .await
                         .map(|started| started.run);
                 }

@@ -1727,7 +1727,23 @@ where
                         .replay_start_authorized(principal, workflow.id(), &idempotency, ctx)
                         .await?
                 {
-                    return self.replayed_start(principal, &existing).await;
+                    // the request of the run its key holds is answered as any replay is (correctness review M1,
+                    // D043-141): what a with-start delivered or applied, "already acted" for a schedule, "already
+                    // completed" for a pending reset
+                    let start_receipt = idempotency.clone();
+                    return Box::pin(self.finish_start(
+                        principal,
+                        run_id,
+                        Admitted::Replayed(existing),
+                        scheduled.is_some(),
+                        engine_tick.is_some(),
+                        None,
+                        with.map(|with| (with, &start_receipt)),
+                        reset,
+                        rerun.and_then(|rerun| rerun.item),
+                        ctx,
+                    ))
+                    .await;
                 }
                 return Err(refusal.into());
             }

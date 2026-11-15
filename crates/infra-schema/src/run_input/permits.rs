@@ -44,6 +44,17 @@ pub struct Permits {
     state: Arc<Mutex<State>>,
     total: usize,
     wait: Duration,
+    /// A test holds a waiter that timed out here, between the end of its wait and the drop of its guard.
+    #[cfg(test)]
+    gap: Option<Arc<Gap>>,
+}
+
+/// Two barriers a test meets a timed-out waiter at: it has reached the gap, and it may go on.
+#[cfg(test)]
+#[derive(Debug)]
+struct Gap {
+    reached: std::sync::Barrier,
+    resume: std::sync::Barrier,
 }
 
 impl Default for Permits {
@@ -69,12 +80,15 @@ impl Drop for Permit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Busy;
 
-/// The waiter's place in the queue: leaves the queue, or gives back what it was granted, when its future is dropped.
+/// The waiter's place in the queue: leaves the queue, or gives back what it was granted, when its future is dropped. It
+/// owns the receiver of its grant, so the receiver lives exactly as long as the guard: a release can never find the waiter
+/// still queued with its receiver gone, and a grant is given back by the guard alone (D043-140).
 struct Waiting<'a> {
     pool: &'a Permits,
     id: u64,
     tenant: TenantId,
     armed: bool,
+    receiver: oneshot::Receiver<()>,
 }
 
 impl Drop for Waiting<'_> {
@@ -110,6 +124,8 @@ impl Permits {
             })),
             total,
             wait,
+            #[cfg(test)]
+            gap: None,
         }
     }
 
@@ -147,8 +163,9 @@ impl Permits {
             id,
             tenant,
             armed: true,
+            receiver,
         };
-        match tokio::time::timeout(self.wait, receiver).await {
+        match tokio::time::timeout(self.wait, &mut waiting.receiver).await {
             Ok(Ok(())) => {
                 waiting.armed = false;
                 Ok(Permit {
@@ -157,7 +174,14 @@ impl Permits {
                 })
             }
             // timed out (or the pool went away): the guard leaves the queue or returns a grant that raced the clock
-            _ => Err(Busy),
+            _ => {
+                #[cfg(test)]
+                if let Some(gap) = &self.gap {
+                    gap.reached.wait();
+                    gap.resume.wait();
+                }
+                Err(Busy)
+            }
         }
     }
 
@@ -190,17 +214,10 @@ impl Permits {
             };
             state.free -= 1;
             *state.held.entry(waiter.tenant).or_default() += 1;
-            if waiter.grant.send(()).is_err() {
-                // its future is gone and its guard could not find it in the queue any more: take it back here
-                state.free += 1;
-                if let Some(held) = state.held.get_mut(&waiter.tenant) {
-                    *held -= 1;
-                    if *held == 0 {
-                        state.held.remove(&waiter.tenant);
-                    }
-                }
-                continue;
-            }
+            // The receiver lives inside the waiter's guard and the guard takes the waiter out of the queue, under this lock,
+            // before the receiver drops: a waiter still queued always has its receiver, so the send cannot fail, and a grant
+            // its future never takes is given back by the guard (once).
+            let _ = waiter.grant.send(());
             state.peak = state.peak.max(total - state.free);
         }
     }
@@ -209,6 +226,12 @@ impl Permits {
     #[must_use]
     pub fn held_by(&self, tenant: TenantId) -> usize {
         self.lock().held.get(&tenant).copied().unwrap_or(0)
+    }
+
+    /// The permits free now.
+    #[must_use]
+    pub fn free(&self) -> usize {
+        self.lock().free
     }
 
     /// The waiters in the queue now.
@@ -330,6 +353,37 @@ mod tests {
             "an entry that holds nothing leaves the map"
         );
         pool.acquire(tenant).await.unwrap();
+    }
+
+    /// A waiter whose wait ended while a permit was released, between the end of its wait and the drop of its guard, must
+    /// not make the pool count that permit twice (security review of phase 2): the pool never holds more than its total,
+    /// and nobody holds anything once everything is returned.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_release_in_the_gap_of_a_timed_out_waiter_is_not_counted_twice() {
+        let gap = Arc::new(Gap {
+            reached: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+        });
+        let mut pool = Permits::new(1, Duration::from_millis(20));
+        pool.gap = Some(Arc::clone(&gap));
+        let holder = TenantId::generate();
+        let held = pool.acquire(holder).await.unwrap();
+        let waiter = TenantId::generate();
+        let pool2 = pool.clone();
+        let waiting = tokio::spawn(async move { pool2.acquire(waiter).await.map(|_| ()) });
+        let reached = Arc::clone(&gap);
+        tokio::task::spawn_blocking(move || reached.reached.wait())
+            .await
+            .unwrap();
+        drop(held); // released in the gap
+        let resume = Arc::clone(&gap);
+        tokio::task::spawn_blocking(move || resume.resume.wait())
+            .await
+            .unwrap();
+        assert_eq!(waiting.await.unwrap(), Err(Busy));
+        assert_eq!(pool.free(), 1, "one permit, counted once");
+        assert_eq!(pool.tenants(), 0, "nobody holds anything");
+        assert_eq!(pool.waiting(), 0);
     }
 
     /// No permit within the wait is `Busy`, and the waiter is gone from the queue.
