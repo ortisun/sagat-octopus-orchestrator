@@ -171,7 +171,7 @@ on purpose by the owner.
 
 ### The first activation: the cron triggers (018)
 
-`control-plane schedule-trigger-handover` requires `schedules-v1` of every live execution engine and, in the same transaction, hands the cron triggers over from the legacy cron pass to the schedule pass. It takes `--operator`, `--expect-live N` and `--dry-run`, runs with the owner role, and is idempotent; the procedure, its refusals and the rollback hazard are in [`schedules.md`](schedules.md) section 6.
+`control-plane schedule-trigger-handover` requires `schedules-v1` of every live execution engine and, in the same transaction, hands the cron triggers over from the legacy cron pass to the schedule pass. By hand it takes `--operator`, `--expect-live N` and `--dry-run`/`--apply` and runs with the owner role. **From 0.3.0 the deployment's job runs it with `--auto` as the role `sagat_handover`** (ADR-0091, which amends ADR-0082 decision 1 for that role only): `sagat_handover` records `schedules-v1` for the engines through one wrapper function and can do nothing else in the registry (it cannot read `serving_instances` or call `platform_requirement_activate`; the wrapper does, as its owner, after it has computed every condition under the epoch lock). The history row names the actor `system:handover-job:<run id>` and the database user `sagat_handover`. `migrate` ensures and grants the role at every run. The procedure, the conditions, the reasons and the rollback hazard are in [`schedules.md`](schedules.md) section 6.
 
 ## 6. What the registry does not protect against
 

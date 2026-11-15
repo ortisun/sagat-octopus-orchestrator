@@ -34,6 +34,32 @@ the execution engines, then the control planes (OD-2026-11-14-3). **An explicit 
 and after the handover of the cron triggers such an engine is refused at registration: remove the line, or keep it on purpose
 ([schedules runbook](../runbooks/schedules.md#2-turning-it-on-and-off)). Batch operations and the two reset switches stay off by default.
 
+## The cron triggers are handed over automatically after a deployment (feature 018, ADR-0091, D2248)
+
+**The handover of the cron triggers from the legacy cron pass to the schedule pass is automatic.** A one-shot job of the deployment (the compose
+service `schedule-trigger-handover`, the Helm Job `<release>-schedule-trigger-handover-<revision>`) runs `control-plane schedule-trigger-handover
+--auto` as the narrow role `sagat_handover` and hands over once the database finds, in three rounds 15 s apart and no sooner than ten minutes after
+the job began, that every engine seen in the last ten minutes lists `schedules-v1`, the live engines hold still (at least `--min-live`), no engine
+below 0.3.0 is seen in the scheduler memberships, the reconciliation made no trigger schedule in the last ten minutes, a control plane is live and no
+cron trigger lacks its schedule ([schedules runbook](../runbooks/schedules.md#62-the-handover-step-by-step)).
+
+- **How to see that it happened:** `trigger_schedule_handover_mode{mode="AUTOMATIC"}` is 1 in every engine; the log line `the cron triggers were
+  handed over to the schedule pass` (mode, epoch, engines, the count of tenants); `SELECT state, changed_mode, changed_at FROM
+  schedule_trigger_handover`; every tenant that had a cron trigger has the audit record `schedule.trigger_handover`. While it waits,
+  `trigger_schedule_handover_blocked{reason}` says why ([6.3](../runbooks/schedules.md#63-why-a-handover-is-blocked)).
+- **It is one-way:** there is no command back, the schema `down` refuses once it happened, and no engine below 0.3.0 may run after it (it would
+  ignore a pause).
+- **What to do:** give `migrate` `SAGAT_HANDOVER_PASSWORD` (it creates and grants `sagat_handover` at every run and sets its login from a SCRAM
+  verifier while the state is `LEGACY`), or create the login once; in Helm put `DATABASE_URL` (without the password) and `SAGAT_HANDOVER_PASSWORD`
+  in the Secret `schedules.autoHandover.databaseSecret`. After the handover retire the role (`--retire-role`, `schedules.autoHandover.retireRole`,
+  `SAGAT_HANDOVER_RETIRE_ROLE`, or `ALTER ROLE sagat_handover NOLOGIN`) and delete the Secret.
+- **To keep it manual:** `schedules.autoHandover.enabled: false` (or `schedules.autoHandover: false`) in Helm, `SAGAT_SCHEDULES_AUTO_HANDOVER=false`
+  in compose; then hand over with `--apply` as before.
+- **What is accepted:** an engine binary below the registry release that never registers keeps its legacy pass and ignores a pause (G2005); a
+  control plane below 0.3.0 that publishes after the handover loses that trigger's first ticks until the reconciliation plans it (G2020); a backfill
+  over ticks the legacy pass started more than seven days ago starts a second run (G2021). **An engine with `SAGAT_SCHEDULES_ENABLED=false` holds the
+  handover** (it lists no `schedules-v1`).
+
 ## Schedules: the business-id prefix of an action (feature 018)
 
 An action of a schedule may name a business-id prefix with a conflict and a reuse policy; each run it starts is bound to `<prefix>-<nominal time>`, and a
