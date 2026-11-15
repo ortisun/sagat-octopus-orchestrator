@@ -7,7 +7,7 @@
 #   docker build -f infra/docker/Dockerfile --target dev-idp          -t sagat-octopus-orchestrator/dev-idp:dev .
 # Without --target the last stage (the control plane) is built.
 
-ARG RUST_VERSION=1.98.0
+ARG RUST_VERSION=1.100.0
 
 FROM rust:${RUST_VERSION}-slim-bookworm AS builder
 # Keep the five-process release build usable on the documented local Docker memory budget.

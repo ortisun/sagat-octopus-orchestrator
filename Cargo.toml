@@ -7,7 +7,7 @@ members = ["crates/domain", "crates/application", "crates/infra-postgres", "crat
 license = "MIT"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.100"
 repository = "https://github.com/ortisun/sagat-octopus-orchestrator"
 publish = false
 
