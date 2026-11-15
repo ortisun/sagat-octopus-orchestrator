@@ -1045,6 +1045,17 @@ pub enum DefinitionWarning {
     /// A child node starts the workflow it belongs to. Legal (a condition can stop the recursion),
     /// but the depth limit ends it at the latest.
     RecursiveChild { node: NodeId },
+    /// The `inputSchema` is outside the supported subset (design 043, FR-043-012), published because
+    /// publication ran in `report` mode: every start of the version is refused in `enforce` mode.
+    /// `keyword` and `at` (a JSON pointer into the schema) are the author's vocabulary, never an input.
+    InputSchemaOutsideSubset {
+        issue: InputSchemaIssue,
+        keyword: String,
+        at: String,
+    },
+    /// The version has an `inputSchema` and a trigger other than a manual start: the schema is applied
+    /// to the run input a trigger builds, the event envelope `{event, data}` (FR-043-012, G043-004).
+    InputSchemaAppliesToTriggers,
 }
 
 /// Why an `inputSchema` is outside the supported subset of design 043 (D043-065): the closed codes of a
@@ -1114,6 +1125,16 @@ impl fmt::Display for DefinitionWarning {
             Self::RecursiveChild { node } => write!(
                 f,
                 "node '{node}': starts the workflow it belongs to; the nesting depth limit ends the recursion"
+            ),
+            Self::InputSchemaOutsideSubset { issue, keyword, at } => write!(
+                f,
+                "{} (keyword '{}' at '{}'): published in report mode, every start of this version is refused in enforce mode",
+                issue.message(),
+                clip(keyword),
+                at
+            ),
+            Self::InputSchemaAppliesToTriggers => f.write_str(
+                "the inputSchema is applied to the run input of every trigger, the event envelope {event, data}: a schema written for a manual input refuses the triggered starts",
             ),
         }
     }
@@ -1948,6 +1969,14 @@ impl WorkflowDefinition {
                 }
                 _ => {}
             }
+        }
+        if self.input_schema.is_some()
+            && self
+                .triggers
+                .iter()
+                .any(|trigger| trigger.kind() != crate::triggers::TriggerKind::Manual)
+        {
+            out.push(DefinitionWarning::InputSchemaAppliesToTriggers);
         }
         out
     }

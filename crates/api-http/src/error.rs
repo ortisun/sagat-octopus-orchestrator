@@ -1208,6 +1208,17 @@ fn definition_details(error: &IrError) -> Value {
         IrError::UnknownScript { digest } => {
             json!({ "reason": "UNKNOWN_SCRIPT", "artifactDigest": digest })
         }
+        // Design 043: the closed issue, the keyword and its pointer, as a schema problem of the document.
+        IrError::InputSchema {
+            issue,
+            keyword,
+            path,
+        } => json!({
+            "reason": "SCHEMA",
+            "issues": [{
+                "code": issue.as_str(), "keyword": keyword, "path": path, "message": error.to_string(),
+            }],
+        }),
         IrError::TooLarge => json!({ "reason": "TOO_LARGE" }),
         IrError::Malformed => json!({ "reason": "MALFORMED" }),
         IrError::EscapingBodyEdge { body, from, .. } => {

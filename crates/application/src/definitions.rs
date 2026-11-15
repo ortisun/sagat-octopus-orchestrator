@@ -157,6 +157,55 @@ pub enum IrError {
     /// A `script` node pins an artifact that no ready version of the tenant built.
     #[error("a script node pins the artifact {digest}, which was not built for this tenant")]
     UnknownScript { digest: String },
+    /// The `inputSchema` is outside the supported subset of design 043 and publication runs in `enforce` mode
+    /// (FR-043-012): `issue` is the closed code, `keyword` the keyword refused and `path` its JSON pointer in the
+    /// document (`/inputSchema/...`). Both are the author's vocabulary, never a value of an input.
+    #[error("{}", input_schema_message(*issue, keyword))]
+    InputSchema {
+        issue: sagat_domain::workflow::InputSchemaIssue,
+        keyword: String,
+        path: String,
+    },
+}
+
+fn input_schema_message(issue: sagat_domain::workflow::InputSchemaIssue, keyword: &str) -> String {
+    if keyword.is_empty() {
+        issue.message().to_owned()
+    } else {
+        format!("{} (keyword '{keyword}')", issue.message())
+    }
+}
+
+/// What publication does with an `inputSchema` outside the supported subset (design 043, D043-051, D043-073). The
+/// control plane passes the mode of its process and `sagat validate` its `--input-validation` flag; `enforce` unless
+/// one of them says `report`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InputValidationMode {
+    /// A schema outside the subset refuses the publication, naming the keyword and its pointer.
+    #[default]
+    Enforce,
+    /// The same finding is a warning, and the version is published (its starts are refused in `enforce` mode).
+    Report,
+}
+
+impl InputValidationMode {
+    /// The mode named `enforce` or `report`; `None` for anything else.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "enforce" => Some(Self::Enforce),
+            "report" => Some(Self::Report),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Enforce => "enforce",
+            Self::Report => "report",
+        }
+    }
 }
 
 /// How serious something a dry-run validation found is.
@@ -297,6 +346,9 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
         }
         IrError::NameMismatch { .. } => vec![Problem::error("NAME_MISMATCH", error.to_string())],
         IrError::UnknownScript { .. } => vec![Problem::error("UNKNOWN_SCRIPT", error.to_string())],
+        IrError::InputSchema { issue, path, .. } => {
+            vec![Problem::error(issue.as_str(), error.to_string()).at_path(path.clone())]
+        }
         IrError::Invalid(rule) => {
             let (code, node) = graph_rule(rule);
             let problem = Problem::error(code, rule.to_string());
@@ -362,19 +414,31 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
     }
 }
 
-fn warning_problem(warning: &DefinitionWarning) -> Problem {
-    let (code, node) = match warning {
+/// The problem a warning is reported as: its code and where it is, a node or a pointer into the document.
+#[must_use]
+pub fn warning_problem(warning: &DefinitionWarning) -> Problem {
+    let (code, node, path) = match warning {
         DefinitionWarning::CompensationOutsideSaga { node } => {
-            ("COMPENSATION_OUTSIDE_SAGA", node.to_string())
+            ("COMPENSATION_OUTSIDE_SAGA", Some(node.to_string()), None)
         }
-        DefinitionWarning::RecursiveChild { node } => ("RECURSIVE_CHILD", node.to_string()),
+        DefinitionWarning::RecursiveChild { node } => {
+            ("RECURSIVE_CHILD", Some(node.to_string()), None)
+        }
+        DefinitionWarning::InputSchemaOutsideSubset { issue, at, .. } => {
+            (issue.as_str(), None, Some(format!("/inputSchema{at}")))
+        }
+        DefinitionWarning::InputSchemaAppliesToTriggers => (
+            "INPUT_SCHEMA_APPLIES_TO_TRIGGERS",
+            None,
+            Some("/inputSchema".to_owned()),
+        ),
     };
     Problem {
         severity: Severity::Warning,
         code,
         message: warning.to_string(),
-        node: Some(node),
-        path: None,
+        node,
+        path,
     }
 }
 
@@ -445,6 +509,21 @@ pub trait IrCodec: Send + Sync {
     /// # Errors
     /// An [`IrError`] describing why the document cannot be published.
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError>;
+
+    /// [`Self::parse`] with the mode of the `inputSchema` pre-check given (design 043, D043-073): in
+    /// [`InputValidationMode::Enforce`] a schema outside the supported subset refuses the document
+    /// ([`IrError::InputSchema`]); in [`InputValidationMode::Report`] it is a warning. [`Self::parse`] is the enforce
+    /// mode. A codec that does not pre-check schemas keeps the default, which ignores the mode.
+    ///
+    /// # Errors
+    /// As [`Self::parse`].
+    fn parse_with(
+        &self,
+        document: &[u8],
+        _mode: InputValidationMode,
+    ) -> Result<ParsedDefinition, IrError> {
+        self.parse(document)
+    }
 
     /// Restores the executable IR of an already persisted immutable version. Publication-time
     /// metadata checks must not reinterpret an older version's business execution. Syntax,
@@ -792,6 +871,8 @@ pub struct DefinitionService<S, C, X> {
     codec: X,
     /// `lake.enabled`: whether a definition may hold an Apache Iceberg write. Off unless the deployment says so.
     lake_enabled: bool,
+    /// What publication does with an `inputSchema` outside the supported subset (design 043): the process's mode.
+    input_validation: InputValidationMode,
 }
 
 impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
@@ -801,7 +882,16 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             clock,
             codec,
             lake_enabled: false,
+            input_validation: InputValidationMode::Enforce,
         }
+    }
+
+    /// Publication and its dry run apply `mode` to an `inputSchema` outside the supported subset (D043-073):
+    /// `enforce` (the default) refuses it, `report` warns.
+    #[must_use]
+    pub const fn with_input_validation(mut self, mode: InputValidationMode) -> Self {
+        self.input_validation = mode;
+        self
     }
 
     /// Lets a definition hold an Apache Iceberg write (the deployment's `lake.enabled`). The store still decides
@@ -1048,7 +1138,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         }
         let parsed = self
             .codec
-            .parse(&record.draft)
+            .parse_with(&record.draft, self.input_validation)
             .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
         if parsed.definition.name() != record.workflow.name() {
             return Err(AppError::InvalidDefinition(Box::new(
@@ -1212,7 +1302,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 })
                 .collect::<Vec<_>>()
         });
-        let parsed = match self.codec.parse(bytes) {
+        let parsed = match self.codec.parse_with(bytes, self.input_validation) {
             Ok(parsed) => parsed,
             Err(error) => {
                 return Ok(Validation {

@@ -1,6 +1,7 @@
 //! The command line: every command, its required flags and what is refused.
 #![allow(clippy::expect_used, clippy::panic)]
 
+use sagat_application::definitions::InputValidationMode;
 use sagat_cli::args::{Command, IfExists, Reapply, Reuse, StartOptions, parse};
 
 fn argv(line: &str) -> Vec<String> {
@@ -224,9 +225,43 @@ fn the_commands_for_one_workflow_take_the_words_and_flags_they_document() {
             .expect("parses")
             .command,
         Command::WorkflowValidate {
-            file: "flows/checkout.json".into()
+            file: "flows/checkout.json".into(),
+            input_validation: InputValidationMode::Enforce,
         }
     );
+    // design 043, D043-073: the mode of the inputSchema pre-check, `enforce` unless the flag says `report`
+    assert_eq!(
+        parse(&argv(
+            "workflow validate flows/checkout.json --input-validation report"
+        ))
+        .expect("parses")
+        .command,
+        Command::WorkflowValidate {
+            file: "flows/checkout.json".into(),
+            input_validation: InputValidationMode::Report,
+        }
+    );
+    assert_eq!(
+        parse(&argv("validate --input-validation=enforce"))
+            .expect("parses")
+            .command,
+        Command::Validate {
+            input_validation: InputValidationMode::Enforce,
+        }
+    );
+    assert_eq!(
+        parse(&argv("validate")).expect("parses").command,
+        Command::Validate {
+            input_validation: InputValidationMode::Enforce,
+        }
+    );
+    for refused in [
+        "validate --input-validation lenient",
+        "workflow validate f.json --input-validation",
+        "workflow validate f.json --input-validation Report",
+    ] {
+        assert!(parse(&argv(refused)).is_err(), "{refused}");
+    }
     assert_eq!(
         parse(&argv(
             "workflow publish checkout.yaml --notes first-release --dry-run --accept-breaking"
@@ -604,6 +639,7 @@ fn the_usage_names_every_command_the_parser_takes() {
         "--business-id",
         "--if-exists",
         "--start-delay",
+        "--input-validation",
         "namespace reveal-grants list",
         "namespace reveal-grants grant",
         "namespace reveal-grants revoke",

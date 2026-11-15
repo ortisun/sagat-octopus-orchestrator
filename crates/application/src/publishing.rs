@@ -284,6 +284,11 @@ pub trait PublishingStore: DefinitionStore {
     ) -> impl Future<Output = Result<Switched, StoreError>> + Send;
 }
 
+/// The `inputSchema` mode of a parse of a document that is already a version (a replay, an activation, a comparison):
+/// never a refusal, because publication already decided (D043-081).
+const STORED: crate::definitions::InputValidationMode =
+    crate::definitions::InputValidationMode::Report;
+
 /// Publishing use cases.
 #[derive(Debug, Clone)]
 pub struct PublishingService<S, C, X> {
@@ -312,6 +317,15 @@ where
     #[must_use]
     pub fn with_lake_enabled(mut self, enabled: bool) -> Self {
         self.definitions = self.definitions.with_lake_enabled(enabled);
+        self
+    }
+
+    /// What a publication does with an `inputSchema` outside the supported subset (design 043, D043-073). Only a new
+    /// version is refused for it: a version already stored is replayed, activated and compared in `report` mode, so
+    /// a version published in `report` mode stays reachable (D043-081).
+    #[must_use]
+    pub fn with_input_validation(mut self, mode: crate::definitions::InputValidationMode) -> Self {
+        self.definitions = self.definitions.with_input_validation(mode);
         self
     }
 
@@ -842,7 +856,7 @@ where
         }
         let parsed = self
             .codec
-            .parse(&stored.document)
+            .parse_with(&stored.document, STORED)
             .map_err(|_| AppError::Internal)?;
         Ok(Published {
             version: stored.version,
@@ -967,7 +981,7 @@ where
         }
         let parsed = self
             .codec
-            .parse(&target.document)
+            .parse_with(&target.document, STORED)
             .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
         let kind = current.map_or(ActivationKind::Activate, |from| {
             ActivationKind::of_switch(from, version)
@@ -1115,7 +1129,7 @@ where
                 if active.digest() == from.version.digest() {
                     let parsed = self
                         .codec
-                        .parse(&from.document)
+                        .parse_with(&from.document, STORED)
                         .map_err(|error| AppError::InvalidDefinition(Box::new(error)))?;
                     if let Err(error) = self
                         .store
@@ -1138,7 +1152,11 @@ where
                         .document,
                 );
             }
-            let draft_digest = self.codec.parse(&existing.draft).ok().map(|p| p.digest);
+            let draft_digest = self
+                .codec
+                .parse_with(&existing.draft, STORED)
+                .ok()
+                .map(|p| p.digest);
             let clean = draft_digest.is_some_and(|d| {
                 &d == from.version.digest()
                     || existing.active.as_ref().is_some_and(|a| &d == a.digest())

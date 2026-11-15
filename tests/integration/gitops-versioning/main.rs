@@ -10,6 +10,7 @@ mod activation;
 mod approvals;
 mod artifacts;
 mod common;
+mod input_schema;
 mod isolation;
 mod migration;
 mod promotion;

@@ -42,7 +42,9 @@ pub use operation_evaluator::{
     EvaluatedOperationValue, JsonDeclaredOperationEvaluator, QueryEvaluation, UpdateEvaluationPlan,
 };
 
-use sagat_application::definitions::{IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition};
+use sagat_application::definitions::{
+    InputValidationMode, IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition,
+};
 use sagat_application::operation_evaluation::OperationEvaluationError;
 use sagat_domain::database::RecordSource;
 use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
@@ -145,11 +147,20 @@ impl IrCodec for JsonIrCodec {
     }
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        self.parse_with(document, InputValidationMode::Enforce)
+    }
+
+    fn parse_with(
+        &self,
+        document: &[u8],
+        mode: InputValidationMode,
+    ) -> Result<ParsedDefinition, IrError> {
         let value = validated_document(document)?;
         // a new publication needs every capability its document uses to be on; `parse_stored` below
         // restores what was published while one was
         capabilities::check_publication(&value)?;
-        published_definition(value)
+        // and its `inputSchema` within the supported subset (design 043); `parse_stored` does not ask
+        input_schema::precheck(published_definition(value)?, mode)
     }
 
     fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
@@ -160,7 +171,10 @@ impl IrCodec for JsonIrCodec {
     /// probe of an Iceberg connection). It validates against the public grammar plus the private node types and is otherwise
     /// [`IrCodec::parse`]. Only the entry that builds such a document calls it; no publication path does.
     fn parse_private(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
-        published_definition(validated_document_in(document, schema::Mode::Private)?)
+        input_schema::precheck(
+            published_definition(validated_document_in(document, schema::Mode::Private)?)?,
+            InputValidationMode::Enforce,
+        )
     }
 
     /// The restore of a stored **private** definition (ADR-0080), chosen by the loader from the workflow's `internal` flag and never from

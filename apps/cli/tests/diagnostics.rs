@@ -64,6 +64,13 @@ fn every_code_the_platform_returns_has_help_and_the_help_names_no_code_the_platf
         "CLASSIFICATION_UNRESOLVED_REF",
         "CLASSIFICATION_NOT_APPLICABLE",
         "CLASSIFICATION_INHERITED_OPEN",
+        // design 043: returned through `InputSchemaIssue::as_str`, a closed table of the domain
+        "INPUT_SCHEMA_KEYWORD_UNSUPPORTED",
+        "INPUT_SCHEMA_REFERENCE_INVALID",
+        "INPUT_SCHEMA_PATTERN_UNSUPPORTED",
+        "INPUT_SCHEMA_TOO_LARGE",
+        "INPUT_SCHEMA_TOO_DEEP",
+        "INPUT_SCHEMA_TOO_COSTLY",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -245,5 +252,78 @@ fn what_a_document_says_is_shown_on_one_line() {
     assert!(
         !lines.iter().any(|l| l.starts_with("error[FORGED]")),
         "{lines:?}"
+    );
+}
+
+/// Design 043, FR-043-012, D043-073: `sagat validate` runs the pre-check of the inputSchema subset locally, an error in
+/// `enforce` (the default) and a warning in `report`, naming the keyword and its pointer; a schema with a trigger is
+/// warned about either way.
+#[test]
+fn the_input_schema_subset_is_checked_locally_in_the_mode_given() {
+    use sagat_application::definitions::InputValidationMode;
+    use sagat_cli::diagnostics::analyze_document_with;
+    let with_schema = |schema: Value, triggers: Option<Value>| {
+        let mut document = json!({
+            "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+            "metadata": {"name": "demo"}, "entrypoint": "a",
+            "nodes": [{"id": "a", "type": "activity", "activity": "x.a"}],
+            "inputSchema": schema
+        });
+        if let Some(triggers) = triggers {
+            document["triggers"] = triggers;
+        }
+        serde_json::to_vec(&document).expect("json")
+    };
+    let outside = with_schema(
+        json!({"type": "object", "properties": {"a": {"patternProperties": {"^x": {}}}}}),
+        None,
+    );
+    let (enforced, _) = analyze_document_with(&outside, InputValidationMode::Enforce);
+    let refusal = enforced
+        .iter()
+        .find(|d| d.code == "INPUT_SCHEMA_KEYWORD_UNSUPPORTED")
+        .unwrap_or_else(|| panic!("an error in enforce mode: {enforced:?}"));
+    assert!(!refusal.warning);
+    assert_eq!(
+        refusal.at.as_deref(),
+        Some("at /inputSchema/properties/a/patternProperties")
+    );
+    assert!(
+        refusal.message.contains("patternProperties"),
+        "{}",
+        refusal.message
+    );
+    assert_eq!(
+        of_document(&outside).iter().filter(|d| !d.warning).count(),
+        1,
+        "enforce is the default"
+    );
+    let (reported, _) = analyze_document_with(&outside, InputValidationMode::Report);
+    assert!(
+        reported.iter().all(|d| d.warning),
+        "report mode warns only: {reported:?}"
+    );
+    assert!(
+        reported
+            .iter()
+            .any(|d| d.code == "INPUT_SCHEMA_KEYWORD_UNSUPPORTED"
+                && d.at.as_deref() == Some("at /inputSchema/properties/a/patternProperties"))
+    );
+    let inside = with_schema(json!({"type": "object", "required": ["orderId"]}), None);
+    assert!(
+        of_document(&inside).is_empty(),
+        "{:?}",
+        of_document(&inside)
+    );
+    let triggered = with_schema(
+        json!({"type": "object", "required": ["orderId"]}),
+        Some(json!([{"kind": "event", "eventType": "order.created"}])),
+    );
+    let warned = of_document(&triggered);
+    assert!(
+        warned
+            .iter()
+            .any(|d| d.warning && d.code == "INPUT_SCHEMA_APPLIES_TO_TRIGGERS"),
+        "{warned:?}"
     );
 }

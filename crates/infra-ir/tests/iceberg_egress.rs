@@ -9,7 +9,7 @@
 
 use sagat_application::{
     classification::ClassificationFindingCode,
-    definitions::{IrCodec, IrError},
+    definitions::{InputValidationMode, IrCodec, IrError},
 };
 use sagat_domain::{
     classification::Level,
@@ -71,7 +71,11 @@ fn flow(input_schema: Option<Value>, save: Value) -> Vec<u8> {
 }
 
 fn levels_of(bytes: &[u8]) -> Vec<(String, Level)> {
-    let parsed = JsonIrCodec.parse(bytes).expect("a published document");
+    // Tuple positions (`prefixItems`) are outside the run-input subset of design 043 (D043-046), so these documents
+    // publish only in report mode; the levels an Iceberg write sends out are read the same in either mode (D043-095).
+    let parsed = JsonIrCodec
+        .parse_with(bytes, InputValidationMode::Report)
+        .expect("a published document");
     let node = parsed
         .definition
         .node(&NodeId::parse("save").expect("id"))
