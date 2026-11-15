@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Decided by:** owner: that every start is validated in 0.3.0 (OD-2026-11-14-2), the mode (OD-2026-11-14-8), runs in progress (OD-2026-11-14-9), with-start (OD-2026-11-14-10), schemas that do not compile (OD-2026-11-14-11) and the supported subset with a validator of the platform (OD-2026-11-14-14). The mechanism is an agent's proposal, revised after four rounds of architecture, security and correctness review of design 043 on 2026-11-14.
 **Refines / supersedes:** none. It makes the `inputSchema` of the IR (feature 001) binding, replaces the blob-only `RunInputChecker`, and adds a capability to the instance registry of ADR-0050 decision 9 and ADR-0082.
-**Enforced by:** the type `CheckedRunInput` (its fields and constructor are private to the gate's module, it carries the version id, and `PgRunStore::create` and `continue_evaluated` refuse a mismatch); `scripts/check-architecture.py`, which fails on an `INSERT INTO runs` outside its three places, on `.continue_as_new(` outside tests, on the `test-support` feature outside `[dev-dependencies]`, and on a construction of `CheckedRunInput` outside its module; the oracle property test of the validator against `jsonschema` and its adversarial budget cases (regression checks, not proofs); the vocabulary test and `control-plane input-schema-inventory`'s test; the backstop tests with a validator double held by a barrier; `no_shipped_manifest_sets_run_input_validation_to_report`; the per-row integration tests and the sentinel test of design 043 (`integration_payload_classification`); the statement budget of `integration_claim_transition_efficiency`.
+**Enforced by:** the type `CheckedRunInput` (its fields and constructor are private to the gate's module, it carries the version id, and `PgRunStore::create` and `continue_evaluated` refuse a mismatch); `scripts/check-architecture.py`, which fails on an `INSERT INTO runs` outside its three places, on `.continue_as_new(` outside tests, on the `test-support` feature outside `[dev-dependencies]`, and on a construction of `CheckedRunInput` outside its module; a rule of `scripts/check-architecture.py` that rejects `jsonschema` under the run-input validator module, with its negative fixture; the oracle property test of the validator against `jsonschema` and its adversarial budget cases (regression checks, not proofs); the vocabulary test and `control-plane input-schema-inventory`'s test; the backstop tests with a validator double held by a barrier; `no_shipped_manifest_sets_run_input_validation_to_report`; the per-row integration tests and the sentinel test of design 043 (`integration_payload_classification`); the statement budget of `integration_claim_transition_efficiency`.
 
 ## Context
 
@@ -36,10 +36,11 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
    refusal; the policy (mode, metrics, the type) MUST stay in the gate.
 4. The schema MUST come from the parsed definition of that version, which carries the schema's canonical bytes and
    their digest. In `enforce` mode the check MUST NOT add a SQL statement to a start, a triggered start, a child start or
-   a continuation, and MUST NOT run inside a database transaction or on the async scheduler (`block_in_place`, or in
-   place on a current-thread runtime, holding one of four permits per process, shared work-conservingly: a free permit goes to
-   the waiting tenant that holds the fewest, a tenant MAY hold more than two only while no other waits, the wait is
-   bounded by 5 s, and a dropped waiter MUST release what it holds).
+   a continuation, and MUST NOT run inside a database transaction or on the async scheduler. The adapter behind the
+   port, not `application`, owns that: `block_in_place`, or in place on a current-thread runtime, holding a permit of a
+   bounded pool (by default four per process) shared work-conservingly (a free permit goes to the waiting tenant that
+   holds the fewest; a tenant MAY hold more than half only while no other waits), with a bounded wait (by default 5 s);
+   a dropped waiter MUST release what it holds.
 5. An `inputSchema` MUST be within the documented subset: `type`, `properties`, `required`, `items` (one schema),
    `enum`, `const`, the numeric bounds, `multipleOf` (a positive integer), the length bounds, a `pattern` whose parsed
    syntax passes an allowlist (no Perl, Unicode or POSIX classes, no word boundaries, flags or named groups) and whose
@@ -89,7 +90,7 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
 1. **A documented subset validated by a validator of the platform with a work counter, behind a gate in `application`,
    with a type only the gate builds** — chosen (OD-2026-11-14-14). The bound holds by construction, because the counter
    counts what the validator does; the static pre-check only checks the vocabulary, the references and their cycles; the
-   compiler and four architecture rules keep a new creator from skipping the check.
+   compiler and five architecture rules keep a new creator from skipping the check and `jsonschema` off the path.
 2. **The `jsonschema` library with a static walk as the bound on its work** — rejected after four review rounds, each of
    which found work the walk did not charge or a reference it resolved differently.
 3. **Validation in an isolated process with a timeout** — it bounds the damage without bounding the work, adds a round
@@ -111,7 +112,11 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
   outside it (recursion, `patternProperties`, `not`, `if`, `unevaluated*`, a fractional `multipleOf`, `\d` in a pattern)
   refuses every start of its version in `enforce`, until a version within the subset is published. The inventory
   command lists them before the upgrade; `report` mode covers the time to republish (G043-014 to G043-016).
-- A second compiled-schema cache and four permits per process.
+- A second compiled-schema cache and a permit pool per process, both in `crates/infra-schema`. `crates/application`
+  keeps no runtime: the gate is plain async code over the port, and the adapter gains tokio as a normal dependency
+  (option (b) of the architecture review, D043-071). `jsonschema` stays out of the validator, by a rule (D043-074).
+- The subset narrows what `inputSchema` may hold: a schema that 0.2.x published is refused by 0.3.0 publication in
+  `enforce`, recorded in `workflow.schema.json` and `sdks/SPEC.md` (OD-2026-11-14-14).
 - One migration widens the schedule action outcomes and the registry's capability lists, each added `NOT VALID` and
   then validated; its down migration refuses while a row holds a new value.
 - In `report` mode a reported refusal writes an audit row: one statement on that start.
@@ -121,7 +126,7 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
 ## Evidence
 
 - Design: `docs/designs/043-run-input-validation.md`; registers: `specs/043-run-input-validation/research.md`
-  (D043-001 to D043-070, G043-001 to G043-017, O043-001 to O043-004).
+  (D043-001 to D043-075, G043-001 to G043-017, O043-001 to O043-004).
 - Background: G1955 and G2081 in `specs/018-schedules-bulk-operations/research.md`.
 - Existing tests this builds on: `crates/infra-schema/tests/annotation_is_inert.rs`;
   `claim_check_schema_validation_refuses_external_refs_without_exposing_payloads` in `crates/infra-schema/src/lib.rs`;

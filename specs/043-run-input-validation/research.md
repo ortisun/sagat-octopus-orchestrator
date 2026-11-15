@@ -104,7 +104,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 
 ### Second draft, after the three reviews and the owner's answers (2026-11-14)
 
-- **D043-017** (2026-11-14; the constructor's visibility superseded by D043-032, the key by D043-041 below) The port is narrow: `SchemaValidator` (implemented by `InputSchemas` in `crates/infra-schema`)
+- **D043-017** (2026-11-14; the port made async and the runtime moved into the adapter by D043-071; the constructor's visibility superseded by D043-032, the key by D043-041 below) The port is narrow: `SchemaValidator` (implemented by `InputSchemas` in `crates/infra-schema`)
   takes a key, the schema bytes and the input bytes and answers accept or a `SchemaRefusal` (`Invalid` with segments and
   rule, `Unusable`, `TooDeep`). A concrete `RunInputGate` in `crates/application` owns the mode, the metrics, the
   blocking pool and the only non-test constructor of `CheckedRunInput`, which is `pub(crate)`. The test constructor is
@@ -286,7 +286,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 - **D043-051** (2026-11-14; the issue codes completed by D043-065) Publication runs the pre-check on every `inputSchema`: in `enforce` a violation refuses with a
   typed issue (`INPUT_SCHEMA_KEYWORD_UNSUPPORTED`, `INPUT_SCHEMA_REFERENCE_INVALID`, `INPUT_SCHEMA_TOO_LARGE`) that names
   the keyword and its pointer; in `report` it is a warning with the same fields.
-- **D043-052** (2026-11-14) The inventory is `control-plane input-schema-inventory`, run with the owner's credentials as
+- **D043-052** (2026-11-14; the informational section and the exit codes by D043-072) The inventory is `control-plane input-schema-inventory`, run with the owner's credentials as
   `migrate` is: a paged read of `workflow_versions`, the pre-check on each stored schema, one line per version that would
   be refused (ids, keyword, pointer), no schema text, nothing written. It replaces the release-notes query, which could
   not tell whether a schema would be refused.
@@ -360,7 +360,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 
 ### Eighth draft, after the seventh review (2026-11-14, at `846c570f`)
 
-- **D043-068** (2026-11-14) Fairness is work-conserving. Under one mutex the gate keeps the permits each tenant holds and a
+- **D043-068** (2026-11-14; placed in the adapter by D043-071) Fairness is work-conserving. Under one mutex the gate keeps the permits each tenant holds and a
   FIFO queue of waiters; a free permit goes to the waiter whose tenant holds the fewest (FIFO among equals), and a tenant
   may hold more than two only while no other tenant waits. A lone tenant uses all four; a newcomer is served first as
   permits return; nothing held is taken away. A waiter's guard leaves the queue or returns its permit when the future is
@@ -374,6 +374,25 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 - **D043-070** (2026-11-14) The pattern allowlist refuses a `]` as the first item of a class (`[]a]`) and `[^]`: ECMA-262
   reads `[]` as an empty class and `[^]` as any character, `regex-syntax` reads both as classes holding `]`.
 
+### Ninth draft, after the architecture review (2026-11-14, at `c1cedefa`)
+
+- **D043-071** (2026-11-14) Option (b) of the review: `crates/application` stays free of a runtime (tokio remains its
+  dev-dependency, `crates/application/Cargo.toml:30-32`). `SchemaValidator::check` is an async port; the permits, the
+  work-conserving fair queue, the wait, `block_in_place` and the backstop are in `crates/infra-schema`, which gains tokio
+  (`sync`, `time`, `rt-multi-thread`) as a normal dependency and its own `off_worker` (the one in
+  `crates/infra-postgres/src/payload_disclosure.rs:561` is private). The port adds `SchemaRefusal::Busy`. The defaults
+  (four permits, 5 s) are constants of the adapter.
+- **D043-072** (2026-11-14) The inventory lists, besides the versions that would be refused, an informational section of
+  versions within the subset with an `inputSchema` and a non-manual trigger (G043-004), which does not change the exit
+  status. Exit 0: nothing would be refused; 1: at least one version would; 2: the command failed.
+- **D043-073** (2026-11-14) The publication mode reaches `infra-ir` as a parameter: the control plane passes its process's
+  mode; `sagat validate` takes `--input-validation enforce|report`, `enforce` by default.
+- **D043-074** (2026-11-14) A fifth architecture rule rejects `jsonschema` (a dependency path, a `use` or a qualified path)
+  under `crates/infra-schema/src/run_input/`, with a negative fixture; `jsonschema` stays only as the oracle of the tests and
+  for the scripts of feature 005.
+- **D043-075** (2026-11-14) The digest of `InputSchema` is computed by `infra-ir` at parse; the domain stores a `[u8; 32]`
+  (`sha2` is not in `DOMAIN_ALLOWED`).
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
@@ -381,7 +400,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-001 | A control plane of 0.2.x running beside new engines during the upgrade meets the new outcome `INPUT_INVALID`. The action listing reads the outcome as a string by design (`crates/application/src/schedules.rs:634-635`, `crates/infra-postgres/src/schedules.rs:547`), so it passes through; the outcome filter parses the name strictly (`crates/api-http/src/routes/schedules.rs:275`) and an old binary answers `422` to a filter on `INPUT_INVALID`. | Read in the code, not yet tested: T043-11 adds the test of an action list with an unknown outcome. The filter case is stated in the release notes. | Open |
 | G043-002 | A trigger refusal could be audited again on every retry of its event. | Closed for inbox events by D043-027 (the delivery row), proven by T043-7. Left: two engines that reach the same cron tick at once can both audit it; the reason names the tick key, so the duplicate is recognisable. | Open (narrowed 2026-11-14) |
 | G043-003 | `details.field` names property names declared in the schema to a caller with `run:start`. | Closed 2026-11-14: every role that holds `run:start` also holds `definition:read` (`crates/domain/src/identity.rs:607-691`), so the caller may read the schema the names come from. T043-23 adds the unit test that keeps it so for every `Role`. | Closed (by reading; test in T043-23) |
-| G043-004 | A published version with a non-manual trigger and an `inputSchema` that describes a manual input (and not the event envelope `{event, data}`) refuses every triggered start after the upgrade. | `control-plane input-schema-inventory` and the publication warning list versions with both (D043-052); it cannot tell which schemas accept the envelope without real events. `report` mode covers the time to fix them. | Open |
+| G043-004 | A published version with a non-manual trigger and an `inputSchema` that describes a manual input (and not the event envelope `{event, data}`) refuses every triggered start after the upgrade. | `control-plane input-schema-inventory` lists these versions in its informational section, without changing its exit status (D043-072), and publication warns on new ones; neither can tell which schemas accept the envelope without real events. `report` mode covers the time to fix them. | Open |
 | G043-005 | `format` is an annotation, so a schema that relies on it to refuse an input does not refuse it. | D043-046; documented in the runbook. | Open (documented) |
 | G043-006 | The CPU cost of validating a 256 KiB input on the API path is not measured. | Counters, not timers, prove the compile count; a benchmark is not a target of this design. | Open |
 | G043-007 | Inputs stored before the upgrade (schedules, pending resets) are not checked at the upgrade; they are refused at action time. | By design: the action time is the authority (D043-008). Stated in the release notes. | Open (documented) |
