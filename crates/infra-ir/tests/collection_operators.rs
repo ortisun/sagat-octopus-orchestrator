@@ -81,6 +81,9 @@ fn every_earlier_document_still_decodes_and_encodes_byte_for_byte() {
         .expect("goldens")
         .map(|entry| entry.expect("entry").path())
         .filter(|path| path.to_string_lossy().ends_with(".workflows.json"))
+        // The golden written for the field itself is not an earlier document: the contract test
+        // `six_sdk_collection_operator_golden_is_the_server_canonical_definition` holds it (G042-130).
+        .filter(|path| !path.ends_with("collection-operators.workflows.json"))
         .collect();
     files.sort();
     for path in files {
