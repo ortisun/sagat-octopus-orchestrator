@@ -1,12 +1,14 @@
 //! Performance measurements of feature 018 (schedules and bulk run operations, NFR-018-005, T018-072): firing lag at 1,000 and
 //! 10,000 schedules, the rate of batch jobs, the business-id claim under 32-way contention, reset at 1,000, 5,000 and 20,000
-//! events, and the costs of the trigger handover at 10,000 and 100,000 cron triggers.
+//! events, the costs of the trigger handover at 10,000 and 100,000 cron triggers, and what the schedule passes cost a deployment
+//! that has no schedules (on by default since 0.3.0, OD-2026-11-13-8): idle, and beside a load of runs (`idle.rs`).
 //!
 //! Every scenario is `#[ignore]`: it starts a real PostgreSQL and runs from seconds to half an hour, so it is run on purpose, never
 //! by a pull request (the CI runs this target without `--ignored`, so only the unit tests of the helpers in `measure.rs` run there).
 //! The sizes default to a smoke run (a hundred schedules, a few hundred runs); the sizes of the report are set by the environment
 //! (`SAGAT_PERF_SCHEDULES`, `SAGAT_PERF_BATCH_RUNS`, `SAGAT_PERF_BATCH_SELECTION`, `SAGAT_PERF_BATCH_EACH`,
-//! `SAGAT_PERF_CLAIM_ROUNDS`, `SAGAT_PERF_RESET_EVENTS`, `SAGAT_PERF_TRIGGERS`, `SAGAT_PERF_TRIGGER_SECONDS`) and
+//! `SAGAT_PERF_CLAIM_ROUNDS`, `SAGAT_PERF_RESET_EVENTS`, `SAGAT_PERF_TRIGGERS`, `SAGAT_PERF_TRIGGER_SECONDS`,
+//! `SAGAT_PERF_IDLE_TENANTS`, `SAGAT_PERF_IDLE_SECONDS`, `SAGAT_PERF_THROUGHPUT_RUNS`, `SAGAT_PERF_THROUGHPUT_PAIRS`) and
 //! `tests/performance/schedules-bulk-operations/run.sh` sets them, starts a PostgreSQL of its own with the configuration the report
 //! declares, repeats each scenario and writes the fragments the report is made from.
 //!
@@ -26,6 +28,7 @@ mod batch;
 mod claim;
 mod firing;
 mod harness;
+mod idle;
 mod measure;
 mod reset;
 mod triggers;
@@ -188,4 +191,29 @@ async fn trigger_handover_backlog_after_an_upgrade() {
         Duration::from_secs(u64::try_from(seconds).expect("small")),
     )
     .await;
+}
+
+// --- the schedule passes on a deployment with no schedules ----------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "benchmark: a real PostgreSQL, minutes; run on purpose (run.sh)"]
+async fn idle_cost_of_the_schedule_passes_without_schedules() {
+    let seconds = sizes("SAGAT_PERF_IDLE_SECONDS", &[10])[0];
+    for tenants in sizes("SAGAT_PERF_IDLE_TENANTS", &[2]) {
+        idle::idle(
+            &format!("idle-{tenants}-tenants"),
+            tenants,
+            Duration::from_secs(u64::try_from(seconds).expect("small")),
+        )
+        .await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "benchmark: a real PostgreSQL, minutes; run on purpose (run.sh)"]
+async fn run_throughput_with_the_schedule_passes_on_and_off() {
+    let pairs = sizes("SAGAT_PERF_THROUGHPUT_PAIRS", &[1])[0];
+    for runs in sizes("SAGAT_PERF_THROUGHPUT_RUNS", &[100]) {
+        idle::throughput(&format!("idle-throughput-{runs}"), runs, pairs).await;
+    }
 }
