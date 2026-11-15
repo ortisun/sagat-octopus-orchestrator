@@ -71,11 +71,22 @@ fn flow(input_schema: Option<Value>, save: Value) -> Vec<u8> {
 }
 
 fn levels_of(bytes: &[u8]) -> Vec<(String, Level)> {
-    // Tuple positions (`prefixItems`) are outside the run-input subset of design 043 (D043-046), so these documents
-    // publish only in report mode; the levels an Iceberg write sends out are read the same in either mode (D043-095).
-    let parsed = JsonIrCodec
-        .parse_with(bytes, InputValidationMode::Report)
-        .expect("a published document");
+    // A document inside the run-input subset publishes in enforce mode. Tuple positions (`prefixItems`) are outside it
+    // (D043-046): enforce refuses them, naming the keyword, and they publish only in report mode, where the levels an
+    // Iceberg write sends out are read the same (D043-095, D043-110).
+    let parsed = match JsonIrCodec.parse(bytes) {
+        Ok(parsed) => {
+            assert!(
+                !String::from_utf8_lossy(bytes).contains("prefixItems"),
+                "enforce refuses tuple positions"
+            );
+            parsed
+        }
+        Err(IrError::InputSchema { keyword, .. }) if keyword == "prefixItems" => JsonIrCodec
+            .parse_with(bytes, InputValidationMode::Report)
+            .expect("a published document in report mode"),
+        Err(other) => panic!("a published document: {other:?}"),
+    };
     let node = parsed
         .definition
         .node(&NodeId::parse("save").expect("id"))
