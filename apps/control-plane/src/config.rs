@@ -123,6 +123,28 @@ pub fn flag(get: Lookup<'_>, name: &'static str) -> Result<bool, ConfigError> {
     }
 }
 
+/// `SAGAT_RUN_INPUT_VALIDATION`, strictly (the ADR-0081 pattern, D043-109): unset or empty is `enforce`, `enforce` and
+/// `report` are themselves, and anything else, a different case or a space included, stops the process naming it.
+///
+/// # Errors
+/// [`ConfigError::Invalid`] naming the variable.
+pub fn run_input_validation(
+    get: Lookup<'_>,
+) -> Result<sagat_application::definitions::InputValidationMode, ConfigError> {
+    const NAME: &str = "SAGAT_RUN_INPUT_VALIDATION";
+    match get(NAME).as_deref() {
+        None | Some("") => Ok(sagat_application::definitions::InputValidationMode::Enforce),
+        Some(text) => {
+            sagat_application::definitions::InputValidationMode::parse(text).ok_or_else(|| {
+                ConfigError::Invalid {
+                    name: NAME,
+                    reason: "must be enforce or report".to_owned(),
+                }
+            })
+        }
+    }
+}
+
 /// Variables of the per-tenant request budget: (requests per second, burst).
 pub const TENANT_RATE_VARS: (&str, &str) = ("SAGAT_RATE_LIMIT_RPS", "SAGAT_RATE_LIMIT_BURST");
 /// Variables of the per-subject request budget: (requests per second, burst).
@@ -387,6 +409,10 @@ pub struct ServeConfig {
     /// With it off, publishing such a workflow is refused with `LAKE_DISABLED`. With it on, publication still
     /// waits for the checks of access, allowed modes and data classification.
     pub lake_enabled: bool,
+    /// What publication does with an `inputSchema` outside the supported subset (`SAGAT_RUN_INPUT_VALIDATION`, design
+    /// 043, FR-043-013): `enforce` unless the operator says `report`. The instance-registry capability that keeps
+    /// replicas from answering differently comes with the start gate (T043-12).
+    pub run_input_validation: sagat_application::definitions::InputValidationMode,
     /// Native TLS identity is required for the mTLS webhook profile; no forwarded headers are trusted.
     pub tls: Option<sagat_api_http::HttpTlsConfig>,
     pub webhook_oidc: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -590,6 +616,7 @@ impl ServeConfig {
             reset_reapply_enabled: flag(get, "SAGAT_RESET_REAPPLY_ENABLED")?,
             reset_cancel_source_enabled: flag(get, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")?,
             lake_enabled: flag(get, "SAGAT_LAKE_ENABLED")?,
+            run_input_validation: run_input_validation(get)?,
             tls,
             webhook_oidc,
             webhook_oidc_development: environment == Environment::Dev,

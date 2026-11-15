@@ -733,8 +733,13 @@ pub async fn serve_with_admin(
             ),
         );
     }
+    tracing::info!(
+        mode = serve.run_input_validation.as_str(),
+        "publication checks every inputSchema against the supported subset in this mode"
+    );
     let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec)
-        .with_lake_enabled(serve.lake_enabled);
+        .with_lake_enabled(serve.lake_enabled)
+        .with_input_validation(serve.run_input_validation);
     let mut runs = run_service(executions.clone(), cache, serve);
     if let Some(settings) = &serve.blobs {
         let backend = sagat_infra_blobstore::build_backend(&settings.store, settings.part_size)
@@ -763,7 +768,8 @@ pub async fn serve_with_admin(
         state,
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
-            .with_lake_enabled(serve.lake_enabled),
+            .with_lake_enabled(serve.lake_enabled)
+            .with_input_validation(serve.run_input_validation),
         runs,
     )
     .with_database_results(Arc::new(database_results))
