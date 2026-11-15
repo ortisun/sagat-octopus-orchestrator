@@ -3716,6 +3716,108 @@
       ]
     },
     {
+      "table": "schedule_trigger_handover",
+      "column": "changed_mode",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only OPERATOR or AUTOMATIC (`schedule_trigger_handover_mode_valid`); the table holds one row. Deployment-level, no tenant; written only by `schedule_trigger_handover_record` (ADR-0091)."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/handover_auto.rs"
+      ]
+    },
+    {
+      "table": "schedule_trigger_handover_attempts",
+      "column": "last_reason",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only the closed set of the reasons of ADR-0091 decision 5 (`schedule_trigger_handover_attempts_reason_closed`); one row per run of the job, rows a week old are deleted by the round. Deployment-level, no tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/handover_auto.rs"
+      ]
+    },
+    {
+      "table": "schedule_trigger_handover_attempts",
+      "column": "stable_set",
+      "sql_type": "_uuid",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "At most 1,000 instance ids (`schedule_trigger_handover_attempts_set_bounded`, the registry's own bound); one row per run of the job. Deployment-level, no tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/handover_auto.rs"
+      ]
+    },
+    {
+      "table": "schedule_trigger_handover_census",
+      "column": "binary_version",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Copied from `serving_instances.binary_version`, CHECK bounds it to 64 characters; at most 1,000 rows per handover, and a handover happens once. Deployment-level, no tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/handover_auto.rs"
+      ]
+    },
+    {
+      "table": "schedule_trigger_handover_census",
+      "column": "kind",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK permits only CONTROL_PLANE or EXECUTION_ENGINE; at most 1,000 rows per handover, once. Deployment-level, no tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/handover_auto.rs"
+      ]
+    },
+    {
+      "table": "schedule_trigger_handover_retirement",
+      "column": "retired_by",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "The session_user that retired the role sagat_handover, CHECK bounds it to 128 characters; the table holds one row. Deployment-level, no tenant."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/handover_auto.rs"
+      ]
+    },
+    {
       "table": "script_artifacts",
       "column": "content",
       "sql_type": "bytea",

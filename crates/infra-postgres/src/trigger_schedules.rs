@@ -23,9 +23,9 @@ use sagat_application::dispatch::TriggerRegistration;
 use sagat_application::error::StoreError;
 use sagat_application::schedule_codec::{policies_to_json, spec_to_json, target_to_json};
 use sagat_application::schedule_triggers::{
-    Change, Convergence, Drift, DriftPage, DriftWindow, HandoverState, ScanCursor, TriggerEntry,
-    TriggerScheduleStore, TriggerSource, trigger_policies, trigger_schedule_name, trigger_spec,
-    trigger_target,
+    AttemptSeen, Change, Convergence, Drift, DriftPage, DriftWindow, HandoverBlock, HandoverMode,
+    HandoverState, HandoverView, ScanCursor, TriggerEntry, TriggerScheduleStore, TriggerSource,
+    trigger_policies, trigger_schedule_name, trigger_spec, trigger_target,
 };
 use sagat_application::schedules::ShardFence;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
@@ -222,6 +222,25 @@ async fn insert(
     Ok(None)
 }
 
+/// The mark of the reconciliation on a trigger-owned schedule it made or revived (D2243, D2258): the automatic handover waits a
+/// horizon after the last one, because only a control plane older than this release, or the backlog of an upgrade, leaves that
+/// work to the reconciliation. A publication never sets it.
+async fn mark_reconciled(
+    conn: &mut PgConnection,
+    tenant: TenantId,
+    schedule: ScheduleId,
+    at: OffsetDateTime,
+) -> Result<(), StoreError> {
+    sqlx::query("UPDATE schedules SET reconciled_at = $3 WHERE tenant_id = $1 AND id = $2")
+        .bind(tenant.as_uuid())
+        .bind(schedule.as_uuid())
+        .bind(at)
+        .execute(conn)
+        .await
+        .map_err(store_error)?;
+    Ok(())
+}
+
 async fn insert_revision(
     conn: &mut PgConnection,
     tenant: TenantId,
@@ -336,10 +355,12 @@ async fn tombstone(
     .await
 }
 
-/// The tombstone itself: no next time, nothing owed, the state version moved.
+/// The tombstone itself: no next time, nothing owed, the state version moved, and the mark of the reconciliation (D2258): only the
+/// engine removes the schedule of a trigger that is gone (a publication of this release removes its own in its transaction).
 const SOFT_DELETE: &str = "UPDATE schedules SET state = 'DELETED', deleted_at = $3, buffered = 0, \
      next_action_at = NULL, next_actual_at = NULL, retry_at = NULL, recheck_at = NULL, \
-     recovery_until = NULL, recovery_acts = NULL, state_version = state_version + 1, updated_at = $3 \
+     recovery_until = NULL, recovery_acts = NULL, state_version = state_version + 1, updated_at = $3, \
+     reconciled_at = $3 \
      WHERE tenant_id = $1 AND id = $2 AND state <> 'DELETED'";
 
 /// Removes the schedules of triggers a publication dropped, in the publishing transaction.
@@ -708,6 +729,27 @@ impl TriggerScheduleStore for PgScheduleStore {
         self.read_handover().await
     }
 
+    async fn handover_view(&self) -> Result<HandoverView, StoreError> {
+        let (state, mode, reason, age): (String, Option<String>, Option<String>, Option<f64>) = sqlx::query_as(
+            "SELECT h.state, h.changed_mode, a.last_reason, \
+                    extract(epoch FROM clock_timestamp() - a.last_round_at)::float8 \
+               FROM schedule_trigger_handover h \
+               LEFT JOIN LATERAL (SELECT x.last_reason, x.last_round_at FROM schedule_trigger_handover_attempts x \
+                                   ORDER BY x.last_round_at DESC LIMIT 1) a ON true",
+        )
+        .fetch_one(self.pool())
+        .await
+        .map_err(store_error)?;
+        Ok(HandoverView {
+            state: HandoverState::from_stored(&state),
+            mode: mode.as_deref().and_then(HandoverMode::from_code),
+            attempt: age.map(|age_seconds| AttemptSeen {
+                reason: reason.as_deref().and_then(HandoverBlock::from_code),
+                age_seconds: age_seconds.max(0.0),
+            }),
+        })
+    }
+
     async fn drift(&self, window: &DriftWindow) -> Result<DriftPage, StoreError> {
         let shards: Vec<i16> = window
             .shards
@@ -828,14 +870,12 @@ impl TriggerScheduleStore for PgScheduleStore {
                     ));
                 }
                 let at = now(&mut tx).await?;
-                if insert(&mut tx, entry, *next, next.is_none(), at)
-                    .await?
-                    .is_none()
-                {
+                let Some(made) = insert(&mut tx, entry, *next, next.is_none(), at).await? else {
                     return Err(StoreError::StateConflict(
                         "a schedule of the trigger exists already, or its names are taken",
                     ));
-                }
+                };
+                mark_reconciled(&mut tx, entry.tenant_id, made, at).await?;
                 tx.commit().await.map_err(store_error)
             }
             Change::Revive {
@@ -856,6 +896,7 @@ impl TriggerScheduleStore for PgScheduleStore {
                         "the schedule is not a tombstone any more",
                     ));
                 }
+                mark_reconciled(&mut tx, entry.tenant_id, *schedule, at).await?;
                 tx.commit().await.map_err(store_error)
             }
             Change::Remove {
@@ -918,7 +959,8 @@ impl TriggerScheduleStore for PgScheduleStore {
                          next_action_at = CASE WHEN state = 'ACTIVE' THEN $4 END, \
                          next_actual_at = CASE WHEN state = 'ACTIVE' THEN $4 END, \
                          remaining_actions = CASE WHEN state = 'ACTIVE' AND $4::timestamptz IS NULL THEN 0 END, \
-                         retry_at = NULL, recovery_until = NULL, recovery_acts = NULL, updated_at = $5 \
+                         retry_at = NULL, recovery_until = NULL, recovery_acts = NULL, updated_at = $5, \
+                         reconciled_at = $5 \
                      WHERE tenant_id = $1 AND id = $2",
                 )
                 .bind(entry.tenant_id.as_uuid())
@@ -1042,7 +1084,7 @@ impl TriggerScheduleStore for PgScheduleStore {
                     "UPDATE schedules SET state = 'ACTIVE', next_action_at = $3, next_actual_at = $3, \
                          remaining_actions = CASE WHEN $3::timestamptz IS NULL THEN 0 END, retry_at = NULL, \
                          recheck_at = NULL, recovery_until = NULL, recovery_acts = NULL, note = NULL, note_by = NULL, \
-                         note_at = NULL, state_version = state_version + 1, updated_at = $4 \
+                         note_at = NULL, state_version = state_version + 1, updated_at = $4, reconciled_at = $4 \
                      WHERE tenant_id = $1 AND id = $2",
                 )
                 .bind(entry.tenant_id.as_uuid())
