@@ -99,12 +99,17 @@ the attempt is not built yet, so a deployment should not turn the lake on to wri
 
 ### COLLECTION_OPERATORS_DISABLED
 
-This release does not publish a forEach that declares operators. Remove the operators and shape the list in an activity before the collection.
+This deployment has not enabled collection operators, so a forEach cannot declare operators. Ask the operator to turn on SAGAT_COLLECTION_OPERATORS_ENABLED once every replica runs 0.3.0, or shape the list in an activity before the collection.
 
-Collection operators are not available in this release (design 042): the scheduler applies a chain at scope entry only
-from task T042-8, so the control plane refuses `SAGAT_COLLECTION_OPERATORS_ENABLED=true` at start. A run of a chained
-version published elsewhere fails at entry with `COLLECTION_OPERATORS_UNSUPPORTED` rather than run its body over the list
-`items` yields.
+The switch is read by publication only (design 042): with it off, a version published while it was on stays readable,
+can be activated, rolled back and promoted where it already runs, and its runs apply their chain at scope entry. The
+fleet rule and the ceilings of a chain are in `docs/runbooks/workflow-primitives.md` ("Collection operators").
+
+At run time, a chained collection that crosses one of its running ceilings at scope entry fails the run with the
+failure code `COLLECTION_OPERATOR_BUDGET`, before any iteration starts and without truncating anything: 1,000 elements
+in the chain's input and in each stage's output, 256 KiB per element, 4 MiB per stage, 1 second of wall time. The reason
+label of `scheduler_collection_source_failures_total` names which. A stage expression that fails, a `filter` that is not
+boolean and a `flatMap` that is not a list fail the run with `EXPRESSION_ERROR` instead.
 
 ### INVALID_OPERATOR
 
