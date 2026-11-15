@@ -1564,8 +1564,8 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
 *The automatic handover (added 2026-11-14, OD-2026-11-14-4 to -7, ADR-0091 proposed; revised after the second review).* The
 owner decided that the handover happens after a deployment without an operator: a one-shot job runs `schedule-trigger-handover
 --auto`. T018-082 to T018-087 build it; T018-061 stays the operator path. None of them may be ticked before ADR-0091 has the three
-repository reviews on its last text (T018-087); O1957 was answered by OD-2026-11-14-12. *Revised after the third review (D2259,
-D2263 to D2268).*
+repository reviews on its last text (T018-087); O1957 was answered by OD-2026-11-14-12. *Revised after the third and fourth reviews (D2259,
+D2263 to D2275).*
 
 - [ ] T018-082 [US7] Migration of the automatic handover — `crates/infra-postgres/migrations/<timestamp>_trigger_handover_automatic.{up,down}.sql`,
   `crates/infra-postgres/storage-classification.json`, `infra/docker/postgres-init/` — on `schedule_trigger_handover`: `changed_mode`
@@ -1582,7 +1582,9 @@ D2263 to D2268).*
   closed set. Follows `.claude/skills/migration/SKILL.md` (timestamp after `develop` and every open 018 branch; additive; `down`
   refuses for any mode). The reconciliation sets the mark on make, revive, respec (`trigger_schedules.rs:877-946`), resume
   (`:1020`) and removal (D2258). Test first: the migration, backfill, role and audit tests of T018-085 seen failing.
-  Refs: FR-018-053, D2243, D2246, D2252, D2253, D2257, D2258, D2259, D2264, D2265, D2267
+    *Fourth review:* the retirement row (D2269); the wrapper's exact `session_user`, fresh last round and `uuid` run id (D2271); the grant
+  function refusing a wider role, `NOBYPASSRLS` (D2275).
+  Refs: FR-018-053, D2243, D2246, D2252, D2253, D2257, D2258, D2259, D2264, D2265, D2267, D2269, D2271, D2275
   Owner-gate: OD-2026-11-14-5, OD-2026-11-14-7
 - [ ] T018-083 [US7] The deployment's job — `infra/docker/compose.yaml`, `infra/docker/.env.example`, `infra/helm/templates/`,
   `infra/helm/values.yaml`, `infra/helm/templates/NOTES.txt` — compose: the service `schedule-trigger-handover` (control-plane
@@ -1597,7 +1599,10 @@ D2263 to D2268).*
   `schedules.autoHandover: false` (D2251, D2252). The engines export `trigger_schedule_handover_blocked{reason}` from the attempt row
   and `trigger_schedule_handover_mode{mode}` from the handover row (series at zero, D2217, D2255); `SagatTriggerHandoverBlocked` as
   `max without (reason)` with its `promtool` test. Test first: `helm template` cases and the rule test seen failing.
-  Refs: FR-018-053, D2245, D2247, D2251, D2252, D2255, D2263, D2264, D2265, D2268, G2246, G2247
+    *Fourth review:* the password apart from the URL (a key of its own in the Secret, D2273); `schedules.autoHandover` also passed to the
+  engines, which export `trigger_schedule_auto_handover_expected` and `trigger_schedule_handover_attempt_age_seconds`, and
+  `SagatTriggerHandoverNotAttempted` with its `promtool` test (D2270).
+  Refs: FR-018-053, D2245, D2247, D2251, D2252, D2255, D2263, D2264, D2265, D2268, D2270, D2273, G2246, G2247
   Owner-gate: OD-2026-11-14-5, OD-2026-11-14-6
 - [ ] T018-084 [US7] The command learns to wait — `apps/control-plane/src/handover.rs`, `apps/control-plane/src/cli.rs`,
   `apps/control-plane/src/lib.rs`, `crates/infra-postgres/src/trigger_schedules.rs`, `crates/infra-postgres/src/instances.rs` —
@@ -1611,7 +1616,10 @@ D2263 to D2268).*
   commit and on "already handed over"; exit codes 0, 2, 3, 4, 1; the dry run prints what `--auto` would answer; `--apply` as the owner
   only, `--auto` as `sagat_handover`; exit 2 at once in compose when the job is on and there is no password. Test first: unit tests of the loop, the reasons, the backoff and one per refusal call site (16 today),
   seen failing.
-  Refs: FR-018-053, FR-018-017, D2240, D2241, D2242, D2243, D2244, D2246, D2249, D2250, D2251, D2253, D2254, D2256, D2259, D2264, D2265, D2266
+    *Fourth review:* `migrate` sets the login only while `LEGACY` and not retired (D2269), from a SCRAM verifier it computes (D2272;
+  the hashing the workspace has, or a reviewed dependency), warns and goes on at `42501` (D2274); the job sets the password on the
+  connection options (D2273) and warns at `42501` when it retires the role.
+  Refs: FR-018-053, FR-018-017, D2240, D2241, D2242, D2243, D2244, D2246, D2249, D2250, D2251, D2253, D2254, D2256, D2259, D2264, D2265, D2266, D2269, D2272, D2273, D2274
   Owner-gate: OD-2026-11-14-5, OD-2026-11-14-7
 - [ ] T018-085 [US7] The tests of ADR-0091 — `tests/fault/schedules-bulk-operations/auto_handover.rs`,
   `tests/integration/schedules-bulk-operations/trigger_auto_handover.rs`, `trigger_scale.rs`, `tests/contract/scalability-ha/`,
@@ -1631,7 +1639,10 @@ D2263 to D2268).*
   missing, nothing when off); a compose smoke test; the one-set test of the reason codes, the Rust enum and the runbook anchors; the
   alert's `promtool` test; the cost of the tenant set under the lock at 100,000 triggers of 1,000 tenants (G2248); the
   released-v0.2 upgrade; a kind run of an `--atomic` rollback deleting the Job in the release profile (G2250). Hand mutants only.
-  Refs: SC-018-019, SC-018-005, SC-018-017, FR-018-053, D2259, D2263, D2264, D2266, D2267, D2268, G2243, G2248, G2250
+    *Fourth review:* the tests of ADR-0091's "fourth review" item (retirement survives `migrate`, no clear password under
+  `log_statement = all`, a password with `@`, `/`, `#`, PostgreSQL 16 `ADMIN OPTION`, a wider role refused, a member and a stale
+  round refused, the second alert).
+  Refs: SC-018-019, SC-018-005, SC-018-017, FR-018-053, D2259, D2263, D2264, D2266, D2267, D2268, D2269, D2270, D2271, D2272, D2273, D2274, D2275, G2243, G2248, G2250
   Owner-gate: OD-2026-11-14-5
 - [ ] T018-086 [US7] Documents of the automatic handover — `docs/runbooks/schedules.md` section 6 (the job by default, its conditions
   and flags, `SAGAT_HANDOVER_PASSWORD` for `migrate` or the login created once, the Secret, and after the handover `--retire-role` or

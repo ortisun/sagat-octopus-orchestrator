@@ -523,7 +523,8 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   unconverged; and then only through the command's own activation transaction, with the live count of the rounds as its
   expectation. It MUST give up after `--wait` (bounded) with the last of a closed set of typed reasons; what a wait cures (lock and
   statement timeouts among them) MUST be retried with a backoff. The last reason MUST be readable by the engines, which export
-  it (`trigger_schedule_handover_blocked{reason}`; alert `SagatTriggerHandoverBlocked` after an hour whatever the reason) with
+  it (`trigger_schedule_handover_blocked{reason}`; alert `SagatTriggerHandoverBlocked` after an hour whatever the reason; and
+  `SagatTriggerHandoverNotAttempted` when the job is expected and its attempt row is missing or stale, D2270) with
   the recorded mode (`trigger_schedule_handover_mode{mode}`). A handover MUST record its mode, its epoch, a copy of the census
   and the set of tenants that have a cron trigger, each with a random audit id, in its transaction, and, after the commit,
   one audit record per tenant of that set with the handover row's actor, mode and time, refusing a planted record
