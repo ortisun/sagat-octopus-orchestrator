@@ -305,3 +305,32 @@ async fn row_9_a_refused_trigger_does_not_keep_a_wait_for_the_same_event_from_wa
         Some(sagat_domain::execution::StepStatus::Waiting)
     );
 }
+
+/// T043-21 for row 9: the work budget is final the first time: a delivery without a run and one audit row.
+#[tokio::test]
+async fn row_9_the_budget_is_final_the_first_time() {
+    let w = world().await;
+    let mut strict = triggered(
+        "row-9-budget",
+        json!([{"kind": "event", "eventType": "order.created"}]),
+    );
+    strict["inputSchema"] = json!({"type": "object"});
+    w.publish(strict).await;
+    let costly = Arc::new(Scripted::answering([Err(SchemaRefusal::WorkLimit)]));
+    let dispatcher = EventDispatcher::new(
+        w.store.clone(),
+        Engine::new(JsonEvaluator),
+        sagat_application::entropy::SystemEntropy,
+        w.cache.clone(),
+        EventDispatchSettings::default(),
+    )
+    .with_run_inputs(Arc::new(RunInputGate::new(
+        costly,
+        InputValidationMode::Enforce,
+    )));
+    publish_event(&w, "row-9-c1", &json!({"orderId": "o-1"})).await;
+    let round = dispatcher.tick().await;
+    assert_eq!(round.retried, 0, "not retried");
+    assert_eq!(refused_deliveries(&w, "row-9-c1").await, 1);
+    assert_eq!(audits(&w, "run.input_refused", "rule=workLimit").await, 1);
+}

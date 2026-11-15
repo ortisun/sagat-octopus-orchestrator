@@ -811,3 +811,128 @@ async fn row_8_trigger_now_answers_422_where_the_decision_would_buffer() {
         "no BUFFERED"
     );
 }
+
+/// The run service `runs` as the starts of a firing.
+#[derive(Clone)]
+struct Through(std::sync::Arc<crate::support::engine::Runs>);
+
+impl sagat_application::schedule_firing::ScheduledStarts for Through {
+    async fn start_scheduled(
+        &self,
+        principal: &sagat_domain::identity::Principal,
+        request: &sagat_application::schedule_firing::ScheduledStart<'_>,
+        admission: sagat_application::schedules::ScheduleAdmission,
+        ctx: &RequestContext,
+    ) -> Result<sagat_application::schedule_firing::ScheduledRun, AppError> {
+        sagat_application::schedule_firing::ScheduledStarts::start_scheduled(
+            self.0.as_ref(),
+            principal,
+            request,
+            admission,
+            ctx,
+        )
+        .await
+    }
+
+    async fn check_scheduled(
+        &self,
+        principal: &sagat_domain::identity::Principal,
+        request: &sagat_application::schedule_firing::ScheduledStart<'_>,
+    ) -> Result<(), AppError> {
+        sagat_application::schedule_firing::ScheduledStarts::check_scheduled(
+            self.0.as_ref(),
+            principal,
+            request,
+        )
+        .await
+    }
+
+    async fn cancel_run(
+        &self,
+        principal: &sagat_domain::identity::Principal,
+        run: uuid::Uuid,
+        reason: &str,
+        key: &str,
+        ctx: &RequestContext,
+    ) -> Result<(), AppError> {
+        sagat_application::schedule_firing::ScheduledStarts::cancel_run(
+            self.0.as_ref(),
+            principal,
+            run,
+            reason,
+            key,
+            ctx,
+        )
+        .await
+    }
+}
+
+fn scripted_runs(
+    w: &crate::support::engine::World,
+    answers: Vec<Result<(), sagat_application::run_input::SchemaRefusal>>,
+) -> crate::support::engine::Runs {
+    use std::sync::Arc;
+    sagat_application::runs::RunService::new(
+        w.store.clone(),
+        sagat_application::clock::SystemClock,
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        w.cache.clone(),
+    )
+    .with_run_inputs(Arc::new(sagat_application::run_input::RunInputGate::new(
+        Arc::new(sagat_application::run_input::test_support::Scripted::answering(answers)),
+        InputValidationMode::Enforce,
+    )))
+}
+
+/// T043-21 for row 6: no room in the validator keeps the time owed (no outcome, a retry set); the work budget is final
+/// the first time (`INPUT_INVALID`).
+#[tokio::test]
+async fn row_6_no_room_keeps_the_time_owed_and_the_budget_is_final() {
+    use sagat_application::run_input::SchemaRefusal;
+
+    let f = fixture().await;
+    let mut checked = flow("row-6-budget");
+    checked["inputSchema"] = json!({"type": "object"});
+    let (workflow, _) = f.w.publish(checked).await;
+    let schedule = f
+        .create(
+            "row-6-budget",
+            &hourly(),
+            &json!({}),
+            Some(target(workflow)),
+        )
+        .await;
+    let firing = |answers| {
+        sagat_application::schedule_firing::ScheduleFiring::new(
+            sagat_infra_postgres::PgScheduleStore::new(f.w.db.pool.clone()),
+            sagat_infra_ir::schedule_calendar::SpecCalendar,
+            f.clock.clone(),
+            sagat_infra_postgres::PgIdentityStore::new(f.w.db.pool.clone()),
+            Through(std::sync::Arc::new(scripted_runs(&f.w, answers))),
+            sagat_domain::schedules::Ceilings::default(),
+        )
+    };
+    f.clock.advance(Duration::hours(1) + Duration::seconds(1));
+    let busy = firing(vec![Err(SchemaRefusal::Busy)]);
+    assert!(matches!(
+        busy.fire(&f.due(&schedule), None).await.expect("fire"),
+        Fired::Refused(_)
+    ));
+    assert!(f.outcomes(&schedule).await.is_empty(), "nothing decided");
+    assert!(
+        f.read(&schedule).await.retry_at.is_some(),
+        "the time stays owed"
+    );
+
+    f.clock.advance(Duration::minutes(10));
+    let costly = firing(vec![Err(SchemaRefusal::WorkLimit)]);
+    assert_eq!(
+        costly.fire(&f.due(&schedule), None).await.expect("fire"),
+        Fired::Acted
+    );
+    assert_eq!(
+        f.outcomes(&schedule).await,
+        outcomes_of(&[("INPUT_INVALID", 1)])
+    );
+    assert!(f.runs(&schedule).await.is_empty());
+}

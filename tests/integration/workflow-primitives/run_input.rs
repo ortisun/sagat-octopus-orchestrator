@@ -300,3 +300,116 @@ async fn row_11_the_child_of_a_parent_admitted_before_the_check_is_checked() {
         Some("CHILD_INPUT_INVALID")
     );
 }
+
+fn scheduler_with(
+    w: &World,
+    answers: Vec<Result<(), sagat_application::run_input::SchemaRefusal>>,
+) -> crate::support::engine::Sched {
+    use std::sync::Arc;
+    sagat_scheduler::Scheduler::new(
+        w.store.clone(),
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        sagat_application::entropy::SystemEntropy,
+        sagat_scheduler::SchedulerSettings::default(),
+    )
+    .with_run_inputs(Arc::new(sagat_application::run_input::RunInputGate::new(
+        Arc::new(sagat_application::run_input::test_support::Scripted::answering(answers)),
+        InputValidationMode::Enforce,
+    )))
+    .with_children(w.cache.clone())
+}
+
+/// T043-21 for row 11: the work budget is final the first time (the step fails `CHILD_INPUT_INVALID`); no room in the
+/// validator is transient (the reservation is left for the next pass, no child, no failure), and the next pass with room
+/// starts the child.
+#[tokio::test]
+async fn row_11_the_budget_is_final_and_no_room_leaves_the_child_for_the_next_pass() {
+    use sagat_application::run_input::SchemaRefusal;
+
+    let w = world().await;
+    let kid = format!("row-11-budget-kid-{}", Uuid::now_v7());
+    w.publish(with_schema(
+        document(&kid, "a", vec![activity("a")]),
+        json!({"type": "object"}),
+    ))
+    .await;
+    let (parent_workflow, _) = w
+        .publish(document(
+            &format!("row-11-budget-{}", Uuid::now_v7()),
+            "c",
+            vec![child_node("c", &kid, None)],
+        ))
+        .await;
+
+    let costly = w.start(parent_workflow, &json!({})).await;
+    scheduler_with(&w, vec![Err(SchemaRefusal::WorkLimit)])
+        .tick()
+        .await;
+    assert_eq!(
+        step_code(&w, costly, "c").await.as_deref(),
+        Some("CHILD_INPUT_INVALID")
+    );
+
+    let busy = w.start(parent_workflow, &json!({})).await;
+    let scheduler = scheduler_with(
+        &w,
+        vec![Err(SchemaRefusal::Busy), Err(SchemaRefusal::Backstop)],
+    );
+    scheduler.tick().await;
+    scheduler.tick().await;
+    let child = child_run_id(busy, &NodeId::parse("c").expect("node"));
+    assert!(w.run_record(child).await.is_none(), "no child yet");
+    assert_eq!(step_code(&w, busy, "c").await, None, "not failed");
+    assert_ne!(w.step_status(busy, "c").await, Some(StepStatus::Failed));
+    scheduler.tick().await;
+    assert!(
+        w.run_record(child).await.is_some(),
+        "with room, the child starts"
+    );
+}
+
+/// T043-21 for row 12: no room in the validator leaves the boundary waiting (no successor, no failure); the work budget
+/// ends the run `FAILED` with `CONTINUATION_INPUT_INVALID`.
+#[tokio::test]
+async fn row_12_no_room_waits_and_the_budget_is_final() {
+    use sagat_application::run_input::SchemaRefusal;
+
+    let w = world().await;
+    let name = format!("row-12-budget-{}", Uuid::now_v7());
+    let (workflow, _) = w.publish(rolling(&name, json!({"type": "object"}))).await;
+    let chain = w
+        .start(workflow, &json!({"segment": 1, "next": {"segment": 2}}))
+        .await;
+    let session = w.session(&["segment.work"]).await;
+    let task = w.one_task(&session).await;
+    w.complete(&session, &task, &json!({}))
+        .await
+        .expect("complete");
+
+    let placement = sagat_scheduler::Placement::new(format!("row-12-budget-{}", Uuid::now_v7()));
+    sagat_scheduler::Keeper::new(
+        w.store.clone(),
+        placement.clone(),
+        sagat_scheduler::KeeperSettings {
+            ttl: std::time::Duration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("shards");
+    let busy = scheduler_with(&w, vec![Err(SchemaRefusal::Busy)]).with_placement(placement.clone());
+    let report = busy.tick().await;
+    assert_eq!(head(&w, chain).await, chain.as_uuid(), "no successor");
+    assert!(
+        !w.run_status(chain).await.is_terminal(),
+        "the boundary waits"
+    );
+    assert_eq!(report.failed, 0, "waiting is not a failure: {report:?}");
+    let costly = scheduler_with(&w, vec![Err(SchemaRefusal::WorkLimit)]).with_placement(placement);
+    costly.tick().await;
+    assert_eq!(w.run_status(chain).await, RunStatus::Failed);
+    assert_eq!(
+        stop_code(&w, chain).await,
+        json!("CONTINUATION_INPUT_INVALID")
+    );
+}

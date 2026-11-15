@@ -886,3 +886,60 @@ measured!(
     a_checked_triggered_start_costs_what_an_unchecked_one_does,
     a_checked_triggered_start_costs_what_an_unchecked_one_does_once
 );
+
+/// What starting one child costs: a parent started, then one scheduler pass that creates its child.
+async fn a_child_start_once(
+    w: &World,
+    parent: sagat_domain::definition::WorkflowId,
+) -> Result<Work, Evicted> {
+    w.start(parent, &json!({"orderId": "o-1"})).await;
+    w.scheduler.tick().await; // warm: the definitions and the compiled schema
+    w.start(parent, &json!({"orderId": "o-1"})).await;
+    let before = reading(w).await;
+    let report = w.scheduler.tick().await;
+    assert_eq!(report.children_started, 1, "{report:?}");
+    spent(w, before).await
+}
+
+/// SC-043-003 for a child start: a child whose version has an `inputSchema` costs what one without does.
+async fn a_checked_child_start_costs_what_an_unchecked_one_does_once() -> Result<(), Evicted> {
+    use crate::support::engine::child_node;
+
+    let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("statement accounting");
+    w.publish(document("budget-kid-plain", "a", vec![activity("a")]))
+        .await;
+    let mut checked = document("budget-kid-checked", "a", vec![activity("a")]);
+    checked["inputSchema"] = json!({"type": "object", "required": ["orderId"], "properties": {"orderId": {"type": "string"}}});
+    w.publish(checked).await;
+    let (plain, _) = w
+        .publish(document(
+            "budget-mother-plain",
+            "c",
+            vec![child_node("c", "budget-kid-plain", None)],
+        ))
+        .await;
+    let (with_schema, _) = w
+        .publish(document(
+            "budget-mother-checked",
+            "c",
+            vec![child_node("c", "budget-kid-checked", None)],
+        ))
+        .await;
+    let without = a_child_start_once(&w, plain).await?;
+    let with = a_child_start_once(&w, with_schema).await?;
+    assert_eq!(
+        with, without,
+        "a child start with an inputSchema costs what one without does"
+    );
+    Ok(())
+}
+
+measured!(
+    /// SC-043-003 for a child start.
+    a_checked_child_start_costs_what_an_unchecked_one_does,
+    a_checked_child_start_costs_what_an_unchecked_one_does_once
+);
