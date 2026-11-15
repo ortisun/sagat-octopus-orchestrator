@@ -5714,6 +5714,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -6071,6 +6072,7 @@ version = "0.2.0"
 dependencies = [
  "futures-util",
  "metrics",
+ "metrics-exporter-prometheus",
  "sagat-application",
  "sagat-domain",
  "sagat-telemetry",

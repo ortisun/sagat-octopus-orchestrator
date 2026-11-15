@@ -24,4 +24,5 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+metrics-exporter-prometheus.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }

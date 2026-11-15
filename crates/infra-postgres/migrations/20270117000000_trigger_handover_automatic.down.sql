@@ -56,15 +56,28 @@ REVOKE ALL ON FUNCTION schedule_trigger_handover_complete(text) FROM PUBLIC;
 
 -- The role `sagat_handover` is a role of the cluster, not of this schema, and may serve another database: it is left as it is,
 -- with nothing to execute here once the functions are gone.
-ALTER FUNCTION platform_requirements_epoch_moved() SECURITY INVOKER;
-ALTER FUNCTION platform_requirements_epoch_moved() RESET search_path;
+-- what the role was granted outside the functions dropped below (the functions take their grants with them)
+DO $revoke$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sagat_handover') THEN
+        REVOKE ALL PRIVILEGES ON schedule_trigger_handover FROM sagat_handover;
+        REVOKE ALL PRIVILEGES (changed_xact) ON platform_requirement_epoch FROM sagat_handover;
+    END IF;
+END $revoke$;
+DROP VIEW schedule_trigger_handover_audit_pending;
 DROP FUNCTION schedule_trigger_handover_role_grants();
+DROP FUNCTION schedule_trigger_handover_role_narrow();
 DROP FUNCTION schedule_trigger_handover_role_ensure();
 DROP FUNCTION schedule_trigger_handover_retire();
 DROP FUNCTION schedule_trigger_handover_audit();
 DROP FUNCTION schedule_trigger_handover_auto(uuid);
 DROP FUNCTION schedule_trigger_handover_record(text, text, interval);
-DROP FUNCTION schedule_trigger_handover_round(uuid, integer, interval, integer, interval, text);
+DROP FUNCTION schedule_trigger_handover_note(uuid, text, integer, interval, integer, interval);
+DROP FUNCTION schedule_trigger_handover_round(uuid, integer, interval, integer, interval);
+DROP FUNCTION schedule_trigger_handover_attempt_open(uuid, integer, interval, integer, interval);
+DROP FUNCTION schedule_trigger_handover_min_live(integer);
+DROP FUNCTION schedule_trigger_handover_set_floor(integer);
+DROP TABLE schedule_trigger_handover_floor;
 DROP FUNCTION schedule_trigger_handover_conditions(interval, integer);
 DROP INDEX schedules_reconciled_at_idx;
 ALTER TABLE schedules DROP COLUMN reconciled_at;

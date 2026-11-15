@@ -1,7 +1,7 @@
 //! `control-plane schedule-trigger-handover --auto` (feature 018, `T018-084`, ADR-0091): the deployment's one-shot job that hands
 //! the cron triggers over once the fleet is stable and converged.
 //!
-//! It runs as `sagat_handover`, which can call four functions and read two tables. **The database decides**: every round goes
+//! It runs as `sagat_handover`, which can call five functions, read two tables and one column (OD-2026-11-15-1). **The database decides**: every round goes
 //! through the round function, which computes every condition and counts the stable rounds in the attempt row; the activation goes
 //! through the wrapper, which computes them all again under the epoch lock, takes the mode from `session_user` and the actor from
 //! the run id. This loop only asks, waits and says why:
@@ -28,8 +28,8 @@ use sagat_application::schedule_triggers::HandoverBlock;
 use sagat_infra_postgres::{
     AutoActivated, AutoAsk, HandoverDbError, OperatorBounds, PgPool, PoolConfig,
     ROUND_STATEMENT_TIMEOUT, Retirement, Round, RoundOutcome, complete_handover_audit,
-    connect_handover, handover_activate, handover_round, last_attempt, may_auto_hand_over,
-    read_handover_mode, retire_handover_role,
+    connect_handover, handover_activate, handover_note, handover_round, last_attempt,
+    may_auto_hand_over, read_handover_mode, retire_handover_role,
 };
 use uuid::Uuid;
 
@@ -136,18 +136,16 @@ impl Pace for Sleep {
     }
 }
 
-/// What the job was asked for.
+/// What the job was asked for: what it asks of each round (`ask`), and what it does around them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoRequest {
-    pub run: Uuid,
-    pub stable: u32,
-    pub horizon: Duration,
-    pub min_live: u32,
-    pub wait: Duration,
+    pub ask: AutoAsk,
     pub retire_role: bool,
     pub dry_run: bool,
     /// Who the deployment says runs it (the release), for the log line only: the actor recorded is the run's.
     pub operator: Option<String>,
+    /// The bounds of the activation's transaction (ADR-0091 decision 4): lock wait 2 s, statement 3 s, step 3 s.
+    pub activation: OperatorBounds,
 }
 
 impl AutoRequest {
@@ -155,24 +153,17 @@ impl AutoRequest {
     #[must_use]
     pub fn of(args: &HandoverArgs, run: Uuid) -> Self {
         Self {
-            run,
-            stable: args.stable.unwrap_or(auto_bounds::STABLE),
-            horizon: args.horizon.unwrap_or(auto_bounds::HORIZON),
-            min_live: args.min_live.unwrap_or(auto_bounds::MIN_LIVE),
-            wait: args.wait.unwrap_or(auto_bounds::WAIT),
+            ask: AutoAsk {
+                run,
+                stable: args.stable.unwrap_or(auto_bounds::STABLE),
+                horizon: args.horizon.unwrap_or(auto_bounds::HORIZON),
+                min_live: args.min_live.unwrap_or(auto_bounds::MIN_LIVE),
+                wait: args.wait.unwrap_or(auto_bounds::WAIT),
+            },
             retire_role: args.retire_role,
             dry_run: args.dry_run,
             operator: args.operator.clone(),
-        }
-    }
-
-    fn ask(&self) -> AutoAsk {
-        AutoAsk {
-            run: self.run,
-            stable: self.stable,
-            horizon: self.horizon,
-            min_live: self.min_live,
-            wait: self.wait,
+            activation: OperatorBounds::default(),
         }
     }
 }
@@ -186,12 +177,15 @@ pub enum AutoOutcome {
         live: u32,
         tenants: u32,
         audited: u32,
+        /// The tenant audit could not be completed (a conflict, a failure): the handover is made, the engines count what is left.
+        audit_pending: bool,
         retired: Option<Retirement>,
     },
     /// It had been handed over before; the audit was completed if it was not.
     AlreadyHandedOver {
         mode: Option<String>,
         audited: u32,
+        audit_pending: bool,
         retired: Option<Retirement>,
     },
     /// `SAGAT_SCHEDULES_AUTO_HANDOVER=false`.
@@ -200,6 +194,15 @@ pub enum AutoOutcome {
     RoleRetired,
     /// The dry run: the role may make it; the last reason recorded, if any.
     WouldWait { last_reason: Option<String> },
+}
+
+fn pending_words(pending: bool) -> &'static str {
+    if pending {
+        " WARNING: the tenant audit of the handover is not complete (see the log); the engines export \
+         trigger_schedule_handover_audit_pending and SagatTriggerHandoverAuditPending fires on it (docs/runbooks/schedules.md, 6.3)."
+    } else {
+        ""
+    }
 }
 
 fn retired_words(retired: Option<Retirement>) -> &'static str {
@@ -224,22 +227,26 @@ impl fmt::Display for AutoOutcome {
                 live,
                 tenants,
                 audited,
+                audit_pending,
                 retired,
             } => write!(
                 f,
                 "handed over automatically: the cron triggers fire from the schedule pass now ({live} live execution engine(s), \
                  requirement epoch {epoch}, {tenants} tenant(s) affected, {audited} audit record(s) written). There is no \
-                 command to go back.{}",
+                 command to go back.{}{}",
+                pending_words(*audit_pending),
                 retired_words(*retired)
             ),
             Self::AlreadyHandedOver {
                 mode,
                 audited,
+                audit_pending,
                 retired,
             } => write!(
                 f,
-                "already handed over (mode {}); {audited} audit record(s) completed now; nothing else was changed.{}",
+                "already handed over (mode {}); {audited} audit record(s) completed now; nothing else was changed.{}{}",
                 shown(mode.as_deref().unwrap_or("not recorded")),
+                pending_words(*audit_pending),
                 retired_words(*retired)
             ),
             Self::SwitchedOff => f.write_str(
@@ -372,26 +379,88 @@ pub async fn auto_handover(
     let mut config = PoolConfig::new(db.url.clone());
     config.max_connections = 2;
     config.statement_timeout = ROUND_STATEMENT_TIMEOUT;
-    let pool = match connect_handover(&config, password).await {
-        Ok(pool) => pool,
-        Err(HandoverDbError::CannotLogIn) if request.retire_role => {
-            return Ok(AutoOutcome::RoleRetired);
+    // the job's own deadline, from its start until a round says the run's (correctness review Major 1)
+    let mut clock = Deadline::from_wait(request.ask.wait);
+    let mut backoff = Backoff::default();
+    let pool = loop {
+        match connect_handover(&config, password).await {
+            Ok(pool) => break pool,
+            // only 28000 is a role that may not log in; a wrong password (28P01) is never a retirement
+            Err(HandoverDbError::CannotLogIn) if request.retire_role => {
+                return Ok(AutoOutcome::RoleRetired);
+            }
+            Err(HandoverDbError::CannotLogIn | HandoverDbError::WrongPassword) => {
+                return Err(declined(
+                    "sagat_handover cannot log in (SQLSTATE 28000: no login or a pg_hba refusal; 28P01: a wrong password): give \
+                     migrate SAGAT_HANDOVER_PASSWORD so that it sets the login, put the same password in the job's Secret, check \
+                     pg_hba, or create the login once (docs/runbooks/schedules.md, 6.1). Nothing was changed.",
+                ));
+            }
+            // the database cannot be reached: tried again with the backoff while --wait lasts
+            Err(HandoverDbError::Unavailable(detail)) => {
+                if clock.passed() {
+                    return Err(deadline_unreached(&detail));
+                }
+                tracing::warn!(%detail, "the database of the automatic handover cannot be reached; trying again");
+                pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
+                if interrupt.is_raised() {
+                    return Err(interrupted());
+                }
+            }
+            Err(error) => return Err(database(&error)),
         }
-        Err(HandoverDbError::CannotLogIn) => {
-            return Err(declined(
-                "sagat_handover cannot log in (SQLSTATE 28000 or 28P01): give migrate SAGAT_HANDOVER_PASSWORD so that it sets the \
-                 login, check pg_hba, or create the login once (docs/runbooks/schedules.md, 6.1). Nothing was changed.",
-            ));
-        }
-        Err(error) => return Err(database(&error)),
     };
     let result = if request.dry_run {
         dry_run(&pool).await
     } else {
-        drive(&pool, request, pace, interrupt).await
+        drive(&pool, request, pace, interrupt, &mut clock).await
     };
     pool.close().await;
     result
+}
+
+fn deadline_unreached(detail: &str) -> RunError {
+    RunError::Deadline(format!(
+        "the automatic handover waited its whole --wait and could not reach the database ({}). Nothing was changed.",
+        shown(detail)
+    ))
+}
+
+/// The job's deadline on its own clock: from its start plus `--wait` until a round gives the run's (kept by the database from the
+/// run's first round, so that a retried pod keeps it), then that one.
+#[derive(Debug, Clone, Copy)]
+pub struct Deadline {
+    at: tokio::time::Instant,
+}
+
+impl Deadline {
+    #[must_use]
+    pub fn from_wait(wait: Duration) -> Self {
+        Self {
+            at: tokio::time::Instant::now() + wait,
+        }
+    }
+
+    /// The run's deadline as a round reports it, on the database's clock.
+    pub fn follow(&mut self, round: &Round) {
+        let left = Duration::try_from(round.deadline - round.now).unwrap_or(Duration::ZERO);
+        self.at = tokio::time::Instant::now() + left;
+    }
+
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        tokio::time::Instant::now() >= self.at
+    }
+
+    /// `wanted`, but never past the deadline by more than a second (every wait goes through this).
+    #[must_use]
+    pub fn clamp(&self, wanted: Duration) -> Duration {
+        let left = self
+            .at
+            .saturating_duration_since(tokio::time::Instant::now())
+            + Duration::from_secs(1);
+        wanted.min(left)
+    }
 }
 
 async fn dry_run(pool: &PgPool) -> Result<AutoOutcome, RunError> {
@@ -408,6 +477,7 @@ async fn dry_run(pool: &PgPool) -> Result<AutoOutcome, RunError> {
         return Ok(AutoOutcome::AlreadyHandedOver {
             mode,
             audited: 0,
+            audit_pending: false,
             retired: None,
         });
     }
@@ -419,16 +489,29 @@ async fn dry_run(pool: &PgPool) -> Result<AutoOutcome, RunError> {
 
 /// Writes a reason only the job can see; a failure to write it is logged and changes nothing of what the job does.
 async fn note(pool: &PgPool, ask: &AutoAsk, reason: HandoverBlock) {
-    if let Err(error) = handover_round(pool, ask, Some(reason)).await {
+    if let Err(error) = handover_note(pool, ask, reason).await {
         tracing::warn!(%error, reason = reason.code(), "the reason of the automatic handover could not be written");
     }
 }
 
-/// The wait before the next round: `wanted`, but never past the run's deadline by more than a second.
-fn until_next(wanted: Duration, round: &Round) -> Duration {
-    let left = round.deadline - round.now;
-    let left = Duration::try_from(left).unwrap_or(Duration::ZERO) + Duration::from_secs(1);
-    wanted.min(left)
+/// Statement timeouts in a row of one kind of call (the rounds, or the activation: correctness review Major 2): `BUSY` until
+/// [`TOO_SLOW_AFTER`], then `CHECK_TOO_SLOW`. Reset only by a call of the same kind that answered.
+#[derive(Debug, Clone, Copy, Default)]
+struct Timeouts(u32);
+
+impl Timeouts {
+    fn one_more(&mut self) -> HandoverBlock {
+        self.0 += 1;
+        if self.0 >= TOO_SLOW_AFTER {
+            HandoverBlock::CheckTooSlow
+        } else {
+            HandoverBlock::Busy
+        }
+    }
+
+    fn answered(&mut self) {
+        self.0 = 0;
+    }
 }
 
 async fn drive(
@@ -436,40 +519,53 @@ async fn drive(
     request: &AutoRequest,
     pace: &dyn Pace,
     interrupt: &Interrupt,
+    clock: &mut Deadline,
 ) -> Result<AutoOutcome, RunError> {
-    let ask = request.ask();
+    let ask = request.ask;
     let mut backoff = Backoff::default();
-    let mut timeouts = 0_u32;
+    let mut round_timeouts = Timeouts::default();
+    let mut activation_timeouts = Timeouts::default();
     let mut last: Option<HandoverBlock> = None;
-    tracing::info!(run = %request.run, operator = request.operator.as_deref().map(shown).as_deref().unwrap_or("not given"),
+    tracing::info!(run = %ask.run, operator = request.operator.as_deref().map(shown).as_deref().unwrap_or("not given"),
         "the automatic handover starts its rounds");
     loop {
         if interrupt.is_raised() {
             note(pool, &ask, HandoverBlock::Interrupted).await;
             return Err(interrupted());
         }
-        let round = match handover_round(pool, &ask, None).await {
+        if clock.passed() {
+            note(pool, &ask, HandoverBlock::Deadline).await;
+            return Err(deadline(last));
+        }
+        let round = match handover_round(pool, &ask).await {
             Ok(round) => {
-                timeouts = 0;
+                round_timeouts.answered();
+                clock.follow(&round);
                 round
             }
             Err(HandoverDbError::StatementTimeout) => {
-                timeouts += 1;
-                let reason = if timeouts >= TOO_SLOW_AFTER {
-                    HandoverBlock::CheckTooSlow
-                } else {
-                    HandoverBlock::Busy
-                };
+                let reason = round_timeouts.one_more();
                 note(pool, &ask, reason).await;
                 last = Some(reason);
-                pace.wait(backoff.next_wait(), interrupt).await;
+                pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
                 continue;
             }
             Err(HandoverDbError::LockTimeout) => {
                 note(pool, &ask, HandoverBlock::Busy).await;
                 last = Some(HandoverBlock::Busy);
-                pace.wait(backoff.next_wait(), interrupt).await;
+                pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
                 continue;
+            }
+            Err(HandoverDbError::Unavailable(detail)) => {
+                tracing::warn!(%detail, "the database of the automatic handover cannot be reached; trying again");
+                pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
+                continue;
+            }
+            Err(HandoverDbError::TooManyRuns) => {
+                return Err(declined(
+                    "TOO_MANY_RUNS: sixteen runs of the automatic handover are before their deadline; another job is running. \
+                     Nothing was changed.",
+                ));
             }
             Err(HandoverDbError::Denied) => return Err(denied()),
             Err(error) => return Err(database(&error)),
@@ -481,18 +577,16 @@ async fn drive(
                     "the handover state is one this build does not know: run the handover with the build that wrote it",
                 ));
             }
-            RoundOutcome::Deadline => {
-                return Err(deadline(round.reason.or(last)));
-            }
-            RoundOutcome::Blocked | RoundOutcome::Counting | RoundOutcome::Noted => {
+            RoundOutcome::Deadline => return Err(deadline(round.reason.or(last))),
+            RoundOutcome::Blocked | RoundOutcome::Counting => {
                 if round.reason.is_some() {
                     last = round.reason;
                 }
                 backoff.reset();
-                tracing::info!(run = %request.run, reason = round.reason.map_or("counting", HandoverBlock::code),
-                    stable = round.stable, wanted = round.wanted, live = round.live, "a round of the automatic handover");
-                let wait = until_next(SPACING, &round);
-                pace.wait(wait, interrupt).await;
+                tracing::info!(run = %ask.run, reason = round.reason.map_or("counting", HandoverBlock::code),
+                    stable = round.stable, wanted = round.wanted, live = round.live, examples = ?round.examples,
+                    "a round of the automatic handover");
+                pace.wait(clock.clamp(SPACING), interrupt).await;
             }
             RoundOutcome::Stable => {
                 if interrupt.is_raised() {
@@ -504,18 +598,21 @@ async fn drive(
                     note(pool, &ask, HandoverBlock::Interrupted).await;
                     return Err(interrupted());
                 }
-                match handover_activate(pool, request.run, OperatorBounds::default()).await {
+                // an activation begun is not cut by an interrupt: it commits or rolls back within its bounds
+                match handover_activate(pool, ask.run, request.activation).await {
                     Ok(AutoActivated::HandedOver {
                         epoch,
                         live,
                         tenants,
-                    }) => return finish(pool, request, Some((epoch, live, tenants))).await,
+                    }) => {
+                        return finish(pool, request, Some((epoch, live, tenants))).await;
+                    }
                     Ok(AutoActivated::Already { .. }) => return finish(pool, request, None).await,
                     Ok(AutoActivated::Refused(reason)) => {
                         // refused under the lock, nothing recorded: the next round sees it (an engine that left, a publication)
+                        activation_timeouts.answered();
                         last = Some(reason);
-                        let wait = until_next(backoff.next_wait(), &round);
-                        pace.wait(wait, interrupt).await;
+                        pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
                     }
                     Ok(AutoActivated::KindsDiffer) => {
                         return Err(declined(
@@ -531,18 +628,17 @@ async fn drive(
                     Err(HandoverDbError::LockTimeout | HandoverDbError::StepBound) => {
                         note(pool, &ask, HandoverBlock::Busy).await;
                         last = Some(HandoverBlock::Busy);
-                        pace.wait(backoff.next_wait(), interrupt).await;
+                        pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
                     }
                     Err(HandoverDbError::StatementTimeout) => {
-                        timeouts += 1;
-                        let reason = if timeouts >= TOO_SLOW_AFTER {
-                            HandoverBlock::CheckTooSlow
-                        } else {
-                            HandoverBlock::Busy
-                        };
+                        let reason = activation_timeouts.one_more();
                         note(pool, &ask, reason).await;
                         last = Some(reason);
-                        pace.wait(backoff.next_wait(), interrupt).await;
+                        pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
+                    }
+                    Err(HandoverDbError::Unavailable(detail)) => {
+                        tracing::warn!(%detail, "the activation lost its connection and rolled back; trying again");
+                        pace.wait(clock.clamp(backoff.next_wait()), interrupt).await;
                     }
                     Err(HandoverDbError::Denied) => return Err(denied()),
                     Err(error) => return Err(database(&error)),
@@ -552,31 +648,43 @@ async fn drive(
     }
 }
 
-/// After the commit (or on finding it handed over): the tenant audit from the recorded set, the log line, the retirement.
+/// After the commit (or on finding it handed over): the tenant audit from the recorded set, the log line, the retirement. The
+/// handover is made, so nothing here fails the job: an audit that cannot be completed is a warning, and what is left is exported by
+/// the engines and alerted on (correctness review); the next run completes it.
 async fn finish(
     pool: &PgPool,
     request: &AutoRequest,
     made: Option<(i64, u32, u32)>,
 ) -> Result<AutoOutcome, RunError> {
     let audit = match complete_handover_audit(pool).await {
-        Ok(audit) => audit,
+        Ok(audit) => Some(audit),
         Err(HandoverDbError::AuditConflict) => {
-            return Err(declined(
+            tracing::warn!(
                 "AUDIT_CONFLICT: an audit record exists under an id drawn for a tenant of the handover and differs from the \
-                 handover's: it was not written by the handover. The handover itself is made; look at the record and at who \
-                 could write audit_records (docs/runbooks/schedules.md, 6.3).",
-            ));
+                 handover's; the handover is made, the tenant audit is not complete (docs/runbooks/schedules.md, 6.3)"
+            );
+            None
         }
-        Err(HandoverDbError::Denied) => return Err(denied()),
-        Err(error) => return Err(database(&error)),
+        Err(error) => {
+            tracing::warn!(%error, "the tenant audit of the handover could not be completed; the next run completes it");
+            None
+        }
     };
-    let mode = audit.mode.clone();
+    let (mode, epoch) = match &audit {
+        Some(audit) => (audit.mode.clone(), audit.epoch),
+        None => {
+            let (_, mode, epoch) = read_handover_mode(pool)
+                .await
+                .map_err(|error| database(&error))?;
+            (mode, epoch)
+        }
+    };
     tracing::info!(
         mode = mode.as_deref().unwrap_or("not recorded"),
-        epoch = audit.epoch.unwrap_or_default(),
+        epoch = epoch.unwrap_or_default(),
         engines = made.map_or(0, |(_, live, _)| live),
-        tenants = audit.tenants,
-        run = %request.run,
+        tenants = audit.as_ref().map_or(0, |audit| audit.tenants),
+        run = %request.ask.run,
         "the cron triggers were handed over to the schedule pass"
     );
     let retired = if request.retire_role {
@@ -584,30 +692,40 @@ async fn finish(
             Ok(Retirement::RecordedNotAltered) => {
                 tracing::warn!(
                     "the retirement of sagat_handover was recorded but the database refused to take its login away (42501): run \
-                     ALTER ROLE sagat_handover NOLOGIN as the role's creator"
+                     ALTER ROLE sagat_handover NOLOGIN PASSWORD NULL as the role's creator"
                 );
                 Some(Retirement::RecordedNotAltered)
             }
+            Ok(Retirement::AuditPending) => {
+                tracing::warn!(
+                    "sagat_handover is not retired: the tenant audit of the handover is not complete"
+                );
+                Some(Retirement::AuditPending)
+            }
             Ok(other) => Some(other),
             Err(error) => {
-                tracing::warn!(%error, "sagat_handover could not be retired: run ALTER ROLE sagat_handover NOLOGIN");
+                tracing::warn!(%error, "sagat_handover could not be retired: run ALTER ROLE sagat_handover NOLOGIN PASSWORD NULL");
                 None
             }
         }
     } else {
         None
     };
+    let audited = audit.as_ref().map_or(0, |audit| audit.written);
+    let audit_pending = audit.is_none();
     Ok(match made {
         Some((epoch, live, tenants)) => AutoOutcome::HandedOver {
             epoch,
             live,
             tenants,
-            audited: audit.written,
+            audited,
+            audit_pending,
             retired,
         },
         None => AutoOutcome::AlreadyHandedOver {
             mode,
-            audited: audit.written,
+            audited,
+            audit_pending,
             retired,
         },
     })

@@ -23,9 +23,9 @@ use sagat_application::dispatch::TriggerRegistration;
 use sagat_application::error::StoreError;
 use sagat_application::schedule_codec::{policies_to_json, spec_to_json, target_to_json};
 use sagat_application::schedule_triggers::{
-    AttemptSeen, Change, Convergence, Drift, DriftPage, DriftWindow, HandoverBlock, HandoverMode,
-    HandoverState, HandoverView, ScanCursor, TriggerEntry, TriggerScheduleStore, TriggerSource,
-    trigger_policies, trigger_schedule_name, trigger_spec, trigger_target,
+    Change, Convergence, Drift, DriftPage, DriftWindow, HandoverBlock, HandoverMode, HandoverState,
+    HandoverView, ScanCursor, TriggerEntry, TriggerScheduleStore, TriggerSource, trigger_policies,
+    trigger_schedule_name, trigger_spec, trigger_target,
 };
 use sagat_application::schedules::ShardFence;
 use sagat_domain::audit::{AuditAction, AuditRecord, ResourceType};
@@ -730,23 +730,34 @@ impl TriggerScheduleStore for PgScheduleStore {
     }
 
     async fn handover_view(&self) -> Result<HandoverView, StoreError> {
-        let (state, mode, reason, age): (String, Option<String>, Option<String>, Option<f64>) = sqlx::query_as(
-            "SELECT h.state, h.changed_mode, a.last_reason, \
-                    extract(epoch FROM clock_timestamp() - a.last_round_at)::float8 \
-               FROM schedule_trigger_handover h \
-               LEFT JOIN LATERAL (SELECT x.last_reason, x.last_round_at FROM schedule_trigger_handover_attempts x \
-                                   ORDER BY x.last_round_at DESC LIMIT 1) a ON true",
-        )
-        .fetch_one(self.pool())
-        .await
-        .map_err(store_error)?;
+        // every run before its deadline, and the most recent run whatever it is (a run that ended DEADLINE or INTERRUPTED stays
+        // visible until another writes): security review m4
+        let (state, mode, reasons, age, pending): (String, Option<String>, Vec<String>, Option<f64>, Option<i64>) =
+            sqlx::query_as(
+                "WITH latest AS (SELECT x.run_id, x.last_round_at FROM schedule_trigger_handover_attempts x \
+                                  ORDER BY x.last_round_at DESC LIMIT 1) \
+                 SELECT h.state, h.changed_mode, \
+                        coalesce((SELECT array_agg(DISTINCT a.last_reason ORDER BY a.last_reason) \
+                                    FROM schedule_trigger_handover_attempts a \
+                                   WHERE a.last_reason IS NOT NULL \
+                                     AND (a.deadline > clock_timestamp() OR a.run_id = (SELECT l.run_id FROM latest l))), \
+                                 '{}'::text[]), \
+                        (SELECT extract(epoch FROM clock_timestamp() - l.last_round_at)::float8 FROM latest l), \
+                        (SELECT p.tenants::bigint FROM schedule_trigger_handover_audit_pending p) \
+                   FROM schedule_trigger_handover h",
+            )
+            .fetch_one(self.pool())
+            .await
+            .map_err(store_error)?;
         Ok(HandoverView {
             state: HandoverState::from_stored(&state),
             mode: mode.as_deref().and_then(HandoverMode::from_code),
-            attempt: age.map(|age_seconds| AttemptSeen {
-                reason: reason.as_deref().and_then(HandoverBlock::from_code),
-                age_seconds: age_seconds.max(0.0),
-            }),
+            blocked: reasons
+                .iter()
+                .filter_map(|code| HandoverBlock::from_code(code))
+                .collect(),
+            attempt_age_seconds: age.map(|age| age.max(0.0)),
+            audit_pending: pending.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
         })
     }
 

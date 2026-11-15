@@ -83,9 +83,22 @@ async fn run(command: Command) -> Result<(), RunError> {
 async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
     match command {
         Command::Migrate => {
-            sagat_control_plane::run_migrations_with(
+            let password =
+                zeroize::Zeroizing::new(env_lookup("SAGAT_HANDOVER_PASSWORD").unwrap_or_default());
+            let floor = match env_lookup("SAGAT_HANDOVER_MIN_LIVE").filter(|text| !text.is_empty())
+            {
+                None => None,
+                Some(text) => Some(text.trim().parse::<u32>().map_err(|_| {
+                    sagat_control_plane::config::ConfigError::Invalid {
+                        name: "SAGAT_HANDOVER_MIN_LIVE",
+                        reason: "must be a whole number of engines".to_owned(),
+                    }
+                })?),
+            };
+            sagat_control_plane::run_migrations_for_handover(
                 &config.database,
-                env_lookup("SAGAT_HANDOVER_PASSWORD").as_deref(),
+                Some(password.as_str()).filter(|password| !password.is_empty()),
+                floor,
             )
             .await?;
             tracing::info!("migrations are up to date");

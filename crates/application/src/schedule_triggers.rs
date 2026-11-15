@@ -170,21 +170,19 @@ impl HandoverMode {
     }
 }
 
-/// The last round of the job, as an engine reads it for its gauges.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct AttemptSeen {
-    /// The reason of the last round; `None` while the rounds are counting, or for a code this build does not know.
-    pub reason: Option<HandoverBlock>,
-    /// Seconds since the last round, on the database's clock.
-    pub age_seconds: f64,
-}
-
-/// What an engine reads of the handover for its gauges: the state, the mode once handed over, and the most recent attempt.
+/// What an engine reads of the handover for its gauges (ADR-0091 decision 5): the state, the mode once handed over, the reasons of the
+/// job's runs that are before their deadline (and of the most recent one), the age of the most recent round, and how many tenants of
+/// the handover's set still lack their audit record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HandoverView {
     pub state: HandoverState,
     pub mode: Option<HandoverMode>,
-    pub attempt: Option<AttemptSeen>,
+    /// Every reason a live run (or the most recent one) last wrote; a code this build does not know is left out.
+    pub blocked: Vec<HandoverBlock>,
+    /// Seconds since the most recent round of any run, on the database's clock; `None` while no run wrote one.
+    pub attempt_age_seconds: Option<f64>,
+    /// Tenants of the handover's recorded set whose audit record is not written; `None` before the handover.
+    pub audit_pending: Option<u32>,
 }
 
 /// The identity of the run a tick starts: the one feature 004 gave it (`D87`), shared by the legacy cron pass and the
@@ -597,7 +595,9 @@ pub trait TriggerScheduleStore: Send + Sync {
             Ok(HandoverView {
                 state: self.handover().await?,
                 mode: None,
-                attempt: None,
+                blocked: Vec::new(),
+                attempt_age_seconds: None,
+                audit_pending: None,
             })
         }
     }

@@ -60,10 +60,10 @@ pub fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] 
 #[must_use]
 pub fn scram_verifier(password: &str, salt: &[u8], iterations: u32) -> String {
     let b64 = base64::engine::general_purpose::STANDARD;
-    let salted = pbkdf2_sha256(password.as_bytes(), salt, iterations);
-    let client_key = hmac_sha256(&salted, b"Client Key");
-    let stored_key: [u8; 32] = Sha256::digest(client_key).into();
-    let server_key = hmac_sha256(&salted, b"Server Key");
+    let salted = zeroize::Zeroizing::new(pbkdf2_sha256(password.as_bytes(), salt, iterations));
+    let client_key = zeroize::Zeroizing::new(hmac_sha256(salted.as_ref(), b"Client Key"));
+    let stored_key: [u8; 32] = Sha256::digest(client_key.as_ref()).into();
+    let server_key = hmac_sha256(salted.as_ref(), b"Server Key");
     format!(
         "SCRAM-SHA-256${iterations}:{}${}:{}",
         b64.encode(salt),
@@ -117,8 +117,8 @@ pub async fn set_login(pool: &PgPool, password: &str) -> Result<LoginSet, RunErr
         }
         .into());
     }
-    let verifier = scram_verifier(password, &salt(), SCRAM_ITERATIONS);
-    let set = set_handover_login(pool, &verifier)
+    let verifier = zeroize::Zeroizing::new(scram_verifier(password, &salt(), SCRAM_ITERATIONS));
+    let set = set_handover_login(pool, verifier.as_str())
         .await
         .map_err(|error| RunError::Database(error.to_string()))?;
     match set {
@@ -139,11 +139,18 @@ pub async fn set_login(pool: &PgPool, password: &str) -> Result<LoginSet, RunErr
             "SAGAT_HANDOVER_PASSWORD is set but the role does not exist and could not be created: create it once \
              (CREATE ROLE sagat_handover NOLOGIN) and run migrate again"
         ),
+        LoginSet::Wider => tracing::error!(
+            role = "sagat_handover",
+            "the role sagat_handover is wider than the automatic handover allows (an attribute beyond LOGIN, a membership in a \
+             role, a member that can act as it, or an object it owns): migrate gives it no login and no grants; make it narrow and \
+             run migrate again (docs/runbooks/schedules.md, 6.1)"
+        ),
         LoginSet::NotPermitted => tracing::warn!(
             role = "sagat_handover",
             "the migrating role may not alter sagat_handover (PostgreSQL 16 requires ADMIN OPTION on a role another role created): \
-             run GRANT sagat_handover TO <the migrating role> WITH ADMIN OPTION as the role's creator, or have its creator run \
-             ALTER ROLE sagat_handover LOGIN PASSWORD '...'; migrate goes on"
+             run GRANT sagat_handover TO <the migrating role> WITH ADMIN OPTION, INHERIT FALSE, SET FALSE as the role's creator \
+             (a member that may SET or INHERIT the role makes it wider), or have its creator run ALTER ROLE sagat_handover LOGIN \
+             PASSWORD '...'; migrate goes on"
         ),
     }
     Ok(set)

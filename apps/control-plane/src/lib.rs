@@ -167,10 +167,40 @@ pub async fn run_migrations_with(
     db: &DatabaseConfig,
     handover_password: Option<&str>,
 ) -> Result<(), RunError> {
+    run_migrations_for_handover(db, handover_password, None).await
+}
+
+/// [`run_migrations_with`], and the owner's floor of the live engines the automatic handover counts with
+/// (`SAGAT_HANDOVER_MIN_LIVE`, security review m3, D2291): a caller of the round function cannot ask for fewer.
+///
+/// # Errors
+/// As [`run_migrations_with`]; [`RunError::Config`] for a floor outside 1 to 1000.
+pub async fn run_migrations_for_handover(
+    db: &DatabaseConfig,
+    handover_password: Option<&str>,
+    min_live_floor: Option<u32>,
+) -> Result<(), RunError> {
     let pool = open_pool(db, Duration::ZERO).await?;
     migrate(&pool)
         .await
         .map_err(|e| RunError::Migrate(e.to_string()))?;
+    if let Some(floor) = min_live_floor {
+        if !(1..=1000).contains(&floor) {
+            pool.close().await;
+            return Err(ConfigError::Invalid {
+                name: "SAGAT_HANDOVER_MIN_LIVE",
+                reason: "must be 1 to 1000".to_owned(),
+            }
+            .into());
+        }
+        sagat_infra_postgres::set_handover_floor(&pool, floor)
+            .await
+            .map_err(|error| RunError::Database(error.to_string()))?;
+        tracing::info!(
+            floor,
+            "the floor of the live engines of the automatic handover is set"
+        );
+    }
     if let Some(password) = handover_password.filter(|password| !password.is_empty()) {
         let set = handover_role::set_login(&pool, password).await;
         if let Err(error) = set {

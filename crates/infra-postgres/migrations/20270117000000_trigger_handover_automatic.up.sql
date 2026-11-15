@@ -156,11 +156,87 @@ CREATE TABLE schedule_trigger_handover_attempts (
     CONSTRAINT schedule_trigger_handover_attempts_deadline_bounded
         CHECK (deadline >= first_round_at AND deadline <= first_round_at + interval '24 hours'),
     CONSTRAINT schedule_trigger_handover_attempts_set_bounded CHECK (stable_set IS NULL OR cardinality(stable_set) <= 1000),
-    CONSTRAINT schedule_trigger_handover_attempts_reason_closed CHECK (last_reason IS NULL OR last_reason IN (
-        'ENGINE_LACKS_CAPABILITY', 'ENGINE_UNREGISTERED', 'TOO_FEW_ENGINES', 'FLEET_CHANGING', 'RECONCILIATION_RECENT',
-        'NO_CONTROL_PLANE', 'UNCONVERGED', 'FIRST_HORIZON', 'BUSY', 'CHECK_TOO_SLOW', 'INTERRUPTED', 'DEADLINE'))
+    CONSTRAINT schedule_trigger_handover_attempts_reason_closed
+        CHECK (last_reason IS NULL OR last_reason = ANY (public.schedule_trigger_handover_reasons()))
 );
 CREATE INDEX schedule_trigger_handover_attempts_recent_idx ON schedule_trigger_handover_attempts (last_round_at DESC);
+
+-- The owner's floor of the live engines (security review m3): a caller of the round function may ask for a weaker `--min-live`
+-- than the deployment runs; the round and the wrapper count with the greater of the run's and this one. `migrate` writes it from
+-- SAGAT_HANDOVER_MIN_LIVE (D2291).
+CREATE TABLE schedule_trigger_handover_floor (
+    only_row boolean     PRIMARY KEY DEFAULT true CHECK (only_row),
+    min_live integer     NOT NULL,
+    set_by   text        NOT NULL,
+    set_at   timestamptz NOT NULL,
+    CONSTRAINT schedule_trigger_handover_floor_live_bounded CHECK (min_live BETWEEN 1 AND 1000),
+    CONSTRAINT schedule_trigger_handover_floor_by_bounded CHECK (char_length(set_by) BETWEEN 1 AND 128)
+);
+
+-- Sets the floor (owner-only: `migrate` calls it). Returns the floor now in force.
+CREATE FUNCTION schedule_trigger_handover_set_floor(p_min_live integer) RETURNS integer
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    IF p_min_live IS NULL OR p_min_live NOT BETWEEN 1 AND 1000 THEN
+        RAISE EXCEPTION 'the floor of the live engines is 1 to 1000' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    INSERT INTO public.schedule_trigger_handover_floor AS f (only_row, min_live, set_by, set_at)
+    VALUES (true, p_min_live, left(session_user::text, 128), clock_timestamp())
+    ON CONFLICT (only_row) DO UPDATE SET min_live = EXCLUDED.min_live, set_by = EXCLUDED.set_by, set_at = EXCLUDED.set_at;
+    RETURN p_min_live;
+END;
+$$;
+
+-- The floor in force (internal): the greater of the run's and the owner's, at least one.
+CREATE FUNCTION schedule_trigger_handover_min_live(p_run_min_live integer) RETURNS integer
+LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS $$
+    SELECT greatest(coalesce(p_run_min_live, 1), coalesce((SELECT f.min_live FROM public.schedule_trigger_handover_floor f), 1), 1)
+$$;
+
+-- Opens the attempt row of a run, or reads it (internal: the round and the note). A run's values are kept from its first call,
+-- each floored; a new run is refused while 16 others are before their deadline and not stopped (security review m4, D2292).
+CREATE FUNCTION schedule_trigger_handover_attempt_open(
+    p_run uuid, p_stable integer, p_horizon interval, p_min_live integer, p_wait interval)
+RETURNS public.schedule_trigger_handover_attempts
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+    v_now timestamptz := clock_timestamp();
+    a     public.schedule_trigger_handover_attempts%ROWTYPE;
+BEGIN
+    IF p_run IS NULL THEN
+        RAISE EXCEPTION 'a round names its run' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF p_horizon IS NOT NULL AND p_horizon > interval '1 hour' THEN
+        RAISE EXCEPTION 'the horizon is at most an hour: expired scheduler memberships are deleted after one'
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.schedule_trigger_handover_attempts t WHERE t.run_id = p_run) THEN
+        PERFORM pg_advisory_xact_lock(hashtextextended('sagat:schedule_trigger_handover_attempts:open', 0));
+        IF (SELECT count(*) FROM public.schedule_trigger_handover_attempts o
+             WHERE o.run_id <> p_run AND o.deadline > v_now
+               AND o.last_reason IS DISTINCT FROM 'INTERRUPTED' AND o.last_reason IS DISTINCT FROM 'DEADLINE') >= 16 THEN
+            RAISE EXCEPTION 'TOO_MANY_RUNS: sixteen runs of the automatic handover are before their deadline'
+                USING ERRCODE = 'program_limit_exceeded';
+        END IF;
+    END IF;
+    INSERT INTO public.schedule_trigger_handover_attempts AS t
+        (run_id, first_round_at, deadline, horizon, stable_wanted, min_live, last_round_at)
+    VALUES (p_run, v_now,
+            v_now + least(greatest(coalesce(p_wait, interval '2 hours'), interval '0'), interval '24 hours'),
+            greatest(coalesce(p_horizon, interval '10 minutes'), interval '10 minutes'),
+            least(greatest(coalesce(p_stable, 3), 3), 1000),
+            least(greatest(coalesce(p_min_live, 1), 1), 1000),
+            v_now)
+    ON CONFLICT (run_id) DO NOTHING;
+    SELECT * INTO STRICT a FROM public.schedule_trigger_handover_attempts t WHERE t.run_id = p_run FOR UPDATE;
+    -- the rows of runs a week old give way, a few at a time
+    DELETE FROM public.schedule_trigger_handover_attempts d WHERE d.run_id IN (
+        SELECT o.run_id FROM public.schedule_trigger_handover_attempts o
+         WHERE o.last_round_at < v_now - interval '7 days' AND o.run_id <> p_run
+         ORDER BY o.last_round_at LIMIT 16 FOR UPDATE SKIP LOCKED);
+    RETURN a;
+END;
+$$;
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- The mark of the reconciliation: set when it makes, revives, respecifies, resumes or removes a trigger-owned schedule, never by a
@@ -230,15 +306,14 @@ $$;
 -- ---------------------------------------------------------------------------------------------------------------------
 -- The round (executable by `sagat_handover`). It takes the run id and the job's own stricter values, each floored here: the
 -- horizon between 10 minutes and an hour, at least 3 stable rounds, at least 1 live engine, a wait of at most 24 hours. They are
--- kept from the run's first round. A note (BUSY, CHECK_TOO_SLOW, INTERRUPTED, DEADLINE: what only the job can see) is written as
--- the round's reason and counts nothing.
+-- kept from the run's first round. What only the job can see is written by the note function below (OD-2026-11-15-1).
 --
--- outcome: HANDED_OVER | UNKNOWN_STATE | NOTED | BLOCKED (out_reason says why) | COUNTING | STABLE (the wrapper may be called now)
+-- outcome: HANDED_OVER | UNKNOWN_STATE | BLOCKED (out_reason says why) | COUNTING | STABLE (the wrapper may be called now)
 --          | DEADLINE (out_reason is the reason the round found)
 -- ---------------------------------------------------------------------------------------------------------------------
 
 CREATE FUNCTION schedule_trigger_handover_round(
-    p_run uuid, p_stable integer, p_horizon interval, p_min_live integer, p_wait interval, p_note text)
+    p_run uuid, p_stable integer, p_horizon interval, p_min_live integer, p_wait interval)
 RETURNS TABLE (out_outcome text, out_reason text, out_stable integer, out_wanted integer, out_live integer,
                out_first_round_at timestamptz, out_deadline timestamptz, out_now timestamptz, out_examples uuid[])
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -253,31 +328,7 @@ DECLARE
     v_set     uuid[];
     v_at      timestamptz;
 BEGIN
-    IF p_run IS NULL THEN
-        RAISE EXCEPTION 'a round names its run' USING ERRCODE = 'invalid_parameter_value';
-    END IF;
-    IF p_horizon IS NOT NULL AND p_horizon > interval '1 hour' THEN
-        RAISE EXCEPTION 'the horizon is at most an hour: expired scheduler memberships are deleted after one'
-            USING ERRCODE = 'invalid_parameter_value';
-    END IF;
-    IF p_note IS NOT NULL AND p_note NOT IN ('BUSY', 'CHECK_TOO_SLOW', 'INTERRUPTED', 'DEADLINE') THEN
-        RAISE EXCEPTION 'a round notes only what the job alone can see' USING ERRCODE = 'invalid_parameter_value';
-    END IF;
-    INSERT INTO public.schedule_trigger_handover_attempts AS t
-        (run_id, first_round_at, deadline, horizon, stable_wanted, min_live, last_round_at)
-    VALUES (p_run, v_now,
-            v_now + least(greatest(coalesce(p_wait, interval '2 hours'), interval '0'), interval '24 hours'),
-            greatest(coalesce(p_horizon, interval '10 minutes'), interval '10 minutes'),
-            least(greatest(coalesce(p_stable, 3), 3), 1000),
-            least(greatest(coalesce(p_min_live, 1), 1), 1000),
-            v_now)
-    ON CONFLICT (run_id) DO NOTHING;
-    SELECT * INTO STRICT a FROM public.schedule_trigger_handover_attempts t WHERE t.run_id = p_run FOR UPDATE;
-    -- the rows of runs a week old give way, a few at a time
-    DELETE FROM public.schedule_trigger_handover_attempts d WHERE d.run_id IN (
-        SELECT o.run_id FROM public.schedule_trigger_handover_attempts o
-         WHERE o.last_round_at < v_now - interval '7 days' AND o.run_id <> p_run
-         ORDER BY o.last_round_at LIMIT 16 FOR UPDATE SKIP LOCKED);
+    a := public.schedule_trigger_handover_attempt_open(p_run, p_stable, p_horizon, p_min_live, p_wait);
 
     SELECT h.state INTO STRICT v_state FROM public.schedule_trigger_handover h;
     IF v_state = 'HANDED_OVER' OR v_state <> 'LEGACY' THEN
@@ -289,20 +340,17 @@ BEGIN
         RETURN;
     END IF;
 
-    IF p_note IS NOT NULL THEN
-        UPDATE public.schedule_trigger_handover_attempts
-           SET last_round_at = v_now, last_reason = p_note,
-               reason_count = CASE WHEN last_reason = p_note THEN reason_count + 1 ELSE 1 END, rounds = rounds + 1
-         WHERE run_id = p_run;
-        RETURN QUERY SELECT 'NOTED'::text, p_note, a.stable_count, a.stable_wanted, 0, a.first_round_at, a.deadline, v_now,
-                            '{}'::uuid[];
-        RETURN;
-    END IF;
-
-    SELECT * INTO STRICT c FROM public.schedule_trigger_handover_conditions(a.horizon, a.min_live);
+    SELECT * INTO STRICT c
+      FROM public.schedule_trigger_handover_conditions(a.horizon, public.schedule_trigger_handover_min_live(a.min_live));
     v_count := a.stable_count;
     v_set := a.stable_set;
     v_at := a.last_stable_at;
+    -- a streak with a gap of more than two heartbeats is not consecutive any more (correctness review): it starts over
+    IF v_at IS NOT NULL AND v_at < v_now - interval '30 seconds' THEN
+        v_count := 0;
+        v_set := NULL;
+        v_at := NULL;
+    END IF;
     IF c.out_reason IS NOT NULL THEN
         -- the streak ends
         v_reason := c.out_reason;
@@ -337,6 +385,39 @@ BEGIN
      WHERE run_id = p_run;
     RETURN QUERY SELECT v_outcome, v_reason, v_count, a.stable_wanted, c.out_live, a.first_round_at, a.deadline, v_now,
                         c.out_examples;
+END;
+$$;
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- The note (executable by `sagat_handover`, OD-2026-11-15-1): what only the job sees, written as its run's last reason and counting
+-- nothing. A closed set: BUSY, CHECK_TOO_SLOW, INTERRUPTED, DEADLINE. It takes the run's values as the round does, so that a run whose
+-- every round failed still has its row (the job's first round may be the one that timed out).
+--
+-- outcome: NOTED | HANDED_OVER
+-- ---------------------------------------------------------------------------------------------------------------------
+
+CREATE FUNCTION schedule_trigger_handover_note(
+    p_run uuid, p_reason text, p_stable integer, p_horizon interval, p_min_live integer, p_wait interval)
+RETURNS TABLE (out_outcome text, out_reason text, out_deadline timestamptz, out_now timestamptz)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+    v_now timestamptz := clock_timestamp();
+    a     public.schedule_trigger_handover_attempts%ROWTYPE;
+BEGIN
+    IF p_reason IS NULL OR p_reason NOT IN ('BUSY', 'CHECK_TOO_SLOW', 'INTERRUPTED', 'DEADLINE') THEN
+        RAISE EXCEPTION 'a note is BUSY, CHECK_TOO_SLOW, INTERRUPTED or DEADLINE: what the job alone can see'
+            USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    a := public.schedule_trigger_handover_attempt_open(p_run, p_stable, p_horizon, p_min_live, p_wait);
+    IF (SELECT h.state FROM public.schedule_trigger_handover h) = 'HANDED_OVER' THEN
+        RETURN QUERY SELECT 'HANDED_OVER'::text, NULL::text, a.deadline, v_now;
+        RETURN;
+    END IF;
+    UPDATE public.schedule_trigger_handover_attempts
+       SET last_round_at = v_now, last_reason = p_reason,
+           reason_count = CASE WHEN last_reason = p_reason THEN reason_count + 1 ELSE 1 END, rounds = rounds + 1
+     WHERE run_id = p_run;
+    RETURN QUERY SELECT 'NOTED'::text, p_reason, a.deadline, v_now;
 END;
 $$;
 
@@ -490,7 +571,8 @@ BEGIN
     END IF;
     PERFORM public.schedule_trigger_handover_lock();
     PERFORM 1 FROM public.schedule_trigger_handover h FOR UPDATE;
-    SELECT * INTO STRICT c FROM public.schedule_trigger_handover_conditions(a.horizon, a.min_live);
+    SELECT * INTO STRICT c
+      FROM public.schedule_trigger_handover_conditions(a.horizon, public.schedule_trigger_handover_min_live(a.min_live));
     IF c.out_reason IS NOT NULL THEN
         RETURN QUERY SELECT 'REFUSED'::text, c.out_reason, v_epoch, c.out_live, 0;
         RETURN;
@@ -547,7 +629,8 @@ BEGIN
         IF FOUND THEN
             IF e.tenant_id <> t.tenant_id OR e.actor <> h.changed_by OR e.action <> 'schedule.trigger_handover'
                OR e.resource_type <> 'platform' OR e.resource_id <> 'schedule_trigger_handover'
-               OR e.reason IS DISTINCT FROM v_reason OR e.created_at <> h.changed_at THEN
+               OR e.reason IS DISTINCT FROM v_reason OR e.created_at <> h.changed_at
+               OR e.trace_id IS DISTINCT FROM NULL::text THEN
                 RAISE EXCEPTION 'AUDIT_CONFLICT: an audit record with the id drawn for a tenant of the handover exists and differs'
                     USING ERRCODE = 'unique_violation';
             END IF;
@@ -591,9 +674,17 @@ BEGIN
     VALUES (true, left(session_user::text, 128), clock_timestamp())
     ON CONFLICT (only_row) DO NOTHING;
     BEGIN
-        ALTER ROLE sagat_handover NOLOGIN;
+        -- no login, and no password left to try (security review m5)
+        ALTER ROLE sagat_handover NOLOGIN PASSWORD NULL;
     EXCEPTION WHEN insufficient_privilege OR undefined_object THEN
         RETURN 'RECORDED_NOT_ALTERED';
+    END;
+    -- the sessions the role still holds end, best effort (the owner may lack the privilege to signal them)
+    BEGIN
+        PERFORM pg_catalog.pg_terminate_backend(a.pid) FROM pg_catalog.pg_stat_activity a
+         WHERE a.usename = 'sagat_handover' AND a.pid <> pg_catalog.pg_backend_pid();
+    EXCEPTION WHEN insufficient_privilege THEN
+        NULL;
     END;
     RETURN 'RETIRED';
 END;
@@ -623,48 +714,84 @@ BEGIN
 END;
 $$;
 
--- Holds every grant of `sagat_handover`, and grants them again (so a role created after this migration gets them). Refuses a role
--- wider than the design: an attribute beyond LOGIN, a membership in any role, or an object it owns; such a role is left with none of
--- these grants (D2275).
--- outcome: GRANTED | WIDER | MISSING
-CREATE FUNCTION schedule_trigger_handover_role_grants() RETURNS text
-LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+-- Whether `sagat_handover` is as narrow as decided (D2275, security review M1 and m6): no attribute beyond LOGIN, a member of no role,
+-- no member that can act as it (one that may SET it or INHERIT its privileges; a member with ADMIN OPTION alone, as PostgreSQL 16
+-- records the role's creator, can only grant it), owning nothing. Owner-only: the grant function and `migrate`'s login step ask it.
+-- outcome: NARROW | WIDER | MISSING
+CREATE FUNCTION schedule_trigger_handover_role_narrow() RETURNS text
+LANGUAGE plpgsql STABLE SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
-    r pg_catalog.pg_roles%ROWTYPE;
+    r         pg_catalog.pg_roles%ROWTYPE;
+    v_members boolean;
 BEGIN
     SELECT * INTO r FROM pg_catalog.pg_roles WHERE rolname = 'sagat_handover';
     IF NOT FOUND THEN
         RETURN 'MISSING';
     END IF;
-    IF r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls
+    IF current_setting('server_version_num')::integer >= 160000 THEN
+        EXECUTE 'SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.roleid = $1 AND (m.set_option OR m.inherit_option))'
+           INTO v_members USING r.oid;
+    ELSE
+        SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.roleid = r.oid) INTO v_members;
+    END IF;
+    IF r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls OR v_members
        OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member = r.oid)
        OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.relowner = r.oid)
        OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p WHERE p.proowner = r.oid)
        OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspowner = r.oid)
        OR EXISTS (SELECT 1 FROM pg_catalog.pg_type y WHERE y.typowner = r.oid) THEN
-        REVOKE ALL ON FUNCTION public.schedule_trigger_handover_round(uuid, integer, interval, integer, interval, text)
+        RETURN 'WIDER';
+    END IF;
+    RETURN 'NARROW';
+END;
+$$;
+
+-- Holds every grant of `sagat_handover`, and grants them again (so a role created after this migration gets them). Refuses a role
+-- wider than the design: such a role is left with none of these grants (D2275). The grants are the five functions of ADR-0091
+-- decision 9, SELECT on the handover and attempt rows, and SELECT on the one column of the requirement epoch that ADR-0082's
+-- deferred check reads at the commit of the job's activation (OD-2026-11-15-1, D2289).
+-- outcome: GRANTED | WIDER | MISSING
+CREATE FUNCTION schedule_trigger_handover_role_grants() RETURNS text
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+    v_narrow text := public.schedule_trigger_handover_role_narrow();
+BEGIN
+    IF v_narrow = 'MISSING' THEN
+        RETURN 'MISSING';
+    END IF;
+    IF v_narrow = 'WIDER' THEN
+        REVOKE ALL ON FUNCTION public.schedule_trigger_handover_round(uuid, integer, interval, integer, interval)
+            FROM sagat_handover;
+        REVOKE ALL ON FUNCTION public.schedule_trigger_handover_note(uuid, text, integer, interval, integer, interval)
             FROM sagat_handover;
         REVOKE ALL ON FUNCTION public.schedule_trigger_handover_auto(uuid) FROM sagat_handover;
         REVOKE ALL ON FUNCTION public.schedule_trigger_handover_audit() FROM sagat_handover;
         REVOKE ALL ON FUNCTION public.schedule_trigger_handover_retire() FROM sagat_handover;
         REVOKE ALL PRIVILEGES ON public.schedule_trigger_handover, public.schedule_trigger_handover_attempts FROM sagat_handover;
+        REVOKE ALL PRIVILEGES (changed_xact) ON public.platform_requirement_epoch FROM sagat_handover;
         RETURN 'WIDER';
     END IF;
-    GRANT EXECUTE ON FUNCTION public.schedule_trigger_handover_round(uuid, integer, interval, integer, interval, text)
+    GRANT EXECUTE ON FUNCTION public.schedule_trigger_handover_round(uuid, integer, interval, integer, interval)
+        TO sagat_handover;
+    GRANT EXECUTE ON FUNCTION public.schedule_trigger_handover_note(uuid, text, integer, interval, integer, interval)
         TO sagat_handover;
     GRANT EXECUTE ON FUNCTION public.schedule_trigger_handover_auto(uuid) TO sagat_handover;
     GRANT EXECUTE ON FUNCTION public.schedule_trigger_handover_audit() TO sagat_handover;
     GRANT EXECUTE ON FUNCTION public.schedule_trigger_handover_retire() TO sagat_handover;
     GRANT SELECT ON public.schedule_trigger_handover, public.schedule_trigger_handover_attempts TO sagat_handover;
+    GRANT SELECT (changed_xact) ON public.platform_requirement_epoch TO sagat_handover;
     RETURN 'GRANTED';
 END;
 $$;
 
--- The deferred check that a requirement moved the epoch runs at the commit, outside the wrapper, with the privileges of the
--- session: for the job that is `sagat_handover`, which reads nothing of the registry. It reads one row and can only refuse a
--- commit; it runs as its owner from here on (D2282), so the role stays as narrow as decided instead of gaining SELECT on the epoch.
-ALTER FUNCTION platform_requirements_epoch_moved() SECURITY DEFINER;
-ALTER FUNCTION platform_requirements_epoch_moved() SET search_path = pg_catalog, pg_temp;
+-- How many tenants of the handover's recorded set still lack their audit record (null before the handover): what the engines
+-- export as trigger_schedule_handover_audit_pending, so that a committed handover whose audit could not be completed is seen
+-- (correctness review). A view with its owner's rights: its reader sees a count, never the tenant set or its audit ids.
+CREATE VIEW schedule_trigger_handover_audit_pending AS
+SELECT CASE WHEN h.changed_epoch IS NULL THEN NULL
+            ELSE (SELECT count(*)::integer FROM public.schedule_trigger_handover_tenants s
+                   WHERE s.epoch = h.changed_epoch AND s.audited_at IS NULL) END AS tenants
+  FROM public.schedule_trigger_handover h;
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Grants. PUBLIC gets nothing; the runtime role reads the attempt rows (the engines' gauges) and nothing else new; the handover
@@ -672,11 +799,17 @@ ALTER FUNCTION platform_requirements_epoch_moved() SET search_path = pg_catalog,
 -- ---------------------------------------------------------------------------------------------------------------------
 
 REVOKE ALL PRIVILEGES ON schedule_trigger_handover_census, schedule_trigger_handover_tenants,
-    schedule_trigger_handover_retirement, schedule_trigger_handover_attempts FROM PUBLIC;
+    schedule_trigger_handover_retirement, schedule_trigger_handover_attempts, schedule_trigger_handover_floor,
+    schedule_trigger_handover_audit_pending FROM PUBLIC;
 REVOKE ALL ON FUNCTION schedule_trigger_handover_reasons() FROM PUBLIC;
 REVOKE ALL ON FUNCTION schedule_trigger_handover_tenants_guard() FROM PUBLIC;
 REVOKE ALL ON FUNCTION schedule_trigger_handover_conditions(interval, integer) FROM PUBLIC;
-REVOKE ALL ON FUNCTION schedule_trigger_handover_round(uuid, integer, interval, integer, interval, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION schedule_trigger_handover_round(uuid, integer, interval, integer, interval) FROM PUBLIC;
+REVOKE ALL ON FUNCTION schedule_trigger_handover_note(uuid, text, integer, interval, integer, interval) FROM PUBLIC;
+REVOKE ALL ON FUNCTION schedule_trigger_handover_attempt_open(uuid, integer, interval, integer, interval) FROM PUBLIC;
+REVOKE ALL ON FUNCTION schedule_trigger_handover_set_floor(integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION schedule_trigger_handover_min_live(integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION schedule_trigger_handover_role_narrow() FROM PUBLIC;
 REVOKE ALL ON FUNCTION schedule_trigger_handover_record(text, text, interval) FROM PUBLIC;
 REVOKE ALL ON FUNCTION schedule_trigger_handover_complete(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION schedule_trigger_handover_auto(uuid) FROM PUBLIC;
@@ -688,7 +821,9 @@ DO $grants$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sagat_app') THEN
         REVOKE ALL PRIVILEGES ON schedule_trigger_handover_census, schedule_trigger_handover_tenants,
-            schedule_trigger_handover_retirement, schedule_trigger_handover_attempts FROM sagat_app;
+            schedule_trigger_handover_retirement, schedule_trigger_handover_attempts, schedule_trigger_handover_floor FROM sagat_app;
         GRANT SELECT ON schedule_trigger_handover_attempts TO sagat_app;
+        -- whether the tenant audit of the handover is complete, for the engines' gauge: a count, never an audit id (D2294)
+        GRANT SELECT ON schedule_trigger_handover_audit_pending TO sagat_app;
     END IF;
 END $grants$;

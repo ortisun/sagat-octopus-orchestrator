@@ -457,7 +457,9 @@ async fn run(
 }
 
 /// The tenant audit of the handover, written after its commit from the set recorded in it (ADR-0091 decision 7): the operator's
-/// handover has it too. An audit record found under a drawn id that differs is refused (`AUDIT_CONFLICT`).
+/// handover has it too. The handover is made when this runs, so nothing here fails the command (correctness review): a record found
+/// under a drawn id that differs (`AUDIT_CONFLICT`), or a failure, is a warning; the engines export the tenants left
+/// (`trigger_schedule_handover_audit_pending`, alerted on) and the next run completes them.
 async fn complete_audit(pool: &sagat_infra_postgres::PgPool) -> Result<(), RunError> {
     match sagat_infra_postgres::complete_handover_audit(pool).await {
         Ok(audit) => {
@@ -468,14 +470,17 @@ async fn complete_audit(pool: &sagat_infra_postgres::PgPool) -> Result<(), RunEr
                 written = audit.written,
                 "the tenant audit of the handover is complete"
             );
-            Ok(())
         }
-        Err(sagat_infra_postgres::HandoverDbError::AuditConflict) => Err(declined(
+        Err(sagat_infra_postgres::HandoverDbError::AuditConflict) => tracing::warn!(
             "AUDIT_CONFLICT: an audit record exists under an id drawn for a tenant of the handover and differs from the \
-             handover's. The handover itself is made; look at the record (docs/runbooks/schedules.md, 6.3).",
-        )),
-        Err(error) => Err(RunError::Database(error.to_string())),
+             handover's. The handover itself is made; the tenant audit is not complete (docs/runbooks/schedules.md, 6.3)"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            "the tenant audit of the handover could not be completed; the handover itself is made and the next run completes it"
+        ),
     }
+    Ok(())
 }
 
 async fn sqlx_epoch(pool: &sagat_infra_postgres::PgPool) -> Result<i64, RunError> {

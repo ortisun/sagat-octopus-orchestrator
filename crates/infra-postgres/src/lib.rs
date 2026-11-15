@@ -34,6 +34,7 @@ mod event_payloads;
 mod events;
 mod execution;
 mod handover_auto;
+mod handover_role;
 mod identity;
 mod instances;
 mod leaf_certification;
@@ -79,11 +80,14 @@ pub use definitions::PgDefinitionStore;
 pub use execution::EXPIRED_RESETS_SQL;
 pub use execution::{PgRunStore, PgRunTx};
 pub use handover_auto::{
-    AuditCompleted, AutoActivated, AutoAsk, HANDOVER_ROLE, HandoverDbError, LoginSet,
-    ROUND_STATEMENT_TIMEOUT, Retirement, RoleEnsured, RoleGrants, Round, RoundOutcome,
-    complete_handover_audit, connect_handover, ensure_handover_role, handover_activate,
-    handover_round, is_scram_verifier, last_attempt, may_auto_hand_over, read_handover_mode,
-    retire_handover_role, set_handover_login,
+    AuditCompleted, AutoActivated, AutoAsk, HANDOVER_ROLE, HandoverDbError,
+    ROUND_STATEMENT_TIMEOUT, Retirement, Round, RoundOutcome, complete_handover_audit,
+    connect_handover, handover_activate, handover_note, handover_round, last_attempt,
+    may_auto_hand_over, read_handover_mode, retire_handover_role,
+};
+pub use handover_role::{
+    LoginSet, RoleEnsured, RoleGrants, ensure_handover_role, is_scram_verifier, set_handover_floor,
+    set_handover_login,
 };
 pub use identity::PgIdentityStore;
 pub use instances::{FeatureStep, OperatorBounds, PgInstanceStore};

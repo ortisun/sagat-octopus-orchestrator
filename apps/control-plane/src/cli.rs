@@ -243,6 +243,15 @@ fn check_auto(parsed: &HandoverArgs) -> Result<(), UsageError> {
     if parsed.wait.is_some_and(|wait| wait > WAIT_MAX) {
         return Err(UsageError("--wait is at most 24h".to_owned()));
     }
+    // a wait that cannot hold one horizon and the stable rounds after it can only end at its deadline (correctness review)
+    let floor = parsed.horizon.unwrap_or(HORIZON)
+        + std::time::Duration::from_secs(15) * parsed.stable.unwrap_or(STABLE);
+    if parsed.wait.is_some_and(|wait| wait <= floor) {
+        return Err(UsageError(format!(
+            "--wait must be longer than --horizon plus 15 s for each --stable round ({} s here)",
+            floor.as_secs()
+        )));
+    }
     Ok(())
 }
 
@@ -384,6 +393,8 @@ ENVIRONMENT (schedule-trigger-handover):
     SAGAT_HANDOVER_RUN_ID     the run id (a uuid; in Kubernetes the Job's UID); drawn at start when unset
     SAGAT_SCHEDULES_AUTO_HANDOVER  false: --auto exits 0 at once and hands nothing over [true]
     SAGAT_HANDOVER_RETIRE_ROLE     true: as --retire-role (for compose, which cannot add a flag on a condition) [false]
+    SAGAT_HANDOVER_MIN_LIVE        for migrate: the owner's floor of the live engines the job counts with, 1 to 1000; a
+                          caller of the round function cannot ask for fewer [unset: 1]
 
 ENVIRONMENT (healthcheck):
     SAGAT_HEALTHCHECK_ADDR            address to probe                [127.0.0.1:8080]

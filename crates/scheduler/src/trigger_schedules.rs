@@ -243,27 +243,32 @@ fn register_alert_series() {
 pub const HANDOVER_VIEW_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The gauges of the automatic handover (ADR-0091 decision 5, D2255, D2270), every series of a closed label created at zero:
-/// `trigger_schedule_handover_blocked{reason}` is 1 for the job's last reason while the state is `LEGACY`;
+/// `trigger_schedule_handover_blocked{reason}` is 1 for each reason a live run of the job last wrote while the state is `LEGACY`;
 /// `trigger_schedule_handover_mode{mode}` is 1 for the mode the row records; `trigger_schedule_handover_attempt_age_seconds` is the
-/// age of the job's last round, and absent while the job has written none. `None` (nothing read yet) sets every series to zero.
+/// age of the most recent round, and absent while the job has written none; `trigger_schedule_handover_audit_pending` counts the
+/// tenants of the handover whose audit record is not written (0 before the handover). `None` (nothing read yet) sets every series of
+/// a closed label to zero.
 pub fn export_handover(view: Option<&HandoverView>) {
     let legacy = view.is_some_and(|view| view.state == HandoverState::Legacy);
-    let blocked = view
-        .and_then(|view| view.attempt)
-        .and_then(|attempt| attempt.reason)
-        .filter(|_| legacy);
+    let blocked: &[HandoverBlock] = match view {
+        Some(view) if legacy => &view.blocked,
+        _ => &[],
+    };
     for reason in HandoverBlock::ALL {
         metrics::gauge!("trigger_schedule_handover_blocked", "reason" => reason.code())
-            .set(if blocked == Some(reason) { 1.0 } else { 0.0 });
+            .set(if blocked.contains(&reason) { 1.0 } else { 0.0 });
     }
     let mode = view.and_then(|view| view.mode);
     for each in HandoverMode::ALL {
         metrics::gauge!("trigger_schedule_handover_mode", "mode" => each.code())
             .set(if mode == Some(each) { 1.0 } else { 0.0 });
     }
-    if let Some(attempt) = view.and_then(|view| view.attempt) {
-        metrics::gauge!("trigger_schedule_handover_attempt_age_seconds").set(attempt.age_seconds);
+    if let Some(age) = view.and_then(|view| view.attempt_age_seconds) {
+        metrics::gauge!("trigger_schedule_handover_attempt_age_seconds").set(age);
     }
+    metrics::gauge!("trigger_schedule_handover_audit_pending").set(f64::from(
+        view.and_then(|view| view.audit_pending).unwrap_or(0),
+    ));
 }
 
 /// The pass over the triggers of the shards a replica owns.
@@ -552,6 +557,98 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    fn rendered(view: Option<&HandoverView>) -> Vec<String> {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || export_handover(view));
+        handle
+            .render()
+            .lines()
+            .filter(|line| line.starts_with("trigger_schedule_handover"))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn every_series_of_the_handover_starts_at_zero_and_the_age_is_absent_without_a_round() {
+        let lines = rendered(None);
+        let blocked: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.starts_with("trigger_schedule_handover_blocked{"))
+            .collect();
+        assert_eq!(blocked.len(), 12, "{lines:?}");
+        assert!(blocked.iter().all(|l| l.ends_with(" 0")), "{blocked:?}");
+        let modes: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.starts_with("trigger_schedule_handover_mode{"))
+            .collect();
+        assert_eq!(modes.len(), 2, "{lines:?}");
+        assert!(modes.iter().all(|l| l.ends_with(" 0")));
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.starts_with("trigger_schedule_handover_attempt_age_seconds")),
+            "absent with no round"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "trigger_schedule_handover_audit_pending 0"),
+            "{lines:?}"
+        );
+
+        let legacy = HandoverView {
+            state: HandoverState::Legacy,
+            mode: None,
+            blocked: vec![HandoverBlock::EngineUnregistered, HandoverBlock::Busy],
+            attempt_age_seconds: Some(20.0),
+            audit_pending: None,
+        };
+        let lines = rendered(Some(&legacy));
+        let at_one: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.starts_with("trigger_schedule_handover_blocked{") && l.ends_with(" 1"))
+            .collect();
+        assert_eq!(
+            at_one.len(),
+            2,
+            "one series per live run's reason: {at_one:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "trigger_schedule_handover_attempt_age_seconds 20"),
+            "{lines:?}"
+        );
+
+        let handed = HandoverView {
+            state: HandoverState::HandedOver,
+            mode: Some(HandoverMode::Automatic),
+            blocked: vec![HandoverBlock::Busy],
+            attempt_age_seconds: Some(5.0),
+            audit_pending: Some(3),
+        };
+        let lines = rendered(Some(&handed));
+        assert!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("trigger_schedule_handover_blocked{"))
+                .all(|l| l.ends_with(" 0")),
+            "nothing is blocked once handed over"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "trigger_schedule_handover_mode{mode=\"AUTOMATIC\"} 1"),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "trigger_schedule_handover_audit_pending 3")
+        );
+    }
 
     #[test]
     fn an_entry_that_fails_is_left_out_for_a_time_that_doubles_and_is_forgotten_when_it_is_done() {
