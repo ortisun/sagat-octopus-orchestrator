@@ -150,7 +150,7 @@ paths:
       description: Needs `ops:read`. Keys appear only as labels. Sorted by oldest wait first. `queuedRuns` in the page header counts the namespace's queued runs against its `queued_runs` ceiling.
       parameters:
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
-        - {name: group, in: query, schema: {type: string, pattern: '^[a-z][a-z0-9.-]{0,63}$'}}
+        - {name: group, in: query, description: 'An explicit group or a derived one (`=<workflow>` or `=<workflow>/<node>`); review 2026-11-13.', schema: {type: string, maxLength: 130, pattern: '^([a-z][a-z0-9.-]{0,63}|=[a-z][a-z0-9-]{2,63}(/[A-Za-z0-9][A-Za-z0-9_.-]{0,63})?)$'}}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
         - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/PageLimit'}
       responses:
@@ -159,6 +159,30 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConcurrencyKeyPage'}
+        '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
+        '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
+        '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
+        '429': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/TooManyRequests'}
+        '503': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unavailable'}
+        default: {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/InternalError'}
+  /namespaces/{namespaceId}/rate-limit-keys:
+    get:
+      operationId: listRateLimitKeys
+      summary: List live rate-limit keys with their grants in the window, waiters and oldest wait age
+      tags: [Governance]
+      x-proposed: '022'
+      description: Release 0.3.0 slice (US07, FR-022-048). Needs `ops:read`. Keys appear only as labels. Sorted by oldest wait first. `queuedRuns` in the page header counts the namespace's queued runs (concurrency and rate-limit waiters together) against its `queued_runs` ceiling.
+      parameters:
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/NamespaceId'}
+        - {name: group, in: query, description: 'An explicit group or a derived one (`=<workflow>` or `=<workflow>/<node>`); review 2026-11-13.', schema: {type: string, maxLength: 130, pattern: '^([a-z][a-z0-9.-]{0,63}|=[a-z][a-z0-9-]{2,63}(/[A-Za-z0-9][A-Za-z0-9_.-]{0,63})?)$'}}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/Cursor'}
+        - {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/parameters/PageLimit'}
+      responses:
+        '200':
+          description: A page of keys
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RateLimitKeyPage'}
         '401': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Unauthorized'}
         '403': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/Forbidden'}
         '404': {$ref: '../../001-platform-foundation/contracts/openapi.yaml#/components/responses/NotFound'}
@@ -337,7 +361,7 @@ components:
         versionId: {type: [string, 'null'], format: uuid}
         cacheName: {type: [string, 'null']}
         node: {type: string}
-        keyLabel: {type: string, pattern: '^[0-9a-f]{12}$'}
+        keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'Null for a caller who may not disclose, at its level, every location the key reads (FR-022-057, review 2026-11-13).'}
         createdAt: {type: string, format: date-time}
         expiresAt: {type: string, format: date-time}
         sizeBytes: {type: integer, minimum: 0, maximum: 262144}
@@ -384,7 +408,7 @@ components:
         pool: {type: string, enum: [ORDINARY, DRAFT_TEST], description: 'Draft test trees use their own pool and never share a key with ordinary runs.'}
         scope: {type: string, enum: [RUN, STEP]}
         group: {type: string}
-        keyLabel: {type: string, pattern: '^[0-9a-f]{12}$'}
+        keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'Null for a caller who may not disclose, at its level, every location the key reads (FR-022-057, review 2026-11-13).'}
         holders: {type: integer, minimum: 0}
         waiters: {type: integer, minimum: 0}
         oldestWaitSince: {type: [string, 'null'], format: date-time}
@@ -395,6 +419,28 @@ components:
       properties:
         queuedRuns: {type: integer, minimum: 0}
         items: {type: array, items: {$ref: '#/components/schemas/ConcurrencyKey'}}
+        nextCursor: {type: [string, 'null']}
+    RateLimitKey:
+      description: Release 0.3.0 slice (US07). One live window. Counts are a snapshot read without the key's lock.
+      type: object
+      additionalProperties: false
+      required: [pool, scope, group, keyLabel, grantsInWindow, waiters]
+      properties:
+        pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
+        scope: {type: string, enum: [RUN, STEP]}
+        group: {type: string}
+        keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'Null for a caller who may not disclose, at its level, every location the key reads (FR-022-057, review 2026-11-13).'}
+        grantsInWindow: {type: integer, minimum: 0, description: 'Grants that still count over the longest window declared by a live grant or waiter of the key.'}
+        unleasedGrants: {type: integer, minimum: 0, description: 'STEP scope: granted steps no worker has leased yet; each holds a slot.'}
+        waiters: {type: integer, minimum: 0}
+        oldestWaitSince: {type: [string, 'null'], format: date-time}
+        nextSlotAt: {type: [string, 'null'], format: date-time, description: 'When the oldest counted grant ages out; null when the window is not full or a slot is held by an unleased step.'}
+    RateLimitKeyPage:
+      type: object
+      required: [items, queuedRuns]
+      properties:
+        queuedRuns: {type: integer, minimum: 0}
+        items: {type: array, items: {$ref: '#/components/schemas/RateLimitKey'}}
         nextCursor: {type: [string, 'null']}
     FailureHandlerStatus:
       type: string
@@ -484,9 +530,25 @@ components:
             state: {type: string, enum: [HOLDING, WAITING]}
             pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
             group: {type: string}
-            keyLabel: {type: string, pattern: '^[0-9a-f]{12}$'}
+            keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'Null for a caller who may not disclose, at its level, every location the key reads (FR-022-057, review 2026-11-13).'}
             since: {type: string, format: date-time}
             queueDeadline: {type: [string, 'null'], format: date-time}
+        rateLimit:
+          description: Release 0.3.0 slice (US07, FR-022-048). The run-level rate limit of the run. A step waiting for a node-level slot is shown on the step (wait kind RATE_LIMIT), not here.
+          type: [object, 'null']
+          additionalProperties: false
+          required: [state, pool, group, keyLabel, limit, per]
+          properties:
+            state: {type: string, enum: [GRANTED, WAITING]}
+            pool: {type: string, enum: [ORDINARY, DRAFT_TEST]}
+            group: {type: string}
+            keyLabel: {type: [string, 'null'], pattern: '^[0-9a-f]{12}$', description: 'Null for a caller who may not disclose, at its level, every location the key reads (FR-022-057, review 2026-11-13).'}
+            limit: {type: integer, minimum: 1}
+            per: {type: string, enum: [second, minute, hour]}
+            since: {type: string, format: date-time, description: 'When the run was buffered (WAITING) or granted (GRANTED).'}
+            queueDeadline: {type: [string, 'null'], format: date-time}
+            position: {type: [integer, 'null'], minimum: 1, description: 'WAITING only, and only in the single-run read (getRun); null in listings: rank among the eligible waiters of the key at read time; 1 is next.'}
+            estimatedGrantAt: {type: [string, 'null'], format: date-time, description: 'WAITING only, and only in the single-run read (getRun): an estimate computed at read time, never a promise; null when it cannot be computed (a slot ahead is held by an unleased step, the position is beyond one window, or the run also waits for a concurrency permit).'}
     RunOriginAdditions:
       description: Values added to the canonical `DatabaseExecutionOrigin` enumeration (name kept for compatibility) used by `Run.origin` and `listRuns?origin=`.
       type: string
