@@ -253,7 +253,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 
 ### Fifth draft, the supported subset (2026-11-14, OD-2026-11-14-14, after the review at `72331b38`)
 
-- **D043-046** (2026-11-14) The subset of OD-2026-11-14-14, with the same meaning for `$schema` absent, draft-07 and
+- **D043-046** (2026-11-14; the pattern rule refined by D043-054 and D043-055) The subset of OD-2026-11-14-14, with the same meaning for `$schema` absent, draft-07 and
   2020-12 (any other `$schema` refused): `type`, `properties`, `required`, `items` (one schema), `enum`, `const`,
   `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` (numbers), `multipleOf` (a positive integer), `minLength`,
   `maxLength`, `minItems`, `maxItems`, `minProperties`, `maxProperties`, `pattern` (the `regex` crate, 64 KiB limits, at
@@ -264,20 +264,20 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   `patternProperties`, `uniqueItems` and `not`. Each could be bounded by the counter (a charge per key and pattern;
   n·log n; one application), but each adds semantics the oracle test must cover, the platform's own documents need none,
   and adding one later breaks no published schema. Every other keyword is out as well.
-- **D043-047** (2026-11-14) A validator of the platform, `InputSchemas` in `crates/infra-schema/src/run_input/`, over
+- **D043-047** (2026-11-14; the charges superseded by D043-058, the nesting limit by D043-057) A validator of the platform, `InputSchemas` in `crates/infra-schema/src/run_input/`, over
   `serde_json::Value`, with a work counter: one unit per keyword applied at an instance node and per element or member
   visited, the length in bytes plus one per `pattern` match, the length in code points per length check, the size of the
   compared values for `enum` and `const`, and a nesting limit of 128 schema applications. It stops at
   `RUN_INPUT_WORK_UNITS` (1,000,000) with `workLimit`, which is final the first time on every row. The counter counts what
   the validator does, so no static estimate is made. `jsonschema` is a test oracle only on this path.
-- **D043-048** (2026-11-14) The pre-check, at publication, at start (cached) and in the inventory: at most 64 KiB and a
+- **D043-048** (2026-11-14; refined by D043-054 to D043-057) The pre-check, at publication, at start (cached) and in the inventory: at most 64 KiB and a
   depth of 32; every keyword in the vocabulary; every `$ref` a local JSON pointer, decoded once by the validator's own
   resolver (RFC 6901 with percent-decoding), that resolves; no cycle in the `$ref` graph; every pattern within its syntax
   and size. The first violation is `Unusable { keyword, at }`. There is no walk.
 - **D043-049** (2026-11-14) The validator names its own rule (the subset's keywords, `workLimit`, `maxDepth`, `other`) and
   builds its own pointer: a segment for a member matched through `properties` and an index matched through `items`,
   nothing under `additionalProperties`; `required` appends the missing name. No library error is read or formatted.
-- **D043-050** (2026-11-14) Simplified, because the counter makes a budget miss deterministic: removed the per-tenant
+- **D043-050** (2026-11-14; the per-tenant cap restored by D043-053) Simplified, because the counter makes a budget miss deterministic: removed the per-tenant
   permits and their eviction rule (D043-034, D043-044), the miss memory, the tick-identity key, the two clocks and the
   second-miss threshold (D043-035, D043-043), and `spawn_blocking` (D043-022). Kept: four permits per process, acquired
   within 5 s; the work through `block_in_place` holding its permit; a backstop in the counter that reads the clock every
@@ -290,6 +290,46 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   `migrate` is: a paged read of `workflow_versions`, the pre-check on each stored schema, one line per version that would
   be refused (ids, keyword, pointer), no schema text, nothing written. It replaces the release-notes query, which could
   not tell whether a schema would be refused.
+
+### Sixth draft, after the fifth review (2026-11-14, at `058ba9d3`)
+
+- **D043-053** (2026-11-14) A tenant holds at most two of the four permits. The gate counts permits in flight per tenant
+  in a map under a mutex (an entry leaves when its count is zero, so nothing in use is evicted) and refuses a tenant at
+  its cap at once (`Unavailable`, transient), without waiting; the global permit is then awaited for at most 5 s.
+- **D043-054** (2026-11-14) Pattern cost. When the lazy DFA gives up, the `regex` crate falls back to an NFA simulation
+  whose cost per byte grows with the NFA's states, and a match cannot be interrupted. So each pattern is capped at
+  compile (a 16 KiB program, 2,048 NFA states, a 64 KiB `hybrid_cache_capacity`; 32 patterns and 256 KiB of programs per
+  schema), and a match is charged (bytes + 1) × ⌈NFA states / 64⌉ **before** it runs; a charge past the budget stops
+  with `workLimit` without matching. A test with a pattern that defeats the DFA (`[ab]*a[ab]{12}`) against 256 KiB
+  checks the cost stays within a constant multiple of the charge. `pattern` stays in 0.3.0 under these bounds.
+- **D043-055** (2026-11-14) Pattern syntax is checked on the parsed `regex-syntax` AST against an allowlist (literals,
+  escaped metacharacters, `\n`, `\r`, `\t`, `\xHH`, bracket classes of literals and ranges, `.`, `^`, `$`, alternation,
+  capturing and non-capturing groups, repetitions with bounds of at most 100), never on the text. Refused: every Perl
+  class and its negation (`\d\D\w\W\s\S`) and the word boundaries (`\b\B`), inside brackets too; `\p{...}`; POSIX classes;
+  flags such as `(?i)`; `\A`, `\z`; named groups; backreferences and lookaround. `.` compiles to "any character but `\n`,
+  `\r`, U+2028, U+2029", its ECMA-262 meaning.
+- **D043-056** (2026-11-14) Pointer decoding for `$ref`: the fragment is percent-decoded (a bad `%` sequence or bytes that
+  are not UTF-8 are refused), split on `/`, then in each token `~1` becomes `/` before `~0` becomes `~`; a `~` followed by
+  anything else is refused, and an array index with a leading zero is refused. The target must be a schema position
+  recorded by the vocabulary walk; `#/enum/0`, `#/default`, `#/examples/0`, an `x-sagat-classification` value and a
+  container such as `#/properties` are refused.
+- **D043-057** (2026-11-14) The compiled form is an arena of nodes, one per schema position, and a `$ref` is the index of
+  its target, never an inlined copy, so a reference DAG stays the size of the document. A depth-first search with white,
+  grey and black marks over every application edge refuses a cycle at a grey node and computes the longest application
+  path; a path longer than 128 is a schema defect, refused at publication (`INPUT_SCHEMA_TOO_DEEP`) and listed by the
+  inventory, not a `workLimit` of the input.
+- **D043-058** (2026-11-14) Every loop step and every subschema application costs at least one unit: an application
+  (`{}` included) and each `$ref` followed, each `required` name, each `type` name, each `allOf`/`anyOf`/`oneOf` branch,
+  each instance member's `properties` lookup and `additionalProperties` decision, each `items` element; `enum` one per
+  member plus the smaller of the two sizes; `const` the smaller size; a length check its length; a pattern match per
+  D043-054. An adversarial test per keyword asserts primitive operations ≤ k × units.
+- **D043-059** (2026-11-14) Determinism: vectors in document order and sorted lookup tables, no `RandomState` iteration;
+  instance members in `serde_json::Map` order (a `BTreeMap`, since `preserve_order` is not enabled). Every replica reports
+  the same first violation.
+- **D043-060** (2026-11-14) The oracle test skips `workLimit`, `maxDepth` and backstop verdicts and fails when they pass 5%
+  of the cases; it generates i64 values, u64 values above `i64::MAX`, integral floats, `-0.0` and integers beyond u64. The
+  validator compares numbers by value, not with `serde_json`'s `PartialEq` (`1 != 1.0` there). Integers beyond u64 are
+  parsed to f64 by both validators, since `arbitrary_precision` is off, so both round them the same way.
 
 ## 3. Gaps
 
@@ -310,7 +350,8 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-013 | The miss memory of D043-035 was per process and evicted. | Removed by D043-050: there is no miss memory. | Closed (by design) |
 | G043-014 | A published schema with a keyword outside the subset (recursion, `patternProperties`, `not`, `if`, `unevaluated*`, ...) refuses every start of its version in `enforce`. | OD-2026-11-14-14; `control-plane input-schema-inventory` lists them (D043-052); `report` mode covers the time to republish. | Open (documented) |
 | G043-015 | `multipleOf` accepts only positive integers, so a schema with `multipleOf: 0.01` (a money amount) is outside the subset. | Floating-point remainders differ between implementations; an exact decimal rule can be added later. | Open (documented) |
-| G043-016 | `pattern` refuses `\d`, `\w`, `\s` and `\b`, which authors use often; they write `[0-9]` and the like instead. | The `regex` crate reads them as Unicode classes and ECMA-262 as ASCII; refusing them keeps one meaning. The publication issue names the pattern's pointer. | Open (documented) |
+| G043-016 | `pattern` refuses Perl classes and their negations, word boundaries, Unicode and POSIX classes, flags and named groups, which authors use often; they write `[0-9]` and the like instead. Characters are code points, as in the `jsonschema` crate, not the UTF-16 units of ECMA-262 without the `u` flag, so an astral character counts as one. | D043-055; the publication issue `INPUT_SCHEMA_PATTERN_UNSUPPORTED` names the pattern's pointer. | Open (documented) |
+| G043-017 | The constant k of the per-keyword tests (primitive operations per unit) and the time a full budget costs are not measured yet. | Measured by the tests of T043-2 and stated with them; G043-006 for the time. | Open |
 
 ## 4. Owner questions
 
