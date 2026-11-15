@@ -581,19 +581,25 @@ public sealed class HostHardeningTests : IAsyncLifetime
             o.Worker.HeartbeatInterval = TimeSpan.FromMilliseconds(100);
             o.Worker.Interceptors.Add(interceptor);
         });
+        // The activity is held until a beat after the two raised ones has reached the server: a barrier on the thing the
+        // test is about, not a guess at how many beats fit in a fixed time (on a loaded runner only the two failing ones did).
+        var running = Stopwatch.StartNew();
         host.RegisterActivity<JsonNode?, int>("slow", async (_, _, ct) =>
         {
-            await Task.Delay(700, ct);
+            await Eventually.UntilAsync(() => State.Of("Heartbeat").Count >= 1, "a beat after the failed ones");
             return 1;
         });
         State.Lease(LeaseFor("slow"));
         await host.StartAsync();
         await Eventually.UntilAsync(() => State.Of("CompleteStep").Count == 1, "the completion");
+        var elapsed = running.Elapsed;
 
-        // The two raised beats reached no server; the ones after them did (the loop did not die), and none came faster than the interval.
+        // The two raised beats reached no server; the one after them did (the loop did not die), and none came faster than
+        // the interval: at most one beat per interval of the time the activity ran, and two more for the edges.
         Assert.True(interceptor.Calls >= 3, $"{interceptor.Calls} beats were tried");
         Assert.True(State.Of("Heartbeat").Count >= 1, "a beat after the failed ones reached the server");
-        Assert.True(interceptor.Calls <= 12, $"{interceptor.Calls} beats in 700 ms: the loop spins");
+        var bound = (int)(elapsed.TotalMilliseconds / 100) + 2;
+        Assert.True(interceptor.Calls <= bound, $"{interceptor.Calls} beats in {elapsed.TotalMilliseconds:F0} ms: the loop spins");
         Assert.Empty(State.Of("FailStep"));
     }
 
