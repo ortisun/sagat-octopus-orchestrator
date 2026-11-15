@@ -16,6 +16,20 @@ reviewed). Each SDK must also emit byte-identical canonical IR for the authoring
 | `flow-standalone` | start activity step with key K; repeat with K and same body; repeat with K and other body; cancel a second leased execution | same run id; `CONFLICT`/`IDEMPOTENCY_KEY_REUSED`; result via disclosure equals worker output; cancelled run `CANCELLED` |
 | `flow-test-run` | draft test from node 3 with two upstream mocks and one downstream mock; same request in a `prod` namespace | zero leases for pinned nodes; `step.mocked` ×3; executed nodes leased once; `prod` → `FORBIDDEN`/`TEST_RUN_PRODUCTION_NAMESPACE` |
 
+Release 0.3.0 slice (US02 and US07, D022-016): `flow-concurrency` above and the scenario below run in
+**six** languages (TypeScript, Go, Python, C#, Java, Rust); the other five scenarios wait for their stories.
+
+| Scenario | Steps | Normalized observations |
+|---|---|---|
+| `flow-rate-limit` | publish a workflow with top-level `rateLimit: {key, limit: 2, per: "second"}` and one activity with node-level `rateLimit: {limit: 1, per: "second"}`; start five runs of one key and one of another key at once; cancel the fifth while buffered; wait for the rest | runs 1–2 have `rate_limit.granted` with `from_queue: false` and never waited; runs 3–4 have `rate_limit.queued` then `rate_limit.granted` with `from_queue: true`, in admission order; no one-second interval holds more than 2 run-scope `granted_at_us` of the key nor more than 1 `step.leased` of the activity's key; the other key's run never waited for the run-level limit; run 5 is `CANCELLED` with `rate_limit.dequeued` and no grant; a buffered run reports `rateLimit.state=WAITING` with a `position` |
+
+The assertions on intervals are computed by the harness from the journals' instants, not compared with
+recorded timestamps; the golden holds only the normalized event order and states.
+
+Builders added by the slice: `rateLimit({key, limit, per, group, queueTimeoutMs})` on activity/script
+steps and at workflow level, beside `concurrency(...)`, in the six SDKs. No client call is added: waiting
+runs are read through the existing run resource.
+
 SDK surface added (names per language idiom; semantics identical):
 
 - Builders: `cache({key, ttlSeconds, scope, name, version})`, `concurrency({key, limit, group,
