@@ -615,6 +615,7 @@ DECLARE
     t         record;
     e         public.audit_records%ROWTYPE;
     v_reason  text;
+    v_actor   text;
     v_written integer := 0;
     v_total   integer;
 BEGIN
@@ -625,12 +626,15 @@ BEGIN
     END IF;
     v_reason := format('the cron triggers were handed over to the schedule pass (mode %s, requirement epoch %s)',
                        h.changed_mode, h.changed_epoch);
+    -- a tenant sees "operator", never the name typed after --operator: the name stays in the platform's records (the handover
+    -- row and the history of the requirement), which no tenant reads (OD-2026-11-15-12, G2308); the job's actor names its run
+    v_actor := CASE WHEN h.changed_mode = 'OPERATOR' THEN 'operator' ELSE h.changed_by END;
     FOR t IN SELECT s.tenant_id, s.audit_id FROM public.schedule_trigger_handover_tenants s
               WHERE s.epoch = h.changed_epoch AND s.audited_at IS NULL
               ORDER BY s.tenant_id FOR UPDATE LOOP
         SELECT * INTO e FROM public.audit_records x WHERE x.id = t.audit_id;
         IF FOUND THEN
-            IF e.tenant_id <> t.tenant_id OR e.actor <> h.changed_by OR e.action <> 'schedule.trigger_handover'
+            IF e.tenant_id <> t.tenant_id OR e.actor <> v_actor OR e.action <> 'schedule.trigger_handover'
                OR e.resource_type <> 'platform' OR e.resource_id <> 'schedule_trigger_handover'
                OR e.reason IS DISTINCT FROM v_reason OR e.created_at <> h.changed_at
                OR e.trace_id IS DISTINCT FROM NULL::text THEN
@@ -639,7 +643,7 @@ BEGIN
             END IF;
         ELSE
             INSERT INTO public.audit_records (id, tenant_id, actor, action, resource_type, resource_id, reason, trace_id, created_at)
-            VALUES (t.audit_id, t.tenant_id, h.changed_by, 'schedule.trigger_handover', 'platform', 'schedule_trigger_handover',
+            VALUES (t.audit_id, t.tenant_id, v_actor, 'schedule.trigger_handover', 'platform', 'schedule_trigger_handover',
                     v_reason, NULL, h.changed_at);
             v_written := v_written + 1;
         END IF;

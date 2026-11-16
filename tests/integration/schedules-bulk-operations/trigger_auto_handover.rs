@@ -1657,7 +1657,37 @@ async fn the_operators_handover_records_mode_operator_and_its_audit_too() {
         (Some("ana"), Some("OPERATOR"))
     );
     assert!(epoch.is_some());
-    assert_eq!(fleet.count("SELECT count(*) FROM audit_records WHERE action = 'schedule.trigger_handover' AND actor = 'ana'").await, 1);
+    // the tenant's record says "operator", never the name typed after --operator: the name stays in the platform's records
+    // (the handover row and the history of the requirement), which no tenant reads (OD-2026-11-15-12, G2308)
+    assert_eq!(
+        fleet
+            .count(
+                "SELECT count(*) FROM audit_records WHERE action = 'schedule.trigger_handover' AND actor = 'operator'"
+            )
+            .await,
+        1
+    );
+    assert_eq!(
+        fleet
+            .count("SELECT count(*) FROM audit_records WHERE actor = 'ana'")
+            .await,
+        0,
+        "no tenant's audit names the operator"
+    );
+    assert_eq!(
+        fleet
+            .count("SELECT count(*) FROM platform_requirement_history WHERE actor = 'ana'")
+            .await,
+        1,
+        "the platform's record keeps the name"
+    );
+    // completing again finds the record it wrote equal to what it would write: no AUDIT_CONFLICT
+    let (written, total): (i32, i32) =
+        sqlx::query_as("SELECT out_written, out_tenants FROM schedule_trigger_handover_audit()")
+            .fetch_one(&fleet.owner)
+            .await
+            .expect("the completion again");
+    assert_eq!((written, total), (0, 1));
 }
 
 // --- timeouts, refusals and the interrupt ---------------------------------------------------------------------------------

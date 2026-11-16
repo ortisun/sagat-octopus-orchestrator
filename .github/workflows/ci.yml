@@ -713,6 +713,28 @@ jobs:
           infra/dr/drill.sh
           cat "$SAGAT_DR_REPORT"
 
+  # The Job of the automatic handover in a real Kubernetes (T018-088, OD-2026-11-15-14, G2250, G2289): a kind cluster of its
+  # own, the chart installed with the job on, an `--atomic` upgrade rolled back (Helm deletes the Job of the revision it leaves,
+  # whose pod writes INTERRUPTED at its SIGTERM, and recreates the old revision's Job under a new UID, a new run), then the
+  # handover. A release run only, like the other jobs that need the whole stack (docs/constitution.md, CI gates).
+  kind-handover:
+    name: handover job in a kind cluster (release)
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # kind pinned by version through the Go module proxy and its checksum database; the node image is pinned by digest in
+      # the script.
+      - name: kind v0.33.0
+        run: |
+          go install sigs.k8s.io/kind@v0.33.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: kind version && helm version --short && kubectl version --client
+      - name: install the chart in kind and run the handover Job
+        run: tests/e2e/scalability-ha/kind-handover.sh
+
   dependencies:
     name: dependency advisories (cargo audit)
     needs: changes
