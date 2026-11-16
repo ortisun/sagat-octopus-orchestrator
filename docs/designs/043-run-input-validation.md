@@ -27,7 +27,7 @@ refined while it was built by
 (Proposed). The owner's decisions are listed under Owner decisions needed. The owner asked for the design to be built
 before it is approved (OD-2026-11-14-15), so the tasks describe what was built and each is ticked with its evidence at
 approval. The registers, the history of the drafts and the build, and the validator's internals are in
-`specs/043-run-input-validation/research.md` (D043-001 to D043-171, G043-001 to G043-056, O043-001 to O043-007). The
+`specs/043-run-input-validation/research.md` (D043-001 to D043-172, G043-001 to G043-056, O043-001 to O043-007). The
 principles cited by numeral are those of [the constitution](../constitution.md).
 
 ### Terms

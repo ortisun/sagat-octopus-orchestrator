@@ -749,6 +749,21 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   returns at once, and `start_server` starts another container (at most three). Red first:
   `a_port_an_http_server_answers_is_told_apart_and_not_waited_on` (`integration_platform_foundation`) waited 20 s.
 
+- **D043-172** (2026-11-16) The goldens of `failureCode` (G043-046, T043-15). Every conformance scenario was run in the six
+  languages (78 scenarios, no bless). Sixteen differed from their goldens, and each difference was read before it was
+  regenerated, scenario by scenario, with a script that lists every difference between a golden and each language's
+  normalized output: in fifteen scenarios the six languages agree, and every difference is one added `failureCode` on
+  the run view of a run that failed: `collection-blob-source` (`ITERATION_LIMIT`, `EXPRESSION_ERROR` twice,
+  `BLOB_UNAVAILABLE`), `collection-compensation` (`NO_STOCK` three times), `collection-fail-fast-drain` (`NO_STOCK`),
+  `collection-limits` (`ITERATION_LIMIT`), `collection-local-recovery` (`RECOVERY_FAILED`), `compensation-safety`
+  (`PAYMENT_NOT_FOUND`, `BUSINESS_REJECTED` twice), `database-connections` (`DATABASE_STATEMENT_DENIED`),
+  `failures-and-retries` (`INSUFFICIENT_FUNDS`, `ACTIVITY_ERROR`), `loop-compensation` and `loop-semantics`
+  (`ITERATION_LIMIT`), `run-input-validation` (`CHILD_INPUT_INVALID` on the parent, `CONTINUATION_INPUT_INVALID` on the
+  chain), `saga-compensation` (`NO_STOCK`), `serialization` (`PAYLOAD_TOO_LARGE`), `switch-builders` (`EXPRESSION_ERROR`
+  twice), `workflow-instance-limits` (`INSTANCE_LIMIT`). Nothing else changed. The sixteenth, `builders.workflows.json`,
+  differs only in `canonical-edges`, where `"multipleOf":0.1` became `"default":0.1` (D043-170). They were then blessed
+  one scenario at a time and the suite run again without the switch.
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
