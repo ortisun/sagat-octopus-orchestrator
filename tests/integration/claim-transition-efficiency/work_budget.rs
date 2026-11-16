@@ -270,6 +270,63 @@ measured!(
     a_lease_and_a_completion_cost_what_the_budget_says_once
 );
 
+/// What admitting a run costs, for a definition that declares no gate (feature 022, NFR-022-007, T022-091): the line
+/// every admission change is measured against. A change to `PgRunStore::create` or to the start path that adds a
+/// statement, a transaction or a row for a definition without `concurrency` or `rateLimit` moves it.
+const PLAIN_ADMISSION: Work = cost(33, 1, 11);
+
+async fn a_plain_admission_costs_what_the_budget_says_once() -> Result<(), Evicted> {
+    let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("the test PostgreSQL preloads pg_stat_statements");
+    let (workflow, _) = w
+        .publish(document(
+            "budget-admission",
+            "a",
+            vec![with(activity("a"), "next", json!("b")), activity("b")],
+        ))
+        .await;
+    // The first starts pay for what is cached afterwards (the definition, prepared statements).
+    for _ in 0..2 {
+        w.start(workflow, &json!({})).await;
+    }
+    let mut costs = Vec::new();
+    for _ in 0..2 {
+        let before = reading(&w).await;
+        w.start(workflow, &json!({})).await;
+        costs.push(spent(&w, before).await?);
+    }
+    assert_eq!(
+        costs[0], costs[1],
+        "the counts of a quiet database do not vary"
+    );
+    if costs[0] != PLAIN_ADMISSION {
+        let before = calls(&w).await;
+        w.start(workflow, &json!({})).await;
+        let after = calls(&w).await;
+        let mut text = String::new();
+        for (query, count) in &after {
+            let delta = count - before.get(query).copied().unwrap_or(0);
+            if delta > 0 {
+                text.push_str(&format!("  {delta:>3}  {query}\n"));
+            }
+        }
+        panic!(
+            "the work of a plain admission left its budget (lower the budget with the change that earns it; raise it only \
+             with the reason beside it): {:?}, budget {PLAIN_ADMISSION:?}\nstatements of one more admission:\n{text}",
+            costs[0]
+        );
+    }
+    Ok(())
+}
+
+measured!(
+    a_plain_admission_costs_what_the_budget_says,
+    a_plain_admission_costs_what_the_budget_says_once
+);
+
 /// Sets the stored kind of the one step row of `run` at `node`, as the owner.
 async fn store_kind(w: &World, run: sagat_domain::execution::RunId, node: &str, kind: &str) {
     let changed = sqlx::query(
