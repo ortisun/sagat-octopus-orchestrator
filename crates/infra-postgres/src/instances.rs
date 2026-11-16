@@ -41,6 +41,11 @@ use crate::pool::BeginSafely;
 /// transaction back, the requirement with it.
 pub type FeatureStep<'c> = Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + 'c>>;
 
+/// A feature step that does nothing: an activation that is the requirement alone (feature 022's capabilities).
+pub fn no_feature_step(_: &mut sqlx::PgConnection) -> FeatureStep<'_> {
+    Box::pin(async { Ok(()) })
+}
+
 /// How long the operator's transaction may hold the requirement epoch. The processes that wait for it run with a
 /// statement timeout of 5 s by default, so the defaults are shorter than that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

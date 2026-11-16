@@ -354,3 +354,46 @@ fn the_usage_lists_the_quota_ceiling_command() {
     let output = control_plane(&["help"], &[]);
     assert!(text(&output.stdout).contains("quota-ceiling"));
 }
+
+/// Feature 022 (T022-094): the operator's activation names one of the two capabilities and who runs it.
+#[test]
+fn flow_control_activate_names_its_capability_and_its_operator() {
+    use sagat_application::flow_control::FlowControlCapability;
+    use sagat_control_plane::cli::{Command, parse};
+    let args = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+    assert_eq!(
+        parse(&args(&[
+            "flow-control-activate",
+            "--capability",
+            "rate-limits",
+            "--operator",
+            "ops:alice"
+        ])),
+        Ok(Command::FlowControlActivate {
+            capability: FlowControlCapability::RateLimits,
+            operator: "ops:alice".to_owned()
+        })
+    );
+    for bad in [
+        &["flow-control-activate"][..],
+        &[
+            "flow-control-activate",
+            "--capability",
+            "schedules",
+            "--operator",
+            "x",
+        ],
+        &["flow-control-activate", "--capability", "rate-limits"],
+        &["flow-control-activate", "--capability", "--operator", "x"],
+        &[
+            "flow-control-activate",
+            "--capability",
+            "rate-limits",
+            "--operator",
+            "x",
+            "--apply",
+        ],
+    ] {
+        assert!(parse(&args(bad)).is_err(), "{bad:?}");
+    }
+}

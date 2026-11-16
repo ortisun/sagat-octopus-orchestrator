@@ -43,6 +43,7 @@ use tokio::net::{TcpListener, TcpStream};
 pub mod cleanup;
 pub mod cli;
 pub mod config;
+pub mod flow_control;
 pub mod handover;
 pub mod registry;
 
