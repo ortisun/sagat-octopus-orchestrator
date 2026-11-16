@@ -212,6 +212,7 @@ Every node has the fields below; each kind adds its own. The kinds: [`activity`]
 | `maxItems` | integer (min 1, max 10000) | yes |  |
 | `next` | [`nodeId`](#nodeId) | yes |  |
 | `onError` | [`nodeId`](#nodeId) |  |  |
+| `operators` | [`collectionOperators`](#collectionOperators) |  |  |
 | `result` | [`expression`](#expression) | yes |  |
 | `timeoutMs` | [`duration`](#duration) |  |  |
 | `type` | `"forEach"` | yes |  |
@@ -440,6 +441,14 @@ any
 |---|---|---|---|
 | `maxSegments` | integer (min 1, max 10000) | yes |  |
 | `timeoutMs` | [`duration`](#duration) | yes |  |
+
+### collectionOperatorStage
+
+any
+
+### collectionOperators
+
+array of [`collectionOperatorStage`](#collectionOperatorStage)
 
 ### databaseLimits
 

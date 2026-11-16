@@ -350,6 +350,7 @@ mod tests {
             id("items"),
             NodeKind::ForEach {
                 items: expr("input.items"),
+                operators: None,
                 body: id("line"),
                 result: expr("bodyResult"),
                 max_items: 10,

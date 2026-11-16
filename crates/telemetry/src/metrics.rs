@@ -149,10 +149,12 @@ pub enum WorkflowPrimitiveRejectionCode {
     QuotaExceeded,
     RateLimited,
     StaleFence,
+    /// A collection's operator chain crossed a running ceiling at entry (design 042, FR-042-025).
+    CollectionOperatorBudget,
 }
 
 impl WorkflowPrimitiveRejectionCode {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::UnsupportedNode,
         Self::InvalidScope,
         Self::IterationLimit,
@@ -175,6 +177,7 @@ impl WorkflowPrimitiveRejectionCode {
         Self::QuotaExceeded,
         Self::RateLimited,
         Self::StaleFence,
+        Self::CollectionOperatorBudget,
     ];
 
     #[must_use]
@@ -202,6 +205,7 @@ impl WorkflowPrimitiveRejectionCode {
             Self::QuotaExceeded => "QUOTA_EXCEEDED",
             Self::RateLimited => "RATE_LIMITED",
             Self::StaleFence => "STALE_FENCE",
+            Self::CollectionOperatorBudget => "COLLECTION_OPERATOR_BUDGET",
         }
     }
 

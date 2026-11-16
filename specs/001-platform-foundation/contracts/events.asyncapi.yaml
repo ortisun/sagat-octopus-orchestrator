@@ -408,6 +408,11 @@ components:
     RunFinished:
       name: RunFinished
       contentType: application/json
+      description: >-
+        A run reached its end. The hint carries no failure code: a FAILED run's code is in its journal
+        (`GET /runs/{runId}/events`). Codes a collection's entry may end a run with include ITERATION_LIMIT, INSTANCE_LIMIT,
+        RUN_DATA_LIMIT, EXPRESSION_ERROR, BLOB_UNAVAILABLE, BLOB_CORRUPT and, for a collection whose operator chain
+        crossed a running ceiling (design 042), COLLECTION_OPERATOR_BUDGET.
       headers:
         type: object
         properties:

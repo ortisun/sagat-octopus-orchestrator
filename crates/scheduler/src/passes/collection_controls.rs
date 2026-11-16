@@ -13,7 +13,7 @@ where
         + LoopProgressStore
         + ScopeFrontierStore
         + ApprovalSchedulerStore,
-    E: ExpressionEvaluator,
+    E: ExpressionEvaluator + 'static,
     R: Entropy,
 {
     fn control_answer(

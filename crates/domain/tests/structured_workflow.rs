@@ -29,6 +29,7 @@ fn collection(body: &str) -> Node {
         id("items"),
         NodeKind::ForEach {
             items: expr("input.items"),
+            operators: None,
             body: id(body),
             result: expr("bodyResult"),
             max_items: 17,
@@ -234,6 +235,7 @@ fn nested_body(name: &str, child: &str) -> BodyDefinition {
         id("items"),
         NodeKind::ForEach {
             items: expr("input.items"),
+            operators: None,
             body: id(child),
             result: expr("bodyResult"),
             max_items: 2,
@@ -376,6 +378,7 @@ fn collection_limits_and_effective_expression_bytes_are_validated() {
             id("items"),
             NodeKind::ForEach {
                 items: expr("input.items"),
+                operators: None,
                 body: id("line"),
                 result: expr("bodyResult"),
                 max_items: items,
@@ -400,6 +403,7 @@ fn collection_limits_and_effective_expression_bytes_are_validated() {
         id("items"),
         NodeKind::ForEach {
             items: expr("input.items"),
+            operators: None,
             body: id("line"),
             result: expr("bodyResult"),
             max_items: 10000,

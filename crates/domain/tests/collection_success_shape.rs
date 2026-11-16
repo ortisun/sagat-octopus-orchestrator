@@ -69,6 +69,7 @@ fn collection(name: &str, body_name: &str, next: &str) -> Node {
         id(name),
         NodeKind::ForEach {
             items: Expression::parse("input.items").expect("items"),
+            operators: None,
             body: id(body_name),
             result: Expression::parse("bodyResult").expect("result"),
             max_items: 10_000,

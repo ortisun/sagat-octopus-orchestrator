@@ -509,6 +509,28 @@ pub trait ExpressionEvaluator: Send + Sync {
             .map(crate::collection_source::CollectionSource::Items)
     }
 
+    /// Applies a collection's operator chain once, at scope entry (design 042, FR-042-006): builds the run's environment
+    /// once, evaluates `input` in it when it is the `items` expression, then each stage over the whole output of the one
+    /// before, with `element` and `position` bound per element, under the running `ceilings`. Synchronous and bounded:
+    /// the scheduler runs it in a blocking task, and it checks its wall time between elements.
+    ///
+    /// The default, for an adapter that predates chains, refuses every chain with
+    /// [`crate::collection_chain::ChainFailure::Unsupported`].
+    ///
+    /// # Errors
+    /// [`crate::collection_chain::ChainFailure`], naming the first failing stage and position, never a value.
+    fn collection_chain(
+        &self,
+        input: crate::collection_chain::ChainInput<'_>,
+        chain: &sagat_domain::operators::OperatorChain,
+        data: &RunData,
+        ceilings: &crate::collection_chain::ChainCeilings,
+    ) -> Result<crate::collection_chain::ChainAnswer, crate::collection_chain::ChainFailure> {
+        // An adapter that predates chains fails them closed rather than run a body over an unshaped list.
+        let _ = (input, chain, data, ceilings);
+        Err(crate::collection_chain::ChainFailure::Unsupported)
+    }
+
     /// Evaluates a body return in the exact iteration context.
     fn collection_return(
         &self,
@@ -1649,19 +1671,38 @@ pub enum EngineError {
 }
 
 /// Runs domain commands against a locked run.
-#[derive(Debug, Clone)]
+///
+/// The evaluator is shared, so that a bounded evaluation that may take long (a collection's operator chain) can run in
+/// a blocking task of its own ([`Self::shared_evaluator`]).
+#[derive(Debug)]
 pub struct Engine<E> {
-    evaluator: E,
+    evaluator: Arc<E>,
+}
+
+impl<E> Clone for Engine<E> {
+    fn clone(&self) -> Self {
+        Self {
+            evaluator: Arc::clone(&self.evaluator),
+        }
+    }
 }
 
 impl<E: ExpressionEvaluator> Engine<E> {
-    pub const fn new(evaluator: E) -> Self {
-        Self { evaluator }
+    pub fn new(evaluator: E) -> Self {
+        Self {
+            evaluator: Arc::new(evaluator),
+        }
     }
 
     #[must_use]
-    pub const fn evaluator(&self) -> &E {
+    pub fn evaluator(&self) -> &E {
         &self.evaluator
+    }
+
+    /// The evaluator, to move into a blocking task.
+    #[must_use]
+    pub fn shared_evaluator(&self) -> Arc<E> {
+        Arc::clone(&self.evaluator)
     }
 
     /// Evaluates one End output request with the same failure redaction and retained-output limits

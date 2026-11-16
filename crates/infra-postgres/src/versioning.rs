@@ -166,14 +166,15 @@ async fn save_state(
     Ok(())
 }
 
-impl PublishingStore for PgDefinitionStore {
-    async fn replay_publication(
-        &self,
-        tenant: TenantId,
-        workflow: WorkflowId,
-        idempotency: &sagat_application::definitions::Idempotency,
-    ) -> Result<Option<sagat_application::definitions::VersionRecord>, StoreError> {
-        let mut conn = self.pool().acquire().await.map_err(store_error)?;
+/// The committed result of a publication with the same key and fingerprint (`DefinitionStore::replay_publication`).
+pub(crate) async fn replay_publication(
+    store: &PgDefinitionStore,
+    tenant: TenantId,
+    workflow: WorkflowId,
+    idempotency: &sagat_application::definitions::Idempotency,
+) -> Result<Option<sagat_application::definitions::VersionRecord>, StoreError> {
+    {
+        let mut conn = store.pool().acquire().await.map_err(store_error)?;
         let number = crate::definitions::replay(
             &mut conn,
             tenant,
@@ -185,12 +186,14 @@ impl PublishingStore for PgDefinitionStore {
         match number {
             Some(number) => {
                 let number = number.parse().map_err(|_| corrupt("publication version"))?;
-                self.get_version(tenant, workflow, number).await
+                store.get_version(tenant, workflow, number).await
             }
             None => Ok(None),
         }
     }
+}
 
+impl PublishingStore for PgDefinitionStore {
     async fn namespace_by_id(
         &self,
         tenant: TenantId,
@@ -843,17 +846,6 @@ pub(crate) async fn effective_policy(
 
 /// The run store serves publishing too, so one value backs every service of the control plane.
 impl PublishingStore for crate::execution::PgRunStore {
-    async fn replay_publication(
-        &self,
-        tenant: TenantId,
-        workflow: WorkflowId,
-        idempotency: &sagat_application::definitions::Idempotency,
-    ) -> Result<Option<sagat_application::definitions::VersionRecord>, StoreError> {
-        self.definitions
-            .replay_publication(tenant, workflow, idempotency)
-            .await
-    }
-
     async fn namespace_by_id(
         &self,
         tenant: TenantId,
