@@ -35,6 +35,7 @@ pub mod execution;
 pub mod flow_control;
 pub mod identity;
 pub mod instances;
+pub mod keyed_digest;
 pub mod leaf_certification;
 pub mod loop_progress;
 pub mod maintenance;
