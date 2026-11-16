@@ -767,6 +767,74 @@ fn compiled_schemas_are_shared_within_a_tenant_never_across_and_a_failure_is_rem
     );
 }
 
+/// The heaviest schema the pre-check admits: 32 patterns at the most states the 256 KiB of programs allow, and the rest of
+/// the 64 KiB spent on `enum` literals.
+fn heaviest_admitted_schema() -> Value {
+    let with = |repeat: usize, members: usize| {
+        let mut properties = serde_json::Map::new();
+        for i in 0..32 {
+            properties.insert(
+                format!("p{i:02}"),
+                json!({"type": "string", "pattern": format!("q{i:02}[ab]{{12}}c{{{repeat}}}d{{{repeat}}}")}),
+            );
+        }
+        properties.insert(
+            "e".into(),
+            json!({"enum": (0..members).map(|n| json!(n)).collect::<Vec<_>>()}),
+        );
+        json!({"type": "object", "properties": properties})
+    };
+    let mut repeat = 1;
+    while repeat < 100 && precheck(&bytes(&with(repeat + 1, 0))).is_ok() {
+        repeat += 1;
+    }
+    let mut members = 0;
+    while precheck(&bytes(&with(repeat, members + 256))).is_ok() {
+        members += 256;
+    }
+    let schema = with(repeat, members);
+    precheck(&bytes(&schema)).expect("the heaviest schema is admitted");
+    schema
+}
+
+/// Security review of 2026-11-15 Major 2, correctness review Major 4 (NFR-043-PERF, SC-043-004): the heaviest schema the
+/// pre-check admits weighs no more than one tenant's share of the cache, so it is compiled once and kept, never compiled
+/// again on every start.
+#[test]
+fn the_heaviest_schema_the_precheck_admits_fits_a_tenant_share_and_is_kept() {
+    use sagat_infra_schema::run_input::{MAX_COMPILED_INPUT_SCHEMA_BYTES, TENANT_SHARE};
+
+    let schema = heaviest_admitted_schema();
+    let started = Instant::now();
+    let weight = compiled(&schema).weight();
+    let compile = started.elapsed();
+    let share = MAX_COMPILED_INPUT_SCHEMA_BYTES / TENANT_SHARE;
+    eprintln!(
+        "the heaviest admitted schema: {} bytes, weight {weight} of a share of {share}, compiled in {compile:?}",
+        bytes(&schema).len()
+    );
+    assert!(
+        weight <= share,
+        "the heaviest admitted schema weighs {weight}, more than a tenant's share of {share}"
+    );
+    let schemas = InputSchemas::default();
+    let canonical = bytes(&schema);
+    let digest = sha_of(&canonical);
+    let stored = InputSchema::new(canonical, digest);
+    let tenant = TenantId::generate();
+    for _ in 0..3 {
+        schemas
+            .check(tenant, &stored, true, br#"{"p00": "q00"}"#)
+            .expect_err("refused at its pattern");
+    }
+    let stats = schemas.cache_stats();
+    assert_eq!(
+        (stats.misses, stats.hits, stats.entries),
+        (1, 2, 1),
+        "compiled once and kept"
+    );
+}
+
 fn sha_of(bytes: &[u8]) -> [u8; 32] {
     // a stand-in digest for the cache key: any function of the bytes keeps the property the test needs
     let mut out = [0u8; 32];

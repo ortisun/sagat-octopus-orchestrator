@@ -24,8 +24,11 @@ use super::{MAX_PATTERN_PROGRAM_BYTES, MAX_PATTERN_STATES};
 const MAX_REPETITION: u32 = 100;
 /// How deep a pattern may nest groups and repetitions.
 const MAX_PATTERN_NESTING: u32 = 64;
-/// The capacity of each lazy DFA cache (forward and reverse) of a compiled pattern.
-pub(super) const HYBRID_CACHE_BYTES: usize = 64 * 1024;
+/// The capacity of each lazy DFA cache (forward and reverse) of a compiled pattern. Its weight counts both for every
+/// matcher, so it sizes what the heaviest admitted schema weighs: at 64 KiB, 32 patterns weighed more than a tenant's
+/// share of the cache and such a schema was compiled again on every start (security review of 2026-11-15, Major 2).
+/// A pattern whose lazy DFA does not fit runs on the PikeVM, whose work the charge already prices (D043-063).
+pub(super) const HYBRID_CACHE_BYTES: usize = 16 * 1024;
 /// How many threads may match one pattern at once besides its owner: the regex keeps a cache for each (D043-064).
 const CONCURRENT_MATCHERS: usize = 4;
 // A pattern is matched only under a permit of the gate, so the caches its weight counts cover every matcher (D043-107).
