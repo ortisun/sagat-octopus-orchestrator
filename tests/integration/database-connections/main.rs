@@ -84,15 +84,21 @@ fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation() 
         .name("managed-secret-lifecycle".into())
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(bounded::lifecycle(
-                    "managed secret lifecycle",
-                    LIFECYCLE_LIMIT,
-                    managed_secret_lifecycle,
-                ))
+            // the scenarios that count what they did read this recorder (design 043, `run_input::METRICS`)
+            let (telemetry, recorder) =
+                sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(3600));
+            let _ = run_input::METRICS.set(telemetry);
+            metrics::with_local_recorder(&recorder, || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(bounded::lifecycle(
+                        "managed secret lifecycle",
+                        LIFECYCLE_LIMIT,
+                        managed_secret_lifecycle,
+                    ))
+            })
         })
         .unwrap()
         .join()

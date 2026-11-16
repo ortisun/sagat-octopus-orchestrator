@@ -14,6 +14,46 @@ use sagat_application::{
 };
 use serde_json::json;
 
+/// The metrics of the lifecycle this scenario runs in, recorded on its thread (set by the test before it starts).
+pub static METRICS: std::sync::OnceLock<sagat_telemetry::Metrics> = std::sync::OnceLock::new();
+
+/// `database_executions_total{origin="AD_HOC_STEP",outcome}` so far: what the run service counts per ad hoc start.
+fn executions(outcome: &str) -> u64 {
+    let Some(metrics) = METRICS.get() else {
+        panic!("the lifecycle records its metrics");
+    };
+    metrics
+        .render()
+        .lines()
+        .filter(|line| {
+            line.starts_with("database_executions_total{")
+                && line.contains("origin=\"AD_HOC_STEP\"")
+                && line.contains(&format!("outcome=\"{outcome}\""))
+        })
+        .filter_map(|line| line.rsplit(' ').next()?.parse::<u64>().ok())
+        .sum()
+}
+
+/// What one call added to the two outcomes of `database_executions_total`: `(admitted, refused)`.
+struct Counted {
+    admitted: u64,
+    refused: u64,
+}
+
+impl Counted {
+    fn now() -> Self {
+        Self {
+            admitted: executions("admitted"),
+            refused: executions("refused"),
+        }
+    }
+
+    fn since(before: &Self) -> (u64, u64) {
+        let now = Self::now();
+        (now.admitted - before.admitted, now.refused - before.refused)
+    }
+}
+
 pub async fn run(w: &World) {
     let mut doc = document(
         "database-ad-hoc-checked",
@@ -38,7 +78,8 @@ pub async fn run(w: &World) {
         key,
     };
 
-    // refused, with the field and the rule
+    // refused, with the field and the rule; counted once, `refused`
+    let before = Counted::now();
     let refused = w
         .runs
         .start_database(
@@ -56,6 +97,8 @@ pub async fn run(w: &World) {
             rule: Some("type"),
         }
     );
+    assert_eq!(Counted::since(&before), (0, 1), "a refusal is counted once");
+    let before = Counted::now();
     w.runs
         .start_database(
             &w.admin,
@@ -64,6 +107,11 @@ pub async fn run(w: &World) {
         )
         .await
         .expect("a matching input is admitted");
+    assert_eq!(
+        Counted::since(&before),
+        (1, 0),
+        "an admission is counted once"
+    );
 
     // a run admitted before the check (report mode) is replayed by a refused retry of its key
     let reported = RunService::new(
@@ -84,6 +132,7 @@ pub async fn run(w: &World) {
         )
         .await
         .expect("admitted in report mode");
+    let before = Counted::now();
     let replayed = w
         .runs
         .start_database(
@@ -94,6 +143,11 @@ pub async fn run(w: &World) {
         .await
         .expect("replayed, not refused");
     assert_eq!(replayed.info.run_id, admitted.info.run_id);
+    assert_eq!(
+        Counted::since(&before),
+        (1, 0),
+        "a refused retry answered with its run is counted once, as the store's replay is"
+    );
 
     // its private rerun says nothing of the source's input
     w.operate(admitted.info.run_id, RunOperation::Cancel)
