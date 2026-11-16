@@ -104,3 +104,75 @@ Conformance in the six languages, every scenario, no bless (`SAGAT_RUST_SDK_TARG
 the target by it; restored); the second stopped at the same scenario on `unexpected response from SSLRequest: 0x48` from
 its target PostgreSQL, the D043-171 collision in another fixture, fixed by D043-176; the third, on the fixed tree, passed:
 78 scenarios in six languages, 1 test passed in 1,752 s.
+
+## 2026-11-16, the gates of the approval (`feature/043-creators`)
+
+**Commits.** The suites below ran on `4b6eb1a649b281660c4622e20d0b348322a7d8a4`, the commit the four approval reports
+read. One unit test failed there (below); its fix is `f48d5729eb534dc25c6cb04eeeabb0dc80202bad`, whose diff from
+`4b6eb1a6` is one entry of the CLI's help catalog (`apps/cli/src/diagnostics.rs`), its section of
+`docs/quickstarts/errors.md`, and records (review reports, the runbook, `research.md`); the architecture reviewer read
+that diff (`reviews/2026-11-16/round-2/post-review-cli-architecture.md`, no Blocker or Major). The unit tests, the
+developer-experience contract, the conformance run, the per-SDK checks and the static gates ran again on `f48d5729`.
+
+**Environment.** Apple M3 Max, macOS 26.3, rustc 1.100.0, Docker Desktop (Testcontainers starts its own PostgreSQL),
+`RUST_TEST_THREADS=2`, `CARGO_PROFILE_DEV_DEBUG=0`, a private `CARGO_TARGET_DIR` outside the repository; no test was
+retried in place.
+
+| Target (at `4b6eb1a6`) | Owner | `SAGAT_TEST_AS_RUNTIME_ROLE=1` |
+|---|---|---|
+| `integration_gitops_versioning` | 41 passed, 0 failed | 41 passed, 0 failed |
+| `integration_database_connections` | 7 passed, 0 failed | 7 passed, 0 failed |
+| `integration_run_input_cache` | 1 passed, 0 failed | 1 passed, 0 failed |
+| `integration_claim_transition_efficiency` | 17 passed, 0 failed | 17 passed, 0 failed |
+| `integration_durable_execution` | 192 passed, 0 failed | 192 passed, 0 failed |
+| `integration_schedules_bulk_operations` | 757 passed, 0 failed, 2 ignored | 757 passed, 0 failed, 2 ignored |
+| `integration_events_webhooks_messaging` | 120 passed, 0 failed | 120 passed, 0 failed |
+| `integration_workflow_primitives` | 805 passed, 0 failed, 23 ignored | 805 passed, 0 failed, 23 ignored |
+| `integration_payload_classification` | 43 passed, 0 failed, 2 ignored | 43 passed, 0 failed, 2 ignored |
+| `integration_platform_foundation` | 107 passed, 0 failed | 107 passed, 0 failed |
+| `fault_events_webhooks_messaging` | 12 passed, 0 failed | 12 passed, 0 failed |
+| `fault_workflow_primitives` | 93 passed, 0 failed | 93 passed, 0 failed |
+| `fault_schedules_bulk_operations` | 131 passed, 0 failed | 131 passed, 0 failed |
+| `fault_payload_classification` | 8 passed, 0 failed, 1 ignored | 8 passed, 0 failed, 1 ignored |
+| `fault_platform_foundation` | 38 passed, 0 failed | 38 passed, 0 failed |
+
+Named in both roles: `the_inventory_runs_on_a_database_of_0_2_0_before_the_migration`,
+`a_version_a_live_schedule_pins_is_never_superseded`,
+`a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all_lists_it`,
+`the_inventory_lists_the_versions_that_would_be_refused_and_exits_by_what_it_found` (each inventory run as the runtime
+role in both), `a_buffered_action_released_and_started_is_counted_once`. The 23 contract targets: 366 passed, 0 failed.
+
+The unit tests of `sagat-domain`, `sagat-application`, `sagat-infra-schema`, `sagat-infra-ir`, `sagat-infra-postgres`,
+`sagat-api-http`, `sagat-scheduler`, `sagat-control-plane`, `sagat-execution-engine` and `sagat-cli`: at `4b6eb1a6`,
+2,337 passed and 1 failed, `every_code_the_platform_returns_has_help_and_the_help_names_no_code_the_platform_does_not`
+(`apps/cli/tests/diagnostics.rs`: "codes with no help: [\"VALIDATOR_BUSY\"]"), a defect of D043-183, whose dry run gives
+that diagnostic code; fixed in `f48d5729`; at `f48d5729`, 2,338 passed, 0 failed, among them
+`run_input::tests::a_refusing_recheck_is_counted`, `the_limits_and_the_charges_of_run_input_validation_v1_are_pinned`,
+`run_input::tests::a_precheck_whose_compile_panics_is_interrupted`,
+`run_input::tests::the_caller_whose_compile_panics_is_answered_interrupted` and
+`inventory::tests::a_version_the_validator_cannot_judge_makes_the_inventory_exit_2_and_is_listed`.
+`contract_developer_experience` at `f48d5729`: 8 passed.
+
+Conformance at `f48d5729`, every scenario in the six languages, no bless: 78 scenarios, 1 test passed in 1,743 s; no
+golden changed. Two earlier attempts stopped at `database-connections` for the environment, not the code: the private
+target directory, made by hand before cargo, had no `CACHEDIR.TAG` (the support code finds the target by it; written),
+and the `database-runner` binary was not yet built in that directory (`cargo build -p sagat-database-runner`). The
+per-SDK checks of `sdks/AGENTS.md` at `f48d5729`: TypeScript, Python, Go, C# (532 of 532, `dotnet format` clean), Java
+and Rust passed; the Studio types match the OpenAPI, and the Studio tests passed (99 files, 1,530 tests). `cargo fmt --check`, `cargo clippy --workspace --all-targets
+--locked -- -D warnings`, the three python checks and their unit tests (`python3 -m unittest discover -s scripts/tests`:
+OK, 2 skipped) passed at `f48d5729`.
+
+**Seen failing first** (each red run in this session, before its fix): D043-177
+`a_precheck_waits_in_the_starts_pool_and_is_busy_after_its_wait` (`Ok(())` where `Err(Busy)` was expected); D043-179 the
+superseded inventory test (both old versions counted) and the `--all` CLI case (an unknown argument); D043-180
+`a_panic_of_the_validator_is_counted_interrupted_and_no_room_deadline` (three `deadline`); D043-183
+`a_dry_run_whose_pre_check_found_no_permit_is_unavailable_not_a_problem` (`Ok` with a problem) and
+`a_promotion_whose_parse_finds_no_permit_is_unavailable_not_draft_has_changes` (`DraftHasChanges`); D043-184
+`a_buffered_action_released_and_started_is_counted_once` (three `accepted` for two starts); D043-185
+`a_version_a_live_schedule_pins_is_never_superseded` (the pinned version superseded); D043-186
+`a_precheck_whose_compile_panics_is_interrupted` (the panic unwound); D043-187
+`the_inventory_runs_on_a_database_of_0_2_0_before_the_migration` (`relation "schedules" does not exist`, exit 2). Tests
+that guard an existing behaviour passed at once, as written: the pin test, the down-migration guard test, the sentinels
+of rows 2 and 13, the rewritten `a_refusing_recheck_is_counted` (its expected counts are those of D043-184), and
+`a_version_the_validator_cannot_judge_makes_the_inventory_exit_2_and_is_listed`, which tests the exit status and the
+printed line built in D043-187.
