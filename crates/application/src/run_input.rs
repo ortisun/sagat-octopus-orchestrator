@@ -416,6 +416,24 @@ impl CheckedRunInput {
     }
 }
 
+/// What `check_before_its_start` counts: the start that follows counts the rest.
+const BEFORE_ITS_START: Counting = Counting::BeforeItsStart;
+/// What `check_ahead` counts.
+const AHEAD: Counting = Counting::Ahead;
+
+/// What one call of the gate counts in `run_input_validations_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Counting {
+    /// Every outcome.
+    All,
+    /// A start an earlier call checked: a refusal and a report only.
+    AtStart,
+    /// A check its start repeats: all but a report, which the start counts with its audit.
+    BeforeItsStart,
+    /// A check of a request whose start is checked and counted later: a refusal only.
+    Ahead,
+}
+
 /// A refusal reported in `report` mode: the reason and the rule, never the field or a value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportedRefusal {
@@ -529,8 +547,69 @@ impl RunInputGate {
         creator: Creator,
         policy: FieldPolicy,
     ) -> Result<CheckedRunInput, InputRefusal> {
-        self.checked(tenant, version, schema, input, creator, policy, true)
-            .await
+        self.checked(
+            tenant,
+            version,
+            schema,
+            input,
+            creator,
+            policy,
+            Counting::All,
+        )
+        .await
+    }
+
+    /// As [`Self::check`], for a check ahead of a start that [`Self::recheck`] checks again (a schedule's action before
+    /// its decision): it counts what the start will not count, an acceptance and a refusal, but not a report, which the
+    /// start counts with the audit it writes (architecture and correctness reviews of 2026-11-16, round 2).
+    ///
+    /// # Errors
+    /// As [`Self::check`].
+    pub async fn check_before_its_start(
+        &self,
+        tenant: TenantId,
+        version: WorkflowVersionId,
+        definition: &WorkflowDefinition,
+        input: Vec<u8>,
+        creator: Creator,
+        policy: FieldPolicy,
+    ) -> Result<CheckedRunInput, InputRefusal> {
+        self.checked(
+            tenant,
+            version,
+            definition.input_schema(),
+            input,
+            creator,
+            policy,
+            BEFORE_ITS_START,
+        )
+        .await
+    }
+
+    /// As [`Self::check`], for a request whose start comes later and is checked and counted then (a `CANCEL_SOURCE`
+    /// reset): only a refusal, which ends the request, is counted here.
+    ///
+    /// # Errors
+    /// As [`Self::check`].
+    pub async fn check_ahead(
+        &self,
+        tenant: TenantId,
+        version: WorkflowVersionId,
+        definition: &WorkflowDefinition,
+        input: Vec<u8>,
+        creator: Creator,
+        policy: FieldPolicy,
+    ) -> Result<CheckedRunInput, InputRefusal> {
+        self.checked(
+            tenant,
+            version,
+            definition.input_schema(),
+            input,
+            creator,
+            policy,
+            AHEAD,
+        )
+        .await
     }
 
     /// As [`Self::check`], for the start of an input the creator already checked, and counted, a moment before (a
@@ -555,7 +634,7 @@ impl RunInputGate {
             input,
             creator,
             policy,
-            false,
+            Counting::AtStart,
         )
         .await
     }
@@ -578,12 +657,18 @@ impl RunInputGate {
         input: Vec<u8>,
         creator: Creator,
         policy: FieldPolicy,
-        counted: bool,
+        counting: Counting,
     ) -> Result<CheckedRunInput, InputRefusal> {
         // a recheck counts only what the check before it could not have counted: a refusal (D043-152), or a report of
         // one in `report` mode, whose audit is written with the run (correctness review of 2026-11-16, Nit 6)
         let count = |creator: Creator, outcome: &'static str| {
-            if counted || matches!(outcome, "refused" | "schema_unusable" | "reported") {
+            let counts = match counting {
+                Counting::All => true,
+                Counting::AtStart => matches!(outcome, "refused" | "schema_unusable" | "reported"),
+                Counting::BeforeItsStart => outcome != "reported",
+                Counting::Ahead => matches!(outcome, "refused" | "schema_unusable"),
+            };
+            if counts {
                 count(creator, outcome);
             } else {
                 tracing::Span::current().record("sagat.run_input.outcome", outcome);
@@ -871,7 +956,7 @@ mod tests {
                 b"{}".to_vec(),
                 Creator::Schedule,
                 FieldPolicy::Show,
-                false,
+                Counting::AtStart,
             )
             .now_or_never()
             .unwrap()
@@ -915,7 +1000,7 @@ mod tests {
                     b"{}".to_vec(),
                     Creator::Schedule,
                     FieldPolicy::Show,
-                    false,
+                    Counting::AtStart,
                 )
                 .now_or_never()
                 .unwrap()
@@ -929,6 +1014,66 @@ mod tests {
                 "run_input_validations_total{creator=schedule,outcome=reported}".to_owned(),
                 1
             )])
+        );
+    }
+
+    /// Round 2 of 2026-11-16 (architecture 3, correctness 1): in `report` mode a schedule's action checked before its
+    /// decision and again at its start is counted `reported` once, as its one audit row; a `CANCEL_SOURCE` reset's
+    /// request counts nothing that its completion will count.
+    #[test]
+    fn a_report_is_counted_once_per_start_whatever_checks_it_before() {
+        use futures_util::FutureExt as _;
+
+        let counted = Arc::new(Counted::default());
+        let recorder = Recorder(Arc::clone(&counted));
+        let gate = RunInputGate::new(
+            Arc::new(Scripted::answering([
+                invalid(Rule::Required),
+                invalid(Rule::Required),
+                invalid(Rule::Required),
+                invalid(Rule::Required),
+            ])),
+            InputValidationMode::Report,
+        );
+        let schema = schema();
+        metrics::with_local_recorder(&recorder, || {
+            let tenant = TenantId::generate();
+            let version = WorkflowVersionId::generate();
+            // a schedule's action: the check before its decision, then the start's recheck
+            // a cancelling reset: the check of its request, then the completion's check
+            for (creator, ahead, start) in [
+                (Creator::Schedule, BEFORE_ITS_START, Counting::AtStart),
+                (Creator::Repeat, AHEAD, Counting::All),
+            ] {
+                for counting in [ahead, start] {
+                    gate.checked(
+                        tenant,
+                        version,
+                        Some(&schema),
+                        b"{}".to_vec(),
+                        creator,
+                        FieldPolicy::Root,
+                        counting,
+                    )
+                    .now_or_never()
+                    .unwrap()
+                    .unwrap();
+                }
+            }
+        });
+        let counts = counted.0.lock().unwrap().clone();
+        assert_eq!(
+            counts,
+            std::collections::BTreeMap::from([
+                (
+                    "run_input_validations_total{creator=repeat,outcome=reported}".to_owned(),
+                    1
+                ),
+                (
+                    "run_input_validations_total{creator=schedule,outcome=reported}".to_owned(),
+                    1
+                ),
+            ])
         );
     }
 

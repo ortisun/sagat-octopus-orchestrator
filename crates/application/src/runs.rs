@@ -3339,7 +3339,7 @@ where
             )
             .await?;
         self.run_inputs
-            .check(
+            .check_before_its_start(
                 principal.tenant_id(),
                 version,
                 &definition,

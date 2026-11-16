@@ -835,6 +835,33 @@ fn the_heaviest_schema_the_precheck_admits_fits_a_tenant_share_and_is_kept() {
     );
 }
 
+/// Security review of 2026-11-16, round 2, Major 1: every schema position carries its JSON pointer, so a long name high
+/// in the document, shared by thousands of positions below it, made the pre-check hold and compare gigabytes. The
+/// pointers the pre-check builds are bounded in total, and such a schema is refused as too large, at once.
+#[test]
+fn a_schema_whose_pointers_would_outgrow_the_bound_is_refused_as_too_large() {
+    let mut properties = serde_json::Map::new();
+    for i in 0..3_000 {
+        properties.insert(format!("a{i}"), json!({}));
+    }
+    let long = "n".repeat(30_000);
+    let schema = json!({"$defs": {long: {"properties": properties}}});
+    let bytes = bytes(&schema);
+    assert!(
+        bytes.len() <= 64 * 1024,
+        "within the size limit: {}",
+        bytes.len()
+    );
+    let started = Instant::now();
+    let refused = CompiledInputSchema::compile(&bytes).expect_err("refused");
+    assert_eq!(refused.issue, InputSchemaIssue::TooLarge, "{refused:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "refused at once: {:?}",
+        started.elapsed()
+    );
+}
+
 fn sha_of(bytes: &[u8]) -> [u8; 32] {
     // a stand-in digest for the cache key: any function of the bytes keeps the property the test needs
     let mut out = [0u8; 32];

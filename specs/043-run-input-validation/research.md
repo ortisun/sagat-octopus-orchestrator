@@ -763,6 +763,21 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   twice), `workflow-instance-limits` (`INSTANCE_LIMIT`). Nothing else changed. The sixteenth, `builders.workflows.json`,
   differs only in `canonical-edges`, where `"multipleOf":0.1` became `"default":0.1` (D043-170). They were then blessed
   one scenario at a time and the suite run again without the switch.
+- **D043-173** (2026-11-16) `report` is counted once per start (round 2: architecture Major 3, correctness Major 1). The
+  gate says what one call counts (`Counting`): `check` counts every outcome; `check_before_its_start`, the check of a
+  schedule's action before its decision, counts all but `reported`, which its start counts with the audit row it
+  writes; `recheck`, at that start, counts a refusal, `schema_unusable` and `reported`; `check_ahead`, the check of a
+  `CANCEL_SOURCE` reset's request, counts only what ends the request (a refusal, `schema_unusable`). Unit tests
+  `a_reporting_recheck_is_counted` and `a_report_is_counted_once_per_start_whatever_checks_it_before` (seen red at two
+  `reported` counts before the change, green after).
+- **D043-174** (2026-11-16) The pre-check bounds the bytes of the JSON pointers it makes (`MAX_POINTER_BYTES`, 4 MiB in
+  all, charged as each pointer is made), and a schema over it is refused as `TooLarge` (round 2: security Major 1, a
+  long `$defs` name repeated over thousands of positions). Test
+  `a_schema_whose_pointers_would_outgrow_the_bound_is_refused_as_too_large` (seen accepted before, refused after).
+- **D043-175** (2026-11-16) `refuse_cron_tick` names the tenant in its predicate (`AND tenant_id = $4`, from the audit
+  record), as every other trigger update does (round 2: security Nit 3). Row 3's test now keeps the plain-start holder
+  waiting for its signal when the refused with-start arrives, and asserts it is still waiting after (round 2:
+  correctness Major 2); `one_scheduled_action_is_one_validation_in_two_spans` groups its condition (correctness Nit 3).
 
 ## 3. Gaps
 

@@ -505,11 +505,12 @@ impl EventDispatchStore for PgRunStore {
         let moved = sqlx::query(
             "UPDATE workflow_triggers \
              SET next_fire_at = $3, retry_at = NULL, last_fire_at = $2 \
-             WHERE id = $1 AND next_fire_at = $2",
+             WHERE id = $1 AND next_fire_at = $2 AND tenant_id = $4",
         )
         .bind(id)
         .bind(expected)
         .bind(next)
+        .bind(audit.tenant_id().as_uuid())
         .execute(&mut *tx)
         .await
         .map_err(store_error)?

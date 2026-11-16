@@ -399,7 +399,7 @@ and the architecture check keeps it there (FR-043-016). Each entry names a file 
 | 9 | Event, webhook, message trigger | `crates/scheduler/src/events.rs` `dispatch` → `start_run` → `start` | `store.create` `events.rs` | the event envelope | delivery without a run + one audit + metric | as for `Invalid`, its own reason and metric |
 | 10 | Cron trigger (the legacy cron pass, until the cron triggers are handed over to the schedule pass, ADR-0083) | `cron_pass` `events.rs` → `start` | as 9 | `{event, data: {scheduledAt, firedAt}}` | one audit with the move of the trigger, none when the tick's key holds a run (D043-156, D043-165) | as for `Invalid` |
 | 11 | Child run | `crates/scheduler/src/passes.rs` `start_child` | `store.create` `passes.rs` | the parent node's evaluated input | parent step `CHILD_INPUT_INVALID`, unless its child was claimed (D043-164) | parent step `RUN_INPUT_SCHEMA_UNUSABLE`, as for `Invalid` |
-| 12 | Continue-as-new (evaluated) | `advance_continuation_in_view` `passes.rs`, input at | `continue_evaluated` `crates/infra-postgres/src/chain_progress.rs` | the evaluated expression | predecessor `FAILED CONTINUATION_INPUT_INVALID` | predecessor `FAILED RUN_INPUT_SCHEMA_UNUSABLE` |
+| 12 | Continue-as-new (evaluated) | `advance_continuation_in_view` `passes.rs` | `continue_evaluated` `crates/infra-postgres/src/chain_progress.rs` | the evaluated expression | predecessor `FAILED CONTINUATION_INPUT_INVALID` | predecessor `FAILED RUN_INPUT_SCHEMA_UNUSABLE` |
 | 13 | Ad hoc database execution, connection probe, private rerun | `crates/api-http/src/routes/database_executions.rs` → `crates/application/src/runs/ad_hoc.rs` | `store.create` `ad_hoc.rs` | caller, or `{}`; a private rerun the stored input | as 1 when the document declares a schema; a private rerun `field` `/` and `rule` `other` (D043-148) | in `enforce` refused at the parse with the publication's issue, naming the keyword; in `report` reported, the run created (FR-043-011) |
 | 14 | Schedule create and update (not a creator) | `crates/application/src/schedules.rs` → `check` | none | the schedule's input with `nominalTimeField` filled with the next nominal time (D043-158) | `422 SCHEDULE_INPUT_INVALID`, `NOMINAL_TIME_FIELD_INVALID` | `422 RUN_INPUT_SCHEMA_UNUSABLE` |
 | — | Continue-as-new (legacy, tests only) | `chain_progress.rs` | `chain_progress.rs` | the predecessor's input, byte for byte | not checked | not checked |
@@ -481,13 +481,13 @@ enum FieldPolicy { Show, Root }      // Root: `/` and `other`, for every start w
   digest the `InputSchema` carries and the creator (`shared` is false for `Creator::AdHoc`, D043-041). The digest is the
   codec's: `InputSchema::new` is public, since the domain cannot hash (`sha2` is not in `DOMAIN_ALLOWED`), and a digest
   that does not match its bytes can only mis-key the cache within its own tenant, because the tenant is in the key.
-- **A service without a gate.** `RunService`, the `Scheduler`, the `EventDispatcher` and the `ScheduleService` hold
+- **A service without a gate.** `RunService`, the `Scheduler` and the `EventDispatcher` hold
   `RunInputGate::unwired()` until a composition root gives them one with `.with_run_inputs`. Its port answers `Busy` for
   every schema, so a start of a version with an `inputSchema` is refused as transient (`503`, or tried again by the
   engine) and is never admitted unchecked; a version without one passes as it would through a wired gate (D043-120). A
   composition root that forgets the gate would leave an engine creator retrying forever, so the seventh rule of
-  FR-043-016 fails on it (ADR-0092 decision 2, D043-161). A `ScheduleService` holds no gate until it is given one, and
-  then skips the write check, leaving the action time, which is the authority, to check (D043-008, D043-125); the
+  FR-043-016 fails on it (ADR-0092 decision 2, D043-161). Until it is given a gate, a `ScheduleService` skips the write
+  check (it does not answer `Busy`), leaving the action-time check, which is the authority (D043-008, D043-125); the
   seventh rule keeps that to tests.
 - **The type** carries the version id; `PgRunStore::create` (`crates/infra-postgres/src/execution.rs`) compares it
   with `NewRun.info.version_id`, and `continue_evaluated` with the predecessor's version (FR-043-017). The existing
@@ -514,7 +514,7 @@ enum FieldPolicy { Show, Root }      // Root: `/` and `other`, for every start w
 G043-017). A waiter waits at most `RUN_INPUT_PERMIT_WAIT` (5 s); its
   guard leaves the queue, or returns its permit, when its future is dropped. The queue holds one entry per caller that
   waits, so it is bounded by the callers in flight and each entry by the wait. The validator runs off the async workers
-  and holds its permit until it returns. Appendix A has the details the bound rests on.
+  and holds its permit until it returns; `specs/043-run-input-validation/research.md` section 5 has the details.
 - **The backstop** (D043-050). The counter also reads the clock every 4,096 units; past `RUN_INPUT_BACKSTOP` (5 s) of
   work it stops with `SchemaRefusal::Backstop`. `Busy`, `Backstop` and `Interrupted` become `InputRefusal::Unavailable`
   in the gate: a caller gets a retryable `503`, and the engine's creators treat it as a lack of room and try again later,
@@ -627,8 +627,8 @@ oracle of a test only. What the design fixes:
   and creates nothing. One statement, on the refusal path only; it replaces the lookup of D043-038 and D043-132, which
   left a window between the lookup and the failure.
 - **Row 12 (continuation).** After the evaluation, the run's lock released, with `check_schema` on the schema read
-  under the lock: a refused input ends the predecessor through the fenced path of `finalize_continuation_expression`
- , given the failure code, and counts `scheduler_continuation_input_refusals_total`; an input that cannot be
+  under the lock: a refused input ends the predecessor through the fenced path of `finalize_continuation_expression`,
+  given the failure code, and counts `scheduler_continuation_input_refusals_total`; an input that cannot be
   checked now is `ContinuationAdvanceError::InputUnavailable`, counted as a wait
   (`scheduler_continuation_waits_total{blocker="input_check"}`), and left for the next pass (D043-133). The failure
   code is the run's stop code, which the REST `Run` shows as `failureCode` (D043-162).

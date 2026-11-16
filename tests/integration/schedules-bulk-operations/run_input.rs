@@ -491,9 +491,37 @@ async fn row_3_with_start_is_refused_for_its_input_even_with_an_open_holder() {
                 .await
         }
     };
-    let holder = send(br#"{"k": "s"}"#, crate::business_ids::key())
-        .await
-        .expect("started and signalled");
+    // the holder: started under the identifier by a plain start, so it still waits for the signal when the refused
+    // request comes (round 2 of 2026-11-16, correctness 2: a holder that had already taken the signal could not show one)
+    let holder =
+        f.w.runs
+            .start_with_options(
+                &f.w.admin,
+                &StartRun {
+                    namespace: "payments",
+                    workflow,
+                    version: None,
+                    input: br#"{"k": "s"}"#,
+                    correlation_id: None,
+                    deadline: None,
+                    key: &crate::business_ids::key(),
+                },
+                sagat_application::runs::StartOptions {
+                    business: Some(crate::with_start::business(
+                        "row-3-cart",
+                        ReusePolicy::AllowDuplicate,
+                    )),
+                    ..sagat_application::runs::StartOptions::default()
+                },
+                &crate::support::engine::ctx(),
+            )
+            .await
+            .expect("the holder");
+    assert_eq!(
+        f.w.step_status(holder.run.info.run_id, "w").await,
+        Some(sagat_domain::execution::StepStatus::Waiting),
+        "the holder waits for the signal"
+    );
     let signals = |run: sagat_domain::execution::RunId| {
         let pool = f.w.db.pool.clone();
         async move {
@@ -522,6 +550,11 @@ async fn row_3_with_start_is_refused_for_its_input_even_with_an_open_holder() {
         signals(holder.run.info.run_id).await,
         before,
         "the holder got nothing"
+    );
+    assert_eq!(
+        f.w.step_status(holder.run.info.run_id, "w").await,
+        Some(sagat_domain::execution::StepStatus::Waiting),
+        "and still waits for it"
     );
 }
 
@@ -1139,8 +1172,8 @@ async fn one_scheduled_action_is_one_validation_in_two_spans() {
     let text = spans.text();
     assert!(
         text.matches("run_input.check").count() >= 2
-            && text.contains("sagat.run_input.outcome=\"accepted\"")
-            || text.contains("sagat.run_input.outcome=accepted"),
+            && (text.contains("sagat.run_input.outcome=\"accepted\"")
+                || text.contains("sagat.run_input.outcome=accepted")),
         "{text}"
     );
     let spans_with_outcome = text

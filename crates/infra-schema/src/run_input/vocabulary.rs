@@ -73,10 +73,27 @@ const DATA: [&str; 5] = [
     "x-sagat-classification",
 ];
 
-/// Refuses a schema nested deeper than [`MAX_INPUT_SCHEMA_DEPTH`] (the root is depth 1), at the first value too deep.
+/// The most bytes of JSON pointers the pre-check builds for one schema: every value has its pointer, so a long name
+/// high in the document, shared by thousands of values below it, would otherwise make the pointers grow with the
+/// square of the document (security review of 2026-11-16, round 2). Far above what a 64 KiB schema of ordinary names
+/// needs.
+const MAX_POINTER_BYTES: usize = 4 * 1024 * 1024;
+
+/// Refuses a schema nested deeper than [`MAX_INPUT_SCHEMA_DEPTH`] (the root is depth 1), at the first value too deep,
+/// and one whose pointers would pass [`MAX_POINTER_BYTES`], as too large.
 fn depth(root: &Value) -> Result<(), Unusable> {
     let mut pending: Vec<(&Value, usize, String, String, Place)> =
         vec![(root, 1, String::new(), String::new(), Place::Schema)];
+    let mut pointer_bytes = 0usize;
+    // counted as each pointer is made, before it is kept, so the bound holds for what is held at once too
+    let mut charge = |pointer: &str| {
+        pointer_bytes = pointer_bytes.saturating_add(pointer.len());
+        if pointer_bytes > MAX_POINTER_BYTES {
+            Err(Unusable::new(InputSchemaIssue::TooLarge, "", ""))
+        } else {
+            Ok(())
+        }
+    };
     while let Some((value, level, pointer, key, place)) = pending.pop() {
         if level > MAX_INPUT_SCHEMA_DEPTH {
             return Err(match place {
@@ -91,18 +108,15 @@ fn depth(root: &Value) -> Result<(), Unusable> {
                         Place::Schemas => Place::Schema,
                         other => other.clone(),
                     };
-                    pending.push((
-                        item,
-                        level + 1,
-                        format!("{pointer}/{index}"),
-                        key.clone(),
-                        inner,
-                    ));
+                    let at = format!("{pointer}/{index}");
+                    charge(&at)?;
+                    pending.push((item, level + 1, at, key.clone(), inner));
                 }
             }
             Value::Object(members) => {
                 for (name, member) in members.iter().rev() {
                     let at = format!("{pointer}/{}", escape(name));
+                    charge(&at)?;
                     let inner = match &place {
                         Place::Schema => match name.as_str() {
                             "properties" | "$defs" | "definitions" => Place::Names,

@@ -207,7 +207,12 @@ async fn a_cron_trigger_whose_schema_is_unusable_audits_the_tick_with_its_reason
     w.dispatcher.tick().await;
     assert_eq!(runs_named(&w, "row-10-unusable").await, 0);
     assert_eq!(
-        audits(&w, "run.input_refused", "RUN_INPUT_SCHEMA_UNUSABLE via trigger").await,
+        audits(
+            &w,
+            "run.input_refused",
+            "RUN_INPUT_SCHEMA_UNUSABLE via trigger"
+        )
+        .await,
         1
     );
     let moved: bool =

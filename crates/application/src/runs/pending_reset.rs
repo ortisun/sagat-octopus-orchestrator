@@ -314,8 +314,8 @@ where
         // Design 043, row 5: the reset will pin the source's version and carry its stored input, both fixed now, so
         // the input is checked here, before the source is cancelled, and a reset that could never be made is refused at
         // its request (correctness review of 2026-11-16, Major 2). `/` and `other`, as every repeat (D043-121). The
-        // completion checks again and stays the authority; this check counts only a refusal, so a reset that passes is
-        // counted once, when it is made.
+        // completion checks again and stays the authority; this check counts only a refusal, so a reset that passes or is
+        // reported is counted once, when it is made.
         let Some(origin) = self.store.rerun_source(tenant, id).await? else {
             return Err(self.missing(principal, id, ctx).await);
         };
@@ -332,7 +332,7 @@ where
                 AppError::Internal
             })?;
         self.run_inputs
-            .recheck(
+            .check_ahead(
                 tenant,
                 version.version.id(),
                 &definition,
