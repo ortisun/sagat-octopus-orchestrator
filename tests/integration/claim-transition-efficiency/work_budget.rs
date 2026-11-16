@@ -943,3 +943,127 @@ measured!(
     a_checked_child_start_costs_what_an_unchecked_one_does,
     a_checked_child_start_costs_what_an_unchecked_one_does_once
 );
+
+/// A scheduler that holds every shard, so that its pass hands continuations off, and checks their input in `enforce`.
+async fn a_chain_scheduler(w: &World) -> crate::support::engine::Sched {
+    let placement = sagat_scheduler::Placement::new(format!("budget-{}", uuid::Uuid::now_v7()));
+    sagat_scheduler::Keeper::new(
+        w.store.clone(),
+        placement.clone(),
+        sagat_scheduler::KeeperSettings {
+            ttl: std::time::Duration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire scheduler shards");
+    sagat_scheduler::Scheduler::new(
+        w.store.clone(),
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        sagat_application::entropy::SystemEntropy,
+        sagat_scheduler::SchedulerSettings::default(),
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
+    .with_children(w.cache.clone())
+    .with_placement(placement)
+}
+
+/// A chain of `name` whose activity is `name.work`, and whose continuation starts the next segment with `input.next`.
+fn a_rolling_chain(name: &str, schema: Option<serde_json::Value>) -> serde_json::Value {
+    let mut doc = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {"id": "work", "type": "activity", "activity": format!("{name}.work"), "next": "rollover"},
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next"}
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 3_600_000}
+    });
+    if let Some(schema) = schema {
+        doc["inputSchema"] = schema;
+    }
+    doc
+}
+
+/// What one continuation costs: a chain whose activity is done, then one scheduler pass that hands it off. A first chain
+/// of the same workflow warms the definition and the compiled schema; its successor's task is left leased, unfinished.
+async fn a_continuation_once(
+    w: &World,
+    scheduler: &crate::support::engine::Sched,
+    workflow: sagat_domain::definition::WorkflowId,
+    name: &str,
+) -> Result<Work, Evicted> {
+    let activity = format!("{name}.work");
+    let session = w.session(&[activity.as_str()]).await;
+    let input = json!({"segment": 1, "next": {"segment": 2}});
+    let finish = |chain: sagat_domain::execution::RunId| {
+        let session = &session;
+        async move {
+            let mut polls = 0;
+            let task = loop {
+                let tasks = w.poll(session, 8).await;
+                if let Some(task) = tasks.into_iter().find(|task| task.run_id == chain) {
+                    break task;
+                }
+                polls += 1;
+                assert!(polls < 100, "the chain's task never came");
+            };
+            w.complete(session, &task, &json!({}))
+                .await
+                .expect("the activity completes");
+        }
+    };
+    let warm = w.start(workflow, &input).await;
+    finish(warm).await;
+    assert_eq!(
+        scheduler.tick().await.continuations_advanced,
+        1,
+        "{name}: warm"
+    );
+    let measured = w.start(workflow, &input).await;
+    finish(measured).await;
+    let before = reading(w).await;
+    let report = scheduler.tick().await;
+    assert_eq!(report.continuations_advanced, 1, "{name}: {report:?}");
+    spent(w, before).await
+}
+
+/// SC-043-003 for a continuation (T043-18): a successor whose version has an `inputSchema` costs, in statements,
+/// transactions and rows written, what one without does; the check runs between the two transactions of the hand-off
+/// and writes nothing.
+async fn a_checked_continuation_costs_what_an_unchecked_one_does_once() -> Result<(), Evicted> {
+    let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("statement accounting");
+    let (plain, _) = w.publish(a_rolling_chain("budgetplain", None)).await;
+    let (checked, _) = w
+        .publish(a_rolling_chain(
+            "budgetchecked",
+            Some(json!({
+                "type": "object",
+                "required": ["segment"],
+                "properties": {"segment": {"type": "integer"}}
+            })),
+        ))
+        .await;
+    let scheduler = a_chain_scheduler(&w).await;
+    let without = a_continuation_once(&w, &scheduler, plain, "budgetplain").await?;
+    let with = a_continuation_once(&w, &scheduler, checked, "budgetchecked").await?;
+    assert_eq!(
+        with, without,
+        "a continuation with an inputSchema costs what one without does"
+    );
+    Ok(())
+}
+
+measured!(
+    /// SC-043-003 for a continuation.
+    a_checked_continuation_costs_what_an_unchecked_one_does,
+    a_checked_continuation_costs_what_an_unchecked_one_does_once
+);
