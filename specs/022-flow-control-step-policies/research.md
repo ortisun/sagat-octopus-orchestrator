@@ -437,7 +437,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 
 - **D022-040 — The quota resources of the concurrency gate.** T022-013 adds six `QuotaResource` values, all counted or
   set per namespace (OD-2026-11-16-2 for the OpenAPI enum): counts `queued_runs` (1,000, hard 10,000; a run waiting at
-  both gates counts once), `flow_control_live_keys` (10,000, hard 100,000; semaphores and windows) and
+  both gates counts once), `concurrency_live_keys` (10,000, hard 100,000; semaphores and windows) and
   `flow_control_key_waiters` (100, hard 10,000; run waiters of one key, D022-024; like `activity_concurrency`, its
   scalar usage is the busiest key's); positive policies `concurrency_limit` (10,000/10,000: the most holders of one
   key whatever a definition declares), `flow_control_queue_timeout_ms` (one day/one day) and
@@ -478,6 +478,37 @@ taken after `git grep D022-04` on every `origin/*` branch.
   is gone. Each deciding transaction of T022-096..098 and T022-022/T022-072 must call these two functions; until they
   exist no transaction decides a key (D022-037).
 
+- **D022-043 — What the reviews of 2026-11-16 changed** (`reviews/2026-11-16/`).
+  - *Retirement is lazy* (correctness F2, architecture M1): D022-042's trigger on the last row's delete is dropped; it
+    serialized every key deletion of a rotation on one row and counted the retiring rows on each. A retiring version is out
+    of force the moment no row uses it (`flow_control_key_versions_in_force()` answers NULL for it) and is recorded
+    `RETIRED` by the next activation. At most one version is `RETIRING` (a unique index), and the migration retires what the
+    earlier command left `RETIRING` (security S2, correctness F3).
+  - *A vanished retiring row is a retryable refusal* (correctness F1, architecture M3): filing it under the active digest
+    at that point would lock it out of the one order; `file_keys` refuses with `KEY_ROW_VANISHED` and the deciding
+    transaction runs again. Only `flow_control.rs` inserts a key row (`scripts/check-architecture.py`).
+  - *The per-key rotation diverges from ADR-0056 decision 7* (architecture B1): ADR-0093 (proposed) records it; T022-095 is
+    not ticked until the owner accepts it, and O1170 asks what ends a rotation that live rows keep open (security S1,
+    architecture M2).
+  - *Live keys are semaphore keys* (architecture m4): the plan has separate ceilings for semaphore keys and rate-limit
+    keys; `flow_control_live_keys` is renamed `concurrency_live_keys` and counts the semaphores; the windows get theirs with
+    T022-077.
+  - *One key's run waiters stay below `queued_runs`* (correctness F5, architecture m5): `effective_key_waiters` clamps the
+    key ceiling below the namespace's, whatever an administrator sets; a run already counted in `queued_runs` (it waits at
+    its other gate) adds nothing to it (correctness F9).
+  - *Declarations name their namespace's workflow* (security S3): the foreign keys are `(tenant, namespace, workflow)` and
+    `(tenant, workflow, version)`, the read joins on the namespace too, and the index leads with the group.
+  - *A warning never fails a publication* (correctness F6): a failed read of the declarations gives no warning (logged);
+    the node-declarations refusal of a request asked again with its own key is answered by the replay (as D042-105).
+  - *The node-declarations ceiling is a publication-time policy* (security S5, architecture M4): like the `workflows`
+    quota, its limit is read by the application before the store's transaction; lowering it never revokes what is
+    published, and re-activating an older version is not judged again (a lowered limit does not revoke, FR-022-021).
+  - *Fitness functions* (architecture m2): the OpenAPI enums and the newest restatement of the ceilings tables' `CHECK`
+    lists are pinned to `QuotaResource::ALL` (`contract_flow_control_step_policies::quotas`); the quota maxima of the
+    declaration bounds are the domain's constants.
+  - *Sort order* (correctness F10): `file_keys` sorts by byte order; an SQL path that locks the same rows sorts
+    `group_name COLLATE "C"` (D022-038).
+
 ## Gaps
 
 | ID | Gap | Status |
@@ -513,6 +544,11 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once.* | Open; runbook (T022-061) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |
+| G1192 | An older replica's quota views read every stored limit and refuse a resource name its build does not know (`stored_limits`): a tenant that sets one of the new limits gets an error from an older replica's quota listing until it is upgraded. True of every resource added before. | Accepted; the next resource change could make the reader skip unknown names |
+| G1193 | Activating a digest key version that a live process was not configured with makes that process refuse every gated decision (`UnknownVersion`) until it is; the registry does not check the key versions processes hold. | Open; ADR-0093, runbook (T022-061) |
+| G1194 | The pinned operation baseline of `contract_iceberg_writes` digests each operation without following `$ref`, so a change to a shared parameter or schema (as the quota enum of D022-040) moves no digest; `contract_flow_control_step_policies::quotas` pins this enum to the code instead. | Accepted |
+| G1195 | Approved texts still describe the drain-first rotation: FR-022-020's last sentence, `data-model.md` (key versions, "only by an audited operator command"), G1163; `data-model.md` does not list `flow_control_group_declarations` or `activated_role`; `contracts/errors.md` does not say that `*_POLICY_INVALID` covers the namespace's ceiling of node-level declarations. Changing them makes the docs drafts again (constitution, Approval). | Open; with the owner's answer to O1170 / ADR-0093 |
+| G1196 | A rotation's progress (rows left under the retiring version) has no metric and no audit record; the operator learns it by running the command again. | Open; T022-061, T022-082 |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
 
 ## Owner questions
@@ -585,6 +621,23 @@ Options: (a) **accept ADR-0089**: gated steps wait outside `READY` and are grant
 limits already are; (b) ship 0.3.0 with run-level `concurrency` only and refuse node-level `concurrency`
 (`UNSUPPORTED_NODE`) until (a); (c) keep decision 3 as accepted. **Recommended: (a)**; (b) is the fallback if
 the owner wants more time on the ADR; (c) is not safe for a shared activity.
+
+### O1170 — What ends a digest-key rotation that live rows keep open?
+
+Asked 2026-11-16 (ADR-0093, proposed; security review S1, architecture review M2). As built, a rotation ends when the old
+version's last semaphore or window row goes, and a third version is refused until then. A run-level permit lives as long
+as its run, so one long-lived run of any tenant can keep a rotation open for weeks; an emergency rotation of a leaked key
+(a third version) waits for it, and every process must keep the retiring key meanwhile. A key cannot be re-keyed without
+its plaintext, which only a deciding transaction has.
+Options: (a) **accept as built**, document in the runbook that an emergency rotation first waits for (or cancels) the
+runs that hold old keys, and list them for the operator; (b) an operator-only **force** outcome that retires the old version
+at once: its rows live on under their old digest until they drain, so a key may have two rows meanwhile and its limit can
+be exceeded by at most the old row's holders, audited; (c) **several retiring versions** (at most 3), each decision
+computing up to four digests and every process holding every retiring key; (d) **re-key on touch** besides (a): a decision
+that finds a key under the retiring version moves the row to the active digest, which shortens rotations for keys in use
+but not for permits held and never decided again. **Recommended: (a) with (b) for incidents** — the normal rotation stays
+safe and bounded by the workload, and a leak can be answered at once with a stated, bounded over-admission. The owner
+also accepts or changes ADR-0093 (it supersedes the last sentence of ADR-0056 decision 7).
 
 ## Owner decision of 2026-11-13: throughput control in release 0.3.0
 
