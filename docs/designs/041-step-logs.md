@@ -1,8 +1,14 @@
 # Step logs per run
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
+*   **Status:** Approved
 *   **Date:** 2026-11-16
+*   **Reviewed-commit:** f9d4a65fa278e1c782a59e3d15adadd6e764371a
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.325
+*   **Reports:** docs/designs/041-step-logs.reviews/2026-11-16/egm-review-final.md sha256:ab54cb98f696963ec98413bc6699cb7c2ca2116f537eb51f52e1cc890c17d764; docs/designs/041-step-logs.reviews/2026-11-16/architecture-reread-3.md sha256:ba22a09f282a360ebabce3f620967c39d8356d7956c553344cb9f29b3cafd611; docs/designs/041-step-logs.reviews/2026-11-16/security-reread-3.md sha256:9c234cd6a9ccd5fa7bdc92c673e701442e62521053437efda022f047f77ac460; docs/designs/041-step-logs.reviews/2026-11-16/correctness-reread-3.md sha256:06d8ad8919b609795b012c5b0755cb3b23fab982d82bea5e5a56846cdba22562
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 63; OD-2026-11-16-200, OD-2026-11-16-201, OD-2026-11-16-202, OD-2026-11-16-203, OD-2026-11-16-204, OD-2026-11-16-205, OD-2026-11-16-206, OD-2026-11-16-207, OD-2026-11-16-208, OD-2026-11-16-209, OD-2026-11-16-210, OD-2026-11-16-211, OD-2026-11-16-212, OD-2026-11-16-213, OD-2026-11-16-214, OD-2026-11-16-215, OD-2026-11-16-216, OD-2026-11-16-217, OD-2026-11-16-218, OD-2026-11-16-219, OD-2026-11-16-220, OD-2026-11-16-221, OD-2026-11-16-222, OD-2026-11-16-223, OD-2026-11-16-224, OD-2026-11-16-225, OD-2026-11-16-226, OD-2026-11-16-227, OD-2026-11-16-228, OD-2026-11-16-229, OD-2026-11-16-230, OD-2026-11-16-231, OD-2026-11-16-232, OD-2026-11-16-233, OD-2026-11-16-234, OD-2026-11-16-235, OD-2026-11-16-236, OD-2026-11-16-237, OD-2026-11-16-238, OD-2026-11-16-239, OD-2026-11-16-240, OD-2026-11-16-241, OD-2026-11-16-242, OD-2026-11-16-243, OD-2026-11-16-244, OD-2026-11-16-245, OD-2026-11-16-246, OD-2026-11-16-247, OD-2026-11-16-248, OD-2026-11-16-249, OD-2026-11-16-250, OD-2026-11-16-251, OD-2026-11-16-252, OD-2026-11-16-253, OD-2026-11-16-254, OD-2026-11-16-255, OD-2026-11-16-256, OD-2026-11-16-257, OD-2026-11-16-258, OD-2026-11-16-259, OD-2026-11-16-260, OD-2026-11-16-261, OD-2026-11-16-262
 *   **Owner-acceptance:** OD-2026-11-15-17 (the design, for 0.3.0); OD-2026-11-16-7 (the approval path)
 
 --------------------------------------------------------------------------------
@@ -1335,7 +1341,7 @@ documentation only. Each slice leaves `develop` releasable.
 
 Slice A, decisions, contracts and the spike:
 
-- [ ] T041-1 Review this design with `egm-review` (its five stages, in order) and the three repository reviewers
+- [x] T041-1 Review this design with `egm-review` (its five stages, in order) and the three repository reviewers
   (`architecture-reviewer`, `security-reviewer`, `correctness-reviewer` of `.claude/agents/`), answer every finding in
   the design and in `resolution.md` of the review folder, and repeat on the committed text until no Blocker and no Major
   of the last complete run is open, by the approval rule of `docs/designs/constitution-4.0.0-egm.md` section 3 (a
@@ -1343,12 +1349,28 @@ Slice A, decisions, contracts and the spike:
   Done when the four reports (the `egm-review` summary and the three reviewers') are cited by the approval block (Status
   `Approved`) and the checkers pass.
   Refs: FR-041-001, FR-041-013
-- [ ] T041-2 Put O041-014 to O041-024, except O041-020 and O041-021 (which T041-31 owns), to the owner and record each
+  Evidence (2026-11-16): three complete runs of the five egm-review stages, in order, and of the three repository
+    reviewers, on 882e56fc, fefcfafb and 6dceb548 (docs/designs/041-step-logs.reviews/2026-11-15/*-approval*.md); every
+    finding answered in resolution.md sections 9 to 12. On the owner's approval path "Corrigir e aceitar o resto"
+    (OD-2026-11-16-7) the third run's Blocker and defects were fixed and the three repository reviewers re-read the
+    fixes on 46c42bbb, fac00787 and f9d4a65f (docs/designs/041-step-logs.reviews/2026-11-16/*-reread*.md), the new
+    Majors of the first two re-reads fixed; the last re-read reports Blocker 0, Major 0 from each reviewer. The 63
+    Blocker and Major findings of the egm-review summary egm-review-final.md are settled by OD-2026-11-16-200 to
+    OD-2026-11-16-262, one row each; the owner accepted the design for 0.3.0 (OD-2026-11-15-17). The approval block
+    cites the four reports. python3 scripts/check-design-docs.py: design docs ok; python3
+    scripts/check-architecture.py: architecture check passed; python3 scripts/check-agent-config.py: agent
+    configuration ok.
+- [x] T041-2 Put O041-014 to O041-024, except O041-020 and O041-021 (which T041-31 owns), to the owner and record each
   answer as a row of `docs/owner-decisions.md` and in research.md; correct the ADRs' Revision sections and this design
   for the answers. Done when each of those questions has a row with Status `Decided`, and every task that builds one of
   the answers cites its row on an `Owner-gate:` line.
   Refs: FR-041-007, FR-041-008
   Owner-gate: OD-2026-11-15-17
+  Evidence (2026-11-16): docs/owner-decisions.md rows OD-2026-11-15-4 to OD-2026-11-15-11 (O041-014 to O041-019,
+    O041-022, O041-023) and OD-2026-11-15-16 (O041-024), each owner and Decided, recorded in research.md's owner
+    questions; the ADR Revision sections corrected (ADR-0084 and ADR-0085 Revision of 2026-11-15, ADR-0027 Amendment);
+    every task building one of those answers cites its row on an Owner-gate line (T041-3 to T041-7, T041-10 to T041-14,
+    T041-29, T041-30, T041-32 and the SDK tasks); python3 scripts/check-design-docs.py: design docs ok.
 - [ ] T041-33 Put the restated O041-025 to the owner and record the answer as a row of `docs/owner-decisions.md` and in
   research.md; for (a), add the reading as a Note of ADR-0084's Revision; for (b), change this design (T2 and the lock
   order) and have it reviewed again. Done when the row is `Decided` and T041-6 cites it on an `Owner-gate:` line.

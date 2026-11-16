@@ -580,3 +580,9 @@ Major, raised by the architecture and correctness reviewers alike: the marker's 
 T041-13 tests that hold a lock the marker waits on fail by the clock. Fixed: the timeout is a parameter of the store
 (200 ms by default), and those tests pass 60 s (section 7, T041-13, data-model.md §9); with it, the marker's expiry read
 names the tenant, T041-13's refusal test asserts the two `403`s, and data-model.md §9 says "any other error".
+
+The last confirmation check on `f9d4a65f` (`../2026-11-16/*-reread-3.md`) reports Blocker 0 and Major 0 from each
+repository reviewer. The approval record cites those three reports and the egm-review summary
+`../2026-11-16/egm-review-final.md`, whose 63 Blocker and Major findings of the third run are settled one row each by
+OD-2026-11-16-200 to OD-2026-11-16-262; the remaining Nits of the re-reads are not blocking and are left to the tasks
+that build what they concern.
