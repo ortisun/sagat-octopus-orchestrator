@@ -778,6 +778,12 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   record), as every other trigger update does (round 2: security Nit 3). Row 3's test now keeps the plain-start holder
   waiting for its signal when the refused with-start arrives, and asserts it is still waiting after (round 2:
   correctness Major 2); `one_scheduled_action_is_one_validation_in_two_spans` groups its condition (correctness Nit 3).
+- **D043-176** (2026-11-16) The same port collision as D043-171 struck a second fixture in the final gates: the
+  `database-connections` conformance scenario panicked on `target admin: unexpected response from SSLRequest: 0x48`, the
+  PostgreSQL a managed connection points at (`support::bounded::start_postgres_target`) being published on a port an
+  HTTP server of the harness held. That fixture now waits for a query on the published port and replaces a container
+  another server answers, at most three times, as the shared test database does. The collision cannot be produced on
+  demand (Docker picks the port), so the failing gate run is its red evidence; the rerun passed the 78 scenarios.
 
 ## 3. Gaps
 

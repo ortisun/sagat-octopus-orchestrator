@@ -64,3 +64,43 @@ and the three python checks passed. The per-SDK checks of `sdks/AGENTS.md` passe
 Conformance in the six languages (`SAGAT_RUST_SDK_TARGET_DIR` set to an owned external directory; the first run without it
 failed at the Rust runner's `prepare.sh`, which refuses to start without one): `SAGAT_SDK_SCENARIO=run-input-validation`
 1 passed (6 languages), `SAGAT_SDK_SCENARIO=collection-operators` 1 passed (6 languages). No golden was blessed.
+
+## 2026-11-16, final gates after round 2 of the approval review (`feature/043-creators`, head `01db0b91`)
+
+Same machine and settings. Every suite was run on the committed tree, once as the owner and once with
+`SAGAT_TEST_AS_RUNTIME_ROLE=1`; no test was retried.
+
+| Target | Owner | `SAGAT_TEST_AS_RUNTIME_ROLE=1` |
+|---|---|---|
+| `integration_durable_execution` | 192 passed, 0 failed | 192 passed, 0 failed |
+| `integration_schedules_bulk_operations` | 756 passed, 0 failed, 2 ignored | 756 passed, 0 failed, 2 ignored |
+| `integration_events_webhooks_messaging` | 120 passed, 0 failed | 120 passed, 0 failed |
+| `integration_workflow_primitives` | 805 passed, 0 failed, 23 ignored | 805 passed, 0 failed, 23 ignored |
+| `integration_payload_classification` | 43 passed, 0 failed, 2 ignored | 43 passed, 0 failed, 2 ignored |
+| `integration_platform_foundation` | 106 passed, 0 failed | 106 passed, 0 failed |
+| `fault_events_webhooks_messaging` | 12 passed, 0 failed | 12 passed, 0 failed |
+| `fault_workflow_primitives` | 93 passed, 0 failed | 93 passed, 0 failed |
+| `fault_schedules_bulk_operations` | 131 passed, 0 failed | 131 passed, 0 failed |
+| `fault_payload_classification` | 8 passed, 0 failed, 1 ignored | 8 passed, 0 failed, 1 ignored |
+| `fault_platform_foundation` | 38 passed, 0 failed | 38 passed, 0 failed |
+
+The 23 contract targets: 366 passed, 0 failed. `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked --
+-D warnings`, the three python checks and their unit tests (OK, 2 skipped) passed; the Studio types match the OpenAPI.
+Per-SDK checks: TypeScript, Python, Go, Java and Rust (151 passed) passed. In C#, `dotnet test` failed once, 531 of 532,
+on `ACallThatTakesLongerThanTheTimeoutIsATransportErrorAndAPostWithAKeyIsRepeated` ("timed out waiting for two
+attempts"), while two integration suites ran beside it; the test gives its client 100 ms for each attempt, connection
+included, and the fake server records a request only once it has read it, so on a loaded machine both attempts can end
+before the server sees either. The test is not touched by design 043; rerun alone three times it passed, and the whole
+project passed 532 of 532 with `dotnet format --verify-no-changes` clean. It is recorded as a load-sensitive test of the
+C# SDK, not fixed here.
+
+The canary failure of the earlier run (`unexpected response from SSLRequest: 0x48`) is explained by D043-171: Docker
+Desktop publishes a container's port on every address with `SO_REUSEADDR`, so it can share the number of a
+`127.0.0.1` listener a test already holds, and `127.0.0.1` then reaches the test's HTTP server, not PostgreSQL. The
+fixture now tells that answer apart and starts another container (`a_port_an_http_server_answers_is_told_apart_and_not_waited_on`).
+
+Conformance in the six languages, every scenario, no bless (`SAGAT_RUST_SDK_TARGET_DIR` set): the first run stopped at
+`database-connections` because the root `CACHEDIR.TAG` of the private target directory was missing (the support code finds
+the target by it; restored); the second stopped at the same scenario on `unexpected response from SSLRequest: 0x48` from
+its target PostgreSQL, the D043-171 collision in another fixture, fixed by D043-176; the third, on the fixed tree, passed:
+78 scenarios in six languages, 1 test passed in 1,752 s.
