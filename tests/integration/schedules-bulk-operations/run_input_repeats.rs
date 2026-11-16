@@ -72,6 +72,22 @@ fn enforcing(f: &Fixture) -> Runs {
     .with_reset_cancel_source(true)
 }
 
+/// A run service whose gate reports, as a control plane in `report` mode (or one of 0.2.x) admits a request.
+fn reporting(f: &Fixture) -> Runs {
+    sagat_application::runs::RunService::new(
+        f.w.store.clone(),
+        sagat_application::clock::SystemClock,
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        f.w.cache.clone(),
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        InputValidationMode::Report,
+    ))
+    .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator))
+    .with_reset_reapply(true)
+    .with_reset_cancel_source(true)
+}
+
 /// The two transient answers of the validator: no permit within the wait, and the backstop.
 fn transient() -> [SchemaRefusal; 2] {
     [SchemaRefusal::Busy, SchemaRefusal::Backstop]
@@ -269,23 +285,87 @@ fn completer_with(f: &Fixture, runs: Runs) -> Completer {
 
 /// Asks a `CANCEL_SOURCE` reset of the open source and ends the source: the entry is pending and due.
 async fn pending_of(f: &Fixture, open: &Open) -> sagat_domain::execution::ResetId {
-    let made =
-        f.w.runs
-            .reset(
-                &f.w.admin,
-                open.run,
-                asking(open.after_a, true),
-                &reset_key(),
-                &ctx(),
-            )
-            .await
-            .expect("the request");
+    pending_through(f, &f.w.runs, open).await
+}
+
+/// As [`pending_of`], the request answered by `runs`.
+async fn pending_through(
+    f: &Fixture,
+    runs: &Runs,
+    open: &Open,
+) -> sagat_domain::execution::ResetId {
+    let made = runs
+        .reset(
+            &f.w.admin,
+            open.run,
+            asking(open.after_a, true),
+            &reset_key(),
+            &ctx(),
+        )
+        .await
+        .expect("the request");
     end(f, open).await;
     made.reset.id
 }
 
-/// Row 5, pending: the engine completing a pending reset whose source's input the version refuses ends the entry
-/// `ADMISSION_REFUSED`, final, with no run; a schema outside the subset ends it the same way.
+/// Row 5, pending, correctness review of 2026-11-16, Major 2: a `CANCEL_SOURCE` reset whose source's input the version
+/// refuses is refused at its request (`/` and `other`; `RUN_INPUT_SCHEMA_UNUSABLE` for a schema outside the subset),
+/// before it cancels anything: the source goes on running and no entry is written. The version and the input are fixed
+/// when the reset is asked, so the outcome is known then.
+#[tokio::test]
+async fn row_5_a_cancelling_reset_whose_input_the_version_refuses_is_refused_and_cancels_nothing() {
+    let f = fixture().await;
+    for (schema, mode, reason) in [
+        (
+            order_schema(),
+            InputValidationMode::Enforce,
+            "RUN_INPUT_INVALID",
+        ),
+        (
+            unusable_schema(),
+            InputValidationMode::Report,
+            "RUN_INPUT_SCHEMA_UNUSABLE",
+        ),
+    ] {
+        let open = open_admitted_in_report(&f, schema, mode).await;
+        let refused =
+            f.w.runs
+                .reset(
+                    &f.w.admin,
+                    open.run,
+                    asking(open.after_a, true),
+                    &reset_key(),
+                    &ctx(),
+                )
+                .await
+                .map(|_| ())
+                .expect_err("refused at the request");
+        let expected = if reason == "RUN_INPUT_INVALID" {
+            AppError::InvalidRunInput {
+                reason,
+                field: Some("/".to_owned()),
+                rule: Some("other"),
+            }
+        } else {
+            AppError::InvalidRunInput {
+                reason,
+                field: None,
+                rule: None,
+            }
+        };
+        assert_eq!(refused, expected);
+        assert_eq!(
+            f.w.run_status(open.run).await,
+            sagat_domain::execution::RunStatus::Running,
+            "the source is not cancelled"
+        );
+        assert_eq!(entries(&f, open.run).await, 0, "no entry");
+    }
+}
+
+/// Row 5, pending: the engine completing a pending reset whose source's input the version refuses (the request admitted
+/// by a control plane in `report` mode, or of 0.2.x) ends the entry `ADMISSION_REFUSED`, final, with no run; a schema
+/// outside the subset ends it the same way. The completion stays the authority.
 #[tokio::test]
 async fn row_5_a_pending_reset_whose_input_the_version_refuses_ends_admission_refused() {
     let f = fixture().await;
@@ -294,7 +374,7 @@ async fn row_5_a_pending_reset_whose_input_the_version_refuses_ends_admission_re
         (unusable_schema(), InputValidationMode::Report),
     ] {
         let open = open_admitted_in_report(&f, schema, mode).await;
-        let id = pending_of(&f, &open).await;
+        let id = pending_through(&f, &reporting(&f), &open).await;
         let completer = completer_with(&f, enforcing(&f));
         assert_eq!(
             completer
