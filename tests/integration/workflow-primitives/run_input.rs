@@ -522,7 +522,10 @@ async fn row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claim
     );
     let text = body.to_string();
     for value in [blob_id, blob["sha256"].as_str().expect("sha")] {
-        assert!(!text.contains(value), "the refusal names no value of the descriptor");
+        assert!(
+            !text.contains(value),
+            "the refusal names no value of the descriptor"
+        );
     }
     let runs_of_refusing: i64 =
         sqlx::query_scalar("SELECT count(*) FROM runs WHERE workflow_id = $1::uuid")
