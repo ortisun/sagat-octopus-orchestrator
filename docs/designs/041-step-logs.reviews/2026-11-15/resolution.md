@@ -574,3 +574,9 @@ raised new Majors, each fixed as the owner's path says (OD-2026-11-16-7: "fix it
 Nits fixed with them: the accessor count in NFR-041-SEC; data-model.md's marker writer and table count; `may_read`
 before `stream` is resolved; the lock-free assertion names the binding and membership locks; ADR-0085's Consequences;
 the listing case of T041-29; the markers in the completion bound; the marker test's hold point.
+
+The confirmation check on `fac00787` (`../2026-11-16/*-reread-2.md`) found the re-read's Majors fixed and one new
+Major, raised by the architecture and correctness reviewers alike: the marker's 200 ms lock timeout would make the
+T041-13 tests that hold a lock the marker waits on fail by the clock. Fixed: the timeout is a parameter of the store
+(200 ms by default), and those tests pass 60 s (section 7, T041-13, data-model.md §9); with it, the marker's expiry read
+names the tenant, T041-13's refusal test asserts the two `403`s, and data-model.md §9 says "any other error".

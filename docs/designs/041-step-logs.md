@@ -1052,8 +1052,9 @@ so that a marker can never commit after a tail has sent `end`. Each outcome is c
 data-model.md §7), which is where a skipped marker is seen. A crash between the two commits loses that one marker; the
 streams route still lists the execution.
 
-**The marker's transaction**, opened by `begin_safely` with a lock timeout of 200 ms, in this order, which keeps the one
-lock order of section 2:
+**The marker's transaction**, opened by `begin_safely` with a lock timeout that is a parameter of the store
+(`StepLogStore::with_marker_lock_timeout`, 200 ms by default; the T041-13 tests that hold a lock the marker waits on
+pass 60 s, as the ingest's held transactions have), in this order, which keeps the one lock order of section 2:
 
 1. `SELECT pg_current_xact_id()` first, as the ingest does, so that a marker whose transaction saw the run unfinished has
    an id below any end horizon (section 5).
@@ -1062,7 +1063,7 @@ lock order of section 2:
 3. The marker stream: `INSERT … ON CONFLICT (tenant_id, public_id) DO NOTHING` into `step_log_streams` with
    `source = script` and `public_id` the execution's id, so a repeated call stores nothing; `last_at` now and
    `expires_at` the earlier of now plus the namespace's `step_log_retention_days` and the stored
-   `script_executions.expires_at` of that id, read in this statement (the store keeps the retention pinned on the lease,
+   `script_executions.expires_at` of that (tenant, id), read in this statement (the store keeps the retention pinned on the lease,
    `crates/infra-postgres/src/scripts.rs:1812-1826`, which can be shorter than the current one), so that the marker
    never outlives the execution it opens.
 4. The tenant allowance, `sagat_quota_step_log_allowance(tenant)`, without a lock: if the marker's 128 bytes do not
@@ -1667,13 +1668,15 @@ Slice C, the server serves:
   `openapi.yaml`, `tests/contract/security-multitenancy/rest/battery.rs`, `docs/reference/api.md`; tests in
   `tests/integration/step-logs/`.
 - [ ] T041-13 Script steps (section 7): the `source = script` items of `listRunLogStreams`, with their state from the
-  execution, through `may_read`, with a test that a viewer and a reader without the grant see no script item; the marker
+  execution, through `may_read`, with a test that a viewer is refused `403 FORBIDDEN` and a reader without the grant
+  `403 FORBIDDEN` with `PII_REVEAL_NOT_GRANTED`; the marker
   written by `StepLogStore::record_script_marker` after `record_execution` commits, called by the script service;
   `script_marker_decision`; `SAGAT_STEP_LOGS_ENABLED` read by the control plane and passed to the script service, with
   its test, and the test platform's `Options` field `step_logs_enabled` of T041-6 applied to it too; the metric
   `step_log_script_markers_total`; the marker joins the lock-order test; the tests of section 7, which run the script
   runner through `lab_with` (`tests/support/scripts.rs:38`), the terminal-transition case holding the namespace's
-  step-log policy fence exclusively while a cancel ends the run. Done when these pass, also as the runtime role.
+  step-log policy fence exclusively while a cancel ends the run, and it and the barrier test run the store with the
+  long marker lock timeout of section 7. Done when these pass, also as the runtime role.
   Refs: FR-041-016
   Owner-gate: OD-2026-11-13-14, OD-2026-11-15-9, OD-2026-11-15-16, OD-2026-11-16-7, OD-2026-11-16-8
   Files: modify `crates/domain/src/step_logs.rs`, `crates/infra-postgres/src/step_logs.rs`,

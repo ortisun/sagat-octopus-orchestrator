@@ -307,11 +307,12 @@ A marker line (either kind) has the level `info`, and `minLevel` never hides a m
 ## 9. The script marker's transaction (design section 7)
 
 `StepLogStore::record_script_marker(execution)`, called by the script service after `record_execution` has committed an
-inserted execution of a run, in a transaction opened by `begin_safely` with `SET LOCAL lock_timeout = '200ms'`; any error
-is caught by the script service and counted as `failed`, and never changes the report's answer:
+inserted execution of a run, in a transaction opened by `begin_safely` with the store's marker lock timeout (200 ms by
+default, a constructor parameter); any error other than `tenant_step_log_quota_exceeded` is caught by the script service
+and counted as `failed`, and never changes the report's answer:
 `SELECT pg_current_xact_id()`; the run's `finished_at` (no lock); the namespace's
 `step_log_attempt_records` and `step_log_retention_days` under their shared fences; `INSERT INTO step_log_streams …
 ON CONFLICT (tenant_id, public_id) DO NOTHING RETURNING` with `source = 'script'`, `public_id` the execution id and `expires_at`
-the earlier of now plus the retention and the stored `script_executions.expires_at` of that id (no row returned: a marker
+the earlier of now plus the retention and the stored `script_executions.expires_at` of that `(tenant_id, id)` (no row returned: a marker
 already exists, nothing more); `sagat_quota_step_log_allowance(tenant)`; the `script_marker` line;
 `COMMIT`, with `tenant_step_log_quota_exceeded` counted as `skipped_quota`.
