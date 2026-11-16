@@ -397,10 +397,13 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         }
         // The platform's own probe documents are the only ones that may carry a private node (ADR-0080): they are parsed by the private
         // entry, whose grammar is the public one plus the private node types. Every other origin is parsed by the public one.
+        // The caller's document is parsed in the process's mode, as a publication is: in `report` a schema outside the
+        // subset is a warning, and the gate reports it with the run (architecture review of 2026-11-16, Major 2).
         let parsed = if origin == RunOrigin::ConnectionProbe {
             self.cache.parse_private_document(request.document)
         } else {
-            self.cache.parse_document(request.document)
+            self.cache
+                .parse_document_in(request.document, self.run_inputs.mode())
         }
         .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
         validate_definition(&parsed.definition, origin)?;

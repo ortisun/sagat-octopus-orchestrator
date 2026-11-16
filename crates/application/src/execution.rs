@@ -1047,6 +1047,23 @@ pub trait RunTx: Send {
         async { Err(scoped_execution_adapter_required()) }
     }
 
+    /// Whether the child `child` of this run's step `node` was created, read under the step's row lock (design 043,
+    /// D043-164): a creation that committed first is seen, and one that comes later waits for this transaction and
+    /// then finds the step moved on, so a refusal of the child's input never fails a step whose child exists. A step
+    /// that no longer waits for that child is reported started (there is nothing to fail). An adapter that cannot
+    /// refuses.
+    fn child_started<'a>(
+        &'a mut self,
+        _node: &'a NodeId,
+        _child: RunId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot read whether a child was started".into(),
+            })
+        }
+    }
+
     /// Keeps, in this transaction, the receipts of a start that an existing holder served instead of
     /// a new run (Signal-with-Start and Update-with-Start, feature 018): `start` under the key of the
     /// request, so that a retry is answered from it even after the holder has closed and the identifier
@@ -2022,6 +2039,16 @@ impl DefinitionCache {
         document: &[u8],
     ) -> Result<crate::definitions::ParsedDefinition, IrError> {
         self.codec.parse(document)
+    }
+
+    /// As [`Self::parse_document`], with its `inputSchema` checked in `mode`, as a publication in that mode checks it
+    /// (design 043): a schema outside the subset is refused in `enforce` and a warning in `report`.
+    pub fn parse_document_in(
+        &self,
+        document: &[u8],
+        mode: crate::definitions::InputValidationMode,
+    ) -> Result<crate::definitions::ParsedDefinition, IrError> {
+        self.codec.parse_with(document, mode)
     }
 
     /// The same for a **private** document (ADR-0080), which only the platform writes. Only the entry that builds one calls it.

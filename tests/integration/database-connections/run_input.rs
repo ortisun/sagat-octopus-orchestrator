@@ -172,4 +172,49 @@ pub async fn run(w: &World) {
             rule: Some("other"),
         }
     );
+
+    // Architecture review of 2026-11-16, Major 2: a document whose `inputSchema` is outside the subset is parsed in the
+    // process's mode, as publication is. In `enforce` it is refused as a publication would be, naming the keyword; in
+    // `report` it is parsed with a warning, the gate reports `RUN_INPUT_SCHEMA_UNUSABLE`, and the run is created.
+    let mut outside = document(
+        "database-ad-hoc-outside",
+        "query",
+        vec![json!({
+            "id":"query", "type":"database", "connectionRef":{"name":"ad-hoc-db"},
+            "operation":"query", "statement":"SELECT 1::bigint"
+        })],
+    );
+    outside["inputSchema"] =
+        json!({"type": "object", "patternProperties": {"^a": {"type": "string"}}});
+    let outside = serde_json::to_vec(&outside).unwrap();
+    let unusable = |key: &'static str| StartDatabaseExecution {
+        namespace: w.namespace.id(),
+        mode: AdHocMode::Step,
+        document: &outside,
+        input: b"{}",
+        timeout_ms: None,
+        key,
+    };
+    let refused = w
+        .runs
+        .start_database(&w.admin, &unusable("ad-hoc-riv-0004"), &ctx())
+        .await
+        .expect_err("refused in enforce");
+    assert!(
+        matches!(&refused, AppError::InvalidDefinition(error) if error.to_string().contains("patternProperties")),
+        "refused as at publication, naming the keyword: {refused:?}"
+    );
+    let reported_run = reported
+        .start_database(&w.admin, &unusable("ad-hoc-riv-0005"), &ctx())
+        .await
+        .expect("created in report mode");
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_records WHERE action = 'run.input_refused' AND resource_id = $1 \
+         AND reason = 'reported: RUN_INPUT_SCHEMA_UNUSABLE'",
+    )
+    .bind(reported_run.info.run_id.to_string())
+    .fetch_one(&w.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(audits, 1, "the report is audited with the run");
 }
