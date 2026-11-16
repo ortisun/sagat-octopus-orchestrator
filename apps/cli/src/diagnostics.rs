@@ -352,6 +352,9 @@ pub fn analyze_document(document: &[u8]) -> (Vec<Diagnostic>, Option<Classificat
                     sagat_domain::workflow::DefinitionWarning::RecursiveChild { node } => {
                         ("RECURSIVE_CHILD", node.to_string())
                     }
+                    sagat_domain::workflow::DefinitionWarning::ConcurrencySelfChild { node } => {
+                        ("CONCURRENCY_SELF_CHILD", node.to_string())
+                    }
                 };
                 Diagnostic {
                     warning: true,

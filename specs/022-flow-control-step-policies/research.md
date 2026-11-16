@@ -393,6 +393,31 @@ Numbers taken after the reviews, after listing `docs/adr` on every `origin/*` br
 worktrees (041 holds ADR-0084/0085, 042 ADR-0086/0087): ADR-0089; FR-022-051..060; SC-022-024..029;
 T022-091..107; D022-019..034; G1184..1186; O1169.
 
+### Decisions of the foundation build (2026-11-15)
+
+Taken while building the first part of the 0.3.0 slice (T022-002..014 narrowed, T022-068..070, T022-091..094). Numbers
+taken after `git grep D022-` on every `origin/*` branch and the sibling worktrees.
+
+- **D022-035 — Until a reset admits through the gate, a flow-control event blocks every reset point after it.** The
+  rules of `contracts/journal-events.md` (`REMATERIALIZE` for `concurrency.queued/acquired/released`,
+  `rate_limit.queued/granted/returned`; `REFUSE` for the timeouts and dequeues) need the reset admission to take a fresh
+  permit or slot through the one port (T022-064, T022-086). That code does not exist in this build, so 018's registry
+  (`crates/domain/src/execution/reset.rs`) declares the ten event types `EXCLUDE`: no reset run can start holding a
+  permit or a slot it was never granted. The contract's rules replace these in the change that builds the reset case.
+  No journal holds these events yet (a gate cannot be activated in this build, D022-037), so the change is free.
+- **D022-036 — Every flow-control event names its scope, and a step-scope one its attempt.** The detail of every one of
+  the ten events carries `pool`, `scope`, `group` and `key_label`, and at step scope `attempt` (the node is the row's own
+  column). `contracts/journal-events.md` lists `concurrency.dequeued` without `scope`; a step can be dequeued since
+  ADR-0089, so the scope is needed to replay it. The detail is closed: the codec reads back only the keys it wrote.
+- **D022-037 — A binary announces a flow-control capability only once it runs the gate.** `flow-control-concurrency-v1`
+  and `flow-control-rate-v1` mean "this process enforces the gate on every path it serves" (ADR-0089 decision 6). This
+  build has the declarations, the events, the tables and the activation, but no admission gate, readiness gate or grant
+  routine (T022-022, T022-072, T022-096..098), so the control plane and the engine do not list either capability.
+  Activation is therefore refused while any instance is live (`INSTANCES_LACK_CAPABILITY`); publication and start of a
+  gated definition are refused `FLOW_CONTROL_ACTIVATION_PENDING` before activation; and `PgRunStore::create`, the one
+  admission point (FR-022-059), refuses a gated definition with `BINARY_CAPABILITY_MISSING` should a requirement ever be
+  recorded with no live instance. Fail closed at every layer; the change that builds the gate adds the capability.
+
 ## Gaps
 
 | ID | Gap | Status |

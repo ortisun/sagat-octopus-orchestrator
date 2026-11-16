@@ -9,8 +9,8 @@
 use std::collections::BTreeSet;
 
 use super::{
-    AddressedRunEvent, CollectionPhase, ExecutionError, ExecutionInstanceId, LoopPhase, RunEvent,
-    RunId, RunState, RunStatus, StepStatus,
+    AddressedRunEvent, CollectionPhase, ExecutionError, ExecutionInstanceId, GateChange, GateEvent,
+    LoopPhase, RunEvent, RunId, RunState, RunStatus, StepStatus,
 };
 use crate::workflow::{NodeId, NodeKind, WorkflowDefinition};
 
@@ -119,6 +119,19 @@ registry! {
     RunEvent::RunReset { .. } => ("run.reset", ResetRule::Copy),
     RunEvent::RunStopRequested { .. } => ("run.stop_requested", ResetRule::Exclude),
     RunEvent::RunFinished { .. } => ("run.finished", ResetRule::Exclude),
+    // Feature 022 (D022-035): until a reset admits its run through the gate (T022-064, T022-086), a prefix that holds a
+    // flow-control event offers no point, so no reset run can start with a permit or a slot it was never granted.
+    // `contracts/journal-events.md` states the rules those tasks install (`REMATERIALIZE` or `REFUSE`).
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyQueued { .. }, .. }) => ("concurrency.queued", ResetRule::Exclude),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyAcquired, .. }) => ("concurrency.acquired", ResetRule::Exclude),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyReleased, .. }) => ("concurrency.released", ResetRule::Exclude),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyWaitTimedOut, .. }) => ("concurrency.wait_timed_out", ResetRule::Exclude),
+    RunEvent::Gate(GateEvent { change: GateChange::ConcurrencyDequeued, .. }) => ("concurrency.dequeued", ResetRule::Exclude),
+    RunEvent::Gate(GateEvent { change: GateChange::RateQueued { .. }, .. }) => ("rate_limit.queued", ResetRule::Exclude),
+    RunEvent::Gate(GateEvent { change: GateChange::RateGranted { .. }, .. }) => ("rate_limit.granted", ResetRule::Exclude),
+    RunEvent::Gate(GateEvent { change: GateChange::RateWaitTimedOut, .. }) => ("rate_limit.wait_timed_out", ResetRule::Exclude),
+    RunEvent::Gate(GateEvent { change: GateChange::RateDequeued, .. }) => ("rate_limit.dequeued", ResetRule::Exclude),
+    RunEvent::Gate(GateEvent { change: GateChange::RateReturned, .. }) => ("rate_limit.returned", ResetRule::Exclude),
 }
 
 /// The rule of an event type by the name the journal stores, if this version knows the type. A journal row

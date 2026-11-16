@@ -7203,6 +7203,14 @@ impl PgRunTx {
                         .into(),
                 });
             }
+            // feature 022: the wait of a gated step is written by the readiness gate (T022-096), which this build
+            // does not have; a definition that declares a gate is refused before a run of it exists (FR-022-059)
+            Some(WaitingOn::Gate) => {
+                return Err(StoreError::Internal {
+                    detail: "a step waiting for a flow-control gate is not persisted by this build"
+                        .into(),
+                });
+            }
         };
         // How far back an event wait accepts events, beyond the moment it began waiting.
         let lookback = match def_node.map(sagat_domain::workflow::Node::kind) {

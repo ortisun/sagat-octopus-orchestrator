@@ -21,7 +21,12 @@
 //! are opaque text evaluated by an adapter (`FR-002-001`, ADR-0003).
 
 mod collection_shape;
+pub mod flow_control;
 pub use collection_shape::{CollectionSuccessShapeError, LeafCollectionSuccessShape};
+pub use flow_control::{
+    ConcurrencyPolicy, FlowControl, FlowControlRule, FlowGroup, GateKind, GateLevel, GroupName,
+    RateLimitPolicy, RatePeriod, ResolvedGroup,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -165,6 +170,29 @@ pub enum WorkflowError {
     InvalidContinuationPolicy(&'static str),
     #[error("switch node '{node}': {reason}")]
     InvalidSwitch { node: NodeId, reason: &'static str },
+    /// A `concurrency` or `rateLimit` declaration breaks one of its rules (feature 022:
+    /// `CONCURRENCY_POLICY_INVALID`, `RATE_LIMIT_POLICY_INVALID`). `node` is `None` at the top level.
+    #[error("{}: {rule}", flow_control_place(*kind, node.as_deref()))]
+    InvalidFlowControl {
+        kind: GateKind,
+        node: Option<String>,
+        rule: FlowControlRule,
+    },
+    /// A flow-control declaration together with something it cannot be combined with (feature 022,
+    /// `FLOW_CONTROL_COMBINATION`): a continuation, whose successors are not admitted through the gate.
+    #[error("{} cannot be declared together with {with}", flow_control_place(*kind, node.as_deref()))]
+    FlowControlCombination {
+        kind: GateKind,
+        node: Option<String>,
+        with: &'static str,
+    },
+}
+
+fn flow_control_place(kind: GateKind, node: Option<&str>) -> String {
+    match node {
+        None => format!("top-level '{kind}'"),
+        Some(node) => format!("node '{node}', '{kind}'"),
+    }
 }
 
 /// Why an expression was rejected.
@@ -793,6 +821,8 @@ pub struct Node {
     effect: EffectPolicy,
     origin: NodeOrigin,
     managed: Option<Managed>,
+    /// The gates of the step (feature 022): only a declared root activity or script carries any.
+    flow_control: FlowControl,
 }
 
 impl Node {
@@ -807,7 +837,43 @@ impl Node {
             effect: EffectPolicy::NONE,
             origin: NodeOrigin::Declared,
             managed: None,
+            flow_control: FlowControl::NONE,
         }
+    }
+
+    /// Declares the gates of this step (feature 022). Only a declared activity or script may: a database,
+    /// lake or derived node, and every other kind, is refused with the rule of the first gate it declares.
+    ///
+    /// # Errors
+    /// [`WorkflowError::InvalidFlowControl`] with [`FlowControlRule::NodeKind`].
+    pub fn with_flow_control(mut self, flow_control: FlowControl) -> Result<Self, WorkflowError> {
+        if !flow_control.is_gated() {
+            return Ok(self);
+        }
+        let gateable = matches!(self.kind, NodeKind::Activity { .. })
+            && self.managed.is_none()
+            && self.origin == NodeOrigin::Declared
+            && !self.id.is_derived();
+        if !gateable {
+            let kind = if flow_control.concurrency().is_some() {
+                GateKind::Concurrency
+            } else {
+                GateKind::RateLimit
+            };
+            return Err(flow_control::invalid(
+                kind,
+                Some(&self.id),
+                FlowControlRule::NodeKind,
+            ));
+        }
+        self.flow_control = flow_control;
+        Ok(self)
+    }
+
+    /// The gates of this step; [`FlowControl::NONE`] for an ungated one.
+    #[must_use]
+    pub const fn flow_control(&self) -> &FlowControl {
+        &self.flow_control
     }
 
     /// Managed operations always use one attempt. An ambiguous write requires manual review.
@@ -1047,6 +1113,10 @@ pub enum DefinitionWarning {
     /// A child node starts the workflow it belongs to. Legal (a condition can stop the recursion),
     /// but the depth limit ends it at the latest.
     RecursiveChild { node: NodeId },
+    /// A child node starts this workflow, which declares a run-level `concurrency`: the child may wait for a
+    /// permit of the same key its parent holds, and the parent for the child, until the queue timeout
+    /// (feature 022, `CONCURRENCY_SELF_CHILD`).
+    ConcurrencySelfChild { node: NodeId },
 }
 
 impl fmt::Display for DefinitionWarning {
@@ -1059,6 +1129,10 @@ impl fmt::Display for DefinitionWarning {
             Self::RecursiveChild { node } => write!(
                 f,
                 "node '{node}': starts the workflow it belongs to; the nesting depth limit ends the recursion"
+            ),
+            Self::ConcurrencySelfChild { node } => write!(
+                f,
+                "node '{node}': starts this workflow, whose run-level concurrency key the child may share with its parent; the child can then wait for a permit its parent holds until the queue timeout"
             ),
         }
     }
@@ -1237,6 +1311,8 @@ pub struct WorkflowDefinition {
     structured: bool,
     continuation_policy: Option<ContinuationPolicy>,
     triggers: Vec<Trigger>,
+    /// The gates of a run start (feature 022, top-level `concurrency` and `rateLimit`).
+    run_flow_control: FlowControl,
 }
 
 /// Which kinds of projected state a definition's runs can have ([`WorkflowDefinition::projected_state`]).
@@ -1294,6 +1370,7 @@ impl WorkflowDefinition {
             structured: false,
             continuation_policy: None,
             triggers: Vec::new(),
+            run_flow_control: FlowControl::NONE,
         })
     }
 
@@ -1413,6 +1490,7 @@ impl WorkflowDefinition {
             structured: true,
             continuation_policy,
             triggers: Vec::new(),
+            run_flow_control: FlowControl::NONE,
         };
         definition.check_aggregate_limits()?;
         Ok(definition)
@@ -1505,6 +1583,116 @@ impl WorkflowDefinition {
         let secrets = self.declared_secrets().len();
         if secrets > MAX_DECLARED_SECRETS {
             return Err(WorkflowError::TooManySecrets(secrets));
+        }
+        Ok(())
+    }
+
+    /// Declares the gates of a run start (feature 022, top-level `concurrency` and `rateLimit`).
+    #[must_use]
+    pub fn with_run_flow_control(mut self, flow_control: FlowControl) -> Self {
+        self.run_flow_control = flow_control;
+        self
+    }
+
+    /// The gates of a run start; [`FlowControl::NONE`] when the definition declares none.
+    #[must_use]
+    pub const fn run_flow_control(&self) -> &FlowControl {
+        &self.run_flow_control
+    }
+
+    /// The root nodes that declare a gate, in id order.
+    pub fn gated_nodes(&self) -> impl Iterator<Item = &Node> {
+        self.nodes().filter(|node| node.flow_control().is_gated())
+    }
+
+    /// Whether a run of this definition passes any gate: at its start or at one of its steps. An admission
+    /// path that does not implement the gates must refuse such a definition (FR-022-059, fail closed).
+    #[must_use]
+    pub fn declares_gates(&self) -> bool {
+        self.run_flow_control.is_gated()
+            || self.all_nodes().any(|node| node.flow_control().is_gated())
+    }
+
+    /// The rules of flow control that hold across the definition, checked when it is published (feature 022):
+    /// no gate beside a continuation (`FLOW_CONTROL_COMBINATION`: a successor is not admitted through the gate,
+    /// FR-022-017, FR-022-039, G1177), no gate inside a body (the codec refuses it before with
+    /// `SCOPED_CONCURRENCY` or `SCOPED_RATE_LIMIT`; this is the domain's own floor), and at most
+    /// [`flow_control::MAX_NODE_DECLARATIONS`] node-level declarations of each kind.
+    ///
+    /// A stored definition is not held to it again: what was published is restored as it was, and the one other
+    /// writer of runs (a continuation successor) asserts the absence of a run-level gate itself (FR-022-059).
+    ///
+    /// # Errors
+    /// The first rule broken.
+    pub fn check_flow_control(&self) -> Result<(), WorkflowError> {
+        let continues = self.continuation_policy.is_some()
+            || self
+                .all_nodes()
+                .any(|node| matches!(node.kind(), NodeKind::ContinueAsNew { .. }));
+        if continues {
+            let first = |flow: &FlowControl| {
+                if flow.concurrency().is_some() {
+                    Some(GateKind::Concurrency)
+                } else if flow.rate_limit().is_some() {
+                    Some(GateKind::RateLimit)
+                } else {
+                    None
+                }
+            };
+            if let Some(kind) = first(&self.run_flow_control) {
+                return Err(WorkflowError::FlowControlCombination {
+                    kind,
+                    node: None,
+                    with: "continueAsNew",
+                });
+            }
+            if let Some((node, kind)) = self
+                .all_nodes()
+                .find_map(|node| first(node.flow_control()).map(|kind| (node, kind)))
+            {
+                return Err(WorkflowError::FlowControlCombination {
+                    kind,
+                    node: Some(clip(node.id().as_str())),
+                    with: "continueAsNew",
+                });
+            }
+        }
+        for body in self.bodies() {
+            if let Some(node) = body.all_nodes().find(|node| node.flow_control().is_gated()) {
+                let kind = if node.flow_control().concurrency().is_some() {
+                    GateKind::Concurrency
+                } else {
+                    GateKind::RateLimit
+                };
+                return Err(flow_control::invalid(
+                    kind,
+                    Some(node.id()),
+                    FlowControlRule::NodeKind,
+                ));
+            }
+        }
+        let max = flow_control::MAX_NODE_DECLARATIONS;
+        let concurrency = self
+            .nodes()
+            .filter(|node| node.flow_control().concurrency().is_some())
+            .count();
+        if concurrency > max {
+            return Err(flow_control::invalid(
+                GateKind::Concurrency,
+                None,
+                FlowControlRule::TooManyDeclarations { max },
+            ));
+        }
+        let rate = self
+            .nodes()
+            .filter(|node| node.flow_control().rate_limit().is_some())
+            .count();
+        if rate > max {
+            return Err(flow_control::invalid(
+                GateKind::RateLimit,
+                None,
+                FlowControlRule::TooManyDeclarations { max },
+            ));
         }
         Ok(())
     }
@@ -1817,6 +2005,11 @@ impl WorkflowDefinition {
                     out.push(DefinitionWarning::RecursiveChild {
                         node: node.id().clone(),
                     });
+                    if self.run_flow_control.concurrency().is_some() {
+                        out.push(DefinitionWarning::ConcurrencySelfChild {
+                            node: node.id().clone(),
+                        });
+                    }
                 }
                 _ => {}
             }

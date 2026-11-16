@@ -61,16 +61,24 @@ fn blocked(points: &ResetPoints, sequence: u64) -> Option<&ResetBlock> {
 /// The event types the journal names, read from the source of `RunEvent::name()`: a type added there without
 /// a row in the registry fails here (D1605).
 fn names_of_the_journal() -> BTreeSet<String> {
-    let source = include_str!("../src/execution/event.rs");
-    let start = source
-        .find("pub const fn name(&self) -> &'static str")
-        .expect("the name function");
-    let body = &source[start..start + source[start..].find("\n    }\n").expect("its end")];
-    body.split("=> \"")
-        .skip(1)
-        .filter_map(|rest| rest.split('"').next())
-        .map(str::to_owned)
-        .collect()
+    // `RunEvent::name()`, and the names of the flow-control events it delegates to (feature 022)
+    [
+        include_str!("../src/execution/event.rs"),
+        include_str!("../src/execution/flow_control.rs"),
+    ]
+    .into_iter()
+    .flat_map(|source| {
+        let start = source
+            .find("pub const fn name(&self) -> &'static str")
+            .expect("the name function");
+        let body = &source[start..start + source[start..].find("\n    }\n").expect("its end")];
+        body.split("=> \"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    })
+    .collect()
 }
 
 #[test]
@@ -106,6 +114,17 @@ fn the_rules_are_the_ones_of_the_contract() {
         "execution_chain.successor_linked",
         "run.continued",
         "continuation.selected",
+        // feature 022 (D022-035): no reset point after a flow-control event until a reset admits through the gate
+        "concurrency.queued",
+        "concurrency.acquired",
+        "concurrency.released",
+        "concurrency.wait_timed_out",
+        "concurrency.dequeued",
+        "rate_limit.queued",
+        "rate_limit.granted",
+        "rate_limit.wait_timed_out",
+        "rate_limit.dequeued",
+        "rate_limit.returned",
     ];
     let refuse = [
         ("reconciliation.requested", "reconciliation.concluded"),

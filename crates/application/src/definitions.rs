@@ -415,6 +415,15 @@ fn graph_rule(error: &WorkflowError) -> (&'static str, Option<String>) {
         E::InvalidWorkflowLimit(_) => ("INVALID_WORKFLOW_LIMIT", None),
         E::InvalidContinuationPolicy(_) => ("INVALID_CONTINUATION_POLICY", None),
         E::InvalidSwitch { node, .. } => ("INVALID_SWITCH", Some(node.to_string())),
+        // feature 022 (`contracts/errors.md`): the code of the gate the declaration is for
+        E::InvalidFlowControl { kind, node, .. } => (
+            match kind {
+                sagat_domain::workflow::GateKind::Concurrency => "CONCURRENCY_POLICY_INVALID",
+                sagat_domain::workflow::GateKind::RateLimit => "RATE_LIMIT_POLICY_INVALID",
+            },
+            node.clone(),
+        ),
+        E::FlowControlCombination { node, .. } => ("FLOW_CONTROL_COMBINATION", node.clone()),
     }
 }
 
@@ -424,6 +433,9 @@ fn warning_problem(warning: &DefinitionWarning) -> Problem {
             ("COMPENSATION_OUTSIDE_SAGA", node.to_string())
         }
         DefinitionWarning::RecursiveChild { node } => ("RECURSIVE_CHILD", node.to_string()),
+        DefinitionWarning::ConcurrencySelfChild { node } => {
+            ("CONCURRENCY_SELF_CHILD", node.to_string())
+        }
     };
     Problem {
         severity: Severity::Warning,

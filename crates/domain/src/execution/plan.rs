@@ -302,6 +302,11 @@ pub fn plan(
     if state.is_start_delayed() {
         return Ok(Plan::Idle);
     }
+    // A run whose start waits for a permit or a slot (feature 022) holds its entry the same way, until the grant
+    // routine grants every gate it waits for, or it is stopped.
+    if state.run_gates().holds_entry() {
+        return Ok(Plan::Idle);
+    }
     if let Some(action) = start_pending(def, state, now)? {
         return Ok(action);
     }
@@ -322,9 +327,12 @@ pub fn plan(
             .instances()
             .all(|(_, step)| step.status().is_terminal() && step.routed());
     Ok(if all_done {
-        Plan::Emit(RunEvent::RunFinished {
-            status: super::state::RunStatus::Succeeded,
-        })
+        finishing(
+            state,
+            RunEvent::RunFinished {
+                status: super::state::RunStatus::Succeeded,
+            },
+        )
     } else {
         Plan::Idle
     })
@@ -340,11 +348,41 @@ fn node_of<'a>(
 
 /// The run is being stopped: the sagas compensate what they are to, then what is not in flight is
 /// cancelled, what is gets asked to stop, and the run finishes.
+/// The run's last event, preceded by giving back the run permit it holds (feature 022, ADR-0056 decision 4): a run
+/// never finishes with a permit, and gives it back only once nothing of it is active.
+fn finishing(state: &RunState, finished: RunEvent) -> Plan {
+    match state.run_gates().held_permit() {
+        Some(slot) => Plan::Emit(RunEvent::Gate(super::GateEvent {
+            target: super::GateTarget::Run,
+            gate: slot.gate().clone(),
+            change: super::GateChange::ConcurrencyReleased,
+        })),
+        None => Plan::Emit(finished),
+    }
+}
+
+/// A stopped run whose start still waits for a gate leaves its queues first, rate first (FR-022-021, FR-022-052):
+/// it is never granted, and holds nothing.
+fn dequeue_stopped_start(state: &RunState) -> Option<RunEvent> {
+    let (kind, slot) = state.run_gates().waiting().next()?;
+    Some(RunEvent::Gate(super::GateEvent {
+        target: super::GateTarget::Run,
+        gate: slot.gate().clone(),
+        change: match kind {
+            crate::workflow::GateKind::RateLimit => super::GateChange::RateDequeued,
+            crate::workflow::GateKind::Concurrency => super::GateChange::ConcurrencyDequeued,
+        },
+    }))
+}
+
 fn drain(
     def: &WorkflowDefinition,
     state: &RunState,
     reason: StopReason,
 ) -> Result<Plan, ExecutionError> {
+    if let Some(dequeued) = dequeue_stopped_start(state) {
+        return Ok(Plan::Emit(dequeued));
+    }
     if let Some(action) = sagas::advance(def, state, Some(reason))? {
         return Ok(action);
     }
@@ -437,9 +475,12 @@ fn drain(
     }
     Ok(
         if state.steps().all(|(_, step)| step.status().is_terminal()) {
-            Plan::Emit(RunEvent::RunFinished {
-                status: state.final_status_for(reason),
-            })
+            finishing(
+                state,
+                RunEvent::RunFinished {
+                    status: state.final_status_for(reason),
+                },
+            )
         } else {
             Plan::Idle
         },

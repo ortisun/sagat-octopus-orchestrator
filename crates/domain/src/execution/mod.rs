@@ -11,6 +11,7 @@ mod command;
 mod continuation;
 mod error;
 mod event;
+mod flow_control;
 mod instance;
 mod operations;
 mod path_state;
@@ -36,7 +37,7 @@ pub use capacity::{
 pub use capacity_transfer::{CapacityTransferRefusal, acquire_gate, vacate_gate};
 pub use command::{
     AddressedProgress, Expiry, Failure, Heartbeat, InstanceHeartbeat, Progress, Resolution,
-    ScopedOutputRefusalSuccess, advance_scope_compensation, complete_instance,
+    ScopedOutputRefusalSuccess, advance_scope_compensation, apply_gate, complete_instance,
     complete_path_instance, complete_reconciliation, complete_reconciliation_instance,
     complete_reconciliation_path_instance, complete_step, expire_attempt, expire_instance,
     expire_path_instance, fail_instance, fail_path_instance, fail_report_for_storage_quota,
@@ -48,7 +49,7 @@ pub use command::{
     resolve_review_path_instance, resume_run, retry_due, retry_due_instance,
     retry_due_path_instance, retry_review, retry_review_instance, retry_review_path_instance,
     satisfy_wait, skip_review, skip_review_instance, skip_review_path_instance, start_run,
-    start_run_delayed, stop_for_storage_quota, stop_run, time_out_wait,
+    start_run_delayed, start_run_gated, stop_for_storage_quota, stop_run, time_out_wait,
 };
 pub use continuation::{
     CancelResolution, ChainError, ChainFinalOutcome, ChainHandoff, ChainPolicy, ChainScope,
@@ -62,6 +63,10 @@ pub use event::{
     CorrelationKey, EventAddressError, FailureCode, Fence, JoinOutcome, LoopContinuation,
     LoopDrainReason, LoopKind, LoopOutcome, PlannedEntry, ReconcileResult, ResetReapply,
     ReviewOutcome, RunEvent, ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,
+};
+pub use flow_control::{
+    GateChange, GateEvent, GatePhase, GatePool, GateRef, GateSlot, GateTarget, Gates,
+    KEY_LABEL_LEN, KeyLabel,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,

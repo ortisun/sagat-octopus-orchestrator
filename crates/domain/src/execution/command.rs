@@ -330,6 +330,60 @@ pub fn start_run_delayed(
     Ok((state, progress))
 }
 
+/// Creates the state of a new run whose start passes the gates its definition declares (feature 022): `run.started`,
+/// then the decisions the admission took for each gate (granted, or queued), and the entry released only when every
+/// gate granted. The decisions are made by an adapter under the key's lock (T10, T19); this only journals them.
+///
+/// # Errors
+/// [`ExecutionError::Invariant`] when a decision is not one an admission can take (a release, a return, a timeout).
+pub fn start_run_gated(
+    def: &WorkflowDefinition,
+    run_id: RunId,
+    now: OffsetDateTime,
+    decisions: Vec<super::GateEvent>,
+) -> Result<(RunState, Progress), ExecutionError> {
+    let mut state = RunState::new(run_id);
+    let started = RunEvent::RunStarted {
+        entrypoint: def.entrypoint().clone(),
+    };
+    state.apply(&started)?;
+    let mut events = vec![started];
+    for decision in decisions {
+        if !matches!(decision.target, super::GateTarget::Run)
+            || !matches!(
+                decision.change,
+                super::GateChange::ConcurrencyQueued { .. }
+                    | super::GateChange::ConcurrencyAcquired
+                    | super::GateChange::RateQueued { .. }
+                    | super::GateChange::RateGranted { .. }
+            )
+        {
+            return Err(ExecutionError::Invariant(
+                "an admission grants or queues the gates of the run's start",
+            ));
+        }
+        let event = RunEvent::Gate(decision);
+        state.apply(&event)?;
+        events.push(event);
+    }
+    let progress = settle(def, &mut state, now, events)?;
+    Ok((state, progress))
+}
+
+/// Journals one flow-control decision about an existing run (feature 022) and settles what it lets go: a grant that
+/// completes the gates of a held start releases the entry, as `start_run` would have.
+///
+/// # Errors
+/// [`ExecutionError::Invariant`] when the decision does not follow the state of its gate.
+pub fn apply_gate(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+    decision: super::GateEvent,
+) -> Result<Progress, ExecutionError> {
+    apply_then_settle(def, state, now, RunEvent::Gate(decision))
+}
+
 /// Releases the entry of a delayed run, as `start_run` would have released it at the start.
 ///
 /// # Errors
