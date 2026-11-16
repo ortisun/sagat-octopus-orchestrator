@@ -781,6 +781,34 @@ mod tests {
         assert_eq!(tokens.len(), Capability::ALL.len(), "no two share a token");
     }
 
+    /// Feature 022 (T022-094, SC-022-027): once a flow-control capability is required of both kinds, a process of this
+    /// build, which lists neither (D022-037), lacks it and so does not serve: it answers `BINARY_CAPABILITY_MISSING`.
+    #[test]
+    fn a_process_of_this_build_lacks_a_required_flow_control_capability() {
+        let required = requirements(
+            4,
+            vec![requirement(
+                "flow-control-rate-v1",
+                &["CONTROL_PLANE", "EXECUTION_ENGINE"],
+            )],
+        );
+        for kind in InstanceKind::ALL {
+            assert_eq!(
+                missing_for(kind, &[Capability::SchedulesV1], &required),
+                vec!["flow-control-rate-v1"],
+                "{kind:?}"
+            );
+            assert!(
+                missing_for(kind, &[Capability::FlowControlRateV1], &required).is_empty(),
+                "a build that runs the gate serves"
+            );
+        }
+        assert_eq!(
+            Capability::parse("flow-control-concurrency-v1"),
+            Some(Capability::FlowControlConcurrencyV1)
+        );
+    }
+
     #[test]
     fn a_process_lacks_what_is_required_of_its_kind_and_it_does_not_list() {
         let required = requirements(
