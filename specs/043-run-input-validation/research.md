@@ -743,7 +743,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   is bound by a proxy on every address with `SO_REUSEADDR`, and macOS then lets it share the number of a listener a test
   already holds on `127.0.0.1`; a connection to `127.0.0.1` reaches the more specific listener, here one of the test's
   HTTP servers (the API, the collector, the OIDC mock), which answers `HTTP/1.1 ...`. Shown on this machine with two
-  sockets (`scratchpad` probe): a `127.0.0.1:P` listener and a later `0.0.0.0:P` one with `SO_REUSEADDR` both bind, and
+  sockets in Python: a `127.0.0.1:P` listener and a later `0.0.0.0:P` one with `SO_REUSEADDR` both bind, and
   `127.0.0.1:P` reaches the first; the ephemeral choice of a later `127.0.0.1:0` never took a wildcard's port in 20,000
   binds, so the window is the container's start. `wait_until_queryable` now tells an HTTP answer from a cold start and
   returns at once, and `start_server` starts another container (at most three). Red first:
@@ -788,6 +788,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-053 | A compile that panics is transient (D043-106) and never remembered, so a schema that makes the compiler panic is compiled again, and panics again, on every start of its version (security review of 2026-11-15, Nit 4). | A compiler bug, not an input: it is logged without the schema and refuses as busy, never admits. Bounding the retries would need a memory of panics per key. | Open |
 | G043-054 | A trigger dispatch that waits for room in the validator uses up none of the event's attempts, but an event that has waited for a day (`GIVE_UP_AFTER`) ends `DEAD`, as one waiting for a quota does (correctness review of 2026-11-15, Nit 14). | Only a validator starved for a day drops a trigger start; documented in Technical Plan 1. | Open (documented) |
 | G043-055 | A batch `RERUN` item that finds no room in the validator is deferred as a lock wait and counts an attempt, so one starved past the executor's attempts ends `FAILED RETRIES_EXHAUSTED`; and a buffered backfill step released by the schedule's own firing and refused for its input is settled `INPUT_INVALID` while its backfill runs on, so its next step is refused again before the backfill ends `CANCELLED` (correctness review of 2026-11-16, Nits 7 and 8). | Both end where the design says (a final outcome after a transient wait; a cancelled backfill one step later); neither admits an input. | Open (documented) |
+| G043-056 | `RUN_INPUT_SCHEMA_UNUSABLE` on row 2 (an uploaded-input start) has no test of its own: a version outside the subset is published only in `report` mode, which the blob platform of the tests does not offer. | Row 2 reaches the gate through `start_with` once its descriptor is built, the path whose refusal row 1's test covers. Rows 7 and 10 gained theirs on 2026-11-16 (`row_7_a_backfill_of_a_version_whose_schema_is_unusable_ends_cancelled_with_the_reason`, `a_cron_trigger_whose_schema_is_unusable_audits_the_tick_with_its_reason`; tests of behaviour already built, passing at once). | Open (documented) |
 
 ## 4. Owner questions
 

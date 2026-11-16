@@ -27,7 +27,7 @@ refined while it was built by
 (Proposed). The owner's decisions are listed under Owner decisions needed. The owner asked for the design to be built
 before it is approved (OD-2026-11-14-15), so the tasks describe what was built and each is ticked with its evidence at
 approval. The registers, the history of the drafts and the build, and the validator's internals are in
-`specs/043-run-input-validation/research.md` (D043-001 to D043-171, G043-001 to G043-055, O043-001 to O043-007). The
+`specs/043-run-input-validation/research.md` (D043-001 to D043-171, G043-001 to G043-056, O043-001 to O043-007). The
 principles cited by numeral are those of [the constitution](../constitution.md).
 
 ### Terms
@@ -251,7 +251,9 @@ The constraints beyond a check in `start_with`:
 ### Success criteria
 
 - **SC-043-001** Rows 1 to 14 of Technical Plan 1 each have the test of FR-043-001 or FR-043-006, passing on real
-  PostgreSQL, for both `RUN_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE` where the row has both.
+  PostgreSQL, for both `RUN_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE` where the row has both, but row 2's
+  `RUN_INPUT_SCHEMA_UNUSABLE`: an uploaded-input start reaches the gate through row 1's path once its descriptor is
+  built, and row 1's test covers that refusal (G043-056).
 - **SC-043-002** The sentinel test of FR-043-014 passes for every row that carries a caller's value (all but row 10,
   whose input is the platform's tick).
 - **SC-043-003** In `integration_claim_transition_efficiency`, in `enforce` mode, a start, a triggered start, a child
@@ -952,7 +954,7 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   ports `record_refused_delivery` and `refuse_cron_tick`), `crates/infra-postgres/src/dispatch.rs` (their writes),
   `crates/domain/src/audit.rs` (`RunInputRefused`).
   Tests: `tests/integration/events-webhooks-messaging/run_input.rs` (row 9 with another trigger served and a wait woken,
-  an unusable schema, the budget, no room, a redelivery, row 10); `tests/fault/events-webhooks-messaging/run_input.rs`
+  an unusable schema, the budget, no room, a redelivery, row 10 and its unusable schema); `tests/fault/events-webhooks-messaging/run_input.rs`
   (two engines on one tick, a writer that stops, a crash between the delivery and its audit, a reporting peer's run).
   Refs: FR-043-001, FR-043-007
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11
@@ -992,7 +994,8 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   Files: the four migration files under `crates/infra-postgres/migrations/`, `crates/domain/src/schedules.rs`,
   `crates/application/src/schedule_firing.rs`, `crates/application/src/runs.rs` (`check_scheduled`),
   `crates/infra-postgres/src/schedules.rs` (`settle_waiting`), `frontend/apps/studio/src/features/schedules/model.ts`.
-  Tests: `tests/integration/schedules-bulk-operations/run_input.rs` (rows 6, 7 and 8, the buffered release, the
+  Tests: `tests/integration/schedules-bulk-operations/run_input.rs` (rows 6, 7 and 8, an unusable schema on rows 6 and
+  7, the buffered release, the
   exhausted schedule, trigger-now refused at its start, no room and the budget, one validation in two spans);
   `actions::the_listing_passes_an_outcome_it_does_not_know_through_as_a_string` (G043-001); the `InputInvalid` cases of
   `firing_decisions` (`fault_schedules_bulk_operations`); `a_constraint_added_not_valid_is_validated_by_a_later_migration`

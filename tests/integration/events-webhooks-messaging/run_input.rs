@@ -186,6 +186,38 @@ async fn a_cron_trigger_whose_input_is_refused_starts_nothing_and_audits_the_tic
     assert!(moved, "the tick is acted on, not retried");
 }
 
+/// Row 10 with a schema outside the subset (SC-043-001): the tick is refused `RUN_INPUT_SCHEMA_UNUSABLE`, audited once with
+/// that reason and the tick's key, and the trigger moves on.
+#[tokio::test]
+async fn a_cron_trigger_whose_schema_is_unusable_audits_the_tick_with_its_reason() {
+    let w = world().await;
+    let mut cron = triggered(
+        "row-10-unusable",
+        json!([{"kind": "cron", "cron": "*/5 * * * *", "timezone": "UTC"}]),
+    );
+    cron["inputSchema"] = unusable_schema();
+    publish_in(&w, InputValidationMode::Report, &cron).await;
+    w.dispatcher.tick().await; // plans the first time
+    sqlx::query(
+        "UPDATE workflow_triggers SET next_fire_at = clock_timestamp() - interval '1 second'",
+    )
+    .execute(&w.db.pool)
+    .await
+    .expect("due");
+    w.dispatcher.tick().await;
+    assert_eq!(runs_named(&w, "row-10-unusable").await, 0);
+    assert_eq!(
+        audits(&w, "run.input_refused", "RUN_INPUT_SCHEMA_UNUSABLE via trigger").await,
+        1
+    );
+    let moved: bool =
+        sqlx::query_scalar("SELECT next_fire_at > clock_timestamp() FROM workflow_triggers")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("next");
+    assert!(moved, "the tick is acted on, not retried");
+}
+
 /// T043-21 for row 9: no room in the validator is transient: the event is retried and nothing is recorded; once there is
 /// room the run starts.
 #[tokio::test]

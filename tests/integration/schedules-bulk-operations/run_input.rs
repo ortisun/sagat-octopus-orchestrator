@@ -278,6 +278,91 @@ async fn row_7_a_backfill_whose_input_is_refused_ends_cancelled() {
     assert!(f.runs(&schedule).await.is_empty());
 }
 
+/// Row 7 with a schema outside the subset (SC-043-001): a backfill step of a version whose schema the validator cannot
+/// use records `INPUT_INVALID` with `RUN_INPUT_SCHEMA_UNUSABLE` and ends the backfill `CANCELLED`.
+#[tokio::test]
+async fn row_7_a_backfill_of_a_version_whose_schema_is_unusable_ends_cancelled_with_the_reason() {
+    let f = fixture().await;
+    let (workflow, _) = f.w.publish(flow("row-7-unusable")).await;
+    let schedule = f
+        .create(
+            "row-7-unusable",
+            &hourly(),
+            &json!({}),
+            Some(target(workflow)),
+        )
+        .await;
+    let defs = sagat_application::definitions::DefinitionService::new(
+        f.w.store.clone(),
+        sagat_application::clock::SystemClock,
+        sagat_infra_ir::JsonIrCodec,
+    )
+    .with_input_validation(InputValidationMode::Report);
+    let record = defs
+        .get_workflow(&f.w.admin, workflow, &crate::support::engine::ctx())
+        .await
+        .expect("workflow");
+    let draft = defs
+        .update_draft(
+            &f.w.admin,
+            workflow,
+            record.workflow.draft_revision(),
+            &serde_json::to_vec(&with_schema(flow("row-7-unusable"), unusable_schema()))
+                .expect("json"),
+            &crate::support::engine::ctx(),
+        )
+        .await
+        .expect("draft");
+    defs.publish(
+        &f.w.admin,
+        workflow,
+        draft.workflow.draft_revision(),
+        None,
+        "publish-unusable-row-7",
+        &crate::support::engine::ctx(),
+    )
+    .await
+    .expect("published in report mode");
+    let backfill = f
+        .service
+        .create_backfill(
+            &f.w.admin,
+            schedule.id,
+            &BackfillRequest {
+                start: t0() - Duration::hours(5),
+                end: t0(),
+                overlap: None,
+            },
+            &RequestContext::default(),
+        )
+        .await
+        .expect("a backfill");
+    let due = DueBackfill {
+        tenant_id: backfill.tenant_id,
+        schedule: backfill.schedule,
+        id: backfill.id,
+    };
+    for _ in 0..10 {
+        if f.firing.backfill_step(&due, None).await.expect("a step") != Fired::Acted {
+            break;
+        }
+    }
+    assert_eq!(
+        f.outcomes(&schedule).await,
+        outcomes_of(&[("INPUT_INVALID", 1)])
+    );
+    assert_eq!(
+        reasons(&f, schedule.id).await,
+        vec!["RUN_INPUT_SCHEMA_UNUSABLE"]
+    );
+    let backfills = f
+        .service
+        .backfills(&f.w.admin, schedule.id)
+        .await
+        .expect("backfills");
+    assert_eq!(backfills[0].state, BackfillState::Cancelled);
+}
+
 /// Row 8: trigger-now answers `422` before it decides and records nothing.
 #[tokio::test]
 async fn row_8_trigger_now_answers_422_and_records_nothing() {
