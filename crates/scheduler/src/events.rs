@@ -103,6 +103,17 @@ struct Firing<'a> {
     reason: String,
     /// The event that fired it, when it was one.
     event: Option<&'a ClaimedEvent>,
+    /// The cron tick that fired it, when it was one: the trigger, the time it fires for and the time it moves to.
+    tick: Option<CronTick>,
+}
+
+/// A cron tick: the trigger, the time it fires for and the next time, so that a refusal moves the trigger in the
+/// transaction of its audit (D043-156).
+#[derive(Debug, Clone, Copy)]
+struct CronTick {
+    trigger: uuid::Uuid,
+    scheduled: OffsetDateTime,
+    next: OffsetDateTime,
 }
 
 /// How starting a run for a trigger ended.
@@ -410,6 +421,7 @@ where
                 event.envelope.key.source, event.envelope.key.event_id, trigger.registration.id
             ),
             event: Some(event),
+            tick: None,
         };
         self.start(trigger, &firing, document).await
     }
@@ -569,8 +581,8 @@ where
     /// Records that `trigger` started nothing for `firing` because its version refused the input (`FR-043-007`): for an
     /// event, its delivery to the trigger with no run and, only when that delivery is new, one value-free audit record,
     /// in one transaction, so a redelivery repeats neither; for a cron tick, which has no inbox event, the audit names the
-    /// tick's key (two dispatchers that reach one tick at once may both write it, G043-002). Then the metric, and the
-    /// other consumers of the event are still served.
+    /// tick's key and is written in the transaction that moves the trigger, by the one dispatcher that moves it
+    /// (G043-002, D043-156). Then the metric, and the other consumers of the event are still served.
     async fn refuse(
         &self,
         trigger: &StoredTrigger,
@@ -605,7 +617,15 @@ where
                     .record_refused_delivery(trigger.tenant_id, &delivery, &audit)
                     .await?;
             }
-            None => RunStore::record_refusal(&self.store, &audit).await?,
+            None => match firing.tick {
+                // one transaction with the move of the trigger, written only by the dispatcher that moved it
+                Some(tick) => {
+                    self.store
+                        .refuse_cron_tick(tick.trigger, tick.scheduled, tick.next, &audit)
+                        .await?;
+                }
+                None => RunStore::record_refusal(&self.store, &audit).await?,
+            },
         }
         // once per dispatch (CUJ 3): a redelivery counts again and records nothing again
         metrics::counter!(
@@ -893,6 +913,11 @@ where
                 fingerprint: identity.fingerprint,
                 reason: tick_reason(id, scheduled),
                 event: None,
+                tick: Some(CronTick {
+                    trigger: id,
+                    scheduled,
+                    next,
+                }),
             };
             match self.start(&trigger, &firing, &document).await {
                 Ok(started) => {

@@ -636,12 +636,24 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   alone) is the test support's: `TestSqs` was used as soon as ElasticMQ printed its start line, before its routes
   answered. `sqs()` now asks `ListQueues` until it answers, at most 50 times. The cause is probable from the plain-text
   404 (ElasticMQ's own errors are XML), not reproduced.
+### After the review run of 2026-11-15 at `ce2e10e2` (phase 3)
+
+- **D043-156** (2026-11-15) A refused cron tick is audited in the transaction that moves its trigger, only when that move
+  found the trigger still at the tick (`refuse_cron_tick`, a compare-and-set on `next_fire_at`), and the round's own
+  advance then finds it moved. Supersedes the separate audit of D043-027 for a tick: with the audit first and the move
+  in its own statement, a move that failed or a writer that stopped between the two left the tick due and every later
+  round audited it again, and N dispatchers wrote N audits (correctness review of 2026-11-15, Major 1). Red first:
+  `two_engines_on_one_refused_cron_tick_audit_it_once_with_the_tick_key` and
+  `a_cron_refusal_whose_writer_stops_before_the_trigger_moves_is_audited_once_by_the_next_round`
+  (`tests/fault/events-webhooks-messaging/run_input.rs`), 2 audits each before the change. The design's T043-7 named
+  the test "at most twice"; its text now cites this decision. Closes G043-002.
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
 |---|---|---|---|
-| G043-001 | A control plane of 0.2.x running beside new engines during the upgrade meets the new outcome `INPUT_INVALID`. The action listing reads the outcome as a string by design (`crates/application/src/schedules.rs:634-635`, `crates/infra-postgres/src/schedules.rs:547`), so it passes through; the outcome filter parses the name strictly (`crates/api-http/src/routes/schedules.rs:275`) and an old binary answers `422` to a filter on `INPUT_INVALID`. | Read in the code, not yet tested: T043-11 adds the test of an action list with an unknown outcome. The filter case is stated in the release notes. | Open |
-| G043-002 | A trigger refusal could be audited again on every retry of its event. | Closed for inbox events by D043-027 (the delivery row), proven by T043-7. Left: two engines that reach the same cron tick at once can both audit it; the reason names the tick key, so the duplicate is recognisable. | Open (narrowed 2026-11-14) |
+| G043-001 | A control plane of 0.2.x running beside new engines during the upgrade meets the new outcome `INPUT_INVALID`. The action listing reads the outcome as a string by design (`crates/application/src/schedules.rs:634-635`, `crates/infra-postgres/src/schedules.rs:547`), so it passes through; the outcome filter parses the name strictly (`crates/api-http/src/routes/schedules.rs:275`) and an old binary answers `422` to a filter on `INPUT_INVALID`. | Read in the code, not yet tested: T043-11 adds the test of an action list with an unknown outcome. The filter case is stated in the release notes. Tested 2026-11-15: `actions::the_listing_passes_an_outcome_it_does_not_know_through_as_a_string` (`integration_schedules_bulk_operations`) lists an outcome no binary knows beside known ones, and a filter on another outcome leaves it out. The filter of an old binary on `INPUT_INVALID` stays a documented limit. | Open (listing tested; filter documented) |
+| G043-002 | A trigger refusal could be audited again on every retry of its event. | Closed for inbox events by D043-027 (the delivery row), proven by T043-7. Left: two engines that reach the same cron tick at once can both audit it; the reason names the tick key, so the duplicate is recognisable. Closed 2026-11-15 by D043-156: the tick's audit is written with the move of its trigger, once (`two_engines_on_one_refused_cron_tick_audit_it_once_with_the_tick_key`, `a_cron_refusal_whose_writer_stops_before_the_trigger_moves_is_audited_once_by_the_next_round`). | Closed |
 | G043-003 | `details.field` names property names declared in the schema to a caller with `run:start`. | Closed 2026-11-14: every role that holds `run:start` also holds `definition:read` (`crates/domain/src/identity.rs:607-691`), so the caller may read the schema the names come from. T043-23 adds the unit test that keeps it so for every `Role`. | Closed (by reading; test in T043-23) |
 | G043-004 | A published version with a non-manual trigger and an `inputSchema` that describes a manual input (and not the event envelope `{event, data}`) refuses every triggered start after the upgrade. | `control-plane input-schema-inventory` lists these versions in its informational section, without changing its exit status (D043-072), and publication warns on new ones; neither can tell which schemas accept the envelope without real events. `report` mode covers the time to fix them. | Open |
 | G043-005 | `format` is an annotation, so a schema that relies on it to refuse an input does not refuse it. | D043-046; documented in the runbook. | Open (documented) |

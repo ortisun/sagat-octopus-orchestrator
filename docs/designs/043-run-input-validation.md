@@ -567,8 +567,9 @@ within a bounded time on the CI machine.
   of the event after another consumer failed (`events.rs:304-334`) finds the delivery and writes nothing. A cron firing
   has no inbox event; its refusal audit names the tick's key (`tick_identity`, `events.rs:801`) in its reason (the
   audit's own key; there is no miss memory), and
-  only one dispatcher moves the trigger past the tick, but two that reach the same tick at once can both audit it
-  (G043-002, narrowed to this case).
+  the audit is written in the transaction that moves the trigger past the tick, only by the dispatcher whose move
+  found the trigger still at that tick, so the tick is audited once however many dispatchers reach it and wherever one
+  stops (D043-156, closing G043-002).
 - **Row 11 (child).** In `start_child` after `get_or_parse` (`passes.rs:5224`), on a refusal the engine first looks up
   the child's idempotency record (scope `child:{parent}`, key `child-start:{node}`, `passes.rs:5302-5306`): a child that a
   peer, a 0.2.x engine or an engine in `report` already created is answered as `Applied::Replayed` is today, and the
@@ -833,7 +834,7 @@ come first; T043-21 to T043-24 land with the tasks they test; T043-5 to T043-13 
   tests in `tests/integration/events-webhooks-messaging/`
   (`a_cron_trigger_whose_input_is_refused_starts_nothing_and_audits_the_tick` for row 10),
   `tests/fault/events-webhooks-messaging/` (a retry after another consumer fails, a crash between the two writes, and
-  `two_engines_on_one_refused_cron_tick_audit_it_at_most_twice_with_the_tick_key` for G043-002).
+  `two_engines_on_one_refused_cron_tick_audit_it_once_with_the_tick_key` for G043-002, D043-156).
   Refs: FR-043-001, FR-043-007
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11
 - [ ] T043-8 Check row 11 with `CHILD_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE`, also for a parent created before the

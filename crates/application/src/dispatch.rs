@@ -392,6 +392,18 @@ pub trait EventDispatchStore: Send + Sync {
         next: OffsetDateTime,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
+    /// A cron tick whose version refused its input (`FR-043-007`): moves the trigger to `next`, provided it is still at
+    /// `expected`, and writes `audit` in the same transaction only when this call moved it. The tick is so audited once,
+    /// however many dispatchers reach it and wherever one of them stops (G043-002, D043-156). `true` when this call moved
+    /// it.
+    fn refuse_cron_tick(
+        &self,
+        id: Uuid,
+        expected: OffsetDateTime,
+        next: OffsetDateTime,
+        audit: &sagat_domain::audit::AuditRecord,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// A tick that could not be started is not owed any less: it stays at `scheduled` and is tried
     /// again from `retry_at`, under the same key. `true` when the trigger was still at `scheduled`.
     fn delay_cron_trigger(

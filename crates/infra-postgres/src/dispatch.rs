@@ -493,6 +493,35 @@ impl EventDispatchStore for PgRunStore {
             > 0)
     }
 
+    async fn refuse_cron_tick(
+        &self,
+        id: Uuid,
+        expected: OffsetDateTime,
+        next: OffsetDateTime,
+        audit: &sagat_domain::audit::AuditRecord,
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
+        // The move is the claim on the tick: a dispatcher that finds the trigger moved writes nothing (D043-156).
+        let moved = sqlx::query(
+            "UPDATE workflow_triggers \
+             SET next_fire_at = $3, retry_at = NULL, last_fire_at = $2 \
+             WHERE id = $1 AND next_fire_at = $2",
+        )
+        .bind(id)
+        .bind(expected)
+        .bind(next)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?
+        .rows_affected()
+            > 0;
+        if moved {
+            crate::identity::insert_audit(&mut tx, audit).await?;
+        }
+        tx.commit().await.map_err(store_error)?;
+        Ok(moved)
+    }
+
     async fn delay_cron_trigger(
         &self,
         id: Uuid,
