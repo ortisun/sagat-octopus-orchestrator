@@ -6,7 +6,7 @@
 //!
 //! - [`SchemaValidator`], an object-safe async port implemented by `crates/infra-schema` (the platform's validator of
 //!   the supported subset). The adapter owns the permits, their work-conserving fair queue, the wait, the off-worker
-//!   step and the backstop (D043-071): `application` holds no runtime.
+//!   step and the backstop (D043-071): this module names no runtime (ADR-0092).
 //! - [`RunInputGate`], the concrete gate: it owns the mode ([`InputValidationMode`]), the metrics and the only non-test
 //!   constructor of [`CheckedRunInput`], whose fields are private to this module. The creation inputs of a run
 //!   (`NewRun.input`, `ContinuationSelection`, `EvaluatedChainHandoffCommand`) are a [`CheckedRunInput`], so a new
@@ -277,8 +277,10 @@ impl Creator {
     }
 }
 
-/// What a refusal of a repeated input may say (D043-037): the pointer and the rule only when the caller's view of the
-/// source run's input withholds nothing, otherwise `/` and `other`.
+/// What a refusal may say: `Show`, the pointer and the rule, for an input the caller sent; `Root`, `/` and `other`, for
+/// every start whose input the caller did not send (a rerun, a batch rerun, a reset, a pending reset, a trigger-now, a
+/// private rerun), whatever the caller may read (D043-121, D043-144, D043-148; the graded check of D043-037 is not
+/// built, G043-040).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldPolicy {
     Show,
@@ -578,9 +580,10 @@ impl RunInputGate {
         policy: FieldPolicy,
         counted: bool,
     ) -> Result<CheckedRunInput, InputRefusal> {
-        // a recheck counts only what the check before it could not have counted: a refusal (D043-152)
+        // a recheck counts only what the check before it could not have counted: a refusal (D043-152), or a report of
+        // one in `report` mode, whose audit is written with the run (correctness review of 2026-11-16, Nit 6)
         let count = |creator: Creator, outcome: &'static str| {
-            if counted || matches!(outcome, "refused" | "schema_unusable") {
+            if counted || matches!(outcome, "refused" | "schema_unusable" | "reported") {
                 count(creator, outcome);
             } else {
                 tracing::Span::current().record("sagat.run_input.outcome", outcome);
@@ -887,6 +890,45 @@ mod tests {
                     1
                 ),
             ])
+        );
+    }
+
+    /// Correctness review of 2026-11-16, Nit 6: in `report` mode a recheck that reports is counted `reported`, as the
+    /// audit it leads to is written, so the metric and the audit rows agree.
+    #[test]
+    fn a_reporting_recheck_is_counted() {
+        use futures_util::FutureExt as _;
+
+        let counted = Arc::new(Counted::default());
+        let recorder = Recorder(Arc::clone(&counted));
+        let gate = RunInputGate::new(
+            Arc::new(Scripted::answering([invalid(Rule::Required)])),
+            InputValidationMode::Report,
+        );
+        let definition_schema = schema();
+        metrics::with_local_recorder(&recorder, || {
+            let checked = gate
+                .checked(
+                    TenantId::generate(),
+                    WorkflowVersionId::generate(),
+                    Some(&definition_schema),
+                    b"{}".to_vec(),
+                    Creator::Schedule,
+                    FieldPolicy::Show,
+                    false,
+                )
+                .now_or_never()
+                .unwrap()
+                .unwrap();
+            assert!(matches!(checked.outcome(), Checked::Reported(_)));
+        });
+        let counts = counted.0.lock().unwrap().clone();
+        assert_eq!(
+            counts,
+            std::collections::BTreeMap::from([(
+                "run_input_validations_total{creator=schedule,outcome=reported}".to_owned(),
+                1
+            )])
         );
     }
 
