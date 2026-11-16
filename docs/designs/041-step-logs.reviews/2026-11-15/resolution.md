@@ -250,3 +250,42 @@ Open after the re-audit: Blocker 0, Major 0 without an answer.
 T041-1 stays unticked although its done condition holds: `scripts/check-design-docs.py` refuses a ticked task in a doc
 that is not `Approved` (R9, "T041-1 is newly ticked but the doc is not Approved", seen on 2026-11-15), and the design is
 `Draft` until the owner answers O041-014 to O041-023 and the approval fields are written.
+
+## 7. The owner's answers and the final review (2026-11-15)
+
+The owner answered O041-014 to O041-019, O041-022 and O041-023 (OD-2026-11-15-4 to -11; two against the recommendation:
+the separate quota and the script marker). Commit `35070fe9` built them in: the ADR revisions marked accepted; an
+Amendment of ADR-0027 for the separate quota and the 128-byte row charge, its text for the owner's acceptance (O041-024);
+the script marker specified (design section 7); constitution 4.5.0 with its Sync Impact Report and task T041-32; the
+register of minors in `sdks/SPEC.md` §9 and a note in the research of drafts 020, 021, 025 and 026. Three fresh
+reviewers then read the diffs `b1b2c249..69e0f828` and `69e0f828..35070fe9` and their re-audit reports:
+`architecture-final.md` (Blocker 0, Major 3, Nit 8), `security-final.md` (Blocker 0, Major 2, Nit 3),
+`correctness-final.md` (Blocker 0, Major 4, Nit 8). Answers, in the commit that adds this section:
+
+| Finding | Answer | Where |
+|---|---|---|
+| architecture M1 | FIX + OWNER | The Amendment gains considered options and consequences (2 GiB of diagnostic text per tenant by default) and the rule-2 trade-off; O041-024 gains option (c), a new ADR refining ADR-0027. The text stays in ADR-0027, as the owner asked |
+| architecture M2, correctness N5, N7 | FIX | Both 2026-11-15 Revision headings say "accepted 2026-11-15 (OD-2026-11-15-4)"; the "not in force" sentence is gone; ADR-0084's note gives the readings of decisions 8 (`step_log`) and 11 (the fences of the classes charged) and the end test that follow from the owner's answers |
+| architecture M3, correctness M1 | FIX | Section 7: one record and one marker per (run, node, attempt), as `script_executions_step_uniq` keeps; G041-007 restated and owned by feature 005; a two-iteration test |
+| security A, architecture N6 | FIX | The reported path and generation must match a `step.leased` event of the run, or no marker (`skipped_identity`); a test |
+| security B, correctness M2, architecture N2 | FIX | The Amendment names the routing branch, the `add_delta` argument with a default, the loop filter, the raise on an unknown class, and two `SECURITY DEFINER` accessors (`sagat_quota_step_log_allowance`, `sagat_quota_lock_step_log_usage`); data-model.md §4 corrected; a runtime-role run in T041-13 |
+| correctness M3 | FIX | The attempt and run byte ceilings count text only; the 128 bytes are the tenant quota's (FR-041-006, section 2 step 6, data-model.md) |
+| correctness M4 | FIX | The barrier ingests are held after `SET CONSTRAINTS ALL IMMEDIATE`, so their flush holds the usage row (SC-041-001, T041-6, Verification) |
+| architecture N1, security C | FIX | The trigger is `ENABLE ALWAYS`, with a fixed `search_path` and qualified names; trigger and backfill in one transaction; T041-28 tests both |
+| architecture N3 | FIX | `identity.rs` (`classify`), `quotas.rs` and `content_usage.rs` in T041-5's Files |
+| architecture N4 | FIX | OD-2026-11-13-18's Covers names T041-5; OD-2026-11-15-9's names T041-22, which cites it; T041-3 and T041-13 wait for O041-024 |
+| architecture N5 | FIX | Clause 4.5.0 and its report name the suites; T041-32 carves `worker.proto` out of `SHARED_INPUTS`; the report states the cost for later protocol changes |
+| architecture N7 | FIX | `script_marker_decision`, a pure function beside `plan_batch` |
+| architecture N8 | FIX | "six resources" |
+| security D | Residual | G041-015: the step-log quota's usage under `quota:read` is a step-log-only signal; ADR-0085 decision 6 (accepted) names only the tenant total. For the owner if it matters |
+| security E | CONTEST | `pg_snapshot_xmax` is the end horizon D1958 removed: a snapshot's `xmax` is the last completed id plus one, so an ingest with a higher id can still be open when `xmin` passes it. The cost is one transaction id per read of a finished run whose cursor lacks `end`, bounded by the API rate limit |
+| correctness N6 | FIX | The Amendment: a transaction charging several classes takes their fences in the order content, log, step-log |
+| correctness N7 (skipped marker) | FIX | A skipped marker is counted by `step_log_script_markers_total` and the Amendment says so |
+| correctness N8 | FIX | The marker stream's `expires_at` is never later than the execution's |
+| correctness N9 | FIX | FR-041-023: the delete removes what was committed when it ran |
+| correctness N10 | FIX | The count rule is stated for highest sequences below 2^53 |
+| correctness N11 | FIX | The marker reads usage through `sagat_quota_lock_step_log_usage` and sets `last_at` and `expires_at` |
+
+Residual after the final review: Blocker 0; Major 0 without an answer (architecture M1 is answered and its choice is the
+owner's, O041-024); Nits: security D (G041-015) and security E (contested). The fixes of this section had no further
+independent read: the EGM cap of one re-audit is spent, and T041-27 and the per-slice reviewers are the next check.

@@ -223,7 +223,9 @@ Sources: `docs/test-strategy.md`, AGENTS.md rules 9, 11 and 12.
   files it changes) and the integration suites that it changes, and, when it changes the code that
   runs a lease or a completion, the suite that budgets what they cost the database, and, when it
   changes the code that captures, sends, stores or serves step logs (the server's step-log modules,
-  the worker-protocol contract, or an SDK's capture code), the step-log suites, and only those;
+  the worker-protocol contract, or an SDK's capture code), the step-log suites (`integration_step_logs`;
+  with it the budget suite for the server's step-log code and the SDK conformance suite for the
+  worker-protocol contract and an SDK's capture code), and only those;
   `scripts/select-test-targets.py` decides which. A merge into
   `develop` starts no run: the push that merges a pull request would prove again what the pull
   request proved. A release MUST

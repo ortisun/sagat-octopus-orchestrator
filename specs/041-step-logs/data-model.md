@@ -41,7 +41,8 @@ CREATE TABLE step_log_streams (
     generation            bigint      NOT NULL,
     source                text        NOT NULL DEFAULT 'worker',  -- 'script': the marker stream of a script attempt
     records               integer     NOT NULL DEFAULT 0,  -- worker lines stored; the marker is not counted here
-    bytes                 bigint      NOT NULL DEFAULT 0,  -- charged bytes stored
+    bytes                 bigint      NOT NULL DEFAULT 0,  -- text bytes stored (the ceilings' measure; the tenant
+                                                           -- quota charges 128 more per row)
     last_sequence         bigint      NOT NULL DEFAULT 0,  -- highest worker sequence seen; only rises (GREATEST)
     ceiling_sequence      bigint,                          -- last_sequence when a ceiling was first met
     next_marker_sequence  bigint      NOT NULL DEFAULT 4611686018427387904,  -- 2^62
@@ -135,11 +136,12 @@ CREATE TABLE classified_namespaces (
 
 -- The record of FR-041-021: a trigger on every insert into workflow_versions, whatever binary makes it. document is the
 -- canonical JSON of the version (crates/application/src/definitions.rs:479-480); the test is a superset of an annotation.
-CREATE FUNCTION sagat_record_classified_namespace() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION sagat_record_classified_namespace() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
     IF position(convert_to('"x-sagat-classification"', 'UTF8') IN NEW.document) > 0 THEN
-        INSERT INTO classified_namespaces (tenant_id, namespace_id, recorded_by)
-        SELECT w.tenant_id, w.namespace_id, 'trigger' FROM workflows w
+        INSERT INTO public.classified_namespaces (tenant_id, namespace_id, recorded_by)
+        SELECT w.tenant_id, w.namespace_id, 'trigger' FROM public.workflows w
          WHERE w.tenant_id = NEW.tenant_id AND w.id = NEW.workflow_id
         ON CONFLICT DO NOTHING;
     END IF;
@@ -147,6 +149,8 @@ BEGIN
 END $$;
 CREATE TRIGGER workflow_versions_record_classified AFTER INSERT ON workflow_versions
     FOR EACH ROW EXECUTE FUNCTION sagat_record_classified_namespace();
+ALTER TABLE workflow_versions ENABLE ALWAYS TRIGGER workflow_versions_record_classified;  -- as the table's other triggers
+-- The trigger and the statement below run in the migration's one transaction, so no version inserted between them is missed.
 -- And once, for the versions that exist:
 INSERT INTO classified_namespaces (tenant_id, namespace_id, recorded_by)
 SELECT DISTINCT w.tenant_id, w.namespace_id, 'migration'
@@ -191,7 +195,12 @@ The class `step_log` and the kind `fixed_octets` are those of ADR-0027's Amendme
 | `run_log_usage` | `SELECT, INSERT, UPDATE` |
 | `classified_namespaces` | `SELECT, INSERT` |
 
-Usage of the two identity sequences. No `TRUNCATE`, no `SECURITY DEFINER` function, no grant on `namespaces` (the
+Usage of the two identity sequences. No `TRUNCATE` and no grant on `namespaces`. The only `SECURITY DEFINER` functions
+are the two accessors of ADR-0027's Amendment, `sagat_quota_step_log_allowance(tenant)` and
+`sagat_quota_lock_step_log_usage(tenant)`, of the existing pattern (fixed `search_path`, trusted owner, `EXECUTE` to
+`sagat_app`), because the runtime role reads neither `tenant_retained_usage` with a lock nor `quota_accounting_control`
+(`20261024000000_durable_quotas.up.sql:564-572`); the trigger function of `workflow_versions` runs as the inserting role.
+No other grant (the
 2026-11-13 column `namespaces.has_classified_schemas` is replaced by `classified_namespaces`, security M3 of
 2026-11-15). The trigger function runs as the inserting role, which holds `INSERT` on `classified_namespaces`. The down
 migration refuses while a row of `step_log_lines` or `classified_namespaces` exists. The migration's one-time statement

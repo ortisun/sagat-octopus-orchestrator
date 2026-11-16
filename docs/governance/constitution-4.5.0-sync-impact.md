@@ -12,7 +12,9 @@ later amendment.
 One clause of one bullet of Development Workflow changes: **CI gates**. Before, a pull request MUST pass the integration
 suites it changes and, when it changes the code that runs a lease or a completion, the budget suite, and only those. Now
 it MUST also pass, when it changes the code that captures, sends, stores or serves step logs (the server's step-log
-modules, the worker-protocol contract, or an SDK's capture code), the step-log suites. No principle changes and the
+modules, the worker-protocol contract, or an SDK's capture code), the step-log suites: `integration_step_logs` and,
+with it, the budget suite `integration_claim_transition_efficiency` for the server's step-log code and the SDK
+conformance suite `sdk_conformance` for the worker-protocol contract and an SDK's capture code. No principle changes and the
 specification process is unchanged, so the amendment is not MAJOR; it adds an obligation, so it is not PATCH.
 
 Why: the step-log suites guard behaviour that lives in code they do not contain. A fix in the ingest's application module,
@@ -62,5 +64,8 @@ for the reason the 4.3.0 report gives.
 
 - A pull request that changes step-log code or an SDK's capture code builds and runs the step-log suites, which include
   real PostgreSQL and, for an SDK, its conformance scenarios: minutes, not seconds.
+- Every later change of `worker.proto`, by any feature (020, 021, 025 and 026 each plan one), runs the six-language
+  conformance suite and `integration_step_logs`: today such a change, under `specs/.*/contracts/`, selects nothing on a
+  pull request. That is up to an hour per such pull request, and the intent: the protocol is what the SDKs share.
 - The paths are the ones design 041 names; step-log behaviour reached from another path is found at the release.
 - Rollback is a forward amendment that removes the clause, and the removal of the rule in the selector.

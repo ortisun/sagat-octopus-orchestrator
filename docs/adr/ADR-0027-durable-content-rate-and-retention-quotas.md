@@ -108,27 +108,51 @@ nothing above this section changes for the resources it already covers.
 1. **A resource.** `tenant_step_log_bytes`: tenant aggregate; the retained bytes of step-log rows (design 041); kind
    storage, unit bytes, maximum the byte maximum of `tenant_log_bytes`, default and default ceiling 1 GiB (the value of
    `tenant_log_bytes`, until the owner sets another). A write over it stores no step-log line and is counted where the
-   reader of the run sees it; it never truncates text to fit (the prefix rule of "Logs cannot obstruct terminal state"
+   reader of the run sees it (on the attempt's stream for worker lines; on a metric for a skipped script-output marker);
+   it never truncates text to fit (the prefix rule of "Logs cannot obstruct terminal state"
    is for terminal reports, and a step log is lossy by ADR-0084). It never blocks a terminal state: no terminal report
    writes a step-log row except the script-output marker, which is skipped when it does not fit.
 2. **A class.** `step_log`, beside `content`, `log` and `protected_system`: the text columns of `step_log_lines` and its
    per-row charge. `tenant_log_bytes` keeps the build, test and execution logs and the other diagnostic text it covers
    today.
-3. **Accounting.** `tenant_retained_usage` gains `step_log_bytes`, `quota_transaction_deltas` gains `step_log_delta`, and
-   the deferred finalizer gains a branch: when the transaction's step-log delta is positive, it takes the shared policy
-   fence `quota-policy:tenant_step_log_bytes:<tenant>` after the content and log fences and before the usage row, works
-   out the limit as it does for logs, and raises `tenant_step_log_quota_exceeded` when it is passed. A path that takes
-   the usage row before its commit and writes a step-log row (only the script-output marker, through `take_log_prefix`)
-   takes the step-log fence in that order first. `quota_accounting_control` gains `step_log_enforcement_enabled`, true
-   from the migration that adds it: a step log has no terminal fallback to wire first.
+3. **Accounting.** `tenant_retained_usage` gains `step_log_bytes` and `quota_transaction_deltas` gains `step_log_delta`.
+   `sagat_quota_row_delta` routes the class `step_log` to the new delta (today every class but `content` goes to the log
+   delta, `20261024000000_durable_quotas.up.sql:231-238`) and raises on a class it does not know; `sagat_quota_add_delta`
+   gains the step-log delta as a new last argument with a default of 0, so that its present callers, the blob trigger
+   included (`:268, :273`), keep working; the finalizer's loop also picks rows whose only non-zero delta is the step-log
+   one (`OR step_log_delta <> 0`, beside `:305-308`). The finalizer gains a branch: when the step-log delta is positive,
+   it takes the shared fence `quota-policy:tenant_step_log_bytes:<tenant>` and works out the limit as it does for logs;
+   a transaction that charges several classes takes their fences in the order content, log, step-log, then the usage row;
+   past the limit it raises `tenant_step_log_quota_exceeded`, which the store maps to a typed refusal beside the
+   existing ones. `quota_accounting_control` gains `step_log_enforcement_enabled`, true from the migration that adds it:
+   a step log has no terminal fallback to wire first. The runtime role reads none of these tables directly; two
+   `SECURITY DEFINER` functions of the existing pattern (fixed `search_path`, trusted owner, `EXECUTE` to `sagat_app`)
+   give it what it needs: `sagat_quota_step_log_allowance(tenant)` (usage, limit and whether it is enforced, without a
+   lock, for the ingest's early check) and `sagat_quota_lock_step_log_usage(tenant)` (the same under the usage row's lock,
+   after the step-log fence, for the script-output marker, through `take_log_prefix`).
 4. **A measurement kind.** `fixed_octets`, a constant charge per row whatever the value, allowed only on a `NOT NULL`
    variable-size column so that the manifest test compares it; `step_log_lines.level` carries 128. A row is charged its
    text plus 128, so every row costs at least 128 bytes. `sagat_quota_measure` gains the branch and the manifest test
    learns the kind and the class.
 5. **Retention.** Unchanged: a step-log stream keeps the retention it was created with (ADR-0084 decision 8).
 
-Built by design 041: T041-4 (the resource), T041-5 (the column, the class, the kind, the finalizer branch, the control
-flag, the manifest and its test), T041-6 (the ingest's checks). Enforced by the manifest test with the new kind and
+Considered options. (1) A separate resource and class, as above: chosen by the owner (OD-2026-11-15-5). (2) Step logs
+inside `tenant_log_bytes`, stopping at 90% of it: not chosen; approximate under concurrency, and the other log writers
+lose part of their allowance. (3) Sharing `tenant_log_bytes` as it is: not chosen; steps that log a lot leave script,
+dispatch and connector errors stored empty for the retention period. For the row charge, (1) a fixed 128 bytes per row:
+chosen (OD-2026-11-15-6); (2) no charge with a written bound: not chosen, a quota bypass is release-blocking
+(constitution V); (3) one row per batch: not chosen for 0.3.0 (O041-004).
+
+Consequences. A tenant's default allowance for retained diagnostic text grows from 1 GiB to 2 GiB (1 GiB of
+`tenant_log_bytes` and 1 GiB of `tenant_step_log_bytes`); every classified write's finalizer has one more branch and its
+loop one more condition; a step-log row costs at least 128 bytes of the tenant quota, so it holds fewer short lines (the
+attempt and run byte ceilings of design 041 measure the text only). This section amends in place an ADR that is accepted
+and implemented, as the owner asked; `docs/adr/README.md` rule 2 would instead put it in a new ADR that refines this one,
+which O041-024 offers as an option.
+
+Built by design 041: T041-4 (the resource), T041-5 (the column, the delta, the class, the kind, the routing, the finalizer
+branch, the control flag, the two functions, the typed refusal, the manifest and its test), T041-6 (the ingest's early
+check), T041-13 (the step-log fence and lock in `take_log_prefix` for the script-output marker). Enforced by the manifest test with the new kind and
 class, a finalizer test of the new branch, and the runtime-role bypass tests of this ADR extended to the new column.
 
 ## Implementation slices and ownership contract

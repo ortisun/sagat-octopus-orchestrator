@@ -125,15 +125,14 @@ then decided O041-012 and O041-013 (OD-2026-11-13-18). Decisions 1, 3, 5, 6, 10 
 added; options 4, 5 and 9 were added. The chosen option is unchanged. The reports are in
 `docs/designs/041-step-logs.reviews/2026-11-13/`.
 
-## Revision (2026-11-15), proposed: awaiting the owner's acceptance (O041-014)
+## Revision (2026-11-15), accepted 2026-11-15 (OD-2026-11-15-4)
 
 Revision accepted 2026-11-15, OD-2026-11-15-4.
 
 Note (2026-11-15, OD-2026-11-15-7): O041-017 was answered (a), so the secret set of decision 1 lives for the process,
 bounded, and the parenthesis about answer (b) in decision 1 and the matching clause of decision 12 do not apply.
 
-Not in force until the owner accepts it (design 041, T041-2; O041-014 in `specs/041-step-logs/research.md`). The Status
-line above and the decisions as written above are unchanged until then. The egm-review and the second round of the
+The Status line above is unchanged; the decisions below replace those of the same numbers above. The egm-review and the second round of the
 reviewers (`docs/designs/041-step-logs.reviews/2026-11-15/`) found that a secret leaves the process's set when its
 attempt ends although a later attempt can log it through shared state; that each language's own decimal text of a number
 does not contain a numeric secret; that the server's scrubbers cannot be reused as written (`scrub_shapes` and

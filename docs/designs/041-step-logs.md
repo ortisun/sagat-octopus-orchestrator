@@ -107,7 +107,7 @@ Facts of the code that shape what can be built (read at `b1b2c249`):
 - **FR-041-006 Ceilings and drop counts.** These ceilings hold, enforced by the server from counters whatever the worker
   does: 8 KiB per message and per exception text, and 2 KiB and 32 keys per field map, measured after redaction; the
   attempt and run ceilings of FR-041-020 (defaults 10,000 records and 1 MiB an attempt, 100,000 records and 16 MiB a
-  run); the tenant's step-log quota, `tenant_step_log_bytes`, a resource of its own (OD-2026-11-15-5). A message or exception over its ceiling is cut at a character boundary and the
+  run, the bytes being those of the stored text); the tenant's step-log quota, `tenant_step_log_bytes`, a resource of its own (OD-2026-11-15-5). A message or exception over its ceiling is cut at a character boundary and the
   line is flagged `truncated`. Records past a ceiling are not stored and are counted on the attempt's stream. When the
   attempt ceiling is first met the server stores one marker line, which holds no text; the run ceiling and the tenant
   quota are recorded only on the stream row. Every sequence the worker numbered and the server never stored is counted
@@ -134,8 +134,8 @@ Facts of the code that shape what can be built (read at `b1b2c249`):
   NOT take, or wait for, a lock on a row of `runs`, `steps` or `run_events`, and leasing, heartbeat and completion MUST
   NOT read or write the log tables. A batch MUST NOT take the tenant's `tenant_retained_usage` row before its commit.
   The batches of one run wait for each other on the run's usage row, which each holds from its allowance step to its
-  commit (section 2; measured by T041-31, G041-009). The bytes, each row's text plus a fixed 128 bytes (OD-2026-11-15-6), are
-  counted in a storage class of their own, `step_log` (ADR-0027 Amendment of 2026-11-15), and released when the rows are
+  commit (section 2; measured by T041-31, G041-009). The bytes charged to the tenant, each row's text plus a fixed 128 bytes
+  (OD-2026-11-15-6), are counted in a storage class of their own, `step_log` (ADR-0027 Amendment of 2026-11-15), and released when the rows are
   deleted.
 - **FR-041-009 Retention.** An attempt's lines are deleted once its stream expires: the server's time of its last
   recorded batch plus the `step_log_retention_days` the stream took from its namespace when it was created (FR-041-020).
@@ -214,7 +214,8 @@ Facts of the code that shape what can be built (read at `b1b2c249`):
   `logTruncated` false to them (OD-2026-11-13-18), whatever `SAGAT_STEP_LOGS_READ_ENABLED` says. Viewers lose the log
   they read today; the release notes say so.
 - **FR-041-023 Deletion.** `DELETE /runs/{runId}/logs`, optionally with `stream`, needs `run:logs:delete`, held by the
-  admin role only. It makes the lines unreadable at once, records `run.logs_deleted` (run, number of streams, no text) in
+  admin role only. It makes the lines committed when it runs unreadable at once (a batch or a marker that commits after it
+  is stored, and a second delete removes it), records `run.logs_deleted` (run, number of streams, no text) in
   the same transaction, and leaves the removal of the rows to the purge. It exists for the incident in which a secret or
   personal data was logged. No route removes a script execution's log before its retention (G041-013); the incident
   runbook says so.
@@ -224,14 +225,15 @@ Facts of the code that shape what can be built (read at `b1b2c249`):
 - **SC-041-001 The hot path.** With the migration applied and the ingest running between the measuring windows,
   `work_budget.rs` passes with its constants unmodified. A batch for a run commits, under `lock_timeout = 50ms`, while
   another transaction holds that run's row `FOR UPDATE` and has updated the leased `steps` row. With K ingest
-  transactions of tenant T held just before their commit (K = the tenant's tickets on one replica, at most the Logs
-  cap), a completion with output of another run of T is shown, through `pg_locks`, to queue behind them; when they are
+  transactions of tenant T, each held after `SET CONSTRAINTS ALL IMMEDIATE` has run its quota flush, so that it holds the
+  tenant usage row until it commits (K = the tenant's tickets on one replica, at most the Logs cap), a completion with
+  output of another run of T is shown, through `pg_locks`, to queue behind them; when they are
   released, all K commit and then the completion commits, within the bound T041-31 measured. The same with a
   `lock_secrets` waiter queued on the namespace.
 - **SC-041-002 A flood.** An activity that writes 1,000,000 lines as fast as it can completes with the same outcome and
   output as one that writes none; the store holds at most the attempt ceiling plus its marker; and for the stream,
   lines stored (the marker excluded) + dropped by the worker + dropped by the server = the highest sequence the logger
-  assigned.
+  assigned (for highest sequences below 2^53, where the drop counts saturate).
 - **SC-041-003 Faults.** In the fault tests of the Verification Plan no record is stored twice, and every record of an
   attempt that has a stream and is missing is covered by a counter or by the "ended without its final flush" state. An
   attempt whose capture stopped before its first batch was stored has no stream (G041-014).
@@ -304,9 +306,12 @@ Open (each registered in research.md; the recommendation is the first option):
 
 - **O041-024 The text of ADR-0027's Amendment (2026-11-15).** The owner decided its substance (OD-2026-11-15-5,
   OD-2026-11-15-6); the text adds the resource `tenant_step_log_bytes` (default 1 GiB), the class `step_log`, the
-  measurement kind `fixed_octets` and the finalizer branch. (a) Accept the text as written. (b) Accept it with the changes
-  the owner names (the default value, for one). Recommended: (a). Trade-off: none beyond what the owner decided; (b) is
-  there if 1 GiB is not the wanted default. T041-4, T041-5 and T041-6 wait for it.
+  measurement kind `fixed_octets`, the finalizer branch and two `SECURITY DEFINER` accessors. (a) Accept the text as
+  written, in ADR-0027 as the owner asked. (b) Accept it with the changes the owner names (the 1 GiB default, for one).
+  (c) Move it to a new ADR that refines ADR-0027, with a pointer there. Recommended: (a), since the owner asked for an
+  amendment section. Trade-off: (a) edits in substance an ADR that is accepted and implemented, which
+  `docs/adr/README.md` rule 2 and the constitution's Governance would put in a new ADR, as (c) does. T041-3, T041-4,
+  T041-5, T041-6 and T041-13 wait for it.
 - **O041-020 An approximate run ceiling** (asked only if the fan-out case of T041-31 fails). (a) Keep the exact run
   ceiling, so that the batches of one run wait for each other on `run_log_usage`. (b) An approximate ceiling: each batch
   sums the counters of the run's streams without a lock, so a run can pass its ceiling by the batches in flight.
@@ -588,10 +593,11 @@ Every statement that binds line text or `q` maps its database error with `store_
    2^53.
 6. **Allowances**, from counters, in this order: the attempt (lines and bytes on the stream row, against the namespace's
    attempt ceilings); the run (`run_log_usage`, created or locked by `INSERT … ON CONFLICT (tenant_id, run_id) DO UPDATE … RETURNING`, held to commit, so the batches of one run wait for each other here); the tenant
-   (`tenant_retained_usage.step_log_bytes`, read **without a lock**, against `tenant_step_log_bytes` worked out as the
-   finalizer's new branch works it out: the least of the tenant's `quota_limits` and `quota_ceilings` rows with the
-   1 GiB default, as the log branch does today (`20261024000000_durable_quotas.up.sql:302-340`), while
-   `step_log_enforcement_enabled` is true; ADR-0027 Amendment of 2026-11-15). Records are kept in
+   (`sagat_quota_step_log_allowance(tenant)`, a `SECURITY DEFINER` accessor of the ADR-0027 Amendment that returns,
+   **without a lock**, `tenant_retained_usage.step_log_bytes`, the limit worked out as the finalizer's branch works it out
+   from `quota_limits`, `quota_ceilings` and the 1 GiB default, and whether it is enforced; the runtime role reads none
+   of those tables itself, `20261024000000_durable_quotas.up.sql:564-572`). The attempt and run allowances count text
+   bytes; the tenant's counts text plus 128 bytes a row. Records are kept in
    sequence order until the first that does not fit the attempt or run allowance; the rest are counted as dropped by
    the server with that ceiling as the reason, `ceiling_sequence` takes the stream's high mark, and when the attempt
    ceiling is first met one marker row (`ceiling_marker`, at `next_marker_sequence`) is planned. If the unlocked tenant
@@ -671,15 +677,17 @@ this database; the tenant boundary is the `tenant_id` in every key and predicate
 (`tests/contract/security-multitenancy/rest/battery.rs`). The down migration refuses while a line or a classified
 namespace exists.
 
-**The classified-namespace record (FR-041-021).** An `AFTER INSERT` trigger on `workflow_versions` inserts
+**The classified-namespace record (FR-041-021).** An `AFTER INSERT` trigger on `workflow_versions`, enabled `ALWAYS` as
+the table's other triggers are (`20261009000000_definitions.up.sql:76-78`), with a fixed `search_path` and qualified
+names, inserts
 `(tenant, namespace)` into `classified_namespaces` with `ON CONFLICT DO NOTHING` when the version's `document` holds the
 UTF-8 text `"x-sagat-classification"` (`position(… in document) > 0`). `document` is the canonical JSON the version froze
 (`crates/application/src/definitions.rs:479-480`), so every annotation the publication analysis finds appears in it
 literally; the test can also match the text where it is not an annotation (a description that quotes it), which counts
 the namespace as classified and errs closed (G041-010). The trigger fires for every insert, whatever binary makes it
 (both `crates/infra-postgres/src/definitions.rs:547` and `execution/ad_hoc.rs:34` insert versions), so a rolling upgrade
-or a rollback cannot leave a classified version unrecorded. The migration runs the same test once over the versions
-that exist. A test holds that, on the classification fixtures and on versions published with `classification_rules = 0`, every version the publication analysis (`crates/infra-schema/src/classification/publication.rs:33-55`) finds
+or a rollback cannot leave a classified version unrecorded. The migration creates the trigger and runs the same test once over the versions that
+exist in one transaction, so no version inserted in between is missed. A test holds that, on the classification fixtures and on versions published with `classification_rules = 0`, every version the publication analysis (`crates/infra-schema/src/classification/publication.rs:33-55`) finds
 classified records its namespace.
 
 ### 4. Retention, purge and deletion
@@ -879,22 +887,32 @@ paged on its own, each with its execution id, node, attempt, own `expiresAt` and
 **marker line** in the run's log, at the time the report was recorded, that the whole-run tab shows as a row opening the
 execution's log under FR-041-022. No script text is ever copied.
 
+**One record per (run, node, attempt).** `script_executions_step_uniq` is unique on (tenant, run, node, attempt)
+(`20261014000000_scripts.up.sql:277`) and the runner gives every iteration of a collection the same node
+(`apps/sandbox-runner/src/lib.rs:1309-1315`), so inside a collection only the first iteration's report of an attempt is
+recorded and the others return as repeats (`scripts.rs:1792-1797`), today, before this feature. The marker follows the
+record: one per (run, node, attempt), for the iteration that was recorded. Widening the key belongs to feature 005
+(G041-007).
+
 **Instance identity.** `record_execution` finds the step by (tenant, run, node) and reads the latest `step.leased` event of
 that attempt (`crates/infra-postgres/src/scripts.rs:1798-1804`), which inside a collection can be another iteration's. So
 the runner adds, to the report it already sends, the `generation` and `instancePath` of the lease it holds
 (`apps/sandbox-runner/src/lib.rs:1057-1074` holds `lease.generation` and `lease.instance`; `ExecutionReport`,
-`apps/sandbox-runner/src/api.rs:176-191`; `RecordExecutionRequest`, optional fields, contracts.md §2). A control plane
-older than this feature refuses unknown fields (`additionalProperties: false`), so a runner whose report is refused as
-malformed resends it once without the two fields; the record is kept, without a marker. When the report carries them, the
-marker's step is the `steps` row of (tenant, run, node, instance path); when it does not, the marker is written only if
-exactly one `steps` row has that (tenant, run, node), a root step, and otherwise not (the execution is still listed;
-G041-007).
+`apps/sandbox-runner/src/api.rs:176-191`; `RecordExecutionRequest`, optional fields, contracts.md §2). The report carries
+no lease token, so these fields are the runner's word: the marker is placed only if a `step.leased` event of the run
+exists with that instance path (`run_events` holds it, `20261027000000_scoped_instance_identity.up.sql:35-43`), that
+attempt and that generation, and otherwise it is skipped (`skipped_identity`). A control plane older than this feature
+refuses unknown fields (`additionalProperties: false`), so a runner whose report is refused as malformed resends it once
+without the two fields; the record is kept, without a marker. A report without the fields gets a marker only if exactly
+one `steps` row has that (tenant, run, node), a root step.
 
-**When it is written.** Only when `record_execution` inserts the execution (not for a repeat, which returns early under
-its advisory lock, `scripts.rs:1784-1796`), for an execution of a run (not a test run, `run_id` null), with
-`SAGAT_STEP_LOGS_ENABLED` on and the namespace's `step_log_attempt_records` above 0, for a run whose `finished_at` is null
-in the same transaction, and with the instance identity known. A run already finished gets no marker, so that a marker
-can never commit after a tail has sent `end`.
+**When it is written.** The decision is a pure function of the domain, `script_marker_decision`, beside `plan_batch` in
+`crates/domain/src/step_logs.rs`, over facts the transaction reads: the execution was inserted (not a repeat, which
+returns early under its advisory lock, `scripts.rs:1784-1796`); it is an execution of a run (not a test run, `run_id`
+null); `SAGAT_STEP_LOGS_ENABLED` is on and the namespace's `step_log_attempt_records` above 0; the run's `finished_at` is
+null in this transaction; the instance identity is verified as above. A run already finished gets no marker, so that a
+marker can never commit after a tail has sent `end`. Each outcome is counted (`step_log_script_markers_total`,
+data-model.md §7), which is where a skipped marker is seen.
 
 **The transaction** is `record_execution`'s own, in this order, which keeps ADR-0084 decision 11 without an exception:
 
@@ -902,14 +920,18 @@ can never commit after a tail has sent `end`.
    an id below any end horizon (section 5).
 2. The existing advisory lock on (tenant, run, node, attempt), the repeat check, the `step.leased` read and the digest
    and retention checks, unchanged. The advisory lock is taken by no other step-log path.
-3. The run's `finished_at` and the instance's `steps` row, read without a lock.
-4. The marker stream: `INSERT … ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING RETURNING` with `source = script`, a new row that no ingest ever locks (an ingest's key has `source = worker`).
-5. `take_log_prefix`, which takes the content fence, the log fence, and now also the step-log fence (a new argument),
-   then the tenant usage row `FOR UPDATE`, in ADR-0027's order.
-6. Under that lock, the step-log usage and limit are exact: if the marker's 128 bytes fit, one line of kind
-   `script_marker` with the execution id (the id `record_execution` generates before its insert) is inserted at the
-   stream's `next_marker_sequence`; if they do not, no line is inserted and the stream records `tenant_quota`. The
-   script record never fails for lack of step-log quota (ADR-0027 Amendment, item 1).
+3. The facts of the decision, read without a lock: the run's `finished_at`, the verifying `step.leased` event, the
+   `steps` row, the namespace's capture resource.
+4. The marker stream: `INSERT … ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING RETURNING` with `source = script`, `last_at` now and `expires_at` the earlier of now plus the namespace's
+   `step_log_retention_days` and the execution's own `expires_at`, so that the marker never outlives the execution it
+   opens; a new row that no ingest ever locks (an ingest's key has `source = worker`).
+5. `take_log_prefix`, which takes the content fence, the log fence and, with a new argument, the step-log fence, then the
+   tenant usage row `FOR UPDATE` through `sagat_quota_lock_step_log_usage` (ADR-0027 Amendment), in ADR-0027's order.
+6. Under that lock, the step-log usage and limit are exact (nothing in the transaction has charged the step-log class
+   yet): if the marker's 128 bytes fit, one line of kind `script_marker` with the execution id (the id
+   `record_execution` generates before its insert) is inserted at the stream's `next_marker_sequence`; if they do not,
+   no line is inserted, the stream records `tenant_quota` and the metric counts `skipped_quota`. The script record never
+   fails for lack of step-log quota (ADR-0027 Amendment, item 1).
 7. The existing insert of `script_executions` and its audits. Under the advisory lock it always inserts; if it ever
    reports no row, the transaction rolls back and the call answers as a repeat, so no marker points to nothing.
 8. Commit: the finalizer charges the script log to `tenant_log_bytes` and the marker to `tenant_step_log_bytes`, under the
@@ -920,12 +942,15 @@ with `source = worker` does not list marker streams. The purge and the delete ro
 the execution and its log are untouched.
 
 **Tests (T041-13).** The marker is written once, with the report's instance path, for a script step inside a collection;
-a repeat report writes none; a test run, a finished run, capture off in the namespace and the deployment switch off write
-none; an older runner's report without the fields gets a marker for a root step and none in a collection; a refused
-report resent without the fields is recorded; at the step-log limit the execution is recorded and no line is stored; at
-barriers, a `record_execution`, an ingest of the same run, a delete of the run's logs and a change of
-`tenant_step_log_bytes` all commit with no deadlock; a `record_execution` held across the run's terminal transition is
-delivered by the tail before `end`, or writes no marker if it read the run finished.
+with two iterations of one attempt, one execution and one marker are kept and the second report answers as a repeat; a
+report whose instance path or generation names no `step.leased` event of the run gets no marker; a repeat report writes
+none; a test run, a finished run, capture off in the namespace and the deployment switch off write none; an older
+runner's report without the fields gets a marker for a root step and none in a collection; a refused report resent
+without the fields is recorded; at the step-log limit the execution is recorded and no line is stored; the marker
+stream expires no later than the execution; as the runtime role (`SAGAT_TEST_AS_RUNTIME_ROLE=1`); at barriers, a
+`record_execution`, an ingest of the same run, a delete of the run's logs and a change of `tenant_step_log_bytes` all
+commit with no deadlock; a `record_execution` held across the run's terminal transition is delivered by the tail before
+`end`, or writes no marker if it read the run finished. `script_marker_decision` has unit tests of each outcome.
 
 ### 8. Studio
 
@@ -960,7 +985,7 @@ The metrics of data-model.md §7, with closed labels. Alerts in `infra/observabi
 transaction older than five minutes, from the gauge of the operations snapshot, built as the `count_and_age` reads of
 `crates/infra-postgres/src/operations.rs:437-448`). Drops at a ceiling are the customer's code and are shown on the run,
 not alerted. The ingest has a span, `worker.append_step_logs`, with counts and the verdict and no text. A new runbook,
-`docs/runbooks/step-logs.md`, covers the five resources, the deployment switches, the purge, what each state and marker
+`docs/runbooks/step-logs.md`, covers the six resources, the deployment switches, the purge, what each state and marker
 means, that a change of retention applies to new streams and a change of capture or a ceiling to new batches, the
 classified-namespace record and its superset test, the PostgreSQL settings of section 5, and the incident path (CUJ 7:
 delete the lines, rotate the secret; a script execution's log is removed only by its own retention, G041-013). `docs/architecture/overview.md` and the storage documentation gain the new tables.
@@ -1126,12 +1151,13 @@ Slice A, decisions and contracts (nothing runs yet):
   stubs with the pinned versions; add the four messages to `skip_debug` in `crates/api-grpc/build.rs` and to the prost
   configuration of `sdks/rust/build.rs` and `sdks/rust/conformance/build.rs`, with `Debug` impls that print counts. Copy
   contracts.md §2 into `openapi.yaml`: the operations tagged `x-planned: '041'`, the `ScriptExecution`, `Quota` and
-  `Error.details` changes, the five resources in `Quota.resource` and `QuotaResourceName`. Add the four operations to the
+  `Error.details` changes, the six resources in `Quota.resource` and `QuotaResourceName`. Add the four operations to the
   battery's `not_built` list (`battery.rs:584-591`); extend the digest test's approved additions with `041`; regenerate
   `docs/reference/api.md` (`SAGAT_DOCS_BLESS=1`, `contract_developer_experience`) and the Studio types, each after reading
   the diff. Contract checks pass; nothing is served.
   Refs: FR-041-004, FR-041-010, FR-041-011, FR-041-012, FR-041-014, FR-041-022, FR-041-023
   Owner-gate: OD-2026-11-15-4, OD-2026-11-15-8, OD-2026-11-15-9
+  Waits for: O041-024 (the text of ADR-0027's Amendment of 2026-11-15)
   Files: modify `specs/001-platform-foundation/contracts/{worker.proto,worker.baseline.json,openapi.yaml}`, the six SDK
   proto copies, `crates/api-grpc/build.rs`, `crates/api-grpc/src/{lib.rs,service.rs}`, `sdks/rust/build.rs`,
   `sdks/rust/conformance/build.rs`, the six test and SDK stubs of section 1, `sdks/go/internal/workerpb/*.pb.go`,
@@ -1170,7 +1196,10 @@ Slice B, the server stores:
   Refs: FR-041-008, FR-041-021
   Owner-gate: OD-2026-11-13-14, OD-2026-11-13-18, OD-2026-11-15-4, OD-2026-11-15-5, OD-2026-11-15-6, OD-2026-11-15-9
   Waits for: O041-024 (the text of ADR-0027's Amendment of 2026-11-15)
-  Files: create a migration (`.up.sql`, `.down.sql`); modify `crates/infra-postgres/storage-classification.json`,
+  Files: create a migration (`.up.sql`, `.down.sql`); modify `crates/infra-postgres/src/identity.rs` (the typed refusal
+  of `tenant_step_log_quota_exceeded` in `classify`, `:787-791`), `crates/infra-postgres/src/quotas.rs` (the usage of
+  the new resource, `:1219`), `crates/infra-postgres/src/content_usage.rs` (`RetainedUsage`, `:147-173`),
+  `crates/infra-postgres/storage-classification.json`,
   `tests/integration/claim-transition-efficiency/main.rs`, `docs/engineering/architecture-principles.md`; create
   `tests/integration/claim-transition-efficiency/step_log_isolation.rs`, `crates/application/tests/step_log_sites.rs`.
 - [ ] T041-6 The ingest of section 2.
@@ -1181,8 +1210,9 @@ Slice B, the server stores:
   the statement budget of the ingest as an equality; the `integration_step_logs` target (`tests/Cargo.toml`); its selector
   rule is T041-32.
   Tests, in `tests/integration/claim-transition-efficiency/`: the lock-free test of SC-041-001; the barrier tests of
-  SC-041-001, which raise the held ingests' lock timeout, release them when the completion appears in `pg_locks` as
-  waiting behind them, and assert that all K committed before it; `work_budget.rs` unmodified; the lock-order test.
+  SC-041-001, which raise the held ingests' lock timeout, hold each after `SET CONSTRAINTS ALL IMMEDIATE` (so that its
+  flush holds the tenant row), release them when the completion appears in `pg_locks` as waiting behind them, and
+  assert that all K committed before it; `work_budget.rs` unmodified; the lock-order test.
   Tests, in `integration_step_logs`, with `worker_sessions` rows inserted at minor 7 by the test support (the server
   negotiates 7 only from T041-7): the session cases (expired, other namespace, other subject, below 1.7, replaced
   token); the authority cases (binding removed, membership revoked, runner, database-runner), each answered `AUTHORITY`
@@ -1236,7 +1266,9 @@ Slice C, the server serves:
   a version with one annotation records its namespace and one without does not, through both insert sites and through a
   plain `INSERT` as an old binary would make it; on the classification fixtures and on versions with
   `classification_rules = 0`, every version the publication analysis finds classified records its namespace; the
-  migration's statement records the existing versions; the runtime role cannot delete or update a row.
+  migration's statement records the existing versions; the trigger is enabled `ALWAYS` (`pg_trigger.tgenabled = 'A'`)
+  and fires under `session_replication_role = replica`; a temporary table named `classified_namespaces` does not capture
+  the record; the runtime role cannot delete or update a row.
   Refs: FR-041-021
   Owner-gate: OD-2026-11-13-18, OD-2026-11-15-4
   Files: tests in `tests/integration/step-logs/` and `tests/integration/security-multitenancy/`.
@@ -1271,8 +1303,9 @@ Slice C, the server serves:
   resend without them, the step-log fence argument of `take_log_prefix`; the tests of section 7.
   Refs: FR-041-016
   Owner-gate: OD-2026-11-13-14, OD-2026-11-15-9
-  Files: modify `crates/infra-postgres/src/{step_logs.rs,scripts.rs,content_usage.rs}`,
-  `crates/application/src/{step_logs.rs,scripts.rs}`, `crates/api-http/src/{dto_scripts.rs,routes/scripts.rs}`,
+  Waits for: O041-024 (the text of ADR-0027's Amendment of 2026-11-15)
+  Files: modify `crates/domain/src/step_logs.rs` (`script_marker_decision`),
+  `crates/infra-postgres/src/{step_logs.rs,scripts.rs,content_usage.rs}`, `crates/application/src/{step_logs.rs,scripts.rs}`, `crates/api-http/src/{dto_scripts.rs,routes/scripts.rs}`,
   `apps/sandbox-runner/src/{lib.rs,api.rs}`; tests in `tests/integration/step-logs/` and `tests/integration/inline-code-sandbox/`.
 - [ ] T041-29 `getScriptExecution` and `listScriptExecutions` withhold the log of FR-041-022 (`log` empty, `logTruncated`
   false, `logWithheld: true`) through `step_logs::may_read` of T041-11, for each execution of a listing; the
@@ -1294,9 +1327,11 @@ Slice C, the server serves:
   `docs/reference/api.md`, `docs/runbooks/step-logs.md`.
 
 - [ ] T041-32 The CI gate of constitution 4.5.0 (OD-2026-11-15-10): a rule in `scripts/select-test-targets.py` that
-  selects `integration_step_logs` for the server's step-log code (`crates/*/src/**/step_logs*`, `crates/api-grpc/src/limits.rs`, the step-log handlers of `crates/api-http/src/routes/execution.rs`), the worker-protocol contract
-  (`specs/001-platform-foundation/contracts/worker.proto`) and the SDKs' capture code, the SDK conformance suite for the
-  last two, and the budget suite for `crates/application/src/step_logs.rs`; its cases in
+  selects, as the clause names them, `integration_step_logs` and the budget suite `integration_claim_transition_efficiency`
+  for the server's step-log code (`crates/*/src/**/step_logs*`, `crates/api-grpc/src/limits.rs`, the step-log handlers of
+  `crates/api-http/src/routes/execution.rs`), and `integration_step_logs` and `sdk_conformance` for the worker-protocol
+  contract (`specs/001-platform-foundation/contracts/worker.proto`, carved out of `SHARED_INPUTS`,
+  `select-test-targets.py:79`) and the SDKs' capture code; its cases in
   `scripts/tests/test_select_test_targets.py`; `docs/test-strategy.md`, `tests/AGENTS.md` and `scripts/README.md`. Lands
   with or after T041-6.
   Refs: NFR-041-PERF, SC-041-001
@@ -1354,7 +1389,7 @@ Slice E, the Studio:
   FR-041-017 (the missing permission from the session, the missing grant from the refusal), markers, windowing, text-only
   rendering without links and with bidirectional and zero-width characters made visible; unit tests.
   Refs: FR-041-017, FR-041-019, FR-041-022
-  Owner-gate: OD-2026-11-13-18
+  Owner-gate: OD-2026-11-13-18, OD-2026-11-15-9
   Files: create `frontend/apps/studio/src/features/runs/LogView.tsx` and its tests; modify `RunDetailPage.tsx`, `NodePanel.tsx`.
 - [ ] T041-23 The tail (`followLogs`, pause and resume, announcements, the polling fallback that stops on `complete`),
   with a test that a dropped connection neither skips nor repeats.
@@ -1415,7 +1450,7 @@ sleeps.
 | What is proven | How |
 |---|---|
 | The hot path is unchanged (SC-041-001) | `work_budget.rs` with its constants unmodified while ingest runs between its windows; a batch commits under `lock_timeout = 50ms` while another transaction holds the run row `FOR UPDATE` and has updated the leased step row; a source-text test that the worker and execution modules never name the log tables |
-| What a completion waits for (SC-041-001) | K ingest transactions of one tenant held just before their commit (lock timeout raised in the test); a completion with output of the same tenant is seen in `pg_locks` waiting behind them; on release all K commit, then the completion, within the bound T041-31 measured; the same with a `lock_secrets` waiter queued on the namespace |
+| What a completion waits for (SC-041-001) | K ingest transactions of one tenant, each held after `SET CONSTRAINTS ALL IMMEDIATE` has run its flush and taken the usage row (lock timeout raised in the test); a completion with output of the same tenant is seen in `pg_locks` waiting behind them; on release all K commit, then the completion, within the bound T041-31 measured; the same with a `lock_secrets` waiter queued on the namespace |
 | Crash between accept and store | The `StepLogTx` wrapper fails before the commit: nothing stored, the resend stores all, once |
 | Crash between store and answer | The wrapper commits and then fails, and the proxy drops a response: the resend stores nothing and gets `CONTINUE` (`FINAL_RECORDED` for a final batch) |
 | Duplicate batch | The same batch twice at a barrier: the second waits on the stream row and gets `RETRY_LATER` at the lock timeout; its resend stores nothing; counters rise once |
@@ -1432,7 +1467,7 @@ sleeps.
 | Tenant boundary | The cross-tenant battery on the RPC and the four routes: 404, `access.denied.cross_tenant`, no count or size disclosed; a cursor or `stream` of another run is refused |
 | Permission, grant and audit | A viewer is refused on the read routes and gets the script execution without its log; a developer without the grant is refused in a classified namespace (recorded by the trigger, also for a version inserted as an old binary would) and allowed in another; two first reads in a window write one `run.logs_read` before returning, and a failure to write it returns no line; only admin may delete, and the delete is audited |
 | Retention | A stream past its expiry is marked, then purged 500 lines at a time and shown as expired from the first of them; quota bytes return; the stream row stays with `purged_at`; a lowered retention leaves existing streams' expiry as it was; a batch racing the mark stores nothing |
-| Script marker (OD-2026-11-15-9) | The tests of section 7 (T041-13): once per inserted execution, with its instance path; none for a repeat, a test run, a finished run, capture off or an unknown iteration; the record kept at the step-log limit; no deadlock with an ingest, a delete or a policy change; delivered before `end` |
+| Script marker (OD-2026-11-15-9) | The tests of section 7 (T041-13): once per inserted execution, with its verified instance path; one per (run, node, attempt) with two iterations; none for an unverified path; none for a repeat, a test run, a finished run, capture off or an unknown iteration; the record kept at the step-log limit; no deadlock with an ingest, a delete or a policy change; delivered before `end` |
 | Separate step-log quota (OD-2026-11-15-5, -6) | A tenant at its `tenant_step_log_bytes` limit stores no step-log line while a script log, a dispatch error and a connector error are stored in full under `tenant_log_bytes`; an empty line is charged 128 bytes; the finalizer's new branch raises at the limit (T041-5, T041-6) |
 | Runtime privileges and storage classification | The privilege audit and manifest tests pass with the new statements and columns |
 | Studio (SC-041-006) | Unit tests of the states and markers; the axe run; the keyboard journey; a line holding markup, a URL, escape sequences and bidirectional controls is shown as inert text |
@@ -1444,7 +1479,7 @@ captures nothing), G041-006 (SC-041-007 is measured on one machine), G041-007 (a
 listed without its iteration), G041-008 (the cursor shows the transaction counter), G041-009 (a wide fan-out
 serialises on `run_log_usage`), G041-010 (the classified-namespace test over-matches), G041-011 (moot: step logs have their own quota), G041-012 (any open transaction of the cluster holds the read horizon), G041-013 (no route
 removes a script execution's log early), G041-014 (an attempt whose capture stopped before its first batch has no
-stream).
+stream), G041-015 (the step-log quota's usage, readable under `quota:read`, shows how much a tenant's runs log).
 
 ### Estimate
 

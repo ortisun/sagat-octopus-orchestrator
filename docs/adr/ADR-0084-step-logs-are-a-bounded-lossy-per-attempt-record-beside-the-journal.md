@@ -125,17 +125,20 @@ that markers carried log bytes; that a tail could end before a late batch commit
 the opposite order. Decisions 3, 5, 6, 7, 8 and 9 were rewritten and decision 11 added; option 7 was added. The chosen option is
 unchanged. The reports are in `docs/designs/041-step-logs.reviews/2026-11-13/`.
 
-## Revision (2026-11-15), proposed: awaiting the owner's acceptance (O041-014)
+## Revision (2026-11-15), accepted 2026-11-15 (OD-2026-11-15-4)
 
 Revision accepted 2026-11-15, OD-2026-11-15-4.
 
 Note (2026-11-15, OD-2026-11-15-9): the owner kept a script-output marker. Its write takes the stream row before the
 fences and the tenant usage row, so it follows decision 11 with no exception (design 041, section 7); the words "the
-script marker is removed" of decision 11 no longer describe the design, and the rule itself is unchanged. The tenant's
-step-log bytes are a resource of their own (OD-2026-11-15-5, ADR-0027 Amendment of 2026-11-15); decision 3 applies to it.
+script marker is removed" of decision 11 no longer describe the design. The tenant's step-log bytes are a resource and a
+storage class of their own (OD-2026-11-15-5, ADR-0027 Amendment of 2026-11-15), so in decision 8 the lines are classified
+`step_log`, not `log`, and in decision 11 "the content policy fence, the log policy fence" reads "the policy fences of
+the classes the transaction charges, in ADR-0027's order (content, log, step-log)"; decision 3 applies to the new
+resource. In "Enforced by", the end test is the one of design 041's T041-12: an ingest with the largest id below the end
+horizon, held open. These readings follow from the owner's answers of the same day and change no rule's intent.
 
-Not in force until the owner accepts it (design 041, T041-2; O041-014 in `specs/041-step-logs/research.md`). The Status
-line above and the decisions as written above are unchanged until then. The egm-review and the second round of the
+The Status line above is unchanged; the decisions below replace those of the same numbers above. The egm-review and the second round of the
 architecture, security and correctness reviewers (`docs/designs/041-step-logs.reviews/2026-11-15/`) found that the end
 rule of decision 9 repeats the defect feature 018 fixed in D1958; that the locking path near the tenant limit of decision
 3 holds the row a completion needs and that a completion waits for every ingest commit queued ahead of it, not one; that
