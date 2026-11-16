@@ -157,6 +157,49 @@ async fn a_cron_refusal_whose_writer_stops_before_the_trigger_moves_is_audited_o
     assert!(moved, "the tick is acted on");
 }
 
+/// Correctness review of 2026-11-16, Nit 9: a dispatcher in `report` mode started the tick's run and stopped before it
+/// moved the trigger (the move is undone here, which is what its stop leaves). The next dispatcher, in `enforce`, finds
+/// the run its key holds: it audits no refusal for a tick that has a run, and moves the trigger on.
+#[tokio::test]
+async fn a_refused_tick_whose_run_a_reporting_peer_created_is_not_audited() {
+    let w = world().await;
+    a_due_refused_tick(&w, "cron-peer-in-report").await;
+    let due: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT next_fire_at FROM workflow_triggers")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("the due time");
+    let reporting = w
+        .dispatcher_with(EventDispatchSettings::default())
+        .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+            sagat_application::run_input::InputValidationMode::Report,
+        ));
+    reporting.tick().await;
+    assert_eq!(
+        count(&w, "SELECT count(*) FROM runs").await,
+        1,
+        "the peer started it"
+    );
+    sqlx::query("UPDATE workflow_triggers SET next_fire_at = $1, retry_at = NULL")
+        .bind(due)
+        .execute(&w.db.pool)
+        .await
+        .expect("the move the peer never made");
+    w.dispatcher.tick().await;
+    assert_eq!(count(&w, "SELECT count(*) FROM runs").await, 1);
+    assert_eq!(
+        audits(&w, "run.input_refused", "at tick").await,
+        0,
+        "a tick that has a run is not audited as refused"
+    );
+    let moved: bool =
+        sqlx::query_scalar("SELECT next_fire_at > clock_timestamp() FROM workflow_triggers")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("next");
+    assert!(moved, "the tick is acted on");
+}
+
 async fn publish_event(w: &World, id: &str) {
     w.events
         .publish(

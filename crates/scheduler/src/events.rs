@@ -620,6 +620,26 @@ where
             None => match firing.tick {
                 // one transaction with the move of the trigger, written only by the dispatcher that moved it
                 Some(tick) => {
+                    // A peer that admitted the tick (in `report` mode, or a 0.2.x engine) and stopped before it moved
+                    // the trigger left a run under the tick's key: the tick has a run and is not a refusal; the round
+                    // moves the trigger on as for any tick already started (correctness review of 2026-11-16, Nit 9).
+                    let key = Idempotency {
+                        scope: format!("trigger:{}", trigger.registration.id),
+                        key: firing.key.clone(),
+                        fingerprint: firing.fingerprint.clone(),
+                    };
+                    if self
+                        .store
+                        .replay_start(
+                            trigger.tenant_id,
+                            sagat_domain::identity::Subject::engine().as_str(),
+                            &key,
+                        )
+                        .await?
+                        .is_some()
+                    {
+                        return Ok(Started::No);
+                    }
                     self.store
                         .refuse_cron_tick(tick.trigger, tick.scheduled, tick.next, &audit)
                         .await?;
