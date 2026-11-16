@@ -135,7 +135,7 @@ Parameters: `Cursor`, `Limit`, and
 
 | Name | Schema | Meaning |
 |---|---|---|
-| `stream` | string, format uuid | one attempt log (`StepLogStream.id`) of this run |
+| `stream` | string, format uuid | one stream (`StepLogStream.id`) of this run: an attempt log, or a script execution's id for its marker |
 | `node` | string, 1-256 | the definition node |
 | `attempt` | integer, 1-2^31-1 | |
 | `minLevel` | enum `trace, debug, info, warn, error` | ordered as listed |
@@ -160,7 +160,7 @@ StepLogLine:
     stream: {type: string, format: uuid}
     node: {type: string}
     attempt: {type: integer}
-    instancePath: {type: array, items: {$ref: '#/components/schemas/ApprovalScope'}}   # the existing {scopeNodeId, iterationIndex} schema
+    instancePath: {type: [array, 'null'], items: {$ref: '#/components/schemas/ApprovalScope'}, description: 'The existing {scopeNodeId, iterationIndex} schema; empty for a root step; null for a script marker, which has no iteration.'}
     sequence: {type: string, description: 'Decimal; above 2^53 for a marker.'}
     workerTime: {type: [string, 'null'], format: date-time}
     storedAt: {type: string, format: date-time}
@@ -183,20 +183,20 @@ StepLogStream:
   type: object
   required: [id, source, node, attempt, instancePath, state]
   properties:
-    id: {type: string, format: uuid, description: 'For source script, the script execution id.'}
+    id: {type: string, format: uuid, description: 'The stream public id; for source script, the script execution id, which is also the id of its marker stream.'}
     source: {type: string, enum: [worker, script]}
     node: {type: string}
     attempt: {type: integer}
-    instancePath: {type: array, items: {$ref: '#/components/schemas/ApprovalScope'}}
+    instancePath: {type: [array, 'null'], items: {$ref: '#/components/schemas/ApprovalScope'}, description: 'Null for source script.'}
     state: {type: string, enum: [open, ended, ended_without_final, deleted, expired], description: 'deleted: the delete route; expired: removal by retention has begun, and no line is returned'}
     records: {type: integer, description: 'worker only: lines stored'}
-    bytes: {type: integer, description: 'worker only: charged bytes stored'}
+    bytes: {type: integer, description: 'worker only: text bytes stored (UTF-8 octets of message, exception and fields; the tenant quota charges 128 more per line)'}
     droppedByWorker: {type: integer, description: 'worker only: sequences the worker numbered and never stored'}
     droppedByServer: {type: integer}
     ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, run_records, run_bytes, tenant_quota, null]}
     firstAt: {type: [string, 'null'], format: date-time}
     lastAt: {type: [string, 'null'], format: date-time}
-    expiresAt: {type: [string, 'null'], format: date-time, description: 'At the retention in force now; script: the execution expiry.'}
+    expiresAt: {type: [string, 'null'], format: date-time, description: 'worker: the last recorded batch plus the retention the stream took when it was created; script: the execution expiry.'}
     removedAt: {type: [string, 'null'], format: date-time}
     logTruncated: {type: boolean, description: 'script only'}
 ```
@@ -222,8 +222,8 @@ A `: ping` comment every 15 seconds otherwise. The caps are those of `streamRunC
 
 ### `DELETE /runs/{runId}/logs` (`deleteRunLogs`, tag Runs)
 
-Needs `run:logs:delete` (admin). Optional `stream` (uuid, of this run). Response `200` `{streamsDeleted: integer}`;
-deleting what is already deleted answers `0` and audits nothing.
+Needs `run:logs:delete` (admin). Optional `stream` (uuid, of this run). Response `204` with no body, so the answer says
+nothing about how many streams the run has; deleting what is already deleted also answers `204` and audits nothing.
 
 ### `getScriptExecution` and `listScriptExecutions` (FR-041-022)
 
@@ -234,15 +234,16 @@ change stated in both descriptions and the release notes.
 
 ### `recordScriptExecution` (the script runner's report)
 
-`RecordExecutionRequest` gains two optional fields, `generation: {type: integer, minimum: 0}` and `instancePath: {type: array, items: {$ref: '#/components/schemas/ApprovalScope'}}`, the lease the runner holds; the description says
-that they place the script-output marker (design section 7) and that a runner whose report an older control plane refuses
-as malformed resends it once without them.
+Unchanged. The script marker is keyed on the execution the report creates (design section 7, D041-060), so the runner
+sends nothing new.
 
 ### `Quota.resource` and `QuotaResourceName`
 
 Gain `tenant_step_log_bytes` (ADR-0027 Amendment of 2026-11-15), `step_log_attempt_records`, `step_log_attempt_bytes`, `step_log_run_records`, `step_log_run_bytes`,
 `step_log_retention_days` (definitions in `data-model.md`). The `Quota` description's rule that lowering a limit does
 not erase retained content holds for them as for every resource: a stream keeps the retention it was created with.
+The `used` description gains one absence: `tenant_step_log_bytes` has no `used` for a caller without `run:logs:read`
+(D041-066).
 
 ### Error table
 

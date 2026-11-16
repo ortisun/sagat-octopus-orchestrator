@@ -3,7 +3,7 @@
 Doc: docs/designs/041-step-logs.md
 Reviewed-commit: b1b2c249 (the reviewed text is that of 879c550b1726870fa56392b1cff20272f114a5ed)
 Reviewer: egm-resolve, by the author
-Status: resolved; one re-audit run (section 5)
+Status: resolved; one re-audit run (section 5); the approval run answered in section 9
 
 Every finding of `consolidated.md` (54 actions from the five EGM stages) and of the second round of the repository
 reviewers (`architecture.md`, `security.md`, `correctness.md`) has one answer below. Answers:
@@ -315,3 +315,80 @@ cite it in `Accepted`. The design therefore stays `Draft`, T041-1 and T041-2 sta
 tick in a doc that is not `Approved`), and no approval block was written. The findings are open: none was fixed after
 this run, so that its reports describe the committed text. Approval needs either a revision that answers them and a new
 complete run, or the owner's written acceptance of each remaining Major.
+
+## 9. Answers to the approval run on `882e56fc`
+
+Every finding of the approval reports, deduplicated, with one answer. FIX: the change is made where named. CONTEST: the
+finding, or the part named, does not hold, for the reason given. Each claim about the code was read in the tree at
+`65c59a4f`. New registers: D041-059 to D041-066 and G041-016; G041-005, G041-007 and G041-008 restated; G041-015 closed
+(`specs/041-step-logs/research.md`). No owner question is raised: none of the answers decides product, scope or release,
+and O041-020 and O041-021 stay conditional on T041-31. Ids: Z, C, K, S, T are stages 5 to 7
+(`egm-stages-5-7-approval.md`), "8-…" stage 8 (`egm-stage-8-approval.md`), IR, CD, ST stage 9
+(`egm-stage-9-approval.md`), AR, SE, CO the repository reviewers (`*-approval.md`).
+
+### Majors
+
+| Findings (merged) | Answer | What changed, where |
+| --- | --- | --- |
+| CO-1 (the barrier test cannot be built) | FIX, D041-059 | One ingest held after its flush, K − 1 seen blocked behind it with a raised lock timeout, then the completion; released one at a time, the completion is blocked only by ingest backends (`pg_blocking_pids`, `tests/support/lock_order.rs:322`) and commits after the K-th. SC-041-001, T041-6 (the `StepLogTx` wrapper's "hold after flush" hook, moved from T041-8 to T041-6), Verification Plan |
+| C-1, T-3, ST-2, 8-merge C-1/T-3, IR nit "within the bound" | FIX, D041-059 | "The bound" is two things, named apart: in structure, the ingests queued ahead (barrier test); in time, SC-041-007's completion p99 within 10%. Overview, Goals, Open Questions, section 2, Risks; T041-31 says the per-line variant must pass and the chunk variant only informs O041-021 |
+| K-1, 8-merge K-1 | FIX | Goals state the final-flush wait of every logging step and that it meets `RETRY_LATER` with no reserved capacity; section 1 says so; T041-31 models admission with a ticket semaphore and records the `RETRY_LATER` share of final batches and what the final flush adds |
+| T-1, 8-merge T-1 | FIX | Section 2 lists the control flow: `LEASE` ends at once; `SESSION`, `CAPTURE_OFF`, `REMOVED`, `FINAL_RECORDED` are noted, skip to step 7 and roll back after it; `FINAL_ONLY` goes on. CONTEST of stage 8's proposal to short-circuit `SESSION` and `CAPTURE_OFF` too: D041-050 defers them so a revoked caller learns only `AUTHORITY`, and keeping that costs nothing |
+| T-2, 8-merge T-2, IR-2 (second half), AR-1, SE-2, CO-3 | FIX | "No `SECURITY DEFINER` function beyond the two accessors of ADR-0027's Amendment" in section 3 and NFR-041-SEC |
+| 8-missed (marker keyed on the execution), Z-2, CD-4, AR-4 | FIX, D041-060 | Section 7 rewritten: one `source = script` stream per inserted execution, public id = execution id, no step, generation or path; runner fields, resend fallback, verification and `skipped_identity` removed; `recordScriptExecution` unchanged (contracts.md §2), so CD-4 and AR-4 have nothing left to own. OD-2026-11-15-9 holds: the whole-run tab still shows the marker row. data-model.md §1, §2, §7 |
+| Z-1 (unlocked run ceiling now) | CONTEST | Exact or approximate is O041-020, which the owner left conditional on T041-31's fan-out case; choosing (b) now pre-empts it, as stage 8 also rejects |
+| Z-3 (code-level detail in the Technical Plan) | FIX in part, CONTEST in part | Review tags removed from the text; tool versions moved to T041-3. The file:line anchors stay: stage 9 needs them, and data-model.md says what detail a task may correct without a new review (stage 8 merges it as a Nit) |
+| C-2 | FIX | Section 5, "A stream's state": `ended_without_final` from the stream row and the `steps` row of its `step_id`, read without a lock; data-model.md §1 |
+| C-3 | FIX | Terms define stream, attempt log, script stream, the `stream` parameter and tail; the script stream's public id is the execution id, so `listRunLogs?stream=` finds a marker; FR-041-010, contracts.md §2 |
+| C-4 | FIX | contracts.md `expiresAt`: last batch plus the retention the stream took at creation |
+| K-2 (downgraded by stage 8) | FIX, D041-064 | `DELETE` answers `204` with no body; FR-041-023, section 4, CUJ 7, contracts.md |
+| S-1 | FIX | Rows II and VIII read `Pass`, with the checks that enforce them as evidence |
+| S-2 | FIX | Complexity Tracking row for G041-008; G041-015 closed by D041-066 (SE-1), so principle V and the Risks name it as closed; Risks rows for G041-008, G041-015, G041-016 |
+| IR-1 | FIX | T041-4 adds `tenant_retained_usage.step_log_bytes` and the exhaustive arms of `crates/infra-postgres/src/quotas.rs:1211-1287` and `tests/integration/security-multitenancy/quotas.rs:507-598` |
+| IR-2 (first half) | FIX | T041-5 names the routing, the `add_delta` argument (drop and recreate, AR-2), the loop filter and the two accessors; data-model.md §3 "Who adds what" |
+| IR-3 | FIX | T041-31 defines the prototype (section 2's SQL against a `spike_041` schema), the chunk-row table, and its accounting (the ADR-0027 triggers on the scratch tables, charging the existing `log` class, `durable_quotas.up.sql:444-558`) |
+| IR-4, CD-2 | FIX, D041-065 | `isolated_server(tag)` and `fresh_db_on` in `tests/support/mod.rs` (the shared server is one per process, `:100-176`); `bounded.rs:81` is the managed-connection target and leaves T041-11's Files |
+| IR-5, CD-1 | FIX | The lost-answer proxy is `tests/integration/database-runner/proxy.rs`, moved by T041-8 to `tests/support/worker_proxy.rs` with a `lose_append_ack` fault; the conformance proxy of `sdks/rust/conformance` is not used |
+| IR-6, ST-9 | FIX | The logger-call micro-benchmark and the matcher fallback belong to each SDK task (section 6, Slice D); T041-9's baseline is the same workload with `SAGAT_STEP_LOGS_ENABLED=false`, as SC-041-007 |
+| IR-7, ST-7, AR-3 | FIX, D041-063 | Step-log handlers in `crates/api-http/src/routes/step_logs.rs` and `crates/api-grpc/src/step_logs.rs`; T041-32 matches `crates/[a-z-]+/src/(.*/)?step_logs(\.rs$|/)`, `limits.rs`, `worker.proto` and the six named SDK capture files, and lands after T041-6 and before T041-7 |
+| IR-8, ST-10 | FIX | T041-26: target `e2e_step_logs` with its expected outcomes, and the older replica through a scenario of `scripts/test-release-upgrade-profile.py` (the v0.2.0 tree at `RELEASE`) |
+| IR-9, CD-3 | FIX, D041-062 | The control plane reads `SAGAT_STEP_LOGS_ENABLED`, as it reads `SAGAT_SCHEDULES_ENABLED` (`apps/control-plane/src/cli.rs:190`); FR-041-020, section 7, section 10, T041-13 |
+| CD-5 | FIX | The gauge is T041-11's (`operations.rs`, `metrics.rs`), its visibility limit G041-016; purge metrics in T041-10's Files, marker metric in T041-13's |
+| CD-6 | FIX | Added to Files: `sdks/rust/src/lib.rs` and `sdks/rust/conformance/src/faults/grpc.rs` (Debug impls, T041-3); `crates/application/src/quotas.rs` (`RetainedUsage`, T041-5); `durable_quotas.rs` and `runtime_privileges.rs` (T041-5); `execution/path.rs` (T041-6, the only other caller of the free `current_worker_authorized`; the trait method keeps its signature); `worker/activity.py` (T041-17) |
+| CD-7 | FIX | T041-5's source-text test covers `crates/application/src/worker/` |
+| CD-8 | FIX | T041-9 drives the workers of `tests/support/worker.rs` (`platform_with`, `Platform::worker`), taught to send batches by section 6's rules; the private `harness.rs:328` is not used |
+| ST-1 | FIX | The plan's rule: every test is seen failing on its own assertion, not a compile error or a missing fixture, and the pull request names the assertion that failed first |
+| ST-3 | FIX | T041-11 serves `source = worker` and builds the end rule for `complete`; `source = script` is T041-13's; T041-12 uses T041-11's rule |
+| ST-4 | FIX | T041-12 and T041-30 switch their operations to `x-implemented` and leave `not_built` |
+| ST-5 | FIX | The lock-order test grows per task: T041-6 (ingest, report, binding), T041-10 (purge), T041-13 (marker), T041-30 (delete); section 2, Verification Plan |
+| ST-6 | FIX | T041-10 creates `docs/runbooks/step-logs.md`; T041-30 and T041-25 modify it |
+| ST-8 | FIX | Slice D states each SDK task's runner work and done condition |
+| Z-4 (Nit), 8-merge Z-4 (the second simplification) | FIX, D041-061 | After the finalizer's raise the answer is `RETRY_LATER`; the resend's plan counts `tenant_quota`; a never-stored final batch leaves "ended without its final flush" (G041-002). ADR-0084 decision 3 holds (no line stored, counted on its stream). Section 2 step 10, T041-6, Verification Plan, Alternatives |
+
+### Nits
+
+| Findings | Answer |
+| --- | --- |
+| CO-2 (which bytes the stream holds) | FIX: text bytes everywhere; step 8 returns text sizes; FR-041-008, data-model.md, contracts.md `bytes` |
+| CO-4 (a stream removed while its lease lives) | FIX: SC-041-003 |
+| AR-2 (`add_delta` overload) | FIX: drop and recreate, grants restated, down restores (data-model.md §3) |
+| AR-5 (older replica fails quota listings) | FIX: section 10 and the runbook; asserted by T041-26 (b) |
+| SE-1 (viewers read step-log usage) | FIX, D041-066: `used` absent without `run:logs:read`; G041-015 closed; T041-4 |
+| SE-3 (script log not audited; `may_read` transaction) | FIX: `may_read` runs in the route's read transaction, and T041-29 writes the throttled `run.logs_read` before a log is returned (section 5) |
+| Stage 6: Draft beside OD-2026-11-15-17; D1958 not introduced; G041-005 "below 1.6"; gap range; research G041-008 "row id"; "go on to step 7"; rollout wording; CUJ 2 poll attribution; "negotiation is unchanged" | FIX: Overview, FR-041-012, G041-005 and G041-008 restated, VIII and the gap list to G041-016, section 2's control flow, section 10, CUJ 2, section 1 |
+| Stage 6: "five quota resources"; undefined project terms; terms used before definition; the section 10 reference | CONTEST: five namespace resources plus one tenant resource is what FR-041-020 and data-model.md §6 say; the Terms paragraph defines the project terms the design uses before section 1; no undefined reference to section 10 was found |
+| Stage 7 design nits: the runtime role holds `SELECT` on `tenant_retained_usage`; "goes on to step 7"; K against tickets × R | FIX: step 6 now says the accessor exists for `quota_accounting_control` and for one limit rule (`durable_quotas.up.sql:561-572`); control flow; SC-041-001 uses K on one replica, section 2 tickets × R |
+| Stage 7 design nits: the single-caller test covers only some files; records above `ceiling_sequence`; per-page scan bound | CONTEST: the test guards `share_secrets_lock`, which the design keeps at one caller; records after a met ceiling fail the attempt allowance of step 6 and are counted as dropped by the server; a read scans at most the run ceiling's rows under the route's statement timeout (section 5) |
+| Stage 7 design nit: `safelog.go` path | FIX: `sdks/go/internal/safelog/safelog.go` |
+| Stage 7 structural nits: status; Goals miss the Studio; gap range; resolution.md not a link; CUJ 5 without a story | FIX |
+| Stage 7 structural nits: answered decisions under "needed"; Alternatives format; no CUJ for the marker; NFR id style; long lines | CONTEST: the heading is cited by research.md and the ADRs; the format is the template's; the marker is a row of CUJ 1's tab, specified in section 7 and tested in T041-13; `NFR-041-xxx` is the id form of `AGENTS.md`; long lines are kept where a path or a table row needs them |
+| Stage 7 style nits ("stream" for three things, poll attribution, review tags, K against R, "remaining calls", rollout sentence) | FIX |
+| Stage 7 style nits ("MUST be sent", markers "hold no text" against labels, five resources, forward references, saturation, "high mark", reason against verdict, `SESSION` resend clause, two "fixed" quantities, jargon, long lines) | CONTEST: each reads as intended in context (a marker stores no text; the Studio renders a label for it), and none changes a rule |
+| Stage 8 nit: `SAGAT_STEP_LOGS_READ_ENABLED` asked by no owner decision | CONTEST: it is an operational switch to shed read load during rollout (NFR-041-OPS), not product; it never opens a script log FR-041-022 closes |
+| Stage 9 IR nits: Rust SDK refuses accepted > 6; callers of `current_worker_authorized`; `take_log_prefix` argument and callers; lock-order test needs later tasks; "within the bound"; T041-22 and T041-25 Files; T041-32 placement | FIX: T041-20 (`worker.rs:468`); T041-6; a `record_execution`-only variant (T041-13); ST-5; D041-059; full paths; ordering |
+| Stage 9 IR nits: `supports_step_log_protocol` form; Owner-gate on T041-23 and T041-26; T041-13 test location | CONTEST: the proof is the form of `supports_scoped_worker_protocol`; the owner rows gate the server tasks that build the decisions those two tasks only exercise; `integration_inline_code_sandbox` is the existing target of the script runner's tests |
+| Stage 9 CD nits: `negotiate_protocol_details` wording; inline-code-sandbox target; `step_log_isolation.rs` in T041-6; T041-32 placement | FIX, except the target, which exists (`tests/Cargo.toml:233`) |
+| Stage 9 ST nits: T041-2's condition; "starts" against "merges"; T041-31's held-transaction workload; "four messages"; "deferred answers"; T041-28's "use"; first-failure wording; partial paths; T041-25 quickstart; T041-27 done condition; gap range | FIX |
+| Stage 9 ST nits: T041-8 Refs; "the row of section 6"; formatting | CONTEST: T041-8's Refs name what it proves; "the row of section 6" is defined by Slice D's introduction; formatting is the checker's, which passes |
+
+The approval run of this revision follows in `*-approval-2.md`.

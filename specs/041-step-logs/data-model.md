@@ -17,9 +17,12 @@ request of the task that needs it and named in its description.
 | `ceiling_reason` | `attempt_records`, `attempt_bytes`, `run_records`, `run_bytes`, `tenant_quota` | none |
 
 The `DROPPED` record kind of the 2026-11-13 revision is gone (D041-028). The `script` source is back for the script
-marker of OD-2026-11-15-9 (D041-057): one stream per script attempt, written only by `record_execution`. A
-stream's state on the routes: `deleted` when `deleted_at` is set, `expired` when `removed_at` is set otherwise, `ended`
-when `final_at` is set, `ended_without_final` when the attempt's lease is gone without it, `open` otherwise.
+marker of OD-2026-11-15-9 (D041-057): one stream per inserted script execution, keyed on it (D041-060): its
+`public_id` is the execution's id, it has the execution's node and attempt and no step, generation or instance path,
+and only `record_execution` writes it. A stream's state on the routes: `deleted` when `deleted_at` is set, `expired`
+when `removed_at` is set otherwise, `ended` when `final_at` is set, `ended_without_final` when none of those is set and
+the `steps` row of its `step_id` no longer holds this attempt's lease (design section 5), `open` otherwise; a script
+stream is `ended` or `expired`.
 
 ## 2. Tables (one migration, T041-5)
 
@@ -30,19 +33,21 @@ written (today the last is `20270116000000_batch_selection_failures`).
 CREATE TABLE step_log_streams (
     tenant_id             uuid        NOT NULL,
     stream_id             bigint      GENERATED ALWAYS AS IDENTITY,
-    public_id             uuid        NOT NULL,            -- what the routes show; the identity is never exposed
+    public_id             uuid        NOT NULL,            -- what the routes show; the identity is never exposed;
+                                                           -- for source 'script', the script execution's id
     namespace_id          uuid        NOT NULL,
     run_id                uuid        NOT NULL,
-    step_id               uuid        NOT NULL,            -- steps.step_id: (version, run, path, node)
+    step_id               uuid,                            -- steps.step_id: (version, run, path, node); null for 'script'
     node                  text        NOT NULL,
-    instance_path_nodes   text[]      NOT NULL DEFAULT '{}',   -- copied from the steps row the lease read saw
-    instance_path_indices integer[]   NOT NULL DEFAULT '{}',
+    instance_path_nodes   text[],                          -- copied from the steps row the lease read saw ('{}' for a
+    instance_path_indices integer[],                       -- root step); null for 'script' (no iteration, G041-007)
     attempt               integer     NOT NULL,
-    generation            bigint      NOT NULL,
-    source                text        NOT NULL DEFAULT 'worker',  -- 'script': the marker stream of a script attempt
+    generation            bigint,                          -- null for 'script'
+    source                text        NOT NULL DEFAULT 'worker',  -- 'script': the marker stream of a script execution
     records               integer     NOT NULL DEFAULT 0,  -- worker lines stored; the marker is not counted here
-    bytes                 bigint      NOT NULL DEFAULT 0,  -- text bytes stored (the ceilings' measure; the tenant
-                                                           -- quota charges 128 more per row)
+    bytes                 bigint      NOT NULL DEFAULT 0,  -- text bytes stored: the UTF-8 octets of message, exception
+                                                           -- and fields (the ceilings' measure; the tenant quota
+                                                           -- charges 128 more per row)
     last_sequence         bigint      NOT NULL DEFAULT 0,  -- highest worker sequence seen; only rises (GREATEST)
     ceiling_sequence      bigint,                          -- last_sequence when a ceiling was first met
     next_marker_sequence  bigint      NOT NULL DEFAULT 4611686018427387904,  -- 2^62
@@ -62,12 +67,18 @@ CREATE TABLE step_log_streams (
     CONSTRAINT step_log_streams_public_uniq UNIQUE (tenant_id, public_id),
     CONSTRAINT step_log_streams_attempt_uniq UNIQUE (tenant_id, run_id, step_id, attempt, generation, source),
     CONSTRAINT step_log_streams_source_valid CHECK (source IN ('worker', 'script')),
-    CONSTRAINT step_log_streams_attempt_valid CHECK (attempt >= 1 AND generation >= 0),
+    CONSTRAINT step_log_streams_source_shape CHECK (
+        (source = 'worker' AND step_id IS NOT NULL AND generation IS NOT NULL
+            AND instance_path_nodes IS NOT NULL AND instance_path_indices IS NOT NULL)
+        OR (source = 'script' AND step_id IS NULL AND generation IS NULL
+            AND instance_path_nodes IS NULL AND instance_path_indices IS NULL)),
+    CONSTRAINT step_log_streams_attempt_valid CHECK (attempt >= 1 AND (generation IS NULL OR generation >= 0)),
     CONSTRAINT step_log_streams_counters_valid CHECK (records >= 0 AND bytes >= 0 AND last_sequence >= 0
         AND dropped_by_worker BETWEEN 0 AND 9007199254740992 AND dropped_by_server >= 0),
     CONSTRAINT step_log_streams_ceiling_valid CHECK (ceiling_reason IS NULL OR ceiling_reason IN
         ('attempt_records', 'attempt_bytes', 'run_records', 'run_bytes', 'tenant_quota')),
-    CONSTRAINT step_log_streams_path_valid CHECK (execution_instance_path_valid(instance_path_nodes, instance_path_indices)),
+    CONSTRAINT step_log_streams_path_valid CHECK (instance_path_nodes IS NULL
+        OR execution_instance_path_valid(instance_path_nodes, instance_path_indices)),
     CONSTRAINT step_log_streams_retention_valid CHECK (retention_days BETWEEN 1 AND 365),
     CONSTRAINT step_log_streams_removal_order CHECK ((deleted_at IS NULL OR removed_at IS NOT NULL)
         AND (purged_at IS NULL OR removed_at IS NOT NULL))
@@ -184,6 +195,17 @@ The class `step_log` and the kind `fixed_octets` are those of ADR-0027's Amendme
 `tenant_retained_usage.step_log_bytes`, its delta `quota_transaction_deltas.step_log_delta`, its policy fence
 `quota-policy:tenant_step_log_bytes:<tenant>` taken after the content and log fences, its error
 `tenant_step_log_quota_exceeded`, and `quota_accounting_control.step_log_enforcement_enabled`, true from the migration.
+
+Who adds what. T041-4's migration adds `tenant_retained_usage.step_log_bytes` (`bigint NOT NULL DEFAULT 0`) with the
+resource, so the usage view has a column to read. T041-5's migration adds the rest: `quota_transaction_deltas.step_log_delta`;
+the routing of the class `step_log` in `sagat_quota_row_delta` (today every class but `content` goes to the log delta,
+`20261024000000_durable_quotas.up.sql:231-238`), which raises on a class it does not know; `sagat_quota_add_delta`
+dropped and created again with the step-log delta as a fifth argument defaulting to 0 (`CREATE OR REPLACE` with a new
+argument would create a second function beside the four-argument one, and the present four-argument calls,
+`:244-252, :268, :273`, would then be ambiguous), with its `REVOKE … FROM PUBLIC` (`:188`) and `FROM sagat_app` (`:569`) restated for the new signature;
+the finalizer's loop filter (`OR step_log_delta <> 0`) and its step-log branch; the control flag; and the two
+accessors. The down migration restores the four-argument `sagat_quota_add_delta` and the bodies of the functions it
+replaced.
 `step_log_lines.script_execution_id` is a `uuid`, fixed-size, so it is not in the manifest.
 
 ## 4. Grants (the migration's `DO $grants$` block)
@@ -246,11 +268,13 @@ run's namespace in its transaction (design section 2, step 3); a new stream keep
 Server: `step_log_batches_total{outcome}` (`stored`, `duplicate`, `final_only`, `stop_attempt`, `stop_capture`,
 `retry_later`, `invalid`); `step_log_lines_stored_total{level}`; `step_log_bytes_stored_total`;
 `step_log_lines_dropped_total{reason}` (`worker_gap`, `attempt_records`, `attempt_bytes`, `run_records`, `run_bytes`,
-`tenant_quota`); `step_log_script_markers_total{outcome}` (`written`, `skipped_quota`, `skipped_identity`,
-`skipped_off`, `skipped_finished`); `step_log_lines_truncated_total`; `step_log_redactions_total{rule}` (`shape`, `field_name`);
+`tenant_quota`); `step_log_script_markers_total{outcome}` (`written`, `skipped_quota`, `skipped_off`,
+`skipped_finished`); `step_log_lines_truncated_total`; `step_log_redactions_total{rule}` (`shape`, `field_name`);
 `step_log_ingest_seconds`; `step_log_lock_timeouts_total`; `step_log_quota_retries_total`;
 `step_log_purged_lines_total`; `step_log_purge_backlog`; `step_log_tails_open`; `step_log_tails_refused_total`;
-`database_oldest_transaction_age_seconds` (a gauge of the operations snapshot, database-wide). Each label set is a
+`database_oldest_transaction_age_seconds` (a gauge of the operations snapshot over `pg_stat_activity.xact_start` and
+`pg_prepared_xacts.prepared`; it sees other roles' sessions only when the deployment grants `pg_read_all_stats`,
+G041-016). Each label set is a
 closed enum with `ALL` and `as_str` in `crates/telemetry/src/metrics.rs`, built as `WorkflowPrimitiveOutcome` is
 (`metrics.rs:68-106`), with a test that every emitted value is one of the enum's.
 
