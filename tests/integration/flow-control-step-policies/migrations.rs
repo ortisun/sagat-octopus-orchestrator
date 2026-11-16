@@ -551,7 +551,7 @@ async fn a_rotation_with_live_holders_waiters_and_grants_never_splits_a_key() {
         shard: 5,
     };
     assert!(
-        key_versions(&mut *runtime.acquire().await.expect("conn"))
+        key_versions(&mut runtime.acquire().await.expect("conn"))
             .await
             .is_err(),
         "no version was ever activated: nothing is decided"
