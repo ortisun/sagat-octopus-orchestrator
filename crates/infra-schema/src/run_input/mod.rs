@@ -85,8 +85,48 @@ pub use sagat_application::run_input::{
 ///
 /// # Errors
 /// The first violation.
+///
+/// It compiles up to [`MAX_PATTERNS`] patterns, so it runs off the async workers and at most [`RUN_INPUT_PERMITS`] at
+/// once per process, as a start's compile does: publication, a dry run and an ad hoc document reach it outside a start
+/// (security review of 2026-11-16, Major 2).
 pub fn precheck(schema: &[u8]) -> Result<(), Unusable> {
-    CompiledInputSchema::compile(schema).map(|_| ())
+    off_worker(|| {
+        let _permit = PrecheckPermit::acquire();
+        #[cfg(test)]
+        let _seen = tests::Concurrent::enter();
+        CompiledInputSchema::compile(schema).map(|_| ())
+    })
+}
+
+/// The pre-checks that run at once outside a start, at most [`RUN_INPUT_PERMITS`]: a blocking count, held off the async
+/// workers, for a compile bounded by the pre-check's own limits.
+static PRECHECKS_FREE: std::sync::Mutex<usize> = std::sync::Mutex::new(RUN_INPUT_PERMITS);
+static PRECHECK_FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+struct PrecheckPermit;
+
+impl PrecheckPermit {
+    fn acquire() -> Self {
+        let mut free = PRECHECKS_FREE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *free == 0 {
+            free = PRECHECK_FREED
+                .wait(free)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *free -= 1;
+        Self
+    }
+}
+
+impl Drop for PrecheckPermit {
+    fn drop(&mut self) {
+        *PRECHECKS_FREE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        PRECHECK_FREED.notify_one();
+    }
 }
 
 impl Weighed for CompiledInputSchema {
@@ -211,7 +251,25 @@ impl sagat_application::run_input::SchemaValidator for RunInputValidator {
             let Ok(permit) = self.permits.acquire(key.tenant).await else {
                 return Err(SchemaRefusal::Busy);
             };
-            let answer = off_worker(|| self.schemas.check(key.tenant, schema, key.shared, input));
+            // A panic of the compile or of the validation is the validator's fault, never the input's: the caller is told
+            // `Interrupted`, transient, like the followers of a compile that panicked, and the process goes on (security
+            // and correctness reviews of 2026-11-16, Major 1). Logged with the digest only, never the schema or the input.
+            let answer = off_worker(|| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.schemas.check(key.tenant, schema, key.shared, input)
+                }))
+                .unwrap_or_else(|_| {
+                    let digest: String = schema.digest()[..8]
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect();
+                    tracing::error!(
+                        schema_digest = %digest,
+                        "the run-input validator panicked: a defect of the validator, reported as transient"
+                    );
+                    Err(SchemaRefusal::Interrupted)
+                })
+            });
             drop(permit);
             answer
         })
@@ -244,6 +302,10 @@ impl InputSchemas {
         shared: bool,
     ) -> Result<Arc<CompiledInputSchema>, CompileFailure> {
         let compile = || {
+            #[cfg(test)]
+            if tests::PANIC_ON_COMPILE.with(std::cell::Cell::get) {
+                panic!("a compiler fault the test injects");
+            }
             CompiledInputSchema::compile(schema.bytes())
                 .map(Arc::new)
                 .map_err(CompileFailure::Unusable)
@@ -287,9 +349,106 @@ impl InputSchemas {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::panic, clippy::expect_used)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    thread_local! {
+        /// Makes the next compile of this thread panic, as a compiler fault would.
+        pub(super) static PANIC_ON_COMPILE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    static PRECHECKS_NOW: AtomicUsize = AtomicUsize::new(0);
+    static PRECHECKS_PEAK: AtomicUsize = AtomicUsize::new(0);
+
+    /// Counts the pre-checks that run at once, for the test of their bound.
+    pub(super) struct Concurrent;
+
+    impl Concurrent {
+        pub(super) fn enter() -> Self {
+            let now = PRECHECKS_NOW.fetch_add(1, Ordering::SeqCst) + 1;
+            PRECHECKS_PEAK.fetch_max(now, Ordering::SeqCst);
+            Self
+        }
+    }
+
+    impl Drop for Concurrent {
+        fn drop(&mut self) {
+            PRECHECKS_NOW.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    fn heavy_schema() -> Vec<u8> {
+        let mut properties = serde_json::Map::new();
+        for i in 0..32 {
+            properties.insert(
+                format!("p{i:02}"),
+                serde_json::json!({"type": "string", "pattern": format!("q{i:02}[ab]{{12}}c{{40}}d{{40}}")}),
+            );
+        }
+        serde_json::to_vec(&serde_json::json!({"type": "object", "properties": properties}))
+            .expect("json")
+    }
+
+    /// Security review of 2026-11-16, Major 2: the pre-check a parse runs (publication, a dry run, an ad hoc
+    /// document) compiles up to 32 patterns; it runs off the async workers and at most `RUN_INPUT_PERMITS` at once
+    /// per process, like a start's compile.
+    #[test]
+    fn prechecks_outside_a_start_run_at_most_four_at_once() {
+        let schema = Arc::new(heavy_schema());
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let schema = Arc::clone(&schema);
+                std::thread::spawn(move || {
+                    for _ in 0..4 {
+                        precheck(&schema).expect("admitted");
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("joined");
+        }
+        let peak = PRECHECKS_PEAK.load(Ordering::SeqCst);
+        assert!(
+            peak <= RUN_INPUT_PERMITS,
+            "{peak} pre-checks ran at once, more than {RUN_INPUT_PERMITS}"
+        );
+    }
+
+    /// Security and correctness reviews of 2026-11-16, Major 1: the caller whose compile panics (the leader of the
+    /// single flight) is answered `Interrupted`, transient, as its followers are, and the process does not unwind;
+    /// nothing is remembered.
+    #[test]
+    fn the_caller_whose_compile_panics_is_answered_interrupted() {
+        use sagat_application::run_input::{SchemaKey, SchemaValidator};
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let validator = RunInputValidator::default();
+        let bytes = br#"{"type": "object"}"#.to_vec();
+        let schema = InputSchema::new(bytes, [7; 32]);
+        let key = SchemaKey {
+            tenant: TenantId::generate(),
+            digest: [7; 32],
+            shared: true,
+        };
+        let answer = runtime.block_on(async {
+            PANIC_ON_COMPILE.with(|flag| flag.set(true));
+            let answer = validator.check(key, &schema, b"{}").await;
+            PANIC_ON_COMPILE.with(|flag| flag.set(false));
+            answer
+        });
+        assert_eq!(answer, Err(SchemaRefusal::Interrupted));
+        assert_eq!(validator.schemas().cache_stats().failures, 0);
+        let again = runtime.block_on(validator.check(key, &schema, b"{}"));
+        assert_eq!(again, Ok(()), "the next start compiles and passes");
+    }
 
     /// A compile that panics leaves its waiting callers a transient outcome, never a final `Unusable`, and nothing is
     /// remembered for the key (D043-106).

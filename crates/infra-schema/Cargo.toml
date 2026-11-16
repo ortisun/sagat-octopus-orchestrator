@@ -29,6 +29,8 @@ regex-syntax = "0.8"
 # The permits, their wait and the off-worker step of the run-input validator live here, not in `sagat-application`
 # (D043-071, ADR-0090 decision 4).
 tokio = { workspace = true, features = ["sync", "time", "rt-multi-thread"] }
+# A panic of the run-input validator is logged, with the schema's digest only (design 043).
+tracing.workspace = true
 
 [features]
 # Counts the run-input validator's primitive operations, so the adversarial tests hold them to a multiple of the units.
