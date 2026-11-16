@@ -1493,7 +1493,8 @@ mod provenance_tests {
         let mut stopped = record();
         stopped.status = RunStatus::Failed;
         stopped.failure_code = Some(
-            sagat_domain::execution::FailureCode::parse("CONTINUATION_INPUT_INVALID").expect("code"),
+            sagat_domain::execution::FailureCode::parse("CONTINUATION_INPUT_INVALID")
+                .expect("code"),
         );
         let body = serde_json::to_value(RunBody::from(&stopped)).expect("json");
         assert_eq!(body["failureCode"], "CONTINUATION_INPUT_INVALID", "{body}");
