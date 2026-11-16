@@ -2,7 +2,8 @@
 //! versions whose `inputSchema` is outside the supported subset, so an operator can see before the upgrade which
 //! versions will refuse every start in `enforce` mode, and fix them or choose `report` first.
 //!
-//! It runs with the owner's credentials, as `migrate` does, reads `workflow_versions` page by page and runs on each
+//! It runs with the database settings of the control plane (the runtime role where a deployment sets one): it only
+//! reads, and needs nothing but `SELECT` on `workflow_versions`. It reads them page by page and runs on each
 //! stored `inputSchema` the pre-check that publication and the start gate run. It prints one line per version that
 //! would be refused (its ids, the issue, the keyword and its pointer), and, for information, one line per version
 //! within the subset that has an `inputSchema` and a trigger other than a manual start, whose triggered runs may be

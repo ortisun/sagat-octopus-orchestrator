@@ -648,6 +648,55 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   (`tests/fault/events-webhooks-messaging/run_input.rs`), 2 audits each before the change. The design's T043-7 named
   the test "at most twice"; its text now cites this decision. Closes G043-002.
 
+### After the review run of 2026-11-15, the fixes (2026-11-16)
+
+- **D043-157** (2026-11-16) In `report` mode a start that an open holder answers creates no run, so `PgRunStore::create`
+  never wrote its audit (correctness review of 2026-11-15, Major 2). The audit is now written with the holder's answer:
+  `RunTx::remember_start_served` takes it and inserts it when the receipt of the start is new, so a Signal-with-Start or
+  an Update-with-Start is audited once across its retries; a plain start that `USE_EXISTING` answers with its holder
+  keeps no receipt, so its audit is written with `record_refusal` with each answer, as each answer is counted
+  (ADR-0092 decision 5). Red first: `report_mode_audits_a_start_that_an_open_holder_answers`
+  (`integration_schedules_bulk_operations`), 0 audits before the change.
+- **D043-158** (2026-11-16) Supersedes the write instant of D043-125: the row 14 write check fills `nominalTimeField` with
+  the next nominal time of the spec after the write (`ScheduleCalendar::next_after`), with the action's own
+  `with_nominal_time`, runs the gate, and only then requires the field to be a declared string property, read through
+  the root's local `$ref`s and `allOf` members and the property's own (at most 256 schemas read). Correctness review of
+  2026-11-15, Major 3: a time-shaped `pattern` every action passes refused a write made at 14:03:27, and a field
+  declared through `$ref` was `NOMINAL_TIME_FIELD_INVALID`. The write check stays stricter than the action check in the
+  one rule feature 018's contract states (the field must be declared). Red first:
+  `row_14_the_write_fills_the_next_nominal_time_and_resolves_the_declaration` (`NOMINAL_TIME_FIELD_INVALID` for the
+  pattern case).
+- **D043-159** (2026-11-16) Each lazy DFA cache of a pattern is 16 KiB, not 64 KiB. A pattern's weight counts both
+  directions for five matchers, so it weighed at least 640 KiB, and 26 or more patterns weighed more than a tenant's
+  16 MiB share: such a schema was compiled for its call and never kept, so every start recompiled it under a permit
+  (security review Major 2, correctness review Major 4). Red first:
+  `the_heaviest_schema_the_precheck_admits_fits_a_tenant_share_and_is_kept` (`crates/infra-schema/tests/run_input.rs`):
+  23,120,849 bytes of a 16,777,216-byte share before; 7,392,209 after, compiled in 16 ms in the test build, one miss and
+  two hits over three checks. `a_pattern_at_the_state_cap_runs_its_charge_within_the_backstop` still passes.
+- **D043-160** (2026-11-16) The architecture rules of design 043 tightened (architecture review Blocker 1, Major 2,
+  Nit 16): a `tokio` token in `crates/application/src/**` outside `collection_source.rs` and test modules fails
+  (ADR-0092 decision 1); the legacy continue-as-new forwarder is exempt only as `continue_as_new` in
+  `crates/infra-postgres/src/chain_progress.rs`; the run-insert rule reads `public.runs`, `"runs"` and `"public"."runs"`,
+  and scans every up migration. Each with a negative fixture seen failing first (`scripts/tests/test_check_architecture.py`,
+  eight failures before, 57 tests passing after).
+- **D043-161** (2026-11-16) A rule fails when a composition root under `apps/*/src` builds a `RunService`, `Scheduler`,
+  `EventDispatcher` or `ScheduleService` without `.with_run_inputs` in its builder chain (architecture review Major 3,
+  ADR-0092 decision 2). The unwired default stays: it refuses, never admits. Red first:
+  `test_a_composition_root_wires_the_gate_into_every_creator_it_builds` (five failures); the repository passes.
+- **D043-162** (2026-11-16) Closes G043-046: the REST `Run` gains the optional `failureCode`, read from `runs.stop_code` by
+  `get` and `list` (`RUN_SELECT` and the list query now select it; a command transaction's read does not, and its
+  record has none), present only when the stop carries a code. The six SDK `Run` types parse it, and the six
+  conformance runners record it only when present, so a run view changes only for a run stopped with a code. The Studio
+  types were regenerated (`npm run api`, `npm run check:api`). Tests: `a_run_stopped_with_a_failure_code_says_it`
+  (`crates/api-http`), one run-parsing test per SDK, the `run-input-validation` conformance golden.
+- **D043-163** (2026-11-16) Smaller fixes of the review run: a trigger dispatch that waits for room in the validator is
+  recorded on the event as "the run input could not be checked now; will retry", not as a storage fault (architecture
+  Nit 12; `a_start_waiting_for_the_validator_is_not_described_as_storage`); the inventory runs with the control plane's
+  database settings, not the owner's, and the doc and the runbook said otherwise (security Nit 5); the counting test of
+  D043-147 was seen red by a hand mutation (a recheck that counts like a check made
+  `one_scheduled_action_is_one_validation_in_two_spans` count 2, reverted at once; correctness Nit 15); the owner-decision
+  row OD-2026-11-15-3 said "Decided; not built" after D043-149 built it, and now says "Decided".
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
@@ -680,14 +729,16 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-043 | The lookup of an existing child before a parent step is failed (D043-038, D043-132) has no integration test: it needs a child created by a peer between the reservation and the check. | Built; untested. | Closed 2026-11-15: `Scheduler::with_before_child_check` lets a test create the child where a peer would; `a_child_a_peer_created_before_the_check_is_not_failed_by_the_refusal` is red without the lookup (`CHILD_INPUT_INVALID`) and green with it. Closed |
 | G043-044 | Not built in phase 2: the fault tests of T043-7, T043-9 and T043-11 (a crash between the delivery and the audit, two engines on one refused cron tick, a restart between the evaluation and the failure, a crash before the schedule decision commits); the budget of a child start and a continuation (T043-18 has the start and the triggered start); the cache counters of SC-043-004 as an integration test; the problem-shape assertions in `contract_rest_durable_execution`; the metric-label check of `integration_observability_operations`; the sentinel on rows 2, 3, 5 to 8, 10, 12 to 14 (T043-17 covers rows 1, 4, 9 and 11, the answers, logs, spans and audit rows, not the metrics text). | Phase 3. | Narrowed 2026-11-15: the child-start budget, the contract problem shapes (`crates/api-http/tests/run_input_errors.rs`), the metric labels and count (`an_action_checked_before_its_decision_and_at_its_start_is_counted_once`), `workLimit` and the transient cases on rows 6, 9, 11 and 12 are built; what is left is in G043-050. Open |
 | G043-045 | The OpenAPI operations of the start routes, the schedule writes, trigger-now and the publication do not describe the design 043 refusals in their own text (D043-135). | The pinned baselines of features 016 and 035 would have to be renewed by their owners; the shared `Error` schema and `errors.md` carry the contract. | Reopened and closed 2026-11-15 by OD-2026-11-15-3 (D043-149). |
-| G043-046 | `CONTINUATION_INPUT_INVALID` does not reach an SDK's run view: the SDK run and event views carry no run-level failure code, only the graph's node codes, so the conformance golden of `run-input-validation` shows the chain `FAILED` and the continuation node cancelled, while `CHILD_INPUT_INVALID` is shown on the parent's child node. | FR-043-015 is met for the child and not for the continuation; the run's stop code is in the journal (`run.stop_requested`) on the server. | Open 2026-11-15: FR-043-015 and T043-15 require it, and it is not built. The REST `Run` has no run-level failure code, so it needs a field of `Run` read from the run's stop, the six SDK run views, the Studio types and a conformance case. Found 2026-11-15 (phase 3), not built: the column the field would read (`runs.stop_code`) is written by every stop with a code, a step failure's own code among them (`plan.rs`, `code: step.failure()`), the instance ceiling and the storage quota, so the field appears on every failed run and changes the run view in 16 of the conformance goldens beside `run-input-validation`. The pinned OpenAPI baselines digest operations only, so they do not move. Building it needs every conformance scenario run in the six languages and those golden diffs read. |
-| G043-050 | Left after the second review round: integration tests of row 2 (an uploaded input), the batch `RERUN` item (`FAILED VALIDATION_FAILED`, deferred with no room), the synchronous reset, the pending reset left pending, and `RUN_INPUT_SCHEMA_UNUSABLE` on row 5; the four fault tests (a crash between the delivery and the audit, two engines on one refused cron tick, a restart between the evaluation and the failure of a continuation, a crash before a schedule decision commits); the continuation statement budget; the sentinel on rows 2, 3, 5 to 8, 10, 12 to 14 and on the metrics text. Done 2026-11-15: SC-043-004 through real starts in a binary of its own (`integration_run_input_cache`), `RUN_INPUT_SCHEMA_UNUSABLE` on rows 3, 4 and 8, the D043-038 lookup. | Not built. Done 2026-11-15 (phase 3): row 2 (`run_input::row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claims_nothing`, workflow primitives); the batch `RERUN` item failed and deferred, the synchronous reset, `RUN_INPUT_SCHEMA_UNUSABLE` on row 5, the pending reset ended and left pending (`run_input_repeats::*`, schedules and bulk operations); the four fault tests (`run_input::*` of the events and workflow-primitives fault suites, the `InputInvalid` cases of `firing_decisions`); the continuation budget (`a_checked_continuation_costs_what_an_unchecked_one_does`); the sentinel on rows 3, 5, 6, 8, 12, 14, the schedule records, the journal's stops and the metrics text (`run_input_sentinel_rows`). Left: the sentinel on rows 7 and 10 (row 10 carries no caller value) and G043-046. | Open (narrowed 2026-11-15) |
+| G043-046 | `CONTINUATION_INPUT_INVALID` does not reach an SDK's run view: the SDK run and event views carry no run-level failure code, only the graph's node codes, so the conformance golden of `run-input-validation` shows the chain `FAILED` and the continuation node cancelled, while `CHILD_INPUT_INVALID` is shown on the parent's child node. | FR-043-015 is met for the child and not for the continuation; the run's stop code is in the journal (`run.stop_requested`) on the server. | Closed 2026-11-16 by D043-162: the REST `Run`'s `failureCode`, the six SDK `Run` types, the Studio types and the conformance goldens, each changed golden read before it was regenerated. |
+| G043-050 | Left after the second review round: integration tests of row 2 (an uploaded input), the batch `RERUN` item (`FAILED VALIDATION_FAILED`, deferred with no room), the synchronous reset, the pending reset left pending, and `RUN_INPUT_SCHEMA_UNUSABLE` on row 5; the four fault tests (a crash between the delivery and the audit, two engines on one refused cron tick, a restart between the evaluation and the failure of a continuation, a crash before a schedule decision commits); the continuation statement budget; the sentinel on rows 2, 3, 5 to 8, 10, 12 to 14 and on the metrics text. Done 2026-11-15: SC-043-004 through real starts in a binary of its own (`integration_run_input_cache`), `RUN_INPUT_SCHEMA_UNUSABLE` on rows 3, 4 and 8, the D043-038 lookup. | Not built. Done 2026-11-15 (phase 3): row 2 (`run_input::row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claims_nothing`, workflow primitives); the batch `RERUN` item failed and deferred, the synchronous reset, `RUN_INPUT_SCHEMA_UNUSABLE` on row 5, the pending reset ended and left pending (`run_input_repeats::*`, schedules and bulk operations); the four fault tests (`run_input::*` of the events and workflow-primitives fault suites, the `InputInvalid` cases of `firing_decisions`); the continuation budget (`a_checked_continuation_costs_what_an_unchecked_one_does`); the sentinel on rows 3, 5, 6, 8, 12, 14, the schedule records, the journal's stops and the metrics text (`run_input_sentinel_rows`). Left: the sentinel on rows 7 and 10 (row 10 carries no caller value) and G043-046. Done 2026-11-16: row 7 in `run_input_sentinel_rows` (a backfill step of the row 6 schedule), G043-046 by D043-162. Row 10 has no caller value to carry a sentinel. | Closed 2026-11-16 |
 | G043-051 | Designs 042 and 043 disagree on whether `sagat-application` may hold a runtime: 042 spawns a blocking task there for a blob source's array. D043-150 keeps both by allowing `tokio` with `rt` alone; moving the parse behind a port would restore the stricter rule. | For the owners of 042 and 043. | Closed 2026-11-15 as decision D043-154. |
 | G043-052 | Design 042's blocking parse of a blob source runs in `sagat-application` with `tokio` `rt` (D043-154); moved behind a port of the adapter, the runtime rule could refuse any `tokio` there again. | Follow-up of 042. | Open |
+| G043-053 | A compile that panics is transient (D043-106) and never remembered, so a schema that makes the compiler panic is compiled again, and panics again, on every start of its version (security review of 2026-11-15, Nit 4). | A compiler bug, not an input: it is logged without the schema and refuses as busy, never admits. Bounding the retries would need a memory of panics per key. | Open |
+| G043-054 | A trigger dispatch that waits for room in the validator uses up none of the event's attempts, but an event that has waited for a day (`GIVE_UP_AFTER`) ends `DEAD`, as one waiting for a quota does (correctness review of 2026-11-15, Nit 14). | Only a validator starved for a day drops a trigger start; documented in Technical Plan 1. | Open (documented) |
 
 ## 4. Owner questions
 
-All answered on 2026-11-14 (`docs/owner-decisions.md`). OD-2026-11-14-2 had already decided that validation is on in
+O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`); O043-005 and O043-006 are open (2026-11-16) and block nothing built. OD-2026-11-14-2 had already decided that validation is on in
 0.3.0 for every start; none of these asked that again. The questions are kept as they were put.
 
 - **O043-001: answered (a)**, OD-2026-11-14-8, with the mode going through the instance registry (D043-028).
@@ -695,6 +746,22 @@ All answered on 2026-11-14 (`docs/owner-decisions.md`). OD-2026-11-14-2 had alre
 - **O043-003: answered (a)**, OD-2026-11-14-11.
 - **O043-004: answered, against the recommendation**, OD-2026-11-14-9 (D043-030). D043-005 was put to the owner
   as well and confirmed by OD-2026-11-14-10, against the recommendation to let an open holder answer.
+- **O043-005 — `inputSchema` tuple positions** (correctness review of 2026-11-15, Major 8). Feature 016's contract lists
+  `prefixItems` as a keyword it classifies, and feature 035 reads it for the levels of an Iceberg write's records; the
+  subset of OD-2026-11-14-14 leaves it out, so in `enforce` a version whose `inputSchema` has tuple positions is refused
+  at publication and refuses its starts (D043-095, D043-110). (a) Accept for 0.3.0: the 016 contract and the release
+  notes say so, the inventory lists such versions, `report` mode publishes them, and tuples are designed into the subset
+  later (in draft-07 tuples are `items` as an array and `additionalItems`, in 2020-12 `prefixItems`, so the same meaning
+  in both dialects needs its own rules and oracle cases). (b) Add `prefixItems` to the subset in 0.3.0, for 2020-12 and
+  an absent `$schema` only. (c) Treat `prefixItems` as an annotation in an `inputSchema`: the check would admit inputs the
+  author meant to refuse. **Recommended: (a)** — no 0.3.0 schema of the platform's own needs tuples, and (b) adds a
+  dialect rule and oracle work to a release that is closing.
+- **O043-006 — The field of a repeat** (correctness review Major 5, security review Major 1). Repeats, trigger-now and
+  the private rerun answer `/` and `other` to every caller (D043-121, D043-144, D043-148), which is never a disclosure
+  but says less than D043-037 allowed to a caller who may read the source input (G043-040). (a) Accept for 0.3.0 as
+  built. (b) Build the graded-disclosure check on the start path for 0.3.0. **Recommended: (a)** — the caller can fix the
+  input from the source run, which they may read, and (b) adds a disclosure evaluation to every repeat.
+
 
 
 - **O043-001 — What protects existing users from the behaviour change.** (a) A deployment setting

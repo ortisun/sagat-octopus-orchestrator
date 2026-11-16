@@ -31,11 +31,15 @@ indices; a member reached through `additionalProperties` adds nothing, and `/` s
 | --- | --- |
 | Batch `RERUN` item | `FAILED` with `VALIDATION_FAILED`; not tried again |
 | Pending reset | `ADMISSION_REFUSED`; not tried again |
-| Schedule action, backfill step | action `INPUT_INVALID` with the reason `SCHEDULE_INPUT_INVALID`, `NOMINAL_TIME_FIELD_INVALID` or `RUN_INPUT_SCHEMA_UNUSABLE`; the schedule pauses when `pauseOnFailure` is set; a backfill ends `CANCELLED` |
+| Schedule action, backfill step | action `INPUT_INVALID` with the reason `SCHEDULE_INPUT_INVALID`, `NOMINAL_TIME_FIELD_INVALID` or `RUN_INPUT_SCHEMA_UNUSABLE`; a scheduled or triggered action pauses the schedule when `pauseOnFailure` is set; a refused backfill step ends the backfill `CANCELLED` and does not pause it |
 | Event, webhook, message trigger | a delivery to the trigger with no run and one audit record `run.input_refused`; `trigger_events_total{outcome="input_invalid"}` or `{outcome="input_schema_unusable"}` |
-| Cron trigger (legacy pass) | one audit record `run.input_refused` naming the tick's key |
+| Cron trigger (legacy pass) | one audit record `run.input_refused` naming the tick's key, written with the move of the trigger past the tick |
 | Child run | the parent step fails with `CHILD_INPUT_INVALID`, or `RUN_INPUT_SCHEMA_UNUSABLE` |
-| Continue-as-new | the predecessor ends `FAILED` with `CONTINUATION_INPUT_INVALID`, or `RUN_INPUT_SCHEMA_UNUSABLE` |
+| Continue-as-new | the predecessor ends `FAILED` with `CONTINUATION_INPUT_INVALID`, or `RUN_INPUT_SCHEMA_UNUSABLE`; the `Run` shows the code as `failureCode` |
+
+`INPUT_INVALID` has two meanings on the platform. Here it is the outcome of a schedule action whose run input was
+refused. In `sdks/SPEC.md` it is also a failure code a worker may give a step whose activity input it refused, which is
+older than design 043 and unrelated to the run input: a step failed `INPUT_INVALID` is not a refused start.
 
 ## Publication issue codes
 

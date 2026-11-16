@@ -26,7 +26,7 @@ the refusals is `specs/043-run-input-validation/contracts/errors.md`.
 
 ## Before the upgrade
 
-1. List the versions at risk, with the owner's credentials, as `migrate` runs:
+1. List the versions at risk, with the control plane's database settings (the runtime role is enough: it only reads):
 
    ```sh
    control-plane input-schema-inventory

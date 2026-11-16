@@ -1,6 +1,6 @@
 # ADR-0090: Every run input is checked against its pinned version's schema before the run is created
 
-**Status:** Accepted (2026-11-14, OD-2026-11-14-15)
+**Status:** Accepted (2026-11-14, OD-2026-11-14-15); refined by ADR-0092 (Proposed)
 **Decided by:** owner: that every start is validated in 0.3.0 (OD-2026-11-14-2), the mode (OD-2026-11-14-8), runs in progress (OD-2026-11-14-9), with-start (OD-2026-11-14-10), schemas that do not compile (OD-2026-11-14-11) and the supported subset with a validator of the platform (OD-2026-11-14-14). The mechanism is an agent's proposal, revised after four rounds of architecture, security and correctness review of design 043 on 2026-11-14.
 **Refines / supersedes:** none. It makes the `inputSchema` of the IR (feature 001) binding, replaces the blob-only `RunInputChecker`, and adds a capability to the instance registry of ADR-0050 decision 9 and ADR-0082.
 **Enforced by:** the type `CheckedRunInput` (its fields and constructor are private to the gate's module, it carries the version id, and `PgRunStore::create` and `continue_evaluated` refuse a mismatch); `scripts/check-architecture.py`, which fails on an `INSERT INTO runs` outside its three places, on `.continue_as_new(` outside tests, on the `test-support` feature outside `[dev-dependencies]`, and on a construction of `CheckedRunInput` outside its module; a rule of `scripts/check-architecture.py` that rejects `jsonschema` under the run-input validator module, with its negative fixture, and a rule that fails when `tokio` becomes a normal dependency of `sagat-application`; the oracle property test of the validator against `jsonschema` and its adversarial budget cases (regression checks, not proofs); the vocabulary test and `control-plane input-schema-inventory`'s test; the backstop tests with a validator double held by a barrier; `no_shipped_manifest_sets_run_input_validation_to_report`; the per-row integration tests and the sentinel test of design 043 (`integration_payload_classification`); the statement budget of `integration_claim_transition_efficiency`.
@@ -128,7 +128,8 @@ The owner decided on 2026-11-14 that in release 0.3.0 the input of every run is 
 ## Evidence
 
 - Design: `docs/designs/043-run-input-validation.md`; registers: `specs/043-run-input-validation/research.md`
-  (D043-001 to D043-077, G043-001 to G043-017, O043-001 to O043-004).
+  (D043-001 to D043-077 at acceptance; the register now runs to D043-163, G043-053 and O043-006; the refinements made
+  while it was built are ADR-0092).
 - Background: G1955 and G2081 in `specs/018-schedules-bulk-operations/research.md`.
 - Existing tests this builds on: `crates/infra-schema/tests/annotation_is_inert.rs`;
   `claim_check_schema_validation_refuses_external_refs_without_exposing_payloads` in `crates/infra-schema/src/lib.rs`;
