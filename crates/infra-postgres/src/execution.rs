@@ -4146,6 +4146,27 @@ impl RunTx for PgRunTx {
         resets::register_pending(self, registration).await
     }
 
+    async fn child_started<'a>(
+        &'a mut self,
+        node: &'a NodeId,
+        child: RunId,
+    ) -> Result<bool, StoreError> {
+        // `FOR UPDATE`: the creation of the child claims this row (`claim_reservation`), so it either committed and is
+        // seen here, or waits for this transaction and then finds the step moved on
+        let started: Option<bool> = sqlx::query_scalar(
+            "SELECT child_started FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+               AND status = 'WAITING' AND waiting_kind = 'CHILD' AND child_run_id = $4 FOR UPDATE",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(child.as_uuid())
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(started.unwrap_or(true))
+    }
+
     async fn remember_start_served<'a>(
         &'a mut self,
         start: &'a Idempotency,

@@ -472,6 +472,83 @@ async fn a_child_a_peer_created_before_the_check_is_not_failed_by_the_refusal() 
     assert_ne!(w.step_status(parent, "c").await, Some(StepStatus::Failed));
 }
 
+/// Correctness review of 2026-11-16, Major 3 (D043-164): a peer claims the reservation of the child (the claim of
+/// `claim_reservation`, held uncommitted by the test) while this replica refuses the child's input. The refusal reads the
+/// step under its row lock, so it waits for the claim, sees the child started, and does not fail the step. The claim is
+/// committed only once the refusal is seen waiting on the step's row (to read it, or, without the read, to write it).
+#[tokio::test]
+async fn a_child_claimed_while_its_refusal_waits_for_the_step_is_not_failed() {
+    use sagat_application::run_input::{PathSegment, Rule, SchemaRefusal};
+    use std::sync::Arc;
+
+    let w = Arc::new(world().await);
+    let kid = format!("row-11-claim-kid-{}", Uuid::now_v7());
+    w.publish(with_schema(
+        document(&kid, "a", vec![activity("a")]),
+        json!({"type": "object"}),
+    ))
+    .await;
+    let (parent_workflow, _) = w
+        .publish(document(
+            &format!("row-11-claim-{}", Uuid::now_v7()),
+            "c",
+            vec![child_node("c", &kid, None)],
+        ))
+        .await;
+    let parent = w.start(parent_workflow, &json!({})).await;
+    let pool = w.db.pool.clone();
+    let claim: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
+    let hook_claim = Arc::clone(&claim);
+    let hook: sagat_scheduler::BeforeChildCheck = Arc::new(move |_child| {
+        let pool = pool.clone();
+        let claim = Arc::clone(&hook_claim);
+        Box::pin(async move {
+            let mut held = pool.begin().await.expect("begin");
+            sqlx::query("UPDATE steps SET child_started = true WHERE run_id = $1 AND node = 'c'")
+                .bind(parent.as_uuid())
+                .execute(&mut *held)
+                .await
+                .expect("the peer's claim");
+            let watcher = pool.clone();
+            *claim.lock().await = Some(tokio::spawn(async move {
+                loop {
+                    let waiting: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+                           AND wait_event_type = 'Lock' AND (ltrim(query) LIKE 'SELECT child_started%' \
+                           OR ltrim(query) LIKE 'UPDATE steps%')",
+                    )
+                    .fetch_one(&watcher)
+                    .await
+                    .expect("pg_stat_activity");
+                    if waiting > 0 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                held.commit().await.expect("the claim commits");
+            }));
+        })
+    });
+    let refusing = scheduler_with(
+        &w,
+        vec![Err(SchemaRefusal::Invalid {
+            segments: vec![PathSegment::Property("k".into())],
+            rule: Rule::Type,
+        })],
+    )
+    .with_before_child_check(hook);
+    refusing.tick().await;
+    if let Some(claim) = claim.lock().await.take() {
+        claim.await.expect("the claim task");
+    }
+    assert_eq!(
+        step_code(&w, parent, "c").await,
+        None,
+        "the step whose child was claimed is not failed"
+    );
+    assert_ne!(w.step_status(parent, "c").await, Some(StepStatus::Failed));
+}
+
 /// Row 2: a start with an uploaded input is checked like any start, against the canonical descriptor
 /// `{"$blob": {id, size, sha256, contentType}}` (the bytes stay opaque). A schema the descriptor does not satisfy is
 /// answered `422` with the pointer and the rule, never a value of the descriptor; no run is created and the upload is not

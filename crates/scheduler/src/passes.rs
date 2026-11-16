@@ -441,6 +441,11 @@ enum Condition<'a> {
     /// The run's entry is still held by a start delay that has ended *now*, by the database clock,
     /// and nothing has stopped or paused the run meanwhile.
     StartDue,
+    /// The child `child` of the step `node` was not created, read under the step's row lock (design 043, D043-164).
+    ChildNotStarted {
+        node: &'a sagat_domain::workflow::NodeId,
+        child: RunId,
+    },
 }
 
 impl Condition<'_> {
@@ -448,7 +453,10 @@ impl Condition<'_> {
     const fn refused(&self) -> Outcome {
         match self {
             Self::RetainedFits { .. } => Outcome::DoesNotFit,
-            Self::Always | Self::LeaseLost { .. } | Self::StartDue => Outcome::Skipped,
+            Self::Always
+            | Self::LeaseLost { .. }
+            | Self::StartDue
+            | Self::ChildNotStarted { .. } => Outcome::Skipped,
         }
     }
 
@@ -483,6 +491,7 @@ impl Condition<'_> {
                     && state.stop_reason().is_none()
                     && !state.is_paused())
             }
+            Self::ChildNotStarted { node, child } => Ok(!tx.child_started(node, *child).await?),
         }
     }
 }
@@ -5843,35 +5852,41 @@ where
             // no room to check it now: the reservation stays and the next pass tries again
             Err(InputRefusal::Unavailable) => return Ok((Outcome::Skipped, false)),
             Err(refusal) => {
-                let created = Idempotency {
-                    scope: format!("child:{parent_id}"),
-                    key: format!("child-start:{node}"),
-                    fingerprint: pending.child.as_uuid().as_bytes().to_vec(),
-                };
-                if self
-                    .store
-                    .replay_start(tenant, Subject::engine().as_str(), &created)
-                    .await?
-                    .is_some()
-                {
-                    return Ok((Outcome::Skipped, false));
-                }
                 let code = match refusal {
                     InputRefusal::SchemaUnusable => FailureCode::run_input_schema_unusable(),
                     _ => FailureCode::child_input_invalid(),
                 };
-                return Ok((
-                    self.finish_with(
+                // A child that a peer, a 0.2.x engine or an engine in `report` already created is not failed: the
+                // step is failed only if, under its row lock, its child was not started (D043-038, D043-164; the
+                // lookup before the failure of D043-132 left a window, correctness review of 2026-11-16, Major 3).
+                let target = node.clone();
+                let child = pending.child;
+                let outcome = self
+                    .apply_if(
                         view,
-                        tenant,
-                        parent_id,
-                        node.clone(),
-                        pending.child,
-                        ChildOutcome::Failed(code),
+                        RunRef {
+                            tenant_id: tenant,
+                            run_id: parent_id,
+                        },
+                        "child_finish",
+                        Condition::ChildNotStarted { node, child },
+                        self.effects(),
+                        move |def, state, now| {
+                            Ok((
+                                (),
+                                execution::finish_child(
+                                    def,
+                                    state,
+                                    &target,
+                                    child,
+                                    ChildOutcome::Failed(code),
+                                    now,
+                                )?,
+                            ))
+                        },
                     )
-                    .await,
-                    true,
-                ));
+                    .await;
+                return Ok((outcome, outcome != Outcome::Skipped));
             }
         };
         let child_id = pending.child;
