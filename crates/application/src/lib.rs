@@ -32,6 +32,7 @@ pub mod error;
 pub mod event_payloads;
 pub mod events;
 pub mod execution;
+pub mod flow_control;
 pub mod identity;
 pub mod instances;
 pub mod leaf_certification;

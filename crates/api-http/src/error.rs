@@ -966,6 +966,7 @@ impl ApiError {
                 e
             }
             AppError::Unavailable => Self::unavailable(),
+            AppError::FlowControl(refusal) => flow_control_refusal(refusal),
             AppError::PayloadTooLarge(what) => {
                 let mut e = Self::new(
                     StatusCode::PAYLOAD_TOO_LARGE,
@@ -1152,6 +1153,44 @@ fn lake_refusal_details(node: &str, refusal: &sagat_domain::database::LakeRefusa
     }
 }
 
+/// The refusals of flow control (feature 022, `contracts/errors.md`, "REST refusals"): existing codes, each with its
+/// own reason. None names a key's value; `FLOW_CONTROL_LIMIT` names the ceiling.
+fn flow_control_refusal(refusal: sagat_application::flow_control::FlowControlRefusal) -> ApiError {
+    use sagat_application::flow_control::FlowControlRefusal as R;
+    let mut e = match refusal {
+        R::ConcurrencyQueueFull | R::RateLimitQueueFull | R::Limit { .. } => {
+            // `limit` is always a literal of this codebase, so the label set is closed
+            let limit = match refusal {
+                R::Limit { limit } => limit,
+                _ => refusal.reason(),
+            };
+            metrics::counter!("quota_exceeded_total", "limit" => limit).increment(1);
+            ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                ErrorCode::QuotaExceeded,
+                "a flow-control limit was reached; nothing was started",
+            )
+        }
+        R::ActivationPending { .. } => ApiError::validation(
+            "the flow-control capability this workflow uses is not activated for the fleet yet",
+        ),
+        R::CapabilityDisabled { .. } => ApiError::validation(
+            "the flow-control capability this workflow uses is disabled by this deployment",
+        ),
+        R::BinaryCapabilityMissing => ApiError::unavailable(),
+    };
+    e.parts.details = Some(match refusal {
+        R::Limit { limit } => json!({ "reason": refusal.reason(), "limit": limit }),
+        R::ActivationPending { capability } | R::CapabilityDisabled { capability } => {
+            json!({ "reason": refusal.reason(), "capability": capability.as_str() })
+        }
+        R::ConcurrencyQueueFull | R::RateLimitQueueFull | R::BinaryCapabilityMissing => {
+            json!({ "reason": refusal.reason() })
+        }
+    });
+    e
+}
+
 /// Structured detail for a rejected workflow document: paths and node ids, never document values
 /// beyond the clipped fragments the codec already limited.
 fn definition_details(error: &IrError) -> Value {
@@ -1205,6 +1244,9 @@ fn definition_details(error: &IrError) -> Value {
         IrError::LakeDisabled { node } => json!({ "reason": "LAKE_DISABLED", "node": node }),
         IrError::CollectionOperatorsDisabled { node } => {
             json!({ "reason": "COLLECTION_OPERATORS_DISABLED", "node": node })
+        }
+        IrError::FlowControlActivationPending { capability } => {
+            json!({ "reason": "FLOW_CONTROL_ACTIVATION_PENDING", "capability": capability })
         }
         IrError::Operator {
             node,

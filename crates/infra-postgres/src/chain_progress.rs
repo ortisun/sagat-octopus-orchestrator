@@ -222,6 +222,23 @@ struct FinalizationRun {
     trace_id: Option<String>,
 }
 
+/// A continuation successor is the one writer of runs besides `PgRunStore::create` (FR-022-059): it must never admit a
+/// run of a definition with a run-level gate, which would start it ungated. Publication refuses a gate beside a
+/// continuation (`FLOW_CONTROL_COMBINATION`); a stored definition that has one anyway is refused here.
+fn refuse_gated_successor(definition: &WorkflowDefinition) -> Result<(), ChainProgressError> {
+    if definition.run_flow_control().is_gated() {
+        tracing::error!(
+            workflow = %definition.name(),
+            "a continuation successor of a definition with a run-level gate was refused"
+        );
+        return Err(ChainProgressError::Storage(StoreError::Internal {
+            detail: "a continuation successor would bypass the run-level flow-control gate"
+                .to_owned(),
+        }));
+    }
+    Ok(())
+}
+
 fn corrupt(detail: &'static str) -> ChainProgressError {
     ChainProgressError::Storage(StoreError::Internal {
         detail: detail.to_owned(),
@@ -1218,6 +1235,7 @@ impl ChainProgressStore for PgChainProgressStore {
         let definition = self
             .definition(&mut tx, command.scope().tenant_id(), run.version_id)
             .await?;
+        refuse_gated_successor(&definition)?;
         let entrypoint = definition.entrypoint().clone();
         let activity = match definition.node(&entrypoint).map(|node| node.kind()) {
             Some(NodeKind::Activity { activity, .. }) => activity.clone(),
@@ -1620,6 +1638,7 @@ impl ChainProgressStore for PgChainProgressStore {
         let definition = self
             .definition(&mut tx, command.scope().tenant_id(), run.version_id)
             .await?;
+        refuse_gated_successor(&definition)?;
         if !matches!(
             definition.node(prepared.boundary()).map(|node| node.kind()),
             Some(NodeKind::ContinueAsNew { .. })

@@ -108,7 +108,8 @@ pub async fn serve(
     let store = PgRunStore::new(pool.clone(), cache.clone())
         .with_breaker(engine.breaker)
         .with_scoped_worker_protocol()
-        .with_lake_enabled(engine.lake_enabled);
+        .with_lake_enabled(engine.lake_enabled)
+        .with_flow_control(engine.flow_control);
     let state = AppState::with_rate_limit(
         IdentityService::new(identity, SystemClock),
         verifier,

@@ -1,0 +1,10 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "key-reads-steps"},
+  "entrypoint": "a",
+  "concurrency": {"key": "steps.a.output.accountId", "limit": 1},
+  "nodes": [
+    {"id": "a", "type": "activity", "activity": "act.a"}
+  ]
+}

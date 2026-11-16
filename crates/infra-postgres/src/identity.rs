@@ -766,6 +766,7 @@ fn record(mapped: StoreError) -> StoreError {
         | StoreError::LakeRefused { .. }
         | StoreError::DatabaseUnavailable
         | StoreError::BusinessIdHeld { .. }
+        | StoreError::FlowControl(_)
         | StoreError::DatabaseLimit => {}
     }
     mapped

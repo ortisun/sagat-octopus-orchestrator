@@ -34,6 +34,7 @@ fn cfg(url: &str) -> (Config, ServeConfig) {
             reset_cancel_source_enabled: false,
             lake_enabled: false,
             collection_operators_enabled: false,
+            flow_control: sagat_application::flow_control::FlowControlSwitches::default(),
             openbao: Default::default(),
             bind_addr: "127.0.0.1:0".parse().expect("addr"),
             tls: None,

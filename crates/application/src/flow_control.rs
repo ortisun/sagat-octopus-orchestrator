@@ -1,0 +1,169 @@
+//! Flow control of feature 022 in the application layer (release 0.3.0 slice): which capabilities a definition needs,
+//! the deployment switches that allow them, their fleet activation, and the typed refusals of `contracts/errors.md`.
+//!
+//! Two switches, enabled one at a time (FR-022-031, FR-022-050): `concurrencyKeys` for `concurrency`, `rateLimits` for
+//! `rateLimit`. Each is also an instance capability of feature 018's registry (FR-022-053, ADR-0089 decision 6): until an
+//! operator activates it for the fleet, publication and starts that use it are refused
+//! `FLOW_CONTROL_ACTIVATION_PENDING`. A switch that is off refuses before the activation is even read.
+//!
+//! What this build does not have is said by the same types, not hidden: a process lists a capability only when it
+//! runs the gate (D022-037), and this one does not, so it never lists it; and the one admission point refuses a gated
+//! definition with [`FlowControlRefusal::BinaryCapabilityMissing`] (FR-022-059).
+
+use std::collections::BTreeSet;
+
+use sagat_domain::workflow::{GateKind, WorkflowDefinition};
+
+use crate::instances::Capability;
+
+/// One of the two flow-control capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum FlowControlCapability {
+    /// `concurrencyKeys`: a definition may declare `concurrency` (US02).
+    ConcurrencyKeys,
+    /// `rateLimits`: a definition may declare `rateLimit` (US07).
+    RateLimits,
+}
+
+impl FlowControlCapability {
+    pub const ALL: [Self; 2] = [Self::ConcurrencyKeys, Self::RateLimits];
+
+    /// The name of the IR capability (ADR-0032 decision 8).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConcurrencyKeys => "concurrencyKeys",
+            Self::RateLimits => "rateLimits",
+        }
+    }
+
+    /// The instance capability of the registry that a whole fleet must honour before it is used.
+    #[must_use]
+    pub const fn registry(self) -> Capability {
+        match self {
+            Self::ConcurrencyKeys => Capability::FlowControlConcurrencyV1,
+            Self::RateLimits => Capability::FlowControlRateV1,
+        }
+    }
+
+    /// The IR field it allows.
+    #[must_use]
+    pub const fn field(self) -> &'static str {
+        match self {
+            Self::ConcurrencyKeys => "concurrency",
+            Self::RateLimits => "rateLimit",
+        }
+    }
+
+    #[must_use]
+    pub const fn of(kind: GateKind) -> Self {
+        match kind {
+            GateKind::Concurrency => Self::ConcurrencyKeys,
+            GateKind::RateLimit => Self::RateLimits,
+        }
+    }
+}
+
+/// The capabilities a definition needs: one for each kind of gate it declares, at the top level or on any node.
+#[must_use]
+pub fn required(definition: &WorkflowDefinition) -> BTreeSet<FlowControlCapability> {
+    let levels = std::iter::once(definition.run_flow_control())
+        .chain(definition.all_nodes().map(|node| node.flow_control()));
+    let mut needed = BTreeSet::new();
+    for level in levels {
+        if level.concurrency().is_some() {
+            needed.insert(FlowControlCapability::ConcurrencyKeys);
+        }
+        if level.rate_limit().is_some() {
+            needed.insert(FlowControlCapability::RateLimits);
+        }
+    }
+    needed
+}
+
+/// Where the first declaration a capability allows stands: `None` for the top level, else the node.
+#[must_use]
+pub fn first_use(
+    definition: &WorkflowDefinition,
+    capability: FlowControlCapability,
+) -> Option<Option<&sagat_domain::workflow::NodeId>> {
+    let declares = |level: &sagat_domain::workflow::FlowControl| match capability {
+        FlowControlCapability::ConcurrencyKeys => level.concurrency().is_some(),
+        FlowControlCapability::RateLimits => level.rate_limit().is_some(),
+    };
+    if declares(definition.run_flow_control()) {
+        return Some(None);
+    }
+    definition
+        .all_nodes()
+        .find(|node| declares(node.flow_control()))
+        .map(|node| Some(node.id()))
+}
+
+/// The deployment's switches (`flow-control.concurrency-keys`, `flow-control.rate-limits`). Both off unless the
+/// deployment says so: a document check that runs without a deployment sees the default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FlowControlSwitches {
+    pub concurrency_keys: bool,
+    pub rate_limits: bool,
+}
+
+impl FlowControlSwitches {
+    #[must_use]
+    pub const fn enabled(self, capability: FlowControlCapability) -> bool {
+        match capability {
+            FlowControlCapability::ConcurrencyKeys => self.concurrency_keys,
+            FlowControlCapability::RateLimits => self.rate_limits,
+        }
+    }
+
+    /// The first capability `definition` needs that this deployment has switched off.
+    #[must_use]
+    pub fn first_disabled(self, definition: &WorkflowDefinition) -> Option<FlowControlCapability> {
+        required(definition)
+            .into_iter()
+            .find(|capability| !self.enabled(*capability))
+    }
+}
+
+/// The refusals of flow control (`contracts/errors.md`, "REST refusals"): each one is an existing `Error.code` with its
+/// own `details.reason`, and none names a key's value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FlowControlRefusal {
+    /// 429 `QUOTA_EXCEEDED` / `CONCURRENCY_QUEUE_FULL`: the key's waiter queue is full (a synchronous start).
+    #[error("the queue of the concurrency key is full")]
+    ConcurrencyQueueFull,
+    /// 429 `QUOTA_EXCEEDED` / `RATE_LIMIT_QUEUE_FULL`: the key's buffer, or the namespace's `queued_runs`, is full for
+    /// a start that would be buffered.
+    #[error("the buffer of the rate-limit key is full")]
+    RateLimitQueueFull,
+    /// 429 `QUOTA_EXCEEDED` / `FLOW_CONTROL_LIMIT`: a namespace ceiling of flow control (`limit` names it).
+    #[error("a flow-control limit of the namespace was reached: {limit}")]
+    Limit { limit: &'static str },
+    /// 422 `VALIDATION_FAILED` / `FLOW_CONTROL_ACTIVATION_PENDING`: the capability is not activated for the fleet.
+    #[error("the {} capability is not activated for the fleet yet", capability.as_str())]
+    ActivationPending { capability: FlowControlCapability },
+    /// 422 `VALIDATION_FAILED` / `CAPABILITY_DISABLED`: a start of a published version whose capability the deployment
+    /// has switched off since (a rollback): existing runs drain, no new one starts.
+    #[error("the {} capability is disabled by this deployment", capability.as_str())]
+    CapabilityDisabled { capability: FlowControlCapability },
+    /// 503 `UNAVAILABLE` / `BINARY_CAPABILITY_MISSING` (retryable): this process does not run the gate a recorded
+    /// requirement asks for, so it does not admit the run (018's code, reused).
+    #[error("this process does not run the flow-control gate")]
+    BinaryCapabilityMissing,
+}
+
+impl FlowControlRefusal {
+    /// The `details.reason` of the refusal.
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::ConcurrencyQueueFull => "CONCURRENCY_QUEUE_FULL",
+            Self::RateLimitQueueFull => "RATE_LIMIT_QUEUE_FULL",
+            Self::Limit { .. } => "FLOW_CONTROL_LIMIT",
+            Self::ActivationPending { .. } => "FLOW_CONTROL_ACTIVATION_PENDING",
+            Self::CapabilityDisabled { .. } => "CAPABILITY_DISABLED",
+            Self::BinaryCapabilityMissing => crate::instances::REASON_CAPABILITY_MISSING,
+        }
+    }
+}

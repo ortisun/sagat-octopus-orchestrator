@@ -218,6 +218,22 @@ pub(crate) async fn verify_declared_operations(
 }
 
 impl DefinitionStore for PgDefinitionStore {
+    /// One read of the registry, outside any transaction of the publication: an activation is an operator's command and
+    /// a publication that raced it is refused or accepted as the read said; the admission of a run reads it again in its
+    /// own transaction (FR-022-059).
+    async fn flow_control_activated(
+        &self,
+        capability: sagat_application::instances::Capability,
+    ) -> Result<bool, StoreError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM platform_requirements WHERE capability = $1)",
+        )
+        .bind(capability.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)
+    }
+
     async fn replay_publication(
         &self,
         tenant: TenantId,

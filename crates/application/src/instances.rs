@@ -112,13 +112,20 @@ pub enum Capability {
     AccessNarrowingV1,
     /// Feature 031: the control plane and the engine read and write the payload encoding.
     PayloadEncodingV1,
+    /// Feature 022: the control plane and the engine run the concurrency gate on every path that admits a run or makes
+    /// a step ready (ADR-0089 decision 6). No build lists it before the gate exists (D022-037).
+    FlowControlConcurrencyV1,
+    /// Feature 022: the same for the rate-limit gate.
+    FlowControlRateV1,
 }
 
 impl Capability {
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 5] = [
         Self::SchedulesV1,
         Self::AccessNarrowingV1,
         Self::PayloadEncodingV1,
+        Self::FlowControlConcurrencyV1,
+        Self::FlowControlRateV1,
     ];
 
     #[must_use]
@@ -127,6 +134,8 @@ impl Capability {
             Self::SchedulesV1 => "schedules-v1",
             Self::AccessNarrowingV1 => "access-narrowing-v1",
             Self::PayloadEncodingV1 => "payload-encoding-v1",
+            Self::FlowControlConcurrencyV1 => "flow-control-concurrency-v1",
+            Self::FlowControlRateV1 => "flow-control-rate-v1",
         }
     }
 

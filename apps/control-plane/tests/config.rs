@@ -1133,3 +1133,36 @@ fn redis_callback_activation_is_an_explicit_strict_operator_switch() {
     values.push(("SAGAT_REDIS_CALLBACKS_ENABLED", "maybe"));
     assert!(ServeConfig::from_lookup(&env(&values)).is_err());
 }
+
+/// Feature 022 (T022-005, T022-069, FR-022-031, FR-022-050): the two flow-control capabilities are switched one at a
+/// time, off unless the deployment says so; anything but a boolean is refused.
+#[test]
+fn the_flow_control_capabilities_are_off_by_default_and_switched_one_at_a_time() {
+    use sagat_application::flow_control::FlowControlSwitches;
+    let read = |extra: &[(&'static str, &'static str)]| {
+        let mut values = OIDC.to_vec();
+        values.extend_from_slice(extra);
+        ServeConfig::from_lookup(&env(&values)).map(|config| config.flow_control)
+    };
+    assert_eq!(read(&[]).expect("defaults"), FlowControlSwitches::default());
+    assert_eq!(
+        read(&[("SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED", "true")]).expect("one"),
+        FlowControlSwitches {
+            concurrency_keys: true,
+            rate_limits: false
+        }
+    );
+    assert_eq!(
+        read(&[("SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED", "true")]).expect("the other"),
+        FlowControlSwitches {
+            concurrency_keys: false,
+            rate_limits: true
+        }
+    );
+    for name in [
+        "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED",
+        "SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED",
+    ] {
+        assert!(read(&[(name, "maybe")]).is_err(), "{name}");
+    }
+}

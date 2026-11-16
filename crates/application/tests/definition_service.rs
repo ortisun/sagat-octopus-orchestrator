@@ -60,6 +60,8 @@ struct State {
     secrets: BTreeMap<String, bool>,
     /// The plans handed to `publish`, by version.
     plans: BTreeMap<WorkflowVersionId, Vec<sagat_domain::saga::SagaPlan>>,
+    /// The registry capabilities the operator has activated for the fleet (feature 022).
+    activated: std::collections::BTreeSet<&'static str>,
 }
 
 #[derive(Clone, Default)]
@@ -139,6 +141,16 @@ impl SecretAccessLookup for FakeStore {
 }
 
 impl DefinitionStore for FakeStore {
+    async fn flow_control_activated(
+        &self,
+        capability: sagat_application::instances::Capability,
+    ) -> Result<bool, StoreError> {
+        Ok(self.with(|s| {
+            s.calls.push(format!("activated {}", capability.as_str()));
+            s.activated.contains(capability.as_str())
+        }))
+    }
+
     async fn replay_publication(
         &self,
         tenant: TenantId,
@@ -654,6 +666,11 @@ impl IrCodec for FakeCodec {
         if String::from_utf8_lossy(document).contains("\"operators\"") {
             return Ok(self.chained_definition(document));
         }
+        let text = String::from_utf8_lossy(document);
+        let gated = (
+            text.contains("\"rateLimit\""),
+            text.contains("\"concurrency\""),
+        );
         let node = Node::new(
             NodeId::parse("a").expect("id"),
             NodeKind::Activity {
@@ -685,12 +702,51 @@ impl IrCodec for FakeCodec {
         } else {
             ("a", vec![node])
         };
-        let definition = WorkflowDefinition::new(
+        // feature 022: a draft that says `rateLimit` gates its activity, one that says `concurrency` its run start
+        let nodes = nodes
+            .into_iter()
+            .map(|node| {
+                if gated.0 && node.id().as_str() == "a" {
+                    node.with_flow_control(sagat_domain::workflow::FlowControl::new(
+                        None,
+                        Some(
+                            sagat_domain::workflow::RateLimitPolicy::new(
+                                sagat_domain::workflow::FlowGroup::Derived,
+                                None,
+                                10,
+                                sagat_domain::workflow::RatePeriod::Second,
+                                std::time::Duration::from_secs(60),
+                            )
+                            .expect("policy"),
+                        ),
+                    ))
+                    .expect("an activity may be gated")
+                } else {
+                    node
+                }
+            })
+            .collect();
+        let mut definition = WorkflowDefinition::new(
             Slug::parse(self.name).expect("slug"),
             NodeId::parse(entry).expect("id"),
             nodes,
         )
         .expect("valid");
+        if gated.1 {
+            definition =
+                definition.with_run_flow_control(sagat_domain::workflow::FlowControl::new(
+                    Some(
+                        sagat_domain::workflow::ConcurrencyPolicy::new(
+                            sagat_domain::workflow::FlowGroup::Derived,
+                            None,
+                            1,
+                            std::time::Duration::from_secs(60),
+                        )
+                        .expect("policy"),
+                    ),
+                    None,
+                ));
+        }
         let mut digest = [0u8; 32];
         digest[0] = u8::try_from(document.len() % 251).expect("small");
         Ok(ParsedDefinition {
@@ -2310,4 +2366,158 @@ async fn a_publication_retried_with_its_key_after_collection_operators_are_off_i
         "{other:?}"
     );
     assert_eq!(f.store.with(|s| s.versions.len()), 1);
+}
+
+// ------------------------------------------------------------------ the flow-control capabilities (feature 022)
+
+const RATE_LIMITED_DRAFT: &[u8] = br#"{"kind":"Workflow","rateLimit":true}"#;
+const CONCURRENCY_DRAFT: &[u8] = br#"{"kind":"Workflow","concurrency":true}"#;
+
+async fn create_gated(f: &Fixture, draft: &'static [u8]) -> WorkflowRecord {
+    f.service
+        .create_workflow(
+            &principal(f.tenant, Role::Developer),
+            "payments",
+            "invoice-flow",
+            draft,
+            "key-0000001",
+            &ctx(),
+        )
+        .await
+        .expect("created")
+}
+
+const BOTH_ON: sagat_application::flow_control::FlowControlSwitches =
+    sagat_application::flow_control::FlowControlSwitches {
+        concurrency_keys: true,
+        rate_limits: true,
+    };
+
+/// T022-005, T022-069, FR-022-031, SC-022-013: with its capability off, a gated definition is refused before a version
+/// exists, naming the node, and the registry is not even read.
+#[tokio::test]
+async fn a_gate_whose_capability_is_off_is_refused_before_a_version_exists() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_gated(&f, RATE_LIMITED_DRAFT).await;
+    for service in [
+        f.service.clone(),
+        f.service
+            .clone()
+            .with_flow_control(sagat_application::flow_control::FlowControlSwitches {
+                concurrency_keys: true,
+                rate_limits: false,
+            }),
+    ] {
+        let result = service
+            .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+            .await;
+        match result {
+            Err(AppError::InvalidDefinition(error)) => assert!(
+                matches!(*error, IrError::Unsupported { ref node, ref kind, .. } if node == "a" && kind == "rateLimit"),
+                "{error:?}"
+            ),
+            other => panic!("expected UNSUPPORTED_NODE, got {other:?}"),
+        }
+    }
+    assert!(
+        f.store.with(|s| s.versions.is_empty()),
+        "nothing was published"
+    );
+    assert!(
+        f.store
+            .with(|s| !s.calls.iter().any(|call| call.starts_with("activated"))),
+        "a switch that is off refuses before the registry is read"
+    );
+}
+
+#[tokio::test]
+async fn a_top_level_gate_whose_capability_is_off_is_refused_at_its_field() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_gated(&f, CONCURRENCY_DRAFT).await;
+    let service =
+        f.service
+            .clone()
+            .with_flow_control(sagat_application::flow_control::FlowControlSwitches {
+                concurrency_keys: false,
+                rate_limits: true,
+            });
+    let validation = service
+        .validate(&p, w.workflow.id(), None, &ctx())
+        .await
+        .expect("a validation");
+    let refused: Vec<_> = validation
+        .problems
+        .iter()
+        .map(|problem| (problem.code, problem.path.clone()))
+        .collect();
+    assert_eq!(
+        refused,
+        [("UNSUPPORTED_NODE", Some("/concurrency".to_owned()))]
+    );
+}
+
+/// T022-094, FR-022-053, SC-022-027: a capability that is on is still refused until the operator activates it for the
+/// fleet, in publication and in validation alike.
+#[tokio::test]
+async fn a_gate_is_refused_until_its_capability_is_activated_for_the_fleet() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create_gated(&f, RATE_LIMITED_DRAFT).await;
+    let service = f.service.clone().with_flow_control(BOTH_ON);
+    let result = service
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await;
+    match result {
+        Err(AppError::InvalidDefinition(error)) => assert!(
+            matches!(
+                *error,
+                IrError::FlowControlActivationPending {
+                    capability: "rateLimits"
+                }
+            ),
+            "{error:?}"
+        ),
+        other => panic!("expected FLOW_CONTROL_ACTIVATION_PENDING, got {other:?}"),
+    }
+    let validation = service
+        .validate(&p, w.workflow.id(), None, &ctx())
+        .await
+        .expect("a validation");
+    assert!(
+        validation
+            .problems
+            .iter()
+            .any(|problem| problem.code == "FLOW_CONTROL_ACTIVATION_PENDING"),
+        "{:?}",
+        validation.problems
+    );
+    assert!(f.store.with(|s| s.versions.is_empty()));
+
+    f.store.with(|s| s.activated.insert("flow-control-rate-v1"));
+    service
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000002", &ctx())
+        .await
+        .expect("published once the fleet runs the gate");
+}
+
+/// NFR-022-007: a definition without a gate does not read the registry, whatever the switches say.
+#[tokio::test]
+async fn a_definition_without_a_gate_never_reads_the_registry() {
+    let f = fixture();
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    f.service
+        .clone()
+        .with_flow_control(BOTH_ON)
+        .publish(&p, w.workflow.id(), 1, None, "pub-0000001", &ctx())
+        .await
+        .expect("published");
+    assert!(
+        f.store
+            .with(|s| !s.calls.iter().any(|call| call.starts_with("activated")))
+    );
 }

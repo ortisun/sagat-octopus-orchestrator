@@ -1,0 +1,19 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "gated-body"},
+  "entrypoint": "lines",
+  "bodies": {
+    "line": {
+      "entrypoint": "charge",
+      "nodes": [
+        {"id": "charge", "type": "activity", "activity": "billing.charge", "concurrency": {"limit": 1}, "next": "done"},
+        {"id": "done", "type": "return", "result": "steps.charge.output"}
+      ]
+    }
+  },
+  "nodes": [
+    {"id": "lines", "type": "forEach", "items": "input.lines", "body": "line", "result": "results", "maxItems": 10, "maxConcurrency": 2, "next": "end"},
+    {"id": "end", "type": "end"}
+  ]
+}

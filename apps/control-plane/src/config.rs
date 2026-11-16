@@ -130,6 +130,18 @@ fn collection_operators(get: Lookup<'_>) -> Result<bool, ConfigError> {
     flag(get, "SAGAT_COLLECTION_OPERATORS_ENABLED")
 }
 
+/// `SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED` and `SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED` (feature 022): whether a
+/// workflow may declare `concurrency` and `rateLimit`. Off unless the deployment says so; with one on, publication and
+/// starts still wait for the operator's fleet activation of the capability (FR-022-053).
+pub fn flow_control(
+    get: Lookup<'_>,
+) -> Result<sagat_application::flow_control::FlowControlSwitches, ConfigError> {
+    Ok(sagat_application::flow_control::FlowControlSwitches {
+        concurrency_keys: flag(get, "SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED")?,
+        rate_limits: flag(get, "SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED")?,
+    })
+}
+
 /// Variables of the per-tenant request budget: (requests per second, burst).
 pub const TENANT_RATE_VARS: (&str, &str) = ("SAGAT_RATE_LIMIT_RPS", "SAGAT_RATE_LIMIT_BURST");
 /// Variables of the per-subject request budget: (requests per second, burst).
@@ -398,6 +410,9 @@ pub struct ServeConfig {
     /// With it off, publishing such a workflow is refused with `COLLECTION_OPERATORS_DISABLED`; a stored one stays
     /// readable and its runs apply their chain.
     pub collection_operators_enabled: bool,
+    /// The flow-control capabilities this deployment allows (`SAGAT_FLOW_CONTROL_*_ENABLED`, feature 022). Off by
+    /// default; a capability that is on still waits for its fleet activation.
+    pub flow_control: sagat_application::flow_control::FlowControlSwitches,
     /// Native TLS identity is required for the mTLS webhook profile; no forwarded headers are trusted.
     pub tls: Option<sagat_api_http::HttpTlsConfig>,
     pub webhook_oidc: Vec<sagat_api_http::auth::WebhookOidcConfig>,
@@ -602,6 +617,7 @@ impl ServeConfig {
             reset_cancel_source_enabled: flag(get, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")?,
             lake_enabled: flag(get, "SAGAT_LAKE_ENABLED")?,
             collection_operators_enabled: collection_operators(get)?,
+            flow_control: flow_control(get)?,
             tls,
             webhook_oidc,
             webhook_oidc_development: environment == Environment::Dev,

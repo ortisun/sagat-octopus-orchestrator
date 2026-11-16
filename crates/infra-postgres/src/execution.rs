@@ -146,6 +146,9 @@ pub struct PgRunStore {
     verify_skipped_loads: bool,
     /// The deployment's `lake.enabled` (feature 035): whether a run may carry an Iceberg write. Off unless set.
     pub(crate) lake_enabled: bool,
+    /// The deployment's `flow-control.*` switches (feature 022): whether a run of a gated definition may be admitted
+    /// at all. Off unless set.
+    flow_control: sagat_application::flow_control::FlowControlSwitches,
 }
 
 impl PgRunStore {
@@ -160,7 +163,65 @@ impl PgRunStore {
             scoped_worker_protocol: false,
             verify_skipped_loads: false,
             lake_enabled: false,
+            flow_control: sagat_application::flow_control::FlowControlSwitches {
+                concurrency_keys: false,
+                rate_limits: false,
+            },
         }
+    }
+
+    /// The deployment's `flow-control.*` switches (feature 022), read by the one admission point.
+    #[must_use]
+    pub const fn with_flow_control(
+        mut self,
+        switches: sagat_application::flow_control::FlowControlSwitches,
+    ) -> Self {
+        self.flow_control = switches;
+        self
+    }
+
+    /// The gate of the one admission point (feature 022, FR-022-059): what a run of a definition that declares a
+    /// `concurrency` or `rateLimit` gets from this build. A capability switched off refuses
+    /// (`CAPABILITY_DISABLED`), one the fleet has not activated refuses (`FLOW_CONTROL_ACTIVATION_PENDING`, read in the
+    /// admitting transaction, FR-022-053), and one that is activated is refused too, because this process does not
+    /// run the gate (`BINARY_CAPABILITY_MISSING`, D022-037): the admission, readiness and grant code of T022-022,
+    /// T022-072 and T022-096..098 is not in this build, and a run must never start ungated. A definition without a
+    /// gate never reaches here, so the plain admission costs nothing more (NFR-022-007, the budget of T022-091).
+    async fn flow_control_admission(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        definition: &WorkflowDefinition,
+    ) -> Result<sagat_application::flow_control::FlowControlRefusal, StoreError> {
+        use sagat_application::flow_control::{FlowControlRefusal, required};
+        let required = required(definition);
+        if let Some(capability) = required
+            .iter()
+            .find(|capability| !self.flow_control.enabled(**capability))
+        {
+            return Ok(FlowControlRefusal::CapabilityDisabled {
+                capability: *capability,
+            });
+        }
+        let names: Vec<&str> = required
+            .iter()
+            .map(|capability| capability.registry().as_str())
+            .collect();
+        let recorded: Vec<String> = sqlx::query_scalar(
+            "SELECT capability FROM platform_requirements WHERE capability = ANY($1)",
+        )
+        .bind(&names)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if let Some(capability) = required
+            .iter()
+            .find(|capability| !recorded.iter().any(|r| r == capability.registry().as_str()))
+        {
+            return Ok(FlowControlRefusal::ActivationPending {
+                capability: *capability,
+            });
+        }
+        Ok(FlowControlRefusal::BinaryCapabilityMissing)
     }
 
     /// Makes every command check that a projection its definition excludes is in fact empty. For
@@ -1115,6 +1176,13 @@ impl RunStore for PgRunStore {
                 self.check_database_replay(&mut tx, tenant, &new.info.started_by, &existing)
                     .await?;
                 return Ok(Admitted::Replayed(existing));
+            }
+            // Feature 022: every run creator passes here, so a gated definition is decided here, before any lock of the
+            // admission is taken (FR-022-059); this build refuses it whatever the registry says (D022-037).
+            if new.definition.declares_gates() {
+                let refusal = self.flow_control_admission(&mut tx, &new.definition).await;
+                let _ = tx.rollback().await;
+                return Err(StoreError::FlowControl(refusal?));
             }
             // The action of a schedule takes its fence and the schedule row before any other
             // admission lock (ADR-0050 decision 7).
@@ -7427,6 +7495,13 @@ fn versioned_script_retention(
 
 /// The run store also serves definitions, so one value can back every service that needs both.
 impl DefinitionStore for PgRunStore {
+    async fn flow_control_activated(
+        &self,
+        capability: sagat_application::instances::Capability,
+    ) -> Result<bool, StoreError> {
+        self.definitions.flow_control_activated(capability).await
+    }
+
     async fn replay_publication(
         &self,
         tenant: TenantId,

@@ -179,6 +179,12 @@ pub enum IrError {
         "node '{node}' is a collection with operators, and this deployment has not enabled collection operators"
     )]
     CollectionOperatorsDisabled { node: String },
+    /// A `concurrency` or `rateLimit` declaration whose capability the operator has not activated for the fleet yet
+    /// (feature 022, `FLOW_CONTROL_ACTIVATION_PENDING`, FR-022-053). `capability` is the IR capability's name.
+    #[error(
+        "the {capability} capability is not activated for the fleet yet: an operator activates it once every control plane and engine runs it"
+    )]
+    FlowControlActivationPending { capability: &'static str },
     #[error("declaration '{field}' is not supported yet: {reason}")]
     UnsupportedDeclaration {
         field: &'static str,
@@ -343,6 +349,10 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
             Problem::error("COLLECTION_OPERATORS_DISABLED", error.to_string())
                 .at_node(node.clone()),
         ],
+        IrError::FlowControlActivationPending { .. } => vec![Problem::error(
+            "FLOW_CONTROL_ACTIVATION_PENDING",
+            error.to_string(),
+        )],
         IrError::UnsupportedDeclaration { field, .. } => {
             vec![Problem::error("UNSUPPORTED_NODE", error.to_string()).at_path(format!("/{field}"))]
         }
@@ -700,6 +710,15 @@ pub struct Published {
 ///
 /// Every method takes the tenant explicitly; adapters MUST apply it as a filter on every statement.
 pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Send + Sync {
+    /// Whether the operator has activated `capability` for the fleet (feature 018's registry: a requirement is
+    /// recorded for it). An adapter that cannot read the registry says no: flow control stays refused (fail closed).
+    fn flow_control_activated(
+        &self,
+        _capability: crate::instances::Capability,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
     /// Current connection/secret authority, for author feedback before publication. The publisher
     /// repeats the check in its transaction. Adapters without managed support fail closed.
     fn check_database_access(
@@ -872,6 +891,9 @@ pub struct DefinitionService<S, C, X> {
     /// `collection-operators` (design 042): whether a `forEach` may declare `operators`. Off unless the deployment says
     /// so. Checked at publication only; a stored definition stays readable whatever it is (FR-042-003).
     collection_operators_enabled: bool,
+    /// `flow-control.*` (feature 022): whether a definition may declare `concurrency` and `rateLimit`. Off unless the
+    /// deployment says so; a capability that is on still needs its fleet activation (FR-022-053).
+    flow_control: crate::flow_control::FlowControlSwitches,
 }
 
 impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
@@ -882,7 +904,62 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             codec,
             lake_enabled: false,
             collection_operators_enabled: false,
+            flow_control: crate::flow_control::FlowControlSwitches {
+                concurrency_keys: false,
+                rate_limits: false,
+            },
         }
+    }
+
+    /// Lets a definition declare `concurrency` or `rateLimit` (the deployment's `flow-control.*`, feature 022). The
+    /// fleet activation of each capability is still read at every publication.
+    #[must_use]
+    pub const fn with_flow_control(
+        mut self,
+        switches: crate::flow_control::FlowControlSwitches,
+    ) -> Self {
+        self.flow_control = switches;
+        self
+    }
+
+    /// Why this deployment may not publish the gates `definition` declares now, if it may not (feature 022): a
+    /// capability switched off (`UNSUPPORTED_NODE`, before a version exists, FR-022-031) or not yet activated for the
+    /// fleet (`FLOW_CONTROL_ACTIVATION_PENDING`, FR-022-053). A definition without a gate costs no read.
+    async fn refused_flow_control(
+        &self,
+        definition: &WorkflowDefinition,
+    ) -> Result<Option<IrError>, StoreError> {
+        let required = crate::flow_control::required(definition);
+        for capability in &required {
+            if !self.flow_control.enabled(*capability) {
+                let reason = "this workflow capability is not enabled by the runtime";
+                return Ok(Some(
+                    match crate::flow_control::first_use(definition, *capability).flatten() {
+                        Some(node) => IrError::Unsupported {
+                            node: node.as_str().to_owned(),
+                            kind: capability.field().to_owned(),
+                            reason,
+                        },
+                        None => IrError::UnsupportedDeclaration {
+                            field: capability.field(),
+                            reason,
+                        },
+                    },
+                ));
+            }
+        }
+        for capability in required {
+            if !self
+                .store
+                .flow_control_activated(capability.registry())
+                .await?
+            {
+                return Ok(Some(IrError::FlowControlActivationPending {
+                    capability: capability.as_str(),
+                }));
+            }
+        }
+        Ok(None)
     }
 
     /// Lets a definition hold an Apache Iceberg write (the deployment's `lake.enabled`). The store still decides
@@ -1184,6 +1261,9 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 },
             )));
         }
+        if let Some(refusal) = self.refused_flow_control(&parsed.definition).await? {
+            return Err(AppError::InvalidDefinition(Box::new(refusal)));
+        }
         self.check_secrets(principal, &record, &parsed.definition, ctx)
             .await?;
         let database_check = self
@@ -1417,6 +1497,9 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             problems.extend(problems_of(&IrError::CollectionOperatorsDisabled {
                 node: node.as_str().to_owned(),
             }));
+        }
+        if let Some(refusal) = self.refused_flow_control(&parsed.definition).await? {
+            problems.extend(problems_of(&refusal));
         }
         match self
             .store

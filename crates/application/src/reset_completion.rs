@@ -231,6 +231,7 @@ pub fn failure_of(error: &AppError) -> Option<&'static str> {
         }),
         AppError::BusinessIdConflict { .. } => Some("BUSINESS_ID_IN_USE"),
         AppError::QuotaExceeded(_)
+        | AppError::FlowControl(_)
         | AppError::NotAllowed(_)
         | AppError::InvalidStart { .. }
         | AppError::NotFound => Some("ADMISSION_REFUSED"),

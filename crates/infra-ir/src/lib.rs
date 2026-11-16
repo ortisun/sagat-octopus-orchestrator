@@ -24,6 +24,7 @@ pub mod schedule_calendar;
 pub use database_result::JsonDatabaseResultValidator;
 mod diff;
 mod evaluator;
+mod flow_control;
 mod lake;
 mod lake_egress;
 pub mod lake_probe_result;
@@ -153,7 +154,14 @@ impl IrCodec for JsonIrCodec {
         // a new publication needs every capability its document uses to be on; `parse_stored` below
         // restores what was published while one was
         capabilities::check_publication(&value)?;
-        published_definition(value)
+        let parsed = published_definition(value)?;
+        // the rules of flow control across the definition hold for a new publication; a stored one is restored as
+        // it was, and the one other writer of runs asserts what it relies on itself (FR-022-059)
+        parsed
+            .definition
+            .check_flow_control()
+            .map_err(IrError::Invalid)?;
+        Ok(parsed)
     }
 
     fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
@@ -318,6 +326,7 @@ fn read_document(document: &[u8]) -> Result<Value, IrError> {
 
 fn check_ir_structure(value: &Value, mode: schema::Mode) -> Result<(), IrError> {
     operators::check_surfaces(value)?;
+    flow_control::check_surfaces(value)?;
     let issues = schema::issues(value, mode);
     if !issues.is_empty() {
         return Err(IrError::Schema(issues));
@@ -359,7 +368,8 @@ fn converted_document(
 ) -> Result<ParsedDefinition, IrError> {
     // The levels of what an Iceberg write sends out are read from the schemas of this document, once, for publication and
     // for the restore that admission relies on; they are derived, so they never reach the canonical bytes.
-    let definition = lake_egress::attach(value, convert(value)?);
+    let definition = lake_egress::attach(value, convert(value)?)
+        .with_run_flow_control(flow_control::run(value)?);
     check_expressions(&definition)?;
     let canonical = canonical::canonical_json(value);
     let digest = canonical::digest_of(&canonical);

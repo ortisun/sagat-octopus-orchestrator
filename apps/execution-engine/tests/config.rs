@@ -1239,3 +1239,18 @@ fn a_line_that_gives_the_switch_a_value_is_read_as_one() {
         assert_eq!(value_given(line, name).as_deref(), value, "{line}");
     }
 }
+
+/// Feature 022 (T022-005, T022-069): the engine admits runs too (triggers, cron, children, schedules), so it reads the
+/// same two switches as the control plane, off unless set.
+#[test]
+fn the_engine_reads_the_flow_control_switches_of_the_control_plane() {
+    let config = parse(&[]).expect("config");
+    assert!(!config.flow_control.concurrency_keys && !config.flow_control.rate_limits);
+    let on = parse(&[
+        ("SAGAT_FLOW_CONTROL_CONCURRENCY_KEYS_ENABLED", "true"),
+        ("SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED", "1"),
+    ])
+    .expect("config");
+    assert!(on.flow_control.concurrency_keys && on.flow_control.rate_limits);
+    assert!(parse(&[("SAGAT_FLOW_CONTROL_RATE_LIMITS_ENABLED", "maybe")]).is_err());
+}

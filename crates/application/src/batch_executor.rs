@@ -152,6 +152,17 @@ fn error_code(error: &AppError) -> &'static str {
         AppError::IdempotencyKeyReused => "IDEMPOTENCY_KEY_REUSED",
         AppError::PayloadTooLarge(_) => "PAYLOAD_TOO_LARGE",
         AppError::DeclaredUpdate(error) => declared_update_code(error),
+        // feature 022: what the single start would have answered (`contracts/errors.md`)
+        AppError::FlowControl(refusal) => {
+            use crate::flow_control::FlowControlRefusal as R;
+            match refusal {
+                R::ConcurrencyQueueFull | R::RateLimitQueueFull | R::Limit { .. } => {
+                    "QUOTA_EXCEEDED"
+                }
+                R::ActivationPending { .. } | R::CapabilityDisabled { .. } => "VALIDATION_FAILED",
+                R::BinaryCapabilityMissing => "UNAVAILABLE",
+            }
+        }
         _ => "INTERNAL",
     }
 }

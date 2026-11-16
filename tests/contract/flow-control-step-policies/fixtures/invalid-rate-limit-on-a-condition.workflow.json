@@ -1,0 +1,11 @@
+{
+  "apiVersion": "sagat-octopus-orchestrator.io/v1",
+  "kind": "Workflow",
+  "metadata": {"name": "gated-condition"},
+  "entrypoint": "check",
+  "nodes": [
+    {"id": "check", "type": "condition", "expression": "input.ok", "ifTrue": "yes", "ifFalse": "no", "rateLimit": {"limit": 1, "per": "minute"}},
+    {"id": "yes", "type": "end"},
+    {"id": "no", "type": "end"}
+  ]
+}
