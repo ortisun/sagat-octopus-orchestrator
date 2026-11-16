@@ -653,6 +653,10 @@ public final class Runner {
             resetFrom.put("runId", run.resetFrom().runId());
             resetFrom.put("sequence", run.resetFrom().sequence());
         }
+        // Present only for a run stopped with a failure code (design 043).
+        if (run.failureCode() != null) {
+            out.put("failureCode", run.failureCode());
+        }
         return out;
     }
 

@@ -85,6 +85,10 @@ fn run_json(run: Run) -> Value {
     if let Some(reset) = &run.reset_from {
         result["resetFrom"] = json!({"runId": reset.run_id, "sequence": reset.sequence});
     }
+    // Present only for a run stopped with a failure code (design 043).
+    if let Some(code) = &run.failure_code {
+        result["failureCode"] = json!(code);
+    }
     result
 }
 fn log_entry(ctx: &ActivityContext, input: &Value, name: &str, kind: &str, outcome: &str) -> Value {

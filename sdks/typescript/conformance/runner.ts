@@ -155,6 +155,8 @@ function runJson(run: Run): Obj {
       ? { schedule: { scheduleId: run.schedule.scheduleId, nominalTime: iso(run.schedule.nominalTime), kind: run.schedule.kind, revision: run.schedule.revision } }
       : {}),
     ...(run.resetFrom !== null ? { resetFrom: { runId: run.resetFrom.runId, sequence: run.resetFrom.sequence } } : {}),
+    // Present only for a run stopped with a failure code (design 043).
+    ...(run.failureCode !== null ? { failureCode: run.failureCode } : {}),
   };
 }
 

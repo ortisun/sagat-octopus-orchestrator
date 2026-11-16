@@ -559,6 +559,16 @@ class SagatClientTest {
     }
 
     @Test
+    void aRunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone() {
+        server.prepare((req, reply) -> reply.send(200,
+                run("status", "\"FAILED\"", "failureCode", "\"CONTINUATION_INPUT_INVALID\"")));
+        assertEquals("CONTINUATION_INPUT_INVALID", client().get(RUN).failureCode());
+
+        server.prepare((req, reply) -> reply.send(200, run()));
+        assertEquals(null, client().get(RUN).failureCode());
+    }
+
+    @Test
     void rerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin() {
         String started = "0190aaaa-0000-7000-8000-000000000021";
         server.prepare((req, reply) -> reply.send(req.path().endsWith("/operations") ? 202 : 200,

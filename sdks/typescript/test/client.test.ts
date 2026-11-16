@@ -404,6 +404,13 @@ test('RERUN_AS_NEW is an operation whose answer names the new run, and the new r
   assert.equal((await client().operate(ended, 'RERUN_AS_NEW', 'run it again after the fix')).newRunId, started);
 });
 
+test('a run stopped with a failure code carries it, and a run without one has none', async () => {
+  prepare((_req, res) => reply(res, 200, run({ status: 'FAILED', failureCode: 'CONTINUATION_INPUT_INVALID' })));
+  assert.equal((await client().get('0190aaaa-0000-7000-8000-000000000001')).failureCode, 'CONTINUATION_INPUT_INVALID');
+  prepare((_req, res) => reply(res, 200, run()));
+  assert.equal((await client().get('0190aaaa-0000-7000-8000-000000000001')).failureCode, null);
+});
+
 test('waiting for completion polls until the run is terminal', async () => {
   let polls = 0;
   prepare((_req, res) => reply(res, 200, run({ status: ++polls < 3 ? 'RUNNING' : 'SUCCEEDED' })));

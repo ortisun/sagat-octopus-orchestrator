@@ -445,6 +445,20 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ARunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone()
+    {
+        server.Handler = _ => Reply(200, Run(run =>
+        {
+            run["status"] = "FAILED";
+            run["failureCode"] = "CONTINUATION_INPUT_INVALID";
+        }));
+        Assert.Equal("CONTINUATION_INPUT_INVALID", (await NewClient().GetAsync(Ids.Run)).FailureCode);
+
+        server.Handler = _ => Reply(200, Run());
+        Assert.Null((await NewClient().GetAsync(Ids.Run)).FailureCode);
+    }
+
+    [Fact]
     public async Task RerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin()
     {
         const string started = "0190aaaa-0000-7000-8000-000000000021";

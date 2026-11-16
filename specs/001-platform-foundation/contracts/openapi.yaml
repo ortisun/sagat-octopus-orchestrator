@@ -5431,6 +5431,10 @@ components:
             segmentIndex: {type: integer, minimum: 0, maximum: 9999}
             completionKind: {type: [string, 'null'], enum: [CONTINUED, FINAL, null], description: 'Null while the segment is open.'}
             successorRunId: {type: [string, 'null'], format: uuid}
+        failureCode:
+          type: string
+          pattern: '^[A-Za-z0-9_.:-]{1,64}$'
+          description: 'Design 043 (FR-043-015): the failure code the stop of the run carries, when it stopped with one: the code of the step whose failure failed the run, a ceiling (`STORAGE_QUOTA_EXCEEDED`, ...), or `CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE` for a continue-as-new refused for its input. Absent for every other run. Read by getRun and listRuns. Never holds an input value.'
     RunPage:
       type: object
       required: [items]

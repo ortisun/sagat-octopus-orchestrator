@@ -1617,7 +1617,7 @@ impl RunStore for PgRunStore {
     ) -> Result<Vec<RunRecord>, StoreError> {
         sqlx::query(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
-                    stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
+                    stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
                     cancel_policy, depth, trace_parent_span, rerun_of, origin, business_id, \
                     start_delayed_until, schedule_id, schedule_nominal_at, schedule_action_kind, \
@@ -2138,7 +2138,7 @@ async fn claim_reservation(
 // outside any chain. They read as well the columns a run was created with that say where it came from
 // (the schedule action and the reset sequence), from the row they already load: no query per run.
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
-     run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
+     run_version, stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
      trace_parent_span, rerun_of, origin, business_id, start_delayed_until, \
      schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision, reset_sequence, \
@@ -2286,6 +2286,9 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         chain: run_segment(row)?,
         schedule: run_schedule(row)?,
         reset_from: run_reset(row)?,
+        failure_code: selected::<String>(row, "stop_code")?
+            .map(|code| FailureCode::parse(&code).map_err(|_| corrupt("stop code")))
+            .transpose()?,
     })
 }
 

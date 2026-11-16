@@ -379,6 +379,9 @@ def run_json(run: Run) -> Obj:
         }
     if run.reset_from is not None:
         observed["resetFrom"] = {"runId": run.reset_from.run_id, "sequence": run.reset_from.sequence}
+    # Present only for a run stopped with a failure code (design 043).
+    if run.failure_code is not None:
+        observed["failureCode"] = run.failure_code
     return observed
 
 

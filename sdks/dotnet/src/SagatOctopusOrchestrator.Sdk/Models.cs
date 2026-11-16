@@ -132,6 +132,12 @@ public record Run
     /// </summary>
     public RunResetFrom? ResetFrom { get; init; }
 
+    /// <summary>
+    /// The failure code the stop of the run carries (design 043): the code of the step whose failure failed the run, a ceiling such as
+    /// <c>STORAGE_QUOTA_EXCEEDED</c>, or <c>CONTINUATION_INPUT_INVALID</c> for a continue-as-new refused for its input; <c>null</c> for every other run.
+    /// </summary>
+    public string? FailureCode { get; init; }
+
     /// <summary>The answer as the server sent it.</summary>
     public JsonElement Raw { get; init; }
 

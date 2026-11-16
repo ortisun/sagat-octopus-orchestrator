@@ -693,6 +693,10 @@ pub struct RunRecord {
     /// The run a reset made this one from, and the journal sequence it keeps (feature 018, `FR-018-037`).
     /// Read by `get` and `list`; `None` for every run a reset did not make.
     pub reset_from: Option<ResetProvenance>,
+    /// The failure code the run's stop carries (`runs.stop_code`): what failed the run (a step's own code, a ceiling, a
+    /// continuation refused for its input, design 043), for a run stopped with one. Read by `get` and `list`; `None`
+    /// for every other run and for a record loaded inside a command transaction.
+    pub failure_code: Option<FailureCode>,
 }
 
 /// Which schedule started a run, for which nominal time, by which kind of action and under which

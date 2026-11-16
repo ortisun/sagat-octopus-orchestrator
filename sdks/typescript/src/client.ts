@@ -56,6 +56,11 @@ export interface Run {
   schedule: RunSchedule | null;
   /** The run a reset made this one from and the journal sequence of it that this run keeps, or null for a run no reset made (a rerun has `rerunOf` and not this). */
   resetFrom: RunResetFrom | null;
+  /**
+   * The failure code the stop of the run carries (design 043): the code of the step whose failure failed the run, a ceiling
+   * such as `STORAGE_QUOTA_EXCEEDED`, or `CONTINUATION_INPUT_INVALID` for a continue-as-new refused for its input. Null for every other run.
+   */
+  failureCode: string | null;
   /** The answer as the server sent it, so a field of a newer server is reachable. */
   raw: Record<string, unknown>;
 }
@@ -370,6 +375,7 @@ export function toRun(value: unknown): Run {
     startDelayedUntil: optDate(raw, 'startDelayedUntil'),
     schedule: toRunSchedule(raw['schedule']),
     resetFrom: toRunResetFrom(raw['resetFrom']),
+    failureCode: optStr(raw, 'failureCode'),
     raw,
   };
 }

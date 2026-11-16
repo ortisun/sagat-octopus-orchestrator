@@ -174,6 +174,10 @@ class Run:
     reset_from: RunResetFrom | None = None
     """The run a reset made this one from and the journal sequence of it this run keeps; ``None`` for a run no reset
     made (a rerun has ``rerun_of`` and not this)."""
+    failure_code: str | None = None
+    """The failure code the stop of the run carries (design 043): the code of the step whose failure failed the run, a
+    ceiling such as ``STORAGE_QUOTA_EXCEEDED``, or ``CONTINUATION_INPUT_INVALID`` for a continue-as-new refused for its
+    input; ``None`` for every other run."""
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -394,6 +398,7 @@ def _run_fields(value: Any) -> dict[str, Any]:
         "start_delayed_until": parse_instant(raw.get("startDelayedUntil")),
         "schedule": _to_run_schedule(raw.get("schedule")),
         "reset_from": _to_run_reset_from(raw.get("resetFrom")),
+        "failure_code": _opt_str(raw, "failureCode"),
         "raw": raw,
     }
     return fields

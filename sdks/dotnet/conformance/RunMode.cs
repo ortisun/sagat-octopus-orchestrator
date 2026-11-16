@@ -885,6 +885,12 @@ internal sealed partial class RunMode : IAsyncDisposable
             observed["resetFrom"] = new JsonObject { ["runId"] = resetFrom.RunId, ["sequence"] = resetFrom.Sequence };
         }
 
+        // Present only for a run stopped with a failure code (design 043).
+        if (run.FailureCode is { } failureCode)
+        {
+            observed["failureCode"] = failureCode;
+        }
+
         return observed;
     }
 

@@ -3919,6 +3919,8 @@ export interface components {
                 /** Format: uuid */
                 successorRunId: string | null;
             };
+            /** @description Design 043 (FR-043-015): the failure code the stop of the run carries, when it stopped with one: the code of the step whose failure failed the run, a ceiling (`STORAGE_QUOTA_EXCEEDED`, ...), or `CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE` for a continue-as-new refused for its input. Absent for every other run. Read by getRun and listRuns. Never holds an input value. */
+            failureCode?: string;
         };
         RunPage: {
             items: components["schemas"]["Run"][];

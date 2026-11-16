@@ -74,6 +74,10 @@ func runJSON(run *client.Run) object {
 	if run.ResetFrom != nil {
 		observed["resetFrom"] = object{"runId": run.ResetFrom.RunID, "sequence": run.ResetFrom.Sequence}
 	}
+	// Present only for a run stopped with a failure code (design 043).
+	if run.FailureCode != "" {
+		observed["failureCode"] = run.FailureCode
+	}
 	return observed
 }
 

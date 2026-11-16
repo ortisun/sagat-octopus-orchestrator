@@ -695,6 +695,16 @@ async def test_cancel_and_signal_are_operations_with_a_reason_and_a_payload_and_
     assert http.seen[3].url == f"/v1/runs/{RUN}/signals/a%2Fb%20c", "a name is a path segment, whatever it holds"
 
 
+async def test_a_run_stopped_with_a_failure_code_carries_it_and_a_run_without_one_has_none(
+    http: FakeHttpServer, make_client: MakeClient
+) -> None:
+    http.serve(lambda _seen: reply(200, run_body(status="FAILED", failureCode="CONTINUATION_INPUT_INVALID")))
+    client = make_client()
+    assert (await client.get(RUN)).failure_code == "CONTINUATION_INPUT_INVALID"
+    http.serve(lambda _seen: reply(200, run_body()))
+    assert (await client.get(RUN)).failure_code is None
+
+
 async def test_rerun_as_new_names_the_new_run_and_the_new_run_names_its_origin(
     http: FakeHttpServer, make_client: MakeClient
 ) -> None:

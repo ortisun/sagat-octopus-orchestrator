@@ -922,6 +922,29 @@ func TestCancelAndSignalAreOperationsWithAReasonAndAPayloadAndTheResultIsTyped(t
 	}
 }
 
+func TestARunStoppedWithAFailureCodeCarriesItAndOtherRunsHaveNone(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"status": "FAILED", "failureCode": "CONTINUATION_INPUT_INVALID"}))
+	})
+	c := newClient(t, f)
+	stopped, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.FailureCode != "CONTINUATION_INPUT_INVALID" {
+		t.Errorf("FailureCode %q", stopped.FailureCode)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
+	plain, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.FailureCode != "" {
+		t.Errorf("a run stopped without a failure code has none: %q", plain.FailureCode)
+	}
+}
+
 func TestRerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin(t *testing.T) {
 	const started = "0190aaaa-0000-7000-8000-000000000021"
 	f := newFake(t)

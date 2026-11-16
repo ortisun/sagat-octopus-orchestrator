@@ -14,7 +14,8 @@ pointer whose segments are names the version's `inputSchema` declares and array 
 reason `RUN_INPUT_INVALID` or `RUN_INPUT_SCHEMA_UNUSABLE`; the failure codes `CHILD_INPUT_INVALID`,
 `CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE` and the schedule outcome `INPUT_INVALID` reach a run or a
 schedule view unchanged. An SDK checks nothing of a schema locally. `field` is also filled for the other refusals whose
-server answer names one (a schedule spec, a start option).
+server answer names one (a schedule spec, a start option). The `Run` of every SDK, and its conformance run view, carries
+the optional `failureCode` of a run stopped with one (FR-043-015), absent for every other run.
 
 Feature 018 adds to every SDK the client surface for schedules (create, describe, list, update, delete, pause,
 resume, trigger, backfill and the history), business identifiers on `start` and their lookup, a start delay,

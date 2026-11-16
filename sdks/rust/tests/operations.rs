@@ -362,6 +362,31 @@ async fn a_run_a_reset_made_says_the_run_it_came_from_and_the_journal_sequence_i
 }
 
 #[tokio::test]
+async fn a_run_stopped_with_a_failure_code_carries_it_and_a_run_without_one_has_none() {
+    let server = Recorder::start().await;
+    server.answer_with(
+        200,
+        run(json!({"status": "FAILED", "failureCode": "CONTINUATION_INPUT_INVALID"})),
+    );
+    let stopped = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get");
+    assert_eq!(
+        stopped.failure_code.as_deref(),
+        Some("CONTINUATION_INPUT_INVALID")
+    );
+    server.answer_with(200, run(json!({})));
+    let plain = server
+        .client()
+        .get(RUN, CallOptions::default())
+        .await
+        .expect("get");
+    assert!(plain.failure_code.is_none());
+}
+
+#[tokio::test]
 async fn an_answer_whose_schedule_or_reset_is_not_what_the_contract_says_is_a_protocol_error_not_a_run_with_half_of_it()
  {
     let server = Recorder::start().await;
