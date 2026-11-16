@@ -178,6 +178,13 @@ O041-025 to O041-027 and the revised design, contracts.md and data-model.md; the
 `docs/designs/041-step-logs.reviews/2026-11-15/resolution.md`. D041-068 corrects the prose of the two sections around
 this one.
 
+## Third approval run of 2026-11-16
+
+The third approval run on `6dceb548` (reports `docs/designs/041-step-logs.reviews/2026-11-15/*-approval-3.md`) left one
+Blocker and Majors open. The task allowed no further revision, so they are listed with one owner question each in
+section 11 of `resolution.md`; questions Q1 to Q8 there would become O041-028 onward when the owner takes them up. The
+design stays `Draft`.
+
 ## Owner answers of 2026-11-15
 
 The owner answered O041-014 to O041-019, O041-022 and O041-023 on 2026-11-15 (OD-2026-11-15-4 to -11). They are built

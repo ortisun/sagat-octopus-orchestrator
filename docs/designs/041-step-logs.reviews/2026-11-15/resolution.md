@@ -475,4 +475,49 @@ T041-2's `Owner-gate` (OD-2026-11-15-17 covers T041-2, and the checker requires 
 the protoc version string (it is the one the committed Go stubs record); "Owner decisions needed" trimmed to ids (the
 rejected options are cited by the Alternatives and the ADRs).
 
-The approval run of this revision is recorded in `*-approval-3.md`.
+The approval run of this revision is recorded in `*-approval-3.md` (section 11 lists what it left open).
+
+## 11. What the third approval run on `6dceb548` leaves open, and the owner's questions
+
+The run of `*-approval-3.md` (stages 5 to 9 in order, then the three repository reviewers) ends with EGM Blocker 1,
+Major 62, Nit 118 (not deduplicated) and the repository reviewers' Majors 5 (architecture 2, security 1, correctness 2).
+The task allowed one more run after the fixes of section 10, so nothing was fixed after this run: the design stays
+`Draft`, no approval block is written and T041-1 and T041-2 stay unticked. Approval needs, for each finding below, either
+a fix and a new complete run, or the owner's written acceptance (one row of `docs/owner-decisions.md` per finding,
+citing `<report>#<n>`). Deduplicated, the open Blocker and Majors are these, each with its question and the author's
+recommendation.
+
+### Questions of product, scope or an accepted ADR (the owner decides)
+
+| # | Findings | Question | Recommendation |
+| --- | --- | --- | --- |
+| Q1 | security-approval-3 #1 | Step logs can show payload values that feature 016 withholds as `pii` in a namespace with no annotation: require the PII grant (a) only where a version is classified (today), (b) where the version has `classification_rules = 1` or no annotation, or (c) for every step-log read? | (c), and change OD-2026-11-13-18's rule; do not accept as is |
+| Q2 | stage 5 Z3-1, stage 8 merge-partly | Make the attempt and run ceilings constants and give the namespace a plain capture switch, instead of four tunable namespace resources and `step_log_attempt_records = 0`? | Yes; do not accept as is |
+| Q3 | stage 5 Z3-2, stage 8 merge | Drop the run ceiling (attempt ceiling and tenant quota bound a run), take the unlocked sum, or keep it exact? This supersedes O041-020 and O041-027 | Drop it |
+| Q4 | stage 5 Z3-3, stage 8 merge | Write the script marker in a short transaction of its own after `record_execution` commits (one marker may be lost on a crash; the Amendment's locking accessor loses its caller)? | Yes |
+| Q5 | stage 7 K3-1, stage 8 merge | Let the ingest read the binding and membership without the namespace secrets lock (a Note on ADR-0084 decisions 5 and 11), so that it never delays leases, heartbeats or managed-database admission? | Yes |
+| Q6 | stage 7 K3-6 and T3-4, stage 8 merge | Restate O041-025 (a) as the report's own predicate (a stopping run's batches accepted for derived nodes and not-cancelled steps), reused as one domain function? | Yes, before T041-33 asks it |
+| Q7 | stage 7 S3-2, T3-3, stage 8 merge | Accept G041-017 (the `[REDACTED]` oracle over the process's secret set) in writing as a condition of principle V? | Yes, accept; no cheap fix exists |
+| Q8 | architecture-approval-3 #2, stages 6 C3-1, 7 K3-7, S3-1, T3-2, stage 8 merge | Add a Note to ADR-0085's Revision (the partial index, no backfill, no read switch, `mustNotStore`), whatever O041-025's answer? | Yes |
+
+### Defects to fix in a revision (the author's work; acceptance as is not recommended)
+
+| # | Findings | Question | Recommendation |
+| --- | --- | --- | --- |
+| F1 | architecture-approval-3 #1, stage 7 K3-2, stage 8 merge | Accept that one tenant's final batches can fill `Class::Logs` on a replica? | No: drop the 1-second ticket wait, add a two-tenant test |
+| F2 | correctness-approval-3 #1 | Accept that a filtered read can declare the log complete before scanning to the end? | No: completion when the scan reaches the run's last row |
+| F3 | correctness-approval-3 #2 | Accept T041-12's end-rule tests on the shared server and on PostgreSQL 16 only? | No: `isolated_server`, 16 and 18 |
+| F4 | stage 7 K3-8, stage 8 merge | Accept that a step's view scans the whole run? | No: a stream-scoped index and the Studio's paging |
+| F5 | stage 6 C3-2, stage 8 merge | Accept an undefined state for a script item with no marker stream? | No: derive it from the execution |
+| F6 | stage 7 K3-3 | Accept formatting and redaction of a record that will be dropped? | No: drop first |
+| F7 | stage 7 K3-4, K3-5 | Accept no risk row for ingest overload and tenant-quota sizing? | No: risk rows, runbook sizing, explicit quota in the benchmarks |
+| F8 | stage 8 missed (per-batch work) | Accept the unstated per-batch statement count? | No: state it; Q2, Q3 and Q5 cut it |
+| F9 | stage 9 CD3-B1 (Blocker), IR3-2 | Accept T041-25's false claim about CI's rule tests? | No: change the CI step and the Files |
+| F10 | stage 9 IR3-1 | Accept that T041-7 breaks three tests it does not list? | No |
+| F11 | stage 9 IR3-3, IR3-4, IR3-5, IR3-6, IR3-7, IR3-8, IR3-10, IR3-11 | Accept the plan gaps on metrics, micro-benchmarks, the spike's rules, a timing assertion in CI, the forced database error, T041-9's tickets, the pending-language refusal and the Studio's script view? | No |
+| F12 | stage 9 IR3-9, CD3-4, ST3-6 | Accept T041-32's undetermined SDK paths? | No: list them |
+| F13 | stage 9 CD3-1, CD3-2, CD3-3, CD3-5 | Accept the wrong CI job name, the digest predicate, the missing migration-test files and the 5-second poll bound? | No |
+| F14 | stage 9 ST3-1 to ST3-5, ST3-7 to ST3-10 | Accept the plan's order and wording defects (owner-task edits with no pull request, the missing hold after T3, tests before the code they test, done conditions, field names, the release note, the canary)? | No |
+| F15 | stage 5 Z3-4 (stage 8: Nit), stage 7 T3-1, T3-5, T3-6 (stage 8: Nits) | Accept the statement-level detail of the Technical Plan and three wording Majors? | Yes for Z3-4 (stage 8 rejects it as a Major); no for the wording |
+
+The repository reviewers' and stages' Nits are listed in the reports and are not blocking.
