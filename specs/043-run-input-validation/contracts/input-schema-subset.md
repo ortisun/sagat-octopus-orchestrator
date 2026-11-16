@@ -5,7 +5,9 @@ The contract an author writes an `inputSchema` against, from release 0.3.0 (OD-2
 version (`RUN_INPUT_SCHEMA_UNUSABLE`); `control-plane input-schema-inventory` lists the stored ones. The refusal codes
 are in `errors.md` beside this file. The limits, the charges and the budget below are part of the capability
 `run-input-validation-v1`: a release that changes any of them so that an input or a schema accepted today is refused
-ships a new capability, required the same way (design 043, Technical Plan 6).
+ships a new capability, `run-input-validation-v2`, required the same way (design 043, Technical Plan 6; ADR-0092
+decision 6). `the_limits_and_the_charges_of_run_input_validation_v1_are_pinned` (`crates/infra-schema/tests/run_input.rs`)
+holds the limits, the budget and the units of one case per keyword family (D043-178).
 
 ## Dialects
 

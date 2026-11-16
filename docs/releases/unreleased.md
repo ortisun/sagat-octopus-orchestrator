@@ -12,7 +12,9 @@ created (ADR-0090, OD-2026-11-14-2). An input the schema refuses is `422 VALIDAT
 
 - An `inputSchema` must stay within a documented subset of JSON Schema. A schema outside it refuses every start of its
   version (`RUN_INPUT_SCHEMA_UNUSABLE`), and publication refuses a new one in `enforce` mode. Run
-  `control-plane input-schema-inventory` before the upgrade to list the versions at risk.
+  `control-plane input-schema-inventory` before the upgrade to list the versions at risk; a superseded version that
+  nothing starts any more is only counted, and `--all` lists it too. A document whose schema cannot be pre-checked now
+  (the validator's four permits busy for 5 s) is answered a retryable `503`.
 - **Runs in progress can fail** at the step that creates a child (`CHILD_INPUT_INVALID`) or continues
   (`CONTINUATION_INPUT_INVALID`) when that new run's input does not match its version's schema (OD-2026-11-14-9, an
   accepted deviation from constitution principle IV).

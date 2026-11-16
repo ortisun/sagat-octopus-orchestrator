@@ -784,6 +784,53 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   HTTP server of the harness held. That fixture now waits for a query on the published port and replaces a container
   another server answers, at most three times, as the shared test database does. The collision cannot be produced on
   demand (Docker picks the port), so the failing gate run is its red evidence; the rerun passed the 78 scenarios.
+- **D043-177** (2026-11-16) The pre-check outside a start takes its permit from the starts' pool (round 2: architecture
+  Major 4, critic Major 3, intermediate zoom-out Major 2; OD-2026-11-16-3). `Permits::acquire_blocking` joins the same
+  fair queue as an awaited start and waits as long (5 s); the parser that runs the pre-check knows no tenant, so every
+  pre-check queues under one owner, the nil tenant id, which no tenant has: the pre-checks cannot crowd out the starts of
+  any tenant, and the starts cannot starve them. Fairness among the tenants that publish was left out: it needs the
+  tenant through the `IrCodec` port, whose parse has about 55 callers. With no permit the pre-check answers
+  `PrecheckRefusal::Busy`; the codec turns it into `IrError::ValidatorBusy` in either mode (the document is not judged),
+  answered a retryable `503` like a start's `Busy` (no `details.reason`, as for a start; the diagnostic code of
+  `sagat validate` is `VALIDATOR_BUSY`). Counted in `run_input_prechecks_total{outcome}` (`admitted`,
+  `unusable`, `busy`). The static pool of D043-166 is gone. Test
+  `a_precheck_waits_in_the_starts_pool_and_is_busy_after_its_wait`, seen failing first (`Ok(())` where `Busy` was
+  expected, the separate pool admitting it while the starts held every permit);
+  `a_document_whose_pre_check_found_no_permit_is_unavailable_and_retryable`.
+- **D043-178** (2026-11-16) The limits and the charges of `run-input-validation-v1` are pinned by
+  `the_limits_and_the_charges_of_run_input_validation_v1_are_pinned` (round 2: architecture Major 5): the pre-check's
+  limits, the budget and the units of one accepted case per keyword family, read once from v1. ADR-0092 decision 6
+  records that changing them ships `run-input-validation-v2`.
+- **D043-179** (2026-11-16) The inventory sorts a version outside the subset by whether something may still start it
+  (OD-2026-11-16-5; round 2: critic Major 1, intermediate zoom-out Major 4). It may when it is its workflow's active
+  version, or a run of it is open (a reset, a continuation or a child of it starts again), or a run of it was created in
+  the last `SUPERSEDED_QUIET_DAYS` (30) days (a caller or a schedule that names it). Otherwise it is superseded: counted
+  in the summary, listed by `--all`, never a reason to exit 1. A caller that names a superseded version explicitly after
+  30 quiet days is not foreseen; `--all` is the complete list. One statement per refused version
+  (`version_still_started`, through `runs_by_workflow_idx`); the runtime role holds `SELECT` on `runs` and `workflows`.
+  Tests `a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all_lists_it` (seen failing first, both old
+  versions counted) and the `--all` case of the CLI test (seen failing first, refused as an unknown argument).
+- **D043-180** (2026-11-16) A panic of the validator is counted `interrupted`, not `deadline` (round 2: critic Major 27,
+  accepted with my recommendation by OD-2026-11-16-3): `deadline` keeps no permit within the wait and the backstop, and
+  any `interrupted` is a defect to alert on. Test `a_panic_of_the_validator_is_counted_interrupted_and_no_room_deadline`,
+  seen failing first (three `deadline`).
+- **D043-181** (2026-11-16) Rows 2 and 13 carry their own sentinels, and the first sentinel test reads the metrics text
+  (round 2: implementation readiness Majors 3 and 13): the uploaded bytes of row 2 hold a sentinel value and key and
+  stay out of the answer, the captured logs and spans and the audit rows; the row 13 scenario refuses two ad hoc inputs
+  with sentinels and checks the answers, the logs, the audit rows and the metrics text. They pass as written: they
+  guard against a leak, and none was found. The down migration's four guards are tested by
+  `the_run_input_validation_rolls_back_only_while_nothing_names_it` (round 2: architecture Major 6): each refuses with
+  its message while a row of its kind exists; with none the rollback goes through and forward restores the new CHECKs;
+  the requirement history, append-only evidence, keeps refusing after the requirement's removal.
+- **D043-182** (2026-11-16) The text findings of round 2 marked for a fix (OD-2026-11-16-3) are fixed in the design:
+  Terms for the validator, the permits and the transient refusals, the blob descriptor, the reset family and row 13's
+  three paths; the modes in the Overview; FR-043-006, -007, -011 and -013 one obligation per item; NFR-043-BOUND one
+  sentence with units, linking the subset contract; the closed rule list linked from FR-043-003; "no room" replaced by
+  "no permit"; the tasks in the past tense, with their test names, files and harness; the rule that picks the suites of
+  a row. Two labels of the round-2 owner questions were wrong and are corrected here: the inventory question cited
+  O043-005, which is about tuple positions (the inventory had no O-question), and the cache-share measurement cited
+  T043-25, which is the port of G043-052; the measurement is T043-28, and the `integration_run_input_cache` target is
+  T043-2's, not T043-16's.
 
 ## 3. Gaps
 
@@ -828,7 +875,7 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 
 ## 4. Owner questions
 
-O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`); O043-005 to O043-007 are open (2026-11-16) and block nothing built. OD-2026-11-14-2 had already decided that validation is on in
+O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`) and O043-007 on 2026-11-16; O043-005 and O043-006 are open and block nothing built. OD-2026-11-14-2 had already decided that validation is on in
 0.3.0 for every start; none of these asked that again. The questions are kept as they were put.
 
 - **O043-001: answered (a)**, OD-2026-11-14-8, with the mode going through the instance registry (D043-028).
@@ -858,6 +905,7 @@ O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`); O0
   (T043-25); (2) make the gate a constructor argument of the four services; (3) drop the name limit, letting a 1 MiB
   name be compared on every lookup; (4) build the graded check of O043-006 (b); (5) count a holder's answer in `report`
   without an audit. **Recommended: (a)** — each decision is what the code does and is held by a test or a rule.
+  **Answered (a)**, OD-2026-11-16-4 ("Aceitar ADR-0092"); the port of (1) stays G043-052 and T043-25.
 
 
 

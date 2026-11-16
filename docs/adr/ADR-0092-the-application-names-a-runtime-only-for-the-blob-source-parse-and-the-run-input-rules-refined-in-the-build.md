@@ -1,9 +1,9 @@
 # ADR-0092: The application names a runtime only for the blob-source parse, and the run-input rules refined in the build
 
-**Status:** Proposed (for the owner)
-**Decided by:** proposed by an agent on 2026-11-16 from D043-150 and D043-154 (the coordinator's technical call of 2026-11-15) and the review run of design 043 of 2026-11-15; to be accepted or refused by the owner.
-**Refines / supersedes:** refines ADR-0090 (accepted 2026-11-14, OD-2026-11-14-15): its "Enforced by" line and its Consequences on the runtime of `sagat-application`, and decisions 5, 8 and 10. Supersedes nothing.
-**Enforced by:** `scripts/check-architecture.py`: `application_runtime_errors` (`tokio` in `sagat-application` is at most a dependency with no default features and no feature but `rt`), `run_input_runtime_errors` (a `tokio` token in `crates/application/src/**` outside `collection_source.rs` and test modules fails), `gate_wiring_errors` (a composition root that builds a creator without `.with_run_inputs` fails), with their negative fixtures in `scripts/tests/test_check_architecture.py` (`TheApplicationHoldsNoRuntime`, `test_a_composition_root_wires_the_gate_into_every_creator_it_builds`); `the_heaviest_schema_the_precheck_admits_fits_a_tenant_share_and_is_kept` and `a_name_past_1_kib_is_refused_and_long_names_are_charged_by_their_length` (`crates/infra-schema/tests/run_input.rs`); `report_mode_audits_a_start_that_an_open_holder_answers` (`integration_schedules_bulk_operations`).
+**Status:** Accepted (2026-11-16, OD-2026-11-16-4)
+**Decided by:** owner (OD-2026-11-16-4, "Aceitar ADR-0092"), accepting the agent proposal of 2026-11-16 made from D043-150 and D043-154 (the coordinator's technical call of 2026-11-15) and the review runs of design 043 of 2026-11-15 and 2026-11-16; decisions 6 and 7 were added on 2026-11-16 by the approval path the owner chose (OD-2026-11-16-3) before the acceptance was recorded.
+**Refines / supersedes:** refines ADR-0090 (accepted 2026-11-14, OD-2026-11-14-15): its "Enforced by" line and its Consequences on the runtime of `sagat-application`, and decisions 5, 8 and 10; refines ADR-0050 decision 2 for a refused run input (decision 7). Supersedes nothing.
+**Enforced by:** `scripts/check-architecture.py`: `application_runtime_errors` (`tokio` in `sagat-application` is at most a dependency with no default features and no feature but `rt`), `run_input_runtime_errors` (a `tokio` token in `crates/application/src/**` outside `collection_source.rs` and test modules fails), `gate_wiring_errors` (a composition root that builds a creator without `.with_run_inputs` fails), with their negative fixtures in `scripts/tests/test_check_architecture.py` (`TheApplicationHoldsNoRuntime`, `test_a_composition_root_wires_the_gate_into_every_creator_it_builds`); `the_heaviest_schema_the_precheck_admits_fits_a_tenant_share_and_is_kept` and `a_name_past_1_kib_is_refused_and_long_names_are_charged_by_their_length` (`crates/infra-schema/tests/run_input.rs`); `report_mode_audits_a_start_that_an_open_holder_answers` (`integration_schedules_bulk_operations`); for decision 6, `the_limits_and_the_charges_of_run_input_validation_v1_are_pinned` (`crates/infra-schema/tests/run_input.rs`); for decision 7, the `INPUT_INVALID` cases of `firing_decisions` (`fault_schedules_bulk_operations`) and the rows 6 and 7 tests of `integration_schedules_bulk_operations`.
 
 ## Context
 
@@ -48,6 +48,17 @@ start that an open holder answers, where no run is created (decision 10). An acc
    written with the holder's answer: with the receipt that answers its retries for a Signal-with-Start or an
    Update-with-Start, so once; in a statement of its own for a plain start answered by its holder, which keeps no
    receipt, so once per answer, as each answer is counted.
+6. What `run-input-validation-v1` admits and refuses is fixed by the pre-check's limits, the work budget and the units
+   each keyword charges (`specs/043-run-input-validation/contracts/input-schema-subset.md`). A release that changes any
+   of them so that an input or a schema accepted before is refused MUST ship a new capability,
+   `run-input-validation-v2`, required by the operator the same way (ADR-0082), never a silent edit of the numbers; a
+   test pins them (D043-178).
+7. Refining ADR-0050 decision 2 for a refused run input: a schedule action whose run input the target version refuses
+   is not a refused admission that leaves its nominal time owed. The decision commits the action `INPUT_INVALID` with its
+   reason, the time acted on, no remaining action used up, and the auto-pause or the backfill's end, under the schedule's
+   fence (design 043, FR-043-006, D043-026, D043-134). Retrying it could never pass, so owing the time would retry it
+   forever (round 2 of 2026-11-16, architecture Major 2). A transient refusal (no permit, the backstop, a panic) still
+   commits nothing and leaves the time owed, as ADR-0050 decision 2 says.
 
 ## Considered options
 
@@ -77,15 +88,19 @@ start that an open holder answers, where no run is created (decision 10). An acc
 - Compile and validate never run inside a database transaction (ADR-0090 decision 4): held by review and by the order
   of the code (row 12 reads under the lock and checks after it is released), not by a test.
 - ADR-0090's Consequences say "one migration"; there are two, a `NOT VALID` addition and its validation (D043-145).
-- Rolled back with the code: nothing is stored by this decision.
+- Rolled back with the code: nothing is stored by decisions 1 to 6; the `INPUT_INVALID` actions of decision 7 are
+  stored, and the down migration of design 043 refuses while one exists.
+- A stricter subset costs a capability and its activation (decision 6), which makes every such change visible to the
+  operator.
 
 ## Evidence
 
 - Design: `docs/designs/043-run-input-validation.md`; registers: `specs/043-run-input-validation/research.md`
   (D043-101, D043-102, D043-105, D043-120, D043-121, D043-144, D043-148, D043-150, D043-154, D043-157 to D043-170,
-  G043-040, G043-051, G043-052).
+  G043-040, G043-051, G043-052, D043-177 to D043-182).
 - Review reports: `docs/designs/043-run-input-validation.reviews/2026-11-15/` (architecture 1, 3, 7; security 1, 2;
-  correctness 2, 4, 5, 6) and their resolution map.
+  correctness 2, 4, 5, 6) and their resolution map; `docs/designs/043-run-input-validation.reviews/2026-11-16/`
+  (round 2: architecture 1, 2, 5) and the owner's answers OD-2026-11-16-3 and OD-2026-11-16-4.
 - Tests seen failing first: the three fixtures of `TheApplicationHoldsNoRuntime` and the wiring fixture; the heaviest
   schema weighed 23.1 MB of a 16.8 MB share before the lazy DFA caches were lowered (7.4 MB after, compiled in 16 ms in
   the test build); the holder audit counted 0 before the fix.
