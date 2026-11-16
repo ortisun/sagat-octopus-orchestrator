@@ -419,30 +419,82 @@ async fn end_kills_a_running_container_removes_it_and_a_second_end_has_nothing_t
 
 /// The fact the supervisor needs (`ICEBERG_LIMIT_EXCEEDED`) is on the container until it is removed; removing first would
 /// lose it, and a memory kill would be reported as a host that broke.
+///
+/// What is held here is the order (read, then remove), so the case first waits until the engine itself shows the flag.
+/// On cgroup v2 the engine sets it from an out-of-memory event that it can deliver late or not at all (moby#41929): one CI
+/// run saw a container end on a SIGKILL with the flag never set, and `end` then had nothing to read (D035-154). A
+/// container whose flag the engine never shows is not this case's to judge, so another one is made, at most
+/// [`OOM_CASES`] times; the end must still report every container whose flag the engine showed.
 #[tokio::test(flavor = "multi_thread")]
 async fn end_reads_the_memory_flag_before_it_removes_the_container() {
     let fixture = Fixture::new().await;
-    let id = attempt();
-    let grow = r#"python3 -I -c "x = bytearray(400 * 1024 * 1024); print('alive')""#;
-    fixture
-        .launch(&id, 20, now() + 3600, 96, &["sh", "-c", grow])
-        .await;
-    let state = within(
-        "wait for the kill",
+    let docker = within(
+        "get the Docker client",
         STAGE,
-        fixture
-            .engine
-            .wait(&fixture.owner, &id, Duration::from_secs(30)),
+        testcontainers_modules::testcontainers::core::client::docker_client_instance(),
     )
     .await
-    .expect("the engine answers");
-    assert_eq!(state, Wait::Ended);
+    .expect("the Docker daemon the engine uses");
+    let grow = r#"python3 -I -c "x = bytearray(400 * 1024 * 1024); print('alive')""#;
+    let mut lost = Vec::new();
+    for case in 0..OOM_CASES {
+        let id = attempt();
+        fixture
+            .launch(&id, 20 + case, now() + 3600, 96, &["sh", "-c", grow])
+            .await;
+        let state = within(
+            "wait for the kill",
+            STAGE,
+            fixture
+                .engine
+                .wait(&fixture.owner, &id, Duration::from_secs(30)),
+        )
+        .await
+        .expect("the engine answers");
+        assert_eq!(state, Wait::Ended);
+        let [container]: [LakeInfo; 1] = fixture.find(&id).await.try_into().expect("one container");
 
-    let ended = within("end", STAGE, fixture.engine.end(&fixture.owner, &id)).await;
-    assert!(ended.existed && ended.confirmed, "{ended:?}");
-    assert!(ended.memory_killed, "the memory kill was lost: {ended:?}");
-    fixture.nothing_is_left().await;
+        // the engine's own answer, asked until it settles: the flag, and the exit status it ended with
+        let until = Instant::now() + OOM_FLAG_WAIT;
+        let (flag, exit_code) = loop {
+            let inspected = within(
+                "inspect",
+                STAGE,
+                docker.inspect_container(&container.name, None),
+            )
+            .await
+            .expect("the engine shows the ended container");
+            let state = inspected.state.unwrap_or_default();
+            if state.oom_killed == Some(true) || Instant::now() >= until {
+                break (state.oom_killed == Some(true), state.exit_code);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(
+            exit_code,
+            Some(137),
+            "the script must end on the kernel's SIGKILL"
+        );
+
+        let ended = within("end", STAGE, fixture.engine.end(&fixture.owner, &id)).await;
+        assert!(ended.existed && ended.confirmed, "{ended:?}");
+        if flag {
+            assert!(ended.memory_killed, "the memory kill was lost: {ended:?}");
+            fixture.nothing_is_left().await;
+            return;
+        }
+        lost.push(id);
+    }
+    panic!(
+        "the engine showed no out-of-memory flag for any of {OOM_CASES} containers that ended on SIGKILL: {lost:?}"
+    );
 }
+
+/// How many containers [`end_reads_the_memory_flag_before_it_removes_the_container`] makes before it says the engine never
+/// shows the flag.
+const OOM_CASES: u32 = 3;
+/// How long that case waits for the engine to show the flag of one container.
+const OOM_FLAG_WAIT: Duration = Duration::from_secs(10);
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_container_that_exits_by_itself_is_not_a_memory_kill() {
