@@ -18,7 +18,7 @@ use sagat_domain::workflow::{
 
 const NEW: [QuotaResource; 6] = [
     QuotaResource::QueuedRuns,
-    QuotaResource::FlowControlLiveKeys,
+    QuotaResource::ConcurrencyLiveKeys,
     QuotaResource::FlowControlKeyWaiters,
     QuotaResource::ConcurrencyLimit,
     QuotaResource::FlowControlQueueTimeoutMs,
@@ -29,7 +29,7 @@ const NEW: [QuotaResource; 6] = [
 fn each_resource_has_its_name_and_is_found_by_name_once() {
     let names = [
         "queued_runs",
-        "flow_control_live_keys",
+        "concurrency_live_keys",
         "flow_control_key_waiters",
         "concurrency_limit",
         "flow_control_queue_timeout_ms",
@@ -57,7 +57,7 @@ fn each_resource_has_its_name_and_is_found_by_name_once() {
 fn the_waiters_and_the_keys_are_counts_and_the_declaration_bounds_are_policies() {
     for count in [
         QuotaResource::QueuedRuns,
-        QuotaResource::FlowControlLiveKeys,
+        QuotaResource::ConcurrencyLiveKeys,
         QuotaResource::FlowControlKeyWaiters,
     ] {
         assert_eq!(count.kind(), QuotaKind::Count, "{count}");
@@ -83,7 +83,7 @@ fn the_waiters_and_the_keys_are_counts_and_the_declaration_bounds_are_policies()
 fn the_defaults_and_the_hard_ceilings_are_those_of_the_plan() {
     let expected = [
         (QuotaResource::QueuedRuns, 1_000, 10_000),
-        (QuotaResource::FlowControlLiveKeys, 10_000, 100_000),
+        (QuotaResource::ConcurrencyLiveKeys, 10_000, 100_000),
         (QuotaResource::FlowControlKeyWaiters, 100, 10_000),
         (QuotaResource::ConcurrencyLimit, 10_000, 10_000),
         (
@@ -137,7 +137,7 @@ fn every_ceiling_accepts_its_bound_and_refuses_one_more() {
 fn zero_refuses() {
     for count in [
         QuotaResource::QueuedRuns,
-        QuotaResource::FlowControlLiveKeys,
+        QuotaResource::ConcurrencyLiveKeys,
         QuotaResource::FlowControlKeyWaiters,
     ] {
         assert_eq!(quota::validate(count, true, 0, count.maximum()), Ok(0));
@@ -160,7 +160,7 @@ fn zero_refuses() {
         ..FlowControlCeilings::DEFAULT
     };
     assert_eq!(
-        closed.admits_waiter(0, 0),
+        closed.admits_waiter(0, 0, false),
         Err(FlowControlLimit::QueuedRuns)
     );
     assert_eq!(closed.admits_key(0), Err(FlowControlLimit::LiveKeys));
@@ -176,13 +176,18 @@ fn a_waiter_and_a_key_are_admitted_below_their_ceilings_and_refused_at_them() {
         key_waiters: 2,
         ..FlowControlCeilings::DEFAULT
     };
-    assert_eq!(ceilings.admits_waiter(2, 1), Ok(()));
+    assert_eq!(ceilings.admits_waiter(2, 1, false), Ok(()));
     assert_eq!(
-        ceilings.admits_waiter(3, 1),
+        ceilings.admits_waiter(3, 1, false),
         Err(FlowControlLimit::QueuedRuns)
     );
     assert_eq!(
-        ceilings.admits_waiter(2, 2),
+        ceilings.admits_waiter(3, 1, true),
+        Ok(()),
+        "a run that waits at its other gate is counted once"
+    );
+    assert_eq!(
+        ceilings.admits_waiter(2, 2, false),
         Err(FlowControlLimit::KeyWaiters)
     );
     assert_eq!(ceilings.admits_key(1), Ok(()));
@@ -228,7 +233,7 @@ fn the_defaults_are_the_resolved_defaults_of_the_resources() {
     assert_eq!(d.queued_runs, QuotaResource::QueuedRuns.default_limit());
     assert_eq!(
         d.live_keys,
-        QuotaResource::FlowControlLiveKeys.default_limit()
+        QuotaResource::ConcurrencyLiveKeys.default_limit()
     );
     assert_eq!(
         d.key_waiters,
@@ -295,4 +300,26 @@ fn a_definition_holds_the_namespace_ceiling_of_node_declarations_and_not_one_mor
     };
     assert_eq!(one.admits_declarations(&concurrency_nodes(1)), Ok(()));
     assert!(one.admits_declarations(&concurrency_nodes(2)).is_err());
+}
+
+/// Correctness review F5, architecture review m5 (2026-11-16): one key's run waiters stay below the namespace's
+/// `queued_runs` whatever an administrator sets, so one hot key cannot take every slot of the namespace.
+#[test]
+fn one_key_never_holds_every_waiting_run_of_the_namespace() {
+    let lowered = FlowControlCeilings {
+        queued_runs: 50,
+        key_waiters: 100,
+        ..FlowControlCeilings::DEFAULT
+    };
+    assert_eq!(lowered.effective_key_waiters(), 49);
+    assert_eq!(lowered.admits_waiter(48, 48, false), Ok(()));
+    assert_eq!(
+        lowered.admits_waiter(49, 49, false),
+        Err(FlowControlLimit::KeyWaiters)
+    );
+    assert_eq!(
+        FlowControlCeilings::DEFAULT.effective_key_waiters(),
+        100,
+        "the defaults already hold it"
+    );
 }

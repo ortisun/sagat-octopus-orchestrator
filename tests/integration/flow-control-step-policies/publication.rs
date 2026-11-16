@@ -355,7 +355,7 @@ async fn each_quota_resource_of_the_gate_is_set_at_its_bound_refused_over_it_and
     let w = world().await;
     let resources = [
         QuotaResource::QueuedRuns,
-        QuotaResource::FlowControlLiveKeys,
+        QuotaResource::ConcurrencyLiveKeys,
         QuotaResource::FlowControlKeyWaiters,
         QuotaResource::ConcurrencyLimit,
         QuotaResource::FlowControlQueueTimeoutMs,
@@ -406,4 +406,249 @@ async fn each_quota_resource_of_the_gate_is_set_at_its_bound_refused_over_it_and
             );
         }
     }
+}
+
+/// Security review S4, correctness review F7d (2026-11-16): the warning reads this namespace only (another namespace of
+/// the same tenant that declares the group differently is not warned about), and the active version of each other
+/// workflow only (a workflow whose new active version dropped the group no longer counts).
+#[tokio::test]
+async fn the_warning_reads_this_namespace_and_the_active_versions_only() {
+    let w = world().await;
+    activate_both(&w).await;
+    let ledger = w.add_namespace("ledger").await;
+    publish_as(
+        &w,
+        &w.admin,
+        ledger.slug().as_str(),
+        &grouped("other-namespace", "accounts", 1, "provider-api", 1, "hour"),
+    )
+    .await
+    .expect("published in another namespace of the tenant");
+
+    let service = definitions(&w);
+    let dropped = service
+        .create_workflow(
+            &w.admin,
+            "payments",
+            "dropped",
+            &serde_json::to_vec(&grouped(
+                "dropped",
+                "accounts",
+                2,
+                "provider-api",
+                2,
+                "hour",
+            ))
+            .expect("json"),
+            &format!("create-{}", Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .expect("created")
+        .workflow
+        .id();
+    service
+        .publish(
+            &w.admin,
+            dropped,
+            1,
+            None,
+            &format!("publish-{}", Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .expect("version 1 declares the groups");
+    let ungrouped = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": "dropped"},
+        "entrypoint": "fetch",
+        "nodes": [{"id": "fetch", "type": "activity", "activity": "provider.fetch"}]
+    });
+    service
+        .update_draft(
+            &w.admin,
+            dropped,
+            1,
+            &serde_json::to_vec(&ungrouped).expect("json"),
+            &ctx(),
+        )
+        .await
+        .expect("draft");
+    service
+        .publish(
+            &w.admin,
+            dropped,
+            2,
+            None,
+            &format!("publish-{}", Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .expect("version 2, active, declares none");
+
+    let mine = publish(
+        &w,
+        &grouped("mine", "accounts", 5, "provider-api", 10, "second"),
+    )
+    .await
+    .expect("published");
+    assert!(
+        mismatches(&mine).is_empty(),
+        "neither another namespace nor an inactive version counts: {:?}",
+        mine.warnings
+    );
+}
+
+/// Correctness review F7d and F7e (2026-11-16): the node-declarations ceiling holds for rate limits too, and a value
+/// above the default ceiling is refused without an operator's grant (`AboveCeiling`), not only above the hard bound.
+#[tokio::test]
+async fn the_rate_limit_declarations_and_the_default_ceilings_are_bounded_too() {
+    let w = world().await;
+    activate_both(&w).await;
+    let nodes: Vec<Value> = (0..17)
+        .map(|i| {
+            let mut node = json!({
+                "id": format!("n{i}"), "type": "activity", "activity": "provider.fetch",
+                "rateLimit": {"key": "input.providerId", "limit": 1, "per": "second"}
+            });
+            if i < 16 {
+                node["next"] = json!(format!("n{}", i + 1));
+            }
+            node
+        })
+        .collect();
+    let doc = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": "many-rates"},
+        "entrypoint": "n0",
+        "nodes": nodes
+    });
+    match publish(&w, &doc).await {
+        Err(AppError::InvalidDefinition(error)) => assert!(
+            matches!(
+                *error,
+                IrError::Invalid(WorkflowError::InvalidFlowControl {
+                    kind: GateKind::RateLimit,
+                    node: None,
+                    ..
+                })
+            ),
+            "{error:?}"
+        ),
+        other => panic!("expected RATE_LIMIT_POLICY_INVALID, got {other:?}"),
+    }
+    for resource in [
+        QuotaResource::QueuedRuns,
+        QuotaResource::ConcurrencyLiveKeys,
+        QuotaResource::FlowControlKeyWaiters,
+        QuotaResource::FlowControlNodeDeclarations,
+    ] {
+        let default = resource.default_limit();
+        w.quotas
+            .set(&w.admin, Some(w.namespace.id()), resource, default, &ctx())
+            .await
+            .unwrap_or_else(|error| panic!("{resource} at its default ceiling: {error:?}"));
+        assert!(
+            matches!(
+                w.quotas
+                    .set(
+                        &w.admin,
+                        Some(w.namespace.id()),
+                        resource,
+                        default + 1,
+                        &ctx()
+                    )
+                    .await,
+                Err(AppError::NotAllowed(_))
+            ),
+            "{resource} above its default ceiling without a grant"
+        );
+    }
+}
+
+/// Correctness review F6 (2026-11-16): a publication asked again with its own key after the namespace lowered its
+/// ceiling of node-level declarations is answered by the replay (as D042-105), not refused; a new key is refused.
+#[tokio::test]
+async fn a_publication_retried_after_the_ceiling_was_lowered_is_replayed() {
+    let w = world().await;
+    activate_both(&w).await;
+    sqlx::query(
+        "INSERT INTO quota_ceilings (tenant_id, resource, max_value, granted_by) \
+         VALUES ($1, 'flow_control_node_declarations', 64, 'operator')",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .execute(&w.db.pool)
+    .await
+    .expect("ceiling granted");
+    let set = |value| {
+        let w = &w;
+        async move {
+            w.quotas
+                .set(
+                    &w.admin,
+                    Some(w.namespace.id()),
+                    QuotaResource::FlowControlNodeDeclarations,
+                    value,
+                    &ctx(),
+                )
+                .await
+                .expect("set");
+        }
+    };
+    set(17).await;
+    let nodes: Vec<Value> = (0..17)
+        .map(|i| {
+            let mut node = json!({
+                "id": format!("n{i}"), "type": "activity", "activity": "provider.fetch",
+                "concurrency": {"key": "input.accountId", "limit": 1}
+            });
+            if i < 16 {
+                node["next"] = json!(format!("n{}", i + 1));
+            }
+            node
+        })
+        .collect();
+    let doc = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": "retried"},
+        "entrypoint": "n0",
+        "nodes": nodes
+    });
+    let service = definitions(&w);
+    let workflow = service
+        .create_workflow(
+            &w.admin,
+            "payments",
+            "retried",
+            &serde_json::to_vec(&doc).expect("json"),
+            &format!("create-{}", Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .expect("created")
+        .workflow
+        .id();
+    let first = service
+        .publish(&w.admin, workflow, 1, None, "publish-retried-1", &ctx())
+        .await
+        .expect("published under 17");
+    set(16).await;
+    let again = service
+        .publish(&w.admin, workflow, 1, None, "publish-retried-1", &ctx())
+        .await
+        .expect("the same request is replayed");
+    assert_eq!(again.version.id(), first.version.id());
+    assert!(!again.created);
+    assert!(
+        matches!(
+            service
+                .publish(&w.admin, workflow, 1, None, "publish-retried-2", &ctx())
+                .await,
+            Err(AppError::InvalidDefinition(_))
+        ),
+        "a new request is judged by the ceiling in force"
+    );
 }

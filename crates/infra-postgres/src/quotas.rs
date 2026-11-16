@@ -1290,9 +1290,9 @@ impl QuotaStore for PgRunStore {
             .bind(namespace)
             .fetch_one(&self.pool)
             .await,
-            QuotaResource::FlowControlLiveKeys => sqlx::query_scalar(
-                "SELECT (SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2) \
-                      + (SELECT count(*) FROM rate_limit_windows WHERE tenant_id = $1 AND namespace_id = $2)",
+                        // the semaphores; the windows have a ceiling of their own (T022-077, plan "Finite ceilings (rate limits)")
+            QuotaResource::ConcurrencyLiveKeys => sqlx::query_scalar(
+                "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2",
             )
             .bind(tenant.as_uuid())
             .bind(namespace)

@@ -259,6 +259,12 @@ WRITER = """
 """
 
 
+KEY_FILER = (
+    'const fn insert(self) -> &\'static str { match self { Self::Semaphores => "INSERT INTO concurrency_semaphores (k) VALUES ($1)", '
+    'Self::Windows => "INSERT INTO rate_limit_windows (k) VALUES ($1)" } }'
+)
+
+
 def tree(keeper=KEEPER, execution=FENCE + ADMISSION, schedules=CHECK_FENCE, **more):
     """A valid tree: the lease row as the rule wants it and one `run.finished` writer that says its schedule."""
     return {
@@ -267,6 +273,7 @@ def tree(keeper=KEEPER, execution=FENCE + ADMISSION, schedules=CHECK_FENCE, **mo
         "schedules.rs": schedules,
         "outbound.rs": ORIGIN,
         "writer.rs": WRITER,
+        "flow_control.rs": KEY_FILER,
         **more,
     }
 
@@ -442,6 +449,39 @@ class RunsAreInsertedOnlyAtTheAdmissionPoint(unittest.TestCase):
         code, out = run_lease_check(tree(execution=FENCE))
         self.assertEqual(code, 1, out)
         self.assertIn("no `INSERT INTO runs` was found in execution.rs", out)
+
+
+
+class KeyRowsAreFiledOnlyByFileKeys(unittest.TestCase):
+    """FR-022-056, D022-042 (architecture review m2 of 2026-11-16): a semaphore or window row is inserted only in
+    flow_control.rs, by `file_keys`."""
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("key rows are filed only by file_keys", result.stdout)
+
+    def test_another_writer_of_a_key_row_is_refused_and_named(self):
+        for table in ("concurrency_semaphores", "rate_limit_windows"):
+            bypass = f'async fn sneak() {{\n    sqlx::query(\n        "insert into {table} (k) values ($1)",\n    );\n}}'
+            code, out = run_lease_check(tree(**{"admission.rs": bypass}))
+            self.assertEqual(code, 1, out)
+            self.assertIn("admission.rs:3", out)
+            self.assertIn(f"inserts into `{table}` outside flow_control.rs", out)
+
+    def test_holders_waiters_grants_and_comments_are_not_a_key_row(self):
+        noise = (
+            '// INSERT INTO concurrency_semaphores is what file_keys does\n'
+            'async fn hold() { sqlx::query("INSERT INTO concurrency_holders (k) VALUES ($1)"); }\n'
+            'async fn grant() { sqlx::query("INSERT INTO rate_limit_grants (k) VALUES ($1)"); }\n'
+        )
+        code, out = run_lease_check(tree(**{"noise.rs": noise}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_finds_no_filer_is_an_error_and_not_a_pass(self):
+        code, out = run_lease_check(tree(**{"flow_control.rs": "fn nothing() {}"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("no key-row insert was found in flow_control.rs", out)
 
 
 if __name__ == "__main__":

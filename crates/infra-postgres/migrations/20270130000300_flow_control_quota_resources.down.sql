@@ -4,8 +4,8 @@
 LOCK TABLE quota_limits, quota_ceilings IN ACCESS EXCLUSIVE MODE;
 DO $guard$
 BEGIN
-    IF EXISTS (SELECT 1 FROM quota_limits WHERE resource IN ('queued_runs', 'flow_control_live_keys', 'flow_control_key_waiters', 'concurrency_limit', 'flow_control_queue_timeout_ms', 'flow_control_node_declarations'))
-        OR EXISTS (SELECT 1 FROM quota_ceilings WHERE resource IN ('queued_runs', 'flow_control_live_keys', 'flow_control_key_waiters', 'concurrency_limit', 'flow_control_queue_timeout_ms', 'flow_control_node_declarations')) THEN
+    IF EXISTS (SELECT 1 FROM quota_limits WHERE resource IN ('queued_runs', 'concurrency_live_keys', 'flow_control_key_waiters', 'concurrency_limit', 'flow_control_queue_timeout_ms', 'flow_control_node_declarations'))
+        OR EXISTS (SELECT 1 FROM quota_ceilings WHERE resource IN ('queued_runs', 'concurrency_live_keys', 'flow_control_key_waiters', 'concurrency_limit', 'flow_control_queue_timeout_ms', 'flow_control_node_declarations')) THEN
         RAISE EXCEPTION 'limits or ceilings of flow-control resources are retained; keep a compatible reader'
             USING ERRCODE = 'object_not_in_prerequisite_state';
     END IF;

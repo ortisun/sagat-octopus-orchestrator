@@ -5,3 +5,4 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 mod ir;
+mod quotas;

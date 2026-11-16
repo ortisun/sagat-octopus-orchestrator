@@ -86,8 +86,9 @@ pub struct KeyToFile {
     pub shard: i16,
 }
 
-/// A key filed and locked (`FOR UPDATE`) for the rest of the transaction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A key filed and locked (`FOR UPDATE`) for the rest of the transaction. Its `Debug` shows the digest only as its
+/// label.
+#[derive(Clone, PartialEq, Eq)]
 pub struct FiledKey {
     /// The position of the key in the slice given to [`file_keys`].
     pub index: usize,
@@ -97,6 +98,25 @@ pub struct FiledKey {
     /// Whether this transaction created the row (the caller judges the namespace's live-keys ceiling, T022-013).
     pub created: bool,
 }
+
+impl std::fmt::Debug for FiledKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FiledKey")
+            .field("index", &self.index)
+            .field(
+                "label",
+                &sagat_domain::execution::KeyLabel::of_digest(&self.digest),
+            )
+            .field("version", &self.version)
+            .field("created", &self.created)
+            .finish()
+    }
+}
+
+/// The error of a key whose retiring row went away between its resolution and its lock: filing it under the active
+/// version at that point would lock it out of the one order, so the deciding transaction is rolled back and retried.
+pub const KEY_ROW_VANISHED: &str =
+    "a flow-control key row went away during a rotation; retry the transaction";
 
 /// The digest key versions in force, read in the caller's transaction: the active one taken shared, so that a
 /// rotation waits for this transaction (FR-022-053).
@@ -121,11 +141,12 @@ pub async fn key_versions(conn: &mut PgConnection) -> Result<KeyVersions, StoreE
 
 /// Files and locks the keys of one table, in the one order: each key resolves to the row that exists under the
 /// retiring version, else to its digest under the active version (created when absent); then the rows are locked sorted
-/// by (pool, scope, group, digest). A key whose retiring row went away between the two steps is filed under the active
-/// version.
+/// by (pool, scope, group, digest), byte order (SQL paths that lock the same rows sort `group_name COLLATE "C"`).
 ///
 /// # Errors
-/// A store error; [`StoreError::Unavailable`] if a row keeps vanishing under the transaction (three tries).
+/// A store error; [`StoreError::Unavailable`] ([`KEY_ROW_VANISHED`], retryable) when a key's retiring row went away
+/// between its resolution and its lock, or a row keeps vanishing under the transaction (three tries): the caller rolls
+/// back and runs the deciding transaction again, which then resolves the key to its active digest.
 pub async fn file_keys(
     conn: &mut PgConnection,
     table: KeyTable,
@@ -152,7 +173,13 @@ pub async fn file_keys(
     let mut filed = Vec::with_capacity(keys.len());
     for (index, digest, retiring) in resolved {
         let key = &keys[index];
-        if retiring && let Some(version) = lock(conn, table, key, &digest).await? {
+        if retiring {
+            let version =
+                lock(conn, table, key, &digest)
+                    .await?
+                    .ok_or_else(|| StoreError::Unavailable {
+                        detail: KEY_ROW_VANISHED.into(),
+                    })?;
             filed.push(FiledKey {
                 index,
                 digest,

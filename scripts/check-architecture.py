@@ -346,6 +346,42 @@ def run_insert_errors(src):
     return errors
 
 
+# --- key rows of the gates are filed only by `file_keys` (FR-022-056, D022-042) ---------------------------------------------------
+# A key row created anywhere else would skip the per-key rotation (the row under the retiring version wins) and the one lock order
+# (D022-038), and could split a key between two rows.
+KEY_ROW_INSERT = re.compile(r"\bINSERT\s+INTO\s+(concurrency_semaphores|rate_limit_windows)\b", re.IGNORECASE)
+KEY_ROW_FILER = "flow_control.rs"
+
+
+def key_row_insert_errors(src):
+    """The errors of the one-key-filer rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for offset, sql in literals:
+            match = KEY_ROW_INSERT.search(sql)
+            if not match:
+                continue
+            if rel == KEY_ROW_FILER:
+                found += 1
+                continue
+            errors.append(
+                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement inserts into "
+                f"`{match.group(1)}` outside {KEY_ROW_FILER}: a key row is filed only by `file_keys`, which resolves it "
+                f"under the digest key versions in force and locks it in the one order (FR-022-056, D022-038, D022-042)"
+            )
+    if found == 0:
+        errors.append(
+            f"no key-row insert was found in {KEY_ROW_FILER} of {src}: the one-key-filer rule would check nothing "
+            f"(is the statement spelled otherwise?)"
+        )
+    return errors
+
+
 def main(argv):
     metadata_file = argv[argv.index("--metadata") + 1] if "--metadata" in argv else None
     postgres_src = (
@@ -422,6 +458,7 @@ def main(argv):
     errors.extend(lease_row_errors(postgres_src))
     errors.extend(run_finished_errors(postgres_src))
     errors.extend(run_insert_errors(postgres_src))
+    errors.extend(key_row_insert_errors(postgres_src))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -451,7 +488,7 @@ def main(argv):
         for e in errors:
             print(f"  - {e}")
         return 1
-    print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, runs are inserted only at the admission point)")
+    print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, runs are inserted only at the admission point, key rows are filed only by file_keys)")
     return 0
 
 

@@ -20,12 +20,12 @@ CREATE TABLE flow_control_group_declarations (
     -- the window of a rate limit; NULL for concurrency
     period_ms      integer,
     PRIMARY KEY (tenant_id, version_id, gate, node),
-    CONSTRAINT flow_control_group_declarations_version_fk FOREIGN KEY (tenant_id, version_id)
-        REFERENCES workflow_versions (tenant_id, id),
-    CONSTRAINT flow_control_group_declarations_workflow_fk FOREIGN KEY (tenant_id, workflow_id)
-        REFERENCES workflows (tenant_id, id),
-    CONSTRAINT flow_control_group_declarations_namespace_fk FOREIGN KEY (tenant_id, namespace_id)
-        REFERENCES namespaces (tenant_id, id),
+        -- the version is of the workflow, and the workflow of the namespace (review of 2026-11-16): a row can never name
+    -- another namespace's workflow, and immutable rows could not be corrected
+    CONSTRAINT flow_control_group_declarations_version_fk FOREIGN KEY (tenant_id, workflow_id, version_id)
+        REFERENCES workflow_versions (tenant_id, workflow_id, id),
+    CONSTRAINT flow_control_group_declarations_workflow_fk FOREIGN KEY (tenant_id, namespace_id, workflow_id)
+        REFERENCES workflows (tenant_id, namespace_id, id),
     CONSTRAINT flow_control_group_declarations_gate_valid CHECK (gate IN ('CONCURRENCY', 'RATE_LIMIT')),
     CONSTRAINT flow_control_group_declarations_node_shape CHECK (
         node = '' OR node ~ '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$'),
@@ -37,7 +37,7 @@ CREATE TABLE flow_control_group_declarations (
 );
 -- what publication reads: the declarations of one group in one namespace
 CREATE INDEX flow_control_group_declarations_group_idx
-    ON flow_control_group_declarations (tenant_id, namespace_id, gate, group_name);
+    ON flow_control_group_declarations (tenant_id, namespace_id, group_name);
 
 -- A declaration is what the version said: written with it, never changed or removed.
 CREATE FUNCTION flow_control_group_declarations_immutable() RETURNS trigger

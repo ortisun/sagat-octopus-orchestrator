@@ -1,24 +1,34 @@
--- Feature 022, release 0.3.0 slice (T022-095; FR-022-053, FR-022-056; D022-025, D022-042; G1190): the digest key is
--- rotated per key, with live rows.
+-- Feature 022, release 0.3.0 slice (T022-095; FR-022-053, FR-022-056; D022-025, D022-042; G1190; ADR-0093, proposed): the
+-- digest key is rotated per key, with live rows.
 --
--- Before: a new key version was refused while any semaphore or window row used another one (T022-007), so a rotation
--- needed every queue drained. Now: activating a new version turns the current one RETIRING while rows use it (RETIRED
--- at once when none does). A deciding transaction reads both (`flow_control_key_versions_in_force`), computes the
--- key's digest under each, and uses the row that exists under the retiring version, else the active one: a key is never
--- split between two rows, because no row is ever created under a retiring version (the trigger of 20270130000000) and an
--- old row, once gone, never comes back. The retiring version becomes RETIRED in the transaction that deletes its last
--- row. One rotation at a time: a third version is refused while the retiring one is still used (a decider computes two
--- digests, never three).
+-- Before: a new key version was refused while any semaphore or window row used another one (T022-007, ADR-0056 decision
+-- 7), so a rotation needed every queue drained. Now: activating a new version turns the current one RETIRING while rows
+-- use it (RETIRED at once when none does). A deciding transaction reads the versions in force
+-- (`flow_control_key_versions_in_force`), computes the key's digest under each, and uses the row that exists under the
+-- retiring version, else the active one: a key is never split between two rows, because no row is ever created under a
+-- retiring version (the trigger of 20270130000000) and an old row, once gone, never comes back.
+--
+-- Retirement is lazy (review of 2026-11-16): a retiring version stops being in force the moment no row uses it (the
+-- function answers NULL for it, so no decider needs its key any more), and the next activation records it RETIRED. No
+-- trigger and no lock is added to the paths that delete key rows. One rotation at a time: a third version is refused while
+-- the retiring one is still used (a decider computes two digests, never three), and at most one version is RETIRING.
 --
 -- The command now records the database role that ran it (G1190), beside the operator name it was given.
 --
--- Additive: one nullable column, two functions, two triggers; the command keeps its name and result shape.
+-- Additive: one nullable column, one unique index, two functions; the command keeps its name and result shape. Versions
+-- the earlier command left RETIRING have no row (it refused while any row used another version) and are retired here.
 
 ALTER TABLE flow_control_key_versions ADD COLUMN activated_role text;
 ALTER TABLE flow_control_key_versions ADD CONSTRAINT flow_control_key_versions_role_bounded
     CHECK (activated_role IS NULL OR char_length(activated_role) BETWEEN 1 AND 63);
 
--- How many key rows (semaphores and windows) use a version.
+UPDATE flow_control_key_versions k SET state = 'RETIRED', retired_at = clock_timestamp()
+ WHERE k.state = 'RETIRING'
+   AND NOT EXISTS (SELECT 1 FROM concurrency_semaphores s WHERE s.key_version = k.version)
+   AND NOT EXISTS (SELECT 1 FROM rate_limit_windows w WHERE w.key_version = k.version);
+CREATE UNIQUE INDEX flow_control_key_versions_one_retiring ON flow_control_key_versions ((true)) WHERE state = 'RETIRING';
+
+-- How many key rows (semaphores and windows) use a version: what the operator's command reports.
 CREATE FUNCTION flow_control_key_version_rows(p_version smallint) RETURNS bigint
     LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
@@ -28,43 +38,21 @@ $$;
 REVOKE ALL ON FUNCTION flow_control_key_version_rows(smallint) FROM PUBLIC;
 
 -- The versions a deciding transaction digests a key under: the active one, taken shared (a rotation waits for this
--- transaction, and a transaction that starts during one waits for it), and the retiring one, read without a lock (it can
--- only become RETIRED, and then no row uses it). `active` is NULL when no version was ever activated: the decider refuses.
+-- transaction, and a transaction that starts during one waits for it), and the retiring one while a row still uses it,
+-- read without a lock: no row can be created under it, so once none uses it none ever will, and NULL is the answer from
+-- then on. `active` is NULL when no version was ever activated: the decider refuses.
 CREATE FUNCTION flow_control_key_versions_in_force(OUT active smallint, OUT retiring smallint)
     LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
     active := public.flow_control_active_key_version();
-    SELECT k.version INTO retiring FROM public.flow_control_key_versions k WHERE k.state = 'RETIRING';
+    SELECT k.version INTO retiring FROM public.flow_control_key_versions k
+     WHERE k.state = 'RETIRING'
+       AND (EXISTS (SELECT 1 FROM public.concurrency_semaphores s WHERE s.key_version = k.version)
+            OR EXISTS (SELECT 1 FROM public.rate_limit_windows w WHERE w.key_version = k.version));
 END
 $$;
 REVOKE ALL ON FUNCTION flow_control_key_versions_in_force() FROM PUBLIC;
-
--- The transaction that deletes the last row of a retiring version retires it. The version row is locked first, so of two
--- transactions that delete its last two rows the second one, which waits for the lock, sees the first one's delete in
--- its next statement and retires it.
-CREATE FUNCTION flow_control_key_version_retire() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
-AS $$
-BEGIN
-    PERFORM 1 FROM public.flow_control_key_versions k
-     WHERE k.version = OLD.key_version AND k.state = 'RETIRING' FOR UPDATE;
-    IF FOUND AND public.flow_control_key_version_rows(OLD.key_version) = 0 THEN
-        UPDATE public.flow_control_key_versions
-           SET state = 'RETIRED', retired_at = clock_timestamp()
-         WHERE version = OLD.key_version AND state = 'RETIRING';
-    END IF;
-    RETURN NULL;
-END
-$$;
-REVOKE ALL ON FUNCTION flow_control_key_version_retire() FROM PUBLIC;
-
-CREATE TRIGGER concurrency_semaphores_retire_version AFTER DELETE ON concurrency_semaphores
-    FOR EACH ROW EXECUTE FUNCTION flow_control_key_version_retire();
-CREATE TRIGGER rate_limit_windows_retire_version AFTER DELETE ON rate_limit_windows
-    FOR EACH ROW EXECUTE FUNCTION flow_control_key_version_retire();
-ALTER TABLE concurrency_semaphores ENABLE ALWAYS TRIGGER concurrency_semaphores_retire_version;
-ALTER TABLE rate_limit_windows ENABLE ALWAYS TRIGGER rate_limit_windows_retire_version;
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- The operator's command, per-key. NOT executable by the runtime role.

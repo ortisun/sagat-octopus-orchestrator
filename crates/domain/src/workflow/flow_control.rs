@@ -448,7 +448,8 @@ pub fn invalid(kind: GateKind, node: Option<&NodeId>, rule: FlowControlRule) -> 
 
 /// A namespace ceiling of feature 022 that refused a waiter, a key or a declaration (FR-022-034, FR-022-047; the
 /// resources of [`crate::quota::QuotaResource`] named in each variant). The refusal is typed by the caller:
-/// `CONCURRENCY_QUEUE_FULL` or `RATE_LIMIT_QUEUE_FULL` for a waiter, `FLOW_CONTROL_LIMIT` for a key or a declaration.
+/// `CONCURRENCY_QUEUE_FULL` or `RATE_LIMIT_QUEUE_FULL` for a waiter, `FLOW_CONTROL_LIMIT` for a key, and the code of the
+/// declaration's kind (`CONCURRENCY_POLICY_INVALID`, `RATE_LIMIT_POLICY_INVALID`) for a declaration at publication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum FlowControlLimit {
     /// `queued_runs`.
@@ -457,7 +458,7 @@ pub enum FlowControlLimit {
     /// `flow_control_key_waiters`.
     #[error("the key holds as many waiting runs as its ceiling allows")]
     KeyWaiters,
-    /// `flow_control_live_keys`.
+    /// `concurrency_live_keys`.
     #[error("the namespace holds as many flow-control keys as its ceiling allows")]
     LiveKeys,
     /// `flow_control_node_declarations`.
@@ -472,7 +473,7 @@ pub enum FlowControlLimit {
 pub struct FlowControlCeilings {
     /// `queued_runs`.
     pub queued_runs: u64,
-    /// `flow_control_live_keys`.
+    /// `concurrency_live_keys`.
     pub live_keys: u64,
     /// `flow_control_key_waiters`.
     pub key_waiters: u64,
@@ -488,14 +489,27 @@ impl FlowControlCeilings {
     /// The values that apply when nobody set anything: the defaults of the plan.
     pub const DEFAULT: Self = Self {
         queued_runs: crate::quota::QuotaResource::QueuedRuns.default_limit(),
-        live_keys: crate::quota::QuotaResource::FlowControlLiveKeys.default_limit(),
+        live_keys: crate::quota::QuotaResource::ConcurrencyLiveKeys.default_limit(),
         key_waiters: crate::quota::QuotaResource::FlowControlKeyWaiters.default_limit(),
         concurrency_limit: crate::quota::QuotaResource::ConcurrencyLimit.default_limit(),
         queue_timeout_ms: crate::quota::QuotaResource::FlowControlQueueTimeoutMs.default_limit(),
         node_declarations: crate::quota::QuotaResource::FlowControlNodeDeclarations.default_limit(),
     };
 
-    /// Whether one more run may wait, given the namespace's waiting runs and the key's, both counted before it.
+    /// The run waiters one key may hold: its ceiling, and always fewer than the namespace's `queued_runs`, so that one
+    /// key never fills the namespace (plan "Ceilings, revised", D022-024) whatever an administrator sets.
+    #[must_use]
+    pub const fn effective_key_waiters(&self) -> u64 {
+        let below_namespace = self.queued_runs.saturating_sub(1);
+        if self.key_waiters < below_namespace {
+            self.key_waiters
+        } else {
+            below_namespace
+        }
+    }
+
+    /// Whether one more run may wait on a key, given the namespace's waiting runs and the key's, both counted before
+    /// it. A run already counted in `queued_runs` (it waits at its other gate) adds nothing to it (FR-022-058).
     ///
     /// # Errors
     /// [`FlowControlLimit::QueuedRuns`] or [`FlowControlLimit::KeyWaiters`] at the ceiling (a zero ceiling refuses
@@ -504,11 +518,12 @@ impl FlowControlCeilings {
         &self,
         queued_runs: u64,
         key_waiters: u64,
+        already_queued: bool,
     ) -> Result<(), FlowControlLimit> {
-        if queued_runs >= self.queued_runs {
+        if !already_queued && queued_runs >= self.queued_runs {
             return Err(FlowControlLimit::QueuedRuns);
         }
-        if key_waiters >= self.key_waiters {
+        if key_waiters >= self.effective_key_waiters() {
             return Err(FlowControlLimit::KeyWaiters);
         }
         Ok(())

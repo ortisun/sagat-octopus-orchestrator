@@ -278,8 +278,8 @@ impl DefinitionStore for PgDefinitionStore {
         let rows = sqlx::query(
             "SELECT w.name, d.gate, d.node, d.group_name, d.declared_limit, d.period_ms \
              FROM flow_control_group_declarations d \
-             JOIN workflows w ON w.tenant_id = d.tenant_id AND w.id = d.workflow_id \
-                             AND w.active_version_id = d.version_id \
+                          JOIN workflows w ON w.tenant_id = d.tenant_id AND w.namespace_id = d.namespace_id \
+                             AND w.id = d.workflow_id AND w.active_version_id = d.version_id \
              WHERE d.tenant_id = $1 AND d.namespace_id = $2 AND d.workflow_id <> $3 AND NOT w.internal \
                AND d.group_name = ANY($4) \
              ORDER BY w.name, d.gate, d.node \

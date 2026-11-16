@@ -462,6 +462,18 @@ fn warning_problem(warning: &DefinitionWarning) -> Problem {
     }
 }
 
+/// The refusal of the namespace's `flow_control_node_declarations` (or the domain's own bound): a publication asked again
+/// with its own key after the namespace lowered it is answered by the store's replay (as D042-105), not refused.
+fn is_node_declarations_ceiling(error: &IrError) -> bool {
+    matches!(
+        error,
+        IrError::Invalid(WorkflowError::InvalidFlowControl {
+            rule: sagat_domain::workflow::FlowControlRule::TooManyDeclarations { .. },
+            ..
+        })
+    )
+}
+
 /// A namespace warning of feature 022: at its node, or at the top-level field for a run-level declaration.
 fn mismatch_problem(
     code: &'static str,
@@ -1035,8 +1047,28 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
 
     /// The namespace warnings of feature 022 (G1187): each explicit group this definition declares that the active
     /// version of another workflow of the namespace declares at the same level with a different limit (or window). One
-    /// warning per declaration of this definition, naming the first such workflow by name.
+    /// warning per declaration of this definition, naming the first such workflow by name. A warning never refuses: a
+    /// failed read gives none (logged), never a failed publication (review of 2026-11-16).
     async fn flow_control_mismatches(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        workflow: WorkflowId,
+        definition: &WorkflowDefinition,
+    ) -> Vec<DefinitionWarning> {
+        match self
+            .read_flow_control_mismatches(tenant, namespace, workflow, definition)
+            .await
+        {
+            Ok(warnings) => warnings,
+            Err(error) => {
+                tracing::warn!(%error, "flow-control group warnings were not computed");
+                Vec::new()
+            }
+        }
+    }
+
+    async fn read_flow_control_mismatches(
         &self,
         tenant: TenantId,
         namespace: NamespaceId,
@@ -1388,7 +1420,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 id,
                 &parsed.definition,
             )
-            .await?,
+            .await,
         );
         self.check_secrets(principal, &record, &parsed.definition, ctx)
             .await?;
@@ -1432,7 +1464,8 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             // D042-105: a publication asked again with its own key after the switch was turned off is answered by
             // the store's replay, as it would have been with the switch on; only a new publication reads the switch.
             Err(AppError::InvalidDefinition(error))
-                if matches!(*error, IrError::CollectionOperatorsDisabled { .. }) =>
+                if matches!(*error, IrError::CollectionOperatorsDisabled { .. })
+                    || is_node_declarations_ceiling(&error) =>
             {
                 return self
                     .replay_refused(
@@ -1641,7 +1674,7 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 record.workflow.id(),
                 &parsed.definition,
             )
-            .await?;
+            .await;
         match self
             .store
             .check_database_access(

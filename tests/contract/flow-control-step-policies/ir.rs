@@ -329,9 +329,14 @@ fn every_rule_that_names_a_gate_is_covered_or_pending() {
     .expect("the publication suite");
     for (code, test) in NAMESPACE_WARNINGS {
         let name = test.rsplit("::").next().expect("a name");
+        let start = suite
+            .find(&format!("async fn {name}()"))
+            .unwrap_or_else(|| panic!("{test} exists"));
+        let body = &suite[start..];
+        let body = &body[..body.find("\n#[tokio::test]").unwrap_or(body.len())];
         assert!(
-            suite.contains(&format!("async fn {name}()")) && suite.contains(code),
-            "{code} is proved by {test}"
+            body.contains(&format!("\"{code}\"")),
+            "{test} asserts {code} itself"
         );
     }
 }

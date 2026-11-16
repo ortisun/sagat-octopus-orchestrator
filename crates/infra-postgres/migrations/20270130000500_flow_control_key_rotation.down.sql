@@ -11,10 +11,11 @@ BEGIN
             USING ERRCODE = 'object_not_in_prerequisite_state';
     END IF;
 END $guard$;
+-- a retiring version no row uses is retired, so that the restored command cannot make it active again
+UPDATE flow_control_key_versions k SET state = 'RETIRED', retired_at = clock_timestamp()
+ WHERE k.state = 'RETIRING' AND flow_control_key_version_rows(k.version) = 0;
 
-DROP TRIGGER concurrency_semaphores_retire_version ON concurrency_semaphores;
-DROP TRIGGER rate_limit_windows_retire_version ON rate_limit_windows;
-DROP FUNCTION flow_control_key_version_retire();
+DROP INDEX flow_control_key_versions_one_retiring;
 DROP FUNCTION flow_control_key_versions_in_force();
 DROP FUNCTION flow_control_key_activate(smallint, text);
 -- the command as 20270130000100 left it

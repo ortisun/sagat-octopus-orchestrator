@@ -108,8 +108,9 @@ pub enum QuotaResource {
     /// Runs of the namespace that wait for a concurrency permit or a rate-limit slot (feature 022, FR-022-021): a run
     /// waiting for both gates counts once. They also count in `active_runs` and `tenant_active_runs`.
     QueuedRuns,
-    /// Concurrency and rate-limit keys that have a row in the namespace (feature 022, FR-022-047, FR-022-054).
-    FlowControlLiveKeys,
+    /// Concurrency keys that have a semaphore row in the namespace (feature 022, plan "Finite ceilings": live semaphore
+    /// keys; FR-022-054). Rate-limit keys have their own ceiling (T022-077).
+    ConcurrencyLiveKeys,
     /// Runs that may wait for one key (feature 022, D022-024): the scalar usage is the busiest key's.
     FlowControlKeyWaiters,
     /// The most holders one concurrency key may be granted, whatever a definition declares (feature 022,
@@ -193,7 +194,7 @@ impl QuotaResource {
         Self::TenantBatchJobs,
         Self::PendingResets,
         Self::QueuedRuns,
-        Self::FlowControlLiveKeys,
+        Self::ConcurrencyLiveKeys,
         Self::FlowControlKeyWaiters,
         Self::ConcurrencyLimit,
         Self::FlowControlQueueTimeoutMs,
@@ -241,7 +242,7 @@ impl QuotaResource {
             Self::TenantBatchJobs => "tenant_batch_jobs",
             Self::PendingResets => "pending_resets",
             Self::QueuedRuns => "queued_runs",
-            Self::FlowControlLiveKeys => "flow_control_live_keys",
+            Self::ConcurrencyLiveKeys => "concurrency_live_keys",
             Self::FlowControlKeyWaiters => "flow_control_key_waiters",
             Self::ConcurrencyLimit => "concurrency_limit",
             Self::FlowControlQueueTimeoutMs => "flow_control_queue_timeout_ms",
@@ -283,7 +284,7 @@ impl QuotaResource {
             | Self::BatchJobs
             | Self::PendingResets
             | Self::QueuedRuns
-            | Self::FlowControlLiveKeys
+            | Self::ConcurrencyLiveKeys
             | Self::FlowControlKeyWaiters
             | Self::ConcurrencyLimit
             | Self::FlowControlQueueTimeoutMs
@@ -394,10 +395,16 @@ impl QuotaResource {
             Self::BatchJobs => 16,
             Self::TenantBatchJobs | Self::PendingResets => 64,
             // feature 022, plan "Finite ceilings" and "Ceilings, revised"
-            Self::QueuedRuns | Self::FlowControlKeyWaiters | Self::ConcurrencyLimit => 10_000,
-            Self::FlowControlLiveKeys => 100_000,
-            Self::FlowControlQueueTimeoutMs => 86_400_000,
-            Self::FlowControlNodeDeclarations => 64,
+            Self::QueuedRuns | Self::FlowControlKeyWaiters => 10_000,
+            // the bounds a declaration has in the domain, so that the two never disagree
+            Self::ConcurrencyLimit => crate::workflow::flow_control::MAX_CONCURRENCY_LIMIT as u64,
+            Self::ConcurrencyLiveKeys => 100_000,
+            Self::FlowControlQueueTimeoutMs => {
+                crate::workflow::flow_control::MAX_QUEUE_TIMEOUT.as_millis() as u64
+            }
+            Self::FlowControlNodeDeclarations => {
+                crate::workflow::flow_control::MAX_NODE_DECLARATIONS as u64
+            }
             _ => MAX_LIMIT,
         }
     }
@@ -447,13 +454,17 @@ impl QuotaResource {
             Self::TenantBatchJobs => 8,
             Self::PendingResets => 16,
             Self::QueuedRuns => 1_000,
-            Self::FlowControlLiveKeys => 10_000,
+            Self::ConcurrencyLiveKeys => 10_000,
             // always below the default `queued_runs`, so that one key cannot fill the namespace (D022-024)
             Self::FlowControlKeyWaiters => 100,
             // the declaration decides unless a namespace lowers it
-            Self::ConcurrencyLimit => 10_000,
-            Self::FlowControlQueueTimeoutMs => 86_400_000,
-            Self::FlowControlNodeDeclarations => 16,
+            Self::ConcurrencyLimit => crate::workflow::flow_control::MAX_CONCURRENCY_LIMIT as u64,
+            Self::FlowControlQueueTimeoutMs => {
+                crate::workflow::flow_control::MAX_QUEUE_TIMEOUT.as_millis() as u64
+            }
+            Self::FlowControlNodeDeclarations => {
+                crate::workflow::flow_control::DEFAULT_NODE_DECLARATIONS as u64
+            }
         }
     }
 
@@ -501,7 +512,7 @@ impl QuotaResource {
             Self::QueuedRuns => {
                 "runs waiting for a concurrency permit or a rate-limit slot in the namespace"
             }
-            Self::FlowControlLiveKeys => "concurrency and rate-limit keys in the namespace",
+            Self::ConcurrencyLiveKeys => "concurrency keys in the namespace",
             Self::FlowControlKeyWaiters => "runs waiting for one concurrency or rate-limit key",
             Self::ConcurrencyLimit => "holders of one concurrency key",
             Self::FlowControlQueueTimeoutMs => "wait for a concurrency permit or a rate-limit slot",

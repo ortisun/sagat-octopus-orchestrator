@@ -397,8 +397,9 @@ async fn the_counters_follow_the_rows_and_the_runtime_role_cannot_write_them() {
 }
 
 /// T022-095, FR-022-056 (per-key rotation, replacing T022-007's refusal): a new version is activated with live rows,
-/// the old one is RETIRING while a row uses it and RETIRED by the transaction that deletes its last row; a third version
-/// waits for that; a version with no row is retired at once; the role that ran the command is recorded (G1190).
+/// the old one is RETIRING and in force while a row uses it, out of force the moment its last row goes and recorded
+/// RETIRED by the next activation; a third version waits for that; a version with no row is retired at once; at most
+/// one version is RETIRING; the role that ran the command is recorded (G1190).
 #[tokio::test]
 async fn a_rotation_runs_with_live_rows_and_retires_the_old_version_with_its_last_row() {
     let w = world().await;
@@ -448,22 +449,40 @@ async fn a_rotation_runs_with_live_rows_and_retires_the_old_version_with_its_las
         activate_key(pool, 3).await,
         ("ROTATION_IN_PROGRESS".to_owned(), 1)
     );
+    let in_force = || async {
+        sqlx::query_as::<_, (Option<i16>, Option<i16>)>(
+            "SELECT active, retiring FROM flow_control_key_versions_in_force()",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("in force")
+    };
+    assert_eq!(in_force().await, (Some(2), Some(1)));
     sqlx::query("DELETE FROM rate_limit_grants")
         .execute(pool)
         .await
         .expect("drain");
     assert_eq!(
-        states().await,
-        [
-            (1, "RETIRED".to_owned(), true),
-            (2, "ACTIVE".to_owned(), false)
-        ],
-        "the transaction that deleted the last row of version 1 retired it"
+        in_force().await,
+        (Some(2), None),
+        "out of force with its last row: no decider needs its key any more"
+    );
+    let second_retiring = sqlx::query(
+        "INSERT INTO flow_control_key_versions (version, state, activated_at, activated_by) \
+         VALUES (9, 'RETIRING', clock_timestamp(), 'forged')",
+    )
+    .execute(pool)
+    .await
+    .map_err(db_error);
+    assert_eq!(
+        second_retiring.map(drop).unwrap_err().0,
+        "23505",
+        "at most one version is retiring"
     );
     assert_eq!(
         activate_key(pool, 3).await,
         ("ACTIVATED".to_owned(), 0),
-        "no row uses version 2"
+        "the unused retiring version is retired, and no row uses version 2"
     );
     assert_eq!(
         states().await,
@@ -705,7 +724,7 @@ async fn a_rotation_with_live_holders_waiters_and_grants_never_splits_a_key() {
     }
     assert_eq!(activate_key(pool, 3).await.0, "ROTATION_IN_PROGRESS");
 
-    // the old version retires with its last row: the grant of prov-1, then the holder and waiter of acct-1
+    // the old version leaves force with its last row: the grant of prov-1, then the holder and waiter of acct-1
     sqlx::query("DELETE FROM rate_limit_grants")
         .execute(pool)
         .await
@@ -714,24 +733,31 @@ async fn a_rotation_with_live_holders_waiters_and_grants_never_splits_a_key() {
         .execute(pool)
         .await
         .expect("drain");
-    let state = || async {
-        sqlx::query_scalar::<_, String>(
-            "SELECT state FROM flow_control_key_versions WHERE version = 1",
-        )
-        .fetch_one(pool)
-        .await
-        .expect("state")
+    let retiring = || async {
+        let mut conn = runtime.acquire().await.expect("conn");
+        key_versions(&mut conn).await.expect("versions").retiring
     };
     assert_eq!(
-        state().await,
-        "RETIRING",
+        retiring().await,
+        Some(1),
         "the waiter of acct-1 still uses it"
     );
     sqlx::query("DELETE FROM concurrency_waiters")
         .execute(&runtime)
         .await
         .expect("the runtime role drains it");
-    assert_eq!(state().await, "RETIRED");
+    assert_eq!(retiring().await, None, "out of force with its last row");
+    assert_eq!(
+        activate_key(pool, 3).await,
+        ("ACTIVATED".to_owned(), 2),
+        "acct-2 and acct-3 rotate with version 2"
+    );
+    let state: String =
+        sqlx::query_scalar("SELECT state FROM flow_control_key_versions WHERE version = 1")
+            .fetch_one(pool)
+            .await
+            .expect("state");
+    assert_eq!(state, "RETIRED", "the next activation recorded it");
     let left: i64 =
         sqlx::query_scalar("SELECT count(*) FROM concurrency_semaphores WHERE key_version = 1")
             .fetch_one(pool)
@@ -865,6 +891,7 @@ async fn a_key_emptied_and_filled_in_one_transaction_keeps_its_row() {
 }
 
 const QUOTA_RESOURCES: i64 = 20_270_130_000_300;
+const ROTATION: i64 = 20_270_130_000_500;
 const DECLARATIONS: i64 = 20_270_130_000_400;
 
 /// T022-013 and T022-069 (D022-040, D022-041): rolling back the quota resources refuses while an administrator's limit
@@ -947,7 +974,7 @@ async fn the_quota_and_declaration_migrations_roll_back_only_once_their_rows_are
         .expect("rolled back past both");
     let old_check = sqlx::query(
         "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
-         VALUES ($1, $2, 'flow_control_live_keys', 5, 'admin')",
+         VALUES ($1, $2, 'concurrency_live_keys', 5, 'admin')",
     )
     .bind(tenant)
     .bind(namespace)
@@ -1042,13 +1069,193 @@ async fn the_counts_of_the_gate_read_the_waiter_and_key_rows() {
         "two runs wait, one of them at both gates"
     );
     assert_eq!(
-        used(QuotaResource::FlowControlLiveKeys).await,
-        Some(2),
-        "one semaphore, one window"
+        used(QuotaResource::ConcurrencyLiveKeys).await,
+        Some(1),
+        "the semaphore; a window is not a concurrency key"
     );
     assert_eq!(
         used(QuotaResource::FlowControlKeyWaiters).await,
         Some(2),
         "the busiest key holds two run waiters"
     );
+}
+
+/// Correctness review F1, architecture review M3 (2026-11-16): a key whose retiring row goes away between its resolution
+/// and its lock is not filed out of the one lock order; the deciding transaction gets a retryable error, and its retry
+/// files the key under the active version.
+#[tokio::test]
+async fn a_retiring_row_that_goes_away_while_it_is_filed_is_a_retryable_refusal() {
+    use sagat_application::error::StoreError;
+    use sagat_application::keyed_digest::{KeyPurpose, KeyRing};
+    use sagat_domain::execution::GatePool;
+    use sagat_domain::identity::{NamespaceId, TenantId};
+    use sagat_domain::workflow::{GateLevel, ResolvedGroup};
+    use sagat_infra_postgres::{KEY_ROW_VANISHED, KeyTable, KeyToFile, file_keys, key_versions};
+
+    let w = world().await;
+    let pool = &w.db.pool;
+    let runtime = w.db.runtime_pool().await;
+    let run = a_run(&w).await;
+    let (tenant, namespace) = (TenantId::new(run.0), NamespaceId::new(run.1));
+    let ring =
+        KeyRing::parse(&format!("1:{},2:{}", "11".repeat(32), "22".repeat(32))).expect("ring");
+    let key = |versions| KeyToFile {
+        tenant,
+        namespace,
+        pool: GatePool::Ordinary,
+        level: GateLevel::Run,
+        group: ResolvedGroup::parse("accounts").expect("group"),
+        candidates: ring
+            .candidates(
+                versions,
+                KeyPurpose::Concurrency,
+                tenant,
+                namespace,
+                b"acct-9",
+            )
+            .expect("digests"),
+        shard: 2,
+    };
+    assert_eq!(activate_key(pool, 1).await.0, "ACTIVATED");
+    let mut tx = runtime.begin().await.expect("tx");
+    let versions = key_versions(&mut tx).await.expect("versions");
+    let filed = file_keys(&mut tx, KeyTable::Semaphores, &[key(versions)])
+        .await
+        .expect("filed");
+    sqlx::query(
+        "INSERT INTO concurrency_holders (tenant_id, namespace_id, run_id, holder_scope, node, attempt, pool, group_name, \
+         key_digest, declared_limit, acquired_at) \
+         VALUES ($1, $2, $3, 'RUN', '', 0, 'ORDINARY', 'accounts', $4, 1, clock_timestamp())",
+    )
+    .bind(run.0)
+    .bind(run.1)
+    .bind(run.2)
+    .bind(filed[0].digest.as_slice())
+    .execute(&mut *tx)
+    .await
+    .expect("a holder");
+    tx.commit().await.expect("commit");
+    assert_eq!(activate_key(pool, 2).await.0, "ACTIVATED");
+
+    // the release that empties the old row holds its lock; the decider resolves to it and waits for it
+    let mut release = pool.begin().await.expect("the release");
+    let release_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *release)
+        .await
+        .expect("pid");
+    sqlx::query("DELETE FROM concurrency_holders")
+        .execute(&mut *release)
+        .await
+        .expect("the last holder goes");
+    let rotating = {
+        let mut conn = runtime.acquire().await.expect("conn");
+        key_versions(&mut conn).await.expect("versions")
+    };
+    assert_eq!(rotating.retiring, Some(1), "the release has not committed");
+    let decider = {
+        let runtime = runtime.clone();
+        let wanted = key(rotating);
+        tokio::spawn(async move {
+            let mut tx = runtime.begin().await.expect("tx");
+            file_keys(&mut tx, KeyTable::Semaphores, &[wanted]).await
+        })
+    };
+    loop {
+        let blocked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))",
+        )
+        .bind(release_pid)
+        .fetch_one(pool)
+        .await
+        .expect("activity");
+        if blocked > 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    release
+        .commit()
+        .await
+        .expect("the old row is pruned at commit");
+    match decider.await.expect("the decider") {
+        Err(StoreError::Unavailable { detail }) => assert_eq!(detail, KEY_ROW_VANISHED),
+        other => panic!("expected the retryable refusal, got {other:?}"),
+    }
+    let mut tx = runtime.begin().await.expect("the retry");
+    let versions = key_versions(&mut tx).await.expect("versions");
+    assert_eq!(versions.retiring, None, "nothing uses version 1 any more");
+    let retried = file_keys(&mut tx, KeyTable::Semaphores, &[key(versions)])
+        .await
+        .expect("filed");
+    assert_eq!((retried[0].version, retried[0].created), (2, true));
+    tx.rollback().await.expect("rollback");
+}
+
+async fn versions_in_force(pool: &PgPool) -> (i16, Option<i16>) {
+    let (active, retiring): (Option<i16>, Option<i16>) =
+        sqlx::query_as("SELECT active, retiring FROM flow_control_key_versions_in_force()")
+            .fetch_one(pool)
+            .await
+            .expect("in force");
+    (active.expect("active"), retiring)
+}
+
+/// Security review S2, correctness review F3 (2026-11-16): the earlier command left every replaced version RETIRING with
+/// no row; the rotation migration retires them, so at most one version is ever retiring and none is in force unused; its
+/// down migration refuses while a rotation is in progress.
+#[tokio::test]
+async fn the_rotation_migration_retires_what_the_old_command_left_and_its_down_refuses_during_a_rotation()
+ {
+    let w = world().await;
+    let pool = &w.db.pool;
+    let run = a_run(&w).await;
+    undo(pool, ROTATION - 100)
+        .await
+        .expect("back to the earlier command");
+    for version in [1, 2, 3] {
+        assert_eq!(
+            activate_key(pool, version).await.0,
+            "ACTIVATED",
+            "the earlier command"
+        );
+    }
+    let retiring: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM flow_control_key_versions WHERE state = 'RETIRING'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("count");
+    assert_eq!(retiring, 2, "what the earlier command leaves behind");
+    MIGRATOR.run(pool).await.expect("forward");
+    let states: Vec<(i16, String)> =
+        sqlx::query_as("SELECT version, state FROM flow_control_key_versions ORDER BY version")
+            .fetch_all(pool)
+            .await
+            .expect("versions");
+    assert_eq!(
+        states,
+        [
+            (1, "RETIRED".to_owned()),
+            (2, "RETIRED".to_owned()),
+            (3, "ACTIVE".to_owned())
+        ]
+    );
+    assert_eq!(versions_in_force(pool).await, (3, None));
+
+    semaphore(pool, run, 3).await;
+    holder(pool, run).await.expect("a holder");
+    assert_eq!(activate_key(pool, 4).await.0, "ACTIVATED");
+    let refused = undo(pool, ROTATION - 100).await;
+    assert!(
+        format!("{refused:?}").contains("a digest key rotation is in progress"),
+        "{refused:?}"
+    );
+    sqlx::query("DELETE FROM concurrency_holders")
+        .execute(pool)
+        .await
+        .expect("drain");
+    undo(pool, ROTATION - 100)
+        .await
+        .expect("rolled back once the rotation is over");
+    MIGRATOR.run(pool).await.expect("forward again");
 }

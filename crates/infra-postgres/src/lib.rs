@@ -78,7 +78,10 @@ pub use definitions::PgDefinitionStore;
 #[doc(hidden)]
 pub use execution::EXPIRED_RESETS_SQL;
 pub use execution::{PgRunStore, PgRunTx};
-pub use flow_control::{FiledKey, KeyTable, KeyToFile, file_keys, key_versions};
+/// The deciding transactions of feature 022's gates file their keys through these, inside the store; exposed for the
+/// integration suite that proves the rotation (T022-095).
+#[doc(hidden)]
+pub use flow_control::{FiledKey, KEY_ROW_VANISHED, KeyTable, KeyToFile, file_keys, key_versions};
 pub use identity::PgIdentityStore;
 pub use instances::{
     FeatureStep, OperatorBounds, PgInstanceStore, live_capable_step, no_feature_step,
