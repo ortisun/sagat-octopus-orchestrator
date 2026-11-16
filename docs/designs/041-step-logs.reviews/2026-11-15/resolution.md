@@ -289,3 +289,29 @@ reviewers then read the diffs `b1b2c249..69e0f828` and `69e0f828..35070fe9` and 
 Residual after the final review: Blocker 0; Major 0 without an answer (architecture M1 is answered and its choice is the
 owner's, O041-024); Nits: security D (G041-015) and security E (contested). The fixes of this section had no further
 independent read: the EGM cap of one re-audit is spent, and T041-27 and the per-slice reviewers are the next check.
+
+## 8. The approval run (2026-11-15) and why the design stays Draft
+
+The owner accepted the ADR-0027 Amendment in place (OD-2026-11-15-16) and the design with constitution 4.5.0
+(OD-2026-11-15-17), recorded in commit `882e56fc`. Approval (`docs/designs/constitution-4.0.0-egm.md` section 3) needs a
+complete run of all five egm-review stages and the three repository reviewers on a committed text after the last fix,
+ending with no Blocker and no Major open, a Major counting as settled only when the owner accepts that finding in
+writing, one owner-decision row per finding. That run was made on `882e56fc`:
+
+| Report | Blocker | Major | Nit |
+| --- | ---: | ---: | ---: |
+| `egm-review-approval.md` (stages in `egm-stages-5-7-approval.md`, `egm-stage-8-approval.md`, `egm-stage-9-approval.md`) | 0 | 49 | 80 |
+| `architecture-approval.md` | 0 | 0 | 5 |
+| `security-approval.md` | 0 | 0 | 3 |
+| `correctness-approval.md` | 0 | 1 | 3 |
+
+The repository reviewers are clean but for one Major (the barrier test of SC-041-001). The egm stages raise 49 Majors,
+not deduplicated, mostly of the task plan (Files, task order, test facilities the plan names that do not exist, the
+control plane's copy of `SAGAT_STEP_LOGS_ENABLED`, the `recordScriptExecution` contract owner) and of wording (the
+completion bound, the step-2 control flow, "no `SECURITY DEFINER`"), and stage 8 proposes two lighter mechanisms (a
+script marker keyed on the execution; `RETRY_LATER` instead of a second transaction after the finalizer's raise).
+OD-2026-11-15-17 accepts the design as a whole; it is not a written acceptance of these findings, so the record cannot
+cite it in `Accepted`. The design therefore stays `Draft`, T041-1 and T041-2 stay unticked (the checker's R9 refuses a
+tick in a doc that is not `Approved`), and no approval block was written. The findings are open: none was fixed after
+this run, so that its reports describe the committed text. Approval needs either a revision that answers them and a new
+complete run, or the owner's written acceptance of each remaining Major.
