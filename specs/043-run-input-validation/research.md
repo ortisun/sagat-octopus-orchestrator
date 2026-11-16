@@ -738,6 +738,17 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   capability. The conformance fixture `builders.json` moved its fractional `multipleOf` (outside the subset, refused at
   publication) to `default`, keeping the number the canonical text must print.
 
+- **D043-171** (2026-11-16) The canary failure of the phase 3 gates (`unexpected response from SSLRequest: 0x48` from the
+  test PostgreSQL) is the test support's, and is fixed there. On Docker Desktop for macOS a container's published port
+  is bound by a proxy on every address with `SO_REUSEADDR`, and macOS then lets it share the number of a listener a test
+  already holds on `127.0.0.1`; a connection to `127.0.0.1` reaches the more specific listener, here one of the test's
+  HTTP servers (the API, the collector, the OIDC mock), which answers `HTTP/1.1 ...`. Shown on this machine with two
+  sockets (`scratchpad` probe): a `127.0.0.1:P` listener and a later `0.0.0.0:P` one with `SO_REUSEADDR` both bind, and
+  `127.0.0.1:P` reaches the first; the ephemeral choice of a later `127.0.0.1:0` never took a wildcard's port in 20,000
+  binds, so the window is the container's start. `wait_until_queryable` now tells an HTTP answer from a cold start and
+  returns at once, and `start_server` starts another container (at most three). Red first:
+  `a_port_an_http_server_answers_is_told_apart_and_not_waited_on` (`integration_platform_foundation`) waited 20 s.
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
