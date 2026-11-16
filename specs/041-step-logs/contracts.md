@@ -156,7 +156,7 @@ StepLogPage:
     items: {type: array, items: {$ref: '#/components/schemas/StepLogLine'}}
     nextCursor: {type: string, description: 'Always present: the position after the last row scanned (at most 5,000 a request), whether or not it matched the filters, to poll from.'}
     heldBack: {type: boolean, description: 'Lines of this run are stored but not yet returned, because an older transaction of the database is still open.'}
-    complete: {type: boolean, description: 'The run is finished, every line that can still be stored for it has been, and the scan reached the run''s last row below the horizon, whether or not the filters matched it. An empty page with complete false is read again from nextCursor.'}
+    complete: {type: boolean, description: 'The run is finished, every line that can still be stored for it has been, and the request''s scan ended because no row below the horizon was left in the index range it reads (neither the page limit nor the 5,000-row bound stopped it), whether or not the filters matched. After an empty page with complete false, read again at once while nextCursor moves; once it stops moving, poll at the tail''s interval.'}
 StepLogLine:
   type: object
   required: [stream, node, attempt, instancePath, sequence, storedAt, kind, level, truncated]
@@ -272,8 +272,9 @@ The tail and the polling fallback end by the same rule, carried in the cursor so
 it. The cursor is `base64url` of a JSON object `{"v":1,"run":"<uuid>","xid":"<decimal>","seq":"<decimal>","end":"<decimal>"|null}`; a cursor whose `run` is not the path's run is refused (400). It holds no row identity. When a
 read sees the run finished and the cursor has no `end`, the read ends its transaction and takes `end = pg_current_xact_id()` in a new, short transaction, so that the id is assigned after the read saw the run finished, and
 puts it in the cursor it returns. A read whose cursor has `end` answers `complete: true` (the tail sends `event: end`)
-when the run is finished, `pg_snapshot_xmin(pg_current_snapshot()) > end` in the reading statement, and the scan from the
-cursor reached the run's last row below the horizon (fewer than 5,000 rows scanned), whether or not any matched; an `end` in a cursor of a run that is not finished is ignored. This is D1958 of feature 018
+when the run is finished, `pg_snapshot_xmin(pg_current_snapshot()) > end` in the reading statement, and the request's scan
+ended because no row below the horizon was left in the index range it reads (neither the page limit nor the 5,000-row
+bound stopped it), whether or not any row matched; an `end` in a cursor of a run that is not finished is ignored. This is D1958 of feature 018
 (`crates/infra-postgres/src/batch.rs:453-459, 654-656`), applied to the run's terminal transition (design section 5).
 
 The Studio's `followLogs()` falls back to polling `listRunLogs` from `nextCursor` and stops when `complete` is true.

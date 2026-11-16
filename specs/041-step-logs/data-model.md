@@ -19,7 +19,7 @@ request of the task that needs it and named in its description.
 The `DROPPED` record kind of the 2026-11-13 revision is gone (D041-028). The `script` source is back for the script
 marker of OD-2026-11-15-9 (D041-057): one stream per inserted script execution, keyed on it (D041-060): its
 `public_id` is the execution's id, it has the execution's node and attempt and no step, generation or instance path,
-and only `record_execution` writes it. A stream's state on the routes: `deleted` when `deleted_at` is set, `expired`
+and only `StepLogStore::record_script_marker` writes it, after `record_execution` commits. A stream's state on the routes: `deleted` when `deleted_at` is set, `expired`
 when `removed_at` is set otherwise, `ended` when `final_at` is set, `ended_without_final` when none of those is set and
 the `steps` row of its `step_id` no longer holds this attempt's lease (design section 5), `open` otherwise; a script
 stream is `deleted`, `expired` or `ended`.
@@ -144,7 +144,7 @@ In `crates/infra-postgres/storage-classification.json` (one entry per column, as
 |---|---|---|
 | `step_log_lines.message`, `.exception`, `.fields` | `step_log` | `octet_length_utf8` |
 | `step_log_lines.level` | `step_log` | `fixed_octets`, 128: the per-row charge of OD-2026-11-15-6 on a `NOT NULL` text column, which the manifest test compares (it reads columns with `typlen = -1`, `durable_quotas.rs:323-343`) |
-| every other variable-size column of the three tables | `protected_system` | evidence: closed sets of section 1, bounded identifiers |
+| every other variable-size column of the two tables | `protected_system` | evidence: closed sets of section 1, bounded identifiers |
 
 The measurement and finalizer triggers that ADR-0027 generates are created on `step_log_lines` only: the manifest test
 requires them only on tables with `content` or `log` columns (`tests/integration/security-multitenancy/durable_quotas.rs:345-411`), and on the counter tables they would run `to_jsonb` on every update. The entries' owner
@@ -229,7 +229,7 @@ it, rounded down, at least 1.
 Server: `step_log_batches_total{outcome}` (`stored`, `duplicate`, `final_only`, `stop_attempt`, `stop_capture`,
 `retry_later`, `invalid`); `step_log_lines_stored_total{level}`; `step_log_bytes_stored_total`;
 `step_log_lines_dropped_total{reason}` (`worker_gap`, `attempt_records`, `attempt_bytes`, `tenant_quota`); `step_log_script_markers_total{outcome}` (`written`, `skipped_quota`, `skipped_off`,
-`skipped_finished`); `step_log_lines_truncated_total`; `step_log_redactions_total{rule}` (`shape`, `field_name`);
+`skipped_finished`, `failed`); `step_log_lines_truncated_total`; `step_log_redactions_total{rule}` (`shape`, `field_name`);
 `step_log_ingest_seconds`; `step_log_lock_timeouts_total`; `step_log_quota_retries_total`;
 `step_log_purged_lines_total`; `step_log_purge_backlog` (the streams whose `expires_at` has passed or whose removal has
 begun and whose `purged_at` is null, counted by the purge pass at the start of each run); `step_log_tails_open`; `step_log_tails_refused_total`;
@@ -290,8 +290,10 @@ timeout is `SET LOCAL lock_timeout = '200ms'`.
   its role, a plain `SELECT` (no namespace secrets lock, no `FOR SHARE`), refusing the database-runner and runner roles.
   `current_worker_authorized` and its callers do not change, and
   `the_shared_secrets_lock_has_one_caller_and_the_scoped_path_never_upgrades`
-  (`crates/infra-postgres/src/quotas.rs:1323-1344`) gains an assertion that `step_logs.rs` calls neither
-  `share_secrets_lock(` nor `lock_secrets(`.
+  (`crates/infra-postgres/src/quotas.rs:1323-1344`) gains an assertion that `step_logs.rs` calls none of
+  `share_secrets_lock(`, `lock_secrets(`, `hold_worker_binding(`, `bound_patterns(` (which takes the binding lock) and
+  `sagat_lock_memberships`; the ingest's own query reads `worker_bindings` as `bound_patterns` does
+  (`execution.rs:4766-4775`), without its lock.
 - **T8.** One `INSERT … SELECT … FROM unnest(…) ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING RETURNING` the text
   size of each inserted row.
 - **T9.** From the rows T8 returned: `last_sequence = GREATEST(last_sequence, high mark)`, records, bytes, truncated
@@ -305,8 +307,11 @@ A marker line (either kind) has the level `info`, and `minLevel` never hides a m
 ## 9. The script marker's transaction (design section 7)
 
 `StepLogStore::record_script_marker(execution)`, called by the script service after `record_execution` has committed an
-inserted execution of a run: `SELECT pg_current_xact_id()`; the run's `finished_at` (no lock); the namespace's
+inserted execution of a run, in a transaction opened by `begin_safely` with `SET LOCAL lock_timeout = '200ms'`; any error
+is caught by the script service and counted as `failed`, and never changes the report's answer:
+`SELECT pg_current_xact_id()`; the run's `finished_at` (no lock); the namespace's
 `step_log_attempt_records` and `step_log_retention_days` under their shared fences; `INSERT INTO step_log_streams …
-ON CONFLICT (tenant_id, public_id) DO NOTHING RETURNING` with `source = 'script'` and `public_id` the execution id (no row
-returned: a marker already exists, nothing more); `sagat_quota_step_log_allowance(tenant)`; the `script_marker` line;
+ON CONFLICT (tenant_id, public_id) DO NOTHING RETURNING` with `source = 'script'`, `public_id` the execution id and `expires_at`
+the earlier of now plus the retention and the stored `script_executions.expires_at` of that id (no row returned: a marker
+already exists, nothing more); `sagat_quota_step_log_allowance(tenant)`; the `script_marker` line;
 `COMMIT`, with `tenant_step_log_quota_exceeded` counted as `skipped_quota`.

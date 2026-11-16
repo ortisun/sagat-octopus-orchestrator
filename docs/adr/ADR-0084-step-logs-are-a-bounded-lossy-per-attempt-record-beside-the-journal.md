@@ -220,7 +220,12 @@ transaction of its own right after the script report commits, and a crash betwee
 decision 7's lossy record allows. In "Enforced by", the barrier tests are those of design 041's SC-041-001 (one ingest
 held after its quota flush, K − 1 queued behind it), and decision 11 is checked by the lock-order test of design 041
 (T041-6, T041-10, T041-13, T041-30). The stop rule of decision 5 and the place of the policy fences in decision 11 are
-still the owner's question O041-025.
+still the owner's question O041-025. Decision 5's "in the locked membership read" and "whose locks are held to commit"
+read, for an ingest, as a membership and a binding read without a lock; the Consequences' clause on a queued taker of
+the namespace secrets lock no longer applies to an ingest. In decision 9, "and the page is empty" reads "and the read's
+scan ended because no row below the horizon was left in the index range it reads, neither the page limit nor the scan
+bound having stopped it, whether or not a filter matched" (design 041, D041-084): a filtered read can otherwise declare
+the log complete before it has scanned to the end.
 
 ## Evidence
 

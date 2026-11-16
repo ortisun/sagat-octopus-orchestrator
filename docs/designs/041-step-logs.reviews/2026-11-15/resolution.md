@@ -557,3 +557,20 @@ the ADRs' Notes of 2026-11-16:
 | Q8 | ADR-0085 Note (the grant everywhere, no record, no read switch, `mustNotStore`, the `Debug` test) |
 
 The three repository reviewers' re-read of these changes is recorded in `../2026-11-16/*-reread.md`.
+
+### The re-read of 2026-11-16 and its Majors
+
+The targeted re-read on `46c42bbb` (`../2026-11-16/*-reread.md`) found the third run's Majors fixed except as follows, and
+raised new Majors, each fixed as the owner's path says (OD-2026-11-16-7: "fix it and say so, no full round"):
+
+| Re-read finding | Fix |
+| --- | --- |
+| architecture #1, correctness #3: the marker's own transaction has no lock timeout and no failure path | `begin_safely` with 200 ms; any error caught by the script service, counted `failed`, never changing the report's answer; a T041-13 test that forces it; the marker's expiry read from the stored execution |
+| architecture #2: ADR-0084 decision 9 against the new end rule | The ADR-0084 Note of 2026-11-16 gives decision 9's reading, and decision 5's for an ingest |
+| correctness #1: "fewer than 5,000 rows scanned" lets a full page declare the end | The end rule says the scan ended because no row was left, neither the page limit nor the bound having stopped it (FR-041-010, section 5, contracts.md §2 and §3); one pure predicate with unit tests; tests of 300 lines at `limit=50` and a tail over 450 lines |
+| correctness #2: an empty, not-complete page is read again with no pause | Read again at once only while `nextCursor` moves; otherwise poll at the tail's interval (section 5, section 8, contracts.md) |
+| correctness #4: the 12,000-line tests on the shared server | They are `horizon_*`, on `isolated_server`, on 16 and 18, with the run's lines over two attempts |
+
+Nits fixed with them: the accessor count in NFR-041-SEC; data-model.md's marker writer and table count; `may_read`
+before `stream` is resolved; the lock-free assertion names the binding and membership locks; ADR-0085's Consequences;
+the listing case of T041-29; the markers in the completion bound; the marker test's hold point.

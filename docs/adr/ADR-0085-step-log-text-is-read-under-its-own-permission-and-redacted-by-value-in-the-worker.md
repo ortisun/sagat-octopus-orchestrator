@@ -179,8 +179,9 @@ Note (2026-11-16, OD-2026-11-16-7 and OD-2026-11-16-8): reading step logs needs 
 reveal grant in every namespace ("Sim, sempre", OD-2026-11-16-8, which changes OD-2026-11-13-18): an unannotated payload
 field is `pii` under ADR-0033 and feature 016, and a log line can hold payload values. So revised decision 6 reads "in
 every namespace", and no classified-namespace record is kept: neither the trigger and table of the 2026-11-15 revision
-nor a backfill nor the partial index that briefly replaced them. The Consequences' sentence on recording and
-backfilling the classified fact no longer applies. Rollback has one switch, `SAGAT_STEP_LOGS_ENABLED`; the read switch
+nor a backfill nor the partial index that briefly replaced them. The Consequences' sentences on readers without the grant
+"in classified namespaces" and on recording and backfilling the classified fact read "in every namespace" and no
+longer apply, respectively. Rollback has one switch, `SAGAT_STEP_LOGS_ENABLED`; the read switch
 `SAGAT_STEP_LOGS_READ_ENABLED` was removed (design 041, D041-069). In "Enforced by", the SDK scenarios search with
 `mustNotStore` (stored lines, route bodies, captured output), not `mustNotLeak`; a unit test beside each generated
 module's `Debug` impl checks that a printed `AppendStepLogsRequest` holds no message text (rule 5); and the tests of the

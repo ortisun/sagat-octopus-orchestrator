@@ -161,8 +161,9 @@ Each requirement is binding as written, whether or not it says MUST.
   scans at most 5,000 rows and its cursor moves past every row it scanned, matched or not; a read with `stream` scans
   that stream's rows only. The cursor names the run it was minted for and is refused for another. A page says whether
   lines are held back by the horizon (`heldBack`) and whether the run's log is complete (`complete`): complete only
-  when the run is finished, every line that can still be stored has been, and the scan reached the run's last row below
-  the horizon, whether or not the filters matched it (section 5).
+  when the run is finished, every line that can still be stored has been, and the request's scan ended because no row
+  below the horizon was left in the index range it reads (the run's, or the stream's with `stream`): neither the page
+  limit nor the 5,000-row bound stopped it, and whether or not the filters matched (section 5).
   Every item carries the identity of FR-041-002, both times, level, message, exception, fields, `truncated` and, for a
   marker, its reason (contracts.md §2).
 - **FR-041-011 Streams.** `GET /runs/{runId}/logs/streams` lists, with `cursor` and `limit`, the attempt logs of the run
@@ -724,7 +725,8 @@ T041-10 adds the purge, T041-13 the script marker and T041-30 the delete route.
 **What a completion can wait for** (the bound). A completion with output of tenant T takes T's usage row (L4) in its
 own commit. It waits only for the commits queued ahead of it on that row: at most the tenant's tickets summed over the
 API replicas (tickets × R, R the number of API replicas), each holding the row from its first deferred flush call to the
-end of its commit, and the purge's delete transactions, each holding it for at most 500 rows. The ingest takes no lock
+end of its commit; the purge's delete transactions, each holding it for at most 500 rows; and script markers, each
+holding it for the flush of one row. The ingest takes no lock
 a report, a lease or a heartbeat takes. In time, the bound is SC-041-007's: the p99 of a completion that stores output
 stays within 10% of its value with capture off. A per-tenant step-log usage row of its own would remove the wait on the
 tenant row; it is O041-026.
@@ -847,15 +849,17 @@ assigned after the statement that saw the run finished (the read transaction may
 the audit insert, assigned before it). Every ingest that saw the lease
 live took its id before it read the lease (T1), and that read did not see the run finished, so its id is below
 `end`. A read whose cursor holds `end` answers `complete: true`, and the tail sends `event: end`, only when the run is
-finished, `pg_snapshot_xmin(pg_current_snapshot()) > end` in the reading statement, and the scan reached the run's last
-row below the horizon (it stopped for want of rows, not at the 5,000-row bound), whether or not the filters matched
-any row; an `end` in a
+finished, `pg_snapshot_xmin(pg_current_snapshot()) > end` in the reading statement, and the request's scan ended because
+no row below the horizon was left in the index range it reads (neither the page limit nor the 5,000-row bound stopped
+it), whether or not the filters matched any row. That predicate is one pure function of (run finished, horizon, `end`,
+why the scan stopped), unit-tested on each case. An `end` in a
 cursor for a run that is not finished is ignored, so a forged cursor cannot end a running run's tail. The comparison is
 strict, as in D1958 (`crates/infra-postgres/src/batch.rs:453-459, 654-656`), where the old horizon `xmax` let a
 transaction open with that id pass `>=` (a held transaction whose id equalled the horizon was missed). T041-11 builds the
-rule for the list route's `complete`, with a test of a finished run of 12,000 lines read with a filter that matches only
-lines 11,000 to 11,010; T041-12 uses the same function for the tail and tests an ingest held after T2 across the end and
-a first read of a new audit window that sees the run finished.
+rule for the list route's `complete`, with tests of a finished run of 12,000 lines read with a filter that matches only
+lines 11,000 to 11,010 and of a finished run of 300 lines read unfiltered at `limit=50` to its end; T041-12 uses the
+same function for the tail and tests a tail over 450 lines, an ingest held after T2 across the end and a first read of a
+new audit window that sees the run finished.
 
 **Filters.** The run index (`tenant_id, run_id, stored_xid, sequence`) serves a read without `stream`; the stream index
 (`tenant_id, stream_id, stored_xid, sequence`) serves a read with it, so a step's view reads only its attempt log.
@@ -863,8 +867,10 @@ a first read of a new audit window that sees the run finished.
 `position(lower($q) in lower(message)) > 0` as a bound parameter. A request scans at most 5,000 rows of the run from its
 cursor, in index order, and `nextCursor` is the position after the last row it scanned, whether or not it matched, as
 the tail's `progress` event is; so a filter that matches nothing moves on and never rescans. A client that gets an
-empty page with `complete` false reads again from `nextCursor` (section 8). `stream` is matched by
-public id together with the run and the tenant. A marker has the level `info`, and `minLevel` never hides a marker.
+empty page with `complete` false reads again at once only while `nextCursor` moved; when it did not move, the client
+has caught up and polls at the tail's interval (section 8). `may_read` runs right after the run is found and before
+`stream` is resolved, so a reader without the grant gets the same `403` whether or not the stream exists. `stream` is
+matched by public id together with the run and the tenant. A marker has the level `info`, and `minLevel` never hides a marker.
 
 **Audit.** `run.logs_read` is a new `AuditAction` in `crates/domain/src/audit.rs`, added to `collapses_repeats()` and
 to `repeat_window()` with 300 seconds (`audit.rs:259, 287`). It is written by `insert_audit`
@@ -1034,7 +1040,8 @@ is recorded and the others return as repeats (`scripts.rs:1792-1797`), as today;
 attempt and no iteration (G041-007). Widening the key belongs to feature 005. The runner's report, `ExecutionReport`
 and `recordScriptExecution` do not change.
 
-**When it is written** (OD-2026-11-16-7). `record_execution` (`crates/infra-postgres/src/scripts.rs:1775`) is unchanged
+**When it is written** (OD-2026-11-16-7). The decision runs in the adapter's one method, which calls the domain's
+`script_marker_decision` between its reads and its writes. `record_execution` (`crates/infra-postgres/src/scripts.rs:1775`) is unchanged
 and commits first. When it reports the execution inserted (not a repeat) for a run, the application's script service
 (`crates/application/src/scripts.rs`) calls `StepLogStore::record_script_marker(execution)`, a short transaction of its
 own in `crates/infra-postgres/src/step_logs.rs`. The decision is a pure function of the domain,
@@ -1045,7 +1052,8 @@ so that a marker can never commit after a tail has sent `end`. Each outcome is c
 data-model.md §7), which is where a skipped marker is seen. A crash between the two commits loses that one marker; the
 streams route still lists the execution.
 
-**The marker's transaction**, in this order, which keeps the one lock order of section 2:
+**The marker's transaction**, opened by `begin_safely` with a lock timeout of 200 ms, in this order, which keeps the one
+lock order of section 2:
 
 1. `SELECT pg_current_xact_id()` first, as the ingest does, so that a marker whose transaction saw the run unfinished has
    an id below any end horizon (section 5).
@@ -1053,14 +1061,20 @@ streams route still lists the execution.
    resources, read under their policy fences taken shared (L1), as the ingest's T3 reads them.
 3. The marker stream: `INSERT … ON CONFLICT (tenant_id, public_id) DO NOTHING` into `step_log_streams` with
    `source = script` and `public_id` the execution's id, so a repeated call stores nothing; `last_at` now and
-   `expires_at` the earlier of now plus the namespace's `step_log_retention_days` and the execution's own `expires_at`,
-   so that the marker never outlives the execution it opens.
+   `expires_at` the earlier of now plus the namespace's `step_log_retention_days` and the stored
+   `script_executions.expires_at` of that id, read in this statement (the store keeps the retention pinned on the lease,
+   `crates/infra-postgres/src/scripts.rs:1812-1826`, which can be shorter than the current one), so that the marker
+   never outlives the execution it opens.
 4. The tenant allowance, `sagat_quota_step_log_allowance(tenant)`, without a lock: if the marker's 128 bytes do not
    fit, nothing more is written and the metric counts `skipped_quota`.
 5. One line of kind `script_marker`, level `info`, with the execution id, at the stream's `next_marker_sequence`.
 6. Commit: the finalizer charges the marker to `tenant_step_log_bytes` (L3, L4). If it raises
    `tenant_step_log_quota_exceeded`, the transaction has rolled back, no marker is stored and the metric counts
    `skipped_quota`. The script record, already committed, never depends on step-log quota (ADR-0027 Amendment, item 1).
+
+Any other error of the marker's transaction (a lock timeout, a lost connection, a deadlock) is caught by the script
+service, counted as `failed`, logged without text, and never changes `record_execution`'s answer, so the runner never
+retries a report that was kept; the marker of that execution is then lost, as after a crash.
 
 `take_log_prefix` and its callers do not change, and the Amendment's locking accessor
 `sagat_quota_lock_step_log_usage` is not built (a Note in ADR-0027, OD-2026-11-16-7). `listRunLogStreams` with
@@ -1072,11 +1086,14 @@ are untouched.
 one attempt in a collection, one execution and one marker are kept and the second report answers as a repeat with no
 marker; a repeat report writes none; a second call for the same execution stores nothing; a test run, a finished run,
 capture off in the namespace and the control plane's switch off write none; at the step-log limit, by the unlocked read
-and by the finalizer's raise, the execution is recorded and no line is stored; the marker stream expires no later than
-the execution; filtering `listRunLogs` by the execution id returns its marker; as the runtime role
+and by the finalizer's raise, the execution is recorded and no line is stored; a marker transaction made to fail (a
+`BEFORE INSERT` trigger the test installs on `step_log_streams`) leaves the report answered as kept and counts `failed`,
+also while the tenant usage row is held; the marker stream expires no later than the execution, with a retention
+pinned on the lease shorter than the namespace's; filtering `listRunLogs` by the execution id returns its marker; as the runtime role
 (`SAGAT_TEST_AS_RUNTIME_ROLE=1`); at barriers, a marker, an ingest of the same run, a delete of the run's logs and a
-change of `tenant_step_log_bytes` all commit with no deadlock; a marker transaction held after step 2 across the run's
-terminal transition is delivered by the tail before `end`. `script_marker_decision` has unit tests of each outcome.
+change of `tenant_step_log_bytes` all commit with no deadlock; a marker transaction held after step 2 (the test holds the
+namespace's step-log policy fence exclusively, so the marker waits with its id assigned and the run read unfinished)
+while the run is ended by a cancel is delivered by the tail before `end`. `script_marker_decision` has unit tests of each outcome.
 
 ### 8. Studio
 
@@ -1085,8 +1102,9 @@ In `frontend/apps/studio/src/features/runs/`:
 - A fourth tab, **Logs**, in `RunDetailPage.tsx` beside Graph, Table and Timeline, and a **Logs** section in
   `NodePanel.tsx` for the selected step with an attempt selector fed by the streams route (paged, both sources); the
   section reads the chosen attempt log with the `stream` filter, so it scans only that stream.
-- Paging: a list page that is empty while `complete` is false is not "no lines": `LogView` reads again from
-  `nextCursor` until a page holds lines or `complete` is true, showing "searching…" meanwhile.
+- Paging: a list page that is empty while `complete` is false is not "no lines": while `nextCursor` moves, `LogView`
+  reads again at once, showing "searching…"; once it stops moving, `LogView` has caught up and polls every 0.5 s, every
+  2 s once idle for 30 s, as the tail does, until `complete` is true.
 - `LogView.tsx`: rows windowed with `useWindowedRows`; each row shows time (worker time, with the stored time on demand
   and a note when the two differ by more than five minutes), level as text and shape as well as colour, the step and
   iteration in the whole-run view, the message and the exception as text, never as HTML, never auto-linked, with terminal
@@ -1270,8 +1288,8 @@ The options the ADRs weighed, with their reasons, are in ADR-0084 ("Considered o
   rule of design 038 picks `integration_claim_transition_efficiency`, where the lock tests live); SC-041-007 by T041-31
   before the schema and T041-9 at the end, with the machine, its load and the PostgreSQL configuration stated, in
   `specs/041-step-logs/validation-report.md`. The ingest's statement count is budgeted as an equality.
-- **NFR-041-SEC (security)** No grant beyond those of data-model.md §4, no `SECURITY DEFINER` function beyond the
-  two accessors of ADR-0027's Amendment, no role membership. The
+- **NFR-041-SEC (security)** No grant beyond those of data-model.md §4, no new `SECURITY DEFINER` function beyond the
+  accessor `sagat_quota_step_log_allowance` of ADR-0027's Amendment, no role membership. The
   cross-tenant battery covers the RPC and the four routes. The canary (SC-041-004) runs in the conformance suite and in
   the server's integration suite. Line text never reaches a metric, span, audit record, error or the platform's log; T041-8
   searches the server's captured output for the canary.
@@ -1476,7 +1494,8 @@ Slice B, the server stores:
   §8), whose T3 reads the policies through `content_usage::admission_policy`, made `pub(crate)` with a batched variant
   for the three resources; T7's unlocked reads of the binding's patterns and of the membership;
   `the_shared_secrets_lock_has_one_caller_and_the_scoped_path_never_upgrades` (`crates/infra-postgres/src/quotas.rs:1323-1344`)
-  extended to assert that `step_logs.rs` calls neither `share_secrets_lock(` nor `lock_secrets(`; the two public scrubber
+  extended to assert that `step_logs.rs` calls none of `share_secrets_lock(`, `lock_secrets(`, `hold_worker_binding(`,
+  `bound_patterns(` and `sagat_lock_memberships` (data-model.md §8, T7); the two public scrubber
   entry points; `WorkerStore::supports_step_log_protocol` and its implementation
   (`crates/infra-postgres/src/workers.rs:199-206`); `store_error_without_text` on every statement that binds line text;
   the metrics the ingest emits (`step_log_batches_total`, `step_log_lines_stored_total`, `step_log_bytes_stored_total`,
@@ -1606,12 +1625,15 @@ Slice C, the server serves:
   rows with `nextCursor` at the scanned position, the stream index for a read with `stream`, the end rule of D1958 for
   `complete`, the filters, the `[RunRead, RunLogsRead]` admission, `may_read` (the PII grant in every namespace), the
   throttled audit, the gauge `database_oldest_transaction_age_seconds` (section 9). Tests: each of those; a reader
-  without the grant refused in a namespace whose schemas carry no annotation; a stream whose `expires_at` has passed
-  returns no line before it is marked, and a stream being purged is shown expired; a finished run of 12,000 lines read
-  with a filter that matches only lines 11,000 to 11,010 returns them before `complete`; a race of two first reads that
+  without the grant refused in a namespace whose schemas carry no annotation, with the same `403` for an existing and a
+  missing `stream`; a stream whose `expires_at` has passed returns no line before it is marked, and a stream being
+  purged is shown expired; the completion predicate as a pure function, one unit test per case; a race of two first reads that
   writes one record; a failure to write the audit (a test-installed trigger on `audit_records` that raises) that
   returns no line; a filtered read that matches nothing and still moves on; the canary of T041-8 absent from every body;
-  the cross-tenant battery; and the held-transaction tests of the horizon, named `horizon_*`, on PostgreSQL 16 and 18.
+  the cross-tenant battery; and, named `horizon_*` and run on PostgreSQL 16 and 18, the held-transaction tests of the
+  horizon, a finished run of 12,000 lines over two attempts (the attempt ceiling is 10,000) read with a filter that
+  matches only lines 11,000 to 11,010, which returns them before `complete`, and a finished run of 300 lines read
+  unfiltered at `limit=50`, which returns all 300 before `complete`.
   Those run on a server of their own: `start_server` of `tests/support/mod.rs:136-176` takes the image tag as a
   parameter, and the support gains `isolated_server(tag)`, which starts a container no other test of the process shares
   and returns a guard holding it, and `fresh_db_on(&guard)`; the tag is `16-alpine` or `SAGAT_TEST_POSTGRES_TAG`; under
@@ -1632,9 +1654,10 @@ Slice C, the server serves:
   `crates/api-http/src/routes/execution.rs:1340` shared with the graph stream, events, resume, `progress`, reconnect,
   caps shared with the graph stream, the per-poll grant check, the audit at each window, the re-check every 30 s, the
   end rule built in T041-11, and the metrics `step_log_tails_open` and `step_log_tails_refused_total`. Tests: a reconnect
-  neither skips nor repeats; a filtered tail of the 12,000-line run of T041-11 delivers lines 11,000 to 11,010 before
-  `end`; a revoked PII grant stops the lines at the next poll; the graph stream emits only `graph`, `reconnect` and `end`
-  (ADR-0084 decision 10); and, named `horizon_*` and run on `isolated_server` on 16 and 18, an ingest held after T2
+  neither skips nor repeats; a revoked PII grant stops the lines at the next poll; the graph stream emits only `graph`,
+  `reconnect` and `end` (ADR-0084 decision 10); and, named `horizon_*` and run on `isolated_server` on 16 and 18, a
+  filtered tail of the 12,000-line run of T041-11 that delivers lines 11,000 to 11,010 before `end`, an unfiltered tail
+  of a finished run of 450 lines that delivers all 450 before `end`, an ingest held after T2
   across the run's terminal transition is delivered before `end`, a first read of a new audit window that sees the run
   finished does not end early, and a forged `end` for a running run is ignored. `docs/reference/api.md` regenerated.
   Done when these pass, also as the runtime role, the `horizon_` tests on 16 and 18.
@@ -1649,8 +1672,8 @@ Slice C, the server serves:
   `script_marker_decision`; `SAGAT_STEP_LOGS_ENABLED` read by the control plane and passed to the script service, with
   its test, and the test platform's `Options` field `step_logs_enabled` of T041-6 applied to it too; the metric
   `step_log_script_markers_total`; the marker joins the lock-order test; the tests of section 7, which run the script
-  runner through `lab_with` (`tests/support/scripts.rs:38`), the terminal-transition case holding the marker's
-  transaction after its step 2. Done when these pass, also as the runtime role.
+  runner through `lab_with` (`tests/support/scripts.rs:38`), the terminal-transition case holding the namespace's
+  step-log policy fence exclusively while a cancel ends the run. Done when these pass, also as the runtime role.
   Refs: FR-041-016
   Owner-gate: OD-2026-11-13-14, OD-2026-11-15-9, OD-2026-11-15-16, OD-2026-11-16-7, OD-2026-11-16-8
   Files: modify `crates/domain/src/step_logs.rs`, `crates/infra-postgres/src/step_logs.rs`,
@@ -1665,7 +1688,7 @@ Slice C, the server serves:
   descriptions of the two operations change, and with them the digest value and its comment in
   `tests/contract/payload-classification/openapi.rs:385`, and `docs/reference/api.md`, each after reading the diff; the
   release-note line that viewers, and readers without the PII grant, no longer read script logs. Tests: a viewer gets
-  no log; a developer without the grant gets no log; a returned log is audited; the canary of T041-8 written to a script
+  no log; a developer without the grant gets no log, and `listScriptExecutions` shows them `logTruncated` false; a returned log is audited; the canary of T041-8 written to a script
   log is absent from a withheld body. Done when these pass, also as the runtime role.
   Refs: FR-041-022
   Owner-gate: OD-2026-11-13-18, OD-2026-11-15-4, OD-2026-11-16-8
