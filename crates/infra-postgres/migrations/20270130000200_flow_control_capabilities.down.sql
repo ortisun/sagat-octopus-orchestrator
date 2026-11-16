@@ -15,6 +15,7 @@ BEGIN
     END IF;
 END $guard$;
 
+DROP FUNCTION flow_control_kinds_without_capable_process(text, text[]);
 ALTER TABLE serving_instances DROP CONSTRAINT serving_instances_capabilities_closed;
 ALTER TABLE serving_instances ADD CONSTRAINT serving_instances_capabilities_closed CHECK (
     capabilities <@ ARRAY['schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1']::text[]

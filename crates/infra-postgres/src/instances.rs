@@ -57,12 +57,10 @@ pub fn live_capable_step(
     move |conn| {
         Box::pin(async move {
             let lacking: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM unnest($1::text[]) AS k(kind) WHERE NOT EXISTS ( \
-                   SELECT 1 FROM serving_instances s WHERE s.kind = k.kind \
-                      AND s.last_seen > clock_timestamp() - interval '30 seconds' AND $2 = ANY (s.capabilities))",
+                "SELECT flow_control_kinds_without_capable_process($1, $2::text[])",
             )
-            .bind(&kinds)
             .bind(capability.as_str())
+            .bind(&kinds)
             .fetch_one(&mut *conn)
             .await
             .map_err(store_error)?;

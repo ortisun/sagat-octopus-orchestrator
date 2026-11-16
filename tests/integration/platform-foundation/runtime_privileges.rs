@@ -99,6 +99,11 @@ const ALLOWED: &[Allowed] = &[
     },
     Allowed {
         file: INSTANCES,
+        need: "EXECUTE flow_control_kinds_without_capable_process()",
+        reason: "T022-094: the feature step of a flow-control activation, run inside the operator's activation with the schema-owning role (`control-plane flow-control-activate`); the runtime role never activates",
+    },
+    Allowed {
+        file: INSTANCES,
         need: "EXECUTE platform_requirement_remove()",
         reason: "T018-080: removing a requirement is the activation in reverse, operator only (see the entry for platform_requirement_activate)",
     },
