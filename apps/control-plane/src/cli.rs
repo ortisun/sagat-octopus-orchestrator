@@ -23,7 +23,7 @@ pub enum Command {
     /// schema-owning database role.
     ScheduleTriggerHandover(HandoverArgs),
     /// List the stored workflow versions whose `inputSchema` is outside the supported subset (design 043), then exit
-    /// 0 (none), 1 (at least one) or 2 (the command failed). Reads only; run it with the owner role, as `migrate`.
+    /// 0 (none), 1 (at least one) or 2 (the command failed). Reads only; it runs with the process's database settings (the runtime role is enough).
     InputSchemaInventory,
     /// Print a new signing key for scripts (`SAGAT_SCRIPT_SIGNING_KEY`) and exit. Needs no database.
     ScriptKey,
@@ -148,7 +148,7 @@ COMMANDS:
                   owner role: schedule-trigger-handover --operator NAME [--expect-live N] [--dry-run | --apply]
     input-schema-inventory  List the stored workflow versions whose inputSchema is outside the supported subset (every start
                   of them is refused in enforce mode), and for information those with an inputSchema and a trigger; reads
-                  only, with the owner role as for migrate. Exit 0: none would be refused; 1: at least one; 2: it failed
+                  only, with the process's database settings. Exit 0: none would be refused; 1: at least one; 2: it failed
     script-key    Print a new Ed25519 key for SAGAT_SCRIPT_SIGNING_KEY (it signs the artifacts of scripts)
     healthcheck   Probe the local API (GET /v1/health); exit 0 when healthy
     version       Print the version

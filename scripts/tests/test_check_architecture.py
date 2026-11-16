@@ -518,7 +518,7 @@ class TheApplicationHoldsNoRuntime(unittest.TestCase):
     def test_the_application_of_this_repository_passes(self):
         result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("no runtime in the application", result.stdout)
+        self.assertIn("the application's runtime confined to one file", result.stdout)
 
 
 def creator_check(files, packages=None):

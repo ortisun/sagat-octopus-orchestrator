@@ -16,13 +16,16 @@ Reads `cargo metadata` and fails when:
     schedule started nothing about the schedule, and nothing else would fail;
   * the run-input validator (`crates/infra-schema/src/run_input/`, design 043) names `jsonschema` (a `use`, an `extern crate` or
     a qualified path): it is the oracle of a test only, never on the path (D043-074, ADR-0090);
-  * `tokio` is a normal or build dependency of `sagat-application` (a dev-dependency is fine): the runtime of the run-input gate
-    lives in the adapter behind the port (D043-071, D043-077);
+  * `tokio` is a dependency of `sagat-application` with a default feature or a feature other than `rt`, or a build dependency,
+    or `tokio` is named in `crates/application/src/**` outside `collection_source.rs` and test modules: the runtime of the
+    run-input gate lives in the adapter behind the port, and the `rt` exception serves design 042's parse alone (ADR-0092);
+  * a composition root under `apps/*/src` builds a `RunService`, `Scheduler`, `EventDispatcher` or `ScheduleService` without
+    `.with_run_inputs` in its builder chain (ADR-0092 decision 2, D043-161);
   * an `INSERT INTO runs` is written outside its three places (`create` in `crates/infra-postgres/src/execution.rs`,
     `continue_as_new` and `continue_evaluated` in `crates/infra-postgres/src/chain_progress.rs`), counted per function
     (FR-043-016): every run row is written where the input of the run is a `CheckedRunInput`;
   * the legacy continue-as-new (`.continue_as_new(`, which carries an input nobody checked) is called outside the tests, other
-    than by a forwarder of the same name (FR-043-016, D043-122);
+    than by the one forwarder, `continue_as_new` in `crates/infra-postgres/src/chain_progress.rs` (FR-043-016, D043-122);
   * the `test-support` feature of `sagat-application` (the constructor of `CheckedRunInput` that skips the gate) is enabled
     anywhere but a `[dev-dependencies]` entry (FR-043-016);
   * a `CheckedRunInput` is built (a struct expression or an associated function call) outside
@@ -696,7 +699,7 @@ def main(argv):
             print(f"  - {e}")
         return 1
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
-          f"no jsonschema in the run-input validator, no runtime in the application, every run created with a checked input)")
+          f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input)")
     return 0
 
 

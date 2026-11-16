@@ -1037,7 +1037,8 @@ pub struct StoredVersion {
 }
 
 /// The stored versions of every tenant whose id is after `after`, ascending by id, at most `limit`: a page of the
-/// inventory, which runs with the owner's credentials as `migrate` does. It reads and writes nothing else.
+/// inventory, which runs with the control plane's database settings (the runtime role where one is set: it needs only
+/// `SELECT` on `workflow_versions` and `workflows`). It reads and writes nothing else.
 ///
 /// # Errors
 /// [`StoreError`] when the read fails.
