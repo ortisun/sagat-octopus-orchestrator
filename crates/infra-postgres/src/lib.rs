@@ -73,7 +73,7 @@ pub use chain_progress::{PgChainProgressStore, initialize_chain_in_transaction};
 pub use clock::DatabaseClock;
 pub use declared_operations::PgDeclaredOperationStore;
 pub use definitions::{
-    PgDefinitionStore, StoredVersion, stored_versions_page, version_still_started,
+    PgDefinitionStore, StoredVersion, schedules_exist, stored_versions_page, version_still_started,
 };
 /// The scan of the pending resets whose source did not end within the window, exposed so a test can check its plan.
 #[doc(hidden)]

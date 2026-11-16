@@ -124,6 +124,14 @@ async fn publication_refuses_a_schema_outside_the_subset_in_enforce_and_warns_in
     );
 }
 
+/// The settings the inventory runs with in production: the runtime role, which must hold every grant it reads with.
+fn as_runtime(w: &World) -> DatabaseConfig {
+    database(w.db.url_for(
+        crate::support::RUNTIME_ROLE,
+        crate::support::RUNTIME_ROLE_PASSWORD,
+    ))
+}
+
 fn database(url: String) -> DatabaseConfig {
     DatabaseConfig {
         url,
@@ -161,7 +169,7 @@ async fn the_inventory_lists_the_versions_that_would_be_refused_and_exits_by_wha
         .await
         .expect("inside the subset");
     }
-    let only_inside = input_schema_inventory(&database(w.db.url.clone())).await;
+    let only_inside = input_schema_inventory(&as_runtime(&w)).await;
     let inventory = only_inside.as_ref().expect("the inventory runs");
     assert!(inventory.refused.is_empty(), "{inventory:?}");
     assert_eq!(inventory.triggered.len(), 1, "{inventory:?}");
@@ -178,7 +186,7 @@ async fn the_inventory_lists_the_versions_that_would_be_refused_and_exits_by_wha
     )
     .await
     .expect("stored");
-    let found = input_schema_inventory(&database(w.db.url.clone())).await;
+    let found = input_schema_inventory(&as_runtime(&w)).await;
     let inventory = found.as_ref().expect("the inventory runs");
     assert_eq!(
         exit_code(&found),
@@ -238,7 +246,7 @@ async fn the_inventory_lists_the_versions_that_would_be_refused_and_exits_by_wha
     .execute(&w.db.pool)
     .await
     .expect("an unreadable stored document, written as the owner");
-    let unreadable = input_schema_inventory(&database(w.db.url.clone())).await;
+    let unreadable = input_schema_inventory(&as_runtime(&w)).await;
     let inventory = unreadable.as_ref().expect("the inventory runs");
     assert_eq!(inventory.unreadable.len(), 1, "{inventory:?}");
     assert_eq!(
@@ -355,7 +363,7 @@ async fn a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all
         .expect("the fixed version is active");
     }
 
-    let default = input_schema_inventory(&database(w.db.url.clone())).await;
+    let default = input_schema_inventory(&as_runtime(&w)).await;
     let inventory = default.as_ref().expect("the inventory runs");
     assert_eq!(
         inventory
@@ -386,7 +394,7 @@ async fn a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all
         "but counted in the summary: {printed}"
     );
 
-    let all = input_schema_inventory_in(&database(w.db.url.clone()), Scope::All).await;
+    let all = input_schema_inventory_in(&as_runtime(&w), Scope::All).await;
     let listed = all.as_ref().expect("the inventory runs").to_string();
     assert!(
         listed.contains(&format!("superseded tenant={}", w.admin.tenant_id())),
@@ -401,7 +409,7 @@ async fn a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all
         .execute(&w.db.pool)
         .await
         .expect("the run finished, written as the owner");
-    let recent = input_schema_inventory(&database(w.db.url.clone())).await;
+    let recent = input_schema_inventory(&as_runtime(&w)).await;
     assert_eq!(exit_code(&recent), 1, "a run created lately: {recent:?}");
     // created longer ago than the quiet days, nothing starts the old version of `busy-flow` either: exit 0
     sqlx::query("UPDATE runs SET created_at = now() - interval '40 days' WHERE workflow_id = $1")
@@ -409,7 +417,7 @@ async fn a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all
         .execute(&w.db.pool)
         .await
         .expect("the run was created long ago, written as the owner");
-    let quiet = input_schema_inventory(&database(w.db.url.clone())).await;
+    let quiet = input_schema_inventory(&as_runtime(&w)).await;
     assert_eq!(exit_code(&quiet), 0, "{quiet:?}");
     assert_eq!(quiet.as_ref().expect("runs").superseded.len(), 2);
 }
@@ -516,7 +524,7 @@ async fn a_version_a_live_schedule_pins_is_never_superseded() {
     .expect("the guard on again");
     tx.commit().await.expect("committed");
 
-    let found = input_schema_inventory(&database(w.db.url.clone())).await;
+    let found = input_schema_inventory(&as_runtime(w)).await;
     let inventory = found.as_ref().expect("the inventory runs");
     assert!(
         inventory
@@ -533,4 +541,34 @@ async fn a_version_a_live_schedule_pins_is_never_superseded() {
         "{inventory:?}"
     );
     assert_eq!(exit_code(&found), 1);
+}
+
+/// The stamp of the last migration of v0.2.0, the schema the inventory reads before the upgrade.
+const V0_2_0_LAST_MIGRATION: i64 = 20_261_220_000_000;
+
+/// Second re-read of design 043 (correctness, new Major): the inventory runs before the migration, on a 0.2.x database,
+/// which has no `schedules` table (feature 018 is not in a 0.2.x release). There a version outside the subset is listed
+/// and the command exits 1, never 2 for a missing table.
+#[tokio::test]
+async fn the_inventory_runs_on_a_database_of_0_2_0_before_the_migration() {
+    let w = world().await;
+    publish_in(
+        &w,
+        InputValidationMode::Report,
+        &with_schema("old-schema-flow", outside(), None),
+    )
+    .await
+    .expect("stored outside the subset");
+    sagat_infra_postgres::MIGRATOR
+        .undo(&w.db.pool, V0_2_0_LAST_MIGRATION)
+        .await
+        .expect("back to the schema of v0.2.0");
+    let schedules: bool = sqlx::query_scalar("SELECT to_regclass('public.schedules') IS NOT NULL")
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("catalog");
+    assert!(!schedules, "a database of v0.2.0 has no schedules");
+    let found = input_schema_inventory(&as_runtime(&w)).await;
+    assert_eq!(exit_code(&found), 1, "{found:?}");
+    assert_eq!(found.as_ref().expect("runs").refused.len(), 1);
 }

@@ -40,8 +40,12 @@ the refusals is `specs/043-run-input-validation/contracts/errors.md`.
    change the exit status; `control-plane input-schema-inventory --all` lists those too (OD-2026-11-16-5). Exit 0:
    nothing anyone still starts would be refused; 1: at least one version would; 2: the command failed (it could not
    connect, or a stored document could not be read). It needs `SELECT` on `workflow_versions`, `workflows`,
-   `schedules`, `schedule_revisions` and `runs`, which the runtime role holds. Each version outside the subset costs one
-   statement over the runs of its workflow, bounded by the statement timeout of the control plane's settings.
+   `schedules`, `schedule_revisions` and `runs`, which the runtime role holds (a database of 0.2.x, read before the
+   migration, has no schedules, and none is read). Each version outside the subset costs one statement over the runs of
+   its workflow and the schedules of its tenant, bounded by the statement timeout of the control plane's settings. A
+   rerun or a reset of a superseded version's run created more than 30 days ago is not foreseen: it is refused `422`
+   when asked for. A version whose schema makes the validator panic is listed `interrupted`, the scan goes on, and the
+   command exits 2: report it with its ids.
 2. Decide the mode. If callers or schemas cannot be fixed before the upgrade, set
    `SAGAT_RUN_INPUT_VALIDATION=report` in the manifest of **every** execution engine and control plane **before you
    migrate** (D043-040): the engines are upgraded first and default to `enforce`, so the first upgraded engine would

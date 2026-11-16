@@ -846,7 +846,9 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   that was buffered counted twice, at its decision and at its release, and transient refusals uncounted ahead of a
   start. `Counting` is now `All` or `Ahead`; `recheck` counts as any start. Test
   `a_buffered_action_released_and_started_is_counted_once` (`integration_schedules_bulk_operations`, seen failing first:
-  three `accepted` for two starts).
+  three `accepted` for two starts). The race between `acquire_blocking`'s timeout and a late grant has no test of its own
+  (correctness Nit 9 of the first re-read): the code takes the queue's lock and gives a raced grant back, as the async
+  path does, whose race is held by `a_release_in_the_gap_of_a_timed_out_waiter_is_not_counted_twice`; left open.
 - **D043-185** (2026-11-16) A version that a schedule pins is never superseded while the schedule is not deleted,
   however seldom it fires (re-read of 2026-11-16: correctness Major 3, architecture Major 4, security Nit 2):
   `version_still_started` also reads the current revision of each live schedule of the tenant
@@ -862,6 +864,18 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   test on a pool of its own cannot raise it (correctness Major 5). Two Nits were left as they are: the pre-checks are
   first come, first served among the tenants that publish (G043-057), and the migration test undoes to a fixed stamp,
   so a later migration must keep it in mind (architecture Nit 13).
+- **D043-187** (2026-11-16) The second targeted re-read (at `d890b926`; reports `reread-2-*.md` of round 2) found one
+  new Major: the inventory failed, exit 2, on a database of 0.2.x, which it must read before the migration, because
+  the schedule clause of D043-185 named a table feature 018 creates (correctness). `schedules_exist` reads the catalog
+  once and the clause is left out when there are no schedules. Test `the_inventory_runs_on_a_database_of_0_2_0_before_the_migration`
+  (seen failing first: `relation "schedules" does not exist`, exit 2). The inventory tests now run as the runtime role
+  (security Nit 2), so the grants it reads with are tested. A version whose schema makes the validator panic is listed
+  `interrupted` and the scan goes on, exit 2, where it stopped the command with a misleading "run it again"
+  (correctness Nit 4, architecture Nit 4, security Nit 3). The other text finding (comprehension Major: Technical Plan 5
+  and the gate's sketch still said the recheck counts only a refusal) and the Nits were fixed in the design: the counting
+  of D043-184 everywhere, the first migration's guards alone, the pre-checks' place in the queue, "superseded" and its
+  number in the summary, `MAX_MULTIPLE_OF` pinned and in the contract, the order of ADR-0092's options, and the tests
+  T043-5, T043-13 and T043-15 had left unnamed.
 
 ## 3. Gaps
 

@@ -1440,7 +1440,9 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
     ///
     /// # Errors
     /// [`AppError::Forbidden`] without `definition:write`; [`AppError::NotFound`] for an unknown
-    /// workflow (another tenant's is also not found, and audited).
+    /// workflow (another tenant's is also not found, and audited); [`AppError::InvalidDefinition`] with
+    /// [`IrError::ValidatorBusy`] when the `inputSchema` could not be pre-checked now (no permit, or a panic of the
+    /// validator): the document was not judged (design 043, D043-183).
     pub async fn validate(
         &self,
         principal: &Principal,

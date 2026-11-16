@@ -19,7 +19,7 @@ pub(super) const DIALECTS: [&str; 2] = [
 ];
 
 /// The largest divisor `multipleOf` may have: above 2^53 an `f64` no longer holds every integer.
-pub(super) const MAX_MULTIPLE_OF: u64 = 1 << 53;
+pub const MAX_MULTIPLE_OF: u64 = 1 << 53;
 
 /// The annotations: no effect on validation, and the only keywords a `$ref` may stand beside (with the containers).
 const ANNOTATIONS: [&str; 7] = [

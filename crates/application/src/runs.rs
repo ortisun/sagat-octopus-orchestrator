@@ -1709,8 +1709,9 @@ where
         } else {
             crate::run_input::FieldPolicy::Show
         };
-        // a schedule's action was checked, and counted, by the firing before its decision (`check_scheduled`): checked
-        // again here, against the version resolved now, and not counted twice (D043-147)
+        // a schedule's action was checked by the firing before its decision (`check_scheduled`), which counted only what
+        // would have stopped it: checked again here, against the version resolved now, and counted as any start
+        // (D043-147, D043-184)
         let checked = if scheduled.is_some() {
             self.run_inputs
                 .recheck(

@@ -417,8 +417,6 @@ impl CheckedRunInput {
 }
 
 /// What `check_before_its_start` and `check_ahead` count: a check ahead of a start counts only what stops the start.
-const BEFORE_ITS_START: Counting = Counting::Ahead;
-/// What `check_ahead` counts.
 const AHEAD: Counting = Counting::Ahead;
 
 /// What one call of the gate counts in `run_input_validations_total` (D043-173, D043-184).
@@ -578,7 +576,7 @@ impl RunInputGate {
             input,
             creator,
             policy,
-            BEFORE_ITS_START,
+            AHEAD,
         )
         .await
     }
@@ -930,8 +928,9 @@ mod tests {
         })
     }
 
-    /// Re-review item 2 (D043-152): a recheck that refuses (a version promoted after the check) is counted as a refusal,
-    /// so an action recorded `INPUT_INVALID` has its refusal in the metric beside the accepted check.
+    /// Re-review item 2 (D043-152) and D043-184: an action accepted ahead of its start and refused at its start (a version
+    /// promoted in between) is one validation, `refused`; the check ahead counted nothing; a check ahead that finds no
+    /// permit stops the start and is counted `deadline`.
     #[test]
     fn a_refusing_recheck_is_counted() {
         use futures_util::FutureExt as _;
@@ -939,20 +938,25 @@ mod tests {
         let counted = Arc::new(Counted::default());
         let recorder = Recorder(Arc::clone(&counted));
         let gate = RunInputGate::new(
-            Arc::new(Scripted::answering([Ok(()), invalid(Rule::Required)])),
+            Arc::new(Scripted::answering([
+                Ok(()),
+                invalid(Rule::Required),
+                Err(SchemaRefusal::Busy),
+            ])),
             InputValidationMode::Enforce,
         );
         let definition_schema = schema();
         metrics::with_local_recorder(&recorder, || {
             let tenant = TenantId::generate();
             let version = WorkflowVersionId::generate();
-            gate.check_schema(
+            gate.checked(
                 tenant,
                 version,
                 Some(&definition_schema),
                 b"{}".to_vec(),
                 Creator::Schedule,
                 FieldPolicy::Show,
+                Counting::Ahead,
             )
             .now_or_never()
             .unwrap()
@@ -969,13 +973,25 @@ mod tests {
             .now_or_never()
             .unwrap()
             .unwrap_err();
+            gate.checked(
+                tenant,
+                version,
+                Some(&definition_schema),
+                b"{}".to_vec(),
+                Creator::Schedule,
+                FieldPolicy::Show,
+                Counting::Ahead,
+            )
+            .now_or_never()
+            .unwrap()
+            .unwrap_err();
         });
         let counts = counted.0.lock().unwrap().clone();
         assert_eq!(
             counts,
             std::collections::BTreeMap::from([
                 (
-                    "run_input_validations_total{creator=schedule,outcome=accepted}".to_owned(),
+                    "run_input_validations_total{creator=schedule,outcome=deadline}".to_owned(),
                     1
                 ),
                 (
@@ -1101,7 +1117,7 @@ mod tests {
             // a schedule's action: the check before its decision, then the start's recheck
             // a cancelling reset: the check of its request, then the completion's check
             for (creator, ahead, start) in [
-                (Creator::Schedule, BEFORE_ITS_START, Counting::All),
+                (Creator::Schedule, AHEAD, Counting::All),
                 (Creator::Repeat, AHEAD, Counting::All),
             ] {
                 for counting in [ahead, start] {

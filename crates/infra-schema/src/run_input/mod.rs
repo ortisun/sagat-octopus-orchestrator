@@ -41,7 +41,7 @@ pub use compile::CompiledInputSchema;
 pub use counter::{Counters, Limits};
 /// Limits of `run-input-validation-v1` held by the pin test of D043-178 (D043-186).
 pub use pattern::{MAX_PATTERN_NESTING, MAX_REPETITION};
-pub use vocabulary::MAX_POINTER_BYTES;
+pub use vocabulary::{MAX_MULTIPLE_OF, MAX_POINTER_BYTES};
 
 /// The work budget of one validation, in units of the counter (NFR-043-BOUND, G043-006, G043-017).
 pub const RUN_INPUT_WORK_UNITS: u64 = 1_000_000;
@@ -87,12 +87,13 @@ pub use sagat_application::run_input::{
 /// inventory run it.
 ///
 /// # Errors
-/// The first violation ([`PrecheckRefusal::Unusable`]), or [`PrecheckRefusal::Busy`] when no permit came within the wait.
+/// The first violation ([`PrecheckRefusal::Unusable`]); [`PrecheckRefusal::Busy`] when no permit came within the wait;
+/// [`PrecheckRefusal::Interrupted`] when the compile panicked.
 ///
 /// It compiles up to [`MAX_PATTERNS`] patterns, so it runs off the async workers on a permit of the process's one pool,
 /// the starts' (security review of 2026-11-16, Major 2; round 2, architecture 4): a start and a pre-check together hold
 /// at most [`RUN_INPUT_PERMITS`], and a pre-check waits at most [`permits::RUN_INPUT_PERMIT_WAIT`]. Counted in
-/// `run_input_prechecks_total{outcome}` (`admitted`, `unusable`, `busy`).
+/// `run_input_prechecks_total{outcome}` (`admitted`, `unusable`, `busy`, `interrupted`).
 pub fn precheck(schema: &[u8]) -> Result<(), PrecheckRefusal> {
     precheck_on(RunInputValidator::process().permits(), schema, true)
 }
@@ -111,7 +112,7 @@ pub enum PrecheckRefusal {
 /// [`precheck`] with the permits of `pool`.
 ///
 /// # Errors
-/// The first violation, or [`PrecheckRefusal::Busy`].
+/// As [`precheck`].
 pub fn precheck_in(pool: &permits::Permits, schema: &[u8]) -> Result<(), PrecheckRefusal> {
     precheck_on(pool, schema, false)
 }

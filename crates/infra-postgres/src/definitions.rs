@@ -1040,8 +1040,10 @@ pub struct StoredVersion {
 /// workflow's active version, or a schedule that is not deleted pins it in its current revision (however seldom it fires),
 /// or a run of it is open (a reset, a continuation or a child of it would start it again), or a run of it was created in
 /// the last `quiet_days` days (a caller that names it). The inventory does not count a version outside the subset that
-/// nothing starts. It reads `workflows`, `schedules`, `schedule_revisions` and `runs` (by `runs_by_workflow_idx`, every
-/// run of the workflow) and writes nothing.
+/// nothing starts. It reads `workflows`, `runs` (by `runs_by_workflow_idx`, every run of the workflow) and, when
+/// `schedules` is true, `schedules` and `schedule_revisions` (every live schedule of the tenant), and writes nothing. A
+/// database of 0.2.x, which the inventory reads before the migration, has no schedules: [`schedules_exist`] says so, and
+/// then nothing is pinned (D043-187).
 ///
 /// # Errors
 /// [`StoreError`] when the read fails.
@@ -1051,9 +1053,14 @@ pub async fn version_still_started(
     workflow: WorkflowId,
     version: WorkflowVersionId,
     quiet_days: u16,
+    schedules: bool,
 ) -> Result<bool, StoreError> {
-    sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM workflows w \
+    const ACTIVE_OR_RUN: &str = "SELECT EXISTS (SELECT 1 FROM workflows w \
+                         WHERE w.tenant_id = $1 AND w.id = $2 AND w.active_version_id = $3) \
+             OR EXISTS (SELECT 1 FROM runs r \
+                         WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.workflow_version_id = $3 \
+                           AND (r.finished_at IS NULL OR r.created_at > now() - make_interval(days => $4)))";
+    const OR_PINNED: &str = "SELECT EXISTS (SELECT 1 FROM workflows w \
                          WHERE w.tenant_id = $1 AND w.id = $2 AND w.active_version_id = $3) \
              OR EXISTS (SELECT 1 FROM schedules s \
                           JOIN schedule_revisions sr ON sr.tenant_id = s.tenant_id AND sr.schedule_id = s.id \
@@ -1062,20 +1069,33 @@ pub async fn version_still_started(
                            AND sr.action->>'versionPolicy' = 'PINNED' AND sr.action->>'versionId' = $3::text) \
              OR EXISTS (SELECT 1 FROM runs r \
                          WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.workflow_version_id = $3 \
-                           AND (r.finished_at IS NULL OR r.created_at > now() - make_interval(days => $4)))",
-    )
-    .bind(tenant.as_uuid())
-    .bind(workflow.as_uuid())
-    .bind(version.as_uuid())
-    .bind(i32::from(quiet_days))
-    .fetch_one(pool)
-    .await
-    .map_err(store_error)
+                           AND (r.finished_at IS NULL OR r.created_at > now() - make_interval(days => $4)))";
+    sqlx::query_scalar(if schedules { OR_PINNED } else { ACTIVE_OR_RUN })
+        .bind(tenant.as_uuid())
+        .bind(workflow.as_uuid())
+        .bind(version.as_uuid())
+        .bind(i32::from(quiet_days))
+        .fetch_one(pool)
+        .await
+        .map_err(store_error)
+}
+
+/// Whether the database has the schedules of feature 018: a database of 0.2.x, which the inventory reads before the
+/// migration, does not (D043-187).
+///
+/// # Errors
+/// [`StoreError`] when the read fails.
+pub async fn schedules_exist(pool: &PgPool) -> Result<bool, StoreError> {
+    sqlx::query_scalar("SELECT to_regclass('public.schedule_revisions') IS NOT NULL")
+        .fetch_one(pool)
+        .await
+        .map_err(store_error)
 }
 
 /// The stored versions of every tenant whose id is after `after`, ascending by id, at most `limit`: a page of the
-/// inventory, which runs with the control plane's database settings (the runtime role where one is set: it needs only
-/// `SELECT` on `workflow_versions` and `workflows`). It reads and writes nothing else.
+/// inventory, which runs with the control plane's database settings (the runtime role where one is set). This page needs
+/// `SELECT` on `workflow_versions` and `workflows`; the inventory also reads `runs`, `schedules` and
+/// `schedule_revisions` ([`version_still_started`]). It writes nothing.
 ///
 /// # Errors
 /// [`StoreError`] when the read fails.

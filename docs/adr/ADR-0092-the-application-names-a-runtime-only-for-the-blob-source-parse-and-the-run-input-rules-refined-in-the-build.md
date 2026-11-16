@@ -72,15 +72,15 @@ start that an open holder answers, where no run is created (decision 10). An acc
 3. **Keep the rule that refuses any normal `tokio`, and fail the build** — breaks design 042 on `develop`.
 4. **A composition-root test in each app instead of the wiring rule** — needs a database and the whole composition for
    each service; the rule is cheap, runs everywhere, and fails on the next service that forgets the gate.
+5. **The gate as a required constructor argument of the four services**, so the compiler enforces decision 2 and
+   `unwired()` goes — the stronger form, and the way back if the rule proves too narrow. Not chosen in 0.3.0: about 66
+   `::new(` call sites, most in test support, would change in a release that is closing, and the unwired default
+   already fails closed (it refuses, never admits).
 6. **For decision 6: change the numbers in a release, with a release note** — simpler, but a stricter release would
    refuse, beside an older one, what the older one admits, until every process runs it; a capability lets the operator
    see the change and lock it.
 7. **For decision 7: keep ADR-0050's words, leave the time owed and retry** — a refused input is the same on every
    retry, so the action would be retried forever (the loop design 043 removes, Technical Plan 5).
-5. **The gate as a required constructor argument of the four services**, so the compiler enforces decision 2 and
-   `unwired()` goes — the stronger form, and the way back if the rule proves too narrow. Not chosen in 0.3.0: about 66
-   `::new(` call sites, most in test support, would change in a release that is closing, and the unwired default
-   already fails closed (it refuses, never admits).
 
 ## Consequences
 

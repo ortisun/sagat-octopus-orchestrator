@@ -3,12 +3,14 @@
 //! versions will refuse every start in `enforce` mode, and fix them or choose `report` first.
 //!
 //! It runs with the database settings of the control plane (the runtime role where a deployment sets one): it only
-//! reads, and needs nothing but `SELECT` on `workflow_versions`, `workflows` and `runs`. It reads the versions page by
-//! page and runs on each stored `inputSchema` the pre-check that publication and the start gate run. It prints one line
+//! reads, and needs nothing but `SELECT` on `workflow_versions`, `workflows`, `runs`, `schedules` and
+//! `schedule_revisions` (the last two absent on a database of 0.2.x, which it reads before the migration). It reads the
+//! versions page by page and runs on each stored `inputSchema` the pre-check that publication and the start gate run. It prints one line
 //! per version that would be refused (its ids, the issue, the keyword and its pointer), and, for information, one line
 //! per version within the subset that has an `inputSchema` and a trigger other than a manual start, whose triggered runs
 //! may be refused (G043-004). A version outside the subset that nothing starts any more (not its workflow's active one,
-//! no open run, no run created in [`SUPERSEDED_QUIET_DAYS`] days) is superseded: counted in the summary, listed with
+//! pinned by no schedule that is not deleted, no open run, no run created in [`SUPERSEDED_QUIET_DAYS`] days) is
+//! superseded: counted in the summary, listed with
 //! `--all`, and never a reason to exit 1 (OD-2026-11-16-5). It prints no schema text and no input, and writes nothing.
 //! Its exit status is 0 when no version would be refused, 1 when at least one would, and 2 when the command itself
 //! failed.
@@ -20,7 +22,7 @@ use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::InputSchemaIssue;
 use sagat_infra_ir::stored_input_schema;
-use sagat_infra_postgres::{stored_versions_page, version_still_started};
+use sagat_infra_postgres::{schedules_exist, stored_versions_page, version_still_started};
 use sagat_infra_schema::run_input::PrecheckRefusal;
 
 use crate::config::DatabaseConfig;
@@ -81,15 +83,17 @@ pub struct Inventory {
     pub scanned: u64,
     /// The stored documents that are not JSON objects (none should be): listed, never a reason to stop.
     pub unreadable: Vec<VersionIds>,
+    /// The versions whose schema made the validator panic, a defect to report: listed, never a reason to stop.
+    pub interrupted: Vec<VersionIds>,
 }
 
 impl Inventory {
     /// 0 when no version would be refused, 1 when at least one would (D043-072; a superseded one does not,
-    /// OD-2026-11-16-5), and 2 when a stored document could not be read, because the command cannot say what that version
-    /// would do (D043-111).
+    /// OD-2026-11-16-5), and 2 when a stored document could not be read or its schema made the validator panic, because
+    /// the command cannot say what that version would do (D043-111, D043-187).
     #[must_use]
     pub fn exit_code(&self) -> u8 {
-        if !self.unreadable.is_empty() {
+        if !self.unreadable.is_empty() || !self.interrupted.is_empty() {
             2
         } else {
             u8::from(!self.refused.is_empty())
@@ -134,6 +138,12 @@ impl fmt::Display for Inventory {
             writeln!(
                 f,
                 "information {ids} the inputSchema is applied to the event envelope of its triggers"
+            )?;
+        }
+        for ids in &self.interrupted {
+            writeln!(
+                f,
+                "interrupted {ids} the validator failed on this schema, a defect of the platform: report it with these ids"
             )?;
         }
         for ids in &self.unreadable {
@@ -193,6 +203,10 @@ pub async fn input_schema_inventory_in(
         scope,
         ..Inventory::default()
     };
+    // a database of 0.2.x, read before the migration, has no schedules to pin a version (D043-187)
+    let schedules = schedules_exist(&pool)
+        .await
+        .map_err(|error| RunError::Database(error.to_string()))?;
     let mut after = None;
     loop {
         let page = stored_versions_page(&pool, after, PAGE)
@@ -220,11 +234,14 @@ pub async fn input_schema_inventory_in(
             };
             match sagat_infra_schema::run_input::precheck(schema.bytes()) {
                 // the inventory checks one schema at a time in its own process: its pool is never full
-                Err(PrecheckRefusal::Busy | PrecheckRefusal::Interrupted) => {
+                Err(PrecheckRefusal::Busy) => {
                     return Err(RunError::Refused(
                         "the run-input validator of the inventory had no permit; run it again",
                     ));
                 }
+                // a defect of the validator on this schema, which a retry meets again: the version is listed by its ids
+                // and the scan goes on; the command cannot say what it would do, so it exits 2 (D043-187)
+                Err(PrecheckRefusal::Interrupted) => inventory.interrupted.push(ids),
                 Err(PrecheckRefusal::Unusable(unusable)) => {
                     let refused = RefusedVersion {
                         ids,
@@ -238,6 +255,7 @@ pub async fn input_schema_inventory_in(
                         stored.workflow,
                         stored.version,
                         SUPERSEDED_QUIET_DAYS,
+                        schedules,
                     )
                     .await
                     .map_err(|error| RunError::Database(error.to_string()))?;

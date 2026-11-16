@@ -65,6 +65,7 @@ Refused, with the reason:
 | Application path from the root | 128 schema nodes | `INPUT_SCHEMA_TOO_DEEP` |
 | A name of `properties` or `required` | 1 KiB | `INPUT_SCHEMA_NAME_TOO_LONG` |
 | Patterns | 32, each at most a 16 KiB program and 512 NFA states, 256 KiB of programs in all; a repetition bound of at most 100 and groups and repetitions nested at most 64 deep | `INPUT_SCHEMA_PATTERN_UNSUPPORTED` |
+| The divisor of `multipleOf` | a positive integer of at most 2^53 | `INPUT_SCHEMA_KEYWORD_UNSUPPORTED` |
 | The JSON pointers of every schema position, together | 4 MiB (a long name high in the schema, repeated over thousands of positions below it, reaches it) | `INPUT_SCHEMA_TOO_LARGE`, at the root |
 | The least work any input pays | below the budget | `INPUT_SCHEMA_TOO_COSTLY` |
 | Input depth | 64 | the input: `RUN_INPUT_INVALID`, `rule` `maxDepth`, `field` `/` |

@@ -1855,6 +1855,11 @@ fn the_limits_and_the_charges_of_run_input_validation_v1_are_pinned() {
         ],
         "a limit of v1 changed: ship run-input-validation-v2 instead (ADR-0092 decision 6)"
     );
+    assert_eq!(
+        v1::MAX_MULTIPLE_OF,
+        1 << 53,
+        "the largest divisor of `multipleOf` in v1: ship run-input-validation-v2 instead (ADR-0092 decision 6)"
+    );
     assert_eq!(RUN_INPUT_WORK_UNITS, 1_000_000, "the budget of v1");
     let charged: Vec<(&str, u64)> = charge_cases()
         .into_iter()
