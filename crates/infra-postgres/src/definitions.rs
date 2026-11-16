@@ -1036,10 +1036,12 @@ pub struct StoredVersion {
     pub document: Vec<u8>,
 }
 
-/// Whether something may still start `version` of `workflow` (design 043, OD-2026-11-16-5, D043-179): it is its workflow's
-/// active version, or a run of it is open (a reset, a continuation or a child of it would start it again), or a run of it
-/// was created in the last `quiet_days` days (a caller or a schedule that names it). The inventory does not count a version
-/// outside the subset that nothing starts. It reads `workflows` and `runs` (by `runs_by_workflow_idx`) and writes nothing.
+/// Whether something may still start `version` of `workflow` (design 043, OD-2026-11-16-5, D043-179, D043-185): it is its
+/// workflow's active version, or a schedule that is not deleted pins it in its current revision (however seldom it fires),
+/// or a run of it is open (a reset, a continuation or a child of it would start it again), or a run of it was created in
+/// the last `quiet_days` days (a caller that names it). The inventory does not count a version outside the subset that
+/// nothing starts. It reads `workflows`, `schedules`, `schedule_revisions` and `runs` (by `runs_by_workflow_idx`, every
+/// run of the workflow) and writes nothing.
 ///
 /// # Errors
 /// [`StoreError`] when the read fails.
@@ -1053,6 +1055,11 @@ pub async fn version_still_started(
     sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM workflows w \
                          WHERE w.tenant_id = $1 AND w.id = $2 AND w.active_version_id = $3) \
+             OR EXISTS (SELECT 1 FROM schedules s \
+                          JOIN schedule_revisions sr ON sr.tenant_id = s.tenant_id AND sr.schedule_id = s.id \
+                                                    AND sr.revision = s.head_revision \
+                         WHERE s.tenant_id = $1 AND s.state <> 'DELETED' \
+                           AND sr.action->>'versionPolicy' = 'PINNED' AND sr.action->>'versionId' = $3::text) \
              OR EXISTS (SELECT 1 FROM runs r \
                          WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.workflow_version_id = $3 \
                            AND (r.finished_at IS NULL OR r.created_at > now() - make_interval(days => $4)))",

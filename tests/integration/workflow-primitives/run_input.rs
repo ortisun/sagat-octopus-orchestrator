@@ -628,8 +628,8 @@ async fn row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claim
     let audits = audits.into_iter().flatten().collect::<Vec<_>>().join("\n");
     let logs = captured.text();
     assert!(
-        logs.contains("422") || logs.contains("RUN_INPUT_INVALID") || logs.contains("run_input"),
-        "the capture saw the refused request: {logs}"
+        logs.contains("run_input.check") && logs.contains("refused"),
+        "the capture saw the gate refuse the request: {logs}"
     );
     for (label, text) in [
         ("the answer", &text),

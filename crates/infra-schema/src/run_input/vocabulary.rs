@@ -77,7 +77,7 @@ const DATA: [&str; 5] = [
 /// high in the document, shared by thousands of values below it, would otherwise make the pointers grow with the
 /// square of the document (security review of 2026-11-16, round 2). Far above what a 64 KiB schema of ordinary names
 /// needs.
-const MAX_POINTER_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_POINTER_BYTES: usize = 4 * 1024 * 1024;
 
 /// Refuses a schema nested deeper than [`MAX_INPUT_SCHEMA_DEPTH`] (the root is depth 1), at the first value too deep,
 /// and one whose pointers would pass [`MAX_POINTER_BYTES`], as too large.

@@ -213,8 +213,8 @@ pub enum IrError {
         keyword: String,
         path: String,
     },
-    /// The pre-check of the `inputSchema` found no permit of the run-input validator within its wait (design 043,
-    /// D043-177): transient, the document is not judged; the caller sends it again (`503`).
+    /// The pre-check of the `inputSchema` found no permit of the run-input validator within its wait, or the validator
+    /// panicked (design 043, D043-177, D043-186): transient, the document is not judged; the caller sends it again (`503`).
     #[error("the run-input validator is busy; send the document again")]
     ValidatorBusy,
 }
@@ -1470,6 +1470,13 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
         });
         let parsed = match self.codec.parse_with(bytes, self.input_validation) {
             Ok(parsed) => parsed,
+            // the pre-check found no permit: the document was not judged, so the dry run is unavailable, never a
+            // problem of the document (design 043, D043-183)
+            Err(IrError::ValidatorBusy) => {
+                return Err(AppError::InvalidDefinition(Box::new(
+                    IrError::ValidatorBusy,
+                )));
+            }
             Err(error) => {
                 return Ok(Validation {
                     problems: problems_of(&error),

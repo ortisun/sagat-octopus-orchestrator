@@ -1846,8 +1846,13 @@ fn the_limits_and_the_charges_of_run_input_validation_v1_are_pinned() {
             v1::MAX_PATTERN_STATES,
             v1::MAX_PATTERN_PROGRAMS_BYTES,
             v1::MAX_POINTER_CHARS,
+            v1::MAX_POINTER_BYTES,
+            usize::try_from(v1::MAX_REPETITION).expect("small"),
+            usize::try_from(v1::MAX_PATTERN_NESTING).expect("small"),
         ],
-        [65_536, 32, 128, 1_024, 64, 32, 16_384, 512, 262_144, 512],
+        [
+            65_536, 32, 128, 1_024, 64, 32, 16_384, 512, 262_144, 512, 4_194_304, 100, 64
+        ],
         "a limit of v1 changed: ship run-input-validation-v2 instead (ADR-0092 decision 6)"
     );
     assert_eq!(RUN_INPUT_WORK_UNITS, 1_000_000, "the budget of v1");

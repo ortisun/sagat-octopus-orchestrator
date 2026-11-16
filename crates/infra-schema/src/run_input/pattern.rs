@@ -21,9 +21,9 @@ use regex_syntax::ast::{
 use super::{MAX_PATTERN_PROGRAM_BYTES, MAX_PATTERN_STATES};
 
 /// The largest bound a repetition may have.
-const MAX_REPETITION: u32 = 100;
+pub const MAX_REPETITION: u32 = 100;
 /// How deep a pattern may nest groups and repetitions.
-const MAX_PATTERN_NESTING: u32 = 64;
+pub const MAX_PATTERN_NESTING: u32 = 64;
 /// The capacity of each lazy DFA cache (forward and reverse) of a compiled pattern. Its weight counts both for every
 /// matcher, so it sizes what the heaviest admitted schema weighs: at 64 KiB, 32 patterns weighed more than a tenant's
 /// share of the cache and such a schema was compiled again on every start (security review of 2026-11-15, Major 2).

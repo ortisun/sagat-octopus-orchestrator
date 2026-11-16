@@ -1,7 +1,7 @@
 # ADR-0092: The application names a runtime only for the blob-source parse, and the run-input rules refined in the build
 
-**Status:** Accepted (2026-11-16, OD-2026-11-16-4)
-**Decided by:** owner (OD-2026-11-16-4, "Aceitar ADR-0092"), accepting the agent proposal of 2026-11-16 made from D043-150 and D043-154 (the coordinator's technical call of 2026-11-15) and the review runs of design 043 of 2026-11-15 and 2026-11-16; decisions 6 and 7 were added on 2026-11-16 by the approval path the owner chose (OD-2026-11-16-3) before the acceptance was recorded.
+**Status:** Accepted (2026-11-16, OD-2026-11-16-4): decisions 1 to 5 and 7. Decision 6 is proposed, for the owner (O043-008).
+**Decided by:** owner (OD-2026-11-16-4, "Aceitar ADR-0092"), accepting the agent proposal of 2026-11-16 made from D043-150 and D043-154 (the coordinator's technical call of 2026-11-15) and the review runs of design 043 of 2026-11-15 and 2026-11-16; decision 7 was added on 2026-11-16 by the approval path the owner chose (OD-2026-11-16-3), which named it; decision 6 was added by the agent from the round-2 architecture review (Major 5) and is not covered by either answer, so it waits for the owner (O043-008).
 **Refines / supersedes:** refines ADR-0090 (accepted 2026-11-14, OD-2026-11-14-15): its "Enforced by" line and its Consequences on the runtime of `sagat-application`, and decisions 5, 8 and 10; refines ADR-0050 decision 2 for a refused run input (decision 7). Supersedes nothing.
 **Enforced by:** `scripts/check-architecture.py`: `application_runtime_errors` (`tokio` in `sagat-application` is at most a dependency with no default features and no feature but `rt`), `run_input_runtime_errors` (a `tokio` token in `crates/application/src/**` outside `collection_source.rs` and test modules fails), `gate_wiring_errors` (a composition root that builds a creator without `.with_run_inputs` fails), with their negative fixtures in `scripts/tests/test_check_architecture.py` (`TheApplicationHoldsNoRuntime`, `test_a_composition_root_wires_the_gate_into_every_creator_it_builds`); `the_heaviest_schema_the_precheck_admits_fits_a_tenant_share_and_is_kept` and `a_name_past_1_kib_is_refused_and_long_names_are_charged_by_their_length` (`crates/infra-schema/tests/run_input.rs`); `report_mode_audits_a_start_that_an_open_holder_answers` (`integration_schedules_bulk_operations`); for decision 6, `the_limits_and_the_charges_of_run_input_validation_v1_are_pinned` (`crates/infra-schema/tests/run_input.rs`); for decision 7, the `INPUT_INVALID` cases of `firing_decisions` (`fault_schedules_bulk_operations`) and the rows 6 and 7 tests of `integration_schedules_bulk_operations`.
 
@@ -48,11 +48,13 @@ start that an open holder answers, where no run is created (decision 10). An acc
    written with the holder's answer: with the receipt that answers its retries for a Signal-with-Start or an
    Update-with-Start, so once; in a statement of its own for a plain start answered by its holder, which keeps no
    receipt, so once per answer, as each answer is counted.
-6. What `run-input-validation-v1` admits and refuses is fixed by the pre-check's limits, the work budget and the units
-   each keyword charges (`specs/043-run-input-validation/contracts/input-schema-subset.md`). A release that changes any
-   of them so that an input or a schema accepted before is refused MUST ship a new capability,
-   `run-input-validation-v2`, required by the operator the same way (ADR-0082), never a silent edit of the numbers; a
-   test pins them (D043-178).
+6. *(Proposed, O043-008.)* What `run-input-validation-v1` admits and refuses is fixed by the subset's vocabulary, its
+   pattern allowlist, the pre-check's limits, the work budget and the units each keyword charges
+   (`specs/043-run-input-validation/contracts/input-schema-subset.md`). A release that changes any of them so that an
+   input or a schema accepted before is refused MUST ship a new capability, `run-input-validation-v2`, required by the
+   operator the same way (ADR-0082), never a silent edit. A test pins the limits, the budget and the charges (D043-178,
+   D043-186); the tests of T043-2 that accept each keyword and each allowed pattern form hold the vocabulary and the
+   allowlist.
 7. Refining ADR-0050 decision 2 for a refused run input: a schedule action whose run input the target version refuses
    is not a refused admission that leaves its nominal time owed. The decision commits the action `INPUT_INVALID` with its
    reason, the time acted on, no remaining action used up, and the auto-pause or the backfill's end, under the schedule's
@@ -70,6 +72,11 @@ start that an open holder answers, where no run is created (decision 10). An acc
 3. **Keep the rule that refuses any normal `tokio`, and fail the build** — breaks design 042 on `develop`.
 4. **A composition-root test in each app instead of the wiring rule** — needs a database and the whole composition for
    each service; the rule is cheap, runs everywhere, and fails on the next service that forgets the gate.
+6. **For decision 6: change the numbers in a release, with a release note** — simpler, but a stricter release would
+   refuse, beside an older one, what the older one admits, until every process runs it; a capability lets the operator
+   see the change and lock it.
+7. **For decision 7: keep ADR-0050's words, leave the time owed and retry** — a refused input is the same on every
+   retry, so the action would be retried forever (the loop design 043 removes, Technical Plan 5).
 5. **The gate as a required constructor argument of the four services**, so the compiler enforces decision 2 and
    `unwired()` goes — the stronger form, and the way back if the rule proves too narrow. Not chosen in 0.3.0: about 66
    `::new(` call sites, most in test support, would change in a release that is closing, and the unwired default

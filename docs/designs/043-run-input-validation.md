@@ -21,7 +21,7 @@ The `inputSchema` is a documented subset of JSON Schema
 counter stops at a budget (OD-2026-11-14-14); a schema outside the subset is refused at publication and, if already
 stored, refuses every start of its version. `control-plane input-schema-inventory` lists the stored versions it affects.
 The check has two modes (FR-043-013): `enforce`, the default, refuses as described; `report` runs every check, counts
-and audits each refusal, and creates the run anyway, so an operator can fix callers before locking the upgrade.
+and audits each final refusal, and creates the run anyway, so an operator can fix callers before locking the upgrade.
 
 The rule is [ADR-0090](../adr/ADR-0090-every-run-input-is-checked-against-its-pinned-version-schema-before-the-run-is-created.md),
 refined while it was built by
@@ -29,7 +29,7 @@ refined while it was built by
 (accepted, OD-2026-11-16-4). The owner's decisions are listed under Owner decisions needed. The owner asked for the design to be built
 before it is approved (OD-2026-11-14-15), so the tasks describe what was built and each is ticked with its evidence at
 approval. The registers, the history of the drafts and the build, and the validator's internals are in
-`specs/043-run-input-validation/research.md` (D043-001 to D043-182, G043-001 to G043-056, O043-001 to O043-007). The
+`specs/043-run-input-validation/research.md` (D043-001 to D043-186, G043-001 to G043-056, O043-001 to O043-008). The
 principles cited by numeral are those of [the constitution](../constitution.md).
 
 ### Terms
@@ -264,13 +264,15 @@ The constraints beyond a check in `start_with`:
   pre-check, with its ids, the keyword and its pointer, and nothing of the schema or of any input; list separately, for
   information, the versions within the subset that have an `inputSchema` and a non-manual trigger; and exit 0 when none
   would be refused, 1 when one would, 2 when the command failed (D043-052, D043-072). A version outside the subset that
-  nothing starts any more (superseded: not its workflow's active version, no open run, no run created in the last 30
-  days) MUST be counted in the summary and MUST NOT change the exit status; `--all` lists it (OD-2026-11-16-5,
+  nothing starts any more (superseded: not its workflow's active version, pinned by no schedule that is not deleted, no
+  open run, no run created in the last 30 days) MUST be shown only as a number in the summary line and MUST NOT change
+  the exit status; `--all` lists it (OD-2026-11-16-5,
   D043-179). *Acceptance:* an integration test stores one version inside the subset with an event trigger and one with
   `patternProperties`, runs the command, finds the second as refused and the first as informational, and sees exit
   status 1; with only the first stored, exit 0; against an unreachable database, exit 2;
   `a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all_lists_it` (a quiet superseded version is
-  counted, not listed, and listed by `--all`; one with an open run still counts).
+  counted, not listed, and listed by `--all`; one with an open run, or a run created lately, still counts) and
+  `a_version_a_live_schedule_pins_is_never_superseded`.
 
 ### Non-functional
 
@@ -563,10 +565,12 @@ G043-017). A waiter waits at most `RUN_INPUT_PERMIT_WAIT` (5 s); its
   guard leaves the queue, or returns its permit, when its future is dropped. The queue holds one entry per caller that
   waits, so it is bounded by the callers in flight and each entry by the wait. The validator runs off the async workers
   and holds its permit until it returns; `specs/043-run-input-validation/research.md` section 5 has the details. A
-  pre-check outside a start (publication, a dry run, an ad hoc document, the inventory) takes its permit from the same
-  pool and waits as long; the parser that runs it does not know the tenant, so all such pre-checks are one owner of the
-  fair queue: they cannot crowd out the starts of any tenant, and the starts cannot starve them. With no permit the
-  document is not judged and the caller gets a retryable `503`, as for a start (D043-177).
+  pre-check outside a start (publication, a dry run, an ad hoc document) takes its permit from the same pool and waits
+  as long (the inventory runs in a process of its own, whose pool is never full); the parser that runs it does not know the tenant, so all such pre-checks are one owner of the
+  fair queue, an owner like a tenant: the starts of a tenant holding fewer permits are served first, and the starts
+  cannot starve them; among the tenants that publish they are first come, first served (G043-057). With no permit, or
+  when the validator panics, the document is not judged and the caller gets a retryable `503`, as for a start
+  (D043-177, D043-186).
 - **The backstop** (D043-050). The counter also reads the clock every 4,096 units; past `RUN_INPUT_BACKSTOP` (5 s) of
   work it stops with `SchemaRefusal::Backstop`. `Busy`, `Backstop` and `Interrupted` become `InputRefusal::Unavailable`
   in the gate: a caller gets a retryable `503`, and the engine's creators treat it as a lack of permits and try again later,
@@ -645,7 +649,8 @@ oracle of a test only. What the design fixes:
   `ScheduledStarts::check_scheduled`, which resolves the version and its definition as a start does (D043-126); the start
   then checks again, against the version resolved then, with `RunInputGate::recheck`, which counts only a refusal
   (D043-147, D043-152). An exhausted schedule is not checked (D043-142). A refused trigger-now answers `422` and records
-  nothing, also when the refusal comes at its start (D043-146). A refused scheduled or triggered action records, in one
+  nothing, also when the refusal comes at its start (D043-146). A refused scheduled action, or a trigger-now action
+that was buffered and is refused at its release (FR-043-006, item 6), records, in one
   `ScheduleDecision`, the action (`Outcome::InputInvalid`, the reason of D043-123), the auto-pause and its
   `ScheduleAutoPaused` audit when `pauseOnFailure` is set; a refused backfill step records the action and the
   backfill's end as `CANCELLED`, as `revoke_authority` does (`schedule_firing.rs`), and does not pause the schedule
@@ -722,9 +727,11 @@ items of row 4, the pending resets of row 5, rows 6, 7 and 9 to 12) before anyon
 
 `run_input_validations_total{creator, outcome}` with `outcome` in `accepted`, `no_schema`, `refused`,
 `schema_unusable`, `reported`, `deadline` (no permit within the wait, or the backstop) and `interrupted` (a panic of
-the validator, a defect; D043-180), counted once per start (a recheck counts only a refusal or a report, D043-147, D043-152, D043-168); `run_input_schema_cache_total{result}` with `hit`, `miss`, `evicted`,
-`failure_remembered`, `unshared`; `run_input_prechecks_total{outcome}` with `admitted`, `unusable` and `busy`, for a
-pre-check outside a start (D043-177); `trigger_events_total{outcome}` gains `input_invalid` and `input_schema_unusable`
+the validator, a defect; D043-180), counted once per start: a check ahead of a start (a schedule's action before its decision or at its release, a
+`CANCEL_SOURCE` reset's request) counts only a refusal, final or transient, and the start counts every outcome
+(D043-147, D043-173, D043-184); `run_input_schema_cache_total{result}` with `hit`, `miss`, `evicted`,
+`failure_remembered`, `unshared`; `run_input_prechecks_total{outcome}` with `admitted`, `unusable`, `busy` and `interrupted`,
+for a pre-check outside a start (D043-177, D043-186); `trigger_events_total{outcome}` gains `input_invalid` and `input_schema_unusable`
 (D043-129); `scheduler_continuation_input_refusals_total` and `scheduler_continuation_waits_total{blocker="input_check"}`
 (D043-133). A `run_input.check` span with the attribute `sagat.run_input.outcome` and, on a refusal,
 `sagat.run_input.rule`.
@@ -747,23 +754,28 @@ nested deeper than 32 never reaches the pre-check at publication: feature 016's 
 carrier first and answers `CLASSIFICATION_TOO_COMPLEX`, in both modes; the start gate and the inventory answer the
 validator's own codes (D043-112, G043-020). `sagat validate` runs the same check locally. A pre-check outside a start
 (publication, a dry run, an ad hoc document) runs off the async workers on a permit of the starts' pool (Technical
-Plan 3); with none within the wait the document is not judged and the caller gets a retryable `503`
-(`IrError::ValidatorBusy`, the diagnostic `VALIDATOR_BUSY` of `sagat validate`; D043-166, D043-177). The stored-document path (`validated_stored_document_in`) does not run it, so a version already stored still parses and is refused at start
+Plan 3); with none within the wait, or when the validator panics, the document is not judged and the caller gets a
+retryable `503 UNAVAILABLE` with no `details.reason`, as a start's `Busy` (`IrError::ValidatorBusy`; the diagnostic
+`VALIDATOR_BUSY` of `sagat validate`); the dry run, the replay of a publication and a promotion answer it the same way
+(D043-166, D043-177, D043-183, D043-186). The stored-document path (`validated_stored_document_in`) does not run it, so a version already stored still parses and is refused at start
 instead (FR-043-011). A `DefinitionWarning` is also added when a version has an `inputSchema` and a non-manual trigger.
 The versioning diff already reports a tighter `inputSchema` as breaking (`crates/infra-ir/src/diff.rs`).
 
 **The inventory** (D043-052) is a command of the control plane, `control-plane input-schema-inventory`, beside
 `migrate` and `schedule-trigger-handover` (`apps/control-plane/src/cli.rs`). It runs with the database settings of the
 control plane process (`config.database`, the runtime role where a deployment sets one, D043-163): it only reads, and
-needs nothing but `SELECT` on `workflow_versions`, `workflows` and `runs`, which the runtime role holds and which a 0.2.x
+needs nothing but `SELECT` on `workflow_versions`, `workflows`, `schedules`, `schedule_revisions` and `runs`, which the
+runtime role holds and which a 0.2.x
 database already has, so the 0.3.0 binary runs it before the migration. It reads the stored versions page by page (its
 cursor starts after the nil uuid, in one statement each page), runs the same pre-check on each stored `inputSchema` and prints one line per version that
 would be refused: tenant, namespace, workflow and version ids, the keyword and its pointer. The keyword and the pointer
 are author text, so they are printed in double quotes with `"` and `\` escaped (D043-111). In a second, informational
 section it lists the versions within the subset that have an `inputSchema` and a non-manual trigger, whose triggered runs may be refused (G043-004); they do not change the exit status. A version outside the subset
-that nothing starts any more, neither its workflow's active version nor the version of an open run or of a run created
-in the last 30 days (`SUPERSEDED_QUIET_DAYS`), is superseded: the summary counts it, `--all` lists it, and it never
-changes the exit status (OD-2026-11-16-5, D043-179). It prints no
+that nothing starts any more, neither its workflow's active version, nor pinned by a schedule that is not deleted, nor
+the version of an open run or of a run created in the last 30 days (`SUPERSEDED_QUIET_DAYS`), is superseded: the last
+line, the summary, gives their number, `--all` lists them, and they never change the exit status (OD-2026-11-16-5,
+D043-179, D043-185). Each refused version costs one statement over the runs of its workflow, bounded by the control
+plane's statement timeout; a pre-check the inventory's own validator cannot run makes the command fail, exit 2. It prints no
 schema text beyond those keywords and pointers, no input, and writes nothing. It exits 0 when no version would be
 refused, 1 when at least one would, and 2 when the command itself failed (it could not connect, a read failed, or a
 stored document is not a JSON object, which it still reports beside what it could read), so an upgrade or CI script
@@ -800,7 +812,8 @@ runbook tell the operator to run it before the upgrade.
 
 ### 10. Rollout
 
-Before the upgrade the operator runs `control-plane input-schema-inventory` and, if the answer warrants it, sets `report` everywhere
+Before the upgrade the operator runs `control-plane input-schema-inventory` and, if callers or schemas cannot be fixed
+before the upgrade, sets `report` everywhere
 (Technical Plan 6). Upgrade order (OD-2026-11-14-3): the migration first; then the engines (the batch items of row 4,
 the pending resets of row 5, rows 6, 7 and 9 to 12 are checked from then on); then the control planes (the requests of
 rows 1 to 5, rows 8, 13 and 14); then, once every live process runs 0.3.0 in `enforce`, the requirement
@@ -936,7 +949,8 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   cache with its tenant share; patterns parsed by `regex-syntax` 0.8 and compiled by `regex-automata` 0.4 (`meta`, with
   the backtracker and the one-pass DFA off and 16 KiB lazy DFA caches); a pre-check outside a start runs off the async
   workers on a permit of the starts' pool (D043-177); a panic of the compile or the validation is answered
-  `Interrupted`; a pin test holds the limits and charges of `run-input-validation-v1` (D043-178).
+  `Interrupted`, and a pre-check's panic is caught the same way (D043-186); `run_input_prechecks_total`; a pin test
+  holds the limits and charges of `run-input-validation-v1` (D043-178, D043-186).
   Files: `crates/infra-schema/src/run_input/` (`mod.rs`, `vocabulary.rs`, `compile.rs`, `validate.rs`, `counter.rs`,
   `pattern.rs`, `pointer.rs`, `value.rs`), `crates/infra-schema/src/lib.rs`, `crates/infra-schema/src/classification/cache.rs`
   (generic over key, value and failure, with a per-owner share; the classification behaviour unchanged),
@@ -963,7 +977,8 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   (ignored, run by hand, G043-017), the oracle `oracle::the_platform_validator_agrees_with_jsonschema_over_the_subset` and
   the property test `sentinel::no_generated_value_or_key_appears_in_a_refusal`; the unit tests of `run_input/mod.rs`
   (`the_caller_whose_compile_panics_is_answered_interrupted`, `a_compile_that_panics_is_transient_for_those_who_waited`,
-  `prechecks_outside_a_start_run_at_most_four_at_once`, `a_precheck_waits_in_the_starts_pool_and_is_busy_after_its_wait`)
+  `prechecks_outside_a_start_run_at_most_four_at_once`, `a_precheck_waits_in_the_starts_pool_and_is_busy_after_its_wait`,
+  `a_precheck_whose_compile_panics_is_interrupted`)
   and of `classification/cache.rs`; `the_cache_compiles_once_per_tenant_and_schema_and_remembers_a_failure_once`
   (`integration_run_input_cache`, `tests/integration/run-input-cache/`, a process of its own).
   Refs: FR-043-002, FR-043-011, FR-043-014, NFR-043-BOUND, NFR-043-SEC, SC-043-004
@@ -972,7 +987,8 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `SchemaRefusal`, `Rule`, `PathSegment`, `Unusable`, re-exported by the adapter), `RunInputGate` with `unwired()`,
   `check`, `check_schema` and `recheck`, `CheckedRunInput` (the version id; fields and constructor private to its
   module; a `test-support` constructor and a `test-support` validator double, `Scripted`), the field policy, the metrics
-  and the span (a panic counted `interrupted`, D043-180), and the mapping of the transient refusals to `Unavailable`;
+  and the span (a panic counted `interrupted`, D043-180; a check ahead of a start counting only what stops it,
+  D043-184), and the mapping of the transient refusals to `Unavailable`;
   and in the adapter (D043-071) the permits: four per process, the work-conserving fair queue of D043-068, the 5 s wait,
   the guards of a dropped future, the blocking acquire of a pre-check (D043-177), `off_worker` and the backstop.
   `RunInputChecker` (the blob-only check) was removed by T043-5, which replaces it.
@@ -987,8 +1003,9 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `an_unwired_gate_refuses_a_schema_transiently_and_passes_a_version_without_one`,
   `a_version_without_a_schema_is_not_sent_to_the_validator`, `the_debug_of_a_checked_input_shows_no_byte_of_it`,
   `a_refusal_maps_to_its_closed_reason`, `a_refusing_recheck_is_counted`, `a_reporting_recheck_is_counted`,
-  `a_report_is_counted_once_per_start_whatever_checks_it_before`, `a_panic_of_the_validator_is_counted_interrupted_and_no_room_deadline`)
-  and of `crates/infra-schema/src/run_input/permits.rs`
+  `a_report_is_counted_once_per_start_whatever_checks_it_before`, `a_panic_of_the_validator_is_counted_interrupted_and_no_room_deadline`),
+  `a_buffered_action_released_and_started_is_counted_once` (`integration_schedules_bulk_operations`), and the unit tests
+  of `crates/infra-schema/src/run_input/permits.rs`
   (`a_tenant_alone_holds_every_permit_and_no_more`, `a_newcomer_is_served_before_the_holders_next_waiter`,
   `a_dropped_waiter_leaves_the_queue_and_a_dropped_grant_returns_its_permit`,
   `a_release_in_the_gap_of_a_timed_out_waiter_is_not_counted_twice`, `no_permit_within_the_wait_is_busy`).
@@ -1019,20 +1036,33 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   Files: `crates/application/src/runs.rs`, `crates/application/src/runs/reset.rs`, `crates/application/src/runs/pending_reset.rs`,
   `crates/application/src/blobs.rs`, `crates/application/src/error.rs`, `crates/api-http/src/error.rs`,
   `crates/application/src/batch_executor.rs`, `crates/application/src/reset_completion.rs`.
-  Tests: `tests/integration/durable-execution/run_input.rs` (row 1, the replay, the `409`, no permit after a run);
-  `tests/integration/workflow-primitives/run_input.rs` (`row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claims_nothing`);
-  `tests/integration/schedules-bulk-operations/run_input.rs` (row 3 with an open holder, Update-with-Start, the replays
-  of rows 3 and 5, row 4, an unusable schema on rows 3, 4 and 8) and `run_input_repeats.rs` (the batch item failed and
-  deferred, the synchronous reset, the cancelling reset refused at its request, the pending reset ended and left
-  pending); `crates/api-http/tests/run_input_errors.rs` (the problem shape).
+  Tests: `integration_durable_execution` (`tests/integration/durable-execution/run_input.rs`):
+  `row_1_a_refused_start_names_the_field_and_the_rule_and_creates_nothing`,
+  `row_1_an_unusable_schema_refuses_every_start_and_no_schema_takes_any_object`,
+  `a_refused_start_replays_the_run_of_its_key_and_a_promotion_makes_it_another_request`,
+  `a_retry_with_no_room_replays_the_run_its_key_holds`; `integration_workflow_primitives`:
+  `row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claims_nothing`; `integration_schedules_bulk_operations`
+  (`run_input.rs`): `row_3_with_start_is_refused_for_its_input_even_with_an_open_holder`,
+  `a_signal_with_start_retry_the_gate_refuses_replays_what_the_first_request_delivered`,
+  `row_4_a_rerun_of_an_input_the_version_refuses_says_the_root_and_other`,
+  `an_unusable_schema_refuses_with_start_rerun_and_trigger_now`,
+  `a_pending_reset_the_gate_refuses_after_another_engine_completed_it_is_already_completed`; and (`run_input_repeats.rs`)
+  `row_4_a_batch_rerun_item_refused_for_its_input_fails_with_validation_failed`,
+  `row_5_a_synchronous_reset_of_an_input_the_version_refuses_says_the_root_and_other`,
+  `row_5_a_reset_of_a_version_whose_schema_is_unusable_is_refused_schema_unusable`,
+  `row_5_a_cancelling_reset_whose_input_the_version_refuses_is_refused_and_cancels_nothing`,
+  `row_5_a_pending_reset_whose_input_the_version_refuses_ends_admission_refused`; `crates/api-http/tests/run_input_errors.rs`
+  (the problem shape).
   Refs: FR-043-001, FR-043-003, FR-043-004, FR-043-005, FR-043-010, FR-043-011
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-10, OD-2026-11-14-11
 - [ ] T043-6 Checked row 13 (the ad hoc execution, the connection probe and the private rerun): the caller's document
   parsed in the process's mode, its own replay, a key never shared, the same permits, `/` and `other` for a private rerun.
   Files: `crates/application/src/runs/ad_hoc.rs`, `crates/application/src/execution.rs` (`parse_document_in`).
   Tests: `tests/integration/database-connections/run_input.rs` (refused with the field and the rule, the replay, the
-  private rerun, a schema outside the subset in `enforce` and in `report`, the sentinel of T043-17), run by
-  `durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation` (`integration_database_connections`).
+  private rerun, a schema outside the subset in `enforce` and in `report`, the sentinel of T043-17): the function
+  `run_input::run`, one scenario of the target `integration_database_connections`, whose single test,
+  `durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation`, runs its scenarios in turn on one
+  database and one connection.
   Refs: FR-043-001, FR-043-003, FR-043-004, FR-043-011
   Owner-gate: OD-2026-11-14-2
 - [ ] T043-7 Checked rows 9 and 10: the delivery without a run and its audit in one transaction, the cron tick's audit
@@ -1040,9 +1070,14 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   Files: `crates/scheduler/src/events.rs`, `crates/application/src/dispatch.rs` (`DeliveryRef::refused_at_trigger`, the
   ports `record_refused_delivery` and `refuse_cron_tick`), `crates/infra-postgres/src/dispatch.rs` (their writes),
   `crates/domain/src/audit.rs` (`RunInputRefused`).
-  Tests: `tests/integration/events-webhooks-messaging/run_input.rs` (row 9 with another trigger served and a wait woken,
-  an unusable schema, the budget, no permit, a redelivery, row 10 and its unusable schema); `tests/fault/events-webhooks-messaging/run_input.rs`
-  (two engines on one tick, a writer that stops, a crash between the delivery and its audit, a reporting peer's run).
+  Tests: `integration_events_webhooks_messaging`: `row_9_a_refused_trigger_records_a_delivery_and_one_audit_and_the_others_are_served`,
+  `row_9_a_refused_trigger_does_not_keep_a_wait_for_the_same_event_from_waking`, `row_9_an_unusable_schema_is_recorded_with_its_reason`,
+  `a_cron_trigger_whose_input_is_refused_starts_nothing_and_audits_the_tick`,
+  `a_cron_trigger_whose_schema_is_unusable_audits_the_tick_with_its_reason`; `fault_events_webhooks_messaging`:
+  `two_engines_on_one_refused_cron_tick_audit_it_once_with_the_tick_key`,
+  `a_cron_refusal_whose_writer_stops_before_the_trigger_moves_is_audited_once_by_the_next_round`,
+  `a_refused_tick_whose_run_a_reporting_peer_created_is_not_audited`,
+  `a_crash_between_the_refused_delivery_and_its_audit_keeps_neither_and_the_retry_records_both_once`.
   Refs: FR-043-001, FR-043-007
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11
 - [ ] T043-8 Checked row 11 with `CHILD_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE`, also for a parent created before
@@ -1050,16 +1085,18 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   Files: `crates/scheduler/src/passes.rs` (`start_child`, `Condition::ChildNotStarted`, the test hook
   `with_before_child_check`), `crates/application/src/execution.rs` and `crates/infra-postgres/src/execution.rs`
   (`RunTx::child_started`), `crates/domain/src/execution/event.rs` (the codes).
-  Tests: `tests/integration/workflow-primitives/run_input.rs` (row 11, the pre-upgrade parent, the budget and no permit, a
-  child a peer created first, a child claimed while the refusal waits for the step).
+  Tests: `integration_workflow_primitives`: `row_11_a_refused_child_is_not_created_and_its_parent_step_fails_with_the_code`,
+  `row_11_the_child_of_a_parent_admitted_before_the_check_is_checked`,
+  `a_child_a_peer_created_before_the_check_is_not_failed_by_the_refusal`,
+  `a_child_claimed_while_its_refusal_waits_for_the_step_is_not_failed`.
   Refs: FR-043-001, FR-043-008, FR-043-011
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-9, OD-2026-11-14-11
 - [ ] T043-9 Checked row 12 with `CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE`, also for a chain started
   before the check was on: the schema read under the run's lock, checked after it is released, the failure through the
   fenced path; `InputUnavailable` counted as a wait; the `report` audit in the hand-off.
   Files: `crates/scheduler/src/passes.rs`, `crates/infra-postgres/src/chain_progress.rs`, `crates/domain/src/execution/event.rs`.
-  Tests: `tests/integration/workflow-primitives/run_input.rs` (row 12, no permit and the budget, the `report` audit);
-  `tests/fault/workflow-primitives/run_input.rs` (`a_restart_between_the_check_of_a_continuation_and_its_failure_fails_the_run_once`).
+  Tests: `integration_workflow_primitives`: `row_12_a_refused_continuation_fails_its_run_and_creates_no_successor`;
+  `fault_workflow_primitives`: `a_restart_between_the_check_of_a_continuation_and_its_failure_fails_the_run_once`.
   Refs: FR-043-001, FR-043-009, FR-043-011
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-9, OD-2026-11-14-11
 - [ ] T043-10 Checked row 14: `ScheduleStore::target_version` (the target version's document, one statement; `target_check`
@@ -1069,14 +1106,16 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `RUN_INPUT_SCHEMA_UNUSABLE`.
   Files: `crates/application/src/schedules.rs`, `crates/application/src/schedule_firing.rs` (`with_nominal_time`),
   `crates/infra-postgres/src/schedules.rs` (`target_version`), `crates/api-http/src/error.rs`.
-  Tests: `tests/integration/schedules-bulk-operations/run_input.rs` (the three `row_14_*` tests).
+  Tests: `integration_schedules_bulk_operations`: `row_14_a_write_whose_input_the_target_refuses_is_refused_under_action_input`,
+  `row_14_the_nominal_time_field_must_be_declared_and_an_unusable_schema_refuses`,
+  `row_14_the_write_fills_the_next_nominal_time_and_resolves_the_declaration`.
   Refs: FR-043-006, FR-043-011
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11
 - [ ] T043-11 Checked rows 6 to 8 and added the outcome `INPUT_INVALID`:
   - two migrations: `20270118000000_run_input_validation` drops each CHECK of the action outcomes, of the registry's
     capability lists and of its requirement history in the `ALTER TABLE` that adds its `*_known` superset `NOT VALID`,
-    and `20270118000100_run_input_validation_validate` validates them; each down migration refuses while a row holds a
-    new value;
+    and `20270118000100_run_input_validation_validate` validates them; the first's down migration refuses while a row
+    holds a new value (the second's is `SELECT 1`: a validated CHECK has nothing to undo);
   - `ScheduledStarts::check_scheduled` before `decide`, and `recheck` at the start;
   - one decision with the action, the auto-pause and its audit, or a backfill's end;
   - trigger-now's `422` before it decides and at its start; `BUFFERED` to `INPUT_INVALID` settled where it waits; an
@@ -1084,15 +1123,20 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   Files: the four migration files under `crates/infra-postgres/migrations/`, `crates/domain/src/schedules.rs`,
   `crates/application/src/schedule_firing.rs`, `crates/application/src/runs.rs` (`check_scheduled`),
   `crates/infra-postgres/src/schedules.rs` (`settle_waiting`), `frontend/apps/studio/src/features/schedules/model.ts`.
-  Tests: `tests/integration/schedules-bulk-operations/run_input.rs` (rows 6, 7 and 8, an unusable schema on rows 6 and
-  7, the buffered release, the
-  exhausted schedule, trigger-now refused at its start, no permit and the budget, one validation in two spans);
+  Tests: `integration_schedules_bulk_operations`: `row_6_an_action_the_new_version_refuses_is_input_invalid_and_pauses_once`,
+  `row_6_without_pause_the_refused_time_is_not_owed_and_an_unusable_schema_says_so`,
+  `row_7_a_backfill_whose_input_is_refused_ends_cancelled`,
+  `row_7_a_backfill_of_a_version_whose_schema_is_unusable_ends_cancelled_with_the_reason`,
+  `row_8_trigger_now_answers_422_and_records_nothing`, `row_8_trigger_now_answers_422_where_the_decision_would_buffer`,
+  `a_trigger_now_refused_at_its_start_answers_422_and_records_nothing`, `a_buffered_action_is_checked_again_at_its_release`,
+  `an_exhausted_schedule_records_no_input_invalid_for_a_version_that_refuses_its_input`,
+  `one_scheduled_action_is_one_validation_in_two_spans`,
   `actions::the_listing_passes_an_outcome_it_does_not_know_through_as_a_string` (G043-001); the `InputInvalid` cases of
   `firing_decisions` (`fault_schedules_bulk_operations`); `a_constraint_added_not_valid_is_validated_by_a_later_migration`
   and `the_run_input_validation_rolls_back_only_while_nothing_names_it` (`integration_platform_foundation`).
   Refs: FR-043-006, NFR-043-COMPAT
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11
-- [ ] T043-12 Read the mode and register it: `SAGAT_RUN_INPUT_VALIDATION` parsed strictly in both apps (an unknown value
+- [ ] T043-12 Read the mode and registered the capability: `SAGAT_RUN_INPUT_VALIDATION` parsed strictly in both apps (an unknown value
   stops the process naming the variable), logged at start, passed to publication and to the gate; the capability
   `run-input-validation-v1` listed only in `enforce`.
   Files: `crates/application/src/instances.rs`, `crates/application/src/definitions.rs` (`InputValidationMode`),
@@ -1106,20 +1150,24 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   (`integration_schedules_bulk_operations`).
   Refs: FR-043-013, NFR-043-COMPAT
   Owner-gate: OD-2026-11-14-8
-- [ ] T043-13 Ran the pre-check at publication and in `sagat validate`, in the mode given (the process's mode in the
-  control plane; `--input-validation enforce|report`, `enforce` by default, in the CLI): an `IrIssue` naming the keyword
+- [ ] T043-13 Ran the pre-check at publication, in `sagat validate` and in `sagat workflow validate`, in the mode given
+  (the process's mode in the control plane; `--input-validation enforce|report`, `enforce` by default, in the CLI): an `IrIssue` naming the keyword
   and its pointer in `enforce`, a `DefinitionWarning` in `report`; a warning for a schema beside a non-manual trigger;
-  a stored version re-parsed in `report` where publication reads it (D043-081); a retryable `503` when the
-  pre-check finds no permit (D043-177).
+  a version already stored, which publication parses again in `report` when it replays, activates or promotes it, so
+  that it is never refused there (D043-081); a retryable `503` when the pre-check finds no permit or panics, on the
+  publication, the dry run, the replay and the promotion (D043-177, D043-183, D043-186).
   Files: `crates/infra-ir/src/lib.rs` (`parse_with`), `crates/infra-ir/src/input_schema.rs`, `crates/domain/src/workflow.rs`
   (`InputSchemaIssue`, `DefinitionWarning`), `crates/application/src/definitions.rs` (`IrCodec::parse_with`,
   `IrError::ValidatorBusy`), `crates/application/src/publishing.rs`, `crates/api-http/src/error.rs`,
   `apps/control-plane/src/lib.rs` (the mode given to publication), `apps/cli/src/args.rs`, `apps/cli/src/validate.rs`,
-  `apps/cli/src/diagnostics.rs`.
+  `apps/cli/src/workflow.rs` and `apps/cli/src/lib.rs` (`sagat workflow validate`), `apps/cli/src/diagnostics.rs`.
   Tests: `crates/infra-ir/tests/input_schema_publication.rs`;
   `publication_refuses_a_schema_outside_the_subset_in_enforce_and_warns_in_report` (`integration_gitops_versioning`);
   `the_commands_for_one_workflow_take_the_words_and_flags_they_document` (`apps/cli/tests/args.rs`);
-  `a_document_whose_pre_check_found_no_permit_is_unavailable_and_retryable` (`crates/api-http/tests/run_input_errors.rs`).
+  `a_document_whose_pre_check_found_no_permit_is_unavailable_and_retryable` (`crates/api-http/tests/run_input_errors.rs`);
+  `a_dry_run_whose_pre_check_found_no_permit_is_unavailable_not_a_problem` (`crates/application/tests/definition_service.rs`);
+  `a_busy_stored_parse_is_unavailable_and_any_other_error_is_the_callers` (`crates/application/src/publishing.rs`);
+  `a_promotion_whose_parse_finds_no_permit_is_unavailable_not_draft_has_changes` (`integration_gitops_versioning`).
   Refs: FR-043-012
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-14
 - [ ] T043-14 Updated the contracts: in the OpenAPI the action outcome `INPUT_INVALID`, the reasons, the closed
@@ -1152,12 +1200,15 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `sdks/java/conformance/src/main/java/dev/sagatoctopusorchestrator/conformance/Runner.java`; Rust `sdks/rust/src/error.rs`,
   `src/types.rs`, `sdks/rust/conformance/src/runtime.rs`; `tests/contract/sdk-conformance/scenarios/run-input-validation.json`
   and the goldens under `tests/contract/sdk-conformance/expected/`.
-  Tests: the run parsing of each SDK ("a run stopped with a failure code carries it, and a run without one has none" in
-  `sdks/typescript/test/client.test.ts`, `TestARunStoppedWithAFailureCodeCarriesItAndOtherRunsHaveNone`,
-  `test_a_run_stopped_with_a_failure_code_carries_it_and_a_run_without_one_has_none`,
-  `ARunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone`, `aRunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone`,
-  `a_run_stopped_with_a_failure_code_carries_it_and_a_run_without_one_has_none`); the error tests of each SDK that read
-  `field` and `rule` beside `RUN_INPUT_INVALID`; the per-SDK checks of `sdks/AGENTS.md`; `sdk_conformance`, every
+  Tests: the run parsing of each SDK: "a run stopped with a failure code carries it, and a run without one has none"
+  (`sdks/typescript/test/client.test.ts`), `TestARunStoppedWithAFailureCodeCarriesItAndOtherRunsHaveNone`
+  (`sdks/go/client/client_test.go`), `test_a_run_stopped_with_a_failure_code_carries_it_and_a_run_without_one_has_none`
+  (`sdks/python/tests/test_client.py`), `ARunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone`
+  (`sdks/dotnet/tests/SagatOctopusOrchestrator.Sdk.Tests/ClientTests.cs`),
+  `aRunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone`
+  (`sdks/java/sdk/src/test/java/dev/sagatoctopusorchestrator/sdk/SagatClientTest.java`),
+  `a_run_stopped_with_a_failure_code_carries_it_and_a_run_without_one_has_none` (`sdks/rust/tests/operations.rs`); the
+  tests that read `field` and `rule` beside `RUN_INPUT_INVALID`, in the same files (and `sdks/python/tests/test_shared.py`); the per-SDK checks of `sdks/AGENTS.md`; `sdk_conformance`, every
   scenario, in six languages.
   Refs: FR-043-015, SC-043-005
   Owner-gate: OD-2026-11-14-2
@@ -1199,7 +1250,8 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   never the check.
   Files: `crates/infra-ir/tests/` (D043-095, D043-110), the classification fixtures published in `report` (`e0e345f8`),
   and `tests/contract/sdk-conformance/scenarios/builders.json` (a fractional `multipleOf` moved to `default`).
-  Tests: the suites that hold those fixtures.
+  Tests: `cargo test -p sagat-infra-ir` (the swept IR fixtures), `integration_payload_classification` (the
+  classification fixtures), `sdk_conformance` (`builders`).
   Refs: SC-043-001
   Owner-gate: OD-2026-11-14-2
 - [ ] T043-21 Tested the budget and the transient cases on every row that has them: an input past the budget is final the
@@ -1236,14 +1288,17 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   Refs: FR-043-003, FR-043-014
   Owner-gate: OD-2026-11-14-2
 - [ ] T043-24 Built `control-plane input-schema-inventory`: with the process's database settings, a paged read of the
-  stored versions of every tenant (`workflow_versions` joined to `workflows`), the pre-check on each, the refused ones
+  stored versions of every tenant (`workflow_versions` joined to `workflows`), the pre-check on each, whether something
+  still starts a refused one (`version_still_started`: its workflow's active version, a live schedule's pin, an open or
+  recent run), the refused ones
   with their ids, issue, keyword and pointer, the informational ones (inside the subset, beside a non-manual trigger),
   no schema text; exit 0, 1 or 2; a superseded version counted, listed by `--all`, never a reason to exit 1
   (OD-2026-11-16-5, D043-179).
   Files: `apps/control-plane/src/cli.rs`, `apps/control-plane/src/inventory.rs`, `apps/control-plane/src/main.rs`,
   `crates/infra-postgres/src/definitions.rs` (`stored_versions_page`, `version_still_started`), `crates/infra-ir/src/input_schema.rs`.
   Tests: `the_inventory_lists_the_versions_that_would_be_refused_and_exits_by_what_it_found` and
-  `a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all_lists_it` (`integration_gitops_versioning`),
+  `a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all_lists_it` and
+  `a_version_a_live_schedule_pins_is_never_superseded` (`integration_gitops_versioning`),
   `the_input_schema_inventory_exits_2_when_it_cannot_run_and_never_shows_the_url` (`apps/control-plane/tests/cli.rs`).
   Refs: FR-043-018
   Owner-gate: OD-2026-11-14-14
@@ -1259,7 +1314,9 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
 - [ ] T043-27 Measure `RUN_INPUT_WORK_UNITS` on the CI machine and decide the budget (G043-006, G043-017).
   Refs: NFR-043-BOUND
 - [ ] T043-28 Measure the recompiles of a tenant alone on a process that starts more than 64 schemas often, the limit
-  of the tenant share the owner kept (OD-2026-11-16-6), and propose a work-conserving share if they matter.
+  of the tenant share the owner kept (OD-2026-11-16-6): one tenant starting 65, 128 and 256 distinct schemas in turn,
+  in a release build, recording the recompiles per minute and the share of the permits' time they take. Above 5% of
+  that time, put a work-conserving share to the owner as an O-question; below it, record the numbers in G043-017.
   Refs: NFR-043-BOUND, SC-043-004
 
 ### Verification Plan
@@ -1267,8 +1324,10 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
 Every pull request runs `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 `python3 scripts/check-architecture.py` with its fixtures (`python3 -m unittest scripts.tests.test_check_architecture`),
 `python3 scripts/check-agent-config.py` and `python3 scripts/check-design-docs.py`, the unit tests of the crates it
-changes, and, for each row whose creator it changes, the targets that name that row below; a change to the gate, the
-validator or `CheckedRunInput` runs all of them:
+changes, and the targets below. For each row whose creator it changes it runs every target that names that row; a
+change to the gate, the validator or `CheckedRunInput` runs every target below; a change to publication, a promotion
+or the inventory runs `integration_gitops_versioning`; to a migration, `integration_platform_foundation`; to a contract
+or an SDK, the contract targets, `sdk_conformance` and the per-SDK checks:
 
 - `integration_durable_execution` (row 1, FR-043-004, FR-043-013, FR-043-017), also with
   `SAGAT_TEST_AS_RUNTIME_ROLE=1`;
@@ -1280,11 +1339,13 @@ validator or `CheckedRunInput` runs all of them:
 - `integration_workflow_primitives`, `fault_workflow_primitives` (rows 2, 11 and 12, pre-upgrade parents included), the
   integration suite also with `SAGAT_TEST_AS_RUNTIME_ROLE=1`;
 - `integration_database_connections` (row 13 and its sentinel);
-- `integration_gitops_versioning` (FR-043-012, FR-043-018);
-- `integration_payload_classification` (the sentinel and the metrics text), `contract_payload_classification` and
+- `integration_gitops_versioning` (FR-043-012, FR-043-018: publication, the dry run, a promotion, the inventory);
+- `integration_payload_classification` (the sentinels of rows 1, 3 to 9, 11, 12 and 14, and the metrics text),
+  `contract_payload_classification` and
   `contract_iceberg_writes` (the re-pinned baselines);
 - `integration_run_input_cache` (SC-043-004, in a process of its own);
-- `integration_claim_transition_efficiency` (SC-043-003): its earlier assertions pass unchanged, and T043-18 adds four;
+- `integration_claim_transition_efficiency` (SC-043-003; rows 1, 9, 11 and 12): its earlier assertions pass unchanged,
+  and T043-18 adds four;
 - `integration_platform_foundation` (the migrations added `NOT VALID`, their down migrations' guards, the privilege
   audit);
 - `contract_rest_durable_execution` and the unit tests of `crates/api-http` (the problem shape, the `Run`);

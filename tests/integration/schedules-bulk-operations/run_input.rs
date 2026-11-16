@@ -433,6 +433,51 @@ async fn a_buffered_action_is_checked_again_at_its_release() {
     assert_eq!(f.runs(&schedule).await.len(), 1);
 }
 
+/// Re-read of design 043 after round 2 (correctness 1): an action buffered while valid is checked before its decision and
+/// again at its release, and counted once, as the start it becomes: two scheduled starts, one of them buffered first, are
+/// two validations in `run_input_validations_total{creator=schedule}`, both `accepted`.
+#[tokio::test]
+async fn a_buffered_action_released_and_started_is_counted_once() {
+    let f = fixture().await;
+    let mut checked = flow("row-6-buffer-counted");
+    checked["inputSchema"] = json!({"type": "object"});
+    let (workflow, _) = f.w.publish(checked).await;
+    let schedule = f
+        .create(
+            "row-6-buffer-counted",
+            &hourly(),
+            &json!({"overlap": "BUFFER_ONE"}),
+            Some(target(workflow)),
+        )
+        .await;
+    let counted = std::sync::Arc::new(Counted::default());
+    let recorder = Recorder(std::sync::Arc::clone(&counted));
+    {
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        f.clock.advance(Duration::hours(1) + Duration::seconds(1));
+        f.drain(&schedule).await; // starts
+        f.clock.advance(Duration::hours(1));
+        f.drain(&schedule).await; // waits
+        let first = f.runs(&schedule).await[0];
+        f.end(first, "SUCCEEDED").await;
+        f.clock.advance(Duration::seconds(6));
+        f.drain(&schedule).await; // released and started
+    }
+    assert_eq!(f.outcomes(&schedule).await, outcomes_of(&[("STARTED", 2)]));
+    let counts = counted.0.lock().expect("counts").clone();
+    let schedule_validations: Vec<(String, u64)> = counts
+        .into_iter()
+        .filter(|(name, _)| name.starts_with("run_input_validations_total{creator=schedule,"))
+        .collect();
+    assert_eq!(
+        schedule_validations,
+        vec![(
+            "run_input_validations_total{creator=schedule,outcome=accepted}".to_owned(),
+            2
+        )],
+    );
+}
+
 /// Row 3 (FR-043-005, OD-2026-11-14-10): a Signal-with-Start whose start input does not match is refused also when an open
 /// holder would answer, and the holder receives no signal.
 #[tokio::test]
@@ -526,7 +571,8 @@ async fn row_3_with_start_is_refused_for_its_input_even_with_an_open_holder() {
         let pool = f.w.db.pool.clone();
         async move {
             sqlx::query_scalar::<_, i64>(
-                "SELECT count(*) FROM run_events WHERE run_id = $1 AND event_type LIKE 'signal%'",
+                // a delivered signal is journaled as the wait it satisfies
+                "SELECT count(*) FROM run_events WHERE run_id = $1 AND event_type = 'wait.satisfied'",
             )
             .bind(run.as_uuid())
             .fetch_one(&pool)

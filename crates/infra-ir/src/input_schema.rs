@@ -36,8 +36,10 @@ pub(crate) fn precheck(
     };
     let unusable = match sagat_infra_schema::run_input::precheck(schema.bytes()) {
         Ok(()) => return Ok(parsed),
-        // transient in either mode: the document is not judged (D043-177)
-        Err(PrecheckRefusal::Busy) => return Err(IrError::ValidatorBusy),
+        // transient in either mode: the document is not judged (D043-177, D043-186)
+        Err(PrecheckRefusal::Busy | PrecheckRefusal::Interrupted) => {
+            return Err(IrError::ValidatorBusy);
+        }
         Err(PrecheckRefusal::Unusable(unusable)) => unusable,
     };
     match mode {

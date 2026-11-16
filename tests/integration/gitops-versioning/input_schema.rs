@@ -395,13 +395,142 @@ async fn a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all
     assert!(listed.contains(&ids[0].1.to_string()), "{listed}");
     assert_eq!(exit_code(&all), 1, "--all changes no exit status");
 
-    // with the open run finished, nothing starts the old version of `busy-flow` either: exit 0
-    sqlx::query("UPDATE runs SET status = 'CANCELLED', finished_at = now(), created_at = now() - interval '40 days' WHERE workflow_id = $1")
+    // finished, but created within the quiet days: something started it lately, so it still counts
+    sqlx::query("UPDATE runs SET status = 'CANCELLED', finished_at = now() WHERE workflow_id = $1")
         .bind(ids[1].0.as_uuid())
         .execute(&w.db.pool)
         .await
-        .expect("the run finished long ago, written as the owner");
+        .expect("the run finished, written as the owner");
+    let recent = input_schema_inventory(&database(w.db.url.clone())).await;
+    assert_eq!(exit_code(&recent), 1, "a run created lately: {recent:?}");
+    // created longer ago than the quiet days, nothing starts the old version of `busy-flow` either: exit 0
+    sqlx::query("UPDATE runs SET created_at = now() - interval '40 days' WHERE workflow_id = $1")
+        .bind(ids[1].0.as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .expect("the run was created long ago, written as the owner");
     let quiet = input_schema_inventory(&database(w.db.url.clone())).await;
     assert_eq!(exit_code(&quiet), 0, "{quiet:?}");
     assert_eq!(quiet.as_ref().expect("runs").superseded.len(), 2);
+}
+
+/// Re-read of design 043 after round 2 (correctness 3, architecture 4): a schedule that pins a version keeps starting it
+/// whatever its workflow's active version is and however seldom it fires, so a version outside the subset that a live
+/// schedule pins is never superseded: the inventory counts it and exits 1.
+#[tokio::test]
+async fn a_version_a_live_schedule_pins_is_never_superseded() {
+    let f = crate::support::schedules::fixture().await;
+    let w = &*f.w;
+    let defs = DefinitionService::new(w.store.clone(), SystemClock, JsonIrCodec)
+        .with_input_validation(InputValidationMode::Report);
+    let old = with_schema("pinned-flow", outside(), None);
+    let created = defs
+        .create_workflow(
+            &w.admin,
+            "payments",
+            "pinned-flow",
+            &bytes(&old),
+            &format!("create-{}", Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .expect("a draft");
+    let workflow = created.workflow.id();
+    let first = defs
+        .publish(
+            &w.admin,
+            workflow,
+            created.workflow.draft_revision(),
+            None,
+            &format!("publish-{}", Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .expect("stored outside the subset")
+        .version
+        .id();
+    let record = defs
+        .get_workflow(&w.admin, workflow, &ctx())
+        .await
+        .expect("the workflow");
+    let record = defs
+        .update_draft(
+            &w.admin,
+            workflow,
+            record.workflow.draft_revision(),
+            &bytes(&with_schema("pinned-flow", json!({"type": "object"}), None)),
+            &ctx(),
+        )
+        .await
+        .expect("fixed");
+    let second = defs
+        .publish(
+            &w.admin,
+            workflow,
+            record.workflow.draft_revision(),
+            None,
+            &format!("publish-{}", Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .expect("the fixed version is active")
+        .version
+        .id();
+    // a quarterly schedule pinned to the old version (written pinned to the new one, which the write check admits, then
+    // re-pinned to the old one as a schedule written before 0.3.0 would be)
+    let schedule = f
+        .create(
+            "pinned-quarterly",
+            &json!({"intervals": [{"everyMs": 7_776_000_000_u64}]}),
+            &json!({}),
+            Some(json!({
+                "workflowId": workflow.to_string(),
+                "versionPolicy": "PINNED",
+                "versionId": second.to_string(),
+            })),
+        )
+        .await;
+    // the revisions are append-only: the owner re-pins this one with that guard off for its transaction alone
+    let mut tx = w.db.pool.begin().await.expect("a transaction");
+    sqlx::query("ALTER TABLE schedule_revisions DISABLE TRIGGER schedule_revisions_append_only")
+        .execute(&mut *tx)
+        .await
+        .expect("the guard off");
+    sqlx::query(
+        "UPDATE schedule_revisions SET action = jsonb_set(action, '{versionId}', to_jsonb($1::text)) WHERE schedule_id = $2",
+    )
+    .bind(first.to_string())
+    .bind(schedule.id.as_uuid())
+    .execute(&mut *tx)
+    .await
+    .expect("re-pinned, written as the owner");
+    sqlx::query("SET CONSTRAINTS ALL IMMEDIATE")
+        .execute(&mut *tx)
+        .await
+        .expect("the deferred quota flush runs now");
+    sqlx::query(
+        "ALTER TABLE schedule_revisions ENABLE ALWAYS TRIGGER schedule_revisions_append_only",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("the guard on again");
+    tx.commit().await.expect("committed");
+
+    let found = input_schema_inventory(&database(w.db.url.clone())).await;
+    let inventory = found.as_ref().expect("the inventory runs");
+    assert!(
+        inventory
+            .refused
+            .iter()
+            .any(|refused| refused.ids.version == first),
+        "the pinned old version still counts: {inventory:?}"
+    );
+    assert!(
+        !inventory
+            .superseded
+            .iter()
+            .any(|refused| refused.ids.version == first),
+        "{inventory:?}"
+    );
+    assert_eq!(exit_code(&found), 1);
 }

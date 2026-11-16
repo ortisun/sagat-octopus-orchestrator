@@ -775,7 +775,9 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   long `$defs` name repeated over thousands of positions). Test
   `a_schema_whose_pointers_would_outgrow_the_bound_is_refused_as_too_large` (seen accepted before, refused after).
 - **D043-175** (2026-11-16) `refuse_cron_tick` names the tenant in its predicate (`AND tenant_id = $4`, from the audit
-  record), as every other trigger update does (round 2: security Nit 3). Row 3's test now keeps the plain-start holder
+  record; round 2: security Nit 3). The advance and the delay of a cron trigger still match on its id alone: they are
+  internal to the dispatcher and keyed by the primary key, so nothing reaches them from a tenant (re-read of 2026-11-16,
+  correctness Nit 12, security; the wording "as every other trigger update does" was wrong). Row 3's test now keeps the plain-start holder
   waiting for its signal when the refused with-start arrives, and asserts it is still waiting after (round 2:
   correctness Major 2); `one_scheduled_action_is_one_validation_in_two_spans` groups its condition (correctness Nit 3).
 - **D043-176** (2026-11-16) The same port collision as D043-171 struck a second fixture in the final gates: the
@@ -831,6 +833,35 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   O043-005, which is about tuple positions (the inventory had no O-question), and the cache-share measurement cited
   T043-25, which is the port of G043-052; the measurement is T043-28, and the `integration_run_input_cache` target is
   T043-2's, not T043-16's.
+- **D043-183** (2026-11-16) A parse whose pre-check found no permit is answered unavailable on every path, not only at
+  publication (re-read of 2026-11-16: correctness Major 1, architecture Major 1). The dry run returned `200` with a
+  `VALIDATOR_BUSY` problem, the replay of a publication answered `500`, and a promotion read the busy parse of a clean
+  draft as "not clean" and refused it `409 DRAFT_HAS_CHANGES`. Each now answers `AppError::InvalidDefinition(ValidatorBusy)`,
+  which the API answers `503`. Tests `a_dry_run_whose_pre_check_found_no_permit_is_unavailable_not_a_problem` (seen
+  failing first: `Ok` with the problem) and `a_promotion_whose_parse_finds_no_permit_is_unavailable_not_draft_has_changes`
+  (seen failing first: `DraftHasChanges`), and the unit test of `unless_busy` for the replay.
+- **D043-184** (2026-11-16) A start counts every outcome; a check ahead of it (a schedule's action before its decision
+  and at its release, a `CANCEL_SOURCE` reset's request) counts only what stops it, a final or a transient refusal
+  (re-read of 2026-11-16: correctness Major 2, Nits 8 and 9 of both reviewers). D043-173 had left an accepted action
+  that was buffered counted twice, at its decision and at its release, and transient refusals uncounted ahead of a
+  start. `Counting` is now `All` or `Ahead`; `recheck` counts as any start. Test
+  `a_buffered_action_released_and_started_is_counted_once` (`integration_schedules_bulk_operations`, seen failing first:
+  three `accepted` for two starts).
+- **D043-185** (2026-11-16) A version that a schedule pins is never superseded while the schedule is not deleted,
+  however seldom it fires (re-read of 2026-11-16: correctness Major 3, architecture Major 4, security Nit 2):
+  `version_still_started` also reads the current revision of each live schedule of the tenant
+  (`action->>'versionPolicy' = 'PINNED'` and its `versionId`). Test `a_version_a_live_schedule_pins_is_never_superseded`
+  (seen failing first: the pinned version superseded and the exit 0); the inventory test gained a run created lately
+  and finished (correctness Nit 10). The runtime role holds `SELECT` on `schedules` and `schedule_revisions`.
+- **D043-186** (2026-11-16) The pin of v1 holds every limit that decides what it admits (re-read of 2026-11-16:
+  correctness Major 4, architecture Major 2, security Nit 4): `MAX_POINTER_BYTES`, `MAX_REPETITION` and
+  `MAX_PATTERN_NESTING` are public and pinned, and the subset contract lists the 4 MiB of pointers and the pattern's
+  repetition bound and nesting. A pre-check whose compile panics is caught, logged at `error` with the schema's size,
+  counted `interrupted` and answered as transient (architecture Nit 6; test `a_precheck_whose_compile_panics_is_interrupted`,
+  seen failing first: the panic unwound). The unit test of the pre-check's bound counts only the process's pool, so a
+  test on a pool of its own cannot raise it (correctness Major 5). Two Nits were left as they are: the pre-checks are
+  first come, first served among the tenants that publish (G043-057), and the migration test undoes to a fixed stamp,
+  so a later migration must keep it in mind (architecture Nit 13).
 
 ## 3. Gaps
 
@@ -872,10 +903,11 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-054 | A trigger dispatch that waits for room in the validator uses up none of the event's attempts, but an event that has waited for a day (`GIVE_UP_AFTER`) ends `DEAD`, as one waiting for a quota does (correctness review of 2026-11-15, Nit 14). | Only a validator starved for a day drops a trigger start; documented in Technical Plan 1. | Open (documented) |
 | G043-055 | A batch `RERUN` item that finds no room in the validator is deferred as a lock wait and counts an attempt, so one starved past the executor's attempts ends `FAILED RETRIES_EXHAUSTED`; and a buffered backfill step released by the schedule's own firing and refused for its input is settled `INPUT_INVALID` while its backfill runs on, so its next step is refused again before the backfill ends `CANCELLED` (correctness review of 2026-11-16, Nits 7 and 8). | Both end where the design says (a final outcome after a transient wait; a cancelled backfill one step later); neither admits an input. | Open (documented) |
 | G043-056 | `RUN_INPUT_SCHEMA_UNUSABLE` on row 2 (an uploaded-input start) has no test of its own: a version outside the subset is published only in `report` mode, which the blob platform of the tests does not offer. | Row 2 reaches the gate through `start_with` once its descriptor is built, the path whose refusal row 1's test covers. Rows 7 and 10 gained theirs on 2026-11-16 (`row_7_a_backfill_of_a_version_whose_schema_is_unusable_ends_cancelled_with_the_reason`, `a_cron_trigger_whose_schema_is_unusable_audits_the_tick_with_its_reason`; tests of behaviour already built, passing at once). | Open (documented) |
+| G043-057 | The pre-checks outside a start (publication, a dry run, a draft save, an ad hoc document) queue under one owner of the permits' fair queue, first come, first served among the tenants that send them: a tenant that sends many dry runs of heavy schemas can make another tenant's publication wait up to 5 s and answer `503` (re-read of 2026-11-16, security Nit 1). The starts of every tenant are still served first by the queue, and a pre-check is bounded (16 ms for the heaviest admitted schema in a test build). | Passing the tenant through the `IrCodec` port (about 55 parse callers) would make them fair; left for a later release, with the per-tenant request limits as the bound meanwhile. | Open |
 
 ## 4. Owner questions
 
-O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`) and O043-007 on 2026-11-16; O043-005 and O043-006 are open and block nothing built. OD-2026-11-14-2 had already decided that validation is on in
+O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`) and O043-007 on 2026-11-16; O043-005, O043-006 and O043-008 are open and block nothing built. OD-2026-11-14-2 had already decided that validation is on in
 0.3.0 for every start; none of these asked that again. The questions are kept as they were put.
 
 - **O043-001: answered (a)**, OD-2026-11-14-8, with the mode going through the instance registry (D043-028).
@@ -906,6 +938,12 @@ O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`) and
   name be compared on every lookup; (4) build the graded check of O043-006 (b); (5) count a holder's answer in `report`
   without an audit. **Recommended: (a)** — each decision is what the code does and is held by a test or a rule.
   **Answered (a)**, OD-2026-11-16-4 ("Aceitar ADR-0092"); the port of (1) stays G043-052 and T043-25.
+- **O043-008 — ADR-0092 decision 6, the version of the subset** (re-read of 2026-11-16, architecture Major 3). A release
+  that makes the subset stricter (its vocabulary, allowlist, limits, budget or charges) changes which inputs a pinned run
+  accepts. (a) Record in ADR-0092 that such a release ships `run-input-validation-v2`, required by the operator as v1 is,
+  never a silent edit; the pin test of D043-178 and D043-186 fails on a silent edit. (b) Leave it to each release's notes
+  and the pin test alone. **Recommended: (a)** — the pin test already refuses a silent edit, and the capability is how
+  ADR-0082 lets the operator lock a fleet to one meaning. Nothing built depends on the answer.
 
 
 

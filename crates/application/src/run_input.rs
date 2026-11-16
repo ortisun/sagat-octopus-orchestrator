@@ -416,21 +416,18 @@ impl CheckedRunInput {
     }
 }
 
-/// What `check_before_its_start` counts: the start that follows counts the rest.
-const BEFORE_ITS_START: Counting = Counting::BeforeItsStart;
+/// What `check_before_its_start` and `check_ahead` count: a check ahead of a start counts only what stops the start.
+const BEFORE_ITS_START: Counting = Counting::Ahead;
 /// What `check_ahead` counts.
 const AHEAD: Counting = Counting::Ahead;
 
-/// What one call of the gate counts in `run_input_validations_total`.
+/// What one call of the gate counts in `run_input_validations_total` (D043-173, D043-184).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Counting {
-    /// Every outcome.
+    /// Every outcome: a start, whatever checked it before.
     All,
-    /// A start an earlier call checked: a refusal and a report only.
-    AtStart,
-    /// A check its start repeats: all but a report, which the start counts with its audit.
-    BeforeItsStart,
-    /// A check of a request whose start is checked and counted later: a refusal only.
+    /// A check ahead of a start that the start checks and counts again (a schedule's action before its decision and at
+    /// its release, a `CANCEL_SOURCE` reset's request): only what stops the start, a final refusal or a transient one.
     Ahead,
 }
 
@@ -560,8 +557,8 @@ impl RunInputGate {
     }
 
     /// As [`Self::check`], for a check ahead of a start that [`Self::recheck`] checks again (a schedule's action before
-    /// its decision): it counts what the start will not count, an acceptance and a refusal, but not a report, which the
-    /// start counts with the audit it writes (architecture and correctness reviews of 2026-11-16, round 2).
+    /// its decision, and again at its release when it was buffered): it counts only what stops the start, a final or a
+    /// transient refusal; an acceptance and a report are counted by the start (D043-173, D043-184).
     ///
     /// # Errors
     /// As [`Self::check`].
@@ -587,7 +584,7 @@ impl RunInputGate {
     }
 
     /// As [`Self::check`], for a request whose start comes later and is checked and counted then (a `CANCEL_SOURCE`
-    /// reset): only a refusal, which ends the request, is counted here.
+    /// reset): only a final or a transient refusal, which ends the request, is counted here.
     ///
     /// # Errors
     /// As [`Self::check`].
@@ -612,9 +609,9 @@ impl RunInputGate {
         .await
     }
 
-    /// As [`Self::check`], for the start of an input the creator already checked, and counted, a moment before (a
-    /// schedule's action, checked before its decision): the result is the same, the validation is counted once
-    /// (review of phase 2, D043-147).
+    /// As [`Self::check`], for the start of a schedule's action, which [`Self::check_before_its_start`] checked before
+    /// its decision without counting what lets it start: the start counts every outcome, so one action is one validation
+    /// (D043-147, D043-184).
     ///
     /// # Errors
     /// As [`Self::check`].
@@ -634,7 +631,7 @@ impl RunInputGate {
             input,
             creator,
             policy,
-            Counting::AtStart,
+            Counting::All,
         )
         .await
     }
@@ -659,14 +656,15 @@ impl RunInputGate {
         policy: FieldPolicy,
         counting: Counting,
     ) -> Result<CheckedRunInput, InputRefusal> {
-        // a recheck counts only what the check before it could not have counted: a refusal (D043-152), or a report of
-        // one in `report` mode, whose audit is written with the run (correctness review of 2026-11-16, Nit 6)
+        // a start counts every outcome; a check ahead of it only what stops it, so that one start is one validation
+        // however many checks came before it (D043-173, D043-184)
         let count = |creator: Creator, outcome: &'static str| {
             let counts = match counting {
                 Counting::All => true,
-                Counting::AtStart => matches!(outcome, "refused" | "schema_unusable" | "reported"),
-                Counting::BeforeItsStart => outcome != "reported",
-                Counting::Ahead => matches!(outcome, "refused" | "schema_unusable"),
+                Counting::Ahead => matches!(
+                    outcome,
+                    "refused" | "schema_unusable" | "deadline" | "interrupted"
+                ),
             };
             if counts {
                 count(creator, outcome);
@@ -966,7 +964,7 @@ mod tests {
                 b"{}".to_vec(),
                 Creator::Schedule,
                 FieldPolicy::Show,
-                Counting::AtStart,
+                Counting::All,
             )
             .now_or_never()
             .unwrap()
@@ -1010,7 +1008,7 @@ mod tests {
                     b"{}".to_vec(),
                     Creator::Schedule,
                     FieldPolicy::Show,
-                    Counting::AtStart,
+                    Counting::All,
                 )
                 .now_or_never()
                 .unwrap()
@@ -1027,12 +1025,9 @@ mod tests {
         );
     }
 
-    /// Round 2 of 2026-11-16 (architecture 3, correctness 1): in `report` mode a schedule's action checked before its
-    /// decision and again at its start is counted `reported` once, as its one audit row; a `CANCEL_SOURCE` reset's
-    /// request counts nothing that its completion will count.
-    #[test]
     /// Round 2 of 2026-11-16 (critic 27; OD-2026-11-16-3): a panic of the validator is counted `interrupted`, its own
     /// outcome, not `deadline`, which stays for no permit within the wait and the backstop; both are transient.
+    #[test]
     fn a_panic_of_the_validator_is_counted_interrupted_and_no_room_deadline() {
         use futures_util::FutureExt as _;
 
@@ -1081,6 +1076,9 @@ mod tests {
         );
     }
 
+    /// Round 2 of 2026-11-16 (architecture 3, correctness 1): in `report` mode a schedule's action checked before its
+    /// decision and again at its start is counted `reported` once, as its one audit row; a `CANCEL_SOURCE` reset's
+    /// request counts nothing that its completion will count.
     #[test]
     fn a_report_is_counted_once_per_start_whatever_checks_it_before() {
         use futures_util::FutureExt as _;
@@ -1103,7 +1101,7 @@ mod tests {
             // a schedule's action: the check before its decision, then the start's recheck
             // a cancelling reset: the check of its request, then the completion's check
             for (creator, ahead, start) in [
-                (Creator::Schedule, BEFORE_ITS_START, Counting::AtStart),
+                (Creator::Schedule, BEFORE_ITS_START, Counting::All),
                 (Creator::Repeat, AHEAD, Counting::All),
             ] {
                 for counting in [ahead, start] {

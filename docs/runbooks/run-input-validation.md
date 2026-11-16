@@ -35,11 +35,13 @@ the refusals is `specs/043-run-input-validation/contracts/errors.md`.
    It prints, for each stored version whose schema would be refused, its ids, the keyword and its pointer, and, for
    information, the versions within the subset that have an `inputSchema` and a non-manual trigger. It prints no schema
    text and no input and writes nothing. A version outside the subset that nothing starts any more (not its workflow's
-   active version, no open run, no run created in the last 30 days) is superseded: the summary counts it and it does not
+   active version, pinned by no schedule that is not deleted, no open run, no run created in the last 30 days) is
+   superseded: the summary counts it and it does not
    change the exit status; `control-plane input-schema-inventory --all` lists those too (OD-2026-11-16-5). Exit 0:
    nothing anyone still starts would be refused; 1: at least one version would; 2: the command failed (it could not
-   connect, or a stored document could not be read). It needs `SELECT` on `workflow_versions`, `workflows` and `runs`,
-   which the runtime role holds.
+   connect, or a stored document could not be read). It needs `SELECT` on `workflow_versions`, `workflows`,
+   `schedules`, `schedule_revisions` and `runs`, which the runtime role holds. Each version outside the subset costs one
+   statement over the runs of its workflow, bounded by the statement timeout of the control plane's settings.
 2. Decide the mode. If callers or schemas cannot be fixed before the upgrade, set
    `SAGAT_RUN_INPUT_VALIDATION=report` in the manifest of **every** execution engine and control plane **before you
    migrate** (D043-040): the engines are upgraded first and default to `enforce`, so the first upgraded engine would
@@ -77,7 +79,8 @@ Going back to `report`: remove the requirement first, then restart in `report`.
 - `run_input_validations_total{creator, outcome}`: `accepted`, `no_schema`, `refused`, `schema_unusable`, `reported`,
   `deadline` (no permit within 5 s, or the backstop: transient, never remembered) and `interrupted` (a panic of the
   validator, logged at `error` with the schema's digest: transient, and a defect).
-- `run_input_prechecks_total{outcome}`: `admitted`, `unusable`, `busy`, for the pre-check of a document outside a start
+- `run_input_prechecks_total{outcome}`: `admitted`, `unusable`, `busy`, `interrupted` (a panic, logged at `error` with
+  the schema's size), for the pre-check of a document outside a start
   (publication, a dry run, an ad hoc document). It shares the four permits of the starts; `busy` is answered a
   retryable `503`, and the caller sends the document again.
 - `run_input_schema_cache_total{result}`: `hit`, `miss`, `evicted`, `failure_remembered`, `unshared` (ad hoc starts).

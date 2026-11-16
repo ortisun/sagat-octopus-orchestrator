@@ -39,6 +39,9 @@ use crate::classification::cache::{Cache, CacheMetrics, Limits as CacheLimits, S
 
 pub use compile::CompiledInputSchema;
 pub use counter::{Counters, Limits};
+/// Limits of `run-input-validation-v1` held by the pin test of D043-178 (D043-186).
+pub use pattern::{MAX_PATTERN_NESTING, MAX_REPETITION};
+pub use vocabulary::MAX_POINTER_BYTES;
 
 /// The work budget of one validation, in units of the counter (NFR-043-BOUND, G043-006, G043-017).
 pub const RUN_INPUT_WORK_UNITS: u64 = 1_000_000;
@@ -91,7 +94,7 @@ pub use sagat_application::run_input::{
 /// at most [`RUN_INPUT_PERMITS`], and a pre-check waits at most [`permits::RUN_INPUT_PERMIT_WAIT`]. Counted in
 /// `run_input_prechecks_total{outcome}` (`admitted`, `unusable`, `busy`).
 pub fn precheck(schema: &[u8]) -> Result<(), PrecheckRefusal> {
-    precheck_in(RunInputValidator::process().permits(), schema)
+    precheck_on(RunInputValidator::process().permits(), schema, true)
 }
 
 /// Why a pre-check did not admit a schema.
@@ -101,6 +104,8 @@ pub enum PrecheckRefusal {
     Unusable(Unusable),
     /// No permit within the wait: transient, the caller may try again.
     Busy,
+    /// The compile panicked, a defect of the validator: transient, logged at `error`.
+    Interrupted,
 }
 
 /// [`precheck`] with the permits of `pool`.
@@ -108,20 +113,46 @@ pub enum PrecheckRefusal {
 /// # Errors
 /// The first violation, or [`PrecheckRefusal::Busy`].
 pub fn precheck_in(pool: &permits::Permits, schema: &[u8]) -> Result<(), PrecheckRefusal> {
+    precheck_on(pool, schema, false)
+}
+
+/// [`precheck_in`]; `process` says the pool is the process's, whose pre-checks a unit test counts (only those, so a test
+/// on a pool of its own cannot raise that count).
+fn precheck_on(
+    pool: &permits::Permits,
+    schema: &[u8],
+    #[cfg_attr(not(test), allow(unused_variables))] process: bool,
+) -> Result<(), PrecheckRefusal> {
     off_worker(|| {
         let _permit = pool.acquire_blocking(PRECHECKS).map_err(|permits::Busy| {
             metrics::counter!("run_input_prechecks_total", "outcome" => "busy").increment(1);
             PrecheckRefusal::Busy
         })?;
         #[cfg(test)]
-        let _seen = tests::Concurrent::enter();
-        let answer = CompiledInputSchema::compile(schema)
-            .map(|_| ())
-            .map_err(PrecheckRefusal::Unusable);
-        let outcome = if answer.is_ok() {
-            "admitted"
-        } else {
-            "unusable"
+        let _seen = process.then(tests::Concurrent::enter);
+        // a panic of the compile is the validator's defect, never the schema's: transient, logged with the size only
+        // (re-read of 2026-11-16, architecture Nit 6; D043-186)
+        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(test)]
+            if tests::PANIC_ON_COMPILE.with(std::cell::Cell::get) {
+                panic!("a compiler fault the test injects");
+            }
+            CompiledInputSchema::compile(schema)
+        }))
+        .map_or_else(
+            |_| {
+                tracing::error!(
+                    schema_bytes = schema.len(),
+                    "the run-input pre-check panicked: a defect of the validator, reported as transient"
+                );
+                Err(PrecheckRefusal::Interrupted)
+            },
+            |compiled| compiled.map(|_| ()).map_err(PrecheckRefusal::Unusable),
+        );
+        let outcome = match &answer {
+            Ok(()) => "admitted",
+            Err(PrecheckRefusal::Unusable(_)) => "unusable",
+            Err(_) => "interrupted",
         };
         metrics::counter!("run_input_prechecks_total", "outcome" => outcome).increment(1);
         answer
@@ -456,6 +487,23 @@ mod tests {
         drop(held);
         assert_eq!(precheck_in(&pool, &schema), Ok(()));
         assert_eq!(pool.free(), 2, "its permit went back");
+    }
+
+    /// A pre-check whose compile panics is answered `Interrupted`, transient, and the process goes on (re-read of
+    /// 2026-11-16, architecture Nit 6).
+    #[test]
+    fn a_precheck_whose_compile_panics_is_interrupted() {
+        let pool = permits::Permits::new(1, std::time::Duration::from_millis(200));
+        PANIC_ON_COMPILE.with(|flag| flag.set(true));
+        let answer = std::panic::catch_unwind(|| precheck_in(&pool, br#"{"type": "object"}"#));
+        PANIC_ON_COMPILE.with(|flag| flag.set(false));
+        assert_eq!(
+            answer.ok(),
+            Some(Err(PrecheckRefusal::Interrupted)),
+            "it did not unwind"
+        );
+        assert_eq!(pool.free(), 1, "its permit went back");
+        assert_eq!(precheck_in(&pool, br#"{"type": "object"}"#), Ok(()));
     }
 
     /// Security and correctness reviews of 2026-11-16, Major 1: the caller whose compile panics (the leader of the

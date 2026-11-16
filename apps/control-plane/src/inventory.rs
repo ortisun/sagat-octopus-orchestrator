@@ -220,7 +220,7 @@ pub async fn input_schema_inventory_in(
             };
             match sagat_infra_schema::run_input::precheck(schema.bytes()) {
                 // the inventory checks one schema at a time in its own process: its pool is never full
-                Err(PrecheckRefusal::Busy) => {
+                Err(PrecheckRefusal::Busy | PrecheckRefusal::Interrupted) => {
                     return Err(RunError::Refused(
                         "the run-input validator of the inventory had no permit; run it again",
                     ));

@@ -288,9 +288,14 @@ async fn sentinel(w: &World) {
         rendered.contains("run_input_validations_total"),
         "the refusals were counted: {rendered}"
     );
+    let logs = captured.text();
+    assert!(
+        logs.contains("run_input.check") && logs.contains("refused"),
+        "the capture saw the gate refuse both starts: {logs}"
+    );
     for (label, text) in [
         ("the answers", answers),
-        ("the logs and spans", captured.text()),
+        ("the logs and spans", logs),
         ("the audit rows", audits),
         ("the metrics", rendered),
     ] {
