@@ -179,7 +179,7 @@ path is the migration file in T041-5 and becomes `crates/infra-postgres/src/step
 needs an existing file, `durable_quotas.rs:302-308`).
 
 The class `step_log` and the kind `fixed_octets` are those of ADR-0027's Amendment of 2026-11-15 (OD-2026-11-15-5 and
--6; its text waits for O041-024): `fixed_octets` charges a constant per row whatever the value, one branch of
+-6; accepted, OD-2026-11-15-16): `fixed_octets` charges a constant per row whatever the value, one branch of
 `sagat_quota_measure` (`20261024000000_durable_quotas.up.sql:152-174`); the class has its own usage column
 `tenant_retained_usage.step_log_bytes`, its delta `quota_transaction_deltas.step_log_delta`, its policy fence
 `quota-policy:tenant_step_log_bytes:<tenant>` taken after the content and log fences, its error

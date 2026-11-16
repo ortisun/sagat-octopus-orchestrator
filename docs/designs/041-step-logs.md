@@ -302,16 +302,9 @@ Technical, each closed by the task named:
 
 ## Owner decisions needed
 
-Open (each registered in research.md; the recommendation is the first option):
+Open, and asked only on a result of the spike T041-31 (each registered in research.md; the recommendation is the first
+option):
 
-- **O041-024 The text of ADR-0027's Amendment (2026-11-15).** The owner decided its substance (OD-2026-11-15-5,
-  OD-2026-11-15-6); the text adds the resource `tenant_step_log_bytes` (default 1 GiB), the class `step_log`, the
-  measurement kind `fixed_octets`, the finalizer branch and two `SECURITY DEFINER` accessors. (a) Accept the text as
-  written, in ADR-0027 as the owner asked. (b) Accept it with the changes the owner names (the 1 GiB default, for one).
-  (c) Move it to a new ADR that refines ADR-0027, with a pointer there. Recommended: (a), since the owner asked for an
-  amendment section. Trade-off: (a) edits in substance an ADR that is accepted and implemented, which
-  `docs/adr/README.md` rule 2 and the constitution's Governance would put in a new ADR, as (c) does. T041-3, T041-4,
-  T041-5, T041-6 and T041-13 wait for it.
 - **O041-020 An approximate run ceiling** (asked only if the fan-out case of T041-31 fails). (a) Keep the exact run
   ceiling, so that the batches of one run wait for each other on `run_log_usage`. (b) An approximate ceiling: each batch
   sums the counters of the run's streams without a lock, so a run can pass its ceiling by the batches in flight.
@@ -368,6 +361,10 @@ Answered, recorded in `docs/owner-decisions.md` and in research.md:
     code changes (D041-058, T041-32). Rejected: no rule.
   - O041-023, "Aceitar" ("accept"): the cursor that shows the storing transaction's id is accepted (G041-008).
     Rejected: an encrypted cursor.
+- **O041-024**, "Emenda no ADR-0027" ("an amendment in ADR-0027"): the Amendment of 2026-11-15 stays a section of ADR-0027
+  and is accepted, an exception to `docs/adr/README.md` rule 2 (OD-2026-11-15-16). Rejected: a new ADR refining ADR-0027.
+- **The design**, "Aceitar e construir" ("accept and build"): accepted with constitution 4.5.0 for release 0.3.0
+  (OD-2026-11-15-17).
 
 ## Critical User Journeys (CUJs)
 
@@ -661,7 +658,7 @@ by step 2 of the ingest in the same transaction, and nothing deletes a run today
 lines and usage row when it deletes the run (G041-004, registered in feature 020's research as G1618). `step_log_lines`
 references `step_log_streams` (same tenant), a row the engine never locks.
 
-**Accounting** (ADR-0027 Amendment of 2026-11-15, its text waiting for O041-024). `step_log_lines.message`,
+**Accounting** (ADR-0027 Amendment of 2026-11-15, accepted, OD-2026-11-15-16). `step_log_lines.message`,
 `.exception` and `.fields` are of the new class `step_log` in `crates/infra-postgres/storage-classification.json`, and
 `.level` carries the fixed charge of 128 bytes (`fixed_octets`, OD-2026-11-15-6); every other variable-size column of
 the four tables is `protected_system`, so a marker costs its 128 bytes and nothing more. They count against
@@ -1131,6 +1128,7 @@ Slice A, decisions and contracts (nothing runs yet):
   research.md; correct the ADRs' Revision sections and this design for the answers. Done when every question not conditional on
   T041-31 (O041-020, O041-021) has a citable row (Status `Decided`) and the tasks that wait for one cite it on an `Owner-gate:` line.
   Refs: FR-041-007, FR-041-008
+  Owner-gate: OD-2026-11-15-17
 - [ ] T041-31 Spike, before the schema is fixed. A log driver in `tests/performance/scalability-ha`, enabled only by
   `SAGAT_PERF_STEP_LOG_SPIKE=1`, creates its scratch tables (both variants) in the benchmark's own disposable database
   and runs a prototype of the ingest's SQL against them while the engine completes steps with a 1 KiB output (the
@@ -1156,8 +1154,7 @@ Slice A, decisions and contracts (nothing runs yet):
   `docs/reference/api.md` (`SAGAT_DOCS_BLESS=1`, `contract_developer_experience`) and the Studio types, each after reading
   the diff. Contract checks pass; nothing is served.
   Refs: FR-041-004, FR-041-010, FR-041-011, FR-041-012, FR-041-014, FR-041-022, FR-041-023
-  Owner-gate: OD-2026-11-15-4, OD-2026-11-15-8, OD-2026-11-15-9
-  Waits for: O041-024 (the text of ADR-0027's Amendment of 2026-11-15)
+  Owner-gate: OD-2026-11-15-4, OD-2026-11-15-8, OD-2026-11-15-9, OD-2026-11-15-16
   Files: modify `specs/001-platform-foundation/contracts/{worker.proto,worker.baseline.json,openapi.yaml}`, the six SDK
   proto copies, `crates/api-grpc/build.rs`, `crates/api-grpc/src/{lib.rs,service.rs}`, `sdks/rust/build.rs`,
   `sdks/rust/conformance/build.rs`, the six test and SDK stubs of section 1, `sdks/go/internal/workerpb/*.pb.go`,
@@ -1176,8 +1173,7 @@ Slice B, the server stores:
   `run:logs:read` and `run:logs:delete` with the role matrix test; `AuditAction::RunLogsRead` and `RunLogsDeleted`, the
   first in `collapses_repeats` and `repeat_window`.
   Refs: FR-041-002, FR-041-003, FR-041-006, FR-041-013, FR-041-020, FR-041-023
-  Owner-gate: OD-2026-11-13-14, OD-2026-11-15-4, OD-2026-11-15-5
-  Waits for: O041-024 (the text of ADR-0027's Amendment of 2026-11-15)
+  Owner-gate: OD-2026-11-13-14, OD-2026-11-15-4, OD-2026-11-15-5, OD-2026-11-15-16
   Files: create `crates/domain/src/step_logs.rs`; modify `crates/domain/src/{lib.rs,quota.rs,identity.rs,audit.rs}`;
   create one migration under `crates/infra-postgres/migrations/`.
 - [ ] T041-5 The migration of data-model.md §2 to §4: the tables, indexes and the no-update trigger; the ADR-0027
@@ -1194,8 +1190,7 @@ Slice B, the server stores:
   `crates/infra-postgres/src/execution.rs` and `execution/` never names `step_log_lines`, `step_log_streams`,
   `run_log_usage` or `StepLogTx` (ADR-0084 decisions 1 and 2).
   Refs: FR-041-008, FR-041-021
-  Owner-gate: OD-2026-11-13-14, OD-2026-11-13-18, OD-2026-11-15-4, OD-2026-11-15-5, OD-2026-11-15-6, OD-2026-11-15-9
-  Waits for: O041-024 (the text of ADR-0027's Amendment of 2026-11-15)
+  Owner-gate: OD-2026-11-13-14, OD-2026-11-13-18, OD-2026-11-15-4, OD-2026-11-15-5, OD-2026-11-15-6, OD-2026-11-15-9, OD-2026-11-15-16
   Files: create a migration (`.up.sql`, `.down.sql`); modify `crates/infra-postgres/src/identity.rs` (the typed refusal
   of `tenant_step_log_quota_exceeded` in `classify`, `:787-791`), `crates/infra-postgres/src/quotas.rs` (the usage of
   the new resource, `:1219`), `crates/infra-postgres/src/content_usage.rs` (`RetainedUsage`, `:147-173`),
@@ -1220,8 +1215,7 @@ Slice B, the server stores:
   one; the tenant limit by the unlocked read and by the finalizer's raise, with a gap in the batch and a final batch
   after it, asserting the counts; capture off in the namespace (no row written).
   Refs: FR-041-002, FR-041-004, FR-041-006, FR-041-007, FR-041-008, SC-041-001
-  Owner-gate: OD-2026-11-13-14, OD-2026-11-15-4, OD-2026-11-15-5, OD-2026-11-15-6
-  Waits for: O041-024 (the text of ADR-0027's Amendment of 2026-11-15)
+  Owner-gate: OD-2026-11-13-14, OD-2026-11-15-4, OD-2026-11-15-5, OD-2026-11-15-6, OD-2026-11-15-16
   Files: create `crates/application/src/step_logs.rs`, `crates/infra-postgres/src/step_logs.rs`,
   `tests/integration/step-logs/main.rs` and its modules; modify `crates/application/src/{lib.rs,worker.rs}`,
   `crates/infra-postgres/src/{lib.rs,execution.rs,workers.rs}`, `crates/telemetry/src/redact.rs`,
@@ -1302,8 +1296,7 @@ Slice C, the server serves:
   `record_execution` in the order of section 7, the runner's `generation` and `instancePath` in its report with the
   resend without them, the step-log fence argument of `take_log_prefix`; the tests of section 7.
   Refs: FR-041-016
-  Owner-gate: OD-2026-11-13-14, OD-2026-11-15-9
-  Waits for: O041-024 (the text of ADR-0027's Amendment of 2026-11-15)
+  Owner-gate: OD-2026-11-13-14, OD-2026-11-15-9, OD-2026-11-15-16
   Files: modify `crates/domain/src/step_logs.rs` (`script_marker_decision`),
   `crates/infra-postgres/src/{step_logs.rs,scripts.rs,content_usage.rs}`, `crates/application/src/{step_logs.rs,scripts.rs}`, `crates/api-http/src/{dto_scripts.rs,routes/scripts.rs}`,
   `apps/sandbox-runner/src/{lib.rs,api.rs}`; tests in `tests/integration/step-logs/` and `tests/integration/inline-code-sandbox/`.

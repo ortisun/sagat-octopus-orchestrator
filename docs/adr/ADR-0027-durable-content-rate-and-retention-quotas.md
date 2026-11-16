@@ -98,9 +98,10 @@ The forward admission also inspects its immutable compensation and reconciliatio
 
 An execution report resolves its tenant, namespace, run, node, attempt and digest against that durable lease before reading the pinned retention. The first stored report assigns its expiry using that pinned duration; replay preserves the first record and expiry, regardless of a later policy decrease. Existing immutable lease events without the field are explicitly grandfathered under the prior retention-selection semantics, and existing execution rows are unchanged. New writers must always stamp the field; enforcement rollout must not claim that older writers enforce the new admission rule. An execution report with no workflow-attempt tuple is a separate record admission subject to current policy; a partial tuple is invalid. Tests must include lowering the ceiling to zero between lease and report, a subsequent forward lease being withheld, old lease compatibility, and completion/compensation at the lowered ceiling.
 
-## Amendment (2026-11-15), proposed: awaiting the owner's acceptance (O041-024)
+## Amendment (2026-11-15), accepted 2026-11-15 (OD-2026-11-15-16)
 
-Not in force until the owner accepts this text (O041-024 in `specs/041-step-logs/research.md`). The owner decided what it
+Amendment accepted 2026-11-15, OD-2026-11-15-16. The owner chose to keep it as a section of this ADR ("Emenda no
+ADR-0027"), an exception to rule 2 of `docs/adr/README.md`, which would have put it in a new ADR. The owner decided what it
 builds on 2026-11-15: step logs get a quota of their own ("Quota separada", OD-2026-11-15-5) and every stored step-log
 row is charged 128 bytes ("Cobrar 128 bytes/linha", OD-2026-11-15-6). It serves design 041 (step logs) and ADR-0084;
 nothing above this section changes for the resources it already covers.
@@ -147,8 +148,7 @@ Consequences. A tenant's default allowance for retained diagnostic text grows fr
 `tenant_log_bytes` and 1 GiB of `tenant_step_log_bytes`); every classified write's finalizer has one more branch and its
 loop one more condition; a step-log row costs at least 128 bytes of the tenant quota, so it holds fewer short lines (the
 attempt and run byte ceilings of design 041 measure the text only). This section amends in place an ADR that is accepted
-and implemented, as the owner asked; `docs/adr/README.md` rule 2 would instead put it in a new ADR that refines this one,
-which O041-024 offers as an option.
+and implemented, as the owner asked (OD-2026-11-15-16, an exception to `docs/adr/README.md` rule 2).
 
 Built by design 041: T041-4 (the resource), T041-5 (the column, the delta, the class, the kind, the routing, the finalizer
 branch, the control flag, the two functions, the typed refusal, the manifest and its test), T041-6 (the ingest's early

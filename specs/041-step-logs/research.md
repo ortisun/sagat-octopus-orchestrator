@@ -92,7 +92,8 @@ The owner questions these rest on were all answered as recommended (OD-2026-11-1
 
 The options and the reasoning are in the design, section "Owner decisions needed". The owner answered all eleven
 on 2026-11-13 ("Aceitar todas"), recorded as OD-2026-11-13-14. O041-014 to O041-023 were raised by the reviews of 2026-11-15; the owner answered eight of them on 2026-11-15
-(OD-2026-11-15-4 to -11); O041-020 and O041-021 stay conditional on T041-31, and O041-024 (the ADR-0027 text) is open.
+(OD-2026-11-15-4 to -11); O041-020 and O041-021 stay conditional on T041-31, and O041-024 (the ADR-0027 text) was answered the same day
+(OD-2026-11-15-16). The owner accepted the design with constitution 4.5.0 (OD-2026-11-15-17).
 
 | ID | Date | Question | Decision | Answer |
 |---|---|---|---|---|
@@ -119,7 +120,7 @@ on 2026-11-13 ("Aceitar todas"), recorded as OD-2026-11-13-14. O041-014 to O041-
 | O041-021 | 2026-11-15 | Chunk rows, if T041-31 shows one row per line fails SC-041-007 and chunk rows pass | (a) one row per line; (b) one row per batch. Recommended: what T041-31 shows passes, (a) if both | Conditional; asked only on that result |
 | O041-022 | 2026-11-15 | A test-selection rule for step-log code (the constitution's CI gate names the suites a pull request runs "and only those") | (a) amend the CI gate so the selector picks `integration_step_logs` and the budget suite for step-log code; (b) no rule. Recommended (a) | Answered 2026-11-15, option (a), as recommended: "Emendar o gate de CI" ("amend the CI gate"), OD-2026-11-15-10 |
 | O041-023 | 2026-11-15 | Accept that the cursor shows the database's transaction counter (G041-008)? | (a) accept as stated; (b) encrypt the cursor with a server key. Recommended (a) | Answered 2026-11-15, option (a), as recommended: "Aceitar" ("accept"), OD-2026-11-15-11 |
-| O041-024 | 2026-11-15 | Accept the text of ADR-0027's Amendment (2026-11-15), which builds OD-2026-11-15-5 and -6? | (a) accept as written; (b) accept with changes. Recommended (a) | Open |
+| O041-024 | 2026-11-15 | Accept the text of ADR-0027's Amendment (2026-11-15), which builds OD-2026-11-15-5 and -6? | (a) accept as written; (b) accept with changes. Recommended (a) | Answered 2026-11-15, option (a), as recommended: "Emenda no ADR-0027" ("an amendment in ADR-0027"), OD-2026-11-15-16, an exception to rule 2 of `docs/adr/README.md` |
 
 ## Review of 2026-11-13
 

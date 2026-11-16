@@ -8,7 +8,9 @@ means the decision is taken and the implementation is still to be done; it is no
 
 After the reviews of 2026-11-15 the assistant put ten questions of design 041 to the owner, each with a recommendation
 (the design's "Owner decisions needed"; `specs/041-step-logs/research.md`). The owner answered eight; O041-020 and
-O041-021 stay conditional on the spike T041-31. Two answers go against the recommendation (OD-2026-11-15-5, -9).
+O041-021 stay conditional on the spike T041-31. Two answers go against the recommendation (OD-2026-11-15-5, -9). The
+owner then answered O041-024, the text of the ADR-0027 Amendment (OD-2026-11-15-16), and accepted the design with
+constitution 4.5.0 (OD-2026-11-15-17).
 
 | ID | Decision | Decided by | Status | Covers |
 |---|---|---|---|---|
@@ -20,6 +22,8 @@ O041-021 stay conditional on the spike T041-31. Two answers go against the recom
 | OD-2026-11-15-9 | "Sim, com marcador" (O041-019 (b), against the recommendation (a)): a script step's output appears in the whole-run Logs tab through a marker row, written when the script runner's report is recorded, that points to the script execution | owner | Decided | docs/designs/041-step-logs.md T041-3, T041-5, T041-13, T041-22 |
 | OD-2026-11-15-10 | "Emendar o gate de CI" (O041-022 (a)): the constitution's CI gate is amended so that the step-log suites run when step-log code changes, the SDKs' capture code and the worker protocol included | owner | Decided | docs/constitution.md 4.5.0, docs/governance/constitution-4.5.0-sync-impact.md, docs/designs/041-step-logs.md T041-32 |
 | OD-2026-11-15-11 | "Aceitar" (O041-023 (a)): the cursor of the step-log routes, which shows the storing transaction's id, is accepted as it is (G041-008) | owner | Decided | docs/designs/041-step-logs.md T041-11 |
+| OD-2026-11-15-16 | "Emenda no ADR-0027" (O041-024 (a)): the Amendment of 2026-11-15 stays a section of ADR-0027 and is accepted as written. This is an exception, by the owner, to rule 2 of `docs/adr/README.md` (an accepted ADR is not edited in substance; a change of mind is a new ADR) | owner | Decided | docs/adr/ADR-0027-*.md (Amendment of 2026-11-15), docs/designs/041-step-logs.md T041-3, T041-4, T041-5, T041-6, T041-13 |
+| OD-2026-11-15-17 | "Aceitar e construir" (design 041): the step-logs design, with constitution 4.5.0, is accepted for release 0.3.0 and is to be built | owner | Decided | docs/designs/041-step-logs.md, docs/constitution.md 4.5.0, docs/designs/041-step-logs.md T041-2 |
 
 ## 2026-11-13 — What release 0.3.0 must contain: feature 018, schedules on by default, step logs per run
 
