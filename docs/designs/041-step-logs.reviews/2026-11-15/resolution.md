@@ -391,4 +391,88 @@ and O041-020 and O041-021 stay conditional on T041-31. Ids: Z, C, K, S, T are st
 | Stage 9 ST nits: T041-2's condition; "starts" against "merges"; T041-31's held-transaction workload; "four messages"; "deferred answers"; T041-28's "use"; first-failure wording; partial paths; T041-25 quickstart; T041-27 done condition; gap range | FIX |
 | Stage 9 ST nits: T041-8 Refs; "the row of section 6"; formatting | CONTEST: T041-8's Refs name what it proves; "the row of section 6" is defined by Slice D's introduction; formatting is the checker's, which passes |
 
-The approval run of this revision follows in `*-approval-2.md`.
+The approval run of this revision is recorded in `*-approval-2.md` (section 10 answers it).
+
+## 10. Answers to the second approval run on `fefcfafb`
+
+The run of `*-approval-2.md` (stages 5 to 9 in order, then the three repository reviewers) left Blocker 1 and Major 63
+(EGM, not deduplicated) and Major 5 (architecture 1, correctness 4) open. Each finding, deduplicated, has one answer.
+FIX + OWNER: the design carries the recommended option, marked pending, and the question is the owner's (product,
+scope, release or an accepted ADR's text); the task that builds it waits for the answer. New registers: D041-067 to
+D041-076, G041-017, O041-025 to O041-027, T041-33. Ids: Z2, C2, K2, S2, T2 (`egm-stages-5-7-approval-2.md`), "8-…"
+(`egm-stage-8-approval-2.md`), IR2, CD2, ST2 (`egm-stage-9-approval-2.md`), AR2, SE2, CO2 (the repository reports).
+
+### Blocker and Majors
+
+| Findings (merged) | Answer | What changed, where |
+| --- | --- | --- |
+| IR2-B1 | FIX, D041-073 | Pending languages per scenario file; Slice D removes them one by one; section 6, T041-14, Slice D |
+| K2-1, 8-merge 1, CO2-1 | FIX + OWNER, O041-025, D041-070 | T2 refuses only a finished run (section 2, data-model.md §8); the compensation case in T041-6 and the Verification Plan; Constitution VIII names it; ADR-0084 decision 5's reading is the owner's |
+| AR2-1 | FIX + OWNER, O041-025, D041-070 | T3 and the marker read the five resources under shared policy fences (`content_usage::admission_policy`); first in the lock order; a test that a change waits for a held batch (T041-6) |
+| K2-2, 8-merge 2 | FIX (evaluated) + OWNER, O041-026 | Alternatives and section 2 weigh a step-log usage row of its own; kept as accepted (OD-2026-11-15-16), asked if T041-31 shows the completion wait failing |
+| K2-3, 8-merge 3 | FIX, D041-072 | Section 2 "Capacity" (Little's law at the SC-041-007 rate); defaults are placeholders set by T041-31; a final batch waits up to 1 s for a ticket |
+| K2-4, 8-merge-partly 11, SE2-7, CO2-N6 | FIX, D041-071 | 5,000 rows a request, `nextCursor` at the scanned position; FR-041-010, section 5, contracts.md, a risk row, T041-11 |
+| 8-merge 8 (run ceiling never resets) | FIX + OWNER, O041-027 | The purge gives back to `run_log_usage` what it deletes (section 4, FR-041-006, T041-10), pending |
+| 8-missed M1 (partial index) | FIX, D041-067 | The classified record is a partial index of the insert-only `workflow_versions`; section 3, FR-041-021, data-model.md §2 and §4, T041-5, T041-28, Risks, Alternatives |
+| 8-missed M2 (fan-out criterion) | FIX | T041-31 counts ticket refusals and lock timeouts apart and judges the wait on `run_log_usage`; O041-020 tied to it |
+| Z2-1, 8-merge-partly 9, T2-7 | FIX | Section 2 keeps the invariants (P1 to P5, T1 to T10, control flow, lock order, the bound once); the statements move to data-model.md §8 |
+| Z2-2 | CONTEST (stage 8 also rejects) | An unlocked sum over a run's streams is not simpler at 10,000 streams and overshoots about 19% at R = 8; O041-020 stays conditional |
+| Z2-3, 8-merge-partly 10, IR2-6, CD2-5, ST2-11 | FIX, D041-075 | T041-9 runs in `scalability-ha` through the application on each replica; the 500-record batch is T041-31's workload (b) |
+| C2-1, ST2-10 | FIX | T041-1 names the three reviewers and cites the approval rule |
+| C2-2, 8-merge 4, CO2-N2 | FIX, D041-068 | research.md corrections of D041-006, D041-034 and the two prose sentences |
+| S2-1, 8-merge 5 | FIX | Complexity Tracking rows for the quota machinery, the marker path, `Class::Logs`, the CI rule |
+| T2-1 | FIX | Overview: "beyond the limit of G041-001" |
+| T2-2, 8-merge 6 | FIX | FR-041-023: a deleted stream answers `REMOVED`; a new stream after a delete is stored |
+| T2-3 | FIX (stage 8 keeps a Nit) | FR-041-020 names the five resources and the sixth |
+| T2-4, 8-merge 7 | FIX | One first failure: the runner's unknown-behaviour refusal, expected by the pending list |
+| T2-5, ST2-5 | FIX | Full paths in the sections named and in the plan; `openapi.yaml` defined once |
+| T2-6 | FIX | Requirements: "each requirement is binding as written"; Overview uses MUST NOT |
+| T2-8 | FIX | SC-041-001 states setups and assertions only |
+| IR2-1, CD2-1, ST2-1 | FIX | T041-32 listed after T041-6; the order rule states the Slice D exception |
+| IR2-2 | FIX | T041-32 adds the server files outside `step_logs` modules, the migrations by name and each SDK's capture files |
+| IR2-3, CD2-3 | FIX | `StepLogIngest`, `StepLogStore`, `StepLogTx`, the wiring files, the `Options` fields; `StepLogReadTx` for `may_read` and T041-29; executions with no run unchanged |
+| IR2-4 | FIX | T041-4 follows the migration skill, has a down guard and tests, and moves the oracle; T041-5 too |
+| IR2-5 | FIX | T041-26: `OVERLAYS`, `phase.rs`, the module, the hand-over of the released replica's address, `lab_with` and the `Options` field |
+| IR2-7, ST2-4 | FIX | T041-31: switches, the fan-out workflow, the held transaction, the sampling and MultiXact methods, R, rounding |
+| IR2-8, CO2-2, CO2-3 | FIX, D041-074 | Five hooks; the `lock_secrets` variant asserts `{L}` for the completion and a fresh digest |
+| CO2-4 | FIX, D041-074 | Reads poll until `heldBack` is false; the `stepLogs` op too |
+| IR2-9, CD2-7 | FIX | T041-20 lists `sdks/rust/conformance/src/faults/grpc.rs` |
+| IR2-10 | FIX | T041-24: a Playwright spec under `frontend/e2e/tests/` played by `studio_journeys.rs` |
+| IR2-11, ST2-7 | FIX | Each Verification Plan row names its task; the missing cases are in T041-6, T041-7, T041-8, T041-11, T041-29 |
+| IR2-12 | FIX, D041-076 | A marker is `info` and `minLevel` never hides it |
+| CD2-2 | FIX | Section 7 and T041-13: a variant that replaces `record_execution`'s own call (`scripts.rs:1855`) |
+| CD2-4 | FIX | `Options` fields in `tests/support/api.rs` (T041-6, T041-13) |
+| CD2-6 | FIX | T041-7 raises the Rust SDK's refusal to 7 |
+| CD2-8 | FIX | Each SDK task lists its RPC wrapper and its test fake |
+| CD2-9, AR2-N5 | FIX | The plan's "Gates" states what CI runs and what the author runs, with the evidence named |
+| ST2-2 | FIX | Test-only tasks and guard tests are shown failing against a planted violation |
+| ST2-3 | FIX | T041-2 excludes O041-020 and O041-021; T041-31 closes them as moot or asks them; T041-33 asks the new ones |
+| ST2-6 | FIX | T041-5 and T041-11 done conditions name what must pass |
+| ST2-8 | FIX | One counting rule, stated once in section 2 and used by T041-4 |
+| ST2-9 | FIX | FR-041-020 defines a ceiling against `quota_ceilings`; the plan says "limit" for the tenant quota |
+
+### Nits
+
+FIX: AR2-N1 (selector, as IR2-2), N2 (the source-text test moves to `step_log_isolation.rs`), N3 and CO2-N3 (the
+shared-lock test covers `step_logs.rs`), N4 (as IR2-3), N6 (T041-4's down guard; the classified table is gone), N7 (the
+"Enforced by" lines go in O041-025's Note; a `Debug` unit test in T041-3), N8 (integers outside ±(2^53 − 1) are strings),
+N9 (every delete is audited); SE2-N1 (the guard trigger on streams), N2 (`REVOKE … FROM PUBLIC` and its test), N3 (the
+scrub covers every part), N4 (`AUTHORITY` audited), N5 (`stored_through_sequence`), N6 (a per-poll grant check), N8
+(`expires_at` passed is expired), N9 (G041-017), N10 (T041-8 searches the PostgreSQL log); CO2-N1 (in O041-025's Note),
+N4 (each poll audits and checks the grant), N5 (the purge in the bound), N7 (a deleted script stream), N8 (the
+`mustNotStore` self-test); the stage 5 to 9 Nits on terms (a Terms list), the two numbered lists (P and T labels),
+runner tokens against memberships, marker level, rounding, CUJ 2 and CUJ 3 wording, `/logs/stream` against
+`/logs/streams` (a Terms entry), the second SDK table's caption, the renumbered sections of `sdks/SPEC.md`, FR-041-007
+(e), CUJ 5 in US01, the owner-decisions subheadings, the chunk variant only on failure, the read switch (dropped,
+D041-069), a full secret set (a risk row and `secret_set_full`), anchors (`register_version`, `quotas.rs:1291`,
+`worker_pb2.pyi`, `compile_fds_with_config`, the role matrix file, the gauge's files, `endpoints.ts`, the alert rule
+test), the `sdks/SPEC.md` §9 split, the PostgreSQL 18 step, `isolated_server` with `SAGAT_TEST_DATABASE_URL`, the
+estimate, "at once", "meet", the drift findings of T041-27, and `<date>`.
+
+CONTEST: T2 Nits of tone that change no rule (fragmentary comparisons, "Keeping the convention", number style); NFR
+word suffixes (`AGENTS.md` names the `NFR-NNN-xxx` form); renaming `/logs/stream` (it follows `/runs/{runId}/stream`);
+T041-2's `Owner-gate` (OD-2026-11-15-17 covers T041-2, and the checker requires a cited row for a ticked gated task);
+the protoc version string (it is the one the committed Go stubs record); "Owner decisions needed" trimmed to ids (the
+rejected options are cited by the Alternatives and the ADRs).
+
+The approval run of this revision is recorded in `*-approval-3.md`.

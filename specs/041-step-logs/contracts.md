@@ -104,7 +104,8 @@ enum StepLogStopReason {
 message AppendStepLogsResponse {
   StepLogVerdict verdict = 1;
   StepLogStopReason stop_reason = 2;          // set with STOP_ATTEMPT and STOP_CAPTURE, else UNSPECIFIED
-  uint64 stored_through_sequence = 3;         // the stream's highest worker sequence now known to the server
+  uint64 stored_through_sequence = 3;         // the stream's highest worker sequence now known to the server; only
+                                              // with CONTINUE, FINAL_ONLY and FINAL_RECORDED, else 0
   int32 retry_after_ms = 4;                   // with RETRY_LATER: 50 to 5,000
 }
 
@@ -150,7 +151,7 @@ StepLogPage:
   required: [items, nextCursor, heldBack, complete]
   properties:
     items: {type: array, items: {$ref: '#/components/schemas/StepLogLine'}}
-    nextCursor: {type: string, description: 'Always present: the position after the last line returned, to poll from.'}
+    nextCursor: {type: string, description: 'Always present: the position after the last row scanned (at most 5,000 a request), whether or not it matched the filters, to poll from.'}
     heldBack: {type: boolean, description: 'Lines of this run are stored but not yet returned, because an older transaction of the database is still open.'}
     complete: {type: boolean, description: 'The run is finished and every line that can still be stored for it has been returned up to this cursor.'}
 StepLogLine:
@@ -165,10 +166,10 @@ StepLogLine:
     workerTime: {type: [string, 'null'], format: date-time}
     storedAt: {type: string, format: date-time}
     kind: {type: string, enum: [line, ceiling_marker, script_marker]}
-    level: {type: string, enum: [trace, debug, info, warn, error]}
+    level: {type: string, enum: [trace, debug, info, warn, error], description: 'info for a marker; minLevel never hides a marker.'}
     message: {type: [string, 'null']}
     exception: {type: [string, 'null']}
-    fields: {type: [object, 'null'], additionalProperties: {type: [string, number, boolean]}}
+    fields: {type: [object, 'null'], additionalProperties: {type: [string, number, boolean]}, description: 'An integer outside -(2^53-1) to 2^53-1 is a decimal string, so that a JavaScript reader keeps it exact.'}
     truncated: {type: boolean}
     marker: {type: [object, 'null'], properties: {reason: {type: string, enum: [attempt_records, attempt_bytes], description: 'ceiling_marker'}, scriptExecutionId: {type: string, format: uuid, description: 'script_marker: open it with getScriptExecution'}}}
 ```
@@ -204,7 +205,7 @@ StepLogStream:
 Items of `source = worker` are the workers' attempt logs; the marker streams of script attempts are not listed there.
 `ended` means the final batch was stored; `ended_without_final` means the attempt's lease is gone and no final batch was
 stored (design FR-041-017); `open` otherwise. For `source = script` the item is a row of `script_executions` of the run
-(`state` `ended` or `expired`), read under the same rule as FR-041-022.
+(`state` `deleted`, `expired` or `ended`), read under the same rule as FR-041-022.
 
 ### `GET /runs/{runId}/logs/stream` (`streamRunLogs`, tag Runs)
 
@@ -223,7 +224,8 @@ A `: ping` comment every 15 seconds otherwise. The caps are those of `streamRunC
 ### `DELETE /runs/{runId}/logs` (`deleteRunLogs`, tag Runs)
 
 Needs `run:logs:delete` (admin). Optional `stream` (uuid, of this run). Response `204` with no body, so the answer says
-nothing about how many streams the run has; deleting what is already deleted also answers `204` and audits nothing.
+nothing about how many streams the run has. Every delete is audited as `run.logs_deleted` with the number of streams it
+changed, 0 when they were already deleted (ADR-0085 decision 9).
 
 ### `getScriptExecution` and `listScriptExecutions` (FR-041-022)
 
@@ -255,13 +257,10 @@ The `used` description gains one absence: `tenant_step_log_bytes` has no `used` 
 | `stream` not of this run | 404 | `NOT_FOUND` | none |
 | Cursor or `after` not valid, altered, or of another run | 400 | `BAD_REQUEST` | none, as every cursor (`routes/primitives.rs:193-205`) |
 | `q` over 128 characters, unknown `minLevel` or `source`, `from` after `to` | 422 | `VALIDATION_FAILED` | none; `details.field` names the parameter |
-| `SAGAT_STEP_LOGS_READ_ENABLED=false` | 422 | `VALIDATION_FAILED` | `STEP_LOGS_NOT_AVAILABLE` (new; the pattern of `RESET_REAPPLY_NOT_AVAILABLE`) |
 | Tail caps | 429 | `RATE_LIMITED` | `STREAMS_GLOBAL`, `STREAMS_PER_SUBJECT`, `STREAMS_PER_TENANT` |
 | Database unavailable | 503 | `UNAVAILABLE` | none |
 
-The one new reason, `STEP_LOGS_NOT_AVAILABLE`, is added in T041-3 to the `Error.details` description ("step logs
-(feature 041) refine `VALIDATION_FAILED` with `STEP_LOGS_NOT_AVAILABLE`, the deployment's read switch is off") and in
-T041-11 to the remediation table and its test.
+This feature adds no `details.reason` either: the read switch of the 2026-11-15 text is gone (D041-069).
 
 ## 3. Ends of a read
 

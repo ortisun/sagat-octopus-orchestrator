@@ -22,9 +22,9 @@ marker of OD-2026-11-15-9 (D041-057): one stream per inserted script execution, 
 and only `record_execution` writes it. A stream's state on the routes: `deleted` when `deleted_at` is set, `expired`
 when `removed_at` is set otherwise, `ended` when `final_at` is set, `ended_without_final` when none of those is set and
 the `steps` row of its `step_id` no longer holds this attempt's lease (design section 5), `open` otherwise; a script
-stream is `ended` or `expired`.
+stream is `deleted`, `expired` or `ended`.
 
-## 2. Tables (one migration, T041-5)
+## 2. Tables and the classified-namespace index (one migration, T041-5)
 
 Timestamp: later than every file in `crates/infra-postgres/migrations/` and on the other open branches when T041-5 is
 written (today the last is `20270116000000_batch_selection_failures`).
@@ -87,6 +87,9 @@ CREATE INDEX step_log_streams_run_idx ON step_log_streams (tenant_id, run_id, st
 CREATE INDEX step_log_streams_expiry_idx ON step_log_streams (expires_at) WHERE removed_at IS NULL;
 CREATE INDEX step_log_streams_removal_idx ON step_log_streams (tenant_id, stream_id)
     WHERE removed_at IS NOT NULL AND purged_at IS NULL;
+-- A BEFORE UPDATE trigger, enabled ALWAYS, refuses a change of tenant_id, stream_id, public_id, namespace_id, run_id,
+-- step_id, node, the instance path, attempt, generation, source or retention_days, a lower last_sequence, and any of
+-- final_at, deleted_at, removed_at, purged_at going from set to null, so no writer can undo a delete or a removal.
 
 CREATE TABLE step_log_lines (
     tenant_id     uuid        NOT NULL,
@@ -135,39 +138,18 @@ CREATE TABLE run_log_usage (
 -- Created by the first batch of the run: INSERT ... ON CONFLICT (tenant_id, run_id) DO UPDATE ... RETURNING, which
 -- locks it to commit (design section 2, step 6).
 
-CREATE TABLE classified_namespaces (
-    tenant_id    uuid        NOT NULL,
-    namespace_id uuid        NOT NULL,
-    recorded_at  timestamptz NOT NULL DEFAULT clock_timestamp(),
-    recorded_by  text        NOT NULL,                     -- 'trigger' or 'migration'
-    PRIMARY KEY (tenant_id, namespace_id),
-    CONSTRAINT classified_namespaces_by_valid CHECK (recorded_by IN ('trigger', 'migration'))
-);
--- Insert-only: ON CONFLICT DO NOTHING. sagat_app has SELECT, INSERT and nothing else, so a row is never cleared.
-
--- The record of FR-041-021: a trigger on every insert into workflow_versions, whatever binary makes it. document is the
--- canonical JSON of the version (crates/application/src/definitions.rs:479-480); the test is a superset of an annotation.
-CREATE FUNCTION sagat_record_classified_namespace() RETURNS trigger LANGUAGE plpgsql
-    SET search_path = pg_catalog, pg_temp AS $$
-BEGIN
-    IF position(convert_to('"x-sagat-classification"', 'UTF8') IN NEW.document) > 0 THEN
-        INSERT INTO public.classified_namespaces (tenant_id, namespace_id, recorded_by)
-        SELECT w.tenant_id, w.namespace_id, 'trigger' FROM public.workflows w
-         WHERE w.tenant_id = NEW.tenant_id AND w.id = NEW.workflow_id
-        ON CONFLICT DO NOTHING;
-    END IF;
-    RETURN NULL;
-END $$;
-CREATE TRIGGER workflow_versions_record_classified AFTER INSERT ON workflow_versions
-    FOR EACH ROW EXECUTE FUNCTION sagat_record_classified_namespace();
-ALTER TABLE workflow_versions ENABLE ALWAYS TRIGGER workflow_versions_record_classified;  -- as the table's other triggers
--- The trigger and the statement below run in the migration's one transaction, so no version inserted between them is missed.
--- And once, for the versions that exist:
-INSERT INTO classified_namespaces (tenant_id, namespace_id, recorded_by)
-SELECT DISTINCT w.tenant_id, w.namespace_id, 'migration'
-  FROM workflow_versions v JOIN workflows w ON w.tenant_id = v.tenant_id AND w.id = v.workflow_id
- WHERE position(convert_to('"x-sagat-classification"', 'UTF8') IN v.document) > 0
-ON CONFLICT DO NOTHING;
+-- The record of FR-041-021 (D041-067). workflow_versions is insert-only: an ALWAYS trigger refuses UPDATE, DELETE and
+-- TRUNCATE (20261009000000_definitions.up.sql:60-77), and no code deletes a workflows row. So a partial index over its
+-- classified versions is a record nothing clears, kept by PostgreSQL for every insert whatever binary makes it, and built
+-- over the existing versions by the CREATE INDEX itself. document is the canonical JSON of the version, as bytea
+-- (crates/application/src/definitions.rs:479-480); the test is a superset of an annotation (G041-010).
+CREATE INDEX workflow_versions_classified_idx ON workflow_versions (tenant_id, workflow_id)
+    WHERE position('"x-sagat-classification"'::bytea IN document) > 0;
+-- step_logs::may_read asks, in its read transaction:
+--   EXISTS (SELECT 1 FROM workflows w JOIN workflow_versions v ON v.tenant_id = w.tenant_id AND v.workflow_id = w.id
+--            WHERE w.tenant_id = $1 AND w.namespace_id = $2
+--              AND position('"x-sagat-classification"'::bytea IN v.document) > 0)
+-- whose predicate is the index's own, so the planner reads the partial index.
 ```
 
 The lines reference their stream (same tenant), a row the engine never locks. No table references `runs` or `steps`
@@ -182,7 +164,7 @@ In `crates/infra-postgres/storage-classification.json` (one entry per column, as
 |---|---|---|
 | `step_log_lines.message`, `.exception`, `.fields` | `step_log` | `octet_length_utf8` |
 | `step_log_lines.level` | `step_log` | `fixed_octets`, 128: the per-row charge of OD-2026-11-15-6 on a `NOT NULL` text column, which the manifest test compares (it reads columns with `typlen = -1`, `durable_quotas.rs:323-343`) |
-| every other variable-size column of the four tables | `protected_system` | evidence: closed sets of section 1, bounded identifiers |
+| every other variable-size column of the three tables | `protected_system` | evidence: closed sets of section 1, bounded identifiers |
 
 The measurement and finalizer triggers that ADR-0027 generates are created on `step_log_lines` only: the manifest test
 requires them only on tables with `content` or `log` columns (`tests/integration/security-multitenancy/durable_quotas.rs:345-411`), and on the counter tables they would run `to_jsonb` on every update. The entries' owner
@@ -215,19 +197,18 @@ replaced.
 | `step_log_lines` | `SELECT, INSERT, DELETE` |
 | `step_log_streams` | `SELECT, INSERT, UPDATE` |
 | `run_log_usage` | `SELECT, INSERT, UPDATE` |
-| `classified_namespaces` | `SELECT, INSERT` |
 
-Usage of the two identity sequences. No `TRUNCATE` and no grant on `namespaces`. The only `SECURITY DEFINER` functions
-are the two accessors of ADR-0027's Amendment, `sagat_quota_step_log_allowance(tenant)` and
-`sagat_quota_lock_step_log_usage(tenant)`, of the existing pattern (fixed `search_path`, trusted owner, `EXECUTE` to
-`sagat_app`), because the runtime role reads neither `tenant_retained_usage` with a lock nor `quota_accounting_control`
-(`20261024000000_durable_quotas.up.sql:564-572`); the trigger function of `workflow_versions` runs as the inserting role.
-No other grant (the
-2026-11-13 column `namespaces.has_classified_schemas` is replaced by `classified_namespaces`, security M3 of
-2026-11-15). The trigger function runs as the inserting role, which holds `INSERT` on `classified_namespaces`. The down
-migration refuses while a row of `step_log_lines` or `classified_namespaces` exists. The migration's one-time statement
-reads every `workflow_versions.document`; its duration on a large catalogue is measured on the upgrade fixture of
-`scripts/check-upgrade-boundary.py` and stated in the runbook.
+Usage of the identity sequence of `step_log_streams`. No `TRUNCATE` and no grant on `namespaces`. The only `SECURITY
+DEFINER` functions are the two accessors of ADR-0027's Amendment, `sagat_quota_step_log_allowance(tenant)` and
+`sagat_quota_lock_step_log_usage(tenant)`, of the existing pattern: a fixed `search_path`, a trusted owner, `REVOKE ALL …
+FROM PUBLIC` (as `20261024000000_durable_quotas.up.sql:294` does, since PostgreSQL grants `EXECUTE` to `PUBLIC` on a new
+function) and `EXECUTE` to `sagat_app` (as `:572`); T041-5 tests that both are `prosecdef` with the pinned `proconfig` and
+that `has_function_privilege('public', …, 'EXECUTE')` is false. They exist because the runtime role may read neither
+`tenant_retained_usage` with a lock nor `quota_accounting_control` (`:564-572`). No other grant (the 2026-11-13 column
+`namespaces.has_classified_schemas` and the 2026-11-15 table `classified_namespaces` are replaced by the partial index of
+§2). The down migration refuses while a row of `step_log_lines` exists, and drops the index. The index's build reads every
+`workflow_versions.document` once and blocks inserts into `workflow_versions` while it runs; its duration on a large
+catalogue is measured on the upgrade fixture and stated in the runbook.
 
 ## 5. Canonical JSON of `fields`
 
@@ -279,4 +260,65 @@ closed enum with `ALL` and `as_str` in `crates/telemetry/src/metrics.rs`, built 
 (`metrics.rs:68-106`), with a test that every emitted value is one of the enum's.
 
 SDK (local to the worker process, each SDK's own metrics facility or log): dropped records by reason (`buffer_full`,
-`send_failed`, `after_ceiling`, `process_bound`).
+`send_failed`, `after_ceiling`, `process_bound`, `secret_set_full`).
+
+## 8. The ingest transaction, statement by statement (design section 2, T1 to T10)
+
+Every statement that binds line text or `q` maps its database error with `store_error_without_text`
+(`crates/infra-postgres/src/identity.rs:734`), because the database's error text can quote bound values. The lock
+timeout is `SET LOCAL lock_timeout = '200ms'`.
+
+- **T1.** `SELECT pg_current_xact_id()`.
+- **T2.** One `SELECT` of the `steps` row by tenant and `step_id`, joined with its `runs` row, matching the request's
+  `run_id`, the instance path of `instance` and its node as `lease_unexpired_instance` matches them
+  (`crates/infra-postgres/src/execution.rs:4783-4817`), with status `LEASED` or `RUNNING`, the same attempt and
+  generation, the lease-token hash, `lease_expires_at > clock_timestamp()`, and `runs.finished_at IS NULL` (pending
+  O041-025; today's text also refuses `stop_reason` set). It returns the namespace, the node, the instance path and
+  `steps.activity`. No row: the run is checked with `run_exists_outside`, and a foreign run is audited as
+  `access.denied.cross_tenant` through `record_denial`, outside this transaction, as `missing_task_error` does
+  (`crates/application/src/worker.rs:2564-2586`). A batch that read a valid lease and commits just after the completion
+  is still that attempt's lines; a stale holder's token never matches.
+- **T3.** The `worker_sessions` row, without a lock, by tenant, id, the lease's namespace and the caller's subject, with
+  the token hash equal, `expires_at > clock_timestamp()` and `accepted_protocol_minor >= 7`. The five resources of §6,
+  each through the rule of `content_usage::admission_policy` (`content_usage.rs:95-106`: the tenant fence shared, then the
+  namespace fence shared, then `effective_policy`), the five resources in the order of `QuotaResource`, their values read
+  in one statement after the ten fences.
+- **T4.** `INSERT … ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO UPDATE SET tenant_id =
+  step_log_streams.tenant_id RETURNING …` on `step_log_streams`; a new row takes the namespace's
+  `step_log_retention_days` as `retention_days`. The update changes no column (the trigger of §2 refuses a change of the
+  columns it guards); it only locks the row to commit, so only batches of the same attempt wait on it. `removed_at` set
+  or `expires_at <= clock_timestamp()` is `REMOVED`; `final_at` set is `FINAL_RECORDED`.
+- **T5.** `plan_batch`: records at or below `last_sequence` are dropped (a resend, or a late batch the worker gave up
+  on). The batch's high mark is the highest of its sequences and, for a final batch, `highest_sequence`; the sequences
+  between `last_sequence` and that mark that the batch does not hold are a gap: those above `ceiling_sequence`, once a
+  ceiling has been met, are counted as dropped by the server, the others as dropped by the worker, each saturating at
+  2^53.
+- **T6.** The attempt allowance from the stream row's `records` and `bytes` against `step_log_attempt_records` and
+  `step_log_attempt_bytes`. The run allowance from `run_log_usage`, created or locked by `INSERT … ON CONFLICT
+  (tenant_id, run_id) DO UPDATE … RETURNING`, held to commit, against `step_log_run_records` and `step_log_run_bytes`.
+  The tenant allowance from `sagat_quota_step_log_allowance(tenant)`, which returns without a lock
+  `tenant_retained_usage.step_log_bytes`, the limit worked out as the finalizer's branch works it out from
+  `quota_limits`, `quota_ceilings` and the 1 GiB default, and whether it is enforced (the runtime role may not read
+  `quota_accounting_control`, `20261024000000_durable_quotas.up.sql:561-572`, and the accessor keeps one limit rule).
+  The attempt and run allowances count text bytes; the tenant's counts text plus 128 bytes a row. When a record does not
+  fit, `ceiling_sequence` takes the stream's high mark and `ceiling_reason` the ceiling; when the attempt ceiling is
+  first met, one `ceiling_marker` row is planned at `next_marker_sequence`. If the unlocked tenant read plus the kept
+  bytes is over the limit, nothing of the batch is stored and the records are counted with `tenant_quota`.
+- **T7.** `hold_worker_binding` (a shared advisory lock, `crates/infra-postgres/src/bindings.rs:15`); the binding's
+  patterns (`bound_patterns`, `execution.rs:4756`) checked by `first_uncovered` against T2's `steps.activity`; and the free
+  function `current_worker_authorized` (`execution.rs:1017`, made `pub(crate)`), which gains an argument naming the roles
+  it refuses. Its two callers, the methods of `execution.rs:4628` and `execution/path.rs:183`, pass the database-runner
+  role as today, so the application's trait method does not change; the ingest's adapter passes the database-runner and
+  runner roles. `the_shared_secrets_lock_has_one_caller_and_the_scoped_path_never_upgrades`
+  (`crates/infra-postgres/src/quotas.rs:1323-1344`) gains `step_logs.rs` among the files that must never call
+  `lock_secrets(`.
+- **T8.** One `INSERT … SELECT … FROM unnest(…) ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING RETURNING` the text
+  size of each inserted row.
+- **T9.** From the rows T8 returned: `last_sequence = GREATEST(last_sequence, high mark)`, records, bytes, truncated
+  records, both drop counts, `ceiling_sequence`, `ceiling_reason`, `first_at`, `last_at = clock_timestamp()`,
+  `expires_at = last_at + retention_days`, and `final_at` when `final_batch` is true, even when nothing was stored; the
+  same records and bytes on `run_log_usage`.
+- **T10.** `COMMIT`. `tenant_step_log_quota_exceeded` from the finalizer is mapped to `RETRY_LATER`.
+
+A marker line (either kind) has the level `info`, and `minLevel` never hides a marker: the filter applies to
+`kind = 'line'` only.
