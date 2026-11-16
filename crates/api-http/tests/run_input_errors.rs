@@ -63,3 +63,16 @@ fn every_rule_is_answered_by_its_closed_name() {
         );
     }
 }
+
+/// D043-177: a document whose `inputSchema` pre-check found no permit of the validator within its wait is not judged; it is
+/// answered as a start's `Busy` is, `503`, retryable, never `422`.
+#[test]
+fn a_document_whose_pre_check_found_no_permit_is_unavailable_and_retryable() {
+    let error = ApiError::from(AppError::InvalidDefinition(Box::new(
+        sagat_application::definitions::IrError::ValidatorBusy,
+    )));
+    let parts = error.parts();
+    assert_eq!(parts.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(parts.code, ErrorCode::Unavailable);
+    assert!(parts.retryable);
+}

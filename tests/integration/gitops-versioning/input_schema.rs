@@ -259,3 +259,149 @@ async fn the_inventory_lists_the_versions_that_would_be_refused_and_exits_by_wha
     assert!(unreachable.is_err(), "{unreachable:?}");
     assert_eq!(exit_code(&unreachable), 2, "the command failed");
 }
+
+/// OD-2026-11-16-5 (round 2 of 2026-11-16, critic 1, intermediate zoom-out 4; D043-179): a version outside the subset
+/// that nothing starts any more (not its workflow's active version, no open run, none created in the last
+/// `SUPERSEDED_QUIET_DAYS` days) does not make the inventory exit 1, since it is immutable and nobody would start it;
+/// `--all` lists it, still without changing the exit status. A superseded version that still has an open run counts.
+#[tokio::test]
+async fn a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all_lists_it() {
+    use sagat_control_plane::inventory::{Scope, input_schema_inventory_in};
+
+    let w = world().await;
+    let defs = DefinitionService::new(w.store.clone(), SystemClock, JsonIrCodec)
+        .with_input_validation(InputValidationMode::Report);
+    // two workflows, each published first outside the subset (as 0.2.x stored it) and then fixed
+    let mut ids = Vec::new();
+    for name in ["quiet-flow", "busy-flow"] {
+        let old = with_schema(name, outside(), None);
+        let created = defs
+            .create_workflow(
+                &w.admin,
+                "payments",
+                name,
+                &bytes(&old),
+                &format!("create-{}", Uuid::now_v7()),
+                &ctx(),
+            )
+            .await
+            .expect("a draft");
+        let first = defs
+            .publish(
+                &w.admin,
+                created.workflow.id(),
+                created.workflow.draft_revision(),
+                None,
+                &format!("publish-{}", Uuid::now_v7()),
+                &ctx(),
+            )
+            .await
+            .expect("stored outside the subset");
+        ids.push((created.workflow.id(), first.version.id()));
+    }
+    // `busy-flow` keeps an open run of its old version (admitted in report mode before the fix)
+    let reporting = sagat_application::runs::RunService::new(
+        w.store.clone(),
+        SystemClock,
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        w.cache.clone(),
+    )
+    .with_run_inputs(std::sync::Arc::new(
+        sagat_application::run_input::RunInputGate::new(
+            sagat_infra_schema::run_input::RunInputValidator::process(),
+            InputValidationMode::Report,
+        ),
+    ));
+    reporting
+        .start(
+            &w.admin,
+            &sagat_application::runs::StartRun {
+                namespace: "payments",
+                workflow: ids[1].0,
+                version: None,
+                input: b"{}",
+                correlation_id: None,
+                deadline: None,
+                key: &format!("start-{}", Uuid::now_v7()),
+            },
+            &ctx(),
+        )
+        .await
+        .expect("an open run of the old version");
+    for (name, (workflow, _)) in ["quiet-flow", "busy-flow"].into_iter().zip(&ids) {
+        let record = defs
+            .get_workflow(&w.admin, *workflow, &ctx())
+            .await
+            .expect("the workflow");
+        let record = defs
+            .update_draft(
+                &w.admin,
+                *workflow,
+                record.workflow.draft_revision(),
+                &bytes(&with_schema(name, json!({"type": "object"}), None)),
+                &ctx(),
+            )
+            .await
+            .expect("fixed");
+        defs.publish(
+            &w.admin,
+            *workflow,
+            record.workflow.draft_revision(),
+            None,
+            &format!("publish-{}", Uuid::now_v7()),
+            &ctx(),
+        )
+        .await
+        .expect("the fixed version is active");
+    }
+
+    let default = input_schema_inventory(&database(w.db.url.clone())).await;
+    let inventory = default.as_ref().expect("the inventory runs");
+    assert_eq!(
+        inventory
+            .refused
+            .iter()
+            .map(|refused| refused.ids.version)
+            .collect::<Vec<_>>(),
+        vec![ids[1].1],
+        "the old version with an open run still counts: {inventory:?}"
+    );
+    assert_eq!(
+        inventory
+            .superseded
+            .iter()
+            .map(|refused| refused.ids.version)
+            .collect::<Vec<_>>(),
+        vec![ids[0].1],
+        "the quiet old version is superseded: {inventory:?}"
+    );
+    assert_eq!(exit_code(&default), 1, "for the busy one");
+    let printed = inventory.to_string();
+    assert!(
+        !printed.contains(&ids[0].1.to_string()),
+        "not listed by default: {printed}"
+    );
+    assert!(
+        printed.contains("1 superseded"),
+        "but counted in the summary: {printed}"
+    );
+
+    let all = input_schema_inventory_in(&database(w.db.url.clone()), Scope::All).await;
+    let listed = all.as_ref().expect("the inventory runs").to_string();
+    assert!(
+        listed.contains(&format!("superseded tenant={}", w.admin.tenant_id())),
+        "{listed}"
+    );
+    assert!(listed.contains(&ids[0].1.to_string()), "{listed}");
+    assert_eq!(exit_code(&all), 1, "--all changes no exit status");
+
+    // with the open run finished, nothing starts the old version of `busy-flow` either: exit 0
+    sqlx::query("UPDATE runs SET status = 'CANCELLED', finished_at = now(), created_at = now() - interval '40 days' WHERE workflow_id = $1")
+        .bind(ids[1].0.as_uuid())
+        .execute(&w.db.pool)
+        .await
+        .expect("the run finished long ago, written as the owner");
+    let quiet = input_schema_inventory(&database(w.db.url.clone())).await;
+    assert_eq!(exit_code(&quiet), 0, "{quiet:?}");
+    assert_eq!(quiet.as_ref().expect("runs").superseded.len(), 2);
+}

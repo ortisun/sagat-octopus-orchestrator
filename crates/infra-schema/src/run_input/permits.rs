@@ -35,7 +35,29 @@ struct State {
 struct Waiter {
     id: u64,
     tenant: TenantId,
-    grant: oneshot::Sender<()>,
+    grant: Grant,
+}
+
+/// How a waiter is told it was granted: a start awaits it, a pre-check outside a start blocks on it off the async workers.
+#[derive(Debug)]
+enum Grant {
+    Awaited(oneshot::Sender<()>),
+    Blocked(std::sync::mpsc::SyncSender<()>),
+}
+
+impl Grant {
+    fn send(self) {
+        // the receiver lives as long as the waiter is queued (its guard, or the blocking acquire, removes it first), and
+        // a channel of one holds the one grant: the send cannot fail
+        match self {
+            Self::Awaited(sender) => {
+                let _ = sender.send(());
+            }
+            Self::Blocked(sender) => {
+                let _ = sender.try_send(());
+            }
+        }
+    }
 }
 
 /// The pool of permits of one process.
@@ -155,7 +177,11 @@ impl Permits {
             let id = state.next;
             state.next += 1;
             let (grant, receiver) = oneshot::channel();
-            state.waiters.push_back(Waiter { id, tenant, grant });
+            state.waiters.push_back(Waiter {
+                id,
+                tenant,
+                grant: Grant::Awaited(grant),
+            });
             (id, receiver)
         };
         let mut waiting = Waiting {
@@ -183,6 +209,56 @@ impl Permits {
                 Err(Busy)
             }
         }
+    }
+
+    /// A permit for `tenant`, within the pool's wait, for a caller that blocks its thread (a pre-check outside a start,
+    /// which runs off the async workers): the same queue, the same fairness and the same wait as [`Self::acquire`].
+    ///
+    /// # Errors
+    /// [`Busy`] when none was granted within the wait.
+    pub fn acquire_blocking(&self, tenant: TenantId) -> Result<Permit, Busy> {
+        let (id, receiver) = {
+            let mut state = self.lock();
+            if state.free > 0 && state.waiters.is_empty() {
+                state.free -= 1;
+                *state.held.entry(tenant).or_default() += 1;
+                state.peak = state.peak.max(self.total - state.free);
+                return Ok(Permit {
+                    pool: self.clone(),
+                    tenant,
+                });
+            }
+            let id = state.next;
+            state.next += 1;
+            let (grant, receiver) = std::sync::mpsc::sync_channel(1);
+            state.waiters.push_back(Waiter {
+                id,
+                tenant,
+                grant: Grant::Blocked(grant),
+            });
+            (id, receiver)
+        };
+        if receiver.recv_timeout(self.wait).is_ok() {
+            return Ok(Permit {
+                pool: self.clone(),
+                tenant,
+            });
+        }
+        // timed out: leave the queue, or give back a grant that raced the clock
+        let granted = {
+            let mut state = self.lock();
+            match state.waiters.iter().position(|waiter| waiter.id == id) {
+                Some(at) => {
+                    state.waiters.remove(at);
+                    false
+                }
+                None => true,
+            }
+        };
+        if granted {
+            self.release(tenant);
+        }
+        Err(Busy)
     }
 
     fn release(&self, tenant: TenantId) {
@@ -217,7 +293,7 @@ impl Permits {
             // The receiver lives inside the waiter's guard and the guard takes the waiter out of the queue, under this lock,
             // before the receiver drops: a waiter still queued always has its receiver, so the send cannot fail, and a grant
             // its future never takes is given back by the guard (once).
-            let _ = waiter.grant.send(());
+            waiter.grant.send();
             state.peak = state.peak.max(total - state.free);
         }
     }

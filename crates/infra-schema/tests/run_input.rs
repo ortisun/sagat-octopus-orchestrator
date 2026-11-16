@@ -1820,3 +1820,147 @@ fn a_pattern_at_the_state_cap_runs_its_charge_within_the_backstop() {
     let full_budget = Duration::from_nanos((per_unit * RUN_INPUT_WORK_UNITS as f64) as u64);
     assert!(full_budget < Duration::from_secs(5), "{full_budget:?}");
 }
+
+// ------------------------------------------------------------------ the pin of run-input-validation-v1 (D043-178)
+
+/// Round 2 of 2026-11-16 (architecture 5): what `run-input-validation-v1` admits and refuses is fixed by these limits and
+/// by the units each keyword charges. A release that changes any of them changes which inputs a pinned run accepts, so it
+/// ships a new capability (`run-input-validation-v2`, ADR-0092 decision 6), never a silent edit of these numbers.
+#[test]
+fn the_limits_and_the_charges_of_run_input_validation_v1_are_pinned() {
+    use sagat_infra_schema::run_input as v1;
+
+    assert_eq!(
+        sagat_application::run_input::CAPABILITY,
+        "run-input-validation-v1"
+    );
+    assert_eq!(
+        [
+            v1::MAX_INPUT_SCHEMA_BYTES,
+            v1::MAX_INPUT_SCHEMA_DEPTH,
+            v1::MAX_APPLICATION_PATH,
+            v1::MAX_NAME_BYTES,
+            v1::MAX_INPUT_DEPTH,
+            v1::MAX_PATTERNS,
+            v1::MAX_PATTERN_PROGRAM_BYTES,
+            v1::MAX_PATTERN_STATES,
+            v1::MAX_PATTERN_PROGRAMS_BYTES,
+            v1::MAX_POINTER_CHARS,
+        ],
+        [65_536, 32, 128, 1_024, 64, 32, 16_384, 512, 262_144, 512],
+        "a limit of v1 changed: ship run-input-validation-v2 instead (ADR-0092 decision 6)"
+    );
+    assert_eq!(RUN_INPUT_WORK_UNITS, 1_000_000, "the budget of v1");
+    let charged: Vec<(&str, u64)> = charge_cases()
+        .into_iter()
+        .map(|(name, schema, input)| {
+            let (answer, spent) =
+                compiled(&schema).validate_with(&bytes(&input), Limits::default());
+            assert_eq!(answer, Ok(()), "{name} is accepted");
+            (name, spent.units)
+        })
+        .collect();
+    assert_eq!(
+        charged,
+        PINNED_CHARGES.to_vec(),
+        "a charge of v1 changed: ship run-input-validation-v2 instead (ADR-0092 decision 6)"
+    );
+}
+
+/// The units of each case of [`charge_cases`], read once from v1 and pinned.
+const PINNED_CHARGES: [(&str, u64); 16] = [
+    ("type", 2),
+    ("properties", 11),
+    ("required", 5),
+    ("additionalProperties", 11),
+    ("enum", 20),
+    ("const", 16),
+    ("pattern", 91),
+    ("lengths", 6),
+    ("numbers", 1),
+    ("multipleOf", 1),
+    ("items", 14),
+    ("objectSize", 1),
+    ("allOf", 7),
+    ("anyOf", 7),
+    ("oneOf", 7),
+    ("ref", 7),
+];
+
+/// One ordinary case per keyword family, each accepted.
+fn charge_cases() -> Vec<(&'static str, Value, Value)> {
+    vec![
+        ("type", json!({"type": "object"}), json!({"a": 1})),
+        (
+            "properties",
+            json!({"properties": {"a": {"type": "integer"}, "b": {"type": "string"}}}),
+            json!({"a": 1, "b": "x", "c": true}),
+        ),
+        (
+            "required",
+            json!({"required": ["a", "b"]}),
+            json!({"a": 1, "b": 2}),
+        ),
+        (
+            "additionalProperties",
+            json!({"properties": {"a": {}}, "additionalProperties": {"type": "integer"}}),
+            json!({"a": 1, "b": 2, "c": 3}),
+        ),
+        (
+            "enum",
+            json!({"enum": ["x", "y", {"k": [1, 2]}]}),
+            json!({"k": [1, 2]}),
+        ),
+        (
+            "const",
+            json!({"const": {"k": [1, 2, 3]}}),
+            json!({"k": [1, 2, 3]}),
+        ),
+        (
+            "pattern",
+            json!({"pattern": "^[a-z]+-[0-9]{3}$"}),
+            json!("order-123"),
+        ),
+        (
+            "lengths",
+            json!({"minLength": 2, "maxLength": 20}),
+            json!("hello"),
+        ),
+        (
+            "numbers",
+            json!({"minimum": 0, "exclusiveMaximum": 100}),
+            json!(42),
+        ),
+        ("multipleOf", json!({"multipleOf": 5}), json!(25)),
+        (
+            "items",
+            json!({"type": "array", "items": {"type": "integer"}, "minItems": 1, "maxItems": 10}),
+            json!([1, 2, 3, 4]),
+        ),
+        (
+            "objectSize",
+            json!({"minProperties": 1, "maxProperties": 4}),
+            json!({"a": 1, "b": 2}),
+        ),
+        (
+            "allOf",
+            json!({"allOf": [{"type": "object"}, {"required": ["a"]}]}),
+            json!({"a": 1}),
+        ),
+        (
+            "anyOf",
+            json!({"anyOf": [{"type": "string"}, {"type": "integer"}]}),
+            json!(7),
+        ),
+        (
+            "oneOf",
+            json!({"oneOf": [{"type": "string"}, {"type": "integer"}]}),
+            json!(7),
+        ),
+        (
+            "ref",
+            json!({"$defs": {"id": {"type": "string", "minLength": 1}}, "properties": {"id": {"$ref": "#/$defs/id"}}}),
+            json!({"id": "x"}),
+        ),
+    ]
+}

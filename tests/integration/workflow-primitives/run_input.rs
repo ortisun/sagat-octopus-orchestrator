@@ -578,8 +578,17 @@ async fn row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claim
             ),
         )
         .await;
-    let blob = upload(&p, br#"{"orderId": "o-1"}"#).await;
+    // T043-17, row 2 (round 2 of 2026-11-16, implementation readiness 3 and 13): the uploaded bytes carry a sentinel value
+    // and key; they stay opaque, and neither reaches the answer, the logs and spans captured at TRACE or the audit rows.
+    const VALUE: &str = "sentinel-043-blob-value-8a6d";
+    const KEY: &str = "sentinel-043-blob-key-2c7f";
+    let blob = upload(
+        &p,
+        format!(r#"{{"orderId": "{VALUE}", "{KEY}": "{VALUE}"}}"#).as_bytes(),
+    )
+    .await;
     let blob_id = blob["id"].as_str().expect("id");
+    let (guard, captured) = crate::support::logs::capture_with_spans(tracing::Level::TRACE);
     let response = p
         .api
         .as_user(reqwest::Method::POST, "/runs", HUMAN, TENANT)
@@ -611,6 +620,31 @@ async fn row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claim
             .await
             .expect("count");
     assert_eq!(runs_of_refusing, 0, "a refused start creates nothing");
+    drop(guard);
+    let audits: Vec<Option<String>> = sqlx::query_scalar("SELECT reason FROM audit_records")
+        .fetch_all(&p.api.db.pool)
+        .await
+        .expect("audit");
+    let audits = audits.into_iter().flatten().collect::<Vec<_>>().join("\n");
+    let logs = captured.text();
+    assert!(
+        logs.contains("422") || logs.contains("RUN_INPUT_INVALID") || logs.contains("run_input"),
+        "the capture saw the refused request: {logs}"
+    );
+    for (label, text) in [
+        ("the answer", &text),
+        ("the logs and spans", &logs),
+        ("the audit rows", &audits),
+    ] {
+        assert!(
+            !text.contains(VALUE),
+            "{label}: the sentinel value leaked: {text}"
+        );
+        assert!(
+            !text.contains(KEY),
+            "{label}: the sentinel key leaked: {text}"
+        );
+    }
 
     let run = start_with_blob(&p, &accepting, blob_id).await;
     let input_blob: Option<Uuid> =

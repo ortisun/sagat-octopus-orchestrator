@@ -24,7 +24,10 @@ pub enum Command {
     ScheduleTriggerHandover(HandoverArgs),
     /// List the stored workflow versions whose `inputSchema` is outside the supported subset (design 043), then exit
     /// 0 (none), 1 (at least one) or 2 (the command failed). Reads only; it runs with the process's database settings (the runtime role is enough).
-    InputSchemaInventory,
+    /// A superseded version nothing starts never counts; `--all` (`all`) lists those as well (OD-2026-11-16-5).
+    InputSchemaInventory {
+        all: bool,
+    },
     /// Print a new signing key for scripts (`SAGAT_SCRIPT_SIGNING_KEY`) and exit. Needs no database.
     ScriptKey,
     /// Probe the local API's liveness endpoint; for container health checks.
@@ -60,6 +63,15 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
     if first == Some("schedule-trigger-handover") {
         return parse_handover(args);
     }
+    if first == Some("input-schema-inventory") {
+        return match (args.next(), args.next()) {
+            (None, _) => Ok(Command::InputSchemaInventory { all: false }),
+            (Some("--all"), None) => Ok(Command::InputSchemaInventory { all: true }),
+            (Some("--all"), Some(extra)) | (Some(extra), _) => {
+                Err(UsageError(format!("unexpected argument '{extra}'")))
+            }
+        };
+    }
     let command = match first {
         None | Some("serve") => Command::Serve,
         Some("migrate") => Command::Migrate,
@@ -69,7 +81,6 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
         Some("cleanup-secrets") => Command::CleanupSecrets,
         Some("quota-ceiling") => Command::QuotaCeiling,
         Some("scheduling-weight") => Command::SchedulingWeight,
-        Some("input-schema-inventory") => Command::InputSchemaInventory,
         Some("script-key") => Command::ScriptKey,
         Some("healthcheck") => Command::Healthcheck,
         Some("help" | "--help" | "-h") => Command::Help,
@@ -146,9 +157,11 @@ COMMANDS:
     scheduling-weight  Set a tenant's weight in the scheduler's passes, 1 to 16 (SAGAT_WEIGHT_TENANT_ID, SAGAT_WEIGHT_VALUE; a number or default)
     schedule-trigger-handover  Hand the cron triggers over from the legacy cron pass to the schedule pass; audited, once, with the
                   owner role: schedule-trigger-handover --operator NAME [--expect-live N] [--dry-run | --apply]
-    input-schema-inventory  List the stored workflow versions whose inputSchema is outside the supported subset (every start
-                  of them is refused in enforce mode), and for information those with an inputSchema and a trigger; reads
-                  only, with the process's database settings. Exit 0: none would be refused; 1: at least one; 2: it failed
+    input-schema-inventory [--all]  List the stored workflow versions whose inputSchema is outside the supported subset (every
+                  start of them is refused in enforce mode), and for information those with an inputSchema and a trigger;
+                  reads only, with the process's database settings. A superseded version nothing starts (not active, no
+                  open run, no run in 30 days) is only counted; --all lists those too. Exit 0: none would be refused; 1:
+                  at least one; 2: it failed
     script-key    Print a new Ed25519 key for SAGAT_SCRIPT_SIGNING_KEY (it signs the artifacts of scripts)
     healthcheck   Probe the local API (GET /v1/health); exit 0 when healthy
     version       Print the version

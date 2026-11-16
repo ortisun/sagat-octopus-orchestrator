@@ -369,5 +369,13 @@ fn the_input_schema_inventory_exits_2_when_it_cannot_run_and_never_shows_the_url
     let usage = control_plane(&["help"], &[]);
     assert!(text(&usage.stdout).contains("input-schema-inventory"));
     let extra = control_plane(&["input-schema-inventory", "--apply"], &[]);
-    assert_eq!(extra.status.code(), Some(2), "it takes no argument");
+    assert_eq!(extra.status.code(), Some(2), "it takes no other argument");
+    // OD-2026-11-16-5: `--all` is the one flag, and it reaches the database like the plain command
+    let all = control_plane(
+        &["input-schema-inventory", "--all"],
+        &[("DATABASE_URL", SECRET_URL)],
+    );
+    assert_eq!(all.status.code(), Some(2), "{}", text(&all.stderr));
+    assert!(text(&all.stderr).contains("database error"));
+    assert!(text(&usage.stdout).contains("--all"));
 }

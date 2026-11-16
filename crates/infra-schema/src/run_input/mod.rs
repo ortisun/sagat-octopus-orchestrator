@@ -84,50 +84,54 @@ pub use sagat_application::run_input::{
 /// inventory run it.
 ///
 /// # Errors
-/// The first violation.
+/// The first violation ([`PrecheckRefusal::Unusable`]), or [`PrecheckRefusal::Busy`] when no permit came within the wait.
 ///
-/// It compiles up to [`MAX_PATTERNS`] patterns, so it runs off the async workers and at most [`RUN_INPUT_PERMITS`] at
-/// once per process, as a start's compile does: publication, a dry run and an ad hoc document reach it outside a start
-/// (security review of 2026-11-16, Major 2).
-pub fn precheck(schema: &[u8]) -> Result<(), Unusable> {
+/// It compiles up to [`MAX_PATTERNS`] patterns, so it runs off the async workers on a permit of the process's one pool,
+/// the starts' (security review of 2026-11-16, Major 2; round 2, architecture 4): a start and a pre-check together hold
+/// at most [`RUN_INPUT_PERMITS`], and a pre-check waits at most [`permits::RUN_INPUT_PERMIT_WAIT`]. Counted in
+/// `run_input_prechecks_total{outcome}` (`admitted`, `unusable`, `busy`).
+pub fn precheck(schema: &[u8]) -> Result<(), PrecheckRefusal> {
+    precheck_in(RunInputValidator::process().permits(), schema)
+}
+
+/// Why a pre-check did not admit a schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrecheckRefusal {
+    /// The schema is outside the subset: final.
+    Unusable(Unusable),
+    /// No permit within the wait: transient, the caller may try again.
+    Busy,
+}
+
+/// [`precheck`] with the permits of `pool`.
+///
+/// # Errors
+/// The first violation, or [`PrecheckRefusal::Busy`].
+pub fn precheck_in(pool: &permits::Permits, schema: &[u8]) -> Result<(), PrecheckRefusal> {
     off_worker(|| {
-        let _permit = PrecheckPermit::acquire();
+        let _permit = pool.acquire_blocking(PRECHECKS).map_err(|permits::Busy| {
+            metrics::counter!("run_input_prechecks_total", "outcome" => "busy").increment(1);
+            PrecheckRefusal::Busy
+        })?;
         #[cfg(test)]
         let _seen = tests::Concurrent::enter();
-        CompiledInputSchema::compile(schema).map(|_| ())
+        let answer = CompiledInputSchema::compile(schema)
+            .map(|_| ())
+            .map_err(PrecheckRefusal::Unusable);
+        let outcome = if answer.is_ok() {
+            "admitted"
+        } else {
+            "unusable"
+        };
+        metrics::counter!("run_input_prechecks_total", "outcome" => outcome).increment(1);
+        answer
     })
 }
 
-/// The pre-checks that run at once outside a start, at most [`RUN_INPUT_PERMITS`]: a blocking count, held off the async
-/// workers, for a compile bounded by the pre-check's own limits.
-static PRECHECKS_FREE: std::sync::Mutex<usize> = std::sync::Mutex::new(RUN_INPUT_PERMITS);
-static PRECHECK_FREED: std::sync::Condvar = std::sync::Condvar::new();
-
-struct PrecheckPermit;
-
-impl PrecheckPermit {
-    fn acquire() -> Self {
-        let mut free = PRECHECKS_FREE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while *free == 0 {
-            free = PRECHECK_FREED
-                .wait(free)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
-        *free -= 1;
-        Self
-    }
-}
-
-impl Drop for PrecheckPermit {
-    fn drop(&mut self) {
-        *PRECHECKS_FREE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
-        PRECHECK_FREED.notify_one();
-    }
-}
+/// The owner the pre-checks outside a start queue under in the starts' pool: the parser that runs them does not know the
+/// tenant, so they share one place in the fair queue, which keeps them from crowding out the starts of any tenant and
+/// the starts from starving them (round 2 of 2026-11-16, architecture 4; D043-177). No tenant has the nil identifier.
+const PRECHECKS: TenantId = TenantId::new(uuid::Uuid::nil());
 
 impl Weighed for CompiledInputSchema {
     fn weight(&self) -> usize {
@@ -416,6 +420,42 @@ mod tests {
             peak <= RUN_INPUT_PERMITS,
             "{peak} pre-checks ran at once, more than {RUN_INPUT_PERMITS}"
         );
+    }
+
+    /// Round 2 of 2026-11-16 (architecture 4, critic 3, intermediate zoom-out 2): a pre-check outside a start takes its
+    /// permit from the starts' pool, so the two never hold more than its permits together, and it waits at most the pool's
+    /// wait: with every permit held it is answered `Busy`, transient, instead of waiting without a limit.
+    #[test]
+    fn a_precheck_waits_in_the_starts_pool_and_is_busy_after_its_wait() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let pool = permits::Permits::new(2, std::time::Duration::from_millis(200));
+        let held: Vec<_> = runtime.block_on(async {
+            let mut held = Vec::new();
+            for _ in 0..2 {
+                held.push(pool.acquire(TenantId::generate()).await.expect("free"));
+            }
+            held
+        });
+        let schema = heavy_schema();
+        let started = std::time::Instant::now();
+        let answer = precheck_in(&pool, &schema);
+        assert_eq!(
+            answer,
+            Err(PrecheckRefusal::Busy),
+            "the starts hold every permit"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "bounded by the pool's wait"
+        );
+        assert_eq!(pool.waiting(), 0, "the pre-check left the queue");
+        drop(held);
+        assert_eq!(precheck_in(&pool, &schema), Ok(()));
+        assert_eq!(pool.free(), 2, "its permit went back");
     }
 
     /// Security and correctness reviews of 2026-11-16, Major 1: the caller whose compile panics (the leader of the

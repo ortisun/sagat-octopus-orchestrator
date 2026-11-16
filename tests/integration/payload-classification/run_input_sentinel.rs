@@ -1,6 +1,7 @@
 //! Design 043, T043-17 (FR-043-014, SC-043-002): a sentinel value, and a sentinel key under `additionalProperties` (the
 //! only place a caller's key can reach the subset), sent in inputs that fail at them on rows 1, 4, 9 and 11, appear in
-//! none of the answer, the logs and spans captured at TRACE, and the audit rows.
+//! none of the answer, the logs and spans captured at TRACE, the audit rows and the metrics text (round 2 of 2026-11-16,
+//! implementation readiness 3). The metrics are recorded on this test's thread, so the text holds only what it did.
 
 use sagat_application::definitions::InputValidationMode;
 use sagat_application::run_input::RunInputGate;
@@ -50,8 +51,20 @@ fn clean(label: &str, text: &str) {
     );
 }
 
-#[tokio::test]
-async fn no_sentinel_reaches_an_answer_a_log_a_span_or_an_audit_row_on_any_row() {
+#[test]
+fn no_sentinel_reaches_an_answer_a_log_a_span_or_an_audit_row_on_any_row() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let (telemetry, recorder) =
+        sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(3600));
+    metrics::with_local_recorder(&recorder, || {
+        runtime.block_on(Box::pin(every_row(&telemetry)));
+    });
+}
+
+async fn every_row(telemetry: &sagat_telemetry::Metrics) {
     let w = world().await;
     let mut order = document(
         &format!("sentinel-order-{}", Uuid::now_v7()),
@@ -179,4 +192,10 @@ async fn no_sentinel_reaches_an_answer_a_log_a_span_or_an_audit_row_on_any_row()
         audit_text(&w).await.contains("RUN_INPUT_INVALID rule="),
         "the trigger refusals were audited"
     );
+    let rendered = telemetry.render();
+    assert!(
+        rendered.contains("run_input_validations_total"),
+        "the refusals were counted: {rendered}"
+    );
+    clean("the metrics", &rendered);
 }

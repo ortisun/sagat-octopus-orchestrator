@@ -31,7 +31,7 @@ async fn main() -> ExitCode {
             println!("control-plane {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Command::InputSchemaInventory => inventory().await,
+        Command::InputSchemaInventory { all } => inventory(all).await,
         other => match run(other).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -43,7 +43,7 @@ async fn main() -> ExitCode {
 }
 
 /// `input-schema-inventory`: its own exit status, 0, 1 or 2 (D043-072), so a script can tell "found" from "failed".
-async fn inventory() -> ExitCode {
+async fn inventory(all: bool) -> ExitCode {
     let config = match Config::from_lookup(&env_lookup) {
         Ok(config) => config,
         Err(error) => {
@@ -51,7 +51,13 @@ async fn inventory() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let outcome = sagat_control_plane::inventory::input_schema_inventory(&config.database).await;
+    let scope = if all {
+        sagat_control_plane::inventory::Scope::All
+    } else {
+        sagat_control_plane::inventory::Scope::Current
+    };
+    let outcome =
+        sagat_control_plane::inventory::input_schema_inventory_in(&config.database, scope).await;
     match &outcome {
         Ok(inventory) => println!("{inventory}"),
         Err(error) => eprintln!("error: {error}"),
@@ -192,6 +198,6 @@ async fn execute(command: Command, config: &Config) -> Result<(), RunError> {
         | Command::Version
         | Command::Healthcheck
         | Command::ScriptKey
-        | Command::InputSchemaInventory => Ok(()),
+        | Command::InputSchemaInventory { .. } => Ok(()),
     }
 }

@@ -688,6 +688,7 @@ impl RunInputGate {
             shared: creator != Creator::AdHoc,
         };
         let answer = self.validator.check(key, schema, &input).await;
+        let transient;
         let refusal = match answer {
             Ok(()) => {
                 count(creator, "accepted");
@@ -697,14 +698,23 @@ impl RunInputGate {
                     outcome: Checked::Valid,
                 });
             }
-            Err(refusal) => refused(refusal, policy),
+            Err(refusal) => {
+                // a panic of the validator is its own transient outcome; no permit and the backstop are `deadline`
+                // (round 2 of 2026-11-16, critic 27)
+                transient = if refusal == SchemaRefusal::Interrupted {
+                    "interrupted"
+                } else {
+                    "deadline"
+                };
+                refused(refusal, policy)
+            }
         };
         let span = tracing::Span::current();
         if let InputRefusal::Invalid { rule, .. } = &refusal {
             span.record("sagat.run_input.rule", rule.as_str());
         }
         if !refusal.is_final() {
-            count(creator, "deadline");
+            count(creator, transient);
             tracing::debug!(%version, creator = creator.as_str(), "the run input could not be checked now");
             return Err(refusal);
         }
@@ -1020,6 +1030,57 @@ mod tests {
     /// Round 2 of 2026-11-16 (architecture 3, correctness 1): in `report` mode a schedule's action checked before its
     /// decision and again at its start is counted `reported` once, as its one audit row; a `CANCEL_SOURCE` reset's
     /// request counts nothing that its completion will count.
+    #[test]
+    /// Round 2 of 2026-11-16 (critic 27; OD-2026-11-16-3): a panic of the validator is counted `interrupted`, its own
+    /// outcome, not `deadline`, which stays for no permit within the wait and the backstop; both are transient.
+    fn a_panic_of_the_validator_is_counted_interrupted_and_no_room_deadline() {
+        use futures_util::FutureExt as _;
+
+        let counted = Arc::new(Counted::default());
+        let recorder = Recorder(Arc::clone(&counted));
+        let gate = RunInputGate::new(
+            Arc::new(Scripted::answering([
+                Err(SchemaRefusal::Interrupted),
+                Err(SchemaRefusal::Busy),
+                Err(SchemaRefusal::Backstop),
+            ])),
+            InputValidationMode::Enforce,
+        );
+        let schema = schema();
+        metrics::with_local_recorder(&recorder, || {
+            for _ in 0..3 {
+                let refused = gate
+                    .checked(
+                        TenantId::generate(),
+                        WorkflowVersionId::generate(),
+                        Some(&schema),
+                        b"{}".to_vec(),
+                        Creator::Api,
+                        FieldPolicy::Show,
+                        Counting::All,
+                    )
+                    .now_or_never()
+                    .unwrap()
+                    .unwrap_err();
+                assert_eq!(refused, InputRefusal::Unavailable);
+            }
+        });
+        let counts = counted.0.lock().unwrap().clone();
+        assert_eq!(
+            counts,
+            std::collections::BTreeMap::from([
+                (
+                    "run_input_validations_total{creator=api,outcome=deadline}".to_owned(),
+                    2
+                ),
+                (
+                    "run_input_validations_total{creator=api,outcome=interrupted}".to_owned(),
+                    1
+                ),
+            ])
+        );
+    }
+
     #[test]
     fn a_report_is_counted_once_per_start_whatever_checks_it_before() {
         use futures_util::FutureExt as _;

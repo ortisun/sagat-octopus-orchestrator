@@ -2,9 +2,9 @@
 //! reset (row 5), a schedule's action, backfill and trigger-now (rows 6, 7 and 8), a continuation (row 12) and a schedule
 //! write (row 14). A sentinel value and a sentinel key, in inputs that fail at them, appear in none of the answers, the logs and spans
 //! captured at TRACE, the audit rows, the schedule's action records, the journal and the metrics text. Row 10 (a cron
-//! tick) has no caller-chosen value: its document is the platform's. Rows 2 and 13 are covered by
-//! `row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claims_nothing` and the row 13 scenario of
-//! `integration_database_connections`. The metrics are recorded on this test's thread, so the text holds only what it did.
+//! tick) has no caller-chosen value: its document is the platform's. Rows 2 and 13 carry their own sentinels:
+//! `row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claims_nothing` (`integration_workflow_primitives`)
+//! and the `sentinel` step of the row 13 scenario of `integration_database_connections`. The metrics are recorded on this test's thread, so the text holds only what it did.
 
 use std::time::Duration;
 

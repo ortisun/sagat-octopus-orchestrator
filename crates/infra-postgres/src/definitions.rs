@@ -1036,6 +1036,36 @@ pub struct StoredVersion {
     pub document: Vec<u8>,
 }
 
+/// Whether something may still start `version` of `workflow` (design 043, OD-2026-11-16-5, D043-179): it is its workflow's
+/// active version, or a run of it is open (a reset, a continuation or a child of it would start it again), or a run of it
+/// was created in the last `quiet_days` days (a caller or a schedule that names it). The inventory does not count a version
+/// outside the subset that nothing starts. It reads `workflows` and `runs` (by `runs_by_workflow_idx`) and writes nothing.
+///
+/// # Errors
+/// [`StoreError`] when the read fails.
+pub async fn version_still_started(
+    pool: &PgPool,
+    tenant: TenantId,
+    workflow: WorkflowId,
+    version: WorkflowVersionId,
+    quiet_days: u16,
+) -> Result<bool, StoreError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM workflows w \
+                         WHERE w.tenant_id = $1 AND w.id = $2 AND w.active_version_id = $3) \
+             OR EXISTS (SELECT 1 FROM runs r \
+                         WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.workflow_version_id = $3 \
+                           AND (r.finished_at IS NULL OR r.created_at > now() - make_interval(days => $4)))",
+    )
+    .bind(tenant.as_uuid())
+    .bind(workflow.as_uuid())
+    .bind(version.as_uuid())
+    .bind(i32::from(quiet_days))
+    .fetch_one(pool)
+    .await
+    .map_err(store_error)
+}
+
 /// The stored versions of every tenant whose id is after `after`, ascending by id, at most `limit`: a page of the
 /// inventory, which runs with the control plane's database settings (the runtime role where one is set: it needs only
 /// `SELECT` on `workflow_versions` and `workflows`). It reads and writes nothing else.

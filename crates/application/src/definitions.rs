@@ -213,6 +213,10 @@ pub enum IrError {
         keyword: String,
         path: String,
     },
+    /// The pre-check of the `inputSchema` found no permit of the run-input validator within its wait (design 043,
+    /// D043-177): transient, the document is not judged; the caller sends it again (`503`).
+    #[error("the run-input validator is busy; send the document again")]
+    ValidatorBusy,
 }
 
 fn input_schema_message(issue: sagat_domain::workflow::InputSchemaIssue, keyword: &str) -> String {
@@ -405,6 +409,7 @@ pub fn problems_of(error: &IrError) -> Vec<Problem> {
         IrError::InputSchema { issue, path, .. } => {
             vec![Problem::error(issue.as_str(), error.to_string()).at_path(path.clone())]
         }
+        IrError::ValidatorBusy => vec![Problem::error("VALIDATOR_BUSY", error.to_string())],
         IrError::Invalid(rule) => {
             let (code, node) = graph_rule(rule);
             let problem = Problem::error(code, rule.to_string());

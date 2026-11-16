@@ -200,6 +200,7 @@ const fn variant(error: &IrError) -> &'static str {
         IrError::NameMismatch { .. } => "NameMismatch",
         IrError::UnknownScript { .. } => "UnknownScript",
         IrError::InputSchema { .. } => "InputSchema",
+        IrError::ValidatorBusy => "ValidatorBusy",
     }
 }
 

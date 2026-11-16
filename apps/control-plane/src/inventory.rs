@@ -3,12 +3,15 @@
 //! versions will refuse every start in `enforce` mode, and fix them or choose `report` first.
 //!
 //! It runs with the database settings of the control plane (the runtime role where a deployment sets one): it only
-//! reads, and needs nothing but `SELECT` on `workflow_versions`. It reads them page by page and runs on each
-//! stored `inputSchema` the pre-check that publication and the start gate run. It prints one line per version that
-//! would be refused (its ids, the issue, the keyword and its pointer), and, for information, one line per version
-//! within the subset that has an `inputSchema` and a trigger other than a manual start, whose triggered runs may be
-//! refused (G043-004). It prints no schema text and no input, and writes nothing. Its exit status is 0 when no version
-//! would be refused, 1 when at least one would, and 2 when the command itself failed.
+//! reads, and needs nothing but `SELECT` on `workflow_versions`, `workflows` and `runs`. It reads the versions page by
+//! page and runs on each stored `inputSchema` the pre-check that publication and the start gate run. It prints one line
+//! per version that would be refused (its ids, the issue, the keyword and its pointer), and, for information, one line
+//! per version within the subset that has an `inputSchema` and a trigger other than a manual start, whose triggered runs
+//! may be refused (G043-004). A version outside the subset that nothing starts any more (not its workflow's active one,
+//! no open run, no run created in [`SUPERSEDED_QUIET_DAYS`] days) is superseded: counted in the summary, listed with
+//! `--all`, and never a reason to exit 1 (OD-2026-11-16-5). It prints no schema text and no input, and writes nothing.
+//! Its exit status is 0 when no version would be refused, 1 when at least one would, and 2 when the command itself
+//! failed.
 
 use std::fmt;
 use std::time::Duration;
@@ -17,7 +20,8 @@ use sagat_domain::definition::{WorkflowId, WorkflowVersionId};
 use sagat_domain::identity::{NamespaceId, TenantId};
 use sagat_domain::workflow::InputSchemaIssue;
 use sagat_infra_ir::stored_input_schema;
-use sagat_infra_postgres::stored_versions_page;
+use sagat_infra_postgres::{stored_versions_page, version_still_started};
+use sagat_infra_schema::run_input::PrecheckRefusal;
 
 use crate::config::DatabaseConfig;
 use crate::handover::shown;
@@ -25,6 +29,10 @@ use crate::{RunError, open_pool};
 
 /// Versions read per page: a document is at most 1 MiB, so a page holds at most this many MiB.
 const PAGE: u32 = 64;
+
+/// A version outside the subset that is not its workflow's active one and has had no open run and no new run for this
+/// many days is superseded: nothing starts it, so it does not make the inventory exit 1 (OD-2026-11-16-5, D043-179).
+pub const SUPERSEDED_QUIET_DAYS: u16 = 30;
 
 /// The ids of one stored version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +72,11 @@ pub struct Inventory {
     pub refused: Vec<RefusedVersion>,
     /// The versions within the subset with an `inputSchema` and a non-manual trigger: information only.
     pub triggered: Vec<VersionIds>,
+    /// The versions outside the subset that nothing starts any more ([`SUPERSEDED_QUIET_DAYS`]): counted in the summary,
+    /// listed with [`Scope::All`], never a reason to exit 1.
+    pub superseded: Vec<RefusedVersion>,
+    /// What the printed inventory lists.
+    pub scope: Scope,
     /// The versions read, all of them.
     pub scanned: u64,
     /// The stored documents that are not JSON objects (none should be): listed, never a reason to stop.
@@ -71,8 +84,9 @@ pub struct Inventory {
 }
 
 impl Inventory {
-    /// 0 when no version would be refused, 1 when at least one would (D043-072), and 2 when a stored document could
-    /// not be read, because the command cannot say what that version would do (D043-111).
+    /// 0 when no version would be refused, 1 when at least one would (D043-072; a superseded one does not,
+    /// OD-2026-11-16-5), and 2 when a stored document could not be read, because the command cannot say what that version
+    /// would do (D043-111).
     #[must_use]
     pub fn exit_code(&self) -> u8 {
         if !self.unreadable.is_empty() {
@@ -104,6 +118,18 @@ impl fmt::Display for Inventory {
                 quoted(&refused.at)
             )?;
         }
+        if self.scope == Scope::All {
+            for refused in &self.superseded {
+                writeln!(
+                    f,
+                    "superseded {} issue={} keyword={} at={} nothing has started it for {SUPERSEDED_QUIET_DAYS} days",
+                    refused.ids,
+                    refused.issue.as_str(),
+                    quoted(&refused.keyword),
+                    quoted(&refused.at)
+                )?;
+            }
+        }
         for ids in &self.triggered {
             writeln!(
                 f,
@@ -116,12 +142,19 @@ impl fmt::Display for Inventory {
                 "unreadable {ids} the stored document is not a JSON object: what this version would do is unknown"
             )?;
         }
+        let hint = if self.scope == Scope::All {
+            ""
+        } else {
+            " (--all lists them)"
+        };
         write!(
             f,
-            "{} stored version(s) read: {} would refuse every start in enforce mode, {} with a trigger are listed for \
-             information. Nothing was changed.",
+            "{} stored version(s) read: {} would refuse every start in enforce mode, {} superseded version(s) outside \
+             the subset that nothing starts are not counted{hint}, {} with a trigger are listed for information. Nothing \
+             was changed.",
             self.scanned,
             self.refused.len(),
+            self.superseded.len(),
             self.triggered.len()
         )
     }
@@ -136,13 +169,30 @@ fn quoted(text: &str) -> String {
     )
 }
 
-/// Reads every stored version and pre-checks its `inputSchema`.
+/// Which versions outside the subset the inventory lists (OD-2026-11-16-5).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Scope {
+    /// Those something may still start; the superseded ones are counted in the summary.
+    #[default]
+    Current,
+    /// The superseded ones as well (`--all`).
+    All,
+}
+
+/// Reads every stored version and pre-checks its `inputSchema`, sorting a version outside the subset into `refused` when
+/// something may still start it and into `superseded` when nothing does (OD-2026-11-16-5); `scope` says what is printed.
 ///
 /// # Errors
 /// [`RunError::Database`] when PostgreSQL cannot be reached or a read fails.
-pub async fn input_schema_inventory(db: &DatabaseConfig) -> Result<Inventory, RunError> {
+pub async fn input_schema_inventory_in(
+    db: &DatabaseConfig,
+    scope: Scope,
+) -> Result<Inventory, RunError> {
     let pool = open_pool(db, Duration::from_secs(30)).await?;
-    let mut inventory = Inventory::default();
+    let mut inventory = Inventory {
+        scope,
+        ..Inventory::default()
+    };
     let mut after = None;
     loop {
         let page = stored_versions_page(&pool, after, PAGE)
@@ -169,12 +219,34 @@ pub async fn input_schema_inventory(db: &DatabaseConfig) -> Result<Inventory, Ru
                 continue;
             };
             match sagat_infra_schema::run_input::precheck(schema.bytes()) {
-                Err(unusable) => inventory.refused.push(RefusedVersion {
-                    ids,
-                    issue: unusable.issue,
-                    keyword: unusable.keyword,
-                    at: format!("/inputSchema{}", unusable.at),
-                }),
+                // the inventory checks one schema at a time in its own process: its pool is never full
+                Err(PrecheckRefusal::Busy) => {
+                    return Err(RunError::Refused(
+                        "the run-input validator of the inventory had no permit; run it again",
+                    ));
+                }
+                Err(PrecheckRefusal::Unusable(unusable)) => {
+                    let refused = RefusedVersion {
+                        ids,
+                        issue: unusable.issue,
+                        keyword: unusable.keyword,
+                        at: format!("/inputSchema{}", unusable.at),
+                    };
+                    let started = version_still_started(
+                        &pool,
+                        stored.tenant,
+                        stored.workflow,
+                        stored.version,
+                        SUPERSEDED_QUIET_DAYS,
+                    )
+                    .await
+                    .map_err(|error| RunError::Database(error.to_string()))?;
+                    if started {
+                        inventory.refused.push(refused);
+                    } else {
+                        inventory.superseded.push(refused);
+                    }
+                }
                 Ok(()) if read.triggered => inventory.triggered.push(ids),
                 Ok(()) => {}
             }
@@ -182,4 +254,12 @@ pub async fn input_schema_inventory(db: &DatabaseConfig) -> Result<Inventory, Ru
     }
     pool.close().await;
     Ok(inventory)
+}
+
+/// Reads every stored version and pre-checks its `inputSchema`: [`Scope::Current`].
+///
+/// # Errors
+/// [`RunError::Database`] when PostgreSQL cannot be reached or a read fails.
+pub async fn input_schema_inventory(db: &DatabaseConfig) -> Result<Inventory, RunError> {
+    input_schema_inventory_in(db, Scope::Current).await
 }

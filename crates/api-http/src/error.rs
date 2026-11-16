@@ -811,6 +811,10 @@ impl ApiError {
                 e.parts.details = Some(json!({ "reason": "IDEMPOTENCY_KEY_REUSED" }));
                 e
             }
+            // design 043: the pre-check of the `inputSchema` had no permit within its wait, as a start's `Busy`
+            AppError::InvalidDefinition(error) if matches!(*error, IrError::ValidatorBusy) => {
+                Self::unavailable()
+            }
             AppError::InvalidDefinition(error) => {
                 let mut e = Self::validation(error.to_string());
                 e.parts.details = Some(definition_details(&error));
@@ -1264,6 +1268,8 @@ fn definition_details(error: &IrError) -> Value {
                 "code": issue.as_str(), "keyword": keyword, "path": path, "message": error.to_string(),
             }],
         }),
+        // answered `503` before the details are built (`AppError::InvalidDefinition` above)
+        IrError::ValidatorBusy => json!({ "reason": "VALIDATOR_BUSY" }),
         IrError::TooLarge => json!({ "reason": "TOO_LARGE" }),
         IrError::Malformed => json!({ "reason": "MALFORMED" }),
         IrError::EscapingBodyEdge { body, from, .. } => {

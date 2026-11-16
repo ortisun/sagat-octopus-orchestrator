@@ -217,4 +217,90 @@ pub async fn run(w: &World) {
     .await
     .unwrap();
     assert_eq!(audits, 1, "the report is audited with the run");
+
+    sentinel(w).await;
+}
+
+/// Row 13 of T043-17 (FR-043-014, SC-043-002; round 2 of 2026-11-16, implementation readiness 3 and 13): a sentinel value,
+/// and a sentinel key under `additionalProperties`, in ad hoc inputs that fail at them, appear in none of the answers, the
+/// logs and spans captured at TRACE, the audit rows and the metrics text.
+async fn sentinel(w: &World) {
+    const VALUE: &str = "sentinel-043-ad-hoc-value-3f9b";
+    const KEY: &str = "sentinel-043-ad-hoc-key-c41e";
+    let mut doc = document(
+        "database-ad-hoc-sentinel",
+        "query",
+        vec![json!({
+            "id":"query", "type":"database", "connectionRef":{"name":"ad-hoc-db"},
+            "operation":"query", "statement":"SELECT 1::bigint"
+        })],
+    );
+    doc["inputSchema"] = json!({
+        "type": "object",
+        "required": ["orderId"],
+        "properties": {"orderId": {"type": "string", "maxLength": 8}},
+        "additionalProperties": {"type": "integer"}
+    });
+    let bytes = serde_json::to_vec(&doc).unwrap();
+    let (_guard, captured) = crate::support::logs::capture_with_spans(tracing::Level::TRACE);
+    let mut answers = String::new();
+    for (n, input) in [
+        json!({"orderId": VALUE}),
+        json!({"orderId": "o-1", KEY: VALUE}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input = serde_json::to_vec(&input).unwrap();
+        let key = format!("ad-hoc-sentinel-{n}");
+        let refused = w
+            .runs
+            .start_database(
+                &w.admin,
+                &StartDatabaseExecution {
+                    namespace: w.namespace.id(),
+                    mode: AdHocMode::Step,
+                    document: &bytes,
+                    input: &input,
+                    timeout_ms: None,
+                    key: &key,
+                },
+                &ctx(),
+            )
+            .await
+            .expect_err("refused");
+        assert!(
+            matches!(refused, AppError::InvalidRunInput { .. }),
+            "{refused:?}"
+        );
+        answers.push_str(&format!("{refused:?} {refused}\n"));
+    }
+    let audits: Vec<Option<String>> = sqlx::query_scalar("SELECT reason FROM audit_records")
+        .fetch_all(&w.db.pool)
+        .await
+        .unwrap();
+    let audits = audits.into_iter().flatten().collect::<Vec<_>>().join("\n");
+    let Some(metrics) = METRICS.get() else {
+        panic!("the lifecycle records its metrics");
+    };
+    let rendered = metrics.render();
+    assert!(
+        rendered.contains("run_input_validations_total"),
+        "the refusals were counted: {rendered}"
+    );
+    for (label, text) in [
+        ("the answers", answers),
+        ("the logs and spans", captured.text()),
+        ("the audit rows", audits),
+        ("the metrics", rendered),
+    ] {
+        assert!(
+            !text.contains(VALUE),
+            "{label}: the sentinel value leaked: {text}"
+        );
+        assert!(
+            !text.contains(KEY),
+            "{label}: the sentinel key leaked: {text}"
+        );
+    }
 }

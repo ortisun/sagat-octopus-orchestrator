@@ -19,6 +19,8 @@ sagat-application.workspace = true
 sagat-domain.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The nil identifier the pre-checks outside a start queue under in the validator's permits (design 043, D043-177).
+uuid.workspace = true
 # No network or file resolution: a `$ref` to anything outside the document is an error, never a request. The scripts'
 # schemas (feature 005) and the classification carriers use it; the run-input validator does not (D043-074): there it is
 # the oracle of a test only.
