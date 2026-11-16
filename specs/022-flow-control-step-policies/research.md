@@ -489,6 +489,7 @@ Alternative: a reset bypasses the limit (an operator's action always proceeds, a
 N by the number of resets).
 
 ### O1169 — If ADR-0089 is not accepted, does node-level `concurrency` ship in 0.3.0?
+**Answered 2026-11-13 (OD-2026-11-13-19, "Aceitar o ADR-0089"): option (a) — ADR-0089 is accepted, so the question's condition does not hold and node-level `concurrency` ships under ADR-0089.**
 ADR-0056 decision 3 (permit at claim) fills the claim's window with steps nobody can lease (D022-019).
 Options: (a) **accept ADR-0089**: gated steps wait outside `READY` and are granted by the pass, as rate
 limits already are; (b) ship 0.3.0 with run-level `concurrency` only and refuse node-level `concurrency`

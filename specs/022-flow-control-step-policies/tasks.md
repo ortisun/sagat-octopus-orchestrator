@@ -170,9 +170,14 @@ T022-063 (020 erasure).
 
 ### Phase 10: follow-up tasks of the slice (T022-066..090)
 
-- [ ] T022-066 Owner gate for the slice: OD-2026-11-13-11 present in `docs/owner-decisions.md`; answers to O1163–O1168 recorded there and in `research.md`; ADR-0056 and ADR-0088 accepted or changed by the owner. FR-022-017..022,039..050. Owner-gate: every task below that builds behaviour. Evidence: the recorded answers; ADR status set by a person.
+- [x] T022-066 Owner gate for the slice: OD-2026-11-13-11 present in `docs/owner-decisions.md`; answers to O1163–O1168 recorded there and in `research.md`; ADR-0056 and ADR-0088 accepted or changed by the owner. FR-022-017..022,039..050. Owner-gate: every task below that builds behaviour. Evidence: the recorded answers; ADR status set by a person.
   - 2026-11-13, partly done: O1163–O1168 answered, every recommendation accepted ("Aceitar todas", OD-2026-11-13-16, recorded in `research.md`; the row in `docs/owner-decisions.md` is added on `develop` by the coordinator). Not done: ADR-0056 and ADR-0088 are still Proposed; the task stays open until a person sets their status.
   - *Amended 2026-11-13 after review* (D022-023): ADR-0056 and ADR-0088 were accepted on 2026-11-13 (OD-2026-11-13-17, commit `1a21cbdc`). At the review revision, `origin/develop`'s `docs/owner-decisions.md` holds none of OD-2026-11-13-11, -16, -17 (checked with `git show origin/develop:docs/owner-decisions.md`), so the task stays open until the coordinator's rows land; ADR-0089 and O1169 are T022-107.
+  *Done 2026-11-15 (0.3.0 slice).* Evidence: `docs/owner-decisions.md` on `develop` (`f0c0c3c2`) holds
+  OD-2026-11-13-11 (throughput control in 0.3.0), OD-2026-11-13-16 (O1163–O1168, every recommendation) and
+  OD-2026-11-13-17 (ADR-0056 and ADR-0088 accepted), added by `69dc08e2`; `research.md` records the answer under each
+  of O1163–O1168; the status lines of ADR-0056 and ADR-0088 read `Accepted (2026-11-13, OD-2026-11-13-17)`, set by
+  `1a21cbdc`. `python3 scripts/check-design-docs.py` passes.
 - [ ] T022-067 [P] [US2] Rust SDK `concurrency` builder in `sdks/rust` (the sixth SDK, D022-016). FR-022-035,050. Evidence: unit tests; canonical fixture byte-identical to the other five.
 - [ ] T022-068 [US7] `RateLimitPolicy` and its validation in `crates/domain/src/workflow/flow_control.rs`; events `rate_limit.queued/granted/wait_timed_out/dequeued`, wait kind `RATE_LIMIT` for runs and steps and their reducer rules in `crates/domain/src/execution/{event.rs,state.rs,flow_control.rs}`. FR-022-039,045. Evidence: unit and property tests; one replay test per event of `contracts/journal-events.md`; old definitions and journals unchanged.
 - [ ] T022-069 [US7] IR codec for `rateLimit` and the `rateLimits` gate in `crates/infra-ir/src/{flow_control.rs,convert.rs}`, with `RATE_LIMIT_POLICY_INVALID`, `SCOPED_RATE_LIMIT`, `FLOW_CONTROL_COMBINATION` and the `RATE_LIMIT_MISMATCH` warning. FR-022-039,050; SC-022-013. Evidence: contract test over the fixture corpus of T022-002; previous corpus unchanged with the gate on and off; a disabled gate refuses before a version exists.
@@ -237,7 +242,11 @@ Added for the findings recorded in `reviews/2026-11-13/` (D022-019..034). The sl
 - [ ] T022-104 Key classification: `FLOW_CONTROL_KEY_SECRET` refused, `FLOW_CONTROL_KEY_PII` warned; `keyLabel` `null` for callers who may not disclose every location the key reads. FR-022-057; G1185. Evidence: codec tests over 016 carriers; REST tests with and without disclosure rights.
 - [ ] T022-105 `flow_control_counts` slot rows with `SECURITY DEFINER` triggers and `SELECT`-only grants; foreign keys `(tenant_id, namespace_id, run_id)`; column-limited `UPDATE` grants on semaphores and windows (`next_eligible_at`, `updated_at`). FR-022-058; D022-026. Evidence: runtime-privilege sweep; a direct `UPDATE` of a counter as `sagat_app` is refused; a dual-gated run counts once.
 - [ ] T022-106 A grant from the buffer does not re-authorize: a buffered run whose initiator lost `run:start` is granted, and its journal and audit keep the original initiator. FR-022-060; D022-034. Evidence: integration test.
-- [ ] T022-107 Owner gate for ADR-0089 and O1169: the owner's answer recorded in `docs/owner-decisions.md` and `research.md`; ADR status set by a person. Owner-gate: T022-024, T022-096, T022-097, T022-098, T022-099. Evidence: the recorded answer.
+- [x] T022-107 Owner gate for ADR-0089 and O1169: the owner's answer recorded in `docs/owner-decisions.md` and `research.md`; ADR status set by a person. Owner-gate: T022-024, T022-096, T022-097, T022-098, T022-099. Evidence: the recorded answer.
+  *Done 2026-11-15.* Evidence: OD-2026-11-13-19 in `docs/owner-decisions.md` on `develop` ("Aceitar o ADR-0089",
+  added by `69dc08e2`); the status line of ADR-0089 reads `Accepted (2026-11-13, OD-2026-11-13-19)`, set by
+  `20789a40`. Accepting ADR-0089 is option (a) of O1169, so node-level `concurrency` ships under ADR-0089; the answer
+  is recorded under O1169 in `research.md` by this change.
 
 ### Order of the slice, revised (2026-11-13)
 
