@@ -254,23 +254,30 @@ fn the_corpus_that_declares_no_gate_reads_as_before() {
 }
 
 /// The rules of `contracts/errors.md` ("Publication and validation") that name concurrency or rate limits and that
-/// the codec does not refuse yet, with what builds them. Every other such rule has a fixture in [`REFUSED`], or is the
-/// warning of [`a_self_starting_child_under_a_run_permit_is_published_with_a_warning`].
-const PENDING: [(&str, &str); 6] = [
-    (
-        "CONCURRENCY_LIMIT_MISMATCH",
-        "namespace-level warning at publication, G1187",
-    ),
-    (
-        "RATE_LIMIT_MISMATCH",
-        "namespace-level warning at publication, G1187",
-    ),
+/// the codec does not refuse yet, with the task that builds each and adds its fixture to this corpus. Every other such
+/// rule has a fixture in [`REFUSED`], is the warning of
+/// [`a_self_starting_child_under_a_run_permit_is_published_with_a_warning`], or is a namespace warning of
+/// [`NAMESPACE_WARNINGS`].
+const PENDING: [(&str, &str); 4] = [
     ("FLOW_CONTROL_KEY_UNBOUNDED", "T022-103"),
     ("FLOW_CONTROL_KEY_SECRET", "T022-104"),
     ("FLOW_CONTROL_KEY_PII", "T022-104"),
     (
         "ENCODING_READ_BY_CONCURRENCY_KEY",
         "feature 031 registers it (FR-022-036)",
+    ),
+];
+
+/// The warnings that compare a definition with the namespace's other published definitions (G1187): one document
+/// cannot show them, so they are proved against PostgreSQL by the named test of `integration_flow_control_step_policies`.
+const NAMESPACE_WARNINGS: [(&str, &str); 2] = [
+    (
+        "CONCURRENCY_LIMIT_MISMATCH",
+        "publication::a_group_declared_elsewhere_with_another_limit_is_warned_and_nothing_else_is",
+    ),
+    (
+        "RATE_LIMIT_MISMATCH",
+        "publication::a_group_declared_elsewhere_with_another_limit_is_warned_and_nothing_else_is",
     ),
 ];
 
@@ -302,13 +309,29 @@ fn every_rule_that_names_a_gate_is_covered_or_pending() {
         .map(|(_, code, _)| (*code).to_owned())
         .chain(["CONCURRENCY_SELF_CHILD".to_owned()])
         .chain(PENDING.iter().map(|(code, _)| (*code).to_owned()))
+        .chain(
+            NAMESPACE_WARNINGS
+                .iter()
+                .map(|(code, _)| (*code).to_owned()),
+        )
         .collect();
     let missing: Vec<_> = named.difference(&covered).collect();
     assert!(
         missing.is_empty(),
         "rules of errors.md with neither a fixture nor a pending entry: {missing:?}"
     );
-    for (code, _) in PENDING {
-        assert!(named.contains(code), "{code} is a rule of errors.md");
+    for (code, _) in PENDING.iter().chain(&NAMESPACE_WARNINGS) {
+        assert!(named.contains(*code), "{code} is a rule of errors.md");
+    }
+    let suite = fs::read_to_string(
+        root().join("tests/integration/flow-control-step-policies/publication.rs"),
+    )
+    .expect("the publication suite");
+    for (code, test) in NAMESPACE_WARNINGS {
+        let name = test.rsplit("::").next().expect("a name");
+        assert!(
+            suite.contains(&format!("async fn {name}()")) && suite.contains(code),
+            "{code} is proved by {test}"
+        );
     }
 }

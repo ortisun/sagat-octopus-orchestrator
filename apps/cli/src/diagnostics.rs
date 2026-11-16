@@ -56,11 +56,11 @@ pub const CATALOG: &[(&str, &str)] = &[
     ),
     (
         "CONCURRENCY_POLICY_INVALID",
-        "A concurrency declaration breaks a rule: a limit from 1 to 10000, a group matching ^[a-z][a-z0-9.-]{0,63}$, a queue timeout from 1 ms to one day, a top-level key that reads only `input`, and only on a root activity or script node.",
+        "A concurrency declaration breaks a rule: a limit from 1 to 10000, a group matching ^[a-z][a-z0-9.-]{0,63}$, a queue timeout from 1 ms to one day, a top-level key that reads only `input`, only on a root activity or script node, and at most 16 node-level declarations per definition unless the namespace's flow_control_node_declarations allows more (64 at most).",
     ),
     (
         "RATE_LIMIT_POLICY_INVALID",
-        "A rate-limit declaration breaks a rule: `per` is second, minute or hour, the limit is at least 1 and at most 100 per second, 6000 per minute or 10000 per hour, and it stands at the top level or on a root activity or script node.",
+        "A rate-limit declaration breaks a rule: `per` is second, minute or hour, the limit is at least 1 and at most 100 per second, 6000 per minute or 10000 per hour, it stands at the top level or on a root activity or script node, and a definition holds at most 16 node-level declarations unless the namespace's flow_control_node_declarations allows more (64 at most).",
     ),
     (
         "FLOW_CONTROL_COMBINATION",
@@ -69,6 +69,14 @@ pub const CATALOG: &[(&str, &str)] = &[
     (
         "CONCURRENCY_SELF_CHILD",
         "A child node starts this workflow, whose run-level concurrency key the child may share with its parent: with a limit of 1 the child waits for the permit its parent holds until the queue timeout. Use another group, or another key, for the child.",
+    ),
+    (
+        "CONCURRENCY_LIMIT_MISMATCH",
+        "Another published workflow of this namespace declares the same explicit concurrency group with a different limit. Both are accepted and each run applies its own limit, so the group admits runs unevenly; use one limit for the group, or a group of its own.",
+    ),
+    (
+        "RATE_LIMIT_MISMATCH",
+        "Another published workflow of this namespace declares the same explicit rate-limit group with a different limit or window. Both are accepted and each run counts the grants against its own limit and window; use one declaration for the group, or a group of its own.",
     ),
     (
         "FLOW_CONTROL_ACTIVATION_PENDING",
@@ -375,12 +383,26 @@ pub fn analyze_document(document: &[u8]) -> (Vec<Diagnostic>, Option<Classificat
                     sagat_domain::workflow::DefinitionWarning::ConcurrencySelfChild { node } => {
                         ("CONCURRENCY_SELF_CHILD", node.to_string())
                     }
+                    // namespace warnings of the definition service: the codec alone never raises them
+                    sagat_domain::workflow::DefinitionWarning::ConcurrencyLimitMismatch {
+                        node,
+                        ..
+                    } => (
+                        "CONCURRENCY_LIMIT_MISMATCH",
+                        node.as_ref().map_or_else(String::new, ToString::to_string),
+                    ),
+                    sagat_domain::workflow::DefinitionWarning::RateLimitMismatch {
+                        node, ..
+                    } => (
+                        "RATE_LIMIT_MISMATCH",
+                        node.as_ref().map_or_else(String::new, ToString::to_string),
+                    ),
                 };
                 Diagnostic {
                     warning: true,
                     code: code.to_owned(),
                     message: w.to_string(),
-                    at: Some(format!("node '{node}'")),
+                    at: (!node.is_empty()).then(|| format!("node '{node}'")),
                     help: help(code),
                 }
             })

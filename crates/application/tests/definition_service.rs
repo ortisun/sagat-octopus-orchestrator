@@ -141,6 +141,16 @@ impl SecretAccessLookup for FakeStore {
 }
 
 impl DefinitionStore for FakeStore {
+    async fn flow_control_group_declarations(
+        &self,
+        _tenant: TenantId,
+        _namespace: NamespaceId,
+        _except: WorkflowId,
+        _groups: &[sagat_domain::workflow::GroupName],
+    ) -> Result<Vec<(Slug, sagat_domain::workflow::GroupDeclaration)>, StoreError> {
+        Ok(Vec::new())
+    }
+
     async fn flow_control_activated(
         &self,
         capability: sagat_application::instances::Capability,

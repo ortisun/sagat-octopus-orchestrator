@@ -445,3 +445,162 @@ pub fn invalid(kind: GateKind, node: Option<&NodeId>, rule: FlowControlRule) -> 
         rule,
     }
 }
+
+/// A namespace ceiling of feature 022 that refused a waiter, a key or a declaration (FR-022-034, FR-022-047; the
+/// resources of [`crate::quota::QuotaResource`] named in each variant). The refusal is typed by the caller:
+/// `CONCURRENCY_QUEUE_FULL` or `RATE_LIMIT_QUEUE_FULL` for a waiter, `FLOW_CONTROL_LIMIT` for a key or a declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FlowControlLimit {
+    /// `queued_runs`.
+    #[error("the namespace holds as many waiting runs as its ceiling allows")]
+    QueuedRuns,
+    /// `flow_control_key_waiters`.
+    #[error("the key holds as many waiting runs as its ceiling allows")]
+    KeyWaiters,
+    /// `flow_control_live_keys`.
+    #[error("the namespace holds as many flow-control keys as its ceiling allows")]
+    LiveKeys,
+    /// `flow_control_node_declarations`.
+    #[error("a definition of the namespace may hold at most {max} node-level {kind} declarations")]
+    NodeDeclarations { kind: GateKind, max: u64 },
+}
+
+/// The namespace's resolved values of the flow-control quota resources (`quota::resolve`, which already applies the
+/// deployment's ceiling). The gate reads them in its deciding transaction; the effective value of a declaration is the
+/// lowest of what it declares and these (FR-022-034).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowControlCeilings {
+    /// `queued_runs`.
+    pub queued_runs: u64,
+    /// `flow_control_live_keys`.
+    pub live_keys: u64,
+    /// `flow_control_key_waiters`.
+    pub key_waiters: u64,
+    /// `concurrency_limit`.
+    pub concurrency_limit: u64,
+    /// `flow_control_queue_timeout_ms`.
+    pub queue_timeout_ms: u64,
+    /// `flow_control_node_declarations`.
+    pub node_declarations: u64,
+}
+
+impl FlowControlCeilings {
+    /// The values that apply when nobody set anything: the defaults of the plan.
+    pub const DEFAULT: Self = Self {
+        queued_runs: crate::quota::QuotaResource::QueuedRuns.default_limit(),
+        live_keys: crate::quota::QuotaResource::FlowControlLiveKeys.default_limit(),
+        key_waiters: crate::quota::QuotaResource::FlowControlKeyWaiters.default_limit(),
+        concurrency_limit: crate::quota::QuotaResource::ConcurrencyLimit.default_limit(),
+        queue_timeout_ms: crate::quota::QuotaResource::FlowControlQueueTimeoutMs.default_limit(),
+        node_declarations: crate::quota::QuotaResource::FlowControlNodeDeclarations.default_limit(),
+    };
+
+    /// Whether one more run may wait, given the namespace's waiting runs and the key's, both counted before it.
+    ///
+    /// # Errors
+    /// [`FlowControlLimit::QueuedRuns`] or [`FlowControlLimit::KeyWaiters`] at the ceiling (a zero ceiling refuses
+    /// every waiter).
+    pub const fn admits_waiter(
+        &self,
+        queued_runs: u64,
+        key_waiters: u64,
+    ) -> Result<(), FlowControlLimit> {
+        if queued_runs >= self.queued_runs {
+            return Err(FlowControlLimit::QueuedRuns);
+        }
+        if key_waiters >= self.key_waiters {
+            return Err(FlowControlLimit::KeyWaiters);
+        }
+        Ok(())
+    }
+
+    /// Whether a new key row may be created, given the namespace's live keys before it.
+    ///
+    /// # Errors
+    /// [`FlowControlLimit::LiveKeys`] at the ceiling.
+    pub const fn admits_key(&self, live_keys: u64) -> Result<(), FlowControlLimit> {
+        if live_keys >= self.live_keys {
+            return Err(FlowControlLimit::LiveKeys);
+        }
+        Ok(())
+    }
+
+    /// The most holders one key of `declared` may be granted: the lower of the declaration and the namespace.
+    #[must_use]
+    pub fn concurrency_limit(&self, declared: &ConcurrencyPolicy) -> u32 {
+        u32::try_from(self.concurrency_limit.min(u64::from(declared.limit())))
+            .unwrap_or(declared.limit())
+    }
+
+    /// The longest a waiter of `declared` waits: the lower of the declaration and the namespace.
+    #[must_use]
+    pub fn queue_timeout(&self, declared: Duration) -> Duration {
+        declared.min(Duration::from_millis(self.queue_timeout_ms))
+    }
+
+    /// Whether the node-level declarations of `definition` fit the namespace, kind by kind (checked at publication;
+    /// the domain's own bound, [`MAX_NODE_DECLARATIONS`], is checked when the definition is built).
+    ///
+    /// # Errors
+    /// [`FlowControlLimit::NodeDeclarations`] for the first kind over the ceiling.
+    pub fn admits_declarations(
+        &self,
+        definition: &super::WorkflowDefinition,
+    ) -> Result<(), FlowControlLimit> {
+        let concurrency = definition
+            .nodes()
+            .filter(|n| n.flow_control().concurrency().is_some())
+            .count();
+        let rate = definition
+            .nodes()
+            .filter(|n| n.flow_control().rate_limit().is_some())
+            .count();
+        for (kind, count) in [
+            (GateKind::Concurrency, concurrency),
+            (GateKind::RateLimit, rate),
+        ] {
+            if u64::try_from(count).unwrap_or(u64::MAX) > self.node_declarations {
+                return Err(FlowControlLimit::NodeDeclarations {
+                    kind,
+                    max: self.node_declarations,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A declaration that names an explicit group: what the namespace's other definitions may share
+/// ([`super::WorkflowDefinition::explicit_group_declarations`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupDeclaration {
+    pub kind: GateKind,
+    /// `None` at the run level.
+    pub node: Option<NodeId>,
+    pub group: GroupName,
+    pub limit: u32,
+    /// The window of a rate limit; `None` for concurrency.
+    pub per: Option<RatePeriod>,
+}
+
+impl GroupDeclaration {
+    /// The level the declaration stands at: run and step declarations of one group never share a key row.
+    #[must_use]
+    pub const fn level(&self) -> GateLevel {
+        if self.node.is_some() {
+            GateLevel::Step
+        } else {
+            GateLevel::Run
+        }
+    }
+
+    /// Whether `other`, a declaration of the same kind, level and group in another definition, differs in what it
+    /// bounds: the limit, and for a rate limit also the window.
+    #[must_use]
+    pub fn mismatches(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.level() == other.level()
+            && self.group == other.group
+            && (self.limit != other.limit || self.per != other.per)
+    }
+}

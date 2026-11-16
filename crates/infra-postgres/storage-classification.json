@@ -9161,6 +9161,60 @@
       "owner_paths": [
         "crates/infra-postgres/migrations/20270130000100_flow_control_rate_limits.up.sql"
       ]
+    },
+    {
+      "table": "flow_control_group_declarations",
+      "column": "gate",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_group_declarations_gate_valid: CONCURRENCY or RATE_LIMIT."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000400_flow_control_group_declarations.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_group_declarations",
+      "column": "node",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_group_declarations_node_shape: empty or a node id of at most 64 characters; a name, never a value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000400_flow_control_group_declarations.up.sql"
+      ]
+    },
+    {
+      "table": "flow_control_group_declarations",
+      "column": "group_name",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_group_declarations_group_explicit: an explicit group name of at most 64 characters (^[a-z][a-z0-9.-]{0,63}$); never a key value."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000400_flow_control_group_declarations.up.sql"
+      ]
     }
   ],
   "external_content": [

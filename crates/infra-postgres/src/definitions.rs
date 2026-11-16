@@ -217,7 +217,126 @@ pub(crate) async fn verify_declared_operations(
     Ok(())
 }
 
+/// Writes the explicit flow-control groups a new version declares (feature 022, G1187), in its publication transaction.
+async fn insert_group_declarations(
+    tx: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    workflow: &sagat_domain::definition::Workflow,
+    version: WorkflowVersionId,
+    definition: &WorkflowDefinition,
+) -> Result<(), StoreError> {
+    for declaration in definition.explicit_group_declarations() {
+        sqlx::query(
+            "INSERT INTO flow_control_group_declarations \
+             (tenant_id, namespace_id, workflow_id, version_id, gate, node, group_name, declared_limit, period_ms) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(workflow.namespace_id().as_uuid())
+        .bind(workflow.id().as_uuid())
+        .bind(version.as_uuid())
+        .bind(gate_name(declaration.kind))
+        .bind(declaration.node.as_ref().map_or("", |node| node.as_str()))
+        .bind(declaration.group.as_str())
+        .bind(i32::try_from(declaration.limit).map_err(|_| corrupt("declared limit"))?)
+        .bind(
+            declaration
+                .per
+                .map(|per| i32::try_from(per.millis()))
+                .transpose()
+                .map_err(|_| corrupt("period"))?,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+    }
+    Ok(())
+}
+
+const fn gate_name(kind: sagat_domain::workflow::GateKind) -> &'static str {
+    match kind {
+        sagat_domain::workflow::GateKind::Concurrency => "CONCURRENCY",
+        sagat_domain::workflow::GateKind::RateLimit => "RATE_LIMIT",
+    }
+}
+
+/// The most declarations of other workflows one publication reads back: a namespace holds at most its workflows quota
+/// of active versions, each with at most 1 + 64 declarations of a kind; past this the warning is best effort.
+const MAX_GROUP_DECLARATIONS_READ: i64 = 1_000;
+
 impl DefinitionStore for PgDefinitionStore {
+    /// One read, outside the publication's transaction: these are warnings (a publication that races another one of the
+    /// namespace may miss it). The active version of every other workflow of the namespace that is not internal.
+    async fn flow_control_group_declarations(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        except: WorkflowId,
+        groups: &[sagat_domain::workflow::GroupName],
+    ) -> Result<Vec<(Slug, sagat_domain::workflow::GroupDeclaration)>, StoreError> {
+        let groups: Vec<&str> = groups.iter().map(|group| group.as_str()).collect();
+        let rows = sqlx::query(
+            "SELECT w.name, d.gate, d.node, d.group_name, d.declared_limit, d.period_ms \
+             FROM flow_control_group_declarations d \
+             JOIN workflows w ON w.tenant_id = d.tenant_id AND w.id = d.workflow_id \
+                             AND w.active_version_id = d.version_id \
+             WHERE d.tenant_id = $1 AND d.namespace_id = $2 AND d.workflow_id <> $3 AND NOT w.internal \
+               AND d.group_name = ANY($4) \
+             ORDER BY w.name, d.gate, d.node \
+             LIMIT $5",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(except.as_uuid())
+        .bind(&groups)
+        .bind(MAX_GROUP_DECLARATIONS_READ)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        rows.iter()
+            .map(|row| {
+                use sqlx::Row as _;
+                let name: String = row.get("name");
+                let gate: String = row.get("gate");
+                let node: String = row.get("node");
+                let group: String = row.get("group_name");
+                let limit: i32 = row.get("declared_limit");
+                let period: Option<i32> = row.get("period_ms");
+                let kind = match gate.as_str() {
+                    "CONCURRENCY" => sagat_domain::workflow::GateKind::Concurrency,
+                    "RATE_LIMIT" => sagat_domain::workflow::GateKind::RateLimit,
+                    _ => return Err(corrupt("flow-control gate")),
+                };
+                let per = period
+                    .map(|ms| {
+                        u64::try_from(ms)
+                            .ok()
+                            .and_then(sagat_domain::workflow::RatePeriod::from_millis)
+                            .ok_or_else(|| corrupt("flow-control period"))
+                    })
+                    .transpose()?;
+                Ok((
+                    Slug::parse(&name).map_err(|_| corrupt("workflow name"))?,
+                    sagat_domain::workflow::GroupDeclaration {
+                        kind,
+                        node: if node.is_empty() {
+                            None
+                        } else {
+                            Some(
+                                sagat_domain::workflow::NodeId::parse(&node)
+                                    .map_err(|_| corrupt("flow-control node"))?,
+                            )
+                        },
+                        group: sagat_domain::workflow::GroupName::parse(&group)
+                            .map_err(|_| corrupt("flow-control group"))?,
+                        limit: u32::try_from(limit).map_err(|_| corrupt("declared limit"))?,
+                        per,
+                    },
+                ))
+            })
+            .collect()
+    }
+
     /// One read of the registry, outside any transaction of the publication: an activation is an operator's command and
     /// a publication that raced it is refused or accepted as the read said; the admission of a run reads it again in its
     /// own transaction (FR-022-059).
@@ -577,6 +696,9 @@ impl DefinitionStore for PgDefinitionStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(store_error)?;
+                // The explicit flow-control groups it declares, for the namespace warnings of the next publications.
+                insert_group_declarations(&mut tx, tenant, &workflow, version.id(), definition)
+                    .await?;
                 // The compensation plan of every saga of the version, stored once with it.
                 for plan in plans {
                     insert_saga_plan(&mut tx, tenant, version.id(), plan).await?;

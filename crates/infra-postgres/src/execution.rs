@@ -7502,6 +7502,18 @@ impl DefinitionStore for PgRunStore {
         self.definitions.flow_control_activated(capability).await
     }
 
+    async fn flow_control_group_declarations(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        except: WorkflowId,
+        groups: &[sagat_domain::workflow::GroupName],
+    ) -> Result<Vec<(Slug, sagat_domain::workflow::GroupDeclaration)>, StoreError> {
+        self.definitions
+            .flow_control_group_declarations(tenant, namespace, except, groups)
+            .await
+    }
+
     async fn replay_publication(
         &self,
         tenant: TenantId,

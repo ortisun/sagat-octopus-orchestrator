@@ -4900,12 +4900,19 @@ export interface components {
          *     018) are batch_jobs 2/16 in a namespace and tenant_batch_jobs 8/64 in a tenant, counting
          *     the jobs that have not finished. Resets that wait for their source run to end
          *     (`CANCEL_SOURCE`, feature 018) are pending_resets 16/64 in a namespace.
+         *     Flow control (feature 022) counts, in a namespace, queued_runs 1000/10000 (runs waiting for a
+         *     concurrency permit or a rate-limit slot, also counted in active_runs), flow_control_live_keys
+         *     10000/100000, and flow_control_key_waiters 100/10000 (run waiters of one
+         *     key; its usage is the busiest key's). Its positive policies are concurrency_limit 10000/10000
+         *     (the most holders of one key, whatever a definition declares), flow_control_queue_timeout_ms
+         *     86400000/86400000 and flow_control_node_declarations 16/64 (node-level declarations of one kind
+         *     per definition, checked at publication).
          *     Zero disables new admission for count/rate/retention resources, never means unlimited.
          *     Lowering a limit does not erase retained content or rewrite existing expiry.
          */
         Quota: {
             /** @enum {string} */
-            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets";
+            resource: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets" | "queued_runs" | "flow_control_live_keys" | "flow_control_key_waiters" | "concurrency_limit" | "flow_control_queue_timeout_ms" | "flow_control_node_declarations";
             /** Format: int64 */
             limit: number;
             /**
@@ -6735,7 +6742,7 @@ export interface components {
         DeliveryId: string;
         ConnectorId: string;
         DeadLetterId: string;
-        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets";
+        QuotaResourceName: "active_runs" | "tenant_active_runs" | "workflows" | "worker_sessions" | "activity_concurrency" | "iteration_concurrency" | "secrets" | "event_endpoints" | "webhook_subscriptions" | "broker_subscriptions" | "event_connectors" | "scripts" | "script_jobs" | "tenant_content_bytes" | "tenant_log_bytes" | "api_requests_per_second" | "events_per_second" | "event_retention_seconds" | "script_retention_days" | "database_statement_bytes" | "database_parameters" | "database_parameter_bytes" | "database_rows" | "database_result_bytes" | "database_timeout_ms" | "database_connect_timeout_ms" | "database_pool_size" | "database_idle_timeout_ms" | "database_connections" | "database_concurrency" | "tenant_database_concurrency" | "secret_provider_operations" | "schedules" | "schedule_backfills" | "batch_jobs" | "tenant_batch_jobs" | "pending_resets" | "queued_runs" | "flow_control_live_keys" | "flow_control_key_waiters" | "concurrency_limit" | "flow_control_queue_timeout_ms" | "flow_control_node_declarations";
         ActivityName: string;
         WorkflowId: string;
         VersionNumber: number;

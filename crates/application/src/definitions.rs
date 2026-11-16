@@ -446,6 +446,12 @@ fn warning_problem(warning: &DefinitionWarning) -> Problem {
         DefinitionWarning::ConcurrencySelfChild { node } => {
             ("CONCURRENCY_SELF_CHILD", node.to_string())
         }
+        DefinitionWarning::ConcurrencyLimitMismatch { node, .. } => {
+            return mismatch_problem("CONCURRENCY_LIMIT_MISMATCH", node.as_ref(), warning);
+        }
+        DefinitionWarning::RateLimitMismatch { node, .. } => {
+            return mismatch_problem("RATE_LIMIT_MISMATCH", node.as_ref(), warning);
+        }
     };
     Problem {
         severity: Severity::Warning,
@@ -453,6 +459,26 @@ fn warning_problem(warning: &DefinitionWarning) -> Problem {
         message: warning.to_string(),
         node: Some(node),
         path: None,
+    }
+}
+
+/// A namespace warning of feature 022: at its node, or at the top-level field for a run-level declaration.
+fn mismatch_problem(
+    code: &'static str,
+    node: Option<&sagat_domain::workflow::NodeId>,
+    warning: &DefinitionWarning,
+) -> Problem {
+    let field = if code == "RATE_LIMIT_MISMATCH" {
+        "rateLimit"
+    } else {
+        "concurrency"
+    };
+    Problem {
+        severity: Severity::Warning,
+        code,
+        message: warning.to_string(),
+        node: node.map(ToString::to_string),
+        path: node.is_none().then(|| format!("/{field}")),
     }
 }
 
@@ -719,6 +745,20 @@ pub trait DefinitionStore: QuotaLookup + SecretAccessLookup + ScriptLookup + Sen
         async { Ok(false) }
     }
 
+    /// The explicit flow-control groups of `groups` that the active versions of the namespace's other workflows declare
+    /// (feature 022, `CONCURRENCY_LIMIT_MISMATCH` and `RATE_LIMIT_MISMATCH`), with the name of the workflow that
+    /// declares each. Bounded by the adapter. Required, with no default: a delegating store that forgot it would silence
+    /// the warnings without a sound.
+    fn flow_control_group_declarations(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        except: WorkflowId,
+        groups: &[sagat_domain::workflow::GroupName],
+    ) -> impl Future<
+        Output = Result<Vec<(Slug, sagat_domain::workflow::GroupDeclaration)>, StoreError>,
+    > + Send;
+
     /// Current connection/secret authority, for author feedback before publication. The publisher
     /// repeats the check in its transaction. Adapters without managed support fail closed.
     fn check_database_access(
@@ -927,6 +967,8 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
     /// fleet (`FLOW_CONTROL_ACTIVATION_PENDING`, FR-022-053). A definition without a gate costs no read.
     async fn refused_flow_control(
         &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
         definition: &WorkflowDefinition,
     ) -> Result<Option<IrError>, StoreError> {
         let required = crate::flow_control::required(definition);
@@ -959,7 +1001,74 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 }));
             }
         }
+        if !definition.gated_nodes().any(|_| true) {
+            return Ok(None);
+        }
+        // the namespace's ceiling of node-level declarations (T022-013, `flow_control_node_declarations`): reported as the
+        // domain reports its own bound, under the code of the kind
+        let ceilings = sagat_domain::workflow::FlowControlCeilings {
+            node_declarations: self
+                .store
+                .effective_limit(
+                    tenant,
+                    Some(namespace),
+                    sagat_domain::quota::QuotaResource::FlowControlNodeDeclarations,
+                )
+                .await?,
+            ..sagat_domain::workflow::FlowControlCeilings::DEFAULT
+        };
+        if let Err(sagat_domain::workflow::FlowControlLimit::NodeDeclarations { kind, max }) =
+            ceilings.admits_declarations(definition)
+        {
+            return Ok(Some(IrError::Invalid(
+                sagat_domain::workflow::flow_control::invalid(
+                    kind,
+                    None,
+                    sagat_domain::workflow::FlowControlRule::TooManyDeclarations {
+                        max: usize::try_from(max).unwrap_or(usize::MAX),
+                    },
+                ),
+            )));
+        }
         Ok(None)
+    }
+
+    /// The namespace warnings of feature 022 (G1187): each explicit group this definition declares that the active
+    /// version of another workflow of the namespace declares at the same level with a different limit (or window). One
+    /// warning per declaration of this definition, naming the first such workflow by name.
+    async fn flow_control_mismatches(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        workflow: WorkflowId,
+        definition: &WorkflowDefinition,
+    ) -> Result<Vec<DefinitionWarning>, StoreError> {
+        let own = definition.explicit_group_declarations();
+        if own.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut groups: Vec<_> = own.iter().map(|d| d.group.clone()).collect();
+        groups.sort();
+        groups.dedup();
+        let others = self
+            .store
+            .flow_control_group_declarations(tenant, namespace, workflow, &groups)
+            .await?;
+        Ok(own
+            .into_iter()
+            .filter_map(|mine| {
+                let (other, _) = others.iter().find(|(_, theirs)| mine.mismatches(theirs))?;
+                let (node, group, other) = (mine.node.clone(), mine.group.clone(), other.clone());
+                Some(match mine.kind {
+                    sagat_domain::workflow::GateKind::Concurrency => {
+                        DefinitionWarning::ConcurrencyLimitMismatch { node, group, other }
+                    }
+                    sagat_domain::workflow::GateKind::RateLimit => {
+                        DefinitionWarning::RateLimitMismatch { node, group, other }
+                    }
+                })
+            })
+            .collect())
     }
 
     /// Lets a definition hold an Apache Iceberg write (the deployment's `lake.enabled`). The store still decides
@@ -1261,9 +1370,26 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 },
             )));
         }
-        if let Some(refusal) = self.refused_flow_control(&parsed.definition).await? {
+        if let Some(refusal) = self
+            .refused_flow_control(
+                principal.tenant_id(),
+                record.workflow.namespace_id(),
+                &parsed.definition,
+            )
+            .await?
+        {
             return Err(AppError::InvalidDefinition(Box::new(refusal)));
         }
+        let mut parsed = parsed;
+        parsed.warnings.extend(
+            self.flow_control_mismatches(
+                principal.tenant_id(),
+                record.workflow.namespace_id(),
+                id,
+                &parsed.definition,
+            )
+            .await?,
+        );
         self.check_secrets(principal, &record, &parsed.definition, ctx)
             .await?;
         let database_check = self
@@ -1498,9 +1624,24 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
                 node: node.as_str().to_owned(),
             }));
         }
-        if let Some(refusal) = self.refused_flow_control(&parsed.definition).await? {
+        if let Some(refusal) = self
+            .refused_flow_control(
+                principal.tenant_id(),
+                record.workflow.namespace_id(),
+                &parsed.definition,
+            )
+            .await?
+        {
             problems.extend(problems_of(&refusal));
         }
+        let mismatches = self
+            .flow_control_mismatches(
+                principal.tenant_id(),
+                record.workflow.namespace_id(),
+                record.workflow.id(),
+                &parsed.definition,
+            )
+            .await?;
         match self
             .store
             .check_database_access(
@@ -1525,7 +1666,12 @@ impl<S: DefinitionStore, C: Clock, X: IrCodec> DefinitionService<S, C, X> {
             Err(error) => return Err(error.into()),
         }
         let valid = problems.is_empty();
-        let mut warnings: Vec<_> = parsed.warnings.iter().map(warning_problem).collect();
+        let mut warnings: Vec<_> = parsed
+            .warnings
+            .iter()
+            .chain(&mismatches)
+            .map(warning_problem)
+            .collect();
         warnings.extend(classification_warnings);
         Ok(Validation {
             problems,

@@ -24,8 +24,9 @@ mod collection_shape;
 pub mod flow_control;
 pub use collection_shape::{CollectionSuccessShapeError, LeafCollectionSuccessShape};
 pub use flow_control::{
-    ConcurrencyPolicy, FlowControl, FlowControlRule, FlowGroup, GateKind, GateLevel, GroupName,
-    RateLimitPolicy, RatePeriod, ResolvedGroup,
+    ConcurrencyPolicy, FlowControl, FlowControlCeilings, FlowControlLimit, FlowControlRule,
+    FlowGroup, GateKind, GateLevel, GroupDeclaration, GroupName, RateLimitPolicy, RatePeriod,
+    ResolvedGroup,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1117,6 +1118,28 @@ pub enum DefinitionWarning {
     /// permit of the same key its parent holds, and the parent for the child, until the queue timeout
     /// (feature 022, `CONCURRENCY_SELF_CHILD`).
     ConcurrencySelfChild { node: NodeId },
+    /// An explicit concurrency group this definition declares is declared by another published definition of the
+    /// namespace (`other`, its active version) with a different `limit`: each acquirer applies its own limit, and grants
+    /// skip ahead past a waiter its own limit refuses (feature 022, `CONCURRENCY_LIMIT_MISMATCH`, D1196). `node` is
+    /// `None` for a run-level declaration.
+    ConcurrencyLimitMismatch {
+        node: Option<NodeId>,
+        group: GroupName,
+        other: Slug,
+    },
+    /// The same for a rate-limit group with a different `limit` or `per` (`RATE_LIMIT_MISMATCH`, D022-009).
+    RateLimitMismatch {
+        node: Option<NodeId>,
+        group: GroupName,
+        other: Slug,
+    },
+}
+
+fn where_declared(node: Option<&NodeId>) -> String {
+    node.map_or_else(
+        || "the workflow".to_owned(),
+        |node| format!("node '{node}'"),
+    )
 }
 
 impl fmt::Display for DefinitionWarning {
@@ -1133,6 +1156,18 @@ impl fmt::Display for DefinitionWarning {
             Self::ConcurrencySelfChild { node } => write!(
                 f,
                 "node '{node}': starts this workflow, whose run-level concurrency key the child may share with its parent; the child can then wait for a permit its parent holds until the queue timeout"
+            ),
+            Self::ConcurrencyLimitMismatch { node, group, other } => write!(
+                f,
+                "{}: concurrency group '{}' is declared by workflow '{other}' of this namespace with a different limit; each run applies its own",
+                where_declared(node.as_ref()),
+                group.as_str()
+            ),
+            Self::RateLimitMismatch { node, group, other } => write!(
+                f,
+                "{}: rate-limit group '{}' is declared by workflow '{other}' of this namespace with a different limit or window; each run applies its own",
+                where_declared(node.as_ref()),
+                group.as_str()
             ),
         }
     }
@@ -1611,6 +1646,43 @@ impl WorkflowDefinition {
     pub fn declares_gates(&self) -> bool {
         self.run_flow_control.is_gated()
             || self.all_nodes().any(|node| node.flow_control().is_gated())
+    }
+
+    /// The declarations of this definition that name an explicit group, run level first, then its root nodes in id
+    /// order: what another definition of the namespace can share (feature 022, `CONCURRENCY_LIMIT_MISMATCH`,
+    /// `RATE_LIMIT_MISMATCH`). A derived group belongs to this definition alone and is not listed.
+    #[must_use]
+    pub fn explicit_group_declarations(&self) -> Vec<flow_control::GroupDeclaration> {
+        let mut out = Vec::new();
+        let mut add = |node: Option<&NodeId>, flow: &FlowControl| {
+            if let Some(policy) = flow.concurrency()
+                && let FlowGroup::Explicit(group) = policy.group()
+            {
+                out.push(flow_control::GroupDeclaration {
+                    kind: GateKind::Concurrency,
+                    node: node.cloned(),
+                    group: group.clone(),
+                    limit: policy.limit(),
+                    per: None,
+                });
+            }
+            if let Some(policy) = flow.rate_limit()
+                && let FlowGroup::Explicit(group) = policy.group()
+            {
+                out.push(flow_control::GroupDeclaration {
+                    kind: GateKind::RateLimit,
+                    node: node.cloned(),
+                    group: group.clone(),
+                    limit: policy.limit(),
+                    per: Some(policy.per()),
+                });
+            }
+        };
+        add(None, &self.run_flow_control);
+        for node in self.nodes() {
+            add(Some(node.id()), node.flow_control());
+        }
+        out
     }
 
     /// The rules of flow control that hold across the definition, checked when it is published (feature 022):

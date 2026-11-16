@@ -430,6 +430,37 @@ taken after `git grep D022-` on every `origin/*` branch and the sibling worktree
   go, and a later grant creates a new one; invariant 9 ("grows by exactly one per `rate_limit.granted`") is checked per
   life of the row (T022-079), not across a purge.
 
+### Decisions of the second build (2026-11-16)
+
+Taken while finishing the foundation's leftovers and starting the gate (T022-002, T022-013, T022-069, T022-095..). Numbers
+taken after `git grep D022-04` on every `origin/*` branch.
+
+- **D022-040 — The quota resources of the concurrency gate.** T022-013 adds six `QuotaResource` values, all counted or
+  set per namespace (OD-2026-11-16-2 for the OpenAPI enum): counts `queued_runs` (1,000, hard 10,000; a run waiting at
+  both gates counts once), `flow_control_live_keys` (10,000, hard 100,000; semaphores and windows) and
+  `flow_control_key_waiters` (100, hard 10,000; run waiters of one key, D022-024; like `activity_concurrency`, its
+  scalar usage is the busiest key's); positive policies `concurrency_limit` (10,000/10,000: the most holders of one
+  key whatever a definition declares), `flow_control_queue_timeout_ms` (one day/one day) and
+  `flow_control_node_declarations` (16, hard 64: node-level declarations of one kind per definition). The effective value
+  of a declaration is the lower of the declaration and the resolved namespace value, which already carries the
+  deployment's ceiling (`FlowControlCeilings`, FR-022-034). A count may be zero (it refuses every new waiter or key);
+  a policy may not (nothing could be declared under it). Until the sharded counters of T022-105 exist, the quota view
+  reads the counts from the waiter and key rows. The node-declarations policy is enforced at publication now, under the
+  code of its kind, as the domain's own bound of 64 is; the others are consumed by the gate (T022-022, T022-072). The
+  rate-limit rows of the ceilings table (per-window limits) stay with T022-077. The canonical OpenAPI baseline of
+  `contract_iceberg_writes` digests each operation without following `$ref`, so the enum change moves no pinned digest:
+  its bless diff was read (18 additions, all operations of 018 and 035 that the baseline deliberately leaves out; no
+  digest changed or removed) and not applied.
+- **D022-041 — Namespace warnings read a table of declared groups.** `CONCURRENCY_LIMIT_MISMATCH` and
+  `RATE_LIMIT_MISMATCH` (G1187) need the declarations of the other definitions of the namespace. Parsing every other
+  document at each publication is unbounded in bytes, so each published version writes its explicit groups to
+  `flow_control_group_declarations` in its publication transaction (immutable, like the version). Publication and
+  validation compare against the *active* version of every other non-internal workflow of the namespace, at the same
+  level (run or step) and gate, one warning per own declaration naming the first such workflow; a derived group is never
+  shared and never listed. The read is outside the publication's transaction and bounded (1,000 rows): a racing
+  publication may miss a warning, which never refuses. The store method has no default, so a delegating store cannot
+  silence it (the first run of the test found `PgRunStore` doing exactly that).
+
 ## Gaps
 
 | ID | Gap | Status |
@@ -460,7 +491,7 @@ taken after `git grep D022-` on every `origin/*` branch and the sibling worktree
 | G1184 | A grant's instant is read before its commit; work becomes visible up to one transaction later, so starts observed by commit time can be closer than `per` by that duration. Accepted; bounded by transaction duration, measured in T022-089. | Accepted |
 | G1185 | A key label is an online oracle: a caller who may see labels and start runs can confirm a guessed key value by the label it gets (like G1171). FR-022-057 limits labels to callers who may disclose the key's source. | Accepted; documented |
 | G1186 | Review findings not relayed to this author (architecture N2–N5, security three nits, correctness N2) are not addressed in this revision; the review records say so. | Open |
-| G1187 | The namespace-level warnings `CONCURRENCY_LIMIT_MISMATCH` and `RATE_LIMIT_MISMATCH` need the declarations of the other published definitions of the namespace; the codec cannot see them and no store keeps them yet. | Open; with T022-022/T022-072 (contract test lists them pending) |
+| G1187 | The namespace-level warnings `CONCURRENCY_LIMIT_MISMATCH` and `RATE_LIMIT_MISMATCH` need the declarations of the other published definitions of the namespace; the codec cannot see them and no store keeps them yet. *Closed 2026-11-16 (D022-041): the declarations table and the publication check; proved by `integration_flow_control_step_policies::publication`.* | Closed |
 | G1188 | `RunState::restore` (a run rebuilt from its projection) does not restore gate state. No stored run has any in this build (admission refuses gated definitions; the projection writer refuses a gated step's wait). | Open; T022-022, T022-096 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. | Open; T022-095 and its runbook |
@@ -552,6 +583,18 @@ recommendation accepted (OD-2026-11-13-16, "Aceitar todas", recorded on `develop
 accepted ADR-0056 and ADR-0088 ("Aceito tudo", OD-2026-11-13-17). After the reviews of 2026-11-13, ADR-0089
 (proposed) changes ADR-0056 decisions 3 and 5 and refines ADR-0088 decisions 3 and 7; it needs the owner
 (T022-107).
+
+## Owner decisions of 2026-11-16
+
+Recorded in `docs/owner-decisions.md` (section "2026-11-16 — Feature 022: the checklist deviations and the quota
+resources of the OpenAPI").
+
+- **OD-2026-11-16-1 — "Aceitar os 5".** The five unticked items of `checklists/requirements.md` are accepted as the
+  deliberate deviations the checklist documents (the gate of OD-2026-11-03-33). Each item cites the row; they stay
+  unticked because what they say is still true.
+- **OD-2026-11-16-2 — "Autorizar, ler o diff".** The quota-resource enum of the canonical OpenAPI gains the
+  concurrency resources of T022-013 (D022-040). The pinned operation baseline of `contract_iceberg_writes` is changed
+  once, after reading its diff; T022-013's evidence block records what was read and which digests moved.
 
 ## External semantics for rate limits (not re-read on 2026-11-13)
 

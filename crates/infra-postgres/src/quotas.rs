@@ -1275,7 +1275,50 @@ impl QuotaStore for PgRunStore {
             .bind(namespace)
             .fetch_one(&self.pool)
             .await,
+            // feature 022 (T022-013): a run waiting for both gates counts once; the waiter rows of both gates are the
+            // truth until the sharded counters of T022-105 exist
+            QuotaResource::QueuedRuns => sqlx::query_scalar(
+                "SELECT count(*) FROM ( \
+                     SELECT run_id FROM concurrency_waiters \
+                      WHERE tenant_id = $1 AND namespace_id = $2 AND permit_scope = 'RUN' \
+                     UNION \
+                     SELECT run_id FROM rate_limit_waiters \
+                      WHERE tenant_id = $1 AND namespace_id = $2 AND limit_scope = 'RUN' \
+                 ) waiting",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            QuotaResource::FlowControlLiveKeys => sqlx::query_scalar(
+                "SELECT (SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2) \
+                      + (SELECT count(*) FROM rate_limit_windows WHERE tenant_id = $1 AND namespace_id = $2)",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
+            // the limit applies to every key; its scalar usage is the busiest key's run waiters, as for
+            // `activity_concurrency`
+            QuotaResource::FlowControlKeyWaiters => sqlx::query_scalar(
+                "SELECT coalesce(max(waiting), 0)::bigint FROM ( \
+                     SELECT count(*) AS waiting FROM concurrency_waiters \
+                      WHERE tenant_id = $1 AND namespace_id = $2 AND permit_scope = 'RUN' \
+                      GROUP BY pool, group_name, key_digest \
+                     UNION ALL \
+                     SELECT count(*) AS waiting FROM rate_limit_waiters \
+                      WHERE tenant_id = $1 AND namespace_id = $2 AND limit_scope = 'RUN' \
+                      GROUP BY pool, group_name, key_digest \
+                 ) per_key",
+            )
+            .bind(tenant.as_uuid())
+            .bind(namespace)
+            .fetch_one(&self.pool)
+            .await,
             QuotaResource::ApiRequestsPerSecond
+            | QuotaResource::ConcurrencyLimit
+            | QuotaResource::FlowControlQueueTimeoutMs
+            | QuotaResource::FlowControlNodeDeclarations
             | QuotaResource::EventsPerSecond
             | QuotaResource::EventRetentionSeconds
             | QuotaResource::ScriptRetentionDays

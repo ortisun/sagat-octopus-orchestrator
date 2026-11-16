@@ -572,3 +572,192 @@ async fn a_key_emptied_and_filled_in_one_transaction_keeps_its_row() {
         "a waiter is never changed"
     );
 }
+
+const QUOTA_RESOURCES: i64 = 20_270_130_000_300;
+const DECLARATIONS: i64 = 20_270_130_000_400;
+
+/// T022-013 and T022-069 (D022-040, D022-041): rolling back the quota resources refuses while an administrator's limit
+/// or an operator's ceiling of one exists, and rolling back the group declarations refuses while a published version
+/// declares one; drained, both roll back and go forward again.
+#[tokio::test]
+async fn the_quota_and_declaration_migrations_roll_back_only_once_their_rows_are_drained() {
+    let w = world().await;
+    let pool = &w.db.pool;
+    let (tenant, namespace, run) = a_run(&w).await;
+    sqlx::query(
+        "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+         VALUES ($1, $2, 'queued_runs', 5, 'admin')",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .execute(pool)
+    .await
+    .expect("a limit of a new resource");
+    let (workflow, version): (Uuid, Uuid) =
+        sqlx::query_as("SELECT r.workflow_id, r.workflow_version_id FROM runs r WHERE r.id = $1")
+            .bind(run)
+            .fetch_one(pool)
+            .await
+            .expect("the run's version");
+    sqlx::query(
+        "INSERT INTO flow_control_group_declarations \
+         (tenant_id, namespace_id, workflow_id, version_id, gate, node, group_name, declared_limit, period_ms) \
+         VALUES ($1, $2, $3, $4, 'RATE_LIMIT', 'a', 'provider-api', 10, 1000)",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .bind(workflow)
+    .bind(version)
+    .execute(pool)
+    .await
+    .expect("a declaration");
+    for statement in [
+        "UPDATE flow_control_group_declarations SET declared_limit = 11",
+        "DELETE FROM flow_control_group_declarations",
+    ] {
+        let error = sqlx::query(statement)
+            .execute(pool)
+            .await
+            .expect_err(statement);
+        assert_eq!(
+            db_error(error).0,
+            "23001",
+            "{statement}: a declaration never changes"
+        );
+    }
+
+    let refused = undo(pool, QUOTA_RESOURCES).await;
+    assert!(
+        format!("{refused:?}").contains("published versions declare flow-control groups"),
+        "{refused:?}"
+    );
+    assert!(exists(pool, "flow_control_group_declarations").await);
+    sqlx::query("ALTER TABLE flow_control_group_declarations DISABLE TRIGGER flow_control_group_declarations_immutable")
+        .execute(pool)
+        .await
+        .expect("the operator drains it on purpose");
+    sqlx::query("DELETE FROM flow_control_group_declarations")
+        .execute(pool)
+        .await
+        .expect("drain");
+    let refused = undo(pool, CONCURRENCY + 200).await;
+    assert!(
+        format!("{refused:?}")
+            .contains("limits or ceilings of flow-control resources are retained"),
+        "{refused:?}"
+    );
+    assert!(!exists(pool, "flow_control_group_declarations").await);
+    sqlx::query("DELETE FROM quota_limits WHERE resource = 'queued_runs'")
+        .execute(pool)
+        .await
+        .expect("drain");
+    undo(pool, CONCURRENCY + 200)
+        .await
+        .expect("rolled back past both");
+    let old_check = sqlx::query(
+        "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+         VALUES ($1, $2, 'flow_control_live_keys', 5, 'admin')",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .execute(pool)
+    .await;
+    assert!(old_check.is_err(), "the list is the old one again");
+    MIGRATOR.run(pool).await.expect("forward again");
+    assert!(exists(pool, "flow_control_group_declarations").await);
+    let _ = DECLARATIONS;
+}
+
+/// T022-013: the usage the quota view reads for the three counts of the gate. A run waiting at both gates counts once in
+/// `queued_runs` and once in each key's waiters; each key row is a live key.
+#[tokio::test]
+async fn the_counts_of_the_gate_read_the_waiter_and_key_rows() {
+    let w = world().await;
+    let pool = &w.db.pool;
+    let first = a_run(&w).await;
+    let second = a_run(&w).await;
+    assert_eq!(activate_key(pool, 1).await.0, "ACTIVATED");
+    let (tenant, namespace, _) = first;
+    sqlx::query(
+        "INSERT INTO concurrency_semaphores (tenant_id, namespace_id, pool, permit_scope, group_name, key_digest, \
+         key_version, key_shard, updated_at) VALUES ($1, $2, 'ORDINARY', 'RUN', 'accounts', $3, 1, 7, clock_timestamp())",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .bind(DIGEST.as_slice())
+    .execute(pool)
+    .await
+    .expect("a semaphore");
+    sqlx::query(
+        "INSERT INTO rate_limit_windows (tenant_id, namespace_id, pool, limit_scope, group_name, key_digest, \
+         key_version, key_shard, updated_at) VALUES ($1, $2, 'ORDINARY', 'RUN', 'provider-api', $3, 1, 3, clock_timestamp())",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .bind(DIGEST.as_slice())
+    .execute(pool)
+    .await
+    .expect("a window");
+    for (_, _, run) in [first, second] {
+        sqlx::query(
+            "INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
+             group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
+             VALUES ($1, $2, $3, '', 'RUN', 0, 'ORDINARY', 'accounts', $4, 1, clock_timestamp(), \
+                     clock_timestamp() + interval '1 minute', 1)",
+        )
+        .bind(tenant)
+        .bind(namespace)
+        .bind(run)
+        .bind(DIGEST.as_slice())
+        .execute(pool)
+        .await
+        .expect("a concurrency waiter");
+    }
+    // the first run waits at both gates
+    sqlx::query(
+        "INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, group_name, \
+         key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard) \
+         VALUES ($1, $2, $3, '', 0, 'ORDINARY', 'RUN', 'provider-api', $4, 10, 1000, clock_timestamp(), \
+                 clock_timestamp() + interval '1 minute', 1)",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .bind(first.2)
+    .bind(DIGEST.as_slice())
+    .execute(pool)
+    .await
+    .expect("a rate-limit waiter");
+
+    let used = |resource| {
+        let w = &w;
+        async move {
+            w.quotas
+                .list(
+                    &w.admin,
+                    Some(w.namespace.id()),
+                    &crate::support::engine::ctx(),
+                )
+                .await
+                .expect("the quota view")
+                .into_iter()
+                .find(|view| view.resource == resource)
+                .and_then(|view| view.used)
+        }
+    };
+    use sagat_domain::quota::QuotaResource;
+    assert_eq!(
+        used(QuotaResource::QueuedRuns).await,
+        Some(2),
+        "two runs wait, one of them at both gates"
+    );
+    assert_eq!(
+        used(QuotaResource::FlowControlLiveKeys).await,
+        Some(2),
+        "one semaphore, one window"
+    );
+    assert_eq!(
+        used(QuotaResource::FlowControlKeyWaiters).await,
+        Some(2),
+        "the busiest key holds two run waiters"
+    );
+}
