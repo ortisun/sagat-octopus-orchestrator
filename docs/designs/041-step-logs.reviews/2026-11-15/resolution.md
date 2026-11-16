@@ -521,3 +521,39 @@ recommendation.
 | F15 | stage 5 Z3-4 (stage 8: Nit), stage 7 T3-1, T3-5, T3-6 (stage 8: Nits) | Accept the statement-level detail of the Technical Plan and three wording Majors? | Yes for Z3-4 (stage 8 rejects it as a Major); no for the wording |
 
 The repository reviewers' and stages' Nits are listed in the reports and are not blocking.
+
+## 12. The owner's approval path (2026-11-16) and what changed
+
+The owner answered section 11 on 2026-11-16: OD-2026-11-16-7 ("Corrigir e aceitar o resto"), OD-2026-11-16-8 (Q1,
+"Sim, sempre"), OD-2026-11-16-9 (Q2, "Configuráveis", against the recommendation) and OD-2026-11-16-10 (Q3, "Retirar").
+What changed, in the design, contracts.md, data-model.md, research.md (D041-077 to D041-086, O041-028 to O041-035) and
+the ADRs' Notes of 2026-11-16:
+
+| Item | Change |
+| --- | --- |
+| Blocker (CD3-B1, IR3-2) | T041-25 changes the `observability` job's promtool step to run every `*_test.yaml` (it ran one named file), lists `ci.yml`, and its done condition names `contract_observability_operations` |
+| F1 (one tenant fills the Logs class) | No call waits for a ticket; a final batch is answered `RETRY_LATER` at once (section 1, D041-083); a two-tenant admission test in T041-7 |
+| F2 (filtered read ends early) | `complete` needs the scan to reach the run's last row below the horizon (FR-041-010, section 5, contracts.md §2 and §3, D041-084); a 12,000-line test in T041-11 and T041-12 |
+| F3 | T041-12's held-transaction tests are `horizon_*`, on `isolated_server`, on 16 and 18 |
+| F4 | A stream-scoped index; the step section reads with `stream`; the Studio reads on after an empty page that is not complete (section 5, section 8) |
+| F5 | A script item's state comes from the execution (FR-041-011, D041-085) |
+| F6 | An SDK drops a doomed record before formatting or redacting it (section 6, D041-086) |
+| F7 | Risk rows for ingest overload and for quota sizing; runbook sizing; the spike's saturated workload (e) and an explicit quota in T041-31 and T041-9 |
+| F8 | Section 2 states 14 statements per batch |
+| F9 | The Blocker above |
+| F10 | T041-7 lists and updates the three tests that assert the server's minor |
+| F11 | Metric owners and `step_log_purge_backlog` (data-model.md §7); the micro-benchmark's harness and the matcher written in the SDK (section 6); T041-31's rules (the p99 of S, the measured rate, attribution to O041-021 or O041-026); the lease-p99 measure moved from T041-7 to T041-9; the forced database error by a test-installed trigger (T041-8); T041-9 uses the spike's ticket model; the pending-language rule matched against the six existing unknown-op refusals; `ScriptLogPanel` for a marker row |
+| F12 | T041-32 lists its regexes and the SDK files |
+| F13 | The `rust` job and its condition; both digest keys; the migration tests' files; `eventually_within` with a 30 s bound and held transactions released within 10 s |
+| F14 | Owner-answer tasks land as documentation pull requests; a hold after T3 (six hooks); T041-6 asserts stored rows by SQL; T041-10 tests at the store and T041-11 the reader; T041-28 withdrawn; T041-3's done condition; the one `Options` field; the release-note line in T041-29; the canary in route bodies |
+| F15 | T3-1, T3-5, T3-6 rewritten; Z3-4 accepted as is |
+| Q1 (OD-2026-11-16-8) | The PII grant on every read (FR-041-013, FR-041-021, section 5, contracts.md); the classified-namespace record dropped |
+| Q2 (OD-2026-11-16-9) | The attempt ceilings and the capture switch stay namespace resources |
+| Q3 (OD-2026-11-16-10) | No run ceiling, no `run_log_usage`; G041-009 moot; O041-020 and O041-027 answered |
+| Q4 | The marker in its own transaction (section 7, data-model.md §9); ADR-0027 Note |
+| Q5 | T7 reads without a lock; the lock order L1 to L4; the `lock_secrets` barrier test replaced; ADR-0084 Note |
+| Q6 | O041-025 restated; `report_fence_allows` (section 2) |
+| Q7 | G041-017 accepted, a condition of principle V and a Complexity Tracking row |
+| Q8 | ADR-0085 Note (the grant everywhere, no record, no read switch, `mustNotStore`, the `Debug` test) |
+
+The three repository reviewers' re-read of these changes is recorded in `../2026-11-16/*-reread.md`.

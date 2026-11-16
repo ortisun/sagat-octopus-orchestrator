@@ -209,6 +209,19 @@ T041-6), the session and authority cases (rule 5, T041-6), the end test with a h
 horizon on PostgreSQL 16 and 18 (rule 9, T041-12), and a contract test that `/runs/{runId}/stream` emits only `graph`,
 `reconnect` and `end` (rule 10, T041-12).
 
+Note (2026-11-16, OD-2026-11-16-7 and OD-2026-11-16-10): on the approval path the owner chose ("Corrigir e aceitar o
+resto"), an ingest reads the binding's patterns and the caller's membership without a lock: it takes no binding lock, no
+namespace secrets lock and no membership lock, so it never delays a report, a lease, a heartbeat, a secret change or a
+managed-database admission, and a batch that commits just after its worker is revoked is still stored. In decision 11,
+an ingest therefore takes the stream row, then at commit the fences and the tenant usage row. There is no run ceiling
+("Retirar", OD-2026-11-16-10): the attempt ceilings and the tenant's step-log quota bound what a run stores, and no run
+usage row exists, so decision 7's ceilings are the attempt's and the tenant's. The script-output marker is written in a
+transaction of its own right after the script report commits, and a crash between the two loses that one marker, as
+decision 7's lossy record allows. In "Enforced by", the barrier tests are those of design 041's SC-041-001 (one ingest
+held after its quota flush, K − 1 queued behind it), and decision 11 is checked by the lock-order test of design 041
+(T041-6, T041-10, T041-13, T041-30). The stop rule of decision 5 and the place of the policy fences in decision 11 are
+still the owner's question O041-025.
+
 ## Evidence
 
 None measured yet; nothing is built. The reasoning rests on facts read in the code at `2e90dbb8`: the budgets in `work_budget.rs`;

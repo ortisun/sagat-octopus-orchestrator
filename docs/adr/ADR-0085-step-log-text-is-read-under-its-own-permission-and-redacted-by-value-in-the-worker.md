@@ -175,6 +175,20 @@ that "purged" named both the delete and the purge. The revision replaces these d
 that a sensitive field of each type is hidden (rule 3, T041-6); the trigger tests, an old binary's insert included (rule 6,
 T041-28); the withheld `logTruncated` in the viewer test (rule 7, T041-29).
 
+Note (2026-11-16, OD-2026-11-16-7 and OD-2026-11-16-8): reading step logs needs `run:logs:read` and the namespace's PII
+reveal grant in every namespace ("Sim, sempre", OD-2026-11-16-8, which changes OD-2026-11-13-18): an unannotated payload
+field is `pii` under ADR-0033 and feature 016, and a log line can hold payload values. So revised decision 6 reads "in
+every namespace", and no classified-namespace record is kept: neither the trigger and table of the 2026-11-15 revision
+nor a backfill nor the partial index that briefly replaced them. The Consequences' sentence on recording and
+backfilling the classified fact no longer applies. Rollback has one switch, `SAGAT_STEP_LOGS_ENABLED`; the read switch
+`SAGAT_STEP_LOGS_READ_ENABLED` was removed (design 041, D041-069). In "Enforced by", the SDK scenarios search with
+`mustNotStore` (stored lines, route bodies, captured output), not `mustNotLeak`; a unit test beside each generated
+module's `Debug` impl checks that a printed `AppendStepLogsRequest` holds no message text (rule 5); and the tests of the
+classified-namespace trigger are replaced by tests that a reader without the grant is refused in a namespace whose
+schemas carry no annotation (design 041, T041-11). The owner accepted G041-017 in writing (OD-2026-11-16-7): because the
+secret set lives for the process, a caller who can steer logged text can learn that a guessed value is a secret the
+process resolved.
+
 ## Evidence
 
 None measured yet; nothing is built. Read in the code at `2e90dbb8`: `crates/domain/src/scripts.rs` (`redact`,

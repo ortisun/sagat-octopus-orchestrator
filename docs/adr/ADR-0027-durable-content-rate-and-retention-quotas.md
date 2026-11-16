@@ -155,6 +155,12 @@ branch, the control flag, the two functions, the typed refusal, the manifest and
 check), T041-13 (the step-log fence and lock in `take_log_prefix` for the script-output marker). Enforced by the manifest test with the new kind and
 class, a finalizer test of the new branch, and the runtime-role bypass tests of this ADR extended to the new column.
 
+Note (2026-11-16, OD-2026-11-16-7): design 041 writes the script-output marker in a transaction of its own, right after
+the script report commits, through the unlocked `sagat_quota_step_log_allowance` and the finalizer like any step-log
+row; a marker refused at the limit is skipped and counted. So `sagat_quota_lock_step_log_usage` of item 3 is not built,
+`take_log_prefix` keeps its present form, and item 1's "the script-output marker, which is skipped when it does not fit"
+holds without a lock.
+
 ## Implementation slices and ownership contract
 
 1. **Shared policy and manifest:** domain resource names/units/ranges; application ports and typed rate result; migration, durable usage/rate state, exhaustive classification manifest and backfill tests; existing quota REST/CLI/OpenAPI views. Own `domain/quota.rs`, `application/quotas.rs`, `infra-postgres/quotas.rs`, new `infra-postgres/content_usage.rs` and migration. Preserve T010-040 activity lock hierarchy and broker resource arms.

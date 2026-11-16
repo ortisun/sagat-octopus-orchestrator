@@ -93,7 +93,9 @@ enum StepLogVerdict {
 enum StepLogStopReason {
   STEP_LOG_STOP_REASON_UNSPECIFIED = 0;
   STEP_LOG_STOP_REASON_FINAL_RECORDED = 1;    // STOP_ATTEMPT: the final batch is already stored (a resend of it gets this)
-  STEP_LOG_STOP_REASON_LEASE = 2;             // STOP_ATTEMPT: the lease is not this attempt's, has expired, or the run is ending
+  STEP_LOG_STOP_REASON_LEASE = 2;             // STOP_ATTEMPT: the lease is not this attempt's or has expired, or a report of
+                                              // the attempt would be refused (run finished, step cancelled, run
+                                              // stopping and the node not a compensation)
   STEP_LOG_STOP_REASON_AUTHORITY = 3;         // STOP_ATTEMPT: binding or membership no longer covers the step
   STEP_LOG_STOP_REASON_REMOVED = 4;           // STOP_ATTEMPT: the attempt's log was deleted or purged
   STEP_LOG_STOP_REASON_CAPTURE_OFF = 5;       // STOP_CAPTURE: the deployment switch or the namespace turned capture off
@@ -131,7 +133,8 @@ it (T041-11 for the first two, T041-12, T041-30). Path parameter `RunId` as ever
 
 ### `GET /runs/{runId}/logs` (`listRunLogs`, tag Runs)
 
-Needs `run:read` and `run:logs:read`, and in a classified namespace the PII reveal grant (design FR-041-013).
+Needs `run:read`, `run:logs:read` and the namespace's PII reveal grant, in every namespace (design FR-041-013,
+OD-2026-11-16-8).
 Parameters: `Cursor`, `Limit`, and
 
 | Name | Schema | Meaning |
@@ -153,7 +156,7 @@ StepLogPage:
     items: {type: array, items: {$ref: '#/components/schemas/StepLogLine'}}
     nextCursor: {type: string, description: 'Always present: the position after the last row scanned (at most 5,000 a request), whether or not it matched the filters, to poll from.'}
     heldBack: {type: boolean, description: 'Lines of this run are stored but not yet returned, because an older transaction of the database is still open.'}
-    complete: {type: boolean, description: 'The run is finished and every line that can still be stored for it has been returned up to this cursor.'}
+    complete: {type: boolean, description: 'The run is finished, every line that can still be stored for it has been, and the scan reached the run''s last row below the horizon, whether or not the filters matched it. An empty page with complete false is read again from nextCursor.'}
 StepLogLine:
   type: object
   required: [stream, node, attempt, instancePath, sequence, storedAt, kind, level, truncated]
@@ -194,7 +197,7 @@ StepLogStream:
     bytes: {type: integer, description: 'worker only: text bytes stored (UTF-8 octets of message, exception and fields; the tenant quota charges 128 more per line)'}
     droppedByWorker: {type: integer, description: 'worker only: sequences the worker numbered and never stored'}
     droppedByServer: {type: integer}
-    ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, run_records, run_bytes, tenant_quota, null]}
+    ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, tenant_quota, null]}
     firstAt: {type: [string, 'null'], format: date-time}
     lastAt: {type: [string, 'null'], format: date-time}
     expiresAt: {type: [string, 'null'], format: date-time, description: 'worker: the last recorded batch plus the retention the stream took when it was created; script: the execution expiry.'}
@@ -204,8 +207,9 @@ StepLogStream:
 
 Items of `source = worker` are the workers' attempt logs; the marker streams of script attempts are not listed there.
 `ended` means the final batch was stored; `ended_without_final` means the attempt's lease is gone and no final batch was
-stored (design FR-041-017); `open` otherwise. For `source = script` the item is a row of `script_executions` of the run
-(`state` `deleted`, `expired` or `ended`), read under the same rule as FR-041-022.
+stored (design FR-041-017); `open` otherwise. For `source = script` the item is a row of `script_executions` of the run, read under the same rule as FR-041-022;
+its `state` comes from the execution: `expired` once the execution's expiry has passed, `ended` before, whether or not
+its marker was written or deleted.
 
 ### `GET /runs/{runId}/logs/stream` (`streamRunLogs`, tag Runs)
 
@@ -241,7 +245,7 @@ sends nothing new.
 
 ### `Quota.resource` and `QuotaResourceName`
 
-Gain `tenant_step_log_bytes` (ADR-0027 Amendment of 2026-11-15), `step_log_attempt_records`, `step_log_attempt_bytes`, `step_log_run_records`, `step_log_run_bytes`,
+Gain `tenant_step_log_bytes` (ADR-0027 Amendment of 2026-11-15), `step_log_attempt_records`, `step_log_attempt_bytes` and
 `step_log_retention_days` (definitions in `data-model.md`). The `Quota` description's rule that lowering a limit does
 not erase retained content holds for them as for every resource: a stream keeps the retention it was created with.
 The `used` description gains one absence: `tenant_step_log_bytes` has no `used` for a caller without `run:logs:read`
@@ -252,7 +256,7 @@ The `used` description gains one absence: `tenant_step_log_bytes` has no `used` 
 | Refusal | Status | `code` | `details.reason` |
 |---|---|---|---|
 | No `run:read` or no `run:logs:read` (or no `run:logs:delete` on delete) | 403 | `FORBIDDEN` | none, as every missing permission (`error.rs:590`) |
-| Classified namespace, no PII reveal grant | 403 | `FORBIDDEN` | `PII_REVEAL_NOT_GRANTED` (exists: `routes/payload_disclosure.rs:162`) |
+| No PII reveal grant for the run's namespace (any namespace) | 403 | `FORBIDDEN` | `PII_REVEAL_NOT_GRANTED` (exists: `routes/payload_disclosure.rs:162`) |
 | Run of another tenant, or unknown | 404 | `NOT_FOUND` | none; audited `access.denied.cross_tenant` when it exists elsewhere |
 | `stream` not of this run | 404 | `NOT_FOUND` | none |
 | Cursor or `after` not valid, altered, or of another run | 400 | `BAD_REQUEST` | none, as every cursor (`routes/primitives.rs:193-205`) |
@@ -268,8 +272,8 @@ The tail and the polling fallback end by the same rule, carried in the cursor so
 it. The cursor is `base64url` of a JSON object `{"v":1,"run":"<uuid>","xid":"<decimal>","seq":"<decimal>","end":"<decimal>"|null}`; a cursor whose `run` is not the path's run is refused (400). It holds no row identity. When a
 read sees the run finished and the cursor has no `end`, the read ends its transaction and takes `end = pg_current_xact_id()` in a new, short transaction, so that the id is assigned after the read saw the run finished, and
 puts it in the cursor it returns. A read whose cursor has `end` answers `complete: true` (the tail sends `event: end`)
-when the run is finished, `pg_snapshot_xmin(pg_current_snapshot()) > end` in the reading statement, and the page from the
-cursor is empty; an `end` in a cursor of a run that is not finished is ignored. This is D1958 of feature 018
+when the run is finished, `pg_snapshot_xmin(pg_current_snapshot()) > end` in the reading statement, and the scan from the
+cursor reached the run's last row below the horizon (fewer than 5,000 rows scanned), whether or not any matched; an `end` in a cursor of a run that is not finished is ignored. This is D1958 of feature 018
 (`crates/infra-postgres/src/batch.rs:453-459, 654-656`), applied to the run's terminal transition (design section 5).
 
 The Studio's `followLogs()` falls back to polling `listRunLogs` from `nextCursor` and stops when `complete` is true.

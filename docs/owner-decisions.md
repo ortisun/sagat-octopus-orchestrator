@@ -4,6 +4,21 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-16 — Design 041 (step logs): the approval path and the answers to Q1 to Q8
+
+After the third approval run of design 041 the assistant listed every open finding with a question to the owner
+(`docs/designs/041-step-logs.reviews/2026-11-15/resolution.md` section 11; O041-028 to O041-035 in
+`specs/041-step-logs/research.md`). The owner chose an approval path and answered Q1 to Q3; Q2 goes against the
+recommendation (OD-2026-11-16-9). The acceptance of each remaining finding is one row from OD-2026-11-16-200 upward, in
+the range reserved for design 041.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-16-7 | "Corrigir e aceitar o resto" ("fix and accept the rest"): fix the Blocker (T041-25's claim about how CI runs the alert rule tests) and the defects F1 to F15 of resolution.md section 11, including the final batch's wait for a ticket and the scan bound that ended a filtered read early; Q4 to Q8 accepted as recommended (the script marker in its own transaction after the report commits; the ingest reads the binding and the membership without the namespace secrets lock; O041-025 restated to the code's stop rule; G041-017 accepted in writing; a Note on ADR-0085); then one short re-read of the fixes by the architecture, security and correctness reviewers, with no full review round; every other remaining finding of the third run accepted as recommended, one row each | owner | Decided | docs/designs/041-step-logs.md T041-6, T041-7, T041-13, docs/adr/ADR-0084-*.md, docs/adr/ADR-0085-*.md, docs/adr/ADR-0027-*.md (Note of 2026-11-16) |
+| OD-2026-11-16-8 | "Sim, sempre" ("yes, always"): every step-log read needs `run:logs:read` and the namespace's PII reveal grant, in every namespace, and so does the `log` of a run's script execution; this changes OD-2026-11-13-18, which required the grant only in a namespace with classified schemas | owner | Decided | docs/designs/041-step-logs.md T041-11, T041-12, T041-13, T041-22, T041-29, docs/adr/ADR-0085-*.md |
+| OD-2026-11-16-9 | "Configuráveis" ("configurable"), against the recommendation of constants: the attempt ceilings stay configurable per namespace, and the per-namespace capture switch is kept | owner | Decided | docs/designs/041-step-logs.md T041-4 |
+| OD-2026-11-16-10 | "Retirar" ("remove"): the run ceiling is dropped entirely; the attempt ceilings and the step-log quota bound the total; this answers O041-020 and O041-027 | owner | Decided | docs/designs/041-step-logs.md T041-4, T041-5, T041-6, T041-10 |
+
 ## 2026-11-15 — Design 041 (step logs): the answers to O041-014 to O041-023
 
 After the reviews of 2026-11-15 the assistant put ten questions of design 041 to the owner, each with a recommendation
@@ -47,7 +62,7 @@ built and the release-candidate run is repeated on the commit that has them (OD-
 | OD-2026-11-13-15 | "Aceitar todas" (design 042, stream operators): O042-001 to O042-009 as the design recommends; release 0.3.0 carries only the collection operators (S0 and S1); trigger operators are a later release | owner | Decided; not built | docs/designs/042-stream-operators.md T042-1, T042-5, T042-6, T042-7, T042-18, T042-20, T042-39, T042-43 |
 | OD-2026-11-13-16 | "Aceitar todas" (feature 022, the 0.3.0 slice): O1163 to O1168 as recommended (a strict sliding window without burst; FIFO per key with skip-ahead; a full buffer refuses a synchronous start and keeps event and cron starts pending; a retry takes a new slot; no rate limit on collection body nodes in 0.3.0; a reset takes a slot or is refused) | owner | Decided; not built | specs/022-flow-control-step-policies/research.md O1163..O1168, T022-066 |
 | OD-2026-11-13-17 | "Aceito tudo": ADR-0056, ADR-0084, ADR-0085, ADR-0086, ADR-0087 and ADR-0088 are accepted | owner | Decided | docs/adr/ADR-0056-*.md, docs/adr/ADR-0084-*.md to docs/adr/ADR-0088-*.md, T042-4, T022-066, T041-2 |
-| OD-2026-11-13-18 | After the security review of design 041: "Exigir a concessão PII", reading step logs in a namespace with classified schemas also requires the namespace PII reveal grant; and "Fechar ao viewer", the `log` field of a script execution requires `run:logs:read`, so viewers no longer read it | owner | Decided | docs/designs/041-step-logs.md T041-5, T041-11, T041-12, T041-22, T041-25, T041-28, T041-29 |
+| OD-2026-11-13-18 | After the security review of design 041: "Exigir a concessão PII", reading step logs in a namespace with classified schemas also requires the namespace PII reveal grant (changed on 2026-11-16 by OD-2026-11-16-8: the grant is required in every namespace); and "Fechar ao viewer", the `log` field of a script execution requires `run:logs:read`, so viewers no longer read it | owner | Decided | docs/designs/041-step-logs.md T041-5, T041-11, T041-12, T041-22, T041-25, T041-28, T041-29 |
 | OD-2026-11-13-19 | After the reviews of designs 022 and 042: "Aceitar o ADR-0089" (a gated step waits outside READY and one fenced grant routine, driven by key, serves every waiter whatever its gates; it supersedes ADR-0056 decisions 3 and 5) and "Confirmar a revisão" (the revised ADR-0087: the switch at publication, the chain bounded at 1,000 elements, 256 KiB per element and 4 MiB per stage, a failed chain fails the run) | owner | Decided | docs/adr/ADR-0089-*.md, docs/adr/ADR-0087-*.md, T022-107, T042-4 |
 
 ## 2026-11-13 — Feature 018: the open questions, the audit of business-id conflicts and ADR-0081 to ADR-0083

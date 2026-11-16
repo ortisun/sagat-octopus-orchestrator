@@ -14,7 +14,7 @@ request of the task that needs it and named in its description.
 | `kind` | `line`, `ceiling_marker`, `script_marker` | none: markers are the server's |
 | `marker_reason` | `attempt_records`, `attempt_bytes` (for `ceiling_marker`) | none |
 | `source` (streams) | `worker`, `script` | none |
-| `ceiling_reason` | `attempt_records`, `attempt_bytes`, `run_records`, `run_bytes`, `tenant_quota` | none |
+| `ceiling_reason` | `attempt_records`, `attempt_bytes`, `tenant_quota` | none |
 
 The `DROPPED` record kind of the 2026-11-13 revision is gone (D041-028). The `script` source is back for the script
 marker of OD-2026-11-15-9 (D041-057): one stream per inserted script execution, keyed on it (D041-060): its
@@ -24,7 +24,7 @@ when `removed_at` is set otherwise, `ended` when `final_at` is set, `ended_witho
 the `steps` row of its `step_id` no longer holds this attempt's lease (design section 5), `open` otherwise; a script
 stream is `deleted`, `expired` or `ended`.
 
-## 2. Tables and the classified-namespace index (one migration, T041-5)
+## 2. Tables (one migration, T041-5)
 
 Timestamp: later than every file in `crates/infra-postgres/migrations/` and on the other open branches when T041-5 is
 written (today the last is `20270116000000_batch_selection_failures`).
@@ -76,7 +76,7 @@ CREATE TABLE step_log_streams (
     CONSTRAINT step_log_streams_counters_valid CHECK (records >= 0 AND bytes >= 0 AND last_sequence >= 0
         AND dropped_by_worker BETWEEN 0 AND 9007199254740992 AND dropped_by_server >= 0),
     CONSTRAINT step_log_streams_ceiling_valid CHECK (ceiling_reason IS NULL OR ceiling_reason IN
-        ('attempt_records', 'attempt_bytes', 'run_records', 'run_bytes', 'tenant_quota')),
+        ('attempt_records', 'attempt_bytes', 'tenant_quota')),
     CONSTRAINT step_log_streams_path_valid CHECK (instance_path_nodes IS NULL
         OR execution_instance_path_valid(instance_path_nodes, instance_path_indices)),
     CONSTRAINT step_log_streams_retention_valid CHECK (retention_days BETWEEN 1 AND 365),
@@ -125,31 +125,11 @@ CREATE TABLE step_log_lines (
 -- One transaction stores lines of one stream only, so (stored_xid, sequence) is unique within a run and orders it; no
 -- row identity exists, so none reaches a cursor.
 CREATE INDEX step_log_lines_read_idx ON step_log_lines (tenant_id, run_id, stored_xid, sequence);
+-- A read with `stream` scans only that stream (design section 5).
+CREATE INDEX step_log_lines_stream_idx ON step_log_lines (tenant_id, stream_id, stored_xid, sequence);
 -- A trigger refuses UPDATE; DELETE is the purge's. The engine never locks a row of either table.
-
-CREATE TABLE run_log_usage (
-    tenant_id uuid    NOT NULL,
-    run_id    uuid    NOT NULL,
-    records   integer NOT NULL DEFAULT 0,
-    bytes     bigint  NOT NULL DEFAULT 0,
-    PRIMARY KEY (tenant_id, run_id),
-    CONSTRAINT run_log_usage_counters_valid CHECK (records >= 0 AND bytes >= 0)
-);
--- Created by the first batch of the run: INSERT ... ON CONFLICT (tenant_id, run_id) DO UPDATE ... RETURNING, which
--- locks it to commit (design section 2, step 6).
-
--- The record of FR-041-021 (D041-067). workflow_versions is insert-only: an ALWAYS trigger refuses UPDATE, DELETE and
--- TRUNCATE (20261009000000_definitions.up.sql:60-77), and no code deletes a workflows row. So a partial index over its
--- classified versions is a record nothing clears, kept by PostgreSQL for every insert whatever binary makes it, and built
--- over the existing versions by the CREATE INDEX itself. document is the canonical JSON of the version, as bytea
--- (crates/application/src/definitions.rs:479-480); the test is a superset of an annotation (G041-010).
-CREATE INDEX workflow_versions_classified_idx ON workflow_versions (tenant_id, workflow_id)
-    WHERE position('"x-sagat-classification"'::bytea IN document) > 0;
--- step_logs::may_read asks, in its read transaction:
---   EXISTS (SELECT 1 FROM workflows w JOIN workflow_versions v ON v.tenant_id = w.tenant_id AND v.workflow_id = w.id
---            WHERE w.tenant_id = $1 AND w.namespace_id = $2
---              AND position('"x-sagat-classification"'::bytea IN v.document) > 0)
--- whose predicate is the index's own, so the planner reads the partial index.
+-- No run usage table: there is no run ceiling (OD-2026-11-16-10). No classified-namespace record: every read needs the
+-- PII reveal grant (OD-2026-11-16-8).
 ```
 
 The lines reference their stream (same tenant), a row the engine never locks. No table references `runs` or `steps`
@@ -185,8 +165,11 @@ the routing of the class `step_log` in `sagat_quota_row_delta` (today every clas
 dropped and created again with the step-log delta as a fifth argument defaulting to 0 (`CREATE OR REPLACE` with a new
 argument would create a second function beside the four-argument one, and the present four-argument calls,
 `:244-252, :268, :273`, would then be ambiguous), with its `REVOKE … FROM PUBLIC` (`:188`) and `FROM sagat_app` (`:569`) restated for the new signature;
-the finalizer's loop filter (`OR step_log_delta <> 0`) and its step-log branch; the control flag; and the two
-accessors. The down migration restores the four-argument `sagat_quota_add_delta` and the bodies of the functions it
+the finalizer's loop filter (`OR step_log_delta <> 0`) and its step-log branch; the control flag; and the accessor
+`sagat_quota_step_log_allowance`. The Amendment's locking accessor, `sagat_quota_lock_step_log_usage`, is not built: the
+script marker is written in a transaction of its own (design section 7; a Note in ADR-0027, OD-2026-11-16-7). Every
+function the migration creates or replaces keeps or has `SECURITY DEFINER`, its pinned `search_path` and its grants as
+before, which T041-5 tests. The down migration restores the four-argument `sagat_quota_add_delta` and the bodies of the functions it
 replaced.
 `step_log_lines.script_execution_id` is a `uuid`, fixed-size, so it is not in the manifest.
 
@@ -196,19 +179,13 @@ replaced.
 |---|---|
 | `step_log_lines` | `SELECT, INSERT, DELETE` |
 | `step_log_streams` | `SELECT, INSERT, UPDATE` |
-| `run_log_usage` | `SELECT, INSERT, UPDATE` |
 
-Usage of the identity sequence of `step_log_streams`. No `TRUNCATE` and no grant on `namespaces`. The only `SECURITY
-DEFINER` functions are the two accessors of ADR-0027's Amendment, `sagat_quota_step_log_allowance(tenant)` and
-`sagat_quota_lock_step_log_usage(tenant)`, of the existing pattern: a fixed `search_path`, a trusted owner, `REVOKE ALL …
-FROM PUBLIC` (as `20261024000000_durable_quotas.up.sql:294` does, since PostgreSQL grants `EXECUTE` to `PUBLIC` on a new
-function) and `EXECUTE` to `sagat_app` (as `:572`); T041-5 tests that both are `prosecdef` with the pinned `proconfig` and
-that `has_function_privilege('public', …, 'EXECUTE')` is false. They exist because the runtime role may read neither
-`tenant_retained_usage` with a lock nor `quota_accounting_control` (`:564-572`). No other grant (the 2026-11-13 column
-`namespaces.has_classified_schemas` and the 2026-11-15 table `classified_namespaces` are replaced by the partial index of
-§2). The down migration refuses while a row of `step_log_lines` exists, and drops the index. The index's build reads every
-`workflow_versions.document` once and blocks inserts into `workflow_versions` while it runs; its duration on a large
-catalogue is measured on the upgrade fixture and stated in the runbook.
+Usage of the identity sequence of `step_log_streams`. No `TRUNCATE` and no grant on `namespaces`. The only new `SECURITY
+DEFINER` function is the accessor of ADR-0027's Amendment, `sagat_quota_step_log_allowance(tenant)`, of the existing
+pattern: a fixed `search_path`, a trusted owner, `REVOKE ALL … FROM PUBLIC` (as `20261024000000_durable_quotas.up.sql:294`
+does, since PostgreSQL grants `EXECUTE` to `PUBLIC` on a new function) and `EXECUTE` to `sagat_app` (as `:572`). It
+exists because the runtime role may not read `quota_accounting_control` (`:564-572`). No other grant. The down migration
+refuses while a row of `step_log_lines` exists.
 
 ## 5. Canonical JSON of `fields`
 
@@ -232,32 +209,37 @@ migration restates the three), and, in T041-3, to `Quota.resource` and `QuotaRes
 |---|---|---|---|---|---|
 | `step_log_attempt_records` | `Policy` | items | 0 to 100,000 | 10,000 | capture is off in the namespace: a named exception, since `validate` and `validate_ceiling` refuse 0 for every `Policy` resource today (`quota.rs:547-549, 569`) |
 | `step_log_attempt_bytes` | `Policy` | bytes | 1,024 to 16 MiB | 1 MiB | refused |
-| `step_log_run_records` | `Policy` | items | 1 to 1,000,000 | 100,000 | refused |
-| `step_log_run_bytes` | `Policy` | bytes | 1,024 to 256 MiB | 16 MiB | refused |
 | `step_log_retention_days` | `Retention` | days | 1 to 365 | 14 | refused |
 
 And one tenant resource, of ADR-0027's Amendment (OD-2026-11-15-5): `tenant_step_log_bytes`, `QuotaScope::Tenant`,
 kind `Storage`, unit bytes, maximum that of `tenant_log_bytes`, default and default ceiling 1 GiB, with usage reported
 from `tenant_retained_usage.step_log_bytes`.
 
-Changing any of them is audited by the quota catalogue as every quota change is. The ingest reads the five values of the
-run's namespace in its transaction (design section 2, step 3); a new stream keeps the retention it read
+There is no run resource (OD-2026-11-16-10). Each namespace resource stays configurable per namespace (OD-2026-11-16-9).
+Changing any of them is audited by the quota catalogue as every quota change is. The ingest reads the three values of
+the run's namespace in its transaction (design section 2, T3); a new stream keeps the retention it read
 (`retention_days`), so a later change of the retention applies to new streams only (ADR-0027).
+
+Admission defaults (set by T041-31 from its measurement, design section 2, "Capacity"; placeholders until then):
+`SAGAT_GRPC_MAX_LOG_CALLS` a quarter of `SAGAT_DB_MAX_CONNECTIONS`, at least 1; `SAGAT_STEP_LOGS_TENANT_CALLS` half of
+it, rounded down, at least 1.
 
 ## 7. Metrics (bare names; labels are closed sets, never tenant, namespace, run, node or worker)
 
 Server: `step_log_batches_total{outcome}` (`stored`, `duplicate`, `final_only`, `stop_attempt`, `stop_capture`,
 `retry_later`, `invalid`); `step_log_lines_stored_total{level}`; `step_log_bytes_stored_total`;
-`step_log_lines_dropped_total{reason}` (`worker_gap`, `attempt_records`, `attempt_bytes`, `run_records`, `run_bytes`,
-`tenant_quota`); `step_log_script_markers_total{outcome}` (`written`, `skipped_quota`, `skipped_off`,
+`step_log_lines_dropped_total{reason}` (`worker_gap`, `attempt_records`, `attempt_bytes`, `tenant_quota`); `step_log_script_markers_total{outcome}` (`written`, `skipped_quota`, `skipped_off`,
 `skipped_finished`); `step_log_lines_truncated_total`; `step_log_redactions_total{rule}` (`shape`, `field_name`);
 `step_log_ingest_seconds`; `step_log_lock_timeouts_total`; `step_log_quota_retries_total`;
-`step_log_purged_lines_total`; `step_log_purge_backlog`; `step_log_tails_open`; `step_log_tails_refused_total`;
+`step_log_purged_lines_total`; `step_log_purge_backlog` (the streams whose `expires_at` has passed or whose removal has
+begun and whose `purged_at` is null, counted by the purge pass at the start of each run); `step_log_tails_open`; `step_log_tails_refused_total`;
 `database_oldest_transaction_age_seconds` (a gauge of the operations snapshot over `pg_stat_activity.xact_start` and
 `pg_prepared_xacts.prepared`; it sees other roles' sessions only when the deployment grants `pg_read_all_stats`,
 G041-016). Each label set is a
 closed enum with `ALL` and `as_str` in `crates/telemetry/src/metrics.rs`, built as `WorkflowPrimitiveOutcome` is
-(`metrics.rs:68-106`), with a test that every emitted value is one of the enum's.
+(`metrics.rs:68-106`), with a test that every emitted value is one of the enum's. Owners: T041-6 the ingest's metrics
+(batches, lines stored, bytes, drops, truncations, redactions, ingest seconds, lock timeouts, quota retries); T041-10 the
+purge's; T041-11 the gauge; T041-12 the tails'; T041-13 the markers'.
 
 SDK (local to the worker process, each SDK's own metrics facility or log): dropped records by reason (`buffer_full`,
 `send_failed`, `after_ceiling`, `process_bound`, `secret_set_full`).
@@ -272,17 +254,18 @@ timeout is `SET LOCAL lock_timeout = '200ms'`.
 - **T2.** One `SELECT` of the `steps` row by tenant and `step_id`, joined with its `runs` row, matching the request's
   `run_id`, the instance path of `instance` and its node as `lease_unexpired_instance` matches them
   (`crates/infra-postgres/src/execution.rs:4783-4817`), with status `LEASED` or `RUNNING`, the same attempt and
-  generation, the lease-token hash, `lease_expires_at > clock_timestamp()`, and `runs.finished_at IS NULL` (pending
-  O041-025; today's text also refuses `stop_reason` set). It returns the namespace, the node, the instance path and
+  generation, the lease-token hash and `lease_expires_at > clock_timestamp()`; the row's `cancel_requested`, the
+  run's `finished_at` and `stop_reason` and the node's kind are passed to `report_fence_allows` (pending O041-025). It
+  returns the namespace, the node, the instance path and
   `steps.activity`. No row: the run is checked with `run_exists_outside`, and a foreign run is audited as
   `access.denied.cross_tenant` through `record_denial`, outside this transaction, as `missing_task_error` does
   (`crates/application/src/worker.rs:2564-2586`). A batch that read a valid lease and commits just after the completion
   is still that attempt's lines; a stale holder's token never matches.
 - **T3.** The `worker_sessions` row, without a lock, by tenant, id, the lease's namespace and the caller's subject, with
-  the token hash equal, `expires_at > clock_timestamp()` and `accepted_protocol_minor >= 7`. The five resources of §6,
-  each through the rule of `content_usage::admission_policy` (`content_usage.rs:95-106`: the tenant fence shared, then the
-  namespace fence shared, then `effective_policy`), the five resources in the order of `QuotaResource`, their values read
-  in one statement after the ten fences.
+  the token hash equal, `expires_at > clock_timestamp()` and `accepted_protocol_minor >= 7`. The three namespace resources
+  of §6, through the rule of `content_usage::admission_policy` (`content_usage.rs:95-106`: the tenant fence shared, then
+  the namespace fence shared, then `effective_policy`): one statement takes the six fences, the three resources in the
+  order of `QuotaResource`, and one reads their values.
 - **T4.** `INSERT … ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO UPDATE SET tenant_id =
   step_log_streams.tenant_id RETURNING …` on `step_log_streams`; a new row takes the namespace's
   `step_log_retention_days` as `retention_days`. The update changes no column (the trigger of §2 refuses a change of the
@@ -294,31 +277,36 @@ timeout is `SET LOCAL lock_timeout = '200ms'`.
   ceiling has been met, are counted as dropped by the server, the others as dropped by the worker, each saturating at
   2^53.
 - **T6.** The attempt allowance from the stream row's `records` and `bytes` against `step_log_attempt_records` and
-  `step_log_attempt_bytes`. The run allowance from `run_log_usage`, created or locked by `INSERT … ON CONFLICT
-  (tenant_id, run_id) DO UPDATE … RETURNING`, held to commit, against `step_log_run_records` and `step_log_run_bytes`.
-  The tenant allowance from `sagat_quota_step_log_allowance(tenant)`, which returns without a lock
+  `step_log_attempt_bytes`. The tenant allowance from `sagat_quota_step_log_allowance(tenant)`, which returns without a lock
   `tenant_retained_usage.step_log_bytes`, the limit worked out as the finalizer's branch works it out from
   `quota_limits`, `quota_ceilings` and the 1 GiB default, and whether it is enforced (the runtime role may not read
   `quota_accounting_control`, `20261024000000_durable_quotas.up.sql:561-572`, and the accessor keeps one limit rule).
-  The attempt and run allowances count text bytes; the tenant's counts text plus 128 bytes a row. When a record does not
+  The attempt allowance counts text bytes; the tenant's counts text plus 128 bytes a row, a planned marker included. When a record does not
   fit, `ceiling_sequence` takes the stream's high mark and `ceiling_reason` the ceiling; when the attempt ceiling is
   first met, one `ceiling_marker` row is planned at `next_marker_sequence`. If the unlocked tenant read plus the kept
   bytes is over the limit, nothing of the batch is stored and the records are counted with `tenant_quota`.
-- **T7.** `hold_worker_binding` (a shared advisory lock, `crates/infra-postgres/src/bindings.rs:15`); the binding's
-  patterns (`bound_patterns`, `execution.rs:4756`) checked by `first_uncovered` against T2's `steps.activity`; and the free
-  function `current_worker_authorized` (`execution.rs:1017`, made `pub(crate)`), which gains an argument naming the roles
-  it refuses. Its two callers, the methods of `execution.rs:4628` and `execution/path.rs:183`, pass the database-runner
-  role as today, so the application's trait method does not change; the ingest's adapter passes the database-runner and
-  runner roles. `the_shared_secrets_lock_has_one_caller_and_the_scoped_path_never_upgrades`
-  (`crates/infra-postgres/src/quotas.rs:1323-1344`) gains `step_logs.rs` among the files that must never call
-  `lock_secrets(`.
+- **T7.** Without a lock (OD-2026-11-16-7): the binding's patterns (`bound_patterns`, `execution.rs:4756`, read without
+  `hold_worker_binding`) checked by `first_uncovered` against T2's `steps.activity`; and the caller's membership row and
+  its role, a plain `SELECT` (no namespace secrets lock, no `FOR SHARE`), refusing the database-runner and runner roles.
+  `current_worker_authorized` and its callers do not change, and
+  `the_shared_secrets_lock_has_one_caller_and_the_scoped_path_never_upgrades`
+  (`crates/infra-postgres/src/quotas.rs:1323-1344`) gains an assertion that `step_logs.rs` calls neither
+  `share_secrets_lock(` nor `lock_secrets(`.
 - **T8.** One `INSERT … SELECT … FROM unnest(…) ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING RETURNING` the text
   size of each inserted row.
 - **T9.** From the rows T8 returned: `last_sequence = GREATEST(last_sequence, high mark)`, records, bytes, truncated
   records, both drop counts, `ceiling_sequence`, `ceiling_reason`, `first_at`, `last_at = clock_timestamp()`,
-  `expires_at = last_at + retention_days`, and `final_at` when `final_batch` is true, even when nothing was stored; the
-  same records and bytes on `run_log_usage`.
+  `expires_at = last_at + retention_days`, and `final_at` when `final_batch` is true, even when nothing was stored.
 - **T10.** `COMMIT`. `tenant_step_log_quota_exceeded` from the finalizer is mapped to `RETRY_LATER`.
 
 A marker line (either kind) has the level `info`, and `minLevel` never hides a marker: the filter applies to
 `kind = 'line'` only.
+
+## 9. The script marker's transaction (design section 7)
+
+`StepLogStore::record_script_marker(execution)`, called by the script service after `record_execution` has committed an
+inserted execution of a run: `SELECT pg_current_xact_id()`; the run's `finished_at` (no lock); the namespace's
+`step_log_attempt_records` and `step_log_retention_days` under their shared fences; `INSERT INTO step_log_streams …
+ON CONFLICT (tenant_id, public_id) DO NOTHING RETURNING` with `source = 'script'` and `public_id` the execution id (no row
+returned: a marker already exists, nothing more); `sagat_quota_step_log_allowance(tenant)`; the `script_marker` line;
+`COMMIT`, with `tenant_step_log_quota_exceeded` counted as `skipped_quota`.
