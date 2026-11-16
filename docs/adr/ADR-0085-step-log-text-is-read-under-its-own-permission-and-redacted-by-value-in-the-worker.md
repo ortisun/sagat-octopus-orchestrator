@@ -114,6 +114,8 @@ Compatibility: additive except for the script log, which viewers lose. Rollback:
 
 ## Revision (2026-11-13, after review, before any code)
 
+Revision accepted 2026-11-15, OD-2026-11-15-4.
+
 The owner accepted the text of commit 35b752b3. The architecture, security and correctness reviews of commit 2e90dbb8 found that a
 Python capture handler would sit on the worker-wide logger and see every attempt, that redaction by an attempt's own secrets left
 another attempt's values in view, that keys, numbers, exceptions and language context were not redacted, that the server used one
@@ -124,6 +126,11 @@ added; options 4, 5 and 9 were added. The chosen option is unchanged. The report
 `docs/designs/041-step-logs.reviews/2026-11-13/`.
 
 ## Revision (2026-11-15), proposed: awaiting the owner's acceptance (O041-014)
+
+Revision accepted 2026-11-15, OD-2026-11-15-4.
+
+Note (2026-11-15, OD-2026-11-15-7): O041-017 was answered (a), so the secret set of decision 1 lives for the process,
+bounded, and the parenthesis about answer (b) in decision 1 and the matching clause of decision 12 do not apply.
 
 Not in force until the owner accepts it (design 041, T041-2; O041-014 in `specs/041-step-logs/research.md`). The Status
 line above and the decisions as written above are unchanged until then. The egm-review and the second round of the

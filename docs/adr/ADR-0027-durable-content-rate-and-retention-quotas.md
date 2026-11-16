@@ -98,6 +98,39 @@ The forward admission also inspects its immutable compensation and reconciliatio
 
 An execution report resolves its tenant, namespace, run, node, attempt and digest against that durable lease before reading the pinned retention. The first stored report assigns its expiry using that pinned duration; replay preserves the first record and expiry, regardless of a later policy decrease. Existing immutable lease events without the field are explicitly grandfathered under the prior retention-selection semantics, and existing execution rows are unchanged. New writers must always stamp the field; enforcement rollout must not claim that older writers enforce the new admission rule. An execution report with no workflow-attempt tuple is a separate record admission subject to current policy; a partial tuple is invalid. Tests must include lowering the ceiling to zero between lease and report, a subsequent forward lease being withheld, old lease compatibility, and completion/compensation at the lowered ceiling.
 
+## Amendment (2026-11-15), proposed: awaiting the owner's acceptance (O041-024)
+
+Not in force until the owner accepts this text (O041-024 in `specs/041-step-logs/research.md`). The owner decided what it
+builds on 2026-11-15: step logs get a quota of their own ("Quota separada", OD-2026-11-15-5) and every stored step-log
+row is charged 128 bytes ("Cobrar 128 bytes/linha", OD-2026-11-15-6). It serves design 041 (step logs) and ADR-0084;
+nothing above this section changes for the resources it already covers.
+
+1. **A resource.** `tenant_step_log_bytes`: tenant aggregate; the retained bytes of step-log rows (design 041); kind
+   storage, unit bytes, maximum the byte maximum of `tenant_log_bytes`, default and default ceiling 1 GiB (the value of
+   `tenant_log_bytes`, until the owner sets another). A write over it stores no step-log line and is counted where the
+   reader of the run sees it; it never truncates text to fit (the prefix rule of "Logs cannot obstruct terminal state"
+   is for terminal reports, and a step log is lossy by ADR-0084). It never blocks a terminal state: no terminal report
+   writes a step-log row except the script-output marker, which is skipped when it does not fit.
+2. **A class.** `step_log`, beside `content`, `log` and `protected_system`: the text columns of `step_log_lines` and its
+   per-row charge. `tenant_log_bytes` keeps the build, test and execution logs and the other diagnostic text it covers
+   today.
+3. **Accounting.** `tenant_retained_usage` gains `step_log_bytes`, `quota_transaction_deltas` gains `step_log_delta`, and
+   the deferred finalizer gains a branch: when the transaction's step-log delta is positive, it takes the shared policy
+   fence `quota-policy:tenant_step_log_bytes:<tenant>` after the content and log fences and before the usage row, works
+   out the limit as it does for logs, and raises `tenant_step_log_quota_exceeded` when it is passed. A path that takes
+   the usage row before its commit and writes a step-log row (only the script-output marker, through `take_log_prefix`)
+   takes the step-log fence in that order first. `quota_accounting_control` gains `step_log_enforcement_enabled`, true
+   from the migration that adds it: a step log has no terminal fallback to wire first.
+4. **A measurement kind.** `fixed_octets`, a constant charge per row whatever the value, allowed only on a `NOT NULL`
+   variable-size column so that the manifest test compares it; `step_log_lines.level` carries 128. A row is charged its
+   text plus 128, so every row costs at least 128 bytes. `sagat_quota_measure` gains the branch and the manifest test
+   learns the kind and the class.
+5. **Retention.** Unchanged: a step-log stream keeps the retention it was created with (ADR-0084 decision 8).
+
+Built by design 041: T041-4 (the resource), T041-5 (the column, the class, the kind, the finalizer branch, the control
+flag, the manifest and its test), T041-6 (the ingest's checks). Enforced by the manifest test with the new kind and
+class, a finalizer test of the new branch, and the runtime-role bypass tests of this ADR extended to the new column.
+
 ## Implementation slices and ownership contract
 
 1. **Shared policy and manifest:** domain resource names/units/ranges; application ports and typed rate result; migration, durable usage/rate state, exhaustive classification manifest and backfill tests; existing quota REST/CLI/OpenAPI views. Own `domain/quota.rs`, `application/quotas.rs`, `infra-postgres/quotas.rs`, new `infra-postgres/content_usage.rs` and migration. Preserve T010-040 activity lock hierarchy and broker resource arms.

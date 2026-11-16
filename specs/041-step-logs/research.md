@@ -61,6 +61,12 @@ The owner questions these rest on were all answered as recommended (OD-2026-11-1
 | D041-050 | 2026-11-15 | An answer the ingest decides before its authority checks (session, capture off, removed, final recorded, tenant quota) is given only after those checks pass, so a revoked caller learns only `AUTHORITY`; the transaction after the finalizer's raise repeats the checks and re-plans under the stream lock with a tenant allowance of 0; the cross-tenant audit is written outside the ingest transaction | A revoked caller could learn of a delete; the second transaction could count records twice or not at all (security re-audit N3, N8; correctness re-audit M1) |
 | D041-051 | 2026-11-15 | The end horizon is taken in a short transaction of its own, begun after the read saw the run finished; an `end` in a cursor of a run that is not finished is ignored | The read transaction may already hold an id from the audit insert, assigned before it saw the run finished; a plain cursor can be forged (correctness re-audit M2, design critic re-audit A, architecture re-audit N10) |
 | D041-052 | 2026-11-15 | `SAGAT_GRPC_MAX_LOG_CALLS` defaults to a quarter of the database pool and the per-tenant tickets to half of it; a test holds lease p99 within 10% while the Logs class is full | The cap is what keeps ingest from holding the connections lease calls need (design critic re-audit E, architecture re-audit N9) |
+| D041-053 | 2026-11-15 | Step logs have a tenant quota of their own, `tenant_step_log_bytes` (Tenant scope, storage, bytes, default 1 GiB): a storage class `step_log` with its own usage column, transaction delta and policy fence, enforced from the start; a batch over it stores no line. `tenant_log_bytes` keeps the build, test and execution logs and other diagnostic text. Amends ADR-0027 (its Amendment of 2026-11-15, for the owner's acceptance); supersedes the shared quota of O041-005 and the tenant part of D041-029 | Owner, OD-2026-11-15-5 ("Quota separada") |
+| D041-054 | 2026-11-15 | Every `step_log_lines` row is charged 128 bytes on top of its text, through a measurement kind `fixed_octets` on its `NOT NULL` column `level` (the same ADR-0027 amendment) | Owner, OD-2026-11-15-6 ("Cobrar 128 bytes/linha") |
+| D041-055 | 2026-11-15 | A worker process keeps every secret value it resolved for its life, at most 1,024 values or 256 KiB; when full, capture stops for the process and each attempt that has a stream still sends its empty final batch | Owner, OD-2026-11-15-7 ("Toda a vida do processo") |
+| D041-056 | 2026-11-15 | Feature 041 holds worker-protocol minor 1.7; `sdks/SPEC.md` §9 has a register of minors; drafts 020, 021, 025 and 026 take the next free minor when their contract merges, and each one's research.md says so | Owner, OD-2026-11-15-8 ("041, com registo") |
+| D041-057 | 2026-11-15 | A script step's output is a marker row (`kind = script_marker`, a `source = script` stream) written by `record_execution` in its own transaction: its id first, then the existing checks, then the stream row, then `take_log_prefix` (which also takes the step-log fence), then the marker line only if it fits the step-log quota; written only for a run not yet finished, with capture on, when the instance identity is known (from the runner's report, or the one step of a root node). The streams route still lists script executions. Supersedes D041-030 for the whole-run tab | Owner, OD-2026-11-15-9 ("Sim, com marcador"); the order keeps ADR-0084 decision 11 without an exception |
+| D041-058 | 2026-11-15 | Constitution 4.5.0: the CI gate also runs the step-log suites when the step-log code changes, the SDKs' capture code and the worker protocol included; the selector rule and its tests are T041-32 | Owner, OD-2026-11-15-10 ("Emendar o gate de CI") |
 
 ## Gaps
 
@@ -73,10 +79,10 @@ The owner questions these rest on were all answered as recommended (OD-2026-11-1
 | G041-005 | 2026-11-13 | A deployment whose protocol ceiling is held below 1.6 by a missing store proof captures no step logs | Open |
 | G041-006 | 2026-11-13 | SC-041-007 is measured on one machine on one day | Open |
 | G041-007 | 2026-11-13 | `record_execution` matches a script report by (tenant, run, node); a script step inside a collection or loop may get a marker without its iteration identity | Open |
-| G041-008 | 2026-11-15 | The cursor holds `stored_xid` and the row id, so a reader who compares cursors learns how fast the whole database assigns transaction ids, an aggregate of every tenant's writes; no tenant's data is shown | Open; recorded as the condition on principle V in the design's Constitution Check |
+| G041-008 | 2026-11-15 | The cursor holds `stored_xid` and the row id, so a reader who compares cursors learns how fast the whole database assigns transaction ids, an aggregate of every tenant's writes; no tenant's data is shown | Accepted as stated by the owner, OD-2026-11-15-11 (O041-023) |
 | G041-009 | 2026-11-15 | The batches of one run wait for each other on `run_log_usage`, so a wide fan-out of logging iterations may meet `RETRY_LATER` and drop | Open; measured by T041-31; O041-020 if the fan-out case fails |
 | G041-010 | 2026-11-15 | The classified-namespace test is a superset: a version whose canonical JSON holds the text `"x-sagat-classification"` outside an annotation (a description that quotes it) counts its namespace as classified, so readers there need the PII reveal grant | Open; errs closed, by design (D041-037) |
-| G041-011 | 2026-11-15 | If O041-015 is answered (a), the 10% reserve is checked by an unlocked read, so the batches in flight can pass it | Open; depends on O041-015 |
+| G041-011 | 2026-11-15 | If O041-015 is answered (a), the 10% reserve is checked by an unlocked read, so the batches in flight can pass it | Moot: step logs have their own quota (OD-2026-11-15-5, D041-053), so there is no reserve to pass |
 | G041-012 | 2026-11-15 | Any open transaction of the cluster, prepared ones included, holds the read horizon, so lines of every tenant are delayed until it ends | Open; signalled by `database_oldest_transaction_age_seconds` and `SagatDatabaseOldTransaction`, not bounded |
 | G041-013 | 2026-11-15 | No route removes a script execution's log before its own retention; an incident in which a secret reached a script log is answered by rotating the secret, and the log stays until it expires | Open; the incident runbook says so |
 | G041-014 | 2026-11-15 | An attempt whose capture stopped before its first batch was stored (the session stopped, `UNAUTHENTICATED`, `UNIMPLEMENTED`) has no stream, so the reader sees "no log" and no count | Open |
@@ -84,8 +90,8 @@ The owner questions these rest on were all answered as recommended (OD-2026-11-1
 ## Owner questions
 
 The options and the reasoning are in the design, section "Owner decisions needed". The owner answered all eleven
-on 2026-11-13 ("Aceitar todas"), recorded as OD-2026-11-13-14. O041-014 to O041-023, raised by the reviews of 2026-11-15, are open and go to the owner
-together through T041-2.
+on 2026-11-13 ("Aceitar todas"), recorded as OD-2026-11-13-14. O041-014 to O041-023 were raised by the reviews of 2026-11-15; the owner answered eight of them on 2026-11-15
+(OD-2026-11-15-4 to -11); O041-020 and O041-021 stay conditional on T041-31, and O041-024 (the ADR-0027 text) is open.
 
 | ID | Date | Question | Decision | Answer |
 |---|---|---|---|---|
@@ -102,16 +108,17 @@ together through T041-2.
 | O041-011 | 2026-11-13 | The limit of redaction (G041-001) | Accept it as stated, with ADR-0085 | Answered 2026-11-13, the limit accepted as stated, as recommended: OD-2026-11-13-14 |
 | O041-012 | 2026-11-13 | Do step logs need the PII reveal grant in a namespace with classified schemas? | Asked after review | Answered 2026-11-13, "Exigir a concessão PII": yes, `run:logs:read` plus the grant there: OD-2026-11-13-18 |
 | O041-013 | 2026-11-13 | Is the `log` of a script execution closed to viewers too? | Asked after review | Answered 2026-11-13, "Fechar ao viewer": yes, it needs `run:logs:read`; release notes say so: OD-2026-11-13-18 |
-| O041-014 | 2026-11-15 | Accept the Revisions (2026-11-13 and 2026-11-15) of ADR-0084 and ADR-0085? | (a) accept both in place; (b) accept with changes; (c) supersede by new ADRs. Recommended (a) | Open |
-| O041-015 | 2026-11-15 | May step logs fill the shared `tenant_log_bytes`? | (a) stop step logs at 90% of it; (b) a separate resource (ADR-0027 amendment); (c) share as is. Recommended (a) | Open |
-| O041-016 | 2026-11-15 | Rows without log bytes escape the tenant quota (a release-blocking bypass) | (a) a fixed 128-byte charge per row (ADR-0027 amendment); (b) written acceptance with the bound; (c) chunk rows. Recommended (a) | Open |
-| O041-017 | 2026-11-15 | How long does a secret value stay in the process's redaction set? | (a) the life of the process, bounded, capture stops when full; (b) while an attempt holds it, with the limit added to ADR-0085 rule 12. Recommended (a) | Open |
-| O041-018 | 2026-11-15 | Which feature holds protocol minor 1.7 (drafts 020, 021, 025, 026 also name it)? | (a) 041, with a register of minors in `sdks/SPEC.md` §9; (b) the owner allocates all five now; (c) merge order, no register. Recommended (a) | Open |
-| O041-019 | 2026-11-15 | Is a script step's output a row of the whole-run Logs tab (O041-009)? | (a) no: listed as a stream and in the step section; (b) yes, with the marker write. Recommended (a) | Open |
+| O041-014 | 2026-11-15 | Accept the Revisions (2026-11-13 and 2026-11-15) of ADR-0084 and ADR-0085? | (a) accept both in place; (b) accept with changes; (c) supersede by new ADRs. Recommended (a) | Answered 2026-11-15, option (a), as recommended: "Aceitar as revisões" ("accept the revisions"), OD-2026-11-15-4 |
+| O041-015 | 2026-11-15 | May step logs fill the shared `tenant_log_bytes`? | (a) stop step logs at 90% of it; (b) a separate resource (ADR-0027 amendment); (c) share as is. Recommended (a) | Answered 2026-11-15, option (b), against the recommendation: "Quota separada" ("a separate quota"), OD-2026-11-15-5 |
+| O041-016 | 2026-11-15 | Rows without log bytes escape the tenant quota (a release-blocking bypass) | (a) a fixed 128-byte charge per row (ADR-0027 amendment); (b) written acceptance with the bound; (c) chunk rows. Recommended (a) | Answered 2026-11-15, option (a), as recommended: "Cobrar 128 bytes/linha" ("charge 128 bytes per line"), OD-2026-11-15-6 |
+| O041-017 | 2026-11-15 | How long does a secret value stay in the process's redaction set? | (a) the life of the process, bounded, capture stops when full; (b) while an attempt holds it, with the limit added to ADR-0085 rule 12. Recommended (a) | Answered 2026-11-15, option (a), as recommended: "Toda a vida do processo" ("the whole life of the process"), OD-2026-11-15-7 |
+| O041-018 | 2026-11-15 | Which feature holds protocol minor 1.7 (drafts 020, 021, 025, 026 also name it)? | (a) 041, with a register of minors in `sdks/SPEC.md` §9; (b) the owner allocates all five now; (c) merge order, no register. Recommended (a) | Answered 2026-11-15, option (a), as recommended: "041, com registo" ("041, with a register"), OD-2026-11-15-8 |
+| O041-019 | 2026-11-15 | Is a script step's output a row of the whole-run Logs tab (O041-009)? | (a) no: listed as a stream and in the step section; (b) yes, with the marker write. Recommended (a) | Answered 2026-11-15, option (b), against the recommendation: "Sim, com marcador" ("yes, with a marker"), OD-2026-11-15-9 |
 | O041-020 | 2026-11-15 | An approximate run ceiling, if the fan-out case of T041-31 fails | (a) keep it exact; (b) approximate, from unlocked stream counters. Recommended (a), then (b) if the fan-out fails | Conditional; asked only if T041-31's fan-out fails |
 | O041-021 | 2026-11-15 | Chunk rows, if T041-31 shows one row per line fails SC-041-007 and chunk rows pass | (a) one row per line; (b) one row per batch. Recommended: what T041-31 shows passes, (a) if both | Conditional; asked only on that result |
-| O041-022 | 2026-11-15 | A test-selection rule for step-log code (the constitution's CI gate names the suites a pull request runs "and only those") | (a) amend the CI gate so the selector picks `integration_step_logs` and the budget suite for step-log code; (b) no rule. Recommended (a) | Open |
-| O041-023 | 2026-11-15 | Accept that the cursor shows the database's transaction counter (G041-008)? | (a) accept as stated; (b) encrypt the cursor with a server key. Recommended (a) | Open |
+| O041-022 | 2026-11-15 | A test-selection rule for step-log code (the constitution's CI gate names the suites a pull request runs "and only those") | (a) amend the CI gate so the selector picks `integration_step_logs` and the budget suite for step-log code; (b) no rule. Recommended (a) | Answered 2026-11-15, option (a), as recommended: "Emendar o gate de CI" ("amend the CI gate"), OD-2026-11-15-10 |
+| O041-023 | 2026-11-15 | Accept that the cursor shows the database's transaction counter (G041-008)? | (a) accept as stated; (b) encrypt the cursor with a server key. Recommended (a) | Answered 2026-11-15, option (a), as recommended: "Aceitar" ("accept"), OD-2026-11-15-11 |
+| O041-024 | 2026-11-15 | Accept the text of ADR-0027's Amendment (2026-11-15), which builds OD-2026-11-15-5 and -6? | (a) accept as written; (b) accept with changes. Recommended (a) | Open |
 
 ## Review of 2026-11-13
 
@@ -129,4 +136,11 @@ each finding to its answer is `docs/designs/041-step-logs.reviews/2026-11-15/res
 D041-021, the expiry rule of D041-025 and the column of D041-026 are superseded as each new row says; the old rows stay
 as they were. G041-003 and G041-007 speak of the script-output marker, which D041-030 removes: a script execution is
 listed by the streams route instead, and G041-007 now means that it is listed without its iteration.
+
+## Owner answers of 2026-11-15
+
+The owner answered O041-014 to O041-019, O041-022 and O041-023 on 2026-11-15 (OD-2026-11-15-4 to -11). They are built
+into the design by D041-053 to D041-058, the ADR-0027 Amendment (for the owner's acceptance, O041-024), constitution
+4.5.0 and the register of minors in `sdks/SPEC.md` §9. G041-007 narrows: a script marker carries its iteration when the
+runner reports its instance identity, and only a report of an older runner inside a collection gets no marker.
 

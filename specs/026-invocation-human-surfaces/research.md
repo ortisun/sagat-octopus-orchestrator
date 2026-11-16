@@ -302,3 +302,7 @@ coordinator decisions of 2026-10-27 (C1–C22): D1640–D1641 come from the over
   rechecked at each delivery, its revocation pauses the channel, each delivery is audited; default
   ceiling `public`; `secret` never (D1345). If the owner declines O1081, channels stay at `internal` at
   most.
+
+Note (2026-11-15, from feature 041): the owner gave worker-protocol minor 1.7 to feature 041 (step logs, OD-2026-11-15-8).
+Where this feature names 1.7 for its own addition, it takes the next free minor of the register in `sdks/SPEC.md` §9 when
+its contract merges.

@@ -4,6 +4,23 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-15 — Design 041 (step logs): the answers to O041-014 to O041-023
+
+After the reviews of 2026-11-15 the assistant put ten questions of design 041 to the owner, each with a recommendation
+(the design's "Owner decisions needed"; `specs/041-step-logs/research.md`). The owner answered eight; O041-020 and
+O041-021 stay conditional on the spike T041-31. Two answers go against the recommendation (OD-2026-11-15-5, -9).
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-15-4 | "Aceitar as revisões" (O041-014 (a)): the revisions of 2026-11-13 and 2026-11-15 of ADR-0084 and ADR-0085 are accepted in place | owner | Decided | docs/adr/ADR-0084-*.md, docs/adr/ADR-0085-*.md, docs/designs/041-step-logs.md T041-3, T041-4, T041-5, T041-6, T041-7, T041-10, T041-11, T041-12, T041-14, T041-28, T041-29, T041-30 |
+| OD-2026-11-15-5 | "Quota separada" (O041-015 (b), against the recommendation (a)): step logs get a tenant quota resource of their own, `tenant_step_log_bytes`, separate from `tenant_log_bytes`; it needs an amendment of ADR-0027 | owner | Decided | docs/adr/ADR-0027-*.md (Amendment of 2026-11-15), docs/designs/041-step-logs.md T041-4, T041-5, T041-6 |
+| OD-2026-11-15-6 | "Cobrar 128 bytes/linha" (O041-016 (a)): every stored step-log row is charged 128 bytes on top of its text, so each row costs at least 128 bytes (the same ADR-0027 amendment) | owner | Decided | docs/adr/ADR-0027-*.md (Amendment of 2026-11-15), docs/designs/041-step-logs.md T041-5, T041-6 |
+| OD-2026-11-15-7 | "Toda a vida do processo" (O041-017 (a)): a worker process keeps every secret value it resolved for its whole life, bounded; capture stops for the process when the set is full | owner | Decided | docs/designs/041-step-logs.md T041-14, T041-15, T041-16, T041-17, T041-18, T041-19, T041-20 |
+| OD-2026-11-15-8 | "041, com registo" (O041-018 (a)): feature 041 holds worker-protocol minor 1.7; a register of minors in `sdks/SPEC.md` records each one, and drafts 020, 021, 025 and 026 take the next ones when they are built | owner | Decided | sdks/SPEC.md §9, docs/designs/041-step-logs.md T041-3, T041-7 |
+| OD-2026-11-15-9 | "Sim, com marcador" (O041-019 (b), against the recommendation (a)): a script step's output appears in the whole-run Logs tab through a marker row, written when the script runner's report is recorded, that points to the script execution | owner | Decided | docs/designs/041-step-logs.md T041-3, T041-5, T041-13 |
+| OD-2026-11-15-10 | "Emendar o gate de CI" (O041-022 (a)): the constitution's CI gate is amended so that the step-log suites run when step-log code changes, the SDKs' capture code and the worker protocol included | owner | Decided | docs/constitution.md 4.5.0, docs/governance/constitution-4.5.0-sync-impact.md, docs/designs/041-step-logs.md T041-32 |
+| OD-2026-11-15-11 | "Aceitar" (O041-023 (a)): the cursor of the step-log routes, which shows the storing transaction's id, is accepted as it is (G041-008) | owner | Decided | docs/designs/041-step-logs.md T041-11 |
+
 ## 2026-11-13 — What release 0.3.0 must contain: feature 018, schedules on by default, step logs per run
 
 Before the release pull request (219) was merged the owner asked whether anything else belonged in it. The assistant

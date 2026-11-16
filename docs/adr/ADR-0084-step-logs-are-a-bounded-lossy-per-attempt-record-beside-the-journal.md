@@ -115,6 +115,8 @@ purge pass exists); an older binary leaves the tables unread; the down migration
 
 ## Revision (2026-11-13, after review, before any code)
 
+Revision accepted 2026-11-15, OD-2026-11-15-4.
+
 The owner accepted the text of commit 35b752b3. The architecture, security and correctness reviews of commit 2e90dbb8 found that the
 ingest held the tenant's retained-usage row for its whole transaction, so completions with output would queue behind log batches
 (the blocker); that the fence was the lease token alone, with no binding, membership, expiry or session check; that ceilings were
@@ -124,6 +126,13 @@ the opposite order. Decisions 3, 5, 6, 7, 8 and 9 were rewritten and decision 11
 unchanged. The reports are in `docs/designs/041-step-logs.reviews/2026-11-13/`.
 
 ## Revision (2026-11-15), proposed: awaiting the owner's acceptance (O041-014)
+
+Revision accepted 2026-11-15, OD-2026-11-15-4.
+
+Note (2026-11-15, OD-2026-11-15-9): the owner kept a script-output marker. Its write takes the stream row before the
+fences and the tenant usage row, so it follows decision 11 with no exception (design 041, section 7); the words "the
+script marker is removed" of decision 11 no longer describe the design, and the rule itself is unchanged. The tenant's
+step-log bytes are a resource of their own (OD-2026-11-15-5, ADR-0027 Amendment of 2026-11-15); decision 3 applies to it.
 
 Not in force until the owner accepts it (design 041, T041-2; O041-014 in `specs/041-step-logs/research.md`). The Status
 line above and the decisions as written above are unchanged until then. The egm-review and the second round of the

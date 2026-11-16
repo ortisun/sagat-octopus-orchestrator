@@ -164,13 +164,13 @@ StepLogLine:
     sequence: {type: string, description: 'Decimal; above 2^53 for a marker.'}
     workerTime: {type: [string, 'null'], format: date-time}
     storedAt: {type: string, format: date-time}
-    kind: {type: string, enum: [line, ceiling_marker]}
+    kind: {type: string, enum: [line, ceiling_marker, script_marker]}
     level: {type: string, enum: [trace, debug, info, warn, error]}
     message: {type: [string, 'null']}
     exception: {type: [string, 'null']}
     fields: {type: [object, 'null'], additionalProperties: {type: [string, number, boolean]}}
     truncated: {type: boolean}
-    marker: {type: [object, 'null'], required: [reason], properties: {reason: {type: string, enum: [attempt_records, attempt_bytes]}}}
+    marker: {type: [object, 'null'], properties: {reason: {type: string, enum: [attempt_records, attempt_bytes], description: 'ceiling_marker'}, scriptExecutionId: {type: string, format: uuid, description: 'script_marker: open it with getScriptExecution'}}}
 ```
 
 ### `GET /runs/{runId}/logs/streams` (`listRunLogStreams`, tag Runs)
@@ -201,6 +201,7 @@ StepLogStream:
     logTruncated: {type: boolean, description: 'script only'}
 ```
 
+Items of `source = worker` are the workers' attempt logs; the marker streams of script attempts are not listed there.
 `ended` means the final batch was stored; `ended_without_final` means the attempt's lease is gone and no final batch was
 stored (design FR-041-017); `open` otherwise. For `source = script` the item is a row of `script_executions` of the run
 (`state` `ended` or `expired`), read under the same rule as FR-041-022.
@@ -231,9 +232,15 @@ deleting what is already deleted answers `0` and audits nothing.
 same caller. `log` stays required, so the schema change is additive; the change of what a viewer is given is a behaviour
 change stated in both descriptions and the release notes.
 
+### `recordScriptExecution` (the script runner's report)
+
+`RecordExecutionRequest` gains two optional fields, `generation: {type: integer, minimum: 0}` and `instancePath: {type: array, items: {$ref: '#/components/schemas/ApprovalScope'}}`, the lease the runner holds; the description says
+that they place the script-output marker (design section 7) and that a runner whose report an older control plane refuses
+as malformed resends it once without them.
+
 ### `Quota.resource` and `QuotaResourceName`
 
-Gain `step_log_attempt_records`, `step_log_attempt_bytes`, `step_log_run_records`, `step_log_run_bytes`,
+Gain `tenant_step_log_bytes` (ADR-0027 Amendment of 2026-11-15), `step_log_attempt_records`, `step_log_attempt_bytes`, `step_log_run_records`, `step_log_run_bytes`,
 `step_log_retention_days` (definitions in `data-model.md`). The `Quota` description's rule that lowering a limit does
 not erase retained content holds for them as for every resource: a stream keeps the retention it was created with.
 

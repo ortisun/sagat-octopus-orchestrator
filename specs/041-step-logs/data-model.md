@@ -11,11 +11,13 @@ request of the task that needs it and named in its description.
 | Set | Values (stored as text, lower case) | Wire (proto) |
 |---|---|---|
 | `level` | `trace`, `debug`, `info`, `warn`, `error`, in that order (`minLevel` compares by it) | `StepLogLevel` |
-| `kind` | `line`, `ceiling_marker` | none: markers are the server's |
-| `marker_reason` | `attempt_records`, `attempt_bytes` | none |
+| `kind` | `line`, `ceiling_marker`, `script_marker` | none: markers are the server's |
+| `marker_reason` | `attempt_records`, `attempt_bytes` (for `ceiling_marker`) | none |
+| `source` (streams) | `worker`, `script` | none |
 | `ceiling_reason` | `attempt_records`, `attempt_bytes`, `run_records`, `run_bytes`, `tenant_quota` | none |
 
-The `DROPPED` record kind and the `script` stream source of the 2026-11-13 revision are gone (D041-028, D041-030). A
+The `DROPPED` record kind of the 2026-11-13 revision is gone (D041-028). The `script` source is back for the script
+marker of OD-2026-11-15-9 (D041-057): one stream per script attempt, written only by `record_execution`. A
 stream's state on the routes: `deleted` when `deleted_at` is set, `expired` when `removed_at` is set otherwise, `ended`
 when `final_at` is set, `ended_without_final` when the attempt's lease is gone without it, `open` otherwise.
 
@@ -37,6 +39,7 @@ CREATE TABLE step_log_streams (
     instance_path_indices integer[]   NOT NULL DEFAULT '{}',
     attempt               integer     NOT NULL,
     generation            bigint      NOT NULL,
+    source                text        NOT NULL DEFAULT 'worker',  -- 'script': the marker stream of a script attempt
     records               integer     NOT NULL DEFAULT 0,  -- worker lines stored; the marker is not counted here
     bytes                 bigint      NOT NULL DEFAULT 0,  -- charged bytes stored
     last_sequence         bigint      NOT NULL DEFAULT 0,  -- highest worker sequence seen; only rises (GREATEST)
@@ -56,7 +59,8 @@ CREATE TABLE step_log_streams (
     purged_at             timestamptz,                     -- no line is left
     PRIMARY KEY (tenant_id, stream_id),
     CONSTRAINT step_log_streams_public_uniq UNIQUE (tenant_id, public_id),
-    CONSTRAINT step_log_streams_attempt_uniq UNIQUE (tenant_id, run_id, step_id, attempt, generation),
+    CONSTRAINT step_log_streams_attempt_uniq UNIQUE (tenant_id, run_id, step_id, attempt, generation, source),
+    CONSTRAINT step_log_streams_source_valid CHECK (source IN ('worker', 'script')),
     CONSTRAINT step_log_streams_attempt_valid CHECK (attempt >= 1 AND generation >= 0),
     CONSTRAINT step_log_streams_counters_valid CHECK (records >= 0 AND bytes >= 0 AND last_sequence >= 0
         AND dropped_by_worker BETWEEN 0 AND 9007199254740992 AND dropped_by_server >= 0),
@@ -87,14 +91,19 @@ CREATE TABLE step_log_lines (
     exception     text,
     fields        text,                                    -- canonical JSON (section 5); null when none
     marker_reason text,
+    script_execution_id uuid,                              -- for a script_marker: the script_executions row it points to
     PRIMARY KEY (tenant_id, stream_id, sequence),
     CONSTRAINT step_log_lines_stream_fk FOREIGN KEY (tenant_id, stream_id)
         REFERENCES step_log_streams (tenant_id, stream_id),
     CONSTRAINT step_log_lines_level_valid CHECK (level IN ('trace', 'debug', 'info', 'warn', 'error')),
     CONSTRAINT step_log_lines_kind_valid CHECK (
-        (kind = 'line' AND marker_reason IS NULL AND sequence < 4611686018427387904)
+        (kind = 'line' AND marker_reason IS NULL AND script_execution_id IS NULL AND sequence < 4611686018427387904)
         OR (kind = 'ceiling_marker' AND message IS NULL AND exception IS NULL AND fields IS NULL
-            AND marker_reason IN ('attempt_records', 'attempt_bytes') AND sequence >= 4611686018427387904)),
+            AND marker_reason IN ('attempt_records', 'attempt_bytes') AND script_execution_id IS NULL
+            AND sequence >= 4611686018427387904)
+        OR (kind = 'script_marker' AND message IS NULL AND exception IS NULL AND fields IS NULL
+            AND marker_reason IS NULL AND script_execution_id IS NOT NULL
+            AND sequence >= 4611686018427387904)),
     CONSTRAINT step_log_lines_sizes CHECK (octet_length(coalesce(message, '')) <= 8192
         AND octet_length(coalesce(exception, '')) <= 8192 AND octet_length(coalesce(fields, '')) <= 2048)
 );
@@ -156,8 +165,8 @@ In `crates/infra-postgres/storage-classification.json` (one entry per column, as
 
 | Column | Class | Measurement |
 |---|---|---|
-| `step_log_lines.message`, `.exception`, `.fields` | `log` | `octet_length_utf8` |
-| `step_log_lines.level` (pending O041-016, recommended option) | `log` | `fixed_octets`, 128: the per-row charge on a `NOT NULL` text column, which the manifest test compares (it reads columns with `typlen = -1`, `durable_quotas.rs:323-343`) |
+| `step_log_lines.message`, `.exception`, `.fields` | `step_log` | `octet_length_utf8` |
+| `step_log_lines.level` | `step_log` | `fixed_octets`, 128: the per-row charge of OD-2026-11-15-6 on a `NOT NULL` text column, which the manifest test compares (it reads columns with `typlen = -1`, `durable_quotas.rs:323-343`) |
 | every other variable-size column of the four tables | `protected_system` | evidence: closed sets of section 1, bounded identifiers |
 
 The measurement and finalizer triggers that ADR-0027 generates are created on `step_log_lines` only: the manifest test
@@ -165,10 +174,13 @@ requires them only on tables with `content` or `log` columns (`tests/integration
 path is the migration file in T041-5 and becomes `crates/infra-postgres/src/step_logs.rs` in T041-6 (the test only
 needs an existing file, `durable_quotas.rs:302-308`).
 
-`fixed_octets` (pending O041-016): a measurement kind that charges a constant per row whatever the value, added to
-`sagat_quota_measure` (`20261024000000_durable_quotas.up.sql:152-174`) as one branch and to the manifest's list of
-kinds. It needs an amendment of ADR-0027; if the owner answers O041-016 otherwise, the entry is `protected_system` and
-the bound of the answer is stated in the runbook.
+The class `step_log` and the kind `fixed_octets` are those of ADR-0027's Amendment of 2026-11-15 (OD-2026-11-15-5 and
+-6; its text waits for O041-024): `fixed_octets` charges a constant per row whatever the value, one branch of
+`sagat_quota_measure` (`20261024000000_durable_quotas.up.sql:152-174`); the class has its own usage column
+`tenant_retained_usage.step_log_bytes`, its delta `quota_transaction_deltas.step_log_delta`, its policy fence
+`quota-policy:tenant_step_log_bytes:<tenant>` taken after the content and log fences, its error
+`tenant_step_log_quota_exceeded`, and `quota_accounting_control.step_log_enforcement_enabled`, true from the migration.
+`step_log_lines.script_execution_id` is a `uuid`, fixed-size, so it is not in the manifest.
 
 ## 4. Grants (the migration's `DO $grants$` block)
 
@@ -212,6 +224,10 @@ migration restates the three), and, in T041-3, to `Quota.resource` and `QuotaRes
 | `step_log_run_bytes` | `Policy` | bytes | 1,024 to 256 MiB | 16 MiB | refused |
 | `step_log_retention_days` | `Retention` | days | 1 to 365 | 14 | refused |
 
+And one tenant resource, of ADR-0027's Amendment (OD-2026-11-15-5): `tenant_step_log_bytes`, `QuotaScope::Tenant`,
+kind `Storage`, unit bytes, maximum that of `tenant_log_bytes`, default and default ceiling 1 GiB, with usage reported
+from `tenant_retained_usage.step_log_bytes`.
+
 Changing any of them is audited by the quota catalogue as every quota change is. The ingest reads the five values of the
 run's namespace in its transaction (design section 2, step 3); a new stream keeps the retention it read
 (`retention_days`), so a later change of the retention applies to new streams only (ADR-0027).
@@ -221,7 +237,8 @@ run's namespace in its transaction (design section 2, step 3); a new stream keep
 Server: `step_log_batches_total{outcome}` (`stored`, `duplicate`, `final_only`, `stop_attempt`, `stop_capture`,
 `retry_later`, `invalid`); `step_log_lines_stored_total{level}`; `step_log_bytes_stored_total`;
 `step_log_lines_dropped_total{reason}` (`worker_gap`, `attempt_records`, `attempt_bytes`, `run_records`, `run_bytes`,
-`tenant_quota`); `step_log_lines_truncated_total`; `step_log_redactions_total{rule}` (`shape`, `field_name`);
+`tenant_quota`); `step_log_script_markers_total{outcome}` (`written`, `skipped_quota`, `skipped_identity`,
+`skipped_off`, `skipped_finished`); `step_log_lines_truncated_total`; `step_log_redactions_total{rule}` (`shape`, `field_name`);
 `step_log_ingest_seconds`; `step_log_lock_timeouts_total`; `step_log_quota_retries_total`;
 `step_log_purged_lines_total`; `step_log_purge_backlog`; `step_log_tails_open`; `step_log_tails_refused_total`;
 `database_oldest_transaction_age_seconds` (a gauge of the operations snapshot, database-wide). Each label set is a
