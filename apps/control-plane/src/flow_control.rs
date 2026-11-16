@@ -10,7 +10,7 @@ use sagat_application::error::StoreError;
 use sagat_application::flow_control::FlowControlCapability;
 use sagat_application::instances::{Activated, Activation, ChangeRefused, InstanceKind};
 use sagat_domain::identity::Subject;
-use sagat_infra_postgres::{PgInstanceStore, no_feature_step};
+use sagat_infra_postgres::{PgInstanceStore, live_capable_step};
 
 use crate::RunError;
 use crate::config::{ConfigError, DatabaseConfig};
@@ -50,8 +50,9 @@ pub async fn activate(
                 kinds: &KINDS,
                 actor: &actor,
             },
-            // the requirement alone: the digest key version has its own command (`flow_control_key_activate`)
-            no_feature_step,
+            // the requirement, once a live process of each kind runs the gate (an empty fleet would serve nothing
+            // after it); the digest key version has its own command (`flow_control_key_activate`)
+            live_capable_step(capability.registry(), &KINDS),
         )
         .await;
     pool.close().await;

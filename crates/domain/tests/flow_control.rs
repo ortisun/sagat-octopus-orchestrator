@@ -339,6 +339,14 @@ fn chain() -> WorkflowDefinition {
     build("a", vec![activity("a")])
 }
 
+/// `chain()` with the run-level gates an admission decides.
+fn gated_chain(concurrency_gate: bool, rate_gate: bool) -> WorkflowDefinition {
+    chain().with_run_flow_control(FlowControl::new(
+        concurrency_gate.then(|| concurrency(1)),
+        rate_gate.then(|| rate(10, RatePeriod::Second)),
+    ))
+}
+
 /// Replays `events` and checks that the journal alone rebuilds `state`.
 fn replays(state: &RunState, events: &[RunEvent]) {
     assert_eq!(
@@ -364,9 +372,13 @@ fn run_to_the_end(state: &mut RunState) -> Vec<RunEvent> {
 
 #[test]
 fn concurrency_queued_holds_the_entry_and_the_run_waits() {
-    let (state, progress) =
-        execution::start_run_gated(&chain(), RunId::generate(), T0, vec![run_event(queued())])
-            .expect("admitted");
+    let (state, progress) = execution::start_run_gated(
+        &gated_chain(true, false),
+        RunId::generate(),
+        T0,
+        vec![run_event(queued())],
+    )
+    .expect("admitted");
     assert_eq!(
         names(&progress.events),
         ["run.started", "concurrency.queued"]
@@ -388,7 +400,7 @@ fn concurrency_queued_holds_the_entry_and_the_run_waits() {
 
 #[test]
 fn concurrency_acquired_from_the_queue_releases_the_entry_once() {
-    let def = chain();
+    let def = gated_chain(true, false);
     let (mut state, admitted) =
         execution::start_run_gated(&def, RunId::generate(), T0, vec![run_event(queued())])
             .expect("admitted");
@@ -418,7 +430,7 @@ fn concurrency_acquired_from_the_queue_releases_the_entry_once() {
 
 #[test]
 fn concurrency_released_comes_before_the_run_finishes_and_never_while_it_works() {
-    let def = chain();
+    let def = gated_chain(true, false);
     let (mut state, admitted) = execution::start_run_gated(
         &def,
         RunId::generate(),
@@ -454,7 +466,7 @@ fn concurrency_released_comes_before_the_run_finishes_and_never_while_it_works()
 
 #[test]
 fn concurrency_wait_timed_out_ends_the_run_failed_without_any_step_having_run() {
-    let def = chain();
+    let def = gated_chain(true, false);
     let (mut state, mut events) =
         execution::start_run_gated(&def, RunId::generate(), T0, vec![run_event(queued())])
             .map(|(state, progress)| (state, progress.events))
@@ -497,7 +509,7 @@ fn concurrency_wait_timed_out_ends_the_run_failed_without_any_step_having_run() 
 
 #[test]
 fn concurrency_dequeued_by_a_cancellation_before_the_run_finishes() {
-    let def = chain();
+    let def = gated_chain(true, false);
     let (mut state, mut events) =
         execution::start_run_gated(&def, RunId::generate(), T0, vec![run_event(queued())])
             .map(|(state, progress)| (state, progress.events))
@@ -520,7 +532,7 @@ fn concurrency_dequeued_by_a_cancellation_before_the_run_finishes() {
 
 #[test]
 fn rate_limit_queued_and_granted_hold_and_release_the_entry() {
-    let def = chain();
+    let def = gated_chain(false, true);
     let (mut state, mut events) =
         execution::start_run_gated(&def, RunId::generate(), T0, vec![run_event(rate_queued())])
             .map(|(state, progress)| (state, progress.events))
@@ -546,7 +558,7 @@ fn rate_limit_queued_and_granted_hold_and_release_the_entry() {
 
 #[test]
 fn rate_limit_wait_timed_out_and_dequeued_of_a_run_waiting_for_both_gates() {
-    let def = chain();
+    let def = gated_chain(true, true);
     let (mut state, mut events) = execution::start_run_gated(
         &def,
         RunId::generate(),
@@ -596,7 +608,7 @@ fn rate_limit_wait_timed_out_and_dequeued_of_a_run_waiting_for_both_gates() {
 
 #[test]
 fn rate_limit_dequeued_by_a_cancellation() {
-    let def = chain();
+    let def = gated_chain(false, true);
     let (mut state, mut events) =
         execution::start_run_gated(&def, RunId::generate(), T0, vec![run_event(rate_queued())])
             .map(|(state, progress)| (state, progress.events))
@@ -613,7 +625,7 @@ fn rate_limit_dequeued_by_a_cancellation() {
 
 #[test]
 fn a_run_level_slot_is_never_returned_and_a_run_cannot_finish_while_it_waits() {
-    let def = chain();
+    let def = gated_chain(false, true);
     let (state, _) =
         execution::start_run_gated(&def, RunId::generate(), T0, vec![run_event(rate_queued())])
             .expect("admitted");
@@ -696,11 +708,24 @@ fn a_step_waits_for_its_gates_and_is_ready_once_the_last_is_granted() {
         state.step(&sid("a")).expect("step").status(),
         StepStatus::Ready
     );
-    let (_, leased) = execution::lease_step(&mut state, &sid("a")).expect("now it is leased");
+    let (fence, leased) = execution::lease_step(&mut state, &sid("a")).expect("now it is leased");
     events.push(leased);
-    let released = RunEvent::Gate(step_event("a", 1, GateChange::ConcurrencyReleased));
-    state.apply(&released).expect("the attempt's permit");
-    events.push(released);
+    let done = execution::complete_step(&chain(), &mut state, &sid("a"), fence, T0)
+        .expect("the attempt ends");
+    let names = names(&done.events);
+    let released = names
+        .iter()
+        .position(|name| *name == "concurrency.released")
+        .expect("the attempt's permit is given back");
+    assert!(
+        released
+            < names
+                .iter()
+                .position(|name| *name == "run.finished")
+                .expect("finished"),
+        "{names:?}"
+    );
+    events.extend(done.events);
     replays(&state, &events);
 }
 
@@ -718,8 +743,12 @@ fn a_step_gate_is_for_the_attempt_it_would_start_next() {
 #[test]
 fn rate_limit_returned_by_a_granted_step_that_was_never_leased() {
     let (_, mut state, mut events) = ready_step();
-    for change in [rate_granted(false), GateChange::RateReturned] {
-        let event = RunEvent::Gate(step_event("a", 1, change));
+    for event in [
+        RunEvent::Gate(step_event("a", 1, rate_granted(false))),
+        // the granted step leaves READY without being leased (here, a cancellation)
+        RunEvent::StepCancelled { node: id("a") },
+        RunEvent::Gate(step_event("a", 1, GateChange::RateReturned)),
+    ] {
         state.apply(&event).expect("applied");
         events.push(event);
     }
@@ -827,4 +856,162 @@ fn the_journal_names_are_the_ten_of_the_contract_and_the_label_is_a_digest_prefi
     assert_eq!(step.node(), Some(&id("a")));
     assert_eq!(step.attempt(), Some(3));
     assert_eq!(RunEvent::Gate(run_event(queued())).node(), None);
+}
+
+// ------------------------------------------------------------------ the review of 2026-11-15 (correctness M1..M3)
+
+/// Correctness review M1: a gate that timed out or left its queue decides the wait; the other gate cannot then grant.
+#[test]
+fn a_grant_after_the_other_gate_gave_up_is_refused() {
+    let (_, mut state, _) = ready_step();
+    for change in [queued(), rate_queued(), GateChange::RateWaitTimedOut] {
+        state
+            .apply(&RunEvent::Gate(step_event("a", 1, change)))
+            .expect("applied");
+    }
+    let late = state.apply(&RunEvent::Gate(step_event(
+        "a",
+        1,
+        GateChange::ConcurrencyAcquired,
+    )));
+    assert!(late.is_err(), "the step must not become ready: {late:?}");
+    let def = gated_chain(true, true);
+    let (mut run, _) = execution::start_run_gated(
+        &def,
+        RunId::generate(),
+        T0,
+        vec![run_event(queued()), run_event(rate_queued())],
+    )
+    .expect("admitted");
+    run.apply(&RunEvent::Gate(run_event(GateChange::RateDequeued)))
+        .expect("dequeued");
+    let late = run.apply(&RunEvent::Gate(run_event(GateChange::ConcurrencyAcquired)));
+    assert!(late.is_err(), "a doomed start takes no permit: {late:?}");
+}
+
+/// Correctness review M2: a permit is given back only once its attempt has ended, and an unleased slot only once the
+/// step has left `READY`; a step whose gate was given back is not leased on it.
+#[test]
+fn a_permit_or_slot_is_given_back_only_when_its_attempt_no_longer_needs_it() {
+    let (_, mut state, _) = ready_step();
+    state
+        .apply(&RunEvent::Gate(step_event(
+            "a",
+            1,
+            GateChange::ConcurrencyAcquired,
+        )))
+        .expect("granted");
+    execution::lease_step(&mut state, &sid("a")).expect("leased");
+    let early = state.clone().apply(&RunEvent::Gate(step_event(
+        "a",
+        1,
+        GateChange::ConcurrencyReleased,
+    )));
+    assert!(early.is_err(), "the attempt still runs: {early:?}");
+
+    let (_, mut ready, _) = ready_step();
+    ready
+        .apply(&RunEvent::Gate(step_event("a", 1, rate_granted(false))))
+        .expect("granted");
+    let returned = ready.clone().apply(&RunEvent::Gate(step_event(
+        "a",
+        1,
+        GateChange::RateReturned,
+    )));
+    assert!(
+        returned.is_err(),
+        "a READY step keeps its slot: {returned:?}"
+    );
+}
+
+/// Correctness review M3: a new attempt does not overwrite a permit the last one still holds, and a run does not finish
+/// while a step holds a permit; the planner gives an ended attempt's permit back first.
+#[test]
+fn a_held_permit_is_neither_overwritten_nor_left_behind_at_the_end() {
+    let (_, mut state, _) = ready_step();
+    state
+        .apply(&RunEvent::Gate(step_event(
+            "a",
+            1,
+            GateChange::ConcurrencyAcquired,
+        )))
+        .expect("granted");
+    let (fence, _) = execution::lease_step(&mut state, &sid("a")).expect("leased");
+    let mut retried = state.clone();
+    for event in [
+        RunEvent::StepRetryScheduled {
+            node: id("a"),
+            attempt: fence.attempt,
+            generation: fence.generation,
+            code: FailureCode::worker_error(),
+            not_before: T0,
+        },
+        RunEvent::StepRetryDue { node: id("a") },
+    ] {
+        retried.apply(&event).expect("retry");
+    }
+    let overwrite = retried.apply(&RunEvent::Gate(step_event(
+        "a",
+        2,
+        GateChange::ConcurrencyAcquired,
+    )));
+    assert!(
+        overwrite.is_err(),
+        "attempt 1 still holds the permit: {overwrite:?}"
+    );
+    let mut raw = state.clone();
+    for event in [
+        RunEvent::StepCompleted {
+            node: id("a"),
+            attempt: fence.attempt,
+            generation: fence.generation,
+        },
+        RunEvent::StepRouted {
+            node: id("a"),
+            activated: Vec::new(),
+        },
+    ] {
+        raw.apply(&event).expect("completed");
+    }
+    let finished = raw.apply(&RunEvent::RunFinished {
+        status: RunStatus::Succeeded,
+    });
+    assert!(
+        finished.is_err(),
+        "the step's permit is still held: {finished:?}"
+    );
+}
+
+/// An admission journals a decision for each gate its definition declares, and only those.
+#[test]
+fn an_admission_decides_exactly_the_gates_the_definition_declares() {
+    let declared = build("a", vec![activity("a")]).with_run_flow_control(FlowControl::new(
+        Some(concurrency(1)),
+        Some(rate(10, RatePeriod::Second)),
+    ));
+    for decisions in [
+        vec![run_event(queued())],
+        vec![run_event(rate_queued()), run_event(rate_granted(false))],
+    ] {
+        assert!(
+            execution::start_run_gated(&declared, RunId::generate(), T0, decisions.clone())
+                .is_err(),
+            "{decisions:?}"
+        );
+    }
+    assert!(
+        execution::start_run_gated(&chain(), RunId::generate(), T0, vec![run_event(queued())])
+            .is_err(),
+        "an ungated definition admits through no gate"
+    );
+    execution::start_run_gated(
+        &declared,
+        RunId::generate(),
+        T0,
+        vec![
+            run_event(GateChange::ConcurrencyAcquired),
+            run_event(rate_granted(false)),
+        ],
+    )
+    .expect("both granted");
 }

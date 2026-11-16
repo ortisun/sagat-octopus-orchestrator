@@ -304,6 +304,9 @@ def run_finished_errors(src):
 # --- runs are inserted only where the flow-control gate runs (FR-022-059, D022-031) ---------------------------------------------
 RUN_INSERT = re.compile(r"\bINSERT\s+INTO\s+runs\b", re.IGNORECASE)
 RUN_WRITERS = ("execution.rs", "chain_progress.rs")
+# What each writer must call before it inserts, in the same function: the gate of the one admission point, and the
+# successor's refusal of a gated definition.
+RUN_WRITER_GUARDS = {"execution.rs": "declares_gates()", "chain_progress.rs": "refuse_gated_successor("}
 
 
 def run_insert_errors(src):
@@ -315,11 +318,20 @@ def run_insert_errors(src):
         text = path.read_text()
         _, literals = rust_literals(text)
         rel = path.relative_to(root).as_posix()
+        masked, _ = rust_literals(text)
         for offset, sql in literals:
             if not RUN_INSERT.search(sql):
                 continue
             if rel in RUN_WRITERS:
                 found += rel == RUN_WRITERS[0]
+                guard = RUN_WRITER_GUARDS[rel]
+                inside = enclosing_function(masked, offset)
+                if inside is None or guard not in masked[inside[1]:offset]:
+                    errors.append(
+                        f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement inserts into "
+                        f"`runs` without `{guard}` before it in the same function: the run would not pass the "
+                        f"flow-control gate (FR-022-059)"
+                    )
                 continue
             errors.append(
                 f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement inserts into `runs` outside "

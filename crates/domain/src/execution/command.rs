@@ -342,6 +342,21 @@ pub fn start_run_gated(
     now: OffsetDateTime,
     decisions: Vec<super::GateEvent>,
 ) -> Result<(RunState, Progress), ExecutionError> {
+    let declared = def.run_flow_control();
+    let kinds: Vec<_> = decisions
+        .iter()
+        .map(|decision| decision.change.kind())
+        .collect();
+    let decides = |kind| kinds.iter().filter(|k| **k == kind).count();
+    if decides(crate::workflow::GateKind::Concurrency)
+        != usize::from(declared.concurrency().is_some())
+        || decides(crate::workflow::GateKind::RateLimit)
+            != usize::from(declared.rate_limit().is_some())
+    {
+        return Err(ExecutionError::Invariant(
+            "an admission decides each gate the definition declares at its start, once",
+        ));
+    }
     let mut state = RunState::new(run_id);
     let started = RunEvent::RunStarted {
         entrypoint: def.entrypoint().clone(),

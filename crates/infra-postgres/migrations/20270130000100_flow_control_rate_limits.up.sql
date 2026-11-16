@@ -24,7 +24,7 @@ CREATE TABLE rate_limit_windows (
     -- every grant ever made under this row, for the fault suite's check against the journals
     grants_total     bigint      NOT NULL DEFAULT 0,
     -- the longest period among its grants and waiters: the purge keeps a grant for it plus one minute (FR-022-056)
-    max_period_ms    integer     NOT NULL,
+    max_period_ms    integer     NOT NULL DEFAULT 1000,
     key_version      smallint    NOT NULL REFERENCES flow_control_key_versions (version),
     key_shard        smallint    NOT NULL,
     next_eligible_at timestamptz,
@@ -140,26 +140,37 @@ BEGIN
         RAISE EXCEPTION 'a rate-limit grant or waiter has no window row'
             USING ERRCODE = 'foreign_key_violation';
     END IF;
-    IF TG_OP = 'DELETE' THEN
-        -- the purge decrements by the rows it actually deleted (FR-022-056), and the transaction that empties a key
-        -- deletes it
-        DELETE FROM public.rate_limit_windows w
-         WHERE w.tenant_id = row_of.tenant_id AND w.namespace_id = row_of.namespace_id AND w.pool = row_of.pool
-           AND w.limit_scope = row_of.limit_scope AND w.group_name = row_of.group_name
-           AND w.key_digest = row_of.key_digest AND w.waiters = 0 AND w.live_grants = 0;
-    END IF;
     RETURN NULL;
 END
 $$;
 REVOKE ALL ON FUNCTION rate_limit_window_count() FROM PUBLIC;
+
+-- The transaction that empties a window deletes it, at its commit; the purge decrements by the rows it actually deleted
+-- (FR-022-056). `grants_total` therefore counts the grants of one life of the window row (D022-039).
+CREATE FUNCTION rate_limit_window_prune() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+    DELETE FROM public.rate_limit_windows w
+     WHERE w.tenant_id = OLD.tenant_id AND w.namespace_id = OLD.namespace_id AND w.pool = OLD.pool
+       AND w.limit_scope = OLD.limit_scope AND w.group_name = OLD.group_name AND w.key_digest = OLD.key_digest
+       AND w.waiters = 0 AND w.live_grants = 0;
+    RETURN NULL;
+END
+$$;
+REVOKE ALL ON FUNCTION rate_limit_window_prune() FROM PUBLIC;
 
 -- A waiter is inserted or deleted, never changed; a grant changes only by the recording of its lease instant, once.
 CREATE FUNCTION rate_limit_rows_guard() RETURNS trigger
     LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp
 AS $$
 BEGIN
-    IF TG_TABLE_NAME = 'rate_limit_grants'
-       AND OLD.leased_at IS NULL AND NEW.leased_at IS NOT NULL
+    -- a field is read only from the table that has it: a waiter has no lease instant
+    IF TG_TABLE_NAME <> 'rate_limit_grants' THEN
+        RAISE EXCEPTION 'a rate-limit waiter is never changed'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF OLD.leased_at IS NULL AND NEW.leased_at IS NOT NULL
        AND (NEW.tenant_id, NEW.namespace_id, NEW.run_id, NEW.node, NEW.attempt, NEW.pool, NEW.limit_scope,
             NEW.group_name, NEW.key_digest, NEW.declared_limit, NEW.period_ms, NEW.granted_at, NEW.shard)
            IS NOT DISTINCT FROM
@@ -176,6 +187,12 @@ CREATE TRIGGER rate_limit_grants_count AFTER INSERT OR DELETE ON rate_limit_gran
     FOR EACH ROW EXECUTE FUNCTION rate_limit_window_count();
 CREATE TRIGGER rate_limit_waiters_count AFTER INSERT OR DELETE ON rate_limit_waiters
     FOR EACH ROW EXECUTE FUNCTION rate_limit_window_count();
+CREATE CONSTRAINT TRIGGER rate_limit_grants_prune AFTER DELETE ON rate_limit_grants
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION rate_limit_window_prune();
+CREATE CONSTRAINT TRIGGER rate_limit_waiters_prune AFTER DELETE ON rate_limit_waiters
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION rate_limit_window_prune();
+CREATE TRIGGER rate_limit_windows_key_version BEFORE INSERT ON rate_limit_windows
+    FOR EACH ROW EXECUTE FUNCTION flow_control_key_version_current();
 CREATE TRIGGER rate_limit_grants_guard BEFORE UPDATE ON rate_limit_grants
     FOR EACH ROW EXECUTE FUNCTION rate_limit_rows_guard();
 CREATE TRIGGER rate_limit_waiters_guard BEFORE UPDATE ON rate_limit_waiters
@@ -184,6 +201,9 @@ ALTER TABLE rate_limit_grants ENABLE ALWAYS TRIGGER rate_limit_grants_count;
 ALTER TABLE rate_limit_waiters ENABLE ALWAYS TRIGGER rate_limit_waiters_count;
 ALTER TABLE rate_limit_grants ENABLE ALWAYS TRIGGER rate_limit_grants_guard;
 ALTER TABLE rate_limit_waiters ENABLE ALWAYS TRIGGER rate_limit_waiters_guard;
+ALTER TABLE rate_limit_grants ENABLE ALWAYS TRIGGER rate_limit_grants_prune;
+ALTER TABLE rate_limit_waiters ENABLE ALWAYS TRIGGER rate_limit_waiters_prune;
+ALTER TABLE rate_limit_windows ENABLE ALWAYS TRIGGER rate_limit_windows_key_version;
 
 -- The key rotation refusal of T022-007 covers the rate rows too (T022-070, ADR-0088 decision 8).
 CREATE OR REPLACE FUNCTION flow_control_key_activate(p_version smallint, p_actor text)
@@ -196,6 +216,11 @@ BEGIN
     LOCK TABLE public.concurrency_semaphores, public.rate_limit_windows IN SHARE MODE;
     IF EXISTS (SELECT 1 FROM public.flow_control_key_versions WHERE version = p_version AND state = 'ACTIVE') THEN
         RETURN QUERY SELECT 'ALREADY_ACTIVE'::text, 0::bigint;
+        RETURN;
+    END IF;
+    -- a retired version (for instance one whose key leaked) is never active again
+    IF EXISTS (SELECT 1 FROM public.flow_control_key_versions WHERE version = p_version AND state = 'RETIRED') THEN
+        RETURN QUERY SELECT 'RETIRED'::text, 0::bigint;
         RETURN;
     END IF;
     SELECT (SELECT count(*) FROM public.concurrency_semaphores WHERE key_version <> p_version)
@@ -220,7 +245,10 @@ REVOKE ALL PRIVILEGES ON rate_limit_windows, rate_limit_grants, rate_limit_waite
 DO $grants$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sagat_app') THEN
-        GRANT SELECT, INSERT ON rate_limit_windows TO sagat_app;
+        -- every column but the counters and the longest period, which only the triggers write
+        GRANT SELECT ON rate_limit_windows TO sagat_app;
+        GRANT INSERT (tenant_id, namespace_id, pool, limit_scope, group_name, key_digest, key_version, key_shard,
+                      next_eligible_at, updated_at) ON rate_limit_windows TO sagat_app;
         GRANT UPDATE (next_eligible_at, updated_at) ON rate_limit_windows TO sagat_app;
         GRANT SELECT, INSERT, DELETE ON rate_limit_grants TO sagat_app;
         GRANT UPDATE (leased_at) ON rate_limit_grants TO sagat_app;

@@ -170,16 +170,61 @@ BEGIN
         RAISE EXCEPTION 'a concurrency holder or waiter has no semaphore row'
             USING ERRCODE = 'foreign_key_violation';
     END IF;
-    IF TG_OP = 'DELETE' THEN
-        -- the transaction that empties a key deletes it
-        DELETE FROM public.concurrency_semaphores s
-         WHERE s.tenant_id = k_tenant AND s.namespace_id = k_namespace AND s.pool = k_pool AND s.permit_scope = k_scope
-           AND s.group_name = k_group AND s.key_digest = k_digest AND s.holders = 0 AND s.waiters = 0;
-    END IF;
     RETURN NULL;
 END
 $$;
 REVOKE ALL ON FUNCTION concurrency_semaphore_count() FROM PUBLIC;
+
+-- The transaction that empties a key deletes it, at its commit (a deferred constraint trigger): a release followed by
+-- the grant of the same key in one transaction keeps the row the grant needs.
+CREATE FUNCTION concurrency_semaphore_prune() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+    k_scope text;
+BEGIN
+    IF TG_TABLE_NAME = 'concurrency_holders' THEN
+        k_scope := OLD.holder_scope;
+    ELSE
+        k_scope := OLD.permit_scope;
+    END IF;
+    DELETE FROM public.concurrency_semaphores s
+     WHERE s.tenant_id = OLD.tenant_id AND s.namespace_id = OLD.namespace_id AND s.pool = OLD.pool
+       AND s.permit_scope = k_scope AND s.group_name = OLD.group_name AND s.key_digest = OLD.key_digest
+       AND s.holders = 0 AND s.waiters = 0;
+    RETURN NULL;
+END
+$$;
+REVOKE ALL ON FUNCTION concurrency_semaphore_prune() FROM PUBLIC;
+
+-- The version a deciding transaction digests keys under: the active one, taken shared (the rotation takes the table
+-- exclusively, so a transaction that read it decides before any rotation, or after it). FR-022-053, ADR-0089 decision 6.
+CREATE FUNCTION flow_control_active_key_version() RETURNS smallint
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $$
+DECLARE
+    v_version smallint;
+BEGIN
+    SELECT k.version INTO v_version FROM public.flow_control_key_versions k WHERE k.state = 'ACTIVE' FOR SHARE;
+    RETURN v_version;
+END
+$$;
+REVOKE ALL ON FUNCTION flow_control_active_key_version() FROM PUBLIC;
+
+-- A key row is filed under the active version only: a transaction that read the version before a rotation cannot file a
+-- key under the old one after it (the key would be split into two rows).
+CREATE FUNCTION flow_control_key_version_current() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+    IF NEW.key_version IS DISTINCT FROM public.flow_control_active_key_version() THEN
+        RAISE EXCEPTION 'a flow-control key is filed under the active digest key version only'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+REVOKE ALL ON FUNCTION flow_control_key_version_current() FROM PUBLIC;
 
 -- A holder or waiter is inserted or deleted, never changed: the key a run waits for or holds is fixed when it is decided.
 CREATE FUNCTION concurrency_rows_immutable() RETURNS trigger
@@ -195,6 +240,12 @@ CREATE TRIGGER concurrency_holders_count AFTER INSERT OR DELETE ON concurrency_h
     FOR EACH ROW EXECUTE FUNCTION concurrency_semaphore_count();
 CREATE TRIGGER concurrency_waiters_count AFTER INSERT OR DELETE ON concurrency_waiters
     FOR EACH ROW EXECUTE FUNCTION concurrency_semaphore_count();
+CREATE CONSTRAINT TRIGGER concurrency_holders_prune AFTER DELETE ON concurrency_holders
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION concurrency_semaphore_prune();
+CREATE CONSTRAINT TRIGGER concurrency_waiters_prune AFTER DELETE ON concurrency_waiters
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION concurrency_semaphore_prune();
+CREATE TRIGGER concurrency_semaphores_key_version BEFORE INSERT ON concurrency_semaphores
+    FOR EACH ROW EXECUTE FUNCTION flow_control_key_version_current();
 CREATE TRIGGER concurrency_holders_immutable BEFORE UPDATE ON concurrency_holders
     FOR EACH ROW EXECUTE FUNCTION concurrency_rows_immutable();
 CREATE TRIGGER concurrency_waiters_immutable BEFORE UPDATE ON concurrency_waiters
@@ -202,6 +253,9 @@ CREATE TRIGGER concurrency_waiters_immutable BEFORE UPDATE ON concurrency_waiter
 ALTER TABLE concurrency_holders ENABLE ALWAYS TRIGGER concurrency_holders_count;
 ALTER TABLE concurrency_waiters ENABLE ALWAYS TRIGGER concurrency_waiters_count;
 ALTER TABLE concurrency_holders ENABLE ALWAYS TRIGGER concurrency_holders_immutable;
+ALTER TABLE concurrency_holders ENABLE ALWAYS TRIGGER concurrency_holders_prune;
+ALTER TABLE concurrency_waiters ENABLE ALWAYS TRIGGER concurrency_waiters_prune;
+ALTER TABLE concurrency_semaphores ENABLE ALWAYS TRIGGER concurrency_semaphores_key_version;
 ALTER TABLE concurrency_waiters ENABLE ALWAYS TRIGGER concurrency_waiters_immutable;
 
 -- ---------------------------------------------------------------------------------------------------------------------
@@ -209,7 +263,7 @@ ALTER TABLE concurrency_waiters ENABLE ALWAYS TRIGGER concurrency_waiters_immuta
 -- refused while any flow-control row of a key still uses another version. Per-key rotation, which lets a rotation run
 -- with live rows, is T022-095 (FR-022-056). NOT executable by the runtime role.
 --
--- outcome: ACTIVATED | ALREADY_ACTIVE | ROWS_UNDER_OTHER_VERSION (out_rows names how many)
+-- outcome: ACTIVATED | ALREADY_ACTIVE | RETIRED | ROWS_UNDER_OTHER_VERSION (out_rows names how many)
 -- ---------------------------------------------------------------------------------------------------------------------
 CREATE FUNCTION flow_control_key_activate(p_version smallint, p_actor text)
 RETURNS TABLE (out_outcome text, out_rows bigint)
@@ -222,6 +276,11 @@ BEGIN
     LOCK TABLE public.concurrency_semaphores IN SHARE MODE;
     IF EXISTS (SELECT 1 FROM public.flow_control_key_versions WHERE version = p_version AND state = 'ACTIVE') THEN
         RETURN QUERY SELECT 'ALREADY_ACTIVE'::text, 0::bigint;
+        RETURN;
+    END IF;
+    -- a retired version (for instance one whose key leaked) is never active again
+    IF EXISTS (SELECT 1 FROM public.flow_control_key_versions WHERE version = p_version AND state = 'RETIRED') THEN
+        RETURN QUERY SELECT 'RETIRED'::text, 0::bigint;
         RETURN;
     END IF;
     SELECT count(*) INTO v_rows FROM public.concurrency_semaphores WHERE key_version <> p_version;
@@ -249,7 +308,11 @@ DO $grants$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sagat_app') THEN
         GRANT SELECT ON flow_control_key_versions TO sagat_app;
-        GRANT SELECT, INSERT ON concurrency_semaphores TO sagat_app;
+        -- every column but the counters, which only the triggers write
+        GRANT SELECT ON concurrency_semaphores TO sagat_app;
+        GRANT INSERT (tenant_id, namespace_id, pool, permit_scope, group_name, key_digest, key_version, key_shard,
+                      next_eligible_at, updated_at) ON concurrency_semaphores TO sagat_app;
+        GRANT EXECUTE ON FUNCTION flow_control_active_key_version() TO sagat_app;
         GRANT UPDATE (next_eligible_at, updated_at) ON concurrency_semaphores TO sagat_app;
         GRANT SELECT, INSERT, DELETE ON concurrency_holders, concurrency_waiters TO sagat_app;
     END IF;

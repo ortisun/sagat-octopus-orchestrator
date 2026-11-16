@@ -211,6 +211,7 @@ FENCE = """
 """
 ADMISSION = """
     async fn create(tx: &mut PgConnection) {
+        if new.definition.declares_gates() { return Err(refused); }
         sqlx::query("INSERT INTO runs (id, tenant_id) VALUES ($1, $2)");
     }
 """
@@ -400,7 +401,7 @@ class RunsAreInsertedOnlyAtTheAdmissionPoint(unittest.TestCase):
         self.assertIn("runs are inserted only at the admission point", result.stdout)
 
     def test_the_admission_point_and_the_continuation_successors_pass(self):
-        successor = 'async fn continue_as_new() { sqlx::query("INSERT INTO runs (id) VALUES ($1)"); }'
+        successor = 'async fn continue_as_new() { refuse_gated_successor(&definition)?; sqlx::query("INSERT INTO runs (id) VALUES ($1)"); }'
         code, out = run_lease_check(tree(**{"chain_progress.rs": successor}))
         self.assertEqual(code, 0, out)
 
@@ -425,6 +426,17 @@ class RunsAreInsertedOnlyAtTheAdmissionPoint(unittest.TestCase):
         )
         code, out = run_lease_check(tree(**{"noise.rs": noise}))
         self.assertEqual(code, 0, out)
+
+    def test_an_admission_or_a_successor_without_its_guard_is_refused(self):
+        unguarded = ADMISSION.replace("        if new.definition.declares_gates() { return Err(refused); }\n", "")
+        self.assertNotEqual(unguarded, ADMISSION)
+        code, out = run_lease_check(tree(execution=FENCE + unguarded))
+        self.assertEqual(code, 1, out)
+        self.assertIn("without `declares_gates()` before it in the same function", out)
+        late = 'async fn continue_as_new() { sqlx::query("INSERT INTO runs (id) VALUES ($1)"); refuse_gated_successor(&d)?; }'
+        code, out = run_lease_check(tree(**{"chain_progress.rs": late}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("without `refuse_gated_successor(` before it", out)
 
     def test_a_rule_that_finds_no_admission_point_is_an_error_and_not_a_pass(self):
         code, out = run_lease_check(tree(execution=FENCE))

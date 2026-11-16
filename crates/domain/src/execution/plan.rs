@@ -291,6 +291,9 @@ pub fn plan(
     if state.is_finished() {
         return Ok(Plan::Idle);
     }
+    if let Some(given_back) = give_back_ended_gates(state) {
+        return Ok(Plan::Emit(given_back));
+    }
     if let Some(reason) = state.stop_reason() {
         return drain(def, state, reason);
     }
@@ -348,6 +351,48 @@ fn node_of<'a>(
 
 /// The run is being stopped: the sagas compensate what they are to, then what is not in flight is
 /// cancelled, what is gets asked to stop, and the run finishes.
+/// What a step no longer needs is given back as soon as it no longer needs it (feature 022, FR-022-019, FR-022-046): the
+/// permit of an attempt that ended, and the permit and slot of a granted step that left `READY` without being leased.
+fn give_back_ended_gates(state: &RunState) -> Option<RunEvent> {
+    for (instance, step) in state.instances() {
+        let Some(node) = instance.path().is_root().then(|| instance.node().clone()) else {
+            continue;
+        };
+        let waiting_on_gate = matches!(step.waiting_on(), Some(WaitingOn::Gate));
+        for (slot, change) in [
+            (
+                step.gates().concurrency(),
+                super::GateChange::ConcurrencyReleased,
+            ),
+            (step.gates().rate(), super::GateChange::RateReturned),
+        ] {
+            let Some(slot) = slot.filter(|slot| slot.phase() == super::GatePhase::Held) else {
+                continue;
+            };
+            let leased_this = step.attempt() >= slot.attempt();
+            let left_ready_unleased =
+                !leased_this && step.status() != StepStatus::Ready && !waiting_on_gate;
+            let due = match change {
+                super::GateChange::ConcurrencyReleased => {
+                    (leased_this && !step.status().is_leased()) || left_ready_unleased
+                }
+                _ => left_ready_unleased,
+            };
+            if due {
+                return Some(RunEvent::Gate(super::GateEvent {
+                    target: super::GateTarget::Step {
+                        node,
+                        attempt: slot.attempt(),
+                    },
+                    gate: slot.gate().clone(),
+                    change,
+                }));
+            }
+        }
+    }
+    None
+}
+
 /// The run's last event, preceded by giving back the run permit it holds (feature 022, ADR-0056 decision 4): a run
 /// never finishes with a permit, and gives it back only once nothing of it is active.
 fn finishing(state: &RunState, finished: RunEvent) -> Plan {

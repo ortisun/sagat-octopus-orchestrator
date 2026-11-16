@@ -3858,6 +3858,12 @@ impl RunState {
                 if *attempt != step.attempt + 1 || *generation != step.generation + 1 {
                     return Err(ExecutionError::StaleAttempt { node: node.clone() });
                 }
+                // feature 022: an attempt is leased only on gates it holds (none given back, none given up on)
+                if !step.gates.admits_lease(*attempt) {
+                    return Err(ExecutionError::Invariant(
+                        "a gated step is leased only with every gate of its attempt granted",
+                    ));
+                }
                 step.status = Leased;
                 step.attempt = *attempt;
                 step.generation = *generation;
@@ -4793,9 +4799,21 @@ impl RunState {
                         event: name,
                     });
                 }
-                if matches!(event.change, GateChange::RateReturned) && step.attempt >= *attempt {
+                // a permit is given back once its attempt no longer needs it: the attempt ended, or the step left READY
+                // without being leased; an unleased slot only in the second case (FR-022-019, FR-022-046)
+                let leased_this = step.attempt >= *attempt;
+                let left_ready_unleased =
+                    !leased_this && step.status != StepStatus::Ready && !waiting_on_gate;
+                let giving_back_allowed = match event.change {
+                    GateChange::ConcurrencyReleased => {
+                        (leased_this && !step.status.is_leased()) || left_ready_unleased
+                    }
+                    GateChange::RateReturned => left_ready_unleased,
+                    _ => true,
+                };
+                if !giving_back_allowed {
                     return Err(ExecutionError::Invariant(
-                        "only the slot of an attempt that was never leased is returned",
+                        "a permit or slot is given back only when its attempt no longer needs it",
                     ));
                 }
                 let fresh = step.status == StepStatus::Ready || waiting_on_gate;
@@ -4827,7 +4845,10 @@ impl RunState {
             ));
         }
         // feature 022: a waiter leaves its queue, and a holder gives its permit back, before the run's last event
-        if self.run_gates.is_waiting() || self.run_gates.held_permit().is_some() {
+        if self.run_gates.is_waiting()
+            || self.run_gates.held_permit().is_some()
+            || self.steps.values().any(|step| step.gates.is_open())
+        {
             return Err(ExecutionError::Invariant(
                 "a run cannot finish while it waits for a gate or holds a run permit",
             ));

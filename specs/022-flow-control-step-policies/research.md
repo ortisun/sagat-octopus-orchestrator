@@ -418,6 +418,18 @@ taken after `git grep D022-` on every `origin/*` branch and the sibling worktree
   admission point (FR-022-059), refuses a gated definition with `BINARY_CAPABILITY_MISSING` should a requirement ever be
   recorded with no live instance. Fail closed at every layer; the change that builds the gate adds the capability.
 
+- **D022-038 — What later writers of the flow-control rows must keep (review of 2026-11-15).** A transaction that
+  changes a key's holders, waiters or grants locks the key row (semaphore or window) `FOR UPDATE` first, in
+  `(pool, scope, group, key)` order, semaphores before windows, and only then inserts or deletes the child rows: the
+  counter triggers update the key row after the child row, and a writer that skipped the key lock could deadlock against
+  one that took it. An emptied key row is deleted at commit by a deferred constraint trigger, so a release followed by the
+  grant of the same key in one transaction keeps it. The namespace counters of T022-105 (`live_keys`, `queued_runs`) must
+  be written by deferred triggers too, so that the slot-8b usage rows stay last (ADR-0050 decision 7). Applies to
+  T022-022, T022-072, T022-097, T022-098, T022-105.
+- **D022-039 — `grants_total` counts one life of a window row.** A window row is deleted when its last grant and waiter
+  go, and a later grant creates a new one; invariant 9 ("grows by exactly one per `rate_limit.granted`") is checked per
+  life of the row (T022-079), not across a purge.
+
 ## Gaps
 
 | ID | Gap | Status |
@@ -448,6 +460,11 @@ taken after `git grep D022-` on every `origin/*` branch and the sibling worktree
 | G1184 | A grant's instant is read before its commit; work becomes visible up to one transaction later, so starts observed by commit time can be closer than `per` by that duration. Accepted; bounded by transaction duration, measured in T022-089. | Accepted |
 | G1185 | A key label is an online oracle: a caller who may see labels and start runs can confirm a guessed key value by the label it gets (like G1171). FR-022-057 limits labels to callers who may disclose the key's source. | Accepted; documented |
 | G1186 | Review findings not relayed to this author (architecture N2–N5, security three nits, correctness N2) are not addressed in this revision; the review records say so. | Open |
+| G1187 | The namespace-level warnings `CONCURRENCY_LIMIT_MISMATCH` and `RATE_LIMIT_MISMATCH` need the declarations of the other published definitions of the namespace; the codec cannot see them and no store keeps them yet. | Open; with T022-022/T022-072 (contract test lists them pending) |
+| G1188 | `RunState::restore` (a run rebuilt from its projection) does not restore gate state. No stored run has any in this build (admission refuses gated definitions; the projection writer refuses a gated step's wait). | Open; T022-022, T022-096 |
+| G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
+| G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. | Open; T022-095 and its runbook |
+| G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
 
 ## Owner questions

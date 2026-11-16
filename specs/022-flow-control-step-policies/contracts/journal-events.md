@@ -41,6 +41,11 @@ the 12-hex-character prefix of the keyed digest (D1168), never the key value.
 
 ## Reset rules (feature 018 registry)
 
+*Implemented 2026-11-15 (D022-035):* until a reset admits its run through the gate (T022-064, T022-086), the registry
+declares all ten `concurrency.*` and `rate_limit.*` types `EXCLUDE`, so no point after one is offered. The table below is
+the rule those tasks install. *D022-036:* every one of the ten carries `scope` in its detail (also `concurrency.dequeued`)
+and, at step scope, `attempt`.
+
 Feature 018 keeps the reset-rule registry in `specs/018-schedules-bulk-operations/contracts/journal-and-events.md`
 and refuses a reset point whose prefix contains an event type without a declared rule (coordinator
 decision C1). Rows re-emitted by a reset carry 018's `restored: true` marker; journal-derived projections,

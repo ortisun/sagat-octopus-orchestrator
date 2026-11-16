@@ -46,6 +46,36 @@ pub fn no_feature_step(_: &mut sqlx::PgConnection) -> FeatureStep<'_> {
     Box::pin(async { Ok(()) })
 }
 
+/// The feature step of a flow-control activation (feature 022, T022-094): the registry records a requirement whenever no
+/// live process lacks it, an empty fleet included, and then no process of an older build serves. This step refuses unless
+/// at least one live process (seen within 30 seconds) of each required kind lists the capability, under the epoch's lock.
+pub fn live_capable_step(
+    capability: Capability,
+    kinds: &[sagat_application::instances::InstanceKind],
+) -> impl for<'c> FnOnce(&'c mut sqlx::PgConnection) -> FeatureStep<'c> + Send + use<> {
+    let kinds: Vec<String> = kinds.iter().map(|kind| kind.as_str().to_owned()).collect();
+    move |conn| {
+        Box::pin(async move {
+            let lacking: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM unnest($1::text[]) AS k(kind) WHERE NOT EXISTS ( \
+                   SELECT 1 FROM serving_instances s WHERE s.kind = k.kind \
+                      AND s.last_seen > clock_timestamp() - interval '30 seconds' AND $2 = ANY (s.capabilities))",
+            )
+            .bind(&kinds)
+            .bind(capability.as_str())
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(store_error)?;
+            if lacking > 0 {
+                return Err(StoreError::StateConflict(
+                    "no live process of a required kind runs the gate: nothing would serve after the activation",
+                ));
+            }
+            Ok(())
+        })
+    }
+}
+
 /// How long the operator's transaction may hold the requirement epoch. The processes that wait for it run with a
 /// statement timeout of 5 s by default, so the defaults are shorter than that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

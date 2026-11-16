@@ -26,6 +26,11 @@ BEGIN
         RETURN QUERY SELECT 'ALREADY_ACTIVE'::text, 0::bigint;
         RETURN;
     END IF;
+    -- a retired version (for instance one whose key leaked) is never active again
+    IF EXISTS (SELECT 1 FROM public.flow_control_key_versions WHERE version = p_version AND state = 'RETIRED') THEN
+        RETURN QUERY SELECT 'RETIRED'::text, 0::bigint;
+        RETURN;
+    END IF;
     SELECT count(*) INTO v_rows FROM public.concurrency_semaphores WHERE key_version <> p_version;
     IF v_rows > 0 THEN
         RETURN QUERY SELECT 'ROWS_UNDER_OTHER_VERSION'::text, v_rows;
@@ -46,4 +51,5 @@ DROP TABLE rate_limit_waiters;
 DROP TABLE rate_limit_grants;
 DROP TABLE rate_limit_windows;
 DROP FUNCTION rate_limit_rows_guard();
+DROP FUNCTION rate_limit_window_prune();
 DROP FUNCTION rate_limit_window_count();

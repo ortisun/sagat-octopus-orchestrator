@@ -47,7 +47,11 @@ async fn exists(pool: &PgPool, table: &str) -> bool {
 /// A run of the world's tenant, for the foreign keys: (tenant, namespace, run).
 async fn a_run(w: &World) -> (Uuid, Uuid, Uuid) {
     let (workflow, _) = w
-        .publish(document("flow-anchor", "a", vec![activity("a")]))
+        .publish(document(
+            &format!("flow-anchor-{}", &Uuid::now_v7().simple().to_string()[24..]),
+            "a",
+            vec![activity("a")],
+        ))
         .await;
     let run = w.start(workflow, &json!({})).await;
     let row = sqlx::query("SELECT tenant_id, namespace_id FROM runs WHERE id = $1")
@@ -84,8 +88,8 @@ async fn semaphore(pool: &PgPool, (tenant, namespace, _): (Uuid, Uuid, Uuid), ve
     .expect("a semaphore");
 }
 
-async fn holder(
-    pool: &PgPool,
+async fn holder<'e, E: sqlx::PgExecutor<'e>>(
+    pool: E,
     (tenant, namespace, run): (Uuid, Uuid, Uuid),
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
@@ -113,8 +117,8 @@ async fn counts(pool: &PgPool, tenant: Uuid) -> Option<(i32, i32)> {
 async fn window(pool: &PgPool, (tenant, namespace, _): (Uuid, Uuid, Uuid), version: i16) {
     sqlx::query(
         "INSERT INTO rate_limit_windows (tenant_id, namespace_id, pool, limit_scope, group_name, key_digest, \
-         max_period_ms, key_version, key_shard, updated_at) \
-         VALUES ($1, $2, 'ORDINARY', 'STEP', 'provider-starts', $3, 1000, $4, 3, clock_timestamp())",
+         key_version, key_shard, updated_at) \
+         VALUES ($1, $2, 'ORDINARY', 'STEP', 'provider-starts', $3, $4, 3, clock_timestamp())",
     )
     .bind(tenant)
     .bind(namespace)
@@ -442,5 +446,129 @@ async fn a_new_key_version_is_refused_while_a_row_uses_another() {
         two_active.map(drop).unwrap_err().0,
         "23505",
         "at most one version is active"
+    );
+}
+
+// ------------------------------------------------------------------ the review of 2026-11-15
+
+/// Security review M1, architecture review M1: the runtime role cannot set a counter when it inserts a key row either.
+#[tokio::test]
+async fn the_runtime_role_cannot_set_a_counter_when_it_inserts_a_key() {
+    let w = world().await;
+    let runtime = w.db.runtime_pool().await;
+    let (tenant, namespace, _) = a_run(&w).await;
+    assert_eq!(activate_key(&w.db.pool, 1).await.0, "ACTIVATED");
+    for statement in [
+        "INSERT INTO concurrency_semaphores (tenant_id, namespace_id, pool, permit_scope, group_name, key_digest, \
+         holders, key_version, key_shard, updated_at) \
+         VALUES ($1, $2, 'ORDINARY', 'RUN', 'forged', $3, 10000, 1, 0, clock_timestamp())",
+        "INSERT INTO rate_limit_windows (tenant_id, namespace_id, pool, limit_scope, group_name, key_digest, \
+         live_grants, grants_total, max_period_ms, key_version, key_shard, updated_at) \
+         VALUES ($1, $2, 'ORDINARY', 'RUN', 'forged', $3, 100, 100, 1000, 1, 0, clock_timestamp())",
+    ] {
+        let forged = sqlx::query(statement)
+            .bind(tenant)
+            .bind(namespace)
+            .bind(DIGEST.as_slice())
+            .execute(&runtime)
+            .await
+            .map_err(db_error);
+        assert_eq!(forged.map(drop).unwrap_err().0, "42501", "{statement}");
+    }
+}
+
+/// Security review (suspicion), architecture review M2: a key row is written only under the active key version, which
+/// a deciding transaction reads through a function that takes it shared; a retired version is never active again.
+#[tokio::test]
+async fn a_key_row_is_written_only_under_the_active_version_and_a_retired_one_stays_retired() {
+    let w = world().await;
+    let pool = &w.db.pool;
+    let runtime = w.db.runtime_pool().await;
+    let run = a_run(&w).await;
+    assert_eq!(activate_key(pool, 1).await.0, "ACTIVATED");
+    assert_eq!(activate_key(pool, 2).await.0, "ACTIVATED");
+    let stale = sqlx::query(
+        "INSERT INTO concurrency_semaphores (tenant_id, namespace_id, pool, permit_scope, group_name, key_digest, \
+         key_version, key_shard, updated_at) VALUES ($1, $2, 'ORDINARY', 'RUN', '=flow-anchor', $3, 1, 7, clock_timestamp())",
+    )
+    .bind(run.0)
+    .bind(run.1)
+    .bind(DIGEST.as_slice())
+    .execute(&runtime)
+    .await
+    .map_err(db_error);
+    assert_eq!(
+        stale.map(drop).unwrap_err().0,
+        "23001",
+        "version 1 is no longer the active one"
+    );
+    let mut tx = runtime.begin().await.expect("tx");
+    let active: i16 = sqlx::query_scalar("SELECT flow_control_active_key_version()")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("the runtime role reads the active version, shared");
+    assert_eq!(active, 2);
+    tx.rollback().await.expect("rollback");
+    semaphore(&runtime, run, 2).await;
+    sqlx::query("UPDATE flow_control_key_versions SET state = 'RETIRED', retired_at = clock_timestamp() WHERE version = 1")
+        .execute(pool)
+        .await
+        .expect("the operator retires version 1");
+    sqlx::query("DELETE FROM concurrency_semaphores")
+        .execute(pool)
+        .await
+        .expect("drain");
+    assert_eq!(
+        activate_key(pool, 1).await.0,
+        "RETIRED",
+        "a retired version is never active again"
+    );
+}
+
+/// Correctness review m6: a key emptied and filled again in one transaction keeps its row (the empty row is deleted at
+/// commit, not at the delete), and a waiter row is refused an update with the guard's own error.
+#[tokio::test]
+async fn a_key_emptied_and_filled_in_one_transaction_keeps_its_row() {
+    let w = world().await;
+    let pool = &w.db.pool;
+    let first = a_run(&w).await;
+    let second = a_run(&w).await;
+    assert_eq!(activate_key(pool, 1).await.0, "ACTIVATED");
+    semaphore(pool, first, 1).await;
+    holder(pool, first).await.expect("a holder");
+    let mut tx = pool.begin().await.expect("tx");
+    sqlx::query("DELETE FROM concurrency_holders WHERE run_id = $1")
+        .bind(first.2)
+        .execute(&mut *tx)
+        .await
+        .expect("released");
+    holder(&mut *tx, second)
+        .await
+        .expect("the next holder of the same key");
+    tx.commit().await.expect("commit");
+    assert_eq!(counts(pool, first.0).await, Some((1, 0)));
+
+    window(pool, first, 1).await;
+    sqlx::query(
+        "INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, group_name, \
+         key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard) \
+         VALUES ($1, $2, $3, 'a', 1, 'ORDINARY', 'STEP', 'provider-starts', $4, 10, 1000, clock_timestamp(), \
+                 clock_timestamp() + interval '1 minute', 3)",
+    )
+    .bind(first.0)
+    .bind(first.1)
+    .bind(first.2)
+    .bind(DIGEST.as_slice())
+    .execute(pool)
+    .await
+    .expect("a waiter");
+    let changed = sqlx::query("UPDATE rate_limit_waiters SET declared_limit = 2")
+        .execute(pool)
+        .await
+        .map_err(db_error);
+    assert_eq!(
+        changed.map(drop).unwrap_err().0,
+        "23001",
+        "a waiter is never changed"
     );
 }

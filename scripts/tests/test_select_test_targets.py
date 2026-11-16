@@ -402,7 +402,9 @@ class Scope(unittest.TestCase):
         for rel in ("crates/scheduler/src/flow_control.rs", "crates/scheduler/src/passes.rs",
                     "crates/domain/src/execution/state.rs", "crates/domain/src/execution/flow_control.rs",
                     "crates/application/src/concurrency.rs", "crates/application/src/rate_limits.rs",
-                    "crates/application/src/flow_control.rs"):
+                    "crates/application/src/flow_control.rs", "crates/application/src/flow_control/ports.rs",
+                    "crates/application/src/keyed_digest.rs", "crates/domain/src/workflow.rs",
+                    "crates/domain/src/workflow/flow_control.rs"):
             with self.subTest(rel=rel):
                 self.write(rel, f"// {rel}\n")
                 self.commit()
@@ -410,7 +412,7 @@ class Scope(unittest.TestCase):
                 self.base = git(self.root, "rev-parse", "HEAD")
 
     def test_the_rest_of_the_domain_selects_no_suite(self):
-        for rel in ("crates/domain/src/workflow.rs", "crates/domain/src/execution.rs",
+        for rel in ("crates/domain/src/identity.rs", "crates/domain/src/execution.rs",
                     "crates/application/src/flow_control_api.rs"):
             with self.subTest(rel=rel):
                 self.write(rel, f"// {rel}\n")

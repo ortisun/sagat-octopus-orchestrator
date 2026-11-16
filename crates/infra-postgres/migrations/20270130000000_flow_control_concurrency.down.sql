@@ -21,5 +21,8 @@ DROP TABLE concurrency_waiters;
 DROP TABLE concurrency_holders;
 DROP TABLE concurrency_semaphores;
 DROP FUNCTION concurrency_rows_immutable();
+DROP FUNCTION concurrency_semaphore_prune();
 DROP FUNCTION concurrency_semaphore_count();
+DROP FUNCTION flow_control_key_version_current();
+DROP FUNCTION flow_control_active_key_version();
 DROP TABLE flow_control_key_versions;

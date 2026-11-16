@@ -72,8 +72,8 @@ HARNESSES = (
     # Feature 022 (D022-030) adds the scheduler's passes, the reducer and the flow-control ports: a grant, a readiness gate or a
     # reducer rule runs inside the transactions the budget counts.
     (re.compile(r"crates/infra-postgres/|crates/application/src/(worker|execution)(\.rs$|/)|crates/application/src/runs\.rs$"
-                r"|crates/scheduler/|crates/domain/src/execution/"
-                r"|crates/application/src/(concurrency|rate_limits|flow_control)\.rs$"),
+                r"|crates/scheduler/|crates/domain/src/execution/|crates/domain/src/workflow(\.rs$|/)"
+                r"|crates/application/src/(concurrency|rate_limits|flow_control|keyed_digest)(\.rs$|/)"),
      BUDGET_SUITES),
 )
 # Inputs of every Rust package: a change selects the unit tests of every package, and no suite.

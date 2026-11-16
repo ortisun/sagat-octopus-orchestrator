@@ -368,6 +368,23 @@ async fn a_gated_definition_that_reaches_a_continuation_successor_is_refused() {
     .expect("the chain");
     assert_eq!(segments, 1, "no successor was admitted");
 
+    // a gate on a step is refused the same way: the successor's steps would run ungated (security review m1)
+    let mut node_gated = document.clone();
+    node_gated["nodes"][0]["concurrency"] = json!({"limit": 1});
+    swap(node_gated).await;
+    let scheduler = Scheduler::new(
+        fresh(),
+        Engine::new(JsonEvaluator),
+        SystemEntropy,
+        SchedulerSettings::default(),
+    )
+    .with_placement(placement.clone());
+    assert_eq!(
+        scheduler.tick().await.continuations_advanced,
+        0,
+        "a node-level gate is refused at the hand-off too"
+    );
+
     swap(document).await;
     let scheduler = Scheduler::new(
         fresh(),
@@ -381,4 +398,59 @@ async fn a_gated_definition_that_reaches_a_continuation_successor_is_refused() {
         report.continuations_advanced, 1,
         "the refusal was the gate's: {report:?}"
     );
+}
+
+/// Architecture review M3: with no live process at all the registry would record the requirement and then no process
+/// of this build would serve; the activation's own step refuses unless a live process of each kind runs the gate.
+#[tokio::test]
+async fn the_activation_of_an_empty_fleet_is_refused_by_its_own_step() {
+    let w = world().await;
+    let registry = PgInstanceStore::new(w.db.pool.clone());
+    let actor = operator();
+    let activation = Activation {
+        capability: Capability::FlowControlConcurrencyV1,
+        kinds: &KINDS,
+        actor: &actor,
+    };
+    let refused = registry
+        .activate(
+            activation,
+            sagat_infra_postgres::live_capable_step(Capability::FlowControlConcurrencyV1, &KINDS),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(ChangeRefused::Store(_))),
+        "nothing would serve after it: {refused:?}"
+    );
+    let recorded: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM platform_requirements)")
+        .fetch_one(&w.db.pool)
+        .await
+        .expect("read");
+    assert!(!recorded, "nothing was recorded");
+    for kind in KINDS {
+        registry
+            .register(&registration(
+                Uuid::new_v4(),
+                kind,
+                &[Capability::FlowControlConcurrencyV1],
+            ))
+            .await
+            .expect("a process that runs the gate");
+    }
+    assert!(matches!(
+        registry
+            .activate(
+                Activation {
+                    capability: Capability::FlowControlConcurrencyV1,
+                    kinds: &KINDS,
+                    actor: &actor,
+                },
+                sagat_infra_postgres::live_capable_step(
+                    Capability::FlowControlConcurrencyV1,
+                    &KINDS
+                ),
+            )
+            .await,
+        Ok(Activated::Recorded { .. })
+    ));
 }

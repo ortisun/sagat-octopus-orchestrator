@@ -248,6 +248,8 @@ pub struct GateSlot {
     phase: GatePhase,
     /// The attempt a step's gate is for; 0 for a run.
     attempt: u32,
+    /// A concurrency permit must be given back; a rate slot stops counting by time.
+    gate_is_permit: bool,
 }
 
 impl GateSlot {
@@ -312,6 +314,24 @@ impl Gates {
         })
     }
 
+    /// Whether a gate still waits or still holds something to give back: a permit, or a slot of an attempt that may
+    /// still be returned. A run whose steps hold one does not finish.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.slots().any(|slot| {
+            matches!(slot.phase, GatePhase::Queued { .. })
+                || (slot.phase == GatePhase::Held && slot.gate_is_permit)
+        })
+    }
+
+    /// Whether attempt `attempt` may be leased: no gate of it waits, was given back or was given up on.
+    #[must_use]
+    pub fn admits_lease(&self, attempt: u32) -> bool {
+        self.slots()
+            .filter(|slot| slot.attempt == attempt)
+            .all(|slot| slot.phase == GatePhase::Held)
+    }
+
     /// The permit this level holds, if it holds one.
     #[must_use]
     pub fn held_permit(&self) -> Option<&GateSlot> {
@@ -358,7 +378,40 @@ impl Gates {
         fresh: bool,
     ) -> Result<(), ExecutionError> {
         let kind = event.change.kind();
+        let deciding = matches!(
+            event.change,
+            GateChange::ConcurrencyQueued { .. }
+                | GateChange::ConcurrencyAcquired
+                | GateChange::RateQueued { .. }
+                | GateChange::RateGranted { .. }
+        );
+        // a wait that one gate gave up on is over: the other gate cannot then grant or queue it (both or neither,
+        // FR-022-044)
+        let other = match kind {
+            crate::workflow::GateKind::Concurrency => self.rate.as_ref(),
+            crate::workflow::GateKind::RateLimit => self.concurrency.as_ref(),
+        };
+        if deciding
+            && other.is_some_and(|other| {
+                other.attempt == attempt
+                    && matches!(other.phase, GatePhase::TimedOut | GatePhase::Dequeued)
+            })
+        {
+            return Err(ExecutionError::Invariant(
+                "a wait one gate gave up on is not granted by the other",
+            ));
+        }
         let slot = self.slot_mut(kind);
+        // a new attempt does not take the place of a permit the last one still holds
+        if deciding
+            && slot.as_ref().is_some_and(|slot| {
+                slot.attempt != attempt && slot.phase == GatePhase::Held && slot.gate_is_permit
+            })
+        {
+            return Err(ExecutionError::Invariant(
+                "a permit the last attempt holds is given back before the next attempt decides",
+            ));
+        }
         // a slot of an earlier attempt is history: this attempt starts with none
         let current = slot.as_ref().filter(|slot| slot.attempt == attempt);
         let same_key = |slot: &GateSlot| slot.gate == event.gate;
@@ -404,6 +457,7 @@ impl Gates {
             gate: event.gate.clone(),
             phase: next,
             attempt,
+            gate_is_permit: kind == crate::workflow::GateKind::Concurrency,
         });
         Ok(())
     }
