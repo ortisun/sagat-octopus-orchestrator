@@ -365,22 +365,37 @@ def application_runtime_errors(pkgs):
     return errors
 
 
+# The one file of `sagat-application` that may name `tokio`: design 042's blocking parse of a blob source's array
+# (ADR-0092). The gate of design 043 is plain async code over its port, and every other module of the application too.
+APPLICATION_RUNTIME_HOME = "crates/application/src/collection_source.rs"
+
+
 def run_input_runtime_errors(root):
-    """`crates/application/src/run_input.rs` names no runtime outside its tests (D043-071, D043-150)."""
-    path = pathlib.Path(root) / "crates" / "application" / "src" / "run_input.rs"
-    if not path.exists():
-        return []
-    text = path.read_text()
-    masked = without_test_modules(rust_literals(text)[0])
-    return [
-        f"crates/application/src/run_input.rs:{text.count(chr(10), 0, m.start()) + 1}: the gate names `tokio`: it is plain async "
-        f"code over its port, and the runtime lives in the adapter (D043-071)"
-        for m in re.finditer(r"\btokio\b", masked)
-    ]
+    """`sagat-application` names `tokio` only in `collection_source.rs` and in test modules (ADR-0092, D043-071, D043-154)."""
+    base = pathlib.Path(root)
+    errors = []
+    for path in sorted(base.glob("crates/application/src/**/*.rs")):
+        rel = path.relative_to(base).as_posix()
+        if rel == APPLICATION_RUNTIME_HOME:
+            continue
+        text = path.read_text()
+        masked = without_test_modules(rust_literals(text)[0])
+        errors.extend(
+            f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `sagat-application` names `tokio` outside "
+            f"`{APPLICATION_RUNTIME_HOME}`: the `rt` exception of ADR-0092 serves design 042's blocking parse alone, and "
+            f"the gate is plain async code over its port (D043-071)"
+            for m in re.finditer(r"\btokio\b", masked)
+        )
+    return errors
 
 
 # --- every run is created with a checked input (design 043, FR-043-016) -------------------------------------------------------
-RUN_INSERT = re.compile(r"\bINSERT\s+INTO\s+runs\b", re.IGNORECASE)
+# the table name bare, quoted or qualified by its schema (`public.runs`, `"runs"`, `\"public\".\"runs\"`)
+RUN_INSERT = re.compile(r'\bINSERT\s+INTO\s+(?:\\?"?public\\?"?\s*\.\s*)?\\?"?runs\b', re.IGNORECASE)
+# (file, function) of the one forwarder that may call the legacy continue-as-new: `PgRunStore`'s `ChainProgressStore`
+# implementation, which hands it to `PgChainProgressStore` (D043-122); keyed by file and function, so that a function of
+# that name anywhere else is not exempt (architecture review of 2026-11-15, Major 2).
+LEGACY_FORWARDER = ("crates/infra-postgres/src/chain_progress.rs", "continue_as_new")
 # (file, function) -> how many `INSERT INTO runs` it may hold: counted per function, so that a moved line is not a failure.
 RUN_INSERT_PLACES = {
     ("crates/infra-postgres/src/execution.rs", "create"): 1,
@@ -444,8 +459,8 @@ def run_creator_errors(root):
                 )
         for m in LEGACY_CONTINUATION.finditer(masked):
             inside = enclosing_function(masked, m.start())
-            if inside is not None and inside[0] == "continue_as_new":
-                continue  # a forwarder of the trait method to its implementation
+            if inside is not None and (rel, inside[0]) == LEGACY_FORWARDER:
+                continue  # the forwarder of the trait method to its implementation
             errors.append(
                 f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: the legacy continue-as-new is called outside the tests: it "
                 f"carries an input nobody checked; use the evaluated continuation (FR-043-016, ADR-0090 decision 1)"
@@ -475,6 +490,15 @@ def run_creator_errors(root):
                 f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{CHECKED_INPUT}` implements `{m.group(1)}`: an input that "
                 f"no gate checked could be made from nothing or from bytes (D043-045)"
             )
+    # a migration writes no run either: a function or a trigger that inserts one would create it unchecked
+    base = pathlib.Path(root)
+    for path in sorted(base.glob("crates/infra-postgres/migrations/*.up.sql")):
+        text = path.read_text()
+        for m in RUN_INSERT.finditer(text):
+            errors.append(
+                f"{path.relative_to(base).as_posix()}:{text.count(chr(10), 0, m.start()) + 1}: a migration writes an "
+                f"`INSERT INTO runs`: a run row is written only where its input is a `CheckedRunInput` (FR-043-016)"
+            )
     for key, allowed in RUN_INSERT_PLACES.items():
         if counts.get(key, 0) == 0 and (pathlib.Path(root) / key[0]).exists():
             errors.append(
@@ -483,6 +507,51 @@ def run_creator_errors(root):
             )
     if not any((pathlib.Path(root) / key[0]).exists() for key in RUN_INSERT_PLACES):
         errors.append(f"no file named by the run-insert rule is under {root}: the rule would check nothing")
+    return errors
+
+
+# The creators a composition root builds, each of which holds the unwired gate until it is given one (D043-120): a
+# service built without `.with_run_inputs` refuses every start of a version with an `inputSchema` as busy, and an engine
+# creator retries it forever (architecture review of 2026-11-15, Major 3).
+GATED_CONSTRUCTORS = re.compile(r"\b(RunService|Scheduler|EventDispatcher|ScheduleService)\s*::\s*new\s*\(")
+
+
+def balanced_end(masked, i):
+    """The index after the group that opens at `masked[i]` (`(`), or `None` when it does not close."""
+    depth = 0
+    for j in range(i, len(masked)):
+        if masked[j] in "([{":
+            depth += 1
+        elif masked[j] in ")]}":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+    return None
+
+
+def gate_wiring_errors(root):
+    """Every creator a composition root under `apps/*/src` builds is given the gate in its builder chain."""
+    errors = []
+    base = pathlib.Path(root)
+    for path in sorted(base.glob("apps/*/src/**/*.rs")):
+        rel = path.relative_to(base).as_posix()
+        text = path.read_text()
+        masked = without_test_modules(rust_literals(text)[0])
+        for m in GATED_CONSTRUCTORS.finditer(masked):
+            end = balanced_end(masked, m.end() - 1)
+            methods = []
+            while end is not None:
+                chained = re.match(r"\s*\.\s*(\w+)\s*\(", masked[end:])
+                if not chained:
+                    break
+                methods.append(chained.group(1))
+                end = balanced_end(masked, end + chained.end() - 1)
+            if "with_run_inputs" not in methods:
+                errors.append(
+                    f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `{m.group(1)}::new` is not given the run-input gate "
+                    f"(`.with_run_inputs`) in its builder chain: without it every start of a version with an `inputSchema` "
+                    f"is refused as busy (D043-120)"
+                )
     return errors
 
 
@@ -595,6 +664,7 @@ def main(argv):
     errors.extend(application_runtime_errors(pkgs))
     errors.extend(run_creator_errors(rust_root))
     errors.extend(run_input_runtime_errors(rust_root))
+    errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
 
     # Cycle detection over workspace members (DFS, three colours).

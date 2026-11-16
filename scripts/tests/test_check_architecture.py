@@ -494,7 +494,21 @@ class TheApplicationHoldsNoRuntime(unittest.TestCase):
             "crates/application/src/run_input.rs": GATE + "async fn f() { tokio::task::yield_now().await; }\n",
         }))
         self.assertEqual(code, 1, out)
-        self.assertIn("the gate names `tokio`", out)
+        self.assertIn("crates/application/src/run_input.rs:3: `sagat-application` names `tokio`", out)
+
+    def test_tokio_is_named_only_by_the_blob_source_parse_and_the_tests(self):
+        """ADR-0092 (architecture review of 2026-11-15, Blocker 1): the `rt` exception serves one file."""
+        code, out = creator_check(creator_tree(**{
+            "crates/application/src/runs.rs": "async fn f() { tokio::task::spawn_blocking(|| ()).await; }\n",
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/application/src/runs.rs:1: `sagat-application` names `tokio`", out)
+        self.assertIn("ADR-0092", out)
+        code, out = creator_check(creator_tree(**{
+            "crates/application/src/collection_source.rs": "async fn f() { tokio::task::spawn_blocking(|| ()).await; }\n",
+            "crates/application/src/runs.rs": "//! not `tokio`\n#[cfg(test)]\nmod tests {\n    #[tokio::test]\n    async fn t() {}\n}\n",
+        }))
+        self.assertEqual(code, 0, out)
 
     def test_a_build_dependency_is_refused(self):
         code, out = run_input_check({"mod.rs": VALIDATOR}, self.packages(("tokio", "build")))
@@ -590,8 +604,60 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("crates/scheduler/src/passes.rs:1: the legacy continue-as-new", out)
         code, out = creator_check(creator_tree(**{
-            "crates/infra-postgres/src/forward.rs": "async fn continue_as_new(&self, c: &C) { self.inner.continue_as_new(c).await }\n",
+            "crates/infra-postgres/src/chain_progress.rs": CHAINS
+            + "async fn continue_as_new(&self, c: &C) { self.inner.continue_as_new(c).await }\n",
             "crates/scheduler/src/passes.rs": "#[cfg(test)]\nmod tests { fn t() { s.continue_as_new(&c); } }\n",
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_forwarder_named_continue_as_new_elsewhere_is_refused(self):
+        """Architecture review of 2026-11-15, Major 2: the exemption is the one forwarder's, by file and function."""
+        for rel in ("crates/infra-postgres/src/forward.rs", "crates/scheduler/src/passes.rs"):
+            with self.subTest(rel=rel):
+                code, out = creator_check(creator_tree(**{
+                    rel: "async fn continue_as_new(&self, c: &C) { self.inner.continue_as_new(c).await }\n",
+                }))
+                self.assertEqual(code, 1, out)
+                self.assertIn(f"{rel}:1: the legacy continue-as-new", out)
+
+    def test_a_qualified_or_quoted_table_name_and_a_migration_are_read_too(self):
+        """Architecture review of 2026-11-15, Nit 16."""
+        for sql in ("INSERT INTO public.runs (id) VALUES ($1)", 'INSERT INTO \\"runs\\" (id) VALUES ($1)',
+                    'insert into \\"public\\".\\"runs\\" (id)'):
+            with self.subTest(sql=sql):
+                code, out = creator_check(creator_tree(**{
+                    "crates/infra-postgres/src/other.rs": f'fn shortcut() {{ let q = "{sql}"; }}\n',
+                }))
+                self.assertEqual(code, 1, out)
+                self.assertIn("crates/infra-postgres/src/other.rs:1", out)
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/migrations/20990101000000_x.up.sql": "CREATE FUNCTION f() AS $$\n  INSERT INTO runs (id) VALUES (1);\n$$;\n",
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/infra-postgres/migrations/20990101000000_x.up.sql:2", out)
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/migrations/20990101000000_x.up.sql": "INSERT INTO runs_archive (id) VALUES (1);\n",
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_composition_root_wires_the_gate_into_every_creator_it_builds(self):
+        """Architecture review of 2026-11-15, Major 3: a service built without `.with_run_inputs` holds the unwired gate,
+        which refuses every start of a version with a schema as busy (D043-120)."""
+        for ctor in ("RunService::new", "sagat_application::runs::RunService::new", "Scheduler::new",
+                     "EventDispatcher::new", "ScheduleService::new"):
+            with self.subTest(ctor=ctor):
+                code, out = creator_check(creator_tree(**{
+                    "apps/control-plane/src/lib.rs": f"fn build() -> S {{\n    {ctor}(a, b)\n        .with_lag_budget(x)\n}}\n",
+                }))
+                self.assertEqual(code, 1, out)
+                self.assertIn("apps/control-plane/src/lib.rs:2: ", out)
+                self.assertIn("with_run_inputs", out)
+        code, out = creator_check(creator_tree(**{
+            "apps/control-plane/src/lib.rs": (
+                "fn build() -> S {\n    RunService::new(a, f(b, c))\n        .with_run_inputs(gate(m))\n        .with_lag_budget(x)\n}\n"
+                "fn other() { let s = Scheduler::new(a).with_children(c).with_run_inputs(g); }\n"
+                "#[cfg(test)]\nmod tests { fn t() { let _ = RunService::new(a); } }\n"
+            ),
         }))
         self.assertEqual(code, 0, out)
 

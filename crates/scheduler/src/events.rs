@@ -466,7 +466,7 @@ where
             Ok(input) => input,
             Err(InputRefusal::Unavailable) => {
                 return Err(StoreError::Unavailable {
-                    detail: "the run input could not be checked now".into(),
+                    detail: INPUT_NOT_CHECKED.into(),
                 }
                 .into());
             }
@@ -1029,10 +1029,18 @@ const fn is_waiting_for_room(error: &EngineError) -> bool {
     )
 }
 
+/// The detail of a dispatch that waits for room in the run-input validator (design 043): no permit within the wait, the
+/// backstop, an interrupted compile. Transient, like a store that cannot be reached, and said as itself.
+const INPUT_NOT_CHECKED: &str = "the run input could not be checked now";
+
 /// What the event records about a failed dispatch: a class, never a detail (details can carry
 /// identifiers and are only in the logs).
 fn describe(error: &EngineError) -> &'static str {
     match error {
+        // architecture review of 2026-11-15, Nit 12: not a storage fault
+        EngineError::Store(StoreError::Unavailable { detail }) if detail == INPUT_NOT_CHECKED => {
+            "the run input could not be checked now; will retry"
+        }
         EngineError::Store(StoreError::Unavailable { .. }) => "storage unavailable; will retry",
         EngineError::Store(StoreError::QuotaExceeded { .. }) => {
             "a quota of the namespace or tenant was reached; will retry"
@@ -1040,5 +1048,26 @@ fn describe(error: &EngineError) -> &'static str {
         EngineError::Store(StoreError::MissingReference) => "a referenced resource is gone",
         EngineError::Store(_) => "storage error; see the logs",
         EngineError::Execution(_) => "the run refused the command; see the logs",
+    }
+}
+
+#[cfg(test)]
+mod input_not_checked_tests {
+    use super::*;
+
+    /// A trigger start that waits for room in the run-input validator is recorded as that, not as storage.
+    #[test]
+    fn a_start_waiting_for_the_validator_is_not_described_as_storage() {
+        let waiting: EngineError = StoreError::Unavailable {
+            detail: INPUT_NOT_CHECKED.into(),
+        }
+        .into();
+        assert!(is_waiting_for_room(&waiting));
+        assert_eq!(
+            describe(&waiting),
+            "the run input could not be checked now; will retry"
+        );
+        let storage: EngineError = StoreError::Unavailable { detail: "x".into() }.into();
+        assert_eq!(describe(&storage), "storage unavailable; will retry");
     }
 }
