@@ -1178,3 +1178,200 @@ async fn an_unusable_schema_refuses_with_start_rerun_and_trigger_now() {
     assert_eq!(refused, unusable);
     assert!(f.outcomes(&schedule).await.is_empty());
 }
+
+/// Correctness review of 2026-11-15, Major 2 (FR-043-013): in `report` mode a Signal-with-Start that an open holder answers
+/// is audited once, in the transaction that signals the holder and keeps the start's receipt, so a retry of the same key
+/// audits nothing more; a plain start that `USE_EXISTING` answers with the holder writes nothing else, and its audit is
+/// written with that answer.
+#[tokio::test]
+async fn report_mode_audits_a_start_that_an_open_holder_answers() {
+    use sagat_application::runs::{SignalAtStart, StartOptions, StartRun};
+    use sagat_domain::business_ids::ReusePolicy;
+    use sagat_infra_schema::run_input::RunInputValidator;
+
+    use crate::support::run_input::audits;
+
+    let f = fixture().await;
+    let mut waiter = document(
+        &format!("report-holder-{}", uuid::Uuid::now_v7()),
+        "w",
+        vec![
+            crate::support::engine::with(
+                crate::support::engine::wait_node(
+                    "w",
+                    crate::with_start::SIGNAL,
+                    "input.k",
+                    300_000,
+                    None,
+                ),
+                "next",
+                json!("notify"),
+            ),
+            activity("notify"),
+        ],
+    );
+    waiter["inputSchema"] = json!({
+        "type": "object",
+        "required": ["k"],
+        "properties": {"k": {"type": "string"}}
+    });
+    let (workflow, _) = f.w.publish(waiter).await;
+    let business = || crate::with_start::business("report-holder", ReusePolicy::AllowDuplicate);
+    let holder =
+        f.w.runs
+            .start_with_options(
+                &f.w.admin,
+                &StartRun {
+                    namespace: "payments",
+                    workflow,
+                    version: None,
+                    input: br#"{"k": "s"}"#,
+                    correlation_id: None,
+                    deadline: None,
+                    key: &crate::business_ids::key(),
+                },
+                StartOptions {
+                    business: Some(business()),
+                    ..StartOptions::default()
+                },
+                &crate::support::engine::ctx(),
+            )
+            .await
+            .expect("the holder")
+            .run
+            .info
+            .run_id;
+    let reported = sagat_application::runs::RunService::new(
+        f.w.store.clone(),
+        sagat_application::clock::SystemClock,
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        f.w.cache.clone(),
+    )
+    .with_run_inputs(RunInputValidator::gate(InputValidationMode::Report))
+    .with_declared_updates(std::sync::Arc::new(
+        sagat_infra_ir::JsonDeclaredOperationEvaluator,
+    ));
+    let key = crate::business_ids::key();
+    let signal = || async {
+        reported
+            .signal_with_start(
+                &f.w.admin,
+                &StartRun {
+                    namespace: "payments",
+                    workflow,
+                    version: None,
+                    input: br#"{"k": 5}"#,
+                    correlation_id: None,
+                    deadline: None,
+                    key: &key,
+                },
+                business(),
+                SignalAtStart {
+                    name: crate::with_start::SIGNAL,
+                    payload: b"{}",
+                },
+                &crate::support::engine::ctx(),
+            )
+            .await
+    };
+    let served = signal().await.expect("the holder is signalled");
+    assert!(!served.started);
+    assert_eq!(served.run.info.run_id, holder);
+    let needle = "reported: RUN_INPUT_INVALID rule=type";
+    assert_eq!(
+        audits(&f.w, "run.input_refused", needle).await,
+        1,
+        "a reported start that its holder answered is audited"
+    );
+    signal()
+        .await
+        .expect("a retry is answered from the receipt");
+    assert_eq!(
+        audits(&f.w, "run.input_refused", needle).await,
+        1,
+        "and only once across a retry"
+    );
+    let plain = reported
+        .start_with_options(
+            &f.w.admin,
+            &StartRun {
+                namespace: "payments",
+                workflow,
+                version: None,
+                input: br#"{"k": 6}"#,
+                correlation_id: None,
+                deadline: None,
+                key: &crate::business_ids::key(),
+            },
+            StartOptions {
+                business: Some(business()),
+                ..StartOptions::default()
+            },
+            &crate::support::engine::ctx(),
+        )
+        .await
+        .expect("the holder answers");
+    assert_eq!(plain.run.info.run_id, holder);
+    assert_eq!(
+        audits(&f.w, "run.input_refused", needle).await,
+        2,
+        "a plain start answered by its holder is audited with that answer"
+    );
+}
+
+/// Row 14, correctness review of 2026-11-15, Major 3: the write check is never stricter than the action check. It fills
+/// `nominalTimeField` with the next nominal time, as the action will (D043-008), not the instant of the write, so a
+/// time-shaped `pattern` that every action passes does not refuse a write made between two times; and a field declared
+/// through a local `$ref` or an `allOf` member is a declared string property.
+#[tokio::test]
+async fn row_14_the_write_fills_the_next_nominal_time_and_resolves_the_declaration() {
+    let on_the_hour = json!({
+        "type": "string",
+        "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:00:00Z$"
+    });
+    for (name, schema) in [
+        (
+            "row-14-hour",
+            json!({"type": "object", "properties": {"at": on_the_hour}}),
+        ),
+        (
+            "row-14-ref",
+            json!({
+                "type": "object",
+                "properties": {"at": {"$ref": "#/$defs/time"}},
+                "$defs": {"time": on_the_hour}
+            }),
+        ),
+        (
+            "row-14-allof",
+            json!({
+                "type": "object",
+                "allOf": [{"properties": {"at": {"allOf": [{"type": "string"}]}}}]
+            }),
+        ),
+    ] {
+        let f =
+            crate::firing::fixture_from(t0() + Duration::minutes(3) + Duration::seconds(27)).await;
+        let mut document = flow(name);
+        document["inputSchema"] = schema;
+        let (workflow, _) = f.w.publish(document).await;
+        let mut write = f.write_of(
+            name,
+            &hourly(),
+            &json!({}),
+            Some(json!({"workflowId": workflow.to_string(), "nominalTimeField": "at"})),
+        );
+        write.input = json!({});
+        let schedule = f.try_create(write).await.unwrap_or_else(|error| {
+            panic!("{name}: every action would pass, so the write does: {error:?}")
+        });
+        // and the action does pass, at the time the write filled in
+        f.clock.advance(Duration::hours(1));
+        f.drain(&schedule).await;
+        assert_eq!(
+            f.outcomes(&schedule).await,
+            outcomes_of(&[("STARTED", 1)]),
+            "{name}"
+        );
+    }
+}

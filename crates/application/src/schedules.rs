@@ -1118,20 +1118,78 @@ fn calendar_error(error: CalendarFailure) -> AppError {
     }
 }
 
-/// Whether `schema` declares `name` as a top-level property whose `type` is or includes `"string"` (D043-008).
+/// Whether `schema` declares `name` as a top-level property whose `type` is or includes `"string"` (D043-008). The
+/// declaration is read as the validator applies the schema: through the root's local `$ref`s and the members of its
+/// `allOf`, and the property's own, so a field declared through a reference is declared (correctness review of
+/// 2026-11-15, Major 3). Called only on a schema the gate accepted, whose references are local and acyclic; the
+/// number of schemas it reads is bounded all the same.
 fn declares_string(schema: &[u8], name: &str) -> bool {
-    let Ok(schema) = serde_json::from_slice::<Value>(schema) else {
+    let Ok(root) = serde_json::from_slice::<Value>(schema) else {
         return false;
     };
-    match schema
-        .get("properties")
-        .and_then(|p| p.get(name))
-        .and_then(|p| p.get("type"))
-    {
-        Some(Value::String(kind)) => kind == "string",
-        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind == "string"),
-        _ => false,
+    let mut budget = DECLARATION_READS;
+    applied(&root, &root, &mut budget).into_iter().any(|node| {
+        node.get("properties")
+            .and_then(|properties| properties.get(name))
+            .is_some_and(|property| {
+                applied(&root, property, &mut budget)
+                    .into_iter()
+                    .any(|node| match node.get("type") {
+                        Some(Value::String(kind)) => kind == "string",
+                        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind == "string"),
+                        _ => false,
+                    })
+            })
+    })
+}
+
+/// The most schemas [`declares_string`] reads.
+const DECLARATION_READS: usize = 256;
+
+/// The schemas that apply wherever `node` does, in its document `root`: `node`, its `$ref` target, and the members of
+/// its `allOf`, followed down while `budget` lasts.
+fn applied<'a>(root: &'a Value, node: &'a Value, budget: &mut usize) -> Vec<&'a Value> {
+    let mut out = Vec::new();
+    let mut pending = vec![node];
+    while let Some(node) = pending.pop() {
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
+        out.push(node);
+        if let Some(Value::String(reference)) = node.get("$ref")
+            && let Some(target) = local_target(root, reference)
+        {
+            pending.push(target);
+        }
+        if let Some(Value::Array(members)) = node.get("allOf") {
+            pending.extend(members.iter());
+        }
     }
+    out
+}
+
+/// The schema a local `$ref` (`#/...`, `~` and `%` escapes decoded) names in `root`.
+fn local_target<'a>(root: &'a Value, reference: &str) -> Option<&'a Value> {
+    let pointer = reference.strip_prefix('#')?;
+    let mut bytes = Vec::with_capacity(pointer.len());
+    let raw = pointer.as_bytes();
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'%' {
+            let hex = std::str::from_utf8(raw.get(i + 1..i + 3)?).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            bytes.push(raw[i]);
+            i += 1;
+        }
+    }
+    let decoded = String::from_utf8(bytes).ok()?;
+    if decoded.is_empty() {
+        return Some(root);
+    }
+    root.pointer(&decoded)
 }
 
 /// The input as the payload that is stored: an object of at most [`MAX_INPUT_BYTES`].
@@ -1354,33 +1412,16 @@ where
             return Ok(());
         };
         let field = write.target.nominal_time_field();
-        if let Some(field) = field
-            && !declares_string(schema.bytes(), field)
-        {
-            return Err(invalid(
-                "NOMINAL_TIME_FIELD_INVALID",
-                "/action/nominalTimeField",
-            ));
-        }
-        let mut input = stored.bytes.clone();
-        if let Some(field) = field {
-            let mut value: Value =
-                serde_json::from_slice(&input).map_err(|_| AppError::Internal)?;
-            if let Some(map) = value.as_object_mut() {
-                let text = now
-                    .to_offset(time::UtcOffset::UTC)
-                    .replace_nanosecond(0)
-                    .ok()
-                    .and_then(|at| {
-                        at.format(&time::format_description::well_known::Rfc3339)
-                            .ok()
-                    })
-                    .ok_or(AppError::Internal)?;
-                map.insert(field.to_owned(), Value::String(text));
-            }
-            input = serde_json::to_vec(&value).map_err(|_| AppError::Internal)?;
-        }
-        match gate
+        // the next nominal time, as the first action will fill it (D043-008): the instant of the write would refuse a
+        // time-shaped `pattern` that every action passes (correctness review of 2026-11-15, Major 3)
+        let nominal = self
+            .calendar
+            .next_after(&write.spec, now)
+            .map_err(calendar_error)?
+            .unwrap_or(now);
+        let input =
+            crate::schedule_firing::with_nominal_time(stored.bytes.clone(), field, nominal)?;
+        let checked = gate
             .check(
                 principal.tenant_id(),
                 version,
@@ -1389,9 +1430,16 @@ where
                 crate::run_input::Creator::Schedule,
                 crate::run_input::FieldPolicy::Show,
             )
-            .await
-        {
-            Ok(_) => Ok(()),
+            .await;
+        match checked {
+            // the field is a declared string property of a schema the gate accepted (018's contract)
+            Ok(_) => match field {
+                Some(field) if !declares_string(schema.bytes(), field) => Err(invalid(
+                    "NOMINAL_TIME_FIELD_INVALID",
+                    "/action/nominalTimeField",
+                )),
+                _ => Ok(()),
+            },
             Err(crate::run_input::InputRefusal::Invalid { field: at, rule }) => {
                 let pointer = if at == "/" {
                     "/action/input".to_owned()

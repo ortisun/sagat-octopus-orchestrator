@@ -1837,8 +1837,9 @@ fn nominal_text(nominal: OffsetDateTime) -> Result<String, AppError> {
         .map_err(|_| AppError::Internal)
 }
 
-/// The input of the run, with the nominal time set in the declared field (RFC 3339, UTC, seconds).
-fn with_nominal_time(
+/// The input of the run, with the nominal time set in the declared field (RFC 3339, UTC, seconds). The write check of a
+/// schedule fills it the same way (design 043, row 14).
+pub(crate) fn with_nominal_time(
     input: Vec<u8>,
     field: Option<&str>,
     nominal: OffsetDateTime,
