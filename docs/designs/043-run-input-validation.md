@@ -1,8 +1,14 @@
 # Run input validation
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Draft
+*   **Status:** Approved
 *   **Date:** 2026-11-16
+*   **Reviewed-commit:** 4b6eb1a649b281660c4622e20d0b348322a7d8a4
+*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
+*   **Claude-Code:** 2.1.325
+*   **Reports:** docs/designs/043-run-input-validation.reviews/2026-11-16/round-2/reread-egm-review.md sha256:374a7801168180a0c72246d7cc8dfbb95e1c02a9a885bde87c27e244fe728e29; docs/designs/043-run-input-validation.reviews/2026-11-16/round-2/reread-architecture.md sha256:e571280931fa6eff1fe39d045e99b0fe8e6cd2703bb9dca7bf72088f1ce4e28f; docs/designs/043-run-input-validation.reviews/2026-11-16/round-2/reread-security.md sha256:e4773b83d089c81467664f3f84adaeb9da653d2677718f879f690f04265776cb; docs/designs/043-run-input-validation.reviews/2026-11-16/round-2/reread-correctness.md sha256:e307f3b1a56630f3ffa5adc005218fb8680efd6b590367e691e67c68f2ed8d7d
+*   **Open findings:** Blocker 0, Major 0
+*   **Accepted:** 7; OD-2026-11-16-100, OD-2026-11-16-101, OD-2026-11-16-102, OD-2026-11-16-103, OD-2026-11-16-104, OD-2026-11-16-105, OD-2026-11-16-106
 
 --------------------------------------------------------------------------------
 
@@ -950,14 +956,17 @@ runs. The order that kept the build green: T043-1 and T043-2; T043-13 and T043-2
 and T043-4 together with the gate wired at every creator (a `CheckedRunInput` can only come from the gate); T043-20
 before any creator refused; T043-11's migrations before T043-12 lists the capability; then the rest.
 
-- [ ] T043-1 Carried `InputSchema` (the canonical bytes, an `Arc<[u8]>`, and their SHA-256) in the parsed
+- [x] T043-1 Carried `InputSchema` (the canonical bytes, an `Arc<[u8]>`, and their SHA-256) in the parsed
   `WorkflowDefinition`, counted by its footprint, on `parse`, `parse_stored` and their private twins.
   Files: `crates/domain/src/workflow.rs`, `crates/infra-ir/src/lib.rs`, `crates/infra-ir/src/continuation.rs`.
   Tests: `crates/infra-ir/tests/cache.rs` (`the_parsed_definition_carries_the_canonical_input_schema_and_its_sha256`,
   `a_continuation_definition_carries_its_input_schema`, `the_input_schema_is_counted_by_the_definition_footprint`).
   Refs: FR-043-001, NFR-043-PERF
   Owner-gate: OD-2026-11-14-2
-- [ ] T043-2 Built `InputSchemas`, the platform's validator of the subset of
+  Evidence (2026-11-16): the unit tests of `sagat-infra-ir` at `f48d5729` (in the 2,338 passed, 0 failed of
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval"), among them the three
+    tests named above.
+- [x] T043-2 Built `InputSchemas`, the platform's validator of the subset of
   `specs/043-run-input-validation/contracts/input-schema-subset.md`: the pre-check and its `Unusable { issue, keyword,
   at }`, the compiled arena, the work counter, the refusal with its closed `Rule` and pointer, and the `(tenant, digest)`
   cache with its tenant share; patterns parsed by `regex-syntax` 0.8 and compiled by `regex-automata` 0.4 (`meta`, with
@@ -997,7 +1006,10 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   (`integration_run_input_cache`, `tests/integration/run-input-cache/`, a process of its own).
   Refs: FR-043-002, FR-043-011, FR-043-014, NFR-043-BOUND, NFR-043-SEC, SC-043-004
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11, OD-2026-11-14-14
-- [ ] T043-3 Built the gate and its type in `application`: the `SchemaValidator` port and its types (`SchemaKey`,
+  Evidence (2026-11-16): the unit tests of `sagat-infra-schema` at `f48d5729` (in the 2,338 passed) with every test named
+    above; `integration_run_input_cache` 1 passed in both roles at `4b6eb1a6`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-3 Built the gate and its type in `application`: the `SchemaValidator` port and its types (`SchemaKey`,
   `SchemaRefusal`, `Rule`, `PathSegment`, `Unusable`, re-exported by the adapter), `RunInputGate` with `unwired()`,
   `check`, `check_schema` and `recheck`, `CheckedRunInput` (the version id; fields and constructor private to its
   module; a `test-support` constructor and a `test-support` validator double, `Scripted`), the field policy, the metrics
@@ -1025,7 +1037,11 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `a_release_in_the_gap_of_a_timed_out_waiter_is_not_counted_twice`, `no_permit_within_the_wait_is_busy`).
   Refs: FR-043-001, FR-043-013, FR-043-014, NFR-043-PERF, NFR-043-BOUND
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-8, OD-2026-11-14-14
-- [ ] T043-4 Made `NewRun.input`, `ContinuationSelection` and `EvaluatedChainHandoffCommand.input` a `CheckedRunInput`,
+  Evidence (2026-11-16): the unit tests of `sagat-application` and `sagat-infra-schema` at `f48d5729` (in the 2,338
+    passed); `a_buffered_action_released_and_started_is_counted_once` passed in both roles of
+    `integration_schedules_bulk_operations` (757 passed) at `4b6eb1a6`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-4 Made `NewRun.input`, `ContinuationSelection` and `EvaluatedChainHandoffCommand.input` a `CheckedRunInput`,
   so that every creator that builds one goes through the gate. `PgRunStore::create` and `continue_evaluated` refuse an
   input checked against another version (FR-043-017). The seven rules of FR-043-016 were added. Every composition root,
   and the test harness, gives each creator it builds the gate (`.with_run_inputs` on `RunService`, `Scheduler`,
@@ -1043,7 +1059,11 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   case), and the fixtures of `scripts/tests/test_check_architecture.py`.
   Refs: FR-043-016, FR-043-017
   Owner-gate: OD-2026-11-14-2
-- [ ] T043-5 Checked rows 1 to 5 in `start_with`: the error variant and its mapping, the lookup of the key before any
+  Evidence (2026-11-16): `integration_durable_execution` 192 passed and `integration_workflow_primitives` 805 passed, both
+    roles, at `4b6eb1a6`; `scripts/check-architecture.py` passed and its fixtures ran in `python3 -m unittest discover
+    -s scripts/tests` (OK) at `f48d5729`; `specs/043-run-input-validation/validation-report.md`, section "the gates of
+    the approval".
+- [x] T043-5 Checked rows 1 to 5 in `start_with`: the error variant and its mapping, the lookup of the key before any
   refusal, the `409` after a promotion, the refusal with an open holder, `FieldPolicy::Root` for every repeat (D043-121),
   the uploaded-input start against its descriptor (replacing `RunInputChecker`), the check of a `CANCEL_SOURCE` reset at
   its request, and the batch and pending-reset outcomes.
@@ -1070,7 +1090,10 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `an_unusable_schema_has_no_field_and_no_rule_and_no_room_is_retryable`, `every_rule_is_answered_by_its_closed_name`).
   Refs: FR-043-001, FR-043-003, FR-043-004, FR-043-005, FR-043-010, FR-043-011
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-10, OD-2026-11-14-11
-- [ ] T043-6 Checked row 13 (the ad hoc execution, the connection probe and the private rerun): the caller's document
+  Evidence (2026-11-16): `integration_durable_execution` 192, `integration_workflow_primitives` 805 and
+    `integration_schedules_bulk_operations` 757 passed in both roles at `4b6eb1a6`; the `sagat-api-http` unit tests at
+    `f48d5729`; `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-6 Checked row 13 (the ad hoc execution, the connection probe and the private rerun): the caller's document
   parsed in the process's mode, its own replay, a key never shared, the same permits, `/` and `other` for a private rerun.
   Files: `crates/application/src/runs/ad_hoc.rs`, `crates/application/src/execution.rs` (`parse_document_in`).
   Tests: `tests/integration/database-connections/run_input.rs` (refused with the field and the rule, the replay, the
@@ -1080,7 +1103,9 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   database and one connection.
   Refs: FR-043-001, FR-043-003, FR-043-004, FR-043-011
   Owner-gate: OD-2026-11-14-2
-- [ ] T043-7 Checked rows 9 and 10: the delivery without a run and its audit in one transaction, the cron tick's audit
+  Evidence (2026-11-16): `integration_database_connections` 7 passed in both roles at `4b6eb1a6`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-7 Checked rows 9 and 10: the delivery without a run and its audit in one transaction, the cron tick's audit
   with the compare-and-set move of its trigger, no audit for a tick whose key holds a run, the metric, `Started::No`.
   Files: `crates/scheduler/src/events.rs`, `crates/application/src/dispatch.rs` (`DeliveryRef::refused_at_trigger`, the
   ports `record_refused_delivery` and `refuse_cron_tick`), `crates/infra-postgres/src/dispatch.rs` (their writes),
@@ -1095,7 +1120,10 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `a_crash_between_the_refused_delivery_and_its_audit_keeps_neither_and_the_retry_records_both_once`.
   Refs: FR-043-001, FR-043-007
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11
-- [ ] T043-8 Checked row 11 with `CHILD_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE`, also for a parent created before
+  Evidence (2026-11-16): `integration_events_webhooks_messaging` 120 and `fault_events_webhooks_messaging` 12 passed in
+    both roles at `4b6eb1a6`; `specs/043-run-input-validation/validation-report.md`, section "the gates of the
+    approval".
+- [x] T043-8 Checked row 11 with `CHILD_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE`, also for a parent created before
   the check was on; fail the step only if, under the step's row lock, its child was not claimed (D043-164).
   Files: `crates/scheduler/src/passes.rs` (`start_child`, `Condition::ChildNotStarted`, the test hook
   `with_before_child_check`), `crates/application/src/execution.rs` and `crates/infra-postgres/src/execution.rs`
@@ -1106,7 +1134,9 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `a_child_claimed_while_its_refusal_waits_for_the_step_is_not_failed`.
   Refs: FR-043-001, FR-043-008, FR-043-011
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-9, OD-2026-11-14-11
-- [ ] T043-9 Checked row 12 with `CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE`, also for a chain started
+  Evidence (2026-11-16): `integration_workflow_primitives` 805 passed in both roles at `4b6eb1a6`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-9 Checked row 12 with `CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE`, also for a chain started
   before the check was on: the schema read under the run's lock, checked after it is released, the failure through the
   fenced path; `InputUnavailable` counted as a wait; the `report` audit in the hand-off.
   Files: `crates/scheduler/src/passes.rs`, `crates/infra-postgres/src/chain_progress.rs`, `crates/domain/src/execution/event.rs`.
@@ -1114,7 +1144,9 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `fault_workflow_primitives`: `a_restart_between_the_check_of_a_continuation_and_its_failure_fails_the_run_once`.
   Refs: FR-043-001, FR-043-009, FR-043-011
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-9, OD-2026-11-14-11
-- [ ] T043-10 Checked row 14: `ScheduleStore::target_version` (the target version's document, one statement; `target_check`
+  Evidence (2026-11-16): `integration_workflow_primitives` 805 and `fault_workflow_primitives` 93 passed in both roles at
+    `4b6eb1a6`; `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-10 Checked row 14: `ScheduleStore::target_version` (the target version's document, one statement; `target_check`
   unchanged) and `ScheduleService::with_run_inputs` (the gate and a definition cache); the input checked with
   `nominalTimeField` filled with the next nominal time; `SCHEDULE_INPUT_INVALID` under `/action/input`;
   `NOMINAL_TIME_FIELD_INVALID` for a field the schema does not declare as a string, read through `$ref` and `allOf`;
@@ -1126,7 +1158,9 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `row_14_the_write_fills_the_next_nominal_time_and_resolves_the_declaration`.
   Refs: FR-043-006, FR-043-011
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11
-- [ ] T043-11 Checked rows 6 to 8 and added the outcome `INPUT_INVALID`:
+  Evidence (2026-11-16): `integration_schedules_bulk_operations` 757 passed in both roles at `4b6eb1a6`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-11 Checked rows 6 to 8 and added the outcome `INPUT_INVALID`:
   - two migrations: `20270118000000_run_input_validation` drops each CHECK of the action outcomes, of the registry's
     capability lists and of its requirement history in the `ALTER TABLE` that adds its `*_known` superset `NOT VALID`,
     and `20270118000100_run_input_validation_validate` validates them; the first's down migration refuses while a row
@@ -1151,7 +1185,10 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   and `the_run_input_validation_rolls_back_only_while_nothing_names_it` (`integration_platform_foundation`).
   Refs: FR-043-006, NFR-043-COMPAT
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11
-- [ ] T043-12 Read the mode and registered the capability: `SAGAT_RUN_INPUT_VALIDATION` parsed strictly in both apps (an unknown value
+  Evidence (2026-11-16): `integration_schedules_bulk_operations` 757, `fault_schedules_bulk_operations` 131 and
+    `integration_platform_foundation` 107 passed in both roles at `4b6eb1a6`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-12 Read the mode and registered the capability: `SAGAT_RUN_INPUT_VALIDATION` parsed strictly in both apps (an unknown value
   stops the process naming the variable), logged at start, passed to publication and to the gate; the capability
   `run-input-validation-v1` listed only in `enforce`.
   Files: `crates/application/src/instances.rs`, `crates/application/src/definitions.rs` (`InputValidationMode`),
@@ -1165,7 +1202,10 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   (`integration_schedules_bulk_operations`).
   Refs: FR-043-013, NFR-043-COMPAT
   Owner-gate: OD-2026-11-14-8
-- [ ] T043-13 Ran the pre-check at publication, in `sagat validate` and in `sagat workflow validate`, in the mode given
+  Evidence (2026-11-16): the configuration and registry tests of `sagat-control-plane` and `sagat-execution-engine` at
+    `f48d5729` (in the 2,338 passed); `integration_schedules_bulk_operations` 757 passed in both roles at `4b6eb1a6`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-13 Ran the pre-check at publication, in `sagat validate` and in `sagat workflow validate`, in the mode given
   (the process's mode in the control plane; `--input-validation enforce|report`, `enforce` by default, in the CLI): an `IrIssue` naming the keyword
   and its pointer in `enforce`, a `DefinitionWarning` in `report`; a warning for a schema beside a non-manual trigger;
   a version already stored, which publication parses again in `report` when it replays, activates or promotes it, so
@@ -1186,7 +1226,11 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `a_promotion_whose_parse_finds_no_permit_is_unavailable_not_draft_has_changes` (`integration_gitops_versioning`).
   Refs: FR-043-012
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-14
-- [ ] T043-14 Updated the contracts: in the OpenAPI the action outcome `INPUT_INVALID`, the reasons, the closed
+  Evidence (2026-11-16): `integration_gitops_versioning` 41 passed in both roles at `4b6eb1a6`; the unit tests of
+    `sagat-infra-ir`, `sagat-application`, `sagat-api-http` and `sagat-cli` at `f48d5729` (2,338 passed, after the
+    `VALIDATOR_BUSY` help fix); `specs/043-run-input-validation/validation-report.md`, section "the gates of the
+    approval".
+- [x] T043-14 Updated the contracts: in the OpenAPI the action outcome `INPUT_INVALID`, the reasons, the closed
   `details.rule` (open to new values, which a client passes through), `details.field`, the `422` of the six start
   operations (with the 016 and 035 baselines re-pinned once, OD-2026-11-15-3), and the `Run`'s `failureCode` with its
   read from `runs.stop_code`; the subset contract and `errors.md`; the note on `inputSchema` carriers in 016's contract;
@@ -1202,7 +1246,9 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `contract_iceberg_writes`; `npm run check:api`.
   Refs: FR-043-003, FR-043-006, FR-043-015
   Owner-gate: OD-2026-11-14-2, OD-2026-11-15-3
-- [ ] T043-15 Gave the six SDK error types `field` and `rule`, and the six SDK `Run` types the optional `failureCode`;
+  Evidence (2026-11-16): the 23 contract targets, 366 passed, at `4b6eb1a6`; `npm run check:api` matches at `f48d5729`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-15 Gave the six SDK error types `field` and `rule`, and the six SDK `Run` types the optional `failureCode`;
   added the conformance scenario `run-input-validation`, the failure codes included (the chain's run view shows
   `failureCode` `CONTINUATION_INPUT_INVALID`); regenerated the goldens whose run views gain `failureCode`, each diff read
   first (D043-172).
@@ -1228,13 +1274,19 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   scenario, in six languages.
   Refs: FR-043-015, SC-043-005
   Owner-gate: OD-2026-11-14-2
-- [ ] T043-16 Showed the refusal (`reason`, `field`, `rule`) in the CLI and in the Studio's error state.
+  Evidence (2026-11-16): `sdk_conformance`, 78 scenarios in six languages, passed with no golden changed at `f48d5729`;
+    the per-SDK checks of `sdks/AGENTS.md` passed in the six languages;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-16 Showed the refusal (`reason`, `field`, `rule`) in the CLI and in the Studio's error state.
   Files: `apps/cli/src/client.rs`, `frontend/apps/studio/src/ui/ErrorState.tsx`.
   Tests: `a_refused_run_input_is_shown_with_its_field_and_its_rule` (`apps/cli/src/client.rs`); `ErrorState.test.tsx`
   ("says where a run input was refused and by which rule, never the value").
   Refs: FR-043-015
   Owner-gate: OD-2026-11-14-2
-- [ ] T043-17 Ran the sentinel across rows 1 to 14 (row 10 carries no caller value: its input is the platform's tick)
+  Evidence (2026-11-16): the `sagat-cli` unit tests at `f48d5729` (in the 2,338 passed) and the Studio tests at `f48d5729`
+    (99 files, 1,530 passed, `ErrorState.test.tsx` among them); `specs/043-run-input-validation/validation-report.md`,
+    section "the gates of the approval".
+- [x] T043-17 Ran the sentinel across rows 1 to 14 (row 10 carries no caller value: its input is the platform's tick)
   and checked the metric labels and the metrics text.
   Files: `tests/integration/payload-classification/run_input_sentinel.rs` (rows 1, 4, 9 and 11, with the metrics text),
   `tests/integration/payload-classification/run_input_sentinel_rows.rs` (rows 3, 5, 6, 7, 8, 12 and 14),
@@ -1246,14 +1298,19 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   and the `sentinel` step of the row 13 scenario (`integration_database_connections`).
   Refs: FR-043-014, SC-043-002
   Owner-gate: OD-2026-11-14-2
-- [ ] T043-18 Budgeted a start, a triggered start, a child start and a continuation with and without an `inputSchema`, in
+  Evidence (2026-11-16): `integration_payload_classification` 43, `integration_workflow_primitives` 805 and
+    `integration_database_connections` 7 passed in both roles at `4b6eb1a6`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-18 Budgeted a start, a triggered start, a child start and a continuation with and without an `inputSchema`, in
   `enforce` mode.
   Files: `tests/integration/claim-transition-efficiency/work_budget.rs`.
   Tests: `a_checked_start_costs_what_an_unchecked_one_does_once`, `a_checked_triggered_start_costs_what_an_unchecked_one_does_once`,
   `a_checked_child_start_costs_what_an_unchecked_one_does_once`, `a_checked_continuation_costs_what_an_unchecked_one_does_once`.
   Refs: NFR-043-PERF, SC-043-003
   Owner-gate: OD-2026-11-14-2
-- [ ] T043-19 Wrote the runbook and the release notes: the warning, the subset, the inventory and the choice of `report`
+  Evidence (2026-11-16): `integration_claim_transition_efficiency` 17 passed in both roles at `4b6eb1a6`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-19 Wrote the runbook and the release notes: the warning, the subset, the inventory and the choice of `report`
   before migrating, old runs failing at a child or a continuation, recording the requirement once every process is in
   `enforce`, removing it before any process goes back to `report`; the traceability rows; G1955 and G2081 of feature
   018 closed by reference.
@@ -1262,7 +1319,10 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   (regenerated after reading its diff).
   Refs: FR-043-001, FR-043-006, FR-043-013, FR-043-018
   Owner-gate: OD-2026-11-14-8, OD-2026-11-14-9, OD-2026-11-14-14
-- [ ] T043-20 Swept the tests, fixtures and examples whose inputs or schemas the check refuses, and changed the fixture,
+  Evidence (2026-11-16): `contract_developer_experience` 8 passed at `f48d5729`; `python3 scripts/check-design-docs.py`
+    and `check-agent-config.py` passed; `specs/043-run-input-validation/validation-report.md`, section "the gates of the
+    approval".
+- [x] T043-20 Swept the tests, fixtures and examples whose inputs or schemas the check refuses, and changed the fixture,
   never the check.
   Files: `crates/infra-ir/tests/` (D043-095, D043-110), the classification fixtures published in `report` (`e0e345f8`),
   and `tests/contract/sdk-conformance/scenarios/builders.json` (a fractional `multipleOf` moved to `default`).
@@ -1270,7 +1330,10 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   classification fixtures), `sdk_conformance` (`builders`).
   Refs: SC-043-001
   Owner-gate: OD-2026-11-14-2
-- [ ] T043-21 Tested the budget and the transient cases on every row that has them: an input past the budget is final the
+  Evidence (2026-11-16): the unit tests of `sagat-infra-ir` (in the 2,338 passed), `integration_payload_classification` 43
+    in both roles, and `sdk_conformance` 78 scenarios; `specs/043-run-input-validation/validation-report.md`, section
+    "the gates of the approval".
+- [x] T043-21 Tested the budget and the transient cases on every row that has them: an input past the budget is final the
   first time with `workLimit`; no permit within the wait and the backstop are transient (`503`, a batch item deferred, a
   pending reset left pending, a schedule time owed, an event retried, a child or a continuation left for the next pass),
   never cached, never final. The permits' own tests (four held by a lone tenant, a newcomer served first, the dropped
@@ -1286,7 +1349,10 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `row_12_no_room_waits_and_the_budget_is_final`.
   Refs: NFR-043-BOUND, FR-043-001
   Owner-gate: OD-2026-11-14-2, OD-2026-11-14-11
-- [ ] T043-22 Tested `report` mode: a start through the API and an event trigger create the run and audit the refusal once
+  Evidence (2026-11-16): `integration_durable_execution` 192, `integration_schedules_bulk_operations` 757,
+    `integration_events_webhooks_messaging` 120 and `integration_workflow_primitives` 805 passed in both roles at
+    `4b6eb1a6`; `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-22 Tested `report` mode: a start through the API and an event trigger create the run and audit the refusal once
   across a retry and a replay; a continuation audits it with its hand-off; a start an open holder answers is audited
   with that answer; an ad hoc document outside the subset is reported.
   Files: tests in `tests/integration/durable-execution/run_input.rs`, `tests/integration/events-webhooks-messaging/run_input.rs`,
@@ -1297,13 +1363,20 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   `report_mode_audits_a_start_that_an_open_holder_answers`, the row 13 `report` case of `integration_database_connections`.
   Refs: FR-043-013
   Owner-gate: OD-2026-11-14-8
-- [ ] T043-23 Checked that every `Role` holding `run:start` also holds `definition:read`, so `details.field` names only what
+  Evidence (2026-11-16): `integration_durable_execution`, `integration_events_webhooks_messaging`,
+    `integration_workflow_primitives`, `integration_schedules_bulk_operations` and `integration_database_connections`
+    passed in both roles at `4b6eb1a6`; `specs/043-run-input-validation/validation-report.md`, section "the gates of the
+    approval".
+- [x] T043-23 Checked that every `Role` holding `run:start` also holds `definition:read`, so `details.field` names only what
   the caller may read (keeps G043-003 closed).
   Files: `crates/domain/src/identity.rs`.
   Tests: `every_role_that_may_start_a_run_may_read_the_definition_it_starts`.
   Refs: FR-043-003, FR-043-014
   Owner-gate: OD-2026-11-14-2
-- [ ] T043-24 Built `control-plane input-schema-inventory`: with the process's database settings, a paged read of the
+  Evidence (2026-11-16): the unit tests of `sagat-domain` at `f48d5729` (in the 2,338 passed), among them
+    `every_role_that_may_start_a_run_may_read_the_definition_it_starts`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
+- [x] T043-24 Built `control-plane input-schema-inventory`: with the process's database settings, a paged read of the
   stored versions of every tenant (`workflow_versions` joined to `workflows`), the pre-check on each, whether something
   still starts a refused one (`version_still_started`: its workflow's active version, the pin of a schedule that is
   not deleted, an open run or one created in the last 30 days; no schedule is read on a database of the v0.2.0 release,
@@ -1322,6 +1395,9 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
   (`apps/control-plane/src/inventory.rs`).
   Refs: FR-043-018
   Owner-gate: OD-2026-11-14-14
+  Evidence (2026-11-16): `integration_gitops_versioning` 41 passed in both roles at `4b6eb1a6`, the four inventory tests
+    named above among them, each run as the runtime role; the `sagat-control-plane` unit and CLI tests at `f48d5729`;
+    `specs/043-run-input-validation/validation-report.md`, section "the gates of the approval".
 
 #### Follow-up tasks
 
