@@ -1047,12 +1047,15 @@ pub trait RunTx: Send {
     /// a new run (Signal-with-Start and Update-with-Start, feature 018): `start` under the key of the
     /// request, so that a retry is answered from it even after the holder has closed and the identifier
     /// is free, and `marker`, which says that the holder, not a new run, was the answer. Both name
-    /// `holder`, the run the effect reached. An adapter that cannot refuses.
+    /// `holder`, the run the effect reached. `reported`, the audit of a start input refused in `report` mode
+    /// (design 043), is written with them when the receipt of `start` is new, so a retry does not audit it again.
+    /// An adapter that cannot refuses.
     fn remember_start_served<'a>(
         &'a mut self,
         _start: &'a Idempotency,
         _marker: &'a Idempotency,
         _holder: RunId,
+        _reported: Option<&'a AuditRecord>,
     ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
         async {
             Err(StoreError::Internal {

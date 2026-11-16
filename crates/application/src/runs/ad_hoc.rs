@@ -542,6 +542,7 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
                             None,
                             None,
                             rerun.and_then(|rerun| rerun.item),
+                            None,
                             ctx,
                         )
                         .await
@@ -582,6 +583,7 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
                     None,
                     None,
                     rerun.and_then(|rerun| rerun.item),
+                    None,
                     ctx,
                 )
                 .await

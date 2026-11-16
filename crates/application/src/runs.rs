@@ -201,8 +201,9 @@ const NOT_WAITING_FOR_SIGNAL: &str = "the run is not waiting for that signal";
 enum HolderReceipt<'a> {
     /// Nothing to keep or to read: a batch item, whose key is the item's own.
     None,
-    /// The holder serves this request now: keep its receipts with the effect.
-    Keep(&'a Idempotency),
+    /// The holder serves this request now: keep its receipts with the effect, and the audit of a start input refused
+    /// in `report` mode with them (design 043).
+    Keep(&'a Idempotency, Option<&'a AuditRecord>),
     /// A retry: say whether the first request was served by a holder.
     Read(&'a Idempotency),
 }
@@ -1756,6 +1757,7 @@ where
                         with.map(|with| (with, &start_receipt)),
                         reset,
                         rerun.and_then(|rerun| rerun.item),
+                        None,
                         ctx,
                     ))
                     .await;
@@ -1792,6 +1794,10 @@ where
         let scheduled_start = new.schedule.is_some();
         let by_dispatcher = engine_tick.is_some();
         let start_receipt = new.idempotency.clone();
+        let reported = new
+            .input
+            .reported()
+            .map(|refusal| (new.audit.clone(), refusal));
         // The instant the entry is held until, to the microsecond: the journal and the column hold
         // the same number, so a replay of the one is the other.
         let held_until_us = options
@@ -1833,6 +1839,7 @@ where
             with.map(|with| (with, &start_receipt)),
             reset,
             rerun.and_then(|rerun| rerun.item),
+            reported,
             ctx,
         ))
         .await
@@ -1850,6 +1857,7 @@ where
         with: Option<(WithStart<'_>, &Idempotency)>,
         reset: Option<ResetStart<'_>>,
         item: Option<&ItemSettlement>,
+        reported: Option<(AuditRecord, crate::run_input::ReportedRefusal)>,
         ctx: &RequestContext,
     ) -> Result<Started, AppError> {
         match created {
@@ -1905,6 +1913,9 @@ where
                 let mut started = self
                     .known_start(principal, &target.to_string(), true)
                     .await?;
+                // `report` mode: no run is created, so the refusal of the start's input is audited with the holder's
+                // answer (correctness review of 2026-11-15, Major 2)
+                let reported = reported.map(|(audit, refusal)| refusal.audit(&audit, target));
                 match with {
                     Some((WithStart::Signal(signal), start)) => {
                         // an open holder is signalled exactly as `signalRun` would
@@ -1915,7 +1926,7 @@ where
                                 signal.name,
                                 signal.payload,
                                 &start.key,
-                                HolderReceipt::Keep(start),
+                                HolderReceipt::Keep(start, reported.as_ref()),
                                 WaitVia::SignalWithStart,
                                 None,
                                 ctx,
@@ -1939,14 +1950,23 @@ where
                                 target,
                                 started.run.info.namespace_id,
                                 update,
-                                HolderReceipt::Keep(start),
+                                HolderReceipt::Keep(start, reported.as_ref()),
                                 None,
                                 ctx,
                             )
                             .await?;
                         started.update = Some(applied);
                     }
-                    None => {}
+                    None => {
+                        // a plain start keeps no receipt of its own: each answer is audited, as each is counted
+                        if let Some(audit) = &reported
+                            && let Err(error) = self.store.record_refusal(audit).await
+                        {
+                            metrics::counter!("audit_write_failures_total", "action" => audit.action().as_str())
+                                .increment(1);
+                            tracing::error!(%error, action = %audit.action(), "failed to record audit entry");
+                        }
+                    }
                 }
                 Ok(started)
             }
@@ -2193,8 +2213,8 @@ where
         let applied = tx.apply_declared_update(&command, evaluator).await?;
         let served = match receipt {
             HolderReceipt::None => false,
-            HolderReceipt::Keep(start) => {
-                tx.remember_start_served(start, &served_marker(start), run)
+            HolderReceipt::Keep(start, reported) => {
+                tx.remember_start_served(start, &served_marker(start), run, reported)
                     .await?;
                 true
             }
@@ -2982,8 +3002,8 @@ where
         };
         let served = match receipt {
             HolderReceipt::None => false,
-            HolderReceipt::Keep(start) => {
-                tx.remember_start_served(start, &served_marker(start), id)
+            HolderReceipt::Keep(start, reported) => {
+                tx.remember_start_served(start, &served_marker(start), id, reported)
                     .await?;
                 true
             }

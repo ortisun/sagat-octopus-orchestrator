@@ -4148,13 +4148,15 @@ impl RunTx for PgRunTx {
         start: &'a Idempotency,
         marker: &'a Idempotency,
         holder: RunId,
+        reported: Option<&'a AuditRecord>,
     ) -> Result<(), StoreError> {
         let tenant = self.info.tenant_id;
         let holder = holder.to_string();
         // `false` is a concurrent request with the same key that committed first; it served the same
         // holder under the same fingerprint (a different one is refused when the start is replayed)
+        let mut first = false;
         for record in [start, marker] {
-            remember(
+            let kept = remember(
                 &mut self.tx,
                 tenant,
                 record,
@@ -4162,6 +4164,12 @@ impl RunTx for PgRunTx {
                 &holder,
             )
             .await?;
+            first |= kept && std::ptr::eq(record, start);
+        }
+        // `report` mode (design 043): the refusal of the start's input is audited with the receipt that answers its
+        // retries, so once (correctness review of 2026-11-15, Major 2)
+        if first && let Some(audit) = reported {
+            insert_audit(&mut self.tx, audit).await?;
         }
         Ok(())
     }

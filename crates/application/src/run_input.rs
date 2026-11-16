@@ -386,15 +386,20 @@ impl CheckedRunInput {
     /// `None` for an input that was not reported.
     #[must_use]
     pub fn reported_audit(&self, run_audit: &AuditRecord, run: RunId) -> Option<AuditRecord> {
+        self.reported()
+            .map(|reported| reported.audit(run_audit, run))
+    }
+
+    /// The refusal reported in `report` mode, kept apart from the input for a start that an open holder answers: no run
+    /// is created then, so the audit is written with the holder's answer (correctness review of 2026-11-15, Major 2).
+    #[must_use]
+    pub fn reported(&self) -> Option<ReportedRefusal> {
         let Checked::Reported(refusal) = &self.outcome else {
             return None;
         };
-        Some(run_audit.follow_up(
-            AuditAction::RunInputRefused,
-            ResourceType::Run,
-            run.to_string(),
-            format!("reported: {}", refusal.summary()),
-        ))
+        Some(ReportedRefusal {
+            summary: refusal.summary(),
+        })
     }
 
     /// An input that no gate checked, for a test that builds a creation by hand.
@@ -406,6 +411,26 @@ impl CheckedRunInput {
             bytes,
             outcome: Checked::NoSchema,
         }
+    }
+}
+
+/// A refusal reported in `report` mode: the reason and the rule, never the field or a value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedRefusal {
+    summary: String,
+}
+
+impl ReportedRefusal {
+    /// The audit record of the refusal, a follow-up of the start's own `run_audit` about `run`: the run created, or the
+    /// holder that answered the start in its place.
+    #[must_use]
+    pub fn audit(&self, run_audit: &AuditRecord, run: RunId) -> AuditRecord {
+        run_audit.follow_up(
+            AuditAction::RunInputRefused,
+            ResourceType::Run,
+            run.to_string(),
+            format!("reported: {}", self.summary),
+        )
     }
 }
 
