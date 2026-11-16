@@ -884,9 +884,13 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   the table through the search path as the statement does, the causes of exit 2 are complete, "a draft save" is not a
   pre-check (it runs `check_draft` only), and T043-24 names what holds the 0.2.x path. On the suspicion that a caught
   panic still prints its message through the default hook (correctness and security Nits): every explicit panic in
-  `crates/infra-schema/src/run_input/` outside test modules is gone (the only ones left are a test's injected fault), and
-  an implicit one (an index past the end) prints numbers and a source location only, so no schema text reaches stderr;
-  no hook was added.
+  `crates/infra-schema/src/run_input/` outside test modules is gone (the only ones left are a test's injected fault); an
+  implicit index past the end prints numbers and a location; the one slice of schema text (`translate` in `pattern.rs`)
+  cuts at the spans of a one-byte `.`, so it cannot fall off a character boundary, the one implicit panic whose message
+  would quote the string. A panic inside a dependency (`regex-syntax`, `regex-automata`, `serde_json`) prints its own
+  message through the default hook, which is not checked; no hook was added (approval re-read: architecture and
+  security Nits). The inventory's unit test covers the exit status and the printed line of an `interrupted` version;
+  the scan arm that fills the list has no test of its own (correctness Nit).
 
 ## 3. Gaps
 

@@ -40,8 +40,9 @@ the refusals is `specs/043-run-input-validation/contracts/errors.md`.
    change the exit status; `control-plane input-schema-inventory --all` lists those too (OD-2026-11-16-5). Exit 0:
    nothing anyone still starts would be refused; 1: at least one version would; 2: the command failed or could not
    judge a version (it could not connect, a stored document could not be read, or a schema made the validator panic). It needs `SELECT` on `workflow_versions`, `workflows`,
-   `schedules`, `schedule_revisions` and `runs`, which the runtime role holds (a database of 0.2.x, read before the
-   migration, has no schedules, and none is read). Each version outside the subset costs one statement over the runs of
+   `schedules`, `schedule_revisions` and `runs`, which the runtime role holds where they exist (the schedules are feature
+   018's tables, which the database of the v0.2.0 release does not have: the inventory looks them up and reads them only
+   when they exist). Each version outside the subset costs one statement over the runs of
    its workflow and the schedules of its tenant, bounded by the statement timeout of the control plane's settings. A
    rerun or a reset of a superseded version's run created more than 30 days ago is not foreseen: it is refused `422`
    when asked for. A version whose schema makes the validator panic is listed `interrupted`, the scan goes on, and the

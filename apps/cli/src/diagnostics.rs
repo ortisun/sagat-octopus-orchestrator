@@ -287,6 +287,10 @@ pub const CATALOG: &[(&str, &str)] = &[
         "INPUT_SCHEMA_APPLIES_TO_TRIGGERS",
         "This version has an inputSchema and a trigger: the schema is applied to the input a trigger builds, the event envelope {event, data}. Make sure the schema accepts the envelope, or the triggered runs are refused.",
     ),
+    (
+        "VALIDATOR_BUSY",
+        "The platform could not pre-check the inputSchema now: the run-input validator had no permit free within 5 s, or it failed with a defect of its own. Nothing was judged; send the document again after a pause, and report it if it keeps happening.",
+    ),
 ];
 
 /// The file that explains each code, one section for each.
