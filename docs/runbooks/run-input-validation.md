@@ -38,8 +38,8 @@ the refusals is `specs/043-run-input-validation/contracts/errors.md`.
    active version, pinned by no schedule that is not deleted, no open run, no run created in the last 30 days) is
    superseded: the summary counts it and it does not
    change the exit status; `control-plane input-schema-inventory --all` lists those too (OD-2026-11-16-5). Exit 0:
-   nothing anyone still starts would be refused; 1: at least one version would; 2: the command failed (it could not
-   connect, or a stored document could not be read). It needs `SELECT` on `workflow_versions`, `workflows`,
+   nothing anyone still starts would be refused; 1: at least one version would; 2: the command failed or could not
+   judge a version (it could not connect, a stored document could not be read, or a schema made the validator panic). It needs `SELECT` on `workflow_versions`, `workflows`,
    `schedules`, `schedule_revisions` and `runs`, which the runtime role holds (a database of 0.2.x, read before the
    migration, has no schedules, and none is read). Each version outside the subset costs one statement over the runs of
    its workflow and the schedules of its tenant, bounded by the statement timeout of the control plane's settings. A

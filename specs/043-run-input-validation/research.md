@@ -876,6 +876,17 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   of D043-184 everywhere, the first migration's guards alone, the pre-checks' place in the queue, "superseded" and its
   number in the summary, `MAX_MULTIPLE_OF` pinned and in the contract, the order of ADR-0092's options, and the tests
   T043-5, T043-13 and T043-15 had left unnamed.
+- **D043-188** (2026-11-16) The third targeted re-read (at `2606e1d5`; reports `reread-3-*.md` of round 2) found no
+  Major in the code and one in the text (comprehension): Technical Plan 8 said a database of 0.2.x "already has" the
+  schedule tables that FR-043-018 said it lacks. The schedules are feature 018's, which the v0.2.0 release does not
+  have; the text now says so in both places. Its Nits are fixed: the inventory's `interrupted` path has a unit test
+  (`a_version_the_validator_cannot_judge_makes_the_inventory_exit_2_and_is_listed`, test-only), the catalog probe finds
+  the table through the search path as the statement does, the causes of exit 2 are complete, "a draft save" is not a
+  pre-check (it runs `check_draft` only), and T043-24 names what holds the 0.2.x path. On the suspicion that a caught
+  panic still prints its message through the default hook (correctness and security Nits): every explicit panic in
+  `crates/infra-schema/src/run_input/` outside test modules is gone (the only ones left are a test's injected fault), and
+  an implicit one (an index past the end) prints numbers and a source location only, so no schema text reaches stderr;
+  no hook was added.
 
 ## 3. Gaps
 
@@ -917,7 +928,8 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-054 | A trigger dispatch that waits for room in the validator uses up none of the event's attempts, but an event that has waited for a day (`GIVE_UP_AFTER`) ends `DEAD`, as one waiting for a quota does (correctness review of 2026-11-15, Nit 14). | Only a validator starved for a day drops a trigger start; documented in Technical Plan 1. | Open (documented) |
 | G043-055 | A batch `RERUN` item that finds no room in the validator is deferred as a lock wait and counts an attempt, so one starved past the executor's attempts ends `FAILED RETRIES_EXHAUSTED`; and a buffered backfill step released by the schedule's own firing and refused for its input is settled `INPUT_INVALID` while its backfill runs on, so its next step is refused again before the backfill ends `CANCELLED` (correctness review of 2026-11-16, Nits 7 and 8). | Both end where the design says (a final outcome after a transient wait; a cancelled backfill one step later); neither admits an input. | Open (documented) |
 | G043-056 | `RUN_INPUT_SCHEMA_UNUSABLE` on row 2 (an uploaded-input start) has no test of its own: a version outside the subset is published only in `report` mode, which the blob platform of the tests does not offer. | Row 2 reaches the gate through `start_with` once its descriptor is built, the path whose refusal row 1's test covers. Rows 7 and 10 gained theirs on 2026-11-16 (`row_7_a_backfill_of_a_version_whose_schema_is_unusable_ends_cancelled_with_the_reason`, `a_cron_trigger_whose_schema_is_unusable_audits_the_tick_with_its_reason`; tests of behaviour already built, passing at once). | Open (documented) |
-| G043-057 | The pre-checks outside a start (publication, a dry run, a draft save, an ad hoc document) queue under one owner of the permits' fair queue, first come, first served among the tenants that send them: a tenant that sends many dry runs of heavy schemas can make another tenant's publication wait up to 5 s and answer `503` (re-read of 2026-11-16, security Nit 1). The starts of every tenant are still served first by the queue, and a pre-check is bounded (16 ms for the heaviest admitted schema in a test build). | Passing the tenant through the `IrCodec` port (about 55 parse callers) would make them fair; left for a later release, with the per-tenant request limits as the bound meanwhile. | Open |
+| G043-057 | The pre-checks outside a start (publication, a dry run, an ad hoc document) queue under one owner of the permits' fair queue, first come, first served among the tenants that send them: a tenant that sends many dry runs of heavy schemas can make another tenant's publication wait up to 5 s and answer `503` (re-read of 2026-11-16, security Nit 1). The starts of every tenant are still served first by the queue, and a pre-check is bounded (16 ms for the heaviest admitted schema in a test build). | Passing the tenant through the `IrCodec` port (about 55 parse callers) would make them fair; left for a later release, with the per-tenant request limits as the bound meanwhile. | Open |
+| G043-058 | The race between the timeout of `Permits::acquire_blocking` and a grant that arrives as it times out has no test of its own (correctness re-read Nit 9, architecture re-read 3). The code takes the queue's lock, leaves the queue or gives a raced grant back, as the async path does, whose race `a_release_in_the_gap_of_a_timed_out_waiter_is_not_counted_twice` holds with barriers. | A blocking twin of that test needs a hook between the end of the wait and the lock; left for the next change to the permits. | Open |
 
 ## 4. Owner questions
 

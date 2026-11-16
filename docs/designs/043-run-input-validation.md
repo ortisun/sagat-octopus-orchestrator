@@ -29,7 +29,7 @@ refined while it was built by
 (accepted, OD-2026-11-16-4). The owner's decisions are listed under Owner decisions needed. The owner asked for the design to be built
 before it is approved (OD-2026-11-14-15), so the tasks describe what was built and each is ticked with its evidence at
 approval. The registers, the history of the drafts and the build, and the validator's internals are in
-`specs/043-run-input-validation/research.md` (decisions D043-001 to D043-187, gaps G043-001 to G043-057, owner questions O043-001 to O043-008). The
+`specs/043-run-input-validation/research.md` (decisions D043-001 to D043-188, gaps G043-001 to G043-058, owner questions O043-001 to O043-008). The
 principles cited by numeral are those of [the constitution](../constitution.md).
 
 ### Terms
@@ -263,12 +263,16 @@ The constraints beyond a check in `start_with`:
 - **FR-043-018** `control-plane input-schema-inventory` MUST list every stored version whose `inputSchema` fails the
   pre-check, with its ids, the keyword and its pointer, and nothing of the schema or of any input; list separately, for
   information, the versions within the subset that have an `inputSchema` and a non-manual trigger; and exit 0 when none
-  would be refused, 1 when one would, 2 when the command failed (D043-052, D043-072). A version outside the subset that
+  would be refused, 1 when one would, 2 when the command failed or could not judge a version (a stored document that is
+  not JSON, a schema that made the validator panic; D043-052, D043-072, D043-187). A version outside the subset that
   nothing starts any more (superseded: not its workflow's active version, pinned by no schedule that is not deleted, no
   open run, no run created in the last 30 days) MUST be shown only as a number in the summary line and MUST NOT change
   the exit status; `--all` lists it (OD-2026-11-16-5, D043-179, D043-185). A rerun or a reset of a run of it created
-  before those 30 days is not foreseen and is refused `422` when asked for. On a database of 0.2.x, read before the
-  migration, there are no schedules to pin a version (D043-187). *Acceptance:* an integration test stores one version inside the subset with an event trigger and one with
+  before those 30 days is not foreseen: in `enforce` it is refused `422 RUN_INPUT_SCHEMA_UNUSABLE` when asked for, as
+  rows 4 and 5 refuse every start of a version outside the subset (`an_unusable_schema_refuses_with_start_rerun_and_trigger_now`,
+  `row_5_a_reset_of_a_version_whose_schema_is_unusable_is_refused_schema_unusable`). The schedules are feature 018's, which
+  the v0.2.0 release does not have: on its database, read before the migration, the inventory reads no schedule
+  (D043-187). *Acceptance:* an integration test stores one version inside the subset with an event trigger and one with
   `patternProperties`, runs the command, finds the second as refused and the first as informational, and sees exit
   status 1; with only the first stored, exit 0; against an unreachable database, exit 2;
   `a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all_lists_it` (a quiet superseded version is
@@ -516,7 +520,8 @@ impl RunInputGate {
         -> Result<CheckedRunInput, InputRefusal>;
     async fn check_schema(..., schema: Option<&InputSchema>, ...) -> ...;   // a continuation holds only the schema
     async fn recheck(...) -> ...;        // a schedule's start: counts every outcome (D043-147, D043-184)
-    async fn check_before_its_start(...) -> ...;  // a schedule's action before its decision: counts only what stops it
+    async fn check_before_its_start(...) -> ...;  // a schedule's action before its decision and at its release:
+                                                  // counts only what stops it
     async fn check_ahead(...) -> ...;    // a `CANCEL_SOURCE` reset's request: counts only what stops it
 }
 struct CheckedRunInput { version: WorkflowVersionId, bytes: Vec<u8>, outcome: Checked }  // fields and constructor private to run_input.rs
@@ -569,7 +574,7 @@ G043-017). A waiter waits at most `RUN_INPUT_PERMIT_WAIT` (5 s); its
   guard leaves the queue, or returns its permit, when its future is dropped. The queue holds one entry per caller that
   waits, so it is bounded by the callers in flight and each entry by the wait. The validator runs off the async workers
   and holds its permit until it returns; `specs/043-run-input-validation/research.md` section 5 has the details. A
-  pre-check outside a start (publication, a dry run, a draft save, an ad hoc document) takes its permit from the same
+  pre-check outside a start (publication, a dry run, an ad hoc document) takes its permit from the same
   pool and waits as long. The parser that runs a pre-check does not know the tenant, so the queue treats all pre-checks
   as one more tenant: a permit goes to whichever holds fewer, a tenant's starts or the pre-checks, so neither can starve
   the other. Among themselves the pre-checks of different tenants are first come, first served (G043-057). With no
@@ -651,10 +656,12 @@ oracle of a test only. What the design fixes:
   VALIDATION_FAILED`, a pending reset `ADMISSION_REFUSED`, neither tried again; `error_code` and `failure_of`
   (`crates/application/src/batch_executor.rs`, `crates/application/src/reset_completion.rs`) name the variant.
 - **Rows 6 to 8 (schedules).** `trigger_once` and the scheduled path check the input before `decide` through
-  `ScheduledStarts::check_scheduled`, which resolves the version and its definition as a start does (D043-126); the start
-  then checks again, against the version resolved then, with `RunInputGate::recheck`. The check before the decision
-  counts only what stops the action, a final or a transient refusal, and the start counts every outcome, so one action
-  is one validation (D043-147, D043-184). An exhausted schedule is not checked (D043-142). A refused trigger-now answers `422` and records
+  `ScheduledStarts::check_scheduled`, which resolves the version and its definition as a start does (D043-126) and calls
+  `RunInputGate::check_before_its_start`, before the decision and again at the release of a buffered action; the start
+  then checks again, against the version resolved then, with `RunInputGate::recheck`. The checks before the start count
+  only what stops the action, a final or a transient refusal, and the start counts every outcome, so one action is
+  counted once (D043-147, D043-184). A `CANCEL_SOURCE` reset's request checks with `RunInputGate::check_ahead`, which
+  counts the same way. An exhausted schedule is not checked (D043-142). A refused trigger-now answers `422` and records
   nothing, also when the refusal comes at its start (D043-146). A refused scheduled action, or a trigger-now action
 that was buffered and is refused at its release (FR-043-006, item 6), records, in one
   `ScheduleDecision`, the action (`Outcome::InputInvalid`, the reason of D043-123), the auto-pause and its
@@ -665,7 +672,7 @@ that was buffered and is refused at its release (FR-043-006, item 6), records, i
   (`settle_waiting`, D043-126). Two migrations add `INPUT_INVALID` to the action outcomes and `run-input-validation-v1`
   to the registry's capability lists and its requirement history (D043-131): `20270118000000` drops each old CHECK in
   the `ALTER TABLE` that adds its successor `NOT VALID` (a superset, named `*_known`), and `20270118000100` validates
-  them; a static test keeps every later CHECK added `NOT VALID` (D043-145, D043-153). The first's down migration refuses
+  them; a static test keeps every later CHECK added `NOT VALID` (D043-145, D043-153). The down migration of `20270118000000` refuses
   while a row holds a new value; the second's has nothing to undo.
 - **Row 14 (schedule write).** `ScheduleService::with_run_inputs` gives the write check the gate and a definition cache
   (D043-125); `check_input` (`crates/application/src/schedules.rs`) reads the target version's document
@@ -770,9 +777,10 @@ The versioning diff already reports a tighter `inputSchema` as breaking (`crates
 **The inventory** (D043-052) is a command of the control plane, `control-plane input-schema-inventory`, beside
 `migrate` and `schedule-trigger-handover` (`apps/control-plane/src/cli.rs`). It runs with the database settings of the
 control plane process (`config.database`, the runtime role where a deployment sets one, D043-163): it only reads, and
-needs nothing but `SELECT` on `workflow_versions`, `workflows`, `schedules`, `schedule_revisions` and `runs`, which the
-runtime role holds and which a 0.2.x
-database already has, so the 0.3.0 binary runs it before the migration. It reads the stored versions page by page (its
+needs nothing but `SELECT` on `workflow_versions`, `workflows` and `runs`, which a database of 0.2.x already has, and on
+`schedules` and `schedule_revisions` where the database has them (feature 018's tables, which the v0.2.0 release does not
+have: the inventory looks them up once and reads them only when they exist, D043-187). The runtime role holds all five,
+so the 0.3.0 binary runs it before the migration. It reads the stored versions page by page (its
 cursor starts after the nil uuid, in one statement each page), runs the same pre-check on each stored `inputSchema` and prints one line per version that
 would be refused: tenant, namespace, workflow and version ids, the keyword and its pointer. The keyword and the pointer
 are author text, so they are printed in double quotes with `"` and `\` escaped (D043-111). In a second, informational
@@ -826,7 +834,7 @@ rows 1 to 5, rows 8, 13 and 14); then, once every live process runs 0.3.0 in `en
 `run-input-validation-v1`. Until it is recorded, an old control plane admits what a new one refuses, and replicas may
 run different modes (G043-010). Runs in flight are checked when they create a child or continue (OD-2026-11-14-9).
 Rollback: remove the requirement, then downgrade the binaries; a 0.2.x binary runs on the 0.3.0 schema (the new CHECKs
-are supersets), so the binaries can roll back without the down migrations. The first's down migration refuses while a schedule action holds
+are supersets), so the binaries can roll back without the down migrations. The down migration of `20270118000000` refuses while a schedule action holds
 `INPUT_INVALID`, while a registry row lists `run-input-validation-v1`, or while the requirement history names it
 (D043-131; `the_run_input_validation_rolls_back_only_while_nothing_names_it`).
 
@@ -1298,16 +1306,20 @@ before any creator refused; T043-11's migrations before T043-12 lists the capabi
 - [ ] T043-24 Built `control-plane input-schema-inventory`: with the process's database settings, a paged read of the
   stored versions of every tenant (`workflow_versions` joined to `workflows`), the pre-check on each, whether something
   still starts a refused one (`version_still_started`: its workflow's active version, the pin of a schedule that is
-  not deleted, an open run or one created in the last 30 days; no schedules on a database of 0.2.x), the refused ones
+  not deleted, an open run or one created in the last 30 days; no schedule is read on a database of the v0.2.0 release,
+  which has none), the refused ones
   with their ids, issue, keyword and pointer, the informational ones (inside the subset, beside a non-manual trigger),
-  no schema text; exit 0, 1 or 2; a superseded version counted, listed by `--all`, never a reason to exit 1
-  (OD-2026-11-16-5, D043-179).
+  no schema text; exit 0, 1 or 2; a superseded version counted, listed by `--all`, never a reason to exit 1; a schema
+  that makes the validator panic listed `interrupted`, exit 2 (OD-2026-11-16-5, D043-179, D043-185, D043-187).
   Files: `apps/control-plane/src/cli.rs`, `apps/control-plane/src/inventory.rs`, `apps/control-plane/src/main.rs`,
-  `crates/infra-postgres/src/definitions.rs` (`stored_versions_page`, `version_still_started`), `crates/infra-ir/src/input_schema.rs`.
-  Tests: `the_inventory_lists_the_versions_that_would_be_refused_and_exits_by_what_it_found` and
-  `a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all_lists_it` and
-  `a_version_a_live_schedule_pins_is_never_superseded` (`integration_gitops_versioning`),
-  `the_input_schema_inventory_exits_2_when_it_cannot_run_and_never_shows_the_url` (`apps/control-plane/tests/cli.rs`).
+  `crates/infra-postgres/src/definitions.rs` (`stored_versions_page`, `version_still_started`, `schedules_exist`),
+  `crates/infra-ir/src/input_schema.rs`.
+  Tests, each inventory run as the runtime role: `the_inventory_lists_the_versions_that_would_be_refused_and_exits_by_what_it_found`,
+  `a_superseded_version_nothing_starts_does_not_fail_the_inventory_and_all_lists_it`,
+  `a_version_a_live_schedule_pins_is_never_superseded` and `the_inventory_runs_on_a_database_of_0_2_0_before_the_migration`
+  (`integration_gitops_versioning`); `the_input_schema_inventory_exits_2_when_it_cannot_run_and_never_shows_the_url`
+  (`apps/control-plane/tests/cli.rs`); `a_version_the_validator_cannot_judge_makes_the_inventory_exit_2_and_is_listed`
+  (`apps/control-plane/src/inventory.rs`).
   Refs: FR-043-018
   Owner-gate: OD-2026-11-14-14
 
@@ -1357,7 +1369,7 @@ to a documented command, `contract_developer_experience`:
 - `integration_run_input_cache` (SC-043-004, in a process of its own);
 - `integration_claim_transition_efficiency` (SC-043-003; rows 1, 9, 11 and 12): its earlier assertions pass unchanged,
   and T043-18 adds four;
-- `integration_platform_foundation` (the migrations added `NOT VALID`, the first's down migration's guards, the privilege
+- `integration_platform_foundation` (the migrations added `NOT VALID`, the guards of `20270118000000`'s down migration, the privilege
   audit);
 - `contract_rest_durable_execution` and the unit tests of `crates/api-http` (the problem shape, the `Run`);
 - the configuration and registry tests of `apps/control-plane` and `apps/execution-engine` (FR-043-013) and the CLI

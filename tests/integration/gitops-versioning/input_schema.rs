@@ -563,10 +563,11 @@ async fn the_inventory_runs_on_a_database_of_0_2_0_before_the_migration() {
         .undo(&w.db.pool, V0_2_0_LAST_MIGRATION)
         .await
         .expect("back to the schema of v0.2.0");
-    let schedules: bool = sqlx::query_scalar("SELECT to_regclass('public.schedules') IS NOT NULL")
-        .fetch_one(&w.db.pool)
-        .await
-        .expect("catalog");
+    let schedules: bool =
+        sqlx::query_scalar("SELECT to_regclass('schedule_revisions') IS NOT NULL")
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("catalog");
     assert!(!schedules, "a database of v0.2.0 has no schedules");
     let found = input_schema_inventory(&as_runtime(&w)).await;
     assert_eq!(exit_code(&found), 1, "{found:?}");

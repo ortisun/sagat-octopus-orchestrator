@@ -1086,7 +1086,8 @@ pub async fn version_still_started(
 /// # Errors
 /// [`StoreError`] when the read fails.
 pub async fn schedules_exist(pool: &PgPool) -> Result<bool, StoreError> {
-    sqlx::query_scalar("SELECT to_regclass('public.schedule_revisions') IS NOT NULL")
+    // looked up as the inventory's statement finds it, through the search path (re-read 3, architecture Nit 3)
+    sqlx::query_scalar("SELECT to_regclass('schedule_revisions') IS NOT NULL")
         .fetch_one(pool)
         .await
         .map_err(store_error)

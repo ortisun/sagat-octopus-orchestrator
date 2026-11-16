@@ -281,3 +281,49 @@ pub async fn input_schema_inventory_in(
 pub async fn input_schema_inventory(db: &DatabaseConfig) -> Result<Inventory, RunError> {
     input_schema_inventory_in(db, Scope::Current).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids(number: i32) -> VersionIds {
+        VersionIds {
+            tenant: TenantId::generate(),
+            namespace: NamespaceId::generate(),
+            workflow: WorkflowId::generate(),
+            version: WorkflowVersionId::generate(),
+            number,
+        }
+    }
+
+    /// D043-187: a version whose schema made the validator panic is listed by its ids, beside the versions the scan went
+    /// on to judge, and the command exits 2, since it cannot say what that version would do; never 0 or 1.
+    #[test]
+    fn a_version_the_validator_cannot_judge_makes_the_inventory_exit_2_and_is_listed() {
+        let judged = RefusedVersion {
+            ids: ids(1),
+            issue: InputSchemaIssue::KeywordUnsupported,
+            keyword: "patternProperties".to_owned(),
+            at: "/inputSchema/patternProperties".to_owned(),
+        };
+        let interrupted = ids(2);
+        let inventory = Inventory {
+            refused: vec![judged],
+            interrupted: vec![interrupted],
+            scanned: 2,
+            ..Inventory::default()
+        };
+        assert_eq!(inventory.exit_code(), 2);
+        let printed = inventory.to_string();
+        assert!(
+            printed.contains(&format!("interrupted {interrupted}")),
+            "{printed}"
+        );
+        assert!(printed.contains("refused tenant="), "{printed}");
+        let quiet = Inventory {
+            interrupted: vec![ids(3)],
+            ..Inventory::default()
+        };
+        assert_eq!(quiet.exit_code(), 2, "even with nothing refused");
+    }
+}
