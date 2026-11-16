@@ -4,6 +4,19 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-16 — Feature 022: the checklist deviations and the quota resources of the OpenAPI
+
+The foundation of the 0.3.0 slice of feature 022 (pull request 237) left two things that only the owner could settle:
+the five unticked items of `specs/022-flow-control-step-policies/checklists/requirements.md`, which the transitional
+clause of the constitution makes blocking until the owner accepts them (OD-2026-11-03-33), and the change to the
+pinned OpenAPI baseline that T022-013's new quota resources need (the foundation did not bless it, PR 237 "What is
+left"). The owner answered both on 2026-11-16.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-16-1 | "Aceitar os 5": the five unticked items of feature 022's `checklists/requirements.md` (no implementation details, written for non-technical stakeholders, technology-agnostic success criteria, measurable outcomes met, no implementation details leaking) are accepted as the deliberate deviations the checklist documents; they no longer block the implementation (the gate of OD-2026-11-03-33) | owner | Decided | specs/022-flow-control-step-policies/checklists/requirements.md, research.md |
+| OD-2026-11-16-2 | "Autorizar, ler o diff": the quota-resource enum of the canonical OpenAPI gains the concurrency resources of T022-013. The pinned baseline is changed once, after reading its diff, and the reading is recorded | owner | Decided | specs/001-platform-foundation/contracts/openapi.yaml, tests/contract/iceberg-writes/fixtures/openapi-operations.json, specs/022-flow-control-step-policies/tasks.md T022-013 |
+
 ## 2026-11-13 — What release 0.3.0 must contain: feature 018, schedules on by default, step logs per run
 
 Before the release pull request (219) was merged the owner asked whether anything else belonged in it. The assistant
