@@ -461,6 +461,23 @@ taken after `git grep D022-04` on every `origin/*` branch.
   publication may miss a warning, which never refuses. The store method has no default, so a delegating store cannot
   silence it (the first run of the test found `PgRunStore` doing exactly that).
 
+- **D022-042 — Per-key rotation of the digest key (T022-095, FR-022-056).** Activating a new version no longer waits for
+  the queues to drain: the active version becomes `RETIRING` while a semaphore or window row uses it (`RETIRED` at once
+  when none does), and the transaction that deletes its last row retires it (a trigger that locks the version row first,
+  so two transactions deleting the last two rows cannot both miss it). A deciding transaction reads both versions
+  (`flow_control_key_versions_in_force()`: the active one `FOR SHARE`, the retiring one without a lock, since it can only
+  retire), digests the key under each (`KeyRing::candidates`) and files it with `file_keys`: the row under the retiring
+  version wins, else the key is filed under the active one. A key is never split: no row is created under a retiring
+  version (the trigger of `20270130000000`) and an old row, once gone, never returns. Keys of one table are resolved
+  first and then locked in one order, by the digest each resolved to, so a rotation does not change the lock order of a
+  key against release paths that lock it by its stored digest. One rotation at a time (`ROTATION_IN_PROGRESS` while the
+  retiring version is used): a decider computes two digests, never three. A replaced version is never active again, like
+  a retired one. The command records the database role that ran it (`activated_role`, G1190). The activation no longer
+  takes the key tables in `SHARE` mode: no row can be created under a non-active version, so its count of the retiring
+  version's rows can only be too high (a refusal the operator repeats), and the deadlock between it and a release path
+  is gone. Each deciding transaction of T022-096..098 and T022-022/T022-072 must call these two functions; until they
+  exist no transaction decides a key (D022-037).
+
 ## Gaps
 
 | ID | Gap | Status |
@@ -494,7 +511,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1187 | The namespace-level warnings `CONCURRENCY_LIMIT_MISMATCH` and `RATE_LIMIT_MISMATCH` need the declarations of the other published definitions of the namespace; the codec cannot see them and no store keeps them yet. *Closed 2026-11-16 (D022-041): the declarations table and the publication check; proved by `integration_flow_control_step_policies::publication`.* | Closed |
 | G1188 | `RunState::restore` (a run rebuilt from its projection) does not restore gate state. No stored run has any in this build (admission refuses gated definitions; the projection writer refuses a gated step's wait). | Open; T022-022, T022-096 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
-| G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. | Open; T022-095 and its runbook |
+| G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once.* | Open; runbook (T022-061) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
 

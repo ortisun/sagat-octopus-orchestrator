@@ -209,6 +209,50 @@ impl KeyRing {
     }
 }
 
+/// The versions of the digest key a deciding transaction reads (`flow_control_key_versions_in_force`, FR-022-053): the
+/// active one, and the one a rotation is retiring while rows still use it (FR-022-056).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyVersions {
+    pub active: u16,
+    pub retiring: Option<u16>,
+}
+
+/// A key's digests under the versions in force. The row filed under [`Self::retiring`] wins when it exists, else the key
+/// is filed under [`Self::active`]: no key is ever split between two rows during a rotation (FR-022-056).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyCandidates {
+    pub active: KeyedDigest,
+    pub retiring: Option<KeyedDigest>,
+}
+
+impl KeyRing {
+    /// The digests of a key's canonical value under every version in force.
+    ///
+    /// # Errors
+    /// [`KeyedDigestError::UnknownVersion`] when this process lacks the key of either version: it must not decide a key
+    /// it cannot digest as the others do; [`KeyedDigestError::KeyTooLong`] above [`MAX_KEY_BYTES`].
+    pub fn candidates(
+        &self,
+        versions: KeyVersions,
+        purpose: KeyPurpose,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        canonical: &[u8],
+    ) -> Result<KeyCandidates, KeyedDigestError> {
+        let active = self
+            .current(versions.active)?
+            .digest(purpose, tenant, namespace, canonical)?;
+        let retiring = versions
+            .retiring
+            .map(|version| {
+                self.current(version)?
+                    .digest(purpose, tenant, namespace, canonical)
+            })
+            .transpose()?;
+        Ok(KeyCandidates { active, retiring })
+    }
+}
+
 impl fmt::Debug for KeyRing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("KeyRing")
@@ -365,6 +409,67 @@ mod tests {
         assert_eq!(
             KeyRing::parse(&format!("1:{HEX},1:{HEX}")).map(|_| ()),
             Err(KeyedDigestError::DuplicateVersion)
+        );
+    }
+
+    /// FR-022-056: during a rotation a decider digests the key under both versions; outside one, under the active only;
+    /// a process missing either key refuses to decide.
+    #[test]
+    fn the_candidates_are_the_digests_under_every_version_in_force() {
+        let ring = KeyRing::parse(&format!("1:{HEX},2:{}", "ab".repeat(32))).expect("ring");
+        let (tenant, namespace) = ids();
+        let value = br#""acct-42""#;
+        let quiet = ring
+            .candidates(
+                KeyVersions {
+                    active: 2,
+                    retiring: None,
+                },
+                KeyPurpose::Concurrency,
+                tenant,
+                namespace,
+                value,
+            )
+            .expect("candidates");
+        assert_eq!(quiet.active.version(), 2);
+        assert!(quiet.retiring.is_none());
+        let rotating = ring
+            .candidates(
+                KeyVersions {
+                    active: 2,
+                    retiring: Some(1),
+                },
+                KeyPurpose::Concurrency,
+                tenant,
+                namespace,
+                value,
+            )
+            .expect("candidates");
+        assert_eq!(rotating.active, quiet.active);
+        let old = rotating.retiring.expect("the retiring digest");
+        assert_eq!(old.version(), 1);
+        assert_eq!(
+            old,
+            ring.current(1)
+                .expect("v1")
+                .digest(KeyPurpose::Concurrency, tenant, namespace, value)
+                .expect("digest")
+        );
+        assert_ne!(old.as_bytes(), rotating.active.as_bytes());
+        let half = KeyRing::parse(&format!("2:{}", "ab".repeat(32))).expect("ring");
+        assert_eq!(
+            half.candidates(
+                KeyVersions {
+                    active: 2,
+                    retiring: Some(1)
+                },
+                KeyPurpose::Concurrency,
+                tenant,
+                namespace,
+                value,
+            ),
+            Err(KeyedDigestError::UnknownVersion),
+            "a process without the retiring key cannot find the old row"
         );
     }
 }

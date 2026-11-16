@@ -396,10 +396,11 @@ async fn the_counters_follow_the_rows_and_the_runtime_role_cannot_write_them() {
     }
 }
 
-/// T022-007, T022-070, ADR-0056 decision 7, ADR-0088 decision 8: a new digest key version is not activated while any
-/// semaphore or window row uses another; once the keys drain it is, and the old one is retiring.
+/// T022-095, FR-022-056 (per-key rotation, replacing T022-007's refusal): a new version is activated with live rows,
+/// the old one is RETIRING while a row uses it and RETIRED by the transaction that deletes its last row; a third version
+/// waits for that; a version with no row is retired at once; the role that ran the command is recorded (G1190).
 #[tokio::test]
-async fn a_new_key_version_is_refused_while_a_row_uses_another() {
+async fn a_rotation_runs_with_live_rows_and_retires_the_old_version_with_its_last_row() {
     let w = world().await;
     let pool = &w.db.pool;
     let run = a_run(&w).await;
@@ -411,42 +412,332 @@ async fn a_new_key_version_is_refused_while_a_row_uses_another() {
     grant(pool, run, 1000).await.expect("a grant");
     assert_eq!(
         activate_key(pool, 2).await,
-        ("ROWS_UNDER_OTHER_VERSION".to_owned(), 2),
-        "a semaphore and a window of version 1 refuse version 2"
+        ("ACTIVATED".to_owned(), 2),
+        "a semaphore and a window of version 1 rotate with it"
+    );
+    assert_eq!(
+        activate_key(pool, 3).await,
+        ("ROTATION_IN_PROGRESS".to_owned(), 2),
+        "one rotation at a time"
+    );
+    let states = || async {
+        sqlx::query_as::<_, (i16, String, bool)>(
+            "SELECT version, state, retired_at IS NOT NULL FROM flow_control_key_versions ORDER BY version",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("versions")
+    };
+    assert_eq!(
+        states().await,
+        [
+            (1, "RETIRING".to_owned(), false),
+            (2, "ACTIVE".to_owned(), false)
+        ]
     );
     sqlx::query("DELETE FROM concurrency_holders")
         .execute(pool)
         .await
         .expect("drain");
     assert_eq!(
-        activate_key(pool, 2).await,
-        ("ROWS_UNDER_OTHER_VERSION".to_owned(), 1),
+        states().await[0],
+        (1, "RETIRING".to_owned(), false),
         "the window still uses version 1"
+    );
+    assert_eq!(
+        activate_key(pool, 3).await,
+        ("ROTATION_IN_PROGRESS".to_owned(), 1)
     );
     sqlx::query("DELETE FROM rate_limit_grants")
         .execute(pool)
         .await
         .expect("drain");
-    assert_eq!(activate_key(pool, 2).await.0, "ACTIVATED");
-    let states: Vec<(i16, String)> =
-        sqlx::query_as("SELECT version, state FROM flow_control_key_versions ORDER BY version")
-            .fetch_all(pool)
-            .await
-            .expect("versions");
     assert_eq!(
-        states,
-        [(1, "RETIRING".to_owned()), (2, "ACTIVE".to_owned())]
+        states().await,
+        [
+            (1, "RETIRED".to_owned(), true),
+            (2, "ACTIVE".to_owned(), false)
+        ],
+        "the transaction that deleted the last row of version 1 retired it"
     );
-    let two_active =
-        sqlx::query("UPDATE flow_control_key_versions SET state = 'ACTIVE' WHERE version = 1")
-            .execute(pool)
-            .await
-            .map_err(db_error);
+    assert_eq!(
+        activate_key(pool, 3).await,
+        ("ACTIVATED".to_owned(), 0),
+        "no row uses version 2"
+    );
+    assert_eq!(
+        states().await,
+        [
+            (1, "RETIRED".to_owned(), true),
+            (2, "RETIRED".to_owned(), true),
+            (3, "ACTIVE".to_owned(), false)
+        ],
+        "a version no row uses is retired at once"
+    );
+    assert_eq!(activate_key(pool, 2).await.0, "RETIRED");
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT activated_role FROM flow_control_key_versions WHERE version = 3",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("the role");
+    assert!(role.is_some_and(|role| !role.is_empty()), "G1190");
+    let two_active = sqlx::query(
+        "UPDATE flow_control_key_versions SET state = 'ACTIVE', retired_at = NULL WHERE version = 1",
+    )
+    .execute(pool)
+    .await
+    .map_err(db_error);
     assert_eq!(
         two_active.map(drop).unwrap_err().0,
         "23505",
         "at most one version is active"
     );
+}
+
+/// T022-095's evidence: a rotation with live holders, waiters and grants never splits a key. A deciding transaction (as
+/// the runtime role) reads the versions in force, digests the key under both, and files it on the row that exists under
+/// the retiring version, else under the active one; two transactions that file a new key at once share one row; the
+/// old version retires when its last row goes.
+#[tokio::test]
+async fn a_rotation_with_live_holders_waiters_and_grants_never_splits_a_key() {
+    use sagat_application::keyed_digest::{KeyPurpose, KeyRing};
+    use sagat_domain::execution::GatePool;
+    use sagat_domain::identity::{NamespaceId, TenantId};
+    use sagat_domain::workflow::{GateLevel, ResolvedGroup};
+    use sagat_infra_postgres::{KeyTable, KeyToFile, file_keys, key_versions};
+
+    let w = world().await;
+    let pool = &w.db.pool;
+    let runtime = w.db.runtime_pool().await;
+    let first = a_run(&w).await;
+    let second = a_run(&w).await;
+    let (tenant, namespace) = (TenantId::new(first.0), NamespaceId::new(first.1));
+    let ring =
+        KeyRing::parse(&format!("1:{},2:{}", "11".repeat(32), "22".repeat(32))).expect("ring");
+    let key = |purpose, value: &str, versions| KeyToFile {
+        tenant,
+        namespace,
+        pool: GatePool::Ordinary,
+        level: GateLevel::Run,
+        group: ResolvedGroup::parse(if purpose == KeyPurpose::Concurrency {
+            "accounts"
+        } else {
+            "providers"
+        })
+        .expect("group"),
+        candidates: ring
+            .candidates(versions, purpose, tenant, namespace, value.as_bytes())
+            .expect("digests"),
+        shard: 5,
+    };
+    assert!(
+        key_versions(&mut *runtime.acquire().await.expect("conn"))
+            .await
+            .is_err(),
+        "no version was ever activated: nothing is decided"
+    );
+    assert_eq!(activate_key(pool, 1).await.0, "ACTIVATED");
+
+    // before the rotation: a holder of acct-1 and a grant of prov-1, both under version 1
+    let mut tx = runtime.begin().await.expect("tx");
+    let versions = key_versions(&mut tx).await.expect("versions");
+    assert_eq!((versions.active, versions.retiring), (1, None));
+    let acct = file_keys(
+        &mut tx,
+        KeyTable::Semaphores,
+        &[key(KeyPurpose::Concurrency, "acct-1", versions)],
+    )
+    .await
+    .expect("filed");
+    assert!(acct[0].created);
+    let v1_acct = acct[0].digest;
+    sqlx::query(
+        "INSERT INTO concurrency_holders (tenant_id, namespace_id, run_id, holder_scope, node, attempt, pool, group_name, \
+         key_digest, declared_limit, acquired_at) \
+         VALUES ($1, $2, $3, 'RUN', '', 0, 'ORDINARY', 'accounts', $4, 2, clock_timestamp())",
+    )
+    .bind(first.0)
+    .bind(first.1)
+    .bind(first.2)
+    .bind(v1_acct.as_slice())
+    .execute(&mut *tx)
+    .await
+    .expect("a holder");
+    let prov = file_keys(
+        &mut tx,
+        KeyTable::Windows,
+        &[key(KeyPurpose::RateLimit, "prov-1", versions)],
+    )
+    .await
+    .expect("filed");
+    sqlx::query(
+        "INSERT INTO rate_limit_grants (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, group_name, \
+         key_digest, declared_limit, period_ms, granted_at, shard) \
+         VALUES ($1, $2, $3, '', 0, 'ORDINARY', 'RUN', 'providers', $4, 10, 1000, clock_timestamp(), 5)",
+    )
+    .bind(first.0)
+    .bind(first.1)
+    .bind(first.2)
+    .bind(prov[0].digest.as_slice())
+    .execute(&mut *tx)
+    .await
+    .expect("a grant");
+    tx.commit().await.expect("commit");
+
+    assert_eq!(activate_key(pool, 2).await, ("ACTIVATED".to_owned(), 2));
+
+    // during the rotation: acct-1 is found on its version-1 row and gains a waiter there; acct-2 is new under version 2
+    let mut tx = runtime.begin().await.expect("tx");
+    let versions = key_versions(&mut tx).await.expect("versions");
+    assert_eq!((versions.active, versions.retiring), (2, Some(1)));
+    let filed = file_keys(
+        &mut tx,
+        KeyTable::Semaphores,
+        &[
+            key(KeyPurpose::Concurrency, "acct-2", versions),
+            key(KeyPurpose::Concurrency, "acct-1", versions),
+        ],
+    )
+    .await
+    .expect("filed");
+    let old = filed.iter().find(|f| f.index == 1).expect("acct-1");
+    let new = filed.iter().find(|f| f.index == 0).expect("acct-2");
+    assert_eq!(
+        (old.digest, old.version, old.created),
+        (v1_acct, 1, false),
+        "the existing row wins"
+    );
+    assert_eq!((new.version, new.created), (2, true));
+    let mut order = filed.iter().map(|f| f.digest).collect::<Vec<_>>();
+    order.sort_unstable();
+    assert_eq!(
+        order,
+        filed.iter().map(|f| f.digest).collect::<Vec<_>>(),
+        "locked in digest order"
+    );
+    sqlx::query(
+        "INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
+         group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
+         VALUES ($1, $2, $3, '', 'RUN', 0, 'ORDINARY', 'accounts', $4, 2, clock_timestamp(), \
+                 clock_timestamp() + interval '1 minute', 1)",
+    )
+    .bind(second.0)
+    .bind(second.1)
+    .bind(second.2)
+    .bind(v1_acct.as_slice())
+    .execute(&mut *tx)
+    .await
+    .expect("a waiter on the old row");
+    tx.commit().await.expect("commit");
+
+    // two transactions file a new key at once: the second waits for the first's row and shares it
+    let mut holder_tx = runtime.begin().await.expect("tx");
+    let versions = key_versions(&mut holder_tx).await.expect("versions");
+    let holder_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *holder_tx)
+        .await
+        .expect("pid");
+    let first_filing = file_keys(
+        &mut holder_tx,
+        KeyTable::Semaphores,
+        &[key(KeyPurpose::Concurrency, "acct-3", versions)],
+    )
+    .await
+    .expect("filed");
+    assert!(first_filing[0].created);
+    let contender = {
+        let runtime = runtime.clone();
+        let wanted = key(KeyPurpose::Concurrency, "acct-3", versions);
+        tokio::spawn(async move {
+            let mut tx = runtime.begin().await.expect("tx");
+            let filed = file_keys(&mut tx, KeyTable::Semaphores, &[wanted])
+                .await
+                .expect("filed");
+            tx.commit().await.expect("commit");
+            filed
+        })
+    };
+    loop {
+        let blocked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid))",
+        )
+        .bind(holder_pid)
+        .fetch_one(pool)
+        .await
+        .expect("activity");
+        if blocked > 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    holder_tx.commit().await.expect("commit");
+    let second_filing = contender.await.expect("the contender");
+    assert_eq!(second_filing[0].digest, first_filing[0].digest);
+    assert!(
+        !second_filing[0].created,
+        "it found the row the first one made"
+    );
+
+    // no key is ever split: each key has exactly one row, under one of its two digests
+    for value in ["acct-1", "acct-2", "acct-3"] {
+        let candidates = ring
+            .candidates(
+                versions,
+                KeyPurpose::Concurrency,
+                tenant,
+                namespace,
+                value.as_bytes(),
+            )
+            .expect("digests");
+        let rows: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND key_digest = ANY($2)",
+        )
+        .bind(first.0)
+        .bind(vec![
+            candidates.active.as_bytes().to_vec(),
+            candidates.retiring.expect("rotating").as_bytes().to_vec(),
+        ])
+        .fetch_one(pool)
+        .await
+        .expect("rows");
+        assert_eq!(rows, 1, "{value}");
+    }
+    assert_eq!(activate_key(pool, 3).await.0, "ROTATION_IN_PROGRESS");
+
+    // the old version retires with its last row: the grant of prov-1, then the holder and waiter of acct-1
+    sqlx::query("DELETE FROM rate_limit_grants")
+        .execute(pool)
+        .await
+        .expect("drain");
+    sqlx::query("DELETE FROM concurrency_holders")
+        .execute(pool)
+        .await
+        .expect("drain");
+    let state = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT state FROM flow_control_key_versions WHERE version = 1",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("state")
+    };
+    assert_eq!(
+        state().await,
+        "RETIRING",
+        "the waiter of acct-1 still uses it"
+    );
+    sqlx::query("DELETE FROM concurrency_waiters")
+        .execute(&runtime)
+        .await
+        .expect("the runtime role drains it");
+    assert_eq!(state().await, "RETIRED");
+    let left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM concurrency_semaphores WHERE key_version = 1")
+            .fetch_one(pool)
+            .await
+            .expect("rows");
+    assert_eq!(left, 0);
 }
 
 // ------------------------------------------------------------------ the review of 2026-11-15

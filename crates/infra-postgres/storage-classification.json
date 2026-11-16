@@ -8911,6 +8911,23 @@
       ]
     },
     {
+      "table": "flow_control_key_versions",
+      "column": "activated_role",
+      "sql_type": "text",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "global"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "CHECK flow_control_key_versions_role_bounded: a PostgreSQL role name (session_user) of at most 63 characters, written by flow_control_key_activate."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/migrations/20270130000500_flow_control_key_rotation.up.sql"
+      ]
+    },
+    {
       "table": "rate_limit_grants",
       "column": "group_name",
       "sql_type": "text",

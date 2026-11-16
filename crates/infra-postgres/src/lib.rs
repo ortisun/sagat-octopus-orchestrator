@@ -33,6 +33,7 @@ mod event_codec;
 mod event_payloads;
 mod events;
 mod execution;
+mod flow_control;
 mod identity;
 mod instances;
 mod leaf_certification;
@@ -77,6 +78,7 @@ pub use definitions::PgDefinitionStore;
 #[doc(hidden)]
 pub use execution::EXPIRED_RESETS_SQL;
 pub use execution::{PgRunStore, PgRunTx};
+pub use flow_control::{FiledKey, KeyTable, KeyToFile, file_keys, key_versions};
 pub use identity::PgIdentityStore;
 pub use instances::{
     FeatureStep, OperatorBounds, PgInstanceStore, live_capable_step, no_feature_step,
