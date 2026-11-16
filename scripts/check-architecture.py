@@ -13,7 +13,10 @@ Reads `cargo metadata` and fails when:
     with `SKIP LOCKED` (the keeper, which never waits); `partitioning.rs` names no run table; and the two fences stay `FOR SHARE`;
   * a `run.finished` body written by the PostgreSQL adapter (the message subscribers are sent when a run ends) is built after
     `add_schedule_origin`, in the same function (FR-018-046, D2143): a writer that forgets it tells the subscribers of a run a
-    schedule started nothing about the schedule, and nothing else would fail.
+    schedule started nothing about the schedule, and nothing else would fail;
+  * a SQL literal of the PostgreSQL adapter inserts into `runs` outside `execution.rs` (`PgRunStore::create`, the one admission
+    point every run creator passes, where the flow-control gate runs) and `chain_progress.rs` (the continuation successors, which
+    assert that their definition has no run-level gate): a new writer of runs would start runs past the gate (FR-022-059, D022-031).
 
 Usage: python3 scripts/check-architecture.py [--metadata FILE] [--postgres-src DIR]
   --metadata FILE     read a saved `cargo metadata --format-version 1` JSON instead of
@@ -298,6 +301,39 @@ def run_finished_errors(src):
     return errors
 
 
+# --- runs are inserted only where the flow-control gate runs (FR-022-059, D022-031) ---------------------------------------------
+RUN_INSERT = re.compile(r"\bINSERT\s+INTO\s+runs\b", re.IGNORECASE)
+RUN_WRITERS = ("execution.rs", "chain_progress.rs")
+
+
+def run_insert_errors(src):
+    """The errors of the one-admission-point rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for offset, sql in literals:
+            if not RUN_INSERT.search(sql):
+                continue
+            if rel in RUN_WRITERS:
+                found += rel == RUN_WRITERS[0]
+                continue
+            errors.append(
+                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement inserts into `runs` outside "
+                f"{' and '.join(RUN_WRITERS)}: a run created here would not pass the flow-control gate of PgRunStore::create "
+                f"(FR-022-059); create runs through RunStore::create"
+            )
+    if found == 0:
+        errors.append(
+            f"no `INSERT INTO runs` was found in {RUN_WRITERS[0]} of {src}: the one-admission-point rule would check nothing "
+            f"(is the statement spelled otherwise?)"
+        )
+    return errors
+
+
 def main(argv):
     metadata_file = argv[argv.index("--metadata") + 1] if "--metadata" in argv else None
     postgres_src = (
@@ -373,6 +409,7 @@ def main(argv):
 
     errors.extend(lease_row_errors(postgres_src))
     errors.extend(run_finished_errors(postgres_src))
+    errors.extend(run_insert_errors(postgres_src))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2
@@ -402,7 +439,7 @@ def main(argv):
         for e in errors:
             print(f"  - {e}")
         return 1
-    print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule)")
+    print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, runs are inserted only at the admission point)")
     return 0
 
 

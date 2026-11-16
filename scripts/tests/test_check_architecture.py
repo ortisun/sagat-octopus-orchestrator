@@ -209,6 +209,11 @@ FENCE = """
         sqlx::query("SELECT s.expires_at FROM scheduler_shards s");
     }
 """
+ADMISSION = """
+    async fn create(tx: &mut PgConnection) {
+        sqlx::query("INSERT INTO runs (id, tenant_id) VALUES ($1, $2)");
+    }
+"""
 CHECK_FENCE = """
     pub async fn check_fence() {
         sqlx::query("SELECT shard FROM scheduler_shards WHERE shard = $1 FOR SHARE");
@@ -222,6 +227,7 @@ def run_lease_check(files):
         src = pathlib.Path(tmp) / "src"
         src.mkdir()
         for name, source in files.items():
+            (src / name).parent.mkdir(parents=True, exist_ok=True)
             (src / name).write_text(source)
         metadata = {
             "workspace_root": "/r",
@@ -252,7 +258,7 @@ WRITER = """
 """
 
 
-def tree(keeper=KEEPER, execution=FENCE, schedules=CHECK_FENCE, **more):
+def tree(keeper=KEEPER, execution=FENCE + ADMISSION, schedules=CHECK_FENCE, **more):
     """A valid tree: the lease row as the rule wants it and one `run.finished` writer that says its schedule."""
     return {
         "partitioning.rs": keeper,
@@ -383,6 +389,47 @@ class EveryRunFinishedBodySaysItsSchedule(unittest.TestCase):
         code, out = run_lease_check(tree(**{"outbound.rs": "async fn nothing() {}"}))
         self.assertEqual(code, 1, out)
         self.assertIn("`add_schedule_origin` is named by the `run.finished` rule and is not defined", out)
+
+
+class RunsAreInsertedOnlyAtTheAdmissionPoint(unittest.TestCase):
+    """FR-022-059, D022-031: `INSERT INTO runs` appears only in execution.rs (`PgRunStore::create`) and chain_progress.rs."""
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("runs are inserted only at the admission point", result.stdout)
+
+    def test_the_admission_point_and_the_continuation_successors_pass(self):
+        successor = 'async fn continue_as_new() { sqlx::query("INSERT INTO runs (id) VALUES ($1)"); }'
+        code, out = run_lease_check(tree(**{"chain_progress.rs": successor}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_new_writer_of_runs_is_refused_and_named(self):
+        bypass = 'async fn sneak() {\n    sqlx::query(\n        "insert into runs (id) values ($1)",\n    );\n}'
+        code, out = run_lease_check(tree(**{"standalone.rs": bypass}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("standalone.rs:3", out)
+        self.assertIn("inserts into `runs` outside execution.rs and chain_progress.rs", out)
+
+    def test_a_module_under_execution_is_not_the_admission_point(self):
+        nested = 'async fn path() { sqlx::query("INSERT INTO runs (id) VALUES ($1)"); }'
+        code, out = run_lease_check(tree(**{"execution/path.rs": nested}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("execution/path.rs:1", out)
+
+    def test_other_tables_comments_and_text_are_not_a_writer(self):
+        noise = (
+            '// INSERT INTO runs is what create does\n'
+            'async fn events() { sqlx::query("INSERT INTO run_events (run_id) VALUES ($1)"); }\n'
+            'async fn counts() { sqlx::query("INSERT INTO run_active_counts (slot) VALUES (1)"); }\n'
+        )
+        code, out = run_lease_check(tree(**{"noise.rs": noise}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_finds_no_admission_point_is_an_error_and_not_a_pass(self):
+        code, out = run_lease_check(tree(execution=FENCE))
+        self.assertEqual(code, 1, out)
+        self.assertIn("no `INSERT INTO runs` was found in execution.rs", out)
 
 
 if __name__ == "__main__":

@@ -23,8 +23,9 @@ Scoped selection:
   integration   a `sagat-tests` target runs only when it was itself changed: (a) a file of its directory, or its
                 [[test]] entry, changed; or (b) a harness it drives changed (frontend/e2e, sdks/*/conformance, examples/,
                 runners/lake/ for the lake suites); or (c) for the budget of the hot path, a file of
-                crates/infra-postgres/ or of the claim and command path of crates/application changed
-                (OD-2026-11-12-4). Nothing else selects a suite: not a changed package that the suite
+                crates/infra-postgres/, of the claim and command path of crates/application, of crates/scheduler/,
+                of crates/domain/src/execution/ or of the flow-control ports of crates/application changed
+                (OD-2026-11-12-4, D022-030). Nothing else selects a suite: not a changed package that the suite
                 uses or that depends on it, and not a shared input (tests/support, tests/fixtures, runners/ other than
                 runners/lake/, a contract file under specs/, a dependency of tests/Cargo.toml, Cargo.lock): the
                 integration suites are expensive, and the release runs all of them.
@@ -68,7 +69,11 @@ HARNESSES = (
     # The budget of the hot path (OD-2026-11-12-4, design 038): what a lease and a completion cost the database is a
     # property of the code that runs them, not of the suite that measures it, so the code selects the suite. Every
     # statement and trigger of the adapter can add to it, and so can the claim and the command path that drive it.
-    (re.compile(r"crates/infra-postgres/|crates/application/src/(worker|execution)(\.rs$|/)|crates/application/src/runs\.rs$"),
+    # Feature 022 (D022-030) adds the scheduler's passes, the reducer and the flow-control ports: a grant, a readiness gate or a
+    # reducer rule runs inside the transactions the budget counts.
+    (re.compile(r"crates/infra-postgres/|crates/application/src/(worker|execution)(\.rs$|/)|crates/application/src/runs\.rs$"
+                r"|crates/scheduler/|crates/domain/src/execution/"
+                r"|crates/application/src/(concurrency|rate_limits|flow_control)\.rs$"),
      BUDGET_SUITES),
 )
 # Inputs of every Rust package: a change selects the unit tests of every package, and no suite.
