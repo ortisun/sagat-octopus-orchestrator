@@ -471,3 +471,77 @@ async fn a_child_a_peer_created_before_the_check_is_not_failed_by_the_refusal() 
     );
     assert_ne!(w.step_status(parent, "c").await, Some(StepStatus::Failed));
 }
+
+/// Row 2: a start with an uploaded input is checked like any start, against the canonical descriptor
+/// `{"$blob": {id, size, sha256, contentType}}` (the bytes stay opaque). A schema the descriptor does not satisfy is
+/// answered `422` with the pointer and the rule, never a value of the descriptor; no run is created and the upload is not
+/// claimed, so the same upload then starts a version whose schema the descriptor satisfies.
+#[tokio::test]
+async fn row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claims_nothing() {
+    use crate::support::blob_collections::{platform, start_with_blob, upload};
+    use crate::support::worker::{HUMAN, NAMESPACE, TENANT, single_ir};
+
+    let p = platform().await;
+    let refusing = p
+        .publish(
+            "row-2-refusing",
+            &with_schema(single_ir("row-2-refusing", None), order_schema()),
+        )
+        .await;
+    let accepting = p
+        .publish(
+            "row-2-accepting",
+            &with_schema(
+                single_ir("row-2-accepting", None),
+                json!({
+                    "type": "object",
+                    "required": ["$blob"],
+                    "properties": {"$blob": {"type": "object", "required": ["id", "size", "sha256"]}}
+                }),
+            ),
+        )
+        .await;
+    let blob = upload(&p, br#"{"orderId": "o-1"}"#).await;
+    let blob_id = blob["id"].as_str().expect("id");
+    let response = p
+        .api
+        .as_user(reqwest::Method::POST, "/runs", HUMAN, TENANT)
+        .header("x-octopus-namespace", NAMESPACE)
+        .header("idempotency-key", format!("start-{}", Uuid::now_v7()))
+        .json(&json!({"workflowId": refusing, "inputBlobRef": blob_id}))
+        .send()
+        .await
+        .expect("start with a blob");
+    let status = response.status();
+    let body = crate::support::api::json_of(response).await;
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["code"], "VALIDATION_FAILED", "{body}");
+    assert_eq!(
+        body["details"],
+        json!({"reason": "RUN_INPUT_INVALID", "field": "/orderId", "rule": "required"}),
+    );
+    let text = body.to_string();
+    for value in [blob_id, blob["sha256"].as_str().expect("sha")] {
+        assert!(!text.contains(value), "the refusal names no value of the descriptor");
+    }
+    let runs_of_refusing: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM runs WHERE workflow_id = $1::uuid")
+            .bind(&refusing)
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("count");
+    assert_eq!(runs_of_refusing, 0, "a refused start creates nothing");
+
+    let run = start_with_blob(&p, &accepting, blob_id).await;
+    let input_blob: Option<Uuid> =
+        sqlx::query_scalar("SELECT input_blob_id FROM runs WHERE id = $1")
+            .bind(run)
+            .fetch_one(&p.api.db.pool)
+            .await
+            .expect("the run");
+    assert_eq!(
+        input_blob.map(|id| id.to_string()).as_deref(),
+        Some(blob_id),
+        "the upload the refusal did not claim starts the matching version"
+    );
+}
