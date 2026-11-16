@@ -1,6 +1,6 @@
 //! Design 043, T043-17 (FR-043-014, SC-043-002) on the rows the first sentinel test leaves: a Signal-with-Start (row 3), a
-//! reset (row 5), a schedule's action and trigger-now (rows 6 and 8), a continuation (row 12) and a schedule write (row
-//! 14). A sentinel value and a sentinel key, in inputs that fail at them, appear in none of the answers, the logs and spans
+//! reset (row 5), a schedule's action, backfill and trigger-now (rows 6, 7 and 8), a continuation (row 12) and a schedule
+//! write (row 14). A sentinel value and a sentinel key, in inputs that fail at them, appear in none of the answers, the logs and spans
 //! captured at TRACE, the audit rows, the schedule's action records, the journal and the metrics text. Row 10 (a cron
 //! tick) has no caller-chosen value: its document is the platform's. Rows 2 and 13 are covered by
 //! `row_2_an_uploaded_input_start_checks_the_descriptor_and_a_refusal_claims_nothing` and the row 13 scenario of
@@ -228,8 +228,8 @@ async fn the_other_rows(telemetry: &sagat_telemetry::Metrics) {
     clean("the metrics", &rendered);
 }
 
-/// Rows 14, 6 and 8: a write whose input the target refuses; an action whose input a later version refuses; trigger-now
-/// on that schedule.
+/// Rows 14, 6, 8 and 7: a write whose input the target refuses; an action whose input a later version refuses;
+/// trigger-now on that schedule; a backfill step of it.
 async fn schedule_rows(f: &Fixture, input: &Value, answers: &mut String) {
     let strict = named("strict");
     let mut doc = document(&strict, "a", vec![activity("a")]);
@@ -280,6 +280,35 @@ async fn schedule_rows(f: &Fixture, input: &Value, answers: &mut String) {
     assert_eq!(
         f.outcomes(&schedule).await,
         vec![("INPUT_INVALID".to_owned(), 1)]
+    );
+    // row 7: a backfill of earlier times, whose first step is refused and ends it `CANCELLED`
+    let backfill = f
+        .service
+        .create_backfill(
+            &f.w.admin,
+            schedule.id,
+            &sagat_application::schedules::BackfillRequest {
+                start: crate::support::schedules::t0() - time::Duration::hours(3),
+                end: crate::support::schedules::t0(),
+                overlap: None,
+            },
+            &RequestContext::default(),
+        )
+        .await
+        .expect("a backfill");
+    let due = sagat_application::schedules::DueBackfill {
+        tenant_id: backfill.tenant_id,
+        schedule: backfill.schedule,
+        id: backfill.id,
+    };
+    for _ in 0..10 {
+        if f.firing.backfill_step(&due, None).await.expect("a step") != Fired::Acted {
+            break;
+        }
+    }
+    assert_eq!(
+        f.outcomes(&schedule).await,
+        vec![("INPUT_INVALID".to_owned(), 2)]
     );
 }
 
