@@ -58,6 +58,8 @@ outcomes recorded before a switch to `report` stay as they were recorded.
 
 When every caller and schema is fixed:
 
+1. Run `control-plane input-schema-inventory` again and expect exit 0: a version published while a control plane ran
+   in `report` may be outside the subset, and in `enforce` every start of it is refused.
 1. Restart every engine and control plane in `enforce` (unset the variable).
 2. Record the requirement `run-input-validation-v1` for `CONTROL_PLANE` and `EXECUTION_ENGINE` through the instance
    registry ([instance-registry](instance-registry.md)). Recording is refused while any live replica lacks the capability,
@@ -69,14 +71,24 @@ Going back to `report`: remove the requirement first, then restart in `report`.
 ## Watching it
 
 - `run_input_validations_total{creator, outcome}`: `accepted`, `no_schema`, `refused`, `schema_unusable`, `reported`,
-  `deadline` (no permit within 5 s or the backstop: transient, never remembered).
+  `deadline` (no permit within 5 s, the backstop, or a panic of the validator: transient, never remembered; the debug log
+  says which, and a panic is logged at `error` with the schema's digest).
 - `run_input_schema_cache_total{result}`: `hit`, `miss`, `evicted`, `failure_remembered`, `unshared` (ad hoc starts).
 - `trigger_events_total{outcome="input_invalid" | "input_schema_unusable"}`; `scheduler_continuation_input_refusals_total`.
 - Audit records `run.input_refused`. No metric label, log line, span or audit record carries an input value, a field
   name or a tenant.
 
-A sustained `deadline` means the validator has no room: four validations run at once per process, a tenant alone may use
-all four, and a caller who waits more than 5 s gets a retryable `503`.
+What to alert on:
+
+- `refused` or `schema_unusable` rising after the upgrade: callers or schemas the release now refuses; the inventory
+  lists the schemas, and `report` buys time while callers are fixed.
+- `reported` above zero for long: a deployment left in `report`; fix the callers and lock it.
+- `deadline` sustained: the validator has no room. Four validations run at once per process, a tenant alone may use all
+  four, and a caller who waits more than 5 s gets a retryable `503`; add replicas. A `deadline` that stays on one
+  schema with a panic in the log is a defect of the validator: report it with the digest.
+
+A version used both by manual starts and by a trigger needs a schema that accepts both shapes: the manual input and the
+envelope `{event, data}`. The subset has no `if`/`then`, so write an `anyOf` of the two.
 
 ## Rollback
 

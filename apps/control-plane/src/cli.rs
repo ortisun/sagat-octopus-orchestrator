@@ -203,8 +203,9 @@ ENVIRONMENT (serve):
                                       alone expires one whose run does not end (SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS,
                                       a setting of the engine only: nothing here reads it) [false]
     SAGAT_LAKE_ENABLED                let a workflow hold an Apache Iceberg write (publication still waits for its checks) [false]
-    SAGAT_RUN_INPUT_VALIDATION        enforce | report: what publication does with an inputSchema outside the supported
-                                      subset (refuse it, or publish it with a warning); anything else stops the process [enforce]
+    SAGAT_RUN_INPUT_VALIDATION        enforce | report: a run input its version's inputSchema refuses, and an inputSchema
+                                      outside the supported subset at publication, are refused, or counted, audited and
+                                      admitted (published with a warning); anything else stops the process [enforce]
     SAGAT_COLLECTION_OPERATORS_ENABLED  let a forEach declare operators; every replica must run this release first [false]
     SAGAT_SECRETS_KEYS                key ring that seals secrets: id:base64,id2:base64; without it the
                                       secret routes do not exist. The engine needs the same ring

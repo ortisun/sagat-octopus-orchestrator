@@ -59,6 +59,10 @@ start that an open holder answers, where no run is created (decision 10). An acc
 3. **Keep the rule that refuses any normal `tokio`, and fail the build** — breaks design 042 on `develop`.
 4. **A composition-root test in each app instead of the wiring rule** — needs a database and the whole composition for
    each service; the rule is cheap, runs everywhere, and fails on the next service that forgets the gate.
+5. **The gate as a required constructor argument of the four services**, so the compiler enforces decision 2 and
+   `unwired()` goes — the stronger form, and the way back if the rule proves too narrow. Not chosen in 0.3.0: about 66
+   `::new(` call sites, most in test support, would change in a release that is closing, and the unwired default
+   already fails closed (it refuses, never admits).
 
 ## Consequences
 
@@ -70,12 +74,15 @@ start that an open holder answers, where no run is created (decision 10). An acc
   refuses its starts, like every schema outside the subset (OD-2026-11-14-14); the inventory lists it.
 - A caller who may read the source input of a repeat learns less than ADR-0090 allowed (`/`), never more.
 - A plain `report`-mode start that an open holder answers writes one audit row per answer.
+- Compile and validate never run inside a database transaction (ADR-0090 decision 4): held by review and by the order
+  of the code (row 12 reads under the lock and checks after it is released), not by a test.
+- ADR-0090's Consequences say "one migration"; there are two, a `NOT VALID` addition and its validation (D043-145).
 - Rolled back with the code: nothing is stored by this decision.
 
 ## Evidence
 
 - Design: `docs/designs/043-run-input-validation.md`; registers: `specs/043-run-input-validation/research.md`
-  (D043-101, D043-102, D043-105, D043-120, D043-121, D043-144, D043-148, D043-150, D043-154, D043-157 to D043-163,
+  (D043-101, D043-102, D043-105, D043-120, D043-121, D043-144, D043-148, D043-150, D043-154, D043-157 to D043-170,
   G043-040, G043-051, G043-052).
 - Review reports: `docs/designs/043-run-input-validation.reviews/2026-11-15/` (architecture 1, 3, 7; security 1, 2;
   correctness 2, 4, 5, 6) and their resolution map.

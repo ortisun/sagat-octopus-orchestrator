@@ -697,6 +697,47 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
   `one_scheduled_action_is_one_validation_in_two_spans` count 2, reverted at once; correctness Nit 15); the owner-decision
   row OD-2026-11-15-3 said "Decided; not built" after D043-149 built it, and now says "Decided".
 
+### After the first approval round of 2026-11-16 (at `f5626148`)
+
+- **D043-164** (2026-11-16) Supersedes the lookup of D043-132: a refusal of a child's input fails the parent step only if,
+  under the step's row lock, the step still waits for that child and its reservation was not claimed
+  (`Condition::ChildNotStarted`, `RunTx::child_started`, a `SELECT ... FOR UPDATE` of the step). A peer's creation
+  claims the row in its own transaction (`claim_reservation`), so a claim that committed is seen and one in flight waits,
+  then finds the step moved on and creates nothing. The lookup before the failure left a window (correctness review of
+  2026-11-16, Major 3). Seen red with the condition removed: `a_child_a_peer_created_before_the_check_is_not_failed_by_the_refusal`
+  and `a_child_claimed_while_its_refusal_waits_for_the_step_is_not_failed`, the second holding the claim uncommitted
+  until `pg_stat_activity` shows the refusal waiting on the step's row.
+- **D043-165** (2026-11-16) Before a cron tick's refusal is audited, the dispatcher looks the tick's key up
+  (`replay_start` of `trigger:<id>` and the tick's key): a run a peer in `report`, or a 0.2.x engine, started under it and
+  left without moving the trigger makes the tick started, and the round moves the trigger on without an audit
+  (correctness review Nit 9). One statement on the refusal path. Red first:
+  `a_refused_tick_whose_run_a_reporting_peer_created_is_not_audited` (1 audit).
+- **D043-166** (2026-11-16) A panic of the compile or of the validation is caught in `RunInputValidator::check` and
+  answered `SchemaRefusal::Interrupted` to the caller that led the compile, as its followers already were (D043-106):
+  it was a 500 in the control plane and an engine process that exited and crash-looped on the same work (security and
+  correctness reviews of 2026-11-16, Major 1). Logged at `error` with eight bytes of the digest. The pre-check a parse
+  runs outside a start (publication, a dry run, an ad hoc document) now runs through `off_worker`, at most
+  `RUN_INPUT_PERMITS` at once by a blocking count of its own (security review Major 2); it compiled up to 32 patterns on
+  the async workers with no bound. Red first: `the_caller_whose_compile_panics_is_answered_interrupted` (panicked) and
+  `prechecks_outside_a_start_run_at_most_four_at_once` (16 at once). `sagat-infra-schema` gains `tracing`.
+- **D043-167** (2026-11-16) A `CANCEL_SOURCE` reset checks the source's stored input against the source's version at its
+  request, before it registers the entry and cancels the source; the version and the input are fixed then, so the
+  completion could only refuse what the request already could (correctness review Major 2). `recheck` is used, so a
+  passing request is counted when the reset is made. The completion keeps its check, for a request a control plane in
+  `report` or of 0.2.x admitted. Red first: `row_5_a_cancelling_reset_whose_input_the_version_refuses_is_refused_and_cancels_nothing`.
+- **D043-168** (2026-11-16) A recheck counts `reported` as well as a refusal, so the metric agrees with the audit rows of
+  `report` mode (correctness review Nit 6). Red first: `a_reporting_recheck_is_counted`.
+- **D043-169** (2026-11-16) Row 13 parses the caller's document in the process's mode (`DefinitionCache::parse_document_in`):
+  in `enforce` a schema outside the subset is refused at the parse, naming the keyword, as a publication; in `report` it
+  is a warning and the gate reports it with the run (architecture review Major 2; it was parsed in `enforce` whatever
+  the mode). Red first: the `report` case of `run_input::run` in `integration_database_connections`.
+- **D043-170** (2026-11-16) The text of the design moved its detail out (zoom-out reviews Major 1 and 2, structural Major
+  18): the subset, its allowlist, its limits and its charges are the contract `contracts/input-schema-subset.md`; the
+  validator's internals are section 5 of this register; line numbers are gone from the design. The charges and the
+  limits are declared part of `run-input-validation-v1` (Technical Plan 6), so a release that tightens them ships a new
+  capability. The conformance fixture `builders.json` moved its fractional `multipleOf` (outside the subset, refused at
+  publication) to `default`, keeping the number the canonical text must print.
+
 ## 3. Gaps
 
 | ID | Gap | Reason / closure | Status |
@@ -735,10 +776,11 @@ The owner decision this feature implements is OD-2026-11-14-2 ("Validar todos os
 | G043-052 | Design 042's blocking parse of a blob source runs in `sagat-application` with `tokio` `rt` (D043-154); moved behind a port of the adapter, the runtime rule could refuse any `tokio` there again. | Follow-up of 042. | Open |
 | G043-053 | A compile that panics is transient (D043-106) and never remembered, so a schema that makes the compiler panic is compiled again, and panics again, on every start of its version (security review of 2026-11-15, Nit 4). | A compiler bug, not an input: it is logged without the schema and refuses as busy, never admits. Bounding the retries would need a memory of panics per key. | Open |
 | G043-054 | A trigger dispatch that waits for room in the validator uses up none of the event's attempts, but an event that has waited for a day (`GIVE_UP_AFTER`) ends `DEAD`, as one waiting for a quota does (correctness review of 2026-11-15, Nit 14). | Only a validator starved for a day drops a trigger start; documented in Technical Plan 1. | Open (documented) |
+| G043-055 | A batch `RERUN` item that finds no room in the validator is deferred as a lock wait and counts an attempt, so one starved past the executor's attempts ends `FAILED RETRIES_EXHAUSTED`; and a buffered backfill step released by the schedule's own firing and refused for its input is settled `INPUT_INVALID` while its backfill runs on, so its next step is refused again before the backfill ends `CANCELLED` (correctness review of 2026-11-16, Nits 7 and 8). | Both end where the design says (a final outcome after a transient wait; a cancelled backfill one step later); neither admits an input. | Open (documented) |
 
 ## 4. Owner questions
 
-O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`); O043-005 and O043-006 are open (2026-11-16) and block nothing built. OD-2026-11-14-2 had already decided that validation is on in
+O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`); O043-005 to O043-007 are open (2026-11-16) and block nothing built. OD-2026-11-14-2 had already decided that validation is on in
 0.3.0 for every start; none of these asked that again. The questions are kept as they were put.
 
 - **O043-001: answered (a)**, OD-2026-11-14-8, with the mode going through the instance registry (D043-028).
@@ -761,6 +803,13 @@ O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`); O0
   but says less than D043-037 allowed to a caller who may read the source input (G043-040). (a) Accept for 0.3.0 as
   built. (b) Build the graded-disclosure check on the start path for 0.3.0. **Recommended: (a)** — the caller can fix the
   input from the source run, which they may read, and (b) adds a disclosure evaluation to every repeat.
+- **O043-007 — ADR-0092** (architecture review of 2026-11-16, Major 1). It refines accepted ADR-0090 with what the build
+  needed: (1) `tokio` `rt` in one file of `sagat-application`; (2) every composition root wires the gate; (3) the 1 KiB
+  name limit, the `oneOf` bound and the tenant share; (4) `/` for every repeat; (5) the audit of a holder's answer in
+  `report`. (a) Accept it. (b) Refuse a decision, with what follows: (1) move design 042's parse behind a port first
+  (T043-25); (2) make the gate a constructor argument of the four services; (3) drop the name limit, letting a 1 MiB
+  name be compared on every lookup; (4) build the graded check of O043-006 (b); (5) count a holder's answer in `report`
+  without an audit. **Recommended: (a)** — each decision is what the code does and is held by a test or a rule.
 
 
 
@@ -783,3 +832,30 @@ O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`); O0
 - **O043-004 — Children and continuations of runs created before the upgrade** (raised by the reviews of the first
   draft). (a) Exempt them: a run in progress must not break (constitution IV). (b) Check them like every start.
   **Recommended: (a).** Answered (b) by the owner (OD-2026-11-14-9), recorded as an accepted deviation from principle IV.
+
+## 5. Validator internals
+
+How the adapter holds the bounds of the design's Technical Plans 3 and 4 (moved here from the design on 2026-11-16, review
+run of that day). They change with the code; the tests named in T043-2 and T043-3 hold them.
+
+- **The pre-check's search** (D043-069). Depth-first, with white, grey and black marks over the application edges: a
+  grey node met again is a cycle. When a node turns black the search stores its longest application path and its lower
+  bound, so the pass stays linear in the arena; every sum is a `saturating_add`, so it cannot overflow. A `$ref` is the
+  index of its target node, never an inlined copy, so a DAG of references stays the size of the document.
+- **Off the async workers** (D043-071). The adapter's `off_worker` runs the validator through `block_in_place` on a
+  multi-thread runtime, and in place on a current-thread runtime (where `block_in_place` would panic, and where there is
+  no other worker to protect) or outside a runtime. The cache's single-flight `Condvar` is waited on only inside `off_worker`. The work
+  is bounded by the counter, so nothing has to be cancelled and no thread outlives its caller. A tenant's bookkeeping
+  entry in the permit queue leaves the map when it holds nothing and waits for nothing, so nothing in use is evicted.
+- **The regex engines** (D043-064, D043-159). Each pattern is built with every runtime engine bounded: the forward and
+  the reverse lazy DFA with a cache capacity of 16 KiB each, the bounded backtracker off (its visited set is 256 KiB by
+  default), the one-pass DFA off, and the PikeVM cache measured once with `Cache::memory_usage()` after a warm-up match.
+  A lazy DFA whose minimum cache does not fit in 16 KiB is not built, and the pattern runs on the PikeVM, whose work the
+  charge of `(bytes + 1) × states` already prices. The regex keeps a pool of caches, one for its owner thread and one per
+  other thread that matches at once, at most four here under the permits, so an entry weighs its programs plus
+  (1 + 4) × that per-pattern cache size; a compile-time assertion of `pattern.rs`,
+  `RUN_INPUT_PERMITS <= 1 + CONCURRENT_MATCHERS`, keeps the caches the weight counts at least as many as the matchers the
+  permits allow (D043-107).
+- **Determinism** (D043-059). The compiled form keeps document order in vectors and sorted keys in its lookup tables; no
+  iteration depends on `RandomState`. Instance members are visited in `serde_json::Map` order (a `BTreeMap`: the
+  workspace does not enable `preserve_order`).

@@ -3,27 +3,31 @@
 No new `Error.code` (the closed set in `sdks/error-catalog.json` stays as it is). Design 043 adds `details.reason`
 refinements of `VALIDATION_FAILED`, the closed `details.rule`, three failure codes of a run or a step, the schedule
 action outcome `INPUT_INVALID` and seven publication issue codes. Every refusal carries `code`, `retryable`, `traceId`
-and never a value of the input, a key the caller chose or a fragment of the schema's text. The remediation sentences
-are the ones `crates/api-http/src/error.rs` answers.
+and never a value of the input or a key the caller chose; `details.field` may name properties the schema declares, which
+every caller allowed to start the run may read (G043-003). The remediation sentences are the ones
+`crates/api-http/src/error.rs` answers. The subset itself is `input-schema-subset.md` beside this file.
 
 ## Reasons of a refused start
 
 | `code` | HTTP | `details.reason` | Retryable | Raised by | Remediation (one sentence, closed table) |
 | --- | --- | --- | --- | --- | --- |
-| `VALIDATION_FAILED` | 422 | `RUN_INPUT_INVALID` | no | `POST /runs`, the uploaded-input start, Signal-with-Start and Update-with-Start (also with an open holder), `RERUN_AS_NEW`, reset, the ad hoc database execution | Fix the input at `details.field`: `details.rule` names the keyword of the input schema it fails (no excerpt). |
+| `VALIDATION_FAILED` | 422 | `RUN_INPUT_INVALID` | no | `POST /runs`, the uploaded-input start, Signal-with-Start and Update-with-Start (also with an open holder), `RERUN_AS_NEW`, reset (a `CANCEL_SOURCE` reset at its request, before the source is cancelled), the ad hoc database execution | Fix the input at `details.field`: `details.rule` names the keyword of the input schema it fails (no excerpt). |
 | `VALIDATION_FAILED` | 422 | `RUN_INPUT_SCHEMA_UNUSABLE` | no | the same, and the schedule writes and trigger-now | The version's input schema is outside the supported subset; publish a version within it (`control-plane input-schema-inventory` lists them). |
 | `VALIDATION_FAILED` | 422 | `SCHEDULE_INPUT_INVALID` | no | schedule create and update (`details.field` under `/action/input`), trigger-now (`details.field` `/`, `details.rule` `other`: the stored input is read only through FR-018-042) | The input does not match the target version's input schema (no excerpt). |
 | `VALIDATION_FAILED` | 422 | `NOMINAL_TIME_FIELD_INVALID` | no | schedule create and update (`details.field` `/action/nominalTimeField`), trigger-now (`details.field` `/`) | The field is not a declared top-level string property of the input schema. |
-| `UNAVAILABLE` | 503 | (none) | yes | any of the above when the validator had no permit within 5 s or its backstop stopped it | The service cannot serve this call now: try again. |
+| `UNAVAILABLE` | 503 | (none) | yes | any of the above when the validator had no permit within 5 s, its backstop stopped it, or it failed with a defect of its own; in `report` mode too | The service cannot serve this call now: try again. |
+| `VALIDATION_FAILED` | 422 | an `INPUT_SCHEMA_*` issue (below) | no | the ad hoc database execution in `enforce` mode, whose document is parsed as a publication is | The input schema of the document is outside the supported subset: the issue names the keyword and its pointer. |
 
 `details.field` is a JSON pointer whose segments are only names the schema declares under `properties` and array
-indices; a member reached through `additionalProperties` adds nothing, and `/` stands for the root. A run started again
-(a rerun or a reset) says `/` and `other` unless the caller's view of the source input withholds nothing.
+indices; a member reached through `additionalProperties` adds nothing, and `/` stands for the root. A start whose input
+the caller did not send (a rerun, a batch rerun, a reset, a pending reset, a trigger-now, a private rerun) always says
+`/` and `other`, whatever the caller may read (design 043, D043-121, O043-006).
 
 `details.rule` is one of `type`, `required`, `enum`, `const`, `minimum`, `maximum`, `exclusiveMinimum`,
 `exclusiveMaximum`, `multipleOf`, `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`, `minProperties`,
 `maxProperties`, `additionalProperties`, `anyOf`, `oneOf`, `workLimit` (the work budget of the validation), `maxDepth`
-(the input nests deeper than 64) and `other`.
+(the input nests deeper than 64) and `other`. A later subset may add values: a client passes one it does not know
+through.
 
 ## What a creator nobody waits for records
 
