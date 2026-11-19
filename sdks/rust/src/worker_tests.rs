@@ -67,6 +67,7 @@ impl pb::worker_service_server::WorkerService for Service {
                     minor => minor,
                 }
             ),
+            step_logs: None,
         }))
     }
     async fn poll_tasks(
@@ -187,6 +188,12 @@ impl pb::worker_service_server::WorkerService for Service {
                 version: 1,
             }],
         }))
+    }
+    async fn append_step_logs(
+        &self,
+        _: Request<pb::AppendStepLogsRequest>,
+    ) -> Result<Response<pb::AppendStepLogsResponse>, Status> {
+        Err(Status::unimplemented("AppendStepLogs"))
     }
     async fn resolve_database(
         &self,

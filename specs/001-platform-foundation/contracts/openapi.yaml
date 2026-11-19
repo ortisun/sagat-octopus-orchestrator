@@ -970,6 +970,126 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/logs:
+    parameters:
+      - {$ref: '#/components/parameters/RunId'}
+    get:
+      operationId: listRunLogs
+      summary: Read the lines a run's steps logged
+      tags: [Runs]
+      x-planned: '041'
+      description: |
+        Feature 041. Needs `run:read`, `run:logs:read` and the namespace's PII reveal grant, in every namespace (a missing
+        grant is `403` with `details.reason` `PII_REVEAL_NOT_GRANTED`). Lines come in stored order and only below the read
+        horizon (the oldest transaction still open when the reading statement runs); `heldBack` says lines are held back by
+        it. A request scans at most 5,000 rows and `nextCursor` moves past every row it scanned, matched or not; a read with
+        `stream` scans that stream only. The cursor names the run it was minted for and is refused (`400`) for another.
+        `complete` is true only when the run is finished, every line that can still be stored has been, and the scan ended
+        because no row below the horizon was left (neither the page limit nor the 5,000-row bound stopped it). Another
+        tenant's run is `404`. A read is audited as `run.logs_read` at most once per subject and run in 300 seconds.
+      parameters:
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: stream, in: query, required: false, schema: {type: string, format: uuid}, description: 'One stream of this run (`StepLogStream.id`): an attempt log, or a script execution''s id for its marker. Another stream is `404`.'}
+        - {name: node, in: query, required: false, schema: {type: string, minLength: 1, maxLength: 256}}
+        - {name: attempt, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 2147483647}}
+        - {name: minLevel, in: query, required: false, schema: {type: string, enum: [trace, debug, info, warn, error]}, description: 'Ordered as listed; never hides a marker.'}
+        - {name: from, in: query, required: false, schema: {type: string, format: date-time}, description: 'Storage time, inclusive.'}
+        - {name: to, in: query, required: false, schema: {type: string, format: date-time}, description: 'Storage time, exclusive.'}
+        - {name: q, in: query, required: false, schema: {type: string, minLength: 1, maxLength: 128}, description: 'A literal, case-insensitive substring of the message.'}
+      responses:
+        '200': {description: 'A page of lines', headers: {Cache-Control: {schema: {type: string, const: no-store}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/StepLogPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+    delete:
+      operationId: deleteRunLogs
+      summary: Delete a run's step logs
+      tags: [Runs]
+      x-planned: '041'
+      description: |
+        Feature 041, for the incident in which a secret or personal data was logged. Needs `run:logs:delete` (admin). Makes
+        the lines committed when it runs unreadable at once; a later batch for a deleted stream stores nothing, while a
+        stream created after it (a later attempt) is stored and a second delete removes it. Optional `stream` limits it to
+        one stream of this run. Every delete is audited as `run.logs_deleted` with the number of streams it changed, 0
+        included, and answers `204` with no body. The purge removes the rows. No route removes a script execution's log
+        before its retention.
+      parameters:
+        - {name: stream, in: query, required: false, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/logs/streams:
+    get:
+      operationId: listRunLogStreams
+      summary: List the attempt logs and script executions of a run
+      tags: [Runs]
+      x-planned: '041'
+      description: |
+        Feature 041. The permissions of `listRunLogs`. `source = worker` (the default) lists the attempt logs of the run with
+        their counters, which are read at the statement's snapshot and can be ahead of what a read below the horizon returns;
+        `source = script` lists the run's script executions, whose state comes from the execution itself. Each source is
+        paged on its own.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - {$ref: '#/components/parameters/Cursor'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: source, in: query, required: false, schema: {type: string, enum: [worker, script], default: worker}}
+      responses:
+        '200': {description: 'A page of streams', headers: {Cache-Control: {schema: {type: string, const: no-store}}, X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/StepLogStreamPage'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
+  /runs/{runId}/logs/stream:
+    get:
+      operationId: streamRunLogs
+      summary: Follow the lines a run's steps log, as a stream
+      tags: [Runs]
+      x-planned: '041'
+      description: |
+        Feature 041. `text/event-stream`, the permissions and filters of `listRunLogs` except `cursor` and `limit`, plus
+        `after` (a cursor; `Last-Event-ID` wins). Events: `log` (`id` the cursor after its last line, `data`
+        `{"items": StepLogLine[]}`, at most 200), `progress` (`id` the cursor after the scanned position, `data`
+        `{"heldBack": bool}`, sent instead of a ping when the position moved without a matching line), `end` (the run is
+        finished and `complete` holds) and `reconnect` (token expiry or the 15-minute lifetime). A `: ping` comment every 15
+        seconds otherwise. It never skips or repeats a line across a reconnect. The reader's right is checked when it opens
+        and every 30 seconds, the PII reveal grant at every poll. The caps of `streamRunChanges` apply and are shared with
+        it (`429 RATE_LIMITED`, `STREAMS_GLOBAL`, `STREAMS_PER_SUBJECT`, `STREAMS_PER_TENANT`). Read it with `fetch`.
+      parameters:
+        - {$ref: '#/components/parameters/RunId'}
+        - {name: after, in: query, required: false, schema: {type: string}, description: 'A cursor of this run; `Last-Event-ID` wins when both are sent.'}
+        - {name: stream, in: query, required: false, schema: {type: string, format: uuid}}
+        - {name: node, in: query, required: false, schema: {type: string, minLength: 1, maxLength: 256}}
+        - {name: attempt, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 2147483647}}
+        - {name: minLevel, in: query, required: false, schema: {type: string, enum: [trace, debug, info, warn, error]}}
+        - {name: from, in: query, required: false, schema: {type: string, format: date-time}}
+        - {name: to, in: query, required: false, schema: {type: string, format: date-time}}
+        - {name: q, in: query, required: false, schema: {type: string, minLength: 1, maxLength: 128}}
+      responses:
+        '200': {description: 'The stream', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {text/event-stream: {schema: {type: string}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        default: {$ref: '#/components/responses/InternalError'}
   /runs/{runId}/operations:
     post:
       operationId: operateRun
@@ -4554,7 +4674,7 @@ components:
       name: resource
       in: path
       required: true
-      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations, schedules, schedule_backfills, batch_jobs, tenant_batch_jobs, pending_resets]}
+      schema: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations, schedules, schedule_backfills, batch_jobs, tenant_batch_jobs, pending_resets, tenant_step_log_bytes, step_log_attempt_records, step_log_attempt_bytes, step_log_retention_days]}
     ActivityName:
       name: activity
       in: path
@@ -6593,15 +6713,20 @@ components:
         the jobs that have not finished. Resets that wait for their source run to end
         (`CANCEL_SOURCE`, feature 018) are pending_resets 16/64 in a namespace.
         Zero disables new admission for count/rate/retention resources, never means unlimited.
+        Step logs (feature 041): tenant_step_log_bytes is the tenant's retained step-log bytes, each line
+        charged its text plus 128 bytes (default and default ceiling 1 GiB, maximum 2^50); per namespace,
+        step_log_attempt_records 0..100,000 (default 10,000; 0 turns capture off in the namespace),
+        step_log_attempt_bytes 1,024..16,777,216 (default 1 MiB) and step_log_retention_days 1..365
+        (default 14). A step-log stream keeps the retention it was created with.
         Lowering a limit does not erase retained content or rewrite existing expiry.
       type: object
       required: [resource, limit, source, ceiling]
       properties:
-        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations, schedules, schedule_backfills, batch_jobs, tenant_batch_jobs, pending_resets]}
+        resource: {type: string, enum: [active_runs, tenant_active_runs, workflows, worker_sessions, activity_concurrency, iteration_concurrency, secrets, event_endpoints, webhook_subscriptions, broker_subscriptions, event_connectors, scripts, script_jobs, tenant_content_bytes, tenant_log_bytes, api_requests_per_second, events_per_second, event_retention_seconds, script_retention_days, database_statement_bytes, database_parameters, database_parameter_bytes, database_rows, database_result_bytes, database_timeout_ms, database_connect_timeout_ms, database_pool_size, database_idle_timeout_ms, database_connections, database_concurrency, tenant_database_concurrency, secret_provider_operations, schedules, schedule_backfills, batch_jobs, tenant_batch_jobs, pending_resets, tenant_step_log_bytes, step_log_attempt_records, step_log_attempt_bytes, step_log_retention_days]}
         limit: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624}
         source: {type: string, enum: [default, tenant, namespace], description: 'Where the limit in force comes from. default means the tenant set nothing; iteration_concurrency then remains disabled, while other resources use their platform default up to the ceiling.'}
         ceiling: {type: integer, format: int64, minimum: 0, maximum: 1125899906842624, description: 'The most the tenant may set for this resource, and the most that can be in force. The platform default unless an operator granted the tenant more. No API call raises it.'}
-        used: {type: integer, format: int64, minimum: 0, description: 'Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view.'}
+        used: {type: integer, format: int64, minimum: 0, description: 'Exact charged items or bytes, including outstanding content reservations. Absent for per-operation database and rate/retention policies and for a per-namespace resource in the tenant-wide view, and for tenant_step_log_bytes to a caller without `run:logs:read`.'}
     QuotaList:
       type: object
       required: [items]
@@ -7460,6 +7585,58 @@ components:
       required: [items]
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/ScriptTestRunSummary'}}
+    StepLogPage:
+      type: object
+      required: [items, nextCursor, heldBack, complete]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/StepLogLine'}}
+        nextCursor: {type: string, description: 'Always present: the position after the last row scanned (at most 5,000 a request), whether or not it matched the filters, to poll from.'}
+        heldBack: {type: boolean, description: 'Lines of this run are stored but not yet returned, because an older transaction of the database is still open.'}
+        complete: {type: boolean, description: 'The run is finished, every line that can still be stored for it has been, and the request''s scan ended because no row below the horizon was left in the index range it reads (neither the page limit nor the 5,000-row bound stopped it), whether or not the filters matched. After an empty page with complete false, read again at once while nextCursor moves; once it stops moving, poll at the tail''s interval.'}
+    StepLogLine:
+      type: object
+      required: [stream, node, attempt, instancePath, sequence, storedAt, kind, level, truncated]
+      properties:
+        stream: {type: string, format: uuid}
+        node: {type: string}
+        attempt: {type: integer}
+        instancePath: {type: [array, 'null'], items: {$ref: '#/components/schemas/ApprovalScope'}, description: 'The existing {scopeNodeId, iterationIndex} schema; empty for a root step; null for a script marker, which has no iteration.'}
+        sequence: {type: string, description: 'Decimal; above 2^53 for a marker.'}
+        workerTime: {type: [string, 'null'], format: date-time}
+        storedAt: {type: string, format: date-time}
+        kind: {type: string, enum: [line, ceiling_marker, script_marker]}
+        level: {type: string, enum: [trace, debug, info, warn, error], description: 'info for a marker; minLevel never hides a marker.'}
+        message: {type: [string, 'null']}
+        exception: {type: [string, 'null']}
+        fields: {type: [object, 'null'], additionalProperties: {type: [string, number, boolean]}, description: 'An integer outside -(2^53-1) to 2^53-1 is a decimal string, so that a JavaScript reader keeps it exact.'}
+        truncated: {type: boolean}
+        marker: {type: [object, 'null'], properties: {reason: {type: string, enum: [attempt_records, attempt_bytes], description: 'ceiling_marker'}, scriptExecutionId: {type: string, format: uuid, description: 'script_marker: open it with getScriptExecution'}}}
+    StepLogStreamPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/StepLogStream'}}
+        nextCursor: {type: [string, 'null']}
+    StepLogStream:
+      type: object
+      required: [id, source, node, attempt, instancePath, state]
+      properties:
+        id: {type: string, format: uuid, description: 'The stream public id; for source script, the script execution id, which is also the id of its marker stream.'}
+        source: {type: string, enum: [worker, script]}
+        node: {type: string}
+        attempt: {type: integer}
+        instancePath: {type: [array, 'null'], items: {$ref: '#/components/schemas/ApprovalScope'}, description: 'Null for source script.'}
+        state: {type: string, enum: [open, ended, ended_without_final, deleted, expired], description: 'deleted: the delete route; expired: removal by retention has begun, and no line is returned'}
+        records: {type: integer, description: 'worker only: lines stored'}
+        bytes: {type: integer, description: 'worker only: text bytes stored (UTF-8 octets of message, exception and fields; the tenant quota charges 128 more per line)'}
+        droppedByWorker: {type: integer, description: 'worker only: sequences the worker numbered and never stored'}
+        droppedByServer: {type: integer}
+        ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, tenant_quota, null]}
+        firstAt: {type: [string, 'null'], format: date-time}
+        lastAt: {type: [string, 'null'], format: date-time}
+        expiresAt: {type: [string, 'null'], format: date-time, description: 'worker: the last recorded batch plus the retention the stream took when it was created; script: the execution expiry.'}
+        removedAt: {type: [string, 'null'], format: date-time}
+        logTruncated: {type: boolean, description: 'script only'}
     ScriptExecution:
       type: object
       required: [id, artifactDigest, status, log, logTruncated, denied, wallMs, startMs, createdAt, expiresAt]
@@ -7472,8 +7649,9 @@ components:
         status: {type: string, enum: [SUCCEEDED, FAILED]}
         failure: {type: string}
         exitCode: {type: integer}
-        log: {type: string}
+        log: {type: string, description: 'Feature 041 (FR-041-022): for an execution of a run, returned only to a caller who may read that run''s step logs (`run:logs:read` and the namespace''s PII reveal grant); anyone else gets an empty string, `logTruncated` false and `logWithheld` true. An execution with no run is unchanged.'}
         logTruncated: {type: boolean}
+        logWithheld: {type: boolean, description: 'Feature 041: true when the log of a run''s execution is withheld from this caller (see `log`).'}
         denied: {type: array, items: {type: string}}
         wallMs: {type: integer}
         startMs: {type: integer}
@@ -7484,7 +7662,7 @@ components:
     ScriptExecutionSummary:
       type: object
       required: [id, artifactDigest, status, logTruncated, denied, wallMs, startMs, createdAt, expiresAt]
-      description: 'An execution as a listing shows it: without its log, which `getScriptExecution` has.'
+      description: 'An execution as a listing shows it: without its log, which `getScriptExecution` has. Feature 041: `logTruncated` is false for a caller who may not read the run''s step logs.'
       properties:
         id: {type: string, format: uuid}
         artifactDigest: {type: string}
