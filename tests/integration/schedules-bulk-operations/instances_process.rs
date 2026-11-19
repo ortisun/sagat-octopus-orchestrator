@@ -703,9 +703,11 @@ async fn the_run_input_requirement_is_refused_while_an_engine_reports_and_closes
     let (reporting_id, _, capabilities) = instance_of_kind(&r, "EXECUTION_ENGINE")
         .await
         .expect("registered");
-    assert!(
-        capabilities.is_empty(),
-        "an engine in report mode does not list it: {capabilities:?}"
+    // schedules are on by default (OD-2026-11-13-8), so the engine lists `schedules-v1` and only that
+    assert_eq!(
+        capabilities,
+        ["schedules-v1"],
+        "an engine in report mode does not list run-input-validation-v1: {capabilities:?}"
     );
     let refused = r
         .require(
