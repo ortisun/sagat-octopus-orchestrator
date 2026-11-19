@@ -1956,8 +1956,10 @@ async fn the_reason_codes_of_the_sql_the_rust_enum_and_the_runbook_are_one_set()
 
 // --- the catalog: every definer pinned and closed to PUBLIC; what each role may run ---------------------------------------
 
-/// The three definers older than ADR-0091 that pin `pg_catalog, public, pg_temp` (G2280), by name: the test fails when one is fixed.
-const G2280: [&str; 3] = [
+/// The definers that pin `pg_catalog, public, pg_temp` (G2280), by name: the test fails when one is fixed. Three are older than
+/// ADR-0091; `batch_jobs_purge` came with the purge of batch jobs (#242) after it, with the same path (D2319).
+const G2280: [&str; 4] = [
+    "batch_jobs_purge(integer,integer)",
     "business_ids_purge(integer)",
     "run_active_counts_track()",
     "schedule_purge_actions(integer,integer)",
@@ -1989,7 +1991,7 @@ async fn every_security_definer_function_pins_its_search_path_and_none_is_execut
             .map(|path| path.split(',').map(str::trim).collect::<Vec<_>>());
         let pinned = match path.as_deref() {
             Some(["pg_catalog", "pg_temp"]) => true,
-            // three definers older than this ADR pin `pg_catalog, public, pg_temp` (G2280), by name only: public after pg_catalog,
+            // the definers of G2280 pin `pg_catalog, public, pg_temp`, by name only: public after pg_catalog,
             // and nobody but the owner creates in it
             Some(["pg_catalog", "public", "pg_temp"]) => {
                 !public_creates && G2280.contains(&function.as_str())
