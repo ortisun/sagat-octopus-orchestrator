@@ -391,7 +391,11 @@ where
                 setting(&tenant_level, resource),
                 ceiling,
             );
-            let used = match (resource.has_usage(), resource.scope(), namespace) {
+            let used = match (
+                usage_shown(principal, resource),
+                resource.scope(),
+                namespace,
+            ) {
                 (false, _, _) => None,
                 (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
                     Some(self.store.usage(tenant, namespace, resource).await?)
@@ -528,7 +532,11 @@ where
                 .map(|r| r.value),
             ceiling,
         );
-        let used = match (resource.has_usage(), resource.scope(), namespace) {
+        let used = match (
+            usage_shown(principal, resource),
+            resource.scope(),
+            namespace,
+        ) {
             (false, _, _) => None,
             (true, QuotaScope::Tenant, _) | (true, QuotaScope::Namespace, Some(_)) => {
                 Some(self.store.usage(tenant, namespace, resource).await?)
@@ -642,4 +650,13 @@ fn invalid(error: QuotaError) -> AppError {
             "the value is above the ceiling the platform grants this tenant (see `ceiling`)"
         }
     })
+}
+
+/// Whether the quota view shows the usage of `resource` to `principal`. The retained step-log bytes
+/// of a tenant say how much its runs log, so a caller who may not read step logs is not shown them
+/// (feature 041, D041-066).
+fn usage_shown(principal: &Principal, resource: QuotaResource) -> bool {
+    resource.has_usage()
+        && (resource != QuotaResource::TenantStepLogBytes
+            || principal.authorize(Permission::RunLogsRead).is_ok())
 }

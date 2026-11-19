@@ -1224,6 +1224,15 @@ impl QuotaStore for PgRunStore {
             .fetch_optional(&self.pool)
             .await
             .map(|value| value.unwrap_or(0)),
+            // Feature 041: the step-log class of the ADR-0027 Amendment has its own usage column.
+            QuotaResource::TenantStepLogBytes => sqlx::query_scalar(
+                "SELECT coalesce(step_log_bytes, 0)::bigint FROM tenant_retained_usage \
+                     WHERE tenant_id = $1",
+            )
+            .bind(tenant.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map(|value| value.unwrap_or(0)),
             QuotaResource::DatabaseConnections => sqlx::query_scalar(
                 "SELECT count(*) FROM database_connections WHERE tenant_id=$1 AND namespace_id=$2 AND status<>'DELETED'")
                 .bind(tenant.as_uuid()).bind(namespace).fetch_one(&self.pool).await,
@@ -1288,6 +1297,9 @@ impl QuotaStore for PgRunStore {
             | QuotaResource::DatabaseConnectTimeoutMs
             | QuotaResource::DatabasePoolSize
             | QuotaResource::DatabaseIdleTimeoutMs
+            | QuotaResource::StepLogAttemptRecords
+            | QuotaResource::StepLogAttemptBytes
+            | QuotaResource::StepLogRetentionDays
             => {
                 return Err(StoreError::Internal {
                     detail: "an admission policy has no scalar usage".into(),

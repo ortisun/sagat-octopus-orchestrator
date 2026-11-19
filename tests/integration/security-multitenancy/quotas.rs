@@ -544,6 +544,11 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::BatchJobs, false),
             (QuotaResource::TenantBatchJobs, true),
             (QuotaResource::PendingResets, false),
+            // Feature 041: the admin holds run:logs:read, so the step-log usage is shown.
+            (QuotaResource::TenantStepLogBytes, true),
+            (QuotaResource::StepLogAttemptRecords, false),
+            (QuotaResource::StepLogAttemptBytes, false),
+            (QuotaResource::StepLogRetentionDays, false),
         ]
     );
     let used = tenant_view
@@ -595,7 +600,35 @@ async fn the_tenant_view_has_no_single_usage_for_a_per_namespace_resource() {
             (QuotaResource::ScheduleBackfills, Some(0)),
             (QuotaResource::BatchJobs, Some(0)),
             (QuotaResource::PendingResets, Some(0)),
+            (QuotaResource::StepLogAttemptRecords, None),
+            (QuotaResource::StepLogAttemptBytes, None),
+            (QuotaResource::StepLogRetentionDays, None),
         ]
+    );
+}
+
+/// Feature 041 (D041-066): the retained step-log bytes say how much a tenant's runs log, so a caller
+/// without `run:logs:read` (a viewer holds `quota:read`) is not shown them; a developer is.
+#[tokio::test]
+async fn the_step_log_usage_is_shown_only_to_a_reader_of_step_logs() {
+    let w = world().await;
+    let tenant = w.admin.tenant_id();
+    let used = |views: Vec<sagat_application::quotas::QuotaView>| {
+        views
+            .into_iter()
+            .find(|q| q.resource == QuotaResource::TenantStepLogBytes)
+            .map(|q| q.used)
+    };
+    let viewer = Principal::new(tenant, subject_of("a-viewer"), Role::Viewer);
+    let developer = Principal::new(tenant, subject_of("a-developer"), Role::Developer);
+    assert_eq!(
+        used(w.quotas.list(&viewer, None, &ctx()).await.expect("list")),
+        Some(None),
+        "listed, without its usage"
+    );
+    assert_eq!(
+        used(w.quotas.list(&developer, None, &ctx()).await.expect("list")),
+        Some(Some(0))
     );
 }
 
