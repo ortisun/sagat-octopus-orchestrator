@@ -61,7 +61,10 @@ checks the rest (section 1.4). `docs/reference/workflow-document.md` is regenera
    (inside the carrier), `$defs`, `allOf`, `anyOf`, `oneOf`. An annotation under any other applicator
    (`patternProperties`, `if`/`then`/`else`, `dependentSchemas`, `contains`, `propertyNames`, `not`,
    `unevaluated*`, `$dynamicRef`) is refused; the keyword itself may appear, and what it alone governs
-   is undeclared (rule 4).
+   is undeclared (rule 4). From 0.3.0 an `inputSchema` carrier is also held to the run-input subset of design 043
+   (`specs/043-run-input-validation/contracts/errors.md`): `prefixItems` and every applicator this rule lets appear
+   make an `inputSchema` unusable for starts, and are refused at its publication in `enforce` mode (O043-005). Output
+   and state carriers are unchanged.
 7. A declared child never lowers the level. Inline or through `$ref`, a lower declaration is a
    publication error; the evaluator still clamps (`max`) as defence in depth.
 8. A node with an annotation but no `type` governs every type at that location.

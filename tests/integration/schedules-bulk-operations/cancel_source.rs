@@ -80,19 +80,29 @@ pub(crate) async fn open_chain(f: &Fixture) -> Open {
 
 /// As [`open_chain`], with activities of their own so that several sources can be open at once.
 pub(crate) async fn open_chain_tagged(f: &Fixture, tag: &str) -> Open {
+    open_chain_with_schema(f, tag, None).await
+}
+
+/// As [`open_chain_tagged`], for a version with `schema` as its `inputSchema` (design 043).
+pub(crate) async fn open_chain_with_schema(
+    f: &Fixture,
+    tag: &str,
+    schema: Option<serde_json::Value>,
+) -> Open {
     let (a, b, c) = (format!("a{tag}"), format!("b{tag}"), format!("c{tag}"));
-    let workflow =
-        f.w.publish(document(
-            &format!("cancel-source-{}", Uuid::now_v7()),
-            &a,
-            vec![
-                with(activity(&a), "next", json!(b)),
-                with(activity(&b), "next", json!(c)),
-                activity(&c),
-            ],
-        ))
-        .await
-        .0;
+    let mut doc = document(
+        &format!("cancel-source-{}", Uuid::now_v7()),
+        &a,
+        vec![
+            with(activity(&a), "next", json!(b)),
+            with(activity(&b), "next", json!(c)),
+            activity(&c),
+        ],
+    );
+    if let Some(schema) = schema {
+        doc["inputSchema"] = schema;
+    }
+    let workflow = f.w.publish(doc).await.0;
     let run = f.w.start(workflow, &json!({"k": 1})).await;
     let names = [format!("act.{a}"), format!("act.{b}"), format!("act.{c}")];
     let session =
@@ -233,6 +243,9 @@ fn without_cancel_source(
         Engine::new(sagat_infra_ir::JsonEvaluator),
         f.w.cache.clone(),
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .with_reset_reapply(true)
 }
 
@@ -1687,6 +1700,9 @@ async fn a_pending_reset_delivers_again_what_the_source_received_though_the_engi
         Engine::new(sagat_infra_ir::JsonEvaluator),
         f.w.cache.clone(),
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .with_declared_updates(Arc::new(sagat_infra_ir::JsonDeclaredOperationEvaluator));
     let by_the_engine = ResetCompleter::new(
         f.w.store.clone(),

@@ -118,6 +118,10 @@ pub struct EngineConfig {
     /// the expiry is a step of the same pass (D2080).
     pub reset_cancel_source_enabled: bool,
     pub resets: ResetSettings,
+    /// How a run input its version's `inputSchema` refuses is treated (`SAGAT_RUN_INPUT_VALIDATION`, design 043):
+    /// `enforce` unless it says `report`, parsed strictly like the control plane's. Only in `enforce` does the replica
+    /// list the capability `run-input-validation-v1`.
+    pub run_input_validation: sagat_application::run_input::InputValidationMode,
     /// Pause between rounds of the pass that completes pending resets when the last one found nothing to do.
     pub reset_poll: Duration,
     /// The worker that sends outbound webhooks.
@@ -702,6 +706,7 @@ impl EngineConfig {
         )?);
 
         let reset_cancel_source_enabled = flag(get, "SAGAT_RESET_CANCEL_SOURCE_ENABLED")?;
+        let run_input_validation = sagat_control_plane::config::run_input_validation(get)?;
         let reset_defaults = ResetSettings::default();
         let resets = ResetSettings {
             batch: u32::try_from(positive(
@@ -955,6 +960,7 @@ impl EngineConfig {
             batch_poll,
             reset_cancel_source_enabled,
             resets,
+            run_input_validation,
             reset_poll,
             deliveries,
             delivery_poll,

@@ -240,6 +240,22 @@ class SagatClientTest {
     }
 
     @Test
+    void aRefusedRunInputCarriesTheFieldAndTheRuleBesideTheReason() {
+        // design 043 (FR-043-015): field and rule beside reason, as the server sent them
+        server.prepare((req, reply) -> reply.send(422, "{\"code\":\"VALIDATION_FAILED\",\"message\":\"no\",\"retryable\":false,"
+                + "\"details\":{\"reason\":\"RUN_INPUT_INVALID\",\"field\":\"/orderId\",\"rule\":\"type\"}}"));
+        SagatException error = assertThrows(SagatException.class, () -> client().get(RUN));
+        assertEquals("RUN_INPUT_INVALID", error.reason().orElseThrow());
+        assertEquals("/orderId", error.field().orElseThrow());
+        assertEquals("type", error.rule().orElseThrow());
+        server.prepare((req, reply) -> reply.send(422, "{\"code\":\"VALIDATION_FAILED\",\"message\":\"no\",\"retryable\":false,"
+                + "\"details\":{\"reason\":\"RUN_INPUT_SCHEMA_UNUSABLE\"}}"));
+        SagatException unusable = assertThrows(SagatException.class, () -> client().get(RUN));
+        assertTrue(unusable.field().isEmpty());
+        assertTrue(unusable.rule().isEmpty());
+    }
+
+    @Test
     void aRefusedTokenAMissingResourceAndAValidationErrorAreToldApart() {
         Object[][] cases = {{401, "UNAUTHENTICATED"}, {403, "FORBIDDEN"}, {404, "NOT_FOUND"}, {422, "VALIDATION_FAILED"}};
         for (Object[] c : cases) {
@@ -540,6 +556,16 @@ class SagatClientTest {
         assertEquals(List.of("wait"), signalled.deliveredTo());
         assertEquals("/v1/runs/" + RUN + "/signals/payment-confirmed", server.seen.get(1).path());
         assertEquals("{\"paymentId\":\"p-1\"}", server.seen.get(1).rawBody());
+    }
+
+    @Test
+    void aRunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone() {
+        server.prepare((req, reply) -> reply.send(200,
+                run("status", "\"FAILED\"", "failureCode", "\"CONTINUATION_INPUT_INVALID\"")));
+        assertEquals("CONTINUATION_INPUT_INVALID", client().get(RUN).failureCode());
+
+        server.prepare((req, reply) -> reply.send(200, run()));
+        assertEquals(null, client().get(RUN).failureCode());
     }
 
     @Test

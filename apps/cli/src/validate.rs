@@ -6,7 +6,12 @@ use serde_json::{Value, json};
 use crate::args::Common;
 use crate::{EXIT_DONE, EXIT_FAILED, Env, Io, Session, manifest, remote, session};
 
-pub(crate) async fn run(common: &Common, env: &Env, io: &mut Io<'_>) -> Result<u8, String> {
+pub(crate) async fn run(
+    common: &Common,
+    env: &Env,
+    input_validation: sagat_application::definitions::InputValidationMode,
+    io: &mut Io<'_>,
+) -> Result<u8, String> {
     let path = crate::manifest_path(common, env);
     let (manifest, loaded) = match manifest::load(&path) {
         Ok(found) => found,
@@ -21,7 +26,8 @@ pub(crate) async fn run(common: &Common, env: &Env, io: &mut Io<'_>) -> Result<u
     let mut failed = 0usize;
     let docs = io.docs().map(str::to_owned);
     for item in &loaded {
-        let (diagnostics, classification) = crate::diagnostics::analyze_document(&item.document);
+        let (diagnostics, classification) =
+            crate::diagnostics::analyze_document_with(&item.document, input_validation);
         let errors = diagnostics.iter().filter(|d| !d.warning).count();
         if errors == 0 {
             io.say(format!("ok    {}", item.entry.name));

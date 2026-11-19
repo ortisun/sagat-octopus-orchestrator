@@ -154,6 +154,15 @@ impl SagatError {
                 error.details =
                     Box::new(json!({"reason":reason.chars().take(128).collect::<String>()}));
             }
+            // design 043: the pointer and the closed rule of a refused run input, as the server sent them
+            if given.is_some() {
+                if let Some(field) = envelope["details"]["field"].as_str() {
+                    error.details["field"] = json!(field.chars().take(512).collect::<String>());
+                }
+                if let Some(rule) = envelope["details"]["rule"].as_str() {
+                    error.details["rule"] = json!(rule.chars().take(64).collect::<String>());
+                }
+            }
         }
         if (400..500).contains(&status) && status != 408 && status != 429 {
             error.retryable = false;
@@ -201,11 +210,48 @@ impl SagatError {
     pub fn reason(&self) -> Option<&str> {
         self.details.get("reason").and_then(Value::as_str)
     }
+    /// The server's `details.field`, if any (design 043): a JSON pointer whose segments are names the version's
+    /// `inputSchema` declares and array indices, never a value.
+    pub fn field(&self) -> Option<&str> {
+        self.details.get("field").and_then(Value::as_str)
+    }
+    /// The server's `details.rule`, if any (design 043): the closed keyword of the input schema that failed.
+    pub fn rule(&self) -> Option<&str> {
+        self.details.get("rule").and_then(Value::as_str)
+    }
     pub fn as_json(&self) -> Value {
-        json!({"code":self.code,"message":self.message,"retryable":self.retryable,"traceId":self.trace_id.as_deref().unwrap_or_default(),"reason":self.details.get("reason"),"status":self.grpc_status().map_or_else(||json!(self.status),|s|json!(s)),"retryAfterMs":self.retry_after.map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64),"remediation":self.remediation})
+        let mut fields = json!({"code":self.code,"message":self.message,"retryable":self.retryable,"traceId":self.trace_id.as_deref().unwrap_or_default(),"reason":self.details.get("reason"),"status":self.grpc_status().map_or_else(||json!(self.status),|s|json!(s)),"retryAfterMs":self.retry_after.map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64),"remediation":self.remediation});
+        // only when the server sent them, so every other refusal reads as it always has
+        if let Some(field) = self.field() {
+            fields["field"] = json!(field);
+        }
+        if let Some(rule) = self.rule() {
+            fields["rule"] = json!(rule);
+        }
+        fields
     }
 }
 pub(crate) fn trace_id(value: &str) -> Option<String> {
     (value.len() == 32 && value.bytes().all(|b| b.is_ascii_hexdigit()))
         .then(|| value.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod run_input_tests {
+    use super::*;
+
+    /// Design 043 (FR-043-015): `field` and `rule` beside `reason`, as the server sent them.
+    #[test]
+    fn a_refused_run_input_carries_the_field_and_the_rule_beside_the_reason() {
+        let body = br#"{"code":"VALIDATION_FAILED","message":"no","retryable":false,"details":{"reason":"RUN_INPUT_INVALID","field":"/orderId","rule":"type"}}"#;
+        let error = SagatError::from_http(422, &reqwest::header::HeaderMap::new(), body);
+        assert_eq!(error.reason(), Some("RUN_INPUT_INVALID"));
+        assert_eq!(error.field(), Some("/orderId"));
+        assert_eq!(error.rule(), Some("type"));
+        assert_eq!(error.as_json()["field"], "/orderId");
+        let unusable = br#"{"code":"VALIDATION_FAILED","message":"no","retryable":false,"details":{"reason":"RUN_INPUT_SCHEMA_UNUSABLE"}}"#;
+        let error = SagatError::from_http(422, &reqwest::header::HeaderMap::new(), unusable);
+        assert_eq!((error.field(), error.rule()), (None, None));
+        assert!(error.as_json().get("field").is_none());
+    }
 }

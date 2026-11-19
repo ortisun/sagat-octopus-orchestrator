@@ -605,6 +605,9 @@ async fn try_cancel(fixture: &Fixture, key: &str) -> Result<(), AppError> {
         Engine::new(JsonEvaluator),
         cache,
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .operate(
         &fixture.world.admin,
         fixture.run,
@@ -2383,6 +2386,9 @@ async fn try_review(
         Engine::new(JsonEvaluator),
         cache,
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .review_instance(
         &fixture.world.admin,
         fixture.run,

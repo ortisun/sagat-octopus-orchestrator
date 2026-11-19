@@ -240,6 +240,7 @@
         "createdAt": "<time>",
         "deadline": null,
         "depth": 0,
+        "failureCode": "DATABASE_STATEMENT_DENIED",
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,

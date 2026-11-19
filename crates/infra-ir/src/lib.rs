@@ -24,6 +24,8 @@ pub mod schedule_calendar;
 pub use database_result::JsonDatabaseResultValidator;
 mod diff;
 mod evaluator;
+mod input_schema;
+pub use input_schema::{StoredInputSchema, stored_input_schema};
 mod lake;
 mod lake_egress;
 pub mod lake_probe_result;
@@ -46,7 +48,9 @@ pub use operation_evaluator::{
     EvaluatedOperationValue, JsonDeclaredOperationEvaluator, QueryEvaluation, UpdateEvaluationPlan,
 };
 
-use sagat_application::definitions::{IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition};
+use sagat_application::definitions::{
+    InputValidationMode, IrCodec, IrError, MAX_IR_BYTES, ParsedDefinition,
+};
 use sagat_application::operation_evaluation::OperationEvaluationError;
 use sagat_domain::database::RecordSource;
 use sagat_domain::workflow::{NodeKind, WorkflowDefinition};
@@ -149,11 +153,20 @@ impl IrCodec for JsonIrCodec {
     }
 
     fn parse(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
+        self.parse_with(document, InputValidationMode::Enforce)
+    }
+
+    fn parse_with(
+        &self,
+        document: &[u8],
+        mode: InputValidationMode,
+    ) -> Result<ParsedDefinition, IrError> {
         let value = validated_document(document)?;
         // a new publication needs every capability its document uses to be on; `parse_stored` below
         // restores what was published while one was
         capabilities::check_publication(&value)?;
-        published_definition(value)
+        // and its `inputSchema` within the supported subset (design 043); `parse_stored` does not ask
+        input_schema::precheck(published_definition(value)?, mode)
     }
 
     fn parse_stored(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
@@ -164,7 +177,10 @@ impl IrCodec for JsonIrCodec {
     /// probe of an Iceberg connection). It validates against the public grammar plus the private node types and is otherwise
     /// [`IrCodec::parse`]. Only the entry that builds such a document calls it; no publication path does.
     fn parse_private(&self, document: &[u8]) -> Result<ParsedDefinition, IrError> {
-        published_definition(validated_document_in(document, schema::Mode::Private)?)
+        input_schema::precheck(
+            published_definition(validated_document_in(document, schema::Mode::Private)?)?,
+            InputValidationMode::Enforce,
+        )
     }
 
     /// The restore of a stored **private** definition (ADR-0080), chosen by the loader from the workflow's `internal` flag and never from
@@ -359,7 +375,7 @@ fn converted_document(
 ) -> Result<ParsedDefinition, IrError> {
     // The levels of what an Iceberg write sends out are read from the schemas of this document, once, for publication and
     // for the restore that admission relies on; they are derived, so they never reach the canonical bytes.
-    let definition = lake_egress::attach(value, convert(value)?);
+    let definition = input_schema::attach(value, lake_egress::attach(value, convert(value)?));
     check_expressions(&definition)?;
     let canonical = canonical::canonical_json(value);
     let digest = canonical::digest_of(&canonical);

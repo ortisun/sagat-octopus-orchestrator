@@ -1107,8 +1107,21 @@ impl RunStore for PgRunStore {
 
     async fn create(&self, mut new: NewRun) -> Result<Admitted<PgRunTx>, StoreError> {
         let tenant = new.info.tenant_id;
+        // The input was checked against the schema of one version: a run of another would hold an input nobody
+        // checked for it (design 043, FR-043-017). Logged without the value.
+        if new.input.version() != new.info.version_id {
+            tracing::error!(
+                run = %new.info.run_id,
+                version = %new.info.version_id,
+                checked_against = %new.input.version(),
+                "a run input checked against another version was refused"
+            );
+            return Err(StoreError::Internal {
+                detail: "the run input was checked against another version".into(),
+            });
+        }
         let hash = hash(&new.idempotency.fingerprint);
-        let input_digest = Sha256::digest(&new.input).to_vec();
+        let input_digest = Sha256::digest(new.input.bytes()).to_vec();
         for _ in 0..2 {
             let mut tx = self.pool.begin_safely().await.map_err(store_error)?;
             if let Some(existing) = replay(&mut tx, tenant, &new.idempotency, &hash).await? {
@@ -1217,7 +1230,7 @@ impl RunStore for PgRunStore {
                 })?;
             let initial_state = self
                 .cache
-                .initial_declared_state(&version_document, &new.input)
+                .initial_declared_state(&version_document, new.input.bytes())
                 .map_err(|error| {
                     tracing::warn!(%error, version = %new.info.version_id, "declared initial state evaluation failed");
                     StoreError::Internal {
@@ -1335,7 +1348,7 @@ impl RunStore for PgRunStore {
             )
             .bind(tenant.as_uuid())
             .bind(&input_digest)
-            .bind(&new.input)
+            .bind(new.input.bytes())
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -1465,6 +1478,10 @@ impl RunStore for PgRunStore {
                 return Err(error);
             }
             insert_audit(&mut tx, &new.audit).await?;
+            // `report` mode: the refusal is audited with the run it admitted, once across a retry and a replay (D043-039).
+            if let Some(reported) = new.input.reported_audit(&new.audit, info.run_id) {
+                insert_audit(&mut tx, &reported).await?;
+            }
             if remember(
                 &mut tx,
                 tenant,
@@ -1493,7 +1510,7 @@ impl RunStore for PgRunStore {
                     persisted: 0,
                     data: Some(RunData {
                         run_id: Some(new.info.run_id),
-                        input: new.input.clone(),
+                        input: new.input.bytes().to_vec(),
                         input_blob,
                         state: initial_state.as_ref().map(|value| value.content().to_vec()),
                         state_revision: initial_state.as_ref().map(|_| 0),
@@ -1600,7 +1617,7 @@ impl RunStore for PgRunStore {
     ) -> Result<Vec<RunRecord>, StoreError> {
         sqlx::query(
             "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, run_version, \
-                    stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
+                    stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
                     created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, \
                     cancel_policy, depth, trace_parent_span, rerun_of, origin, business_id, \
                     start_delayed_until, schedule_id, schedule_nominal_at, schedule_action_kind, \
@@ -2121,7 +2138,7 @@ async fn claim_reservation(
 // outside any chain. They read as well the columns a run was created with that say where it came from
 // (the schedule action and the reset sequence), from the row they already load: no query per run.
 const RUN_SELECT: &str = "SELECT id, tenant_id, namespace_id, workflow_id, workflow_version_id, status, \
-     run_version, stop_reason, paused, correlation_id, started_by, trace_id, deadline_at, \
+     run_version, stop_reason, stop_code, paused, correlation_id, started_by, trace_id, deadline_at, \
      created_at, updated_at, finished_at, parent_run_id, root_run_id, parent_node, cancel_policy, depth, \
      trace_parent_span, rerun_of, origin, business_id, start_delayed_until, \
      schedule_id, schedule_nominal_at, schedule_action_kind, schedule_revision, reset_sequence, \
@@ -2269,6 +2286,9 @@ pub(crate) fn run_record(row: &PgRow) -> Result<RunRecord, StoreError> {
         chain: run_segment(row)?,
         schedule: run_schedule(row)?,
         reset_from: run_reset(row)?,
+        failure_code: selected::<String>(row, "stop_code")?
+            .map(|code| FailureCode::parse(&code).map_err(|_| corrupt("stop code")))
+            .transpose()?,
     })
 }
 
@@ -4126,18 +4146,41 @@ impl RunTx for PgRunTx {
         resets::register_pending(self, registration).await
     }
 
+    async fn child_started<'a>(
+        &'a mut self,
+        node: &'a NodeId,
+        child: RunId,
+    ) -> Result<bool, StoreError> {
+        // `FOR UPDATE`: the creation of the child claims this row (`claim_reservation`), so it either committed and is
+        // seen here, or waits for this transaction and then finds the step moved on
+        let started: Option<bool> = sqlx::query_scalar(
+            "SELECT child_started FROM steps WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
+               AND status = 'WAITING' AND waiting_kind = 'CHILD' AND child_run_id = $4 FOR UPDATE",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .bind(node.as_str())
+        .bind(child.as_uuid())
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        Ok(started.unwrap_or(true))
+    }
+
     async fn remember_start_served<'a>(
         &'a mut self,
         start: &'a Idempotency,
         marker: &'a Idempotency,
         holder: RunId,
+        reported: Option<&'a AuditRecord>,
     ) -> Result<(), StoreError> {
         let tenant = self.info.tenant_id;
         let holder = holder.to_string();
         // `false` is a concurrent request with the same key that committed first; it served the same
         // holder under the same fingerprint (a different one is refused when the start is replayed)
+        let mut first = false;
         for record in [start, marker] {
-            remember(
+            let kept = remember(
                 &mut self.tx,
                 tenant,
                 record,
@@ -4145,6 +4188,12 @@ impl RunTx for PgRunTx {
                 &holder,
             )
             .await?;
+            first |= kept && std::ptr::eq(record, start);
+        }
+        // `report` mode (design 043): the refusal of the start's input is audited with the receipt that answers its
+        // retries, so once (correctness review of 2026-11-15, Major 2)
+        if first && let Some(audit) = reported {
+            insert_audit(&mut self.tx, audit).await?;
         }
         Ok(())
     }

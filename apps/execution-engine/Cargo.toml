@@ -32,6 +32,7 @@ sagat-infra-connectors.workspace = true
 sagat-infra-ir.workspace = true
 sagat-infra-nats.workspace = true
 sagat-infra-postgres.workspace = true
+sagat-infra-schema.workspace = true
 sagat-infra-secrets.workspace = true
 sagat-scheduler.workspace = true
 sagat-telemetry.workspace = true

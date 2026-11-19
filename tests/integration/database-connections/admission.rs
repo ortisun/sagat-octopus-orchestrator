@@ -490,7 +490,10 @@ async fn rollback_and_acl_fence(w: &World, existing: RunId, publisher: &str) {
             .await
             .unwrap(),
         definition: w.cache.get(info.version_id).unwrap(),
-        input: b"{}".to_vec(),
+        input: sagat_application::run_input::CheckedRunInput::unchecked(
+            info.version_id,
+            b"{}".to_vec(),
+        ),
         input_blob: None,
         audit: AuditRecord::by(
             &w.admin,

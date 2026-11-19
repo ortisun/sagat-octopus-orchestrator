@@ -45,6 +45,9 @@ pub(super) fn runs_of(p: &Platform) -> Runs {
         Engine::new(JsonEvaluator),
         DefinitionCache::new(Arc::new(JsonIrCodec), 16),
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .with_lake_probes(Arc::new(sagat_infra_ir::JsonLakeProbeCodec))
 }
 

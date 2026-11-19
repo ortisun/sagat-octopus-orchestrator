@@ -145,7 +145,10 @@ pub(crate) async fn status_of(f: &Fixture, run: Uuid) -> String {
 /// whole server's, so a transaction of another test on the same server holds it too. The bound is
 /// therefore a time, not a number of round trips (500 of them passed in a few milliseconds on a busy
 /// runner and the test gave up while the other test's transaction was still open).
-pub(crate) async fn select(exec: &Executor, job: &JobRecord) {
+pub(crate) async fn select<A: ItemActions>(
+    exec: &BatchExecutor<PgBatchStore, A, PgIdentityStore, TestClock>,
+    job: &JobRecord,
+) {
     let give_up = std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
         if exec.step(&due(job), None).await.expect("step") == Stepped::Acted {
@@ -160,7 +163,10 @@ pub(crate) async fn select(exec: &Executor, job: &JobRecord) {
 }
 
 /// Steps the job until it has nothing more to do now; returns how many steps acted.
-pub(crate) async fn settle(exec: &Executor, job: &JobRecord) -> u32 {
+pub(crate) async fn settle<A: ItemActions>(
+    exec: &BatchExecutor<PgBatchStore, A, PgIdentityStore, TestClock>,
+    job: &JobRecord,
+) -> u32 {
     let mut acted = 0;
     for _ in 0..200 {
         match exec.step(&due(job), None).await.expect("step") {

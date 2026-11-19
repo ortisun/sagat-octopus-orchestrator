@@ -35,6 +35,10 @@ import java.time.Instant;
  * @param schedule      the schedule action that started the run; null for a run no schedule started
  * @param resetFrom     the run a reset made this one from, and the journal sequence of it that this run keeps; null
  *                      for a run no reset made (a rerun has {@code rerunOf} and not this)
+ * @param failureCode   the failure code the stop of the run carries (design 043): the code of the step whose failure
+ *                      failed the run, a ceiling such as {@code STORAGE_QUOTA_EXCEEDED}, or
+ *                      {@code CONTINUATION_INPUT_INVALID} for a continue-as-new refused for its input; null for every
+ *                      other run
  * @param raw           the answer as sent
  */
 public record Run(
@@ -60,7 +64,38 @@ public record Run(
         Instant startDelayedUntil,
         ScheduleOfRun schedule,
         ResetFromOfRun resetFrom,
+        String failureCode,
         JsonNode raw) {
+
+    /** A run stopped without a failure code. */
+    public Run(
+            String runId,
+            String workflowId,
+            String versionId,
+            RunStatus status,
+            String statusText,
+            long version,
+            boolean paused,
+            String startedBy,
+            Instant createdAt,
+            Instant updatedAt,
+            Instant finishedAt,
+            Instant deadline,
+            String traceId,
+            String correlationId,
+            int depth,
+            Parent parent,
+            ChainSegmentOfRun chain,
+            String rerunOf,
+            String businessId,
+            Instant startDelayedUntil,
+            ScheduleOfRun schedule,
+            ResetFromOfRun resetFrom,
+            JsonNode raw) {
+        this(runId, workflowId, versionId, status, statusText, version, paused, startedBy, createdAt, updatedAt,
+                finishedAt, deadline, traceId, correlationId, depth, parent, chain, rerunOf, businessId,
+                startDelayedUntil, schedule, resetFrom, null, raw);
+    }
 
     /** A run no schedule started and no reset made. */
     public Run(

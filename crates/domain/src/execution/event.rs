@@ -143,6 +143,25 @@ impl FailureCode {
         Self::system("CHILD_NOT_FOUND")
     }
 
+    /// The child's version refused the input the parent's node evaluated (design 043, `FR-043-008`).
+    #[must_use]
+    pub fn child_input_invalid() -> Self {
+        Self::system("CHILD_INPUT_INVALID")
+    }
+
+    /// The `inputSchema` of the version a new run would pin is outside the supported subset (design 043): a child
+    /// step or a continuation fails with it.
+    #[must_use]
+    pub fn run_input_schema_unusable() -> Self {
+        Self::system("RUN_INPUT_SCHEMA_UNUSABLE")
+    }
+
+    /// The continuation's evaluated input was refused by the schema of the run's version (design 043, `FR-043-009`).
+    #[must_use]
+    pub fn continuation_input_invalid() -> Self {
+        Self::system("CONTINUATION_INPUT_INVALID")
+    }
+
     /// Starting the child would nest runs deeper than the limit.
     #[must_use]
     pub fn child_depth_exceeded() -> Self {

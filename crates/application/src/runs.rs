@@ -201,8 +201,9 @@ const NOT_WAITING_FOR_SIGNAL: &str = "the run is not waiting for that signal";
 enum HolderReceipt<'a> {
     /// Nothing to keep or to read: a batch item, whose key is the item's own.
     None,
-    /// The holder serves this request now: keep its receipts with the effect.
-    Keep(&'a Idempotency),
+    /// The holder serves this request now: keep its receipts with the effect, and the audit of a start input refused
+    /// in `report` mode with them (design 043).
+    Keep(&'a Idempotency, Option<&'a AuditRecord>),
     /// A retry: say whether the first request was served by a holder.
     Read(&'a Idempotency),
 }
@@ -262,7 +263,8 @@ pub struct NewRun {
     pub limits: RunLimits,
     pub info: RunInfo,
     pub definition: Arc<WorkflowDefinition>,
-    pub input: Vec<u8>,
+    /// The input, checked by the gate against the schema of `info.version_id` (design 043, ADR-0090 decision 2).
+    pub input: crate::run_input::CheckedRunInput,
     pub input_blob: Option<crate::blobs::RunInputBinding>,
     pub audit: AuditRecord,
     pub idempotency: Idempotency,
@@ -817,10 +819,9 @@ pub struct RunService<S, C, E> {
     engine: Engine<E>,
     cache: DefinitionCache,
     lag_budget: Duration,
-    input_blobs: Option<(
-        crate::blobs::BlobService,
-        Arc<dyn crate::blobs::RunInputChecker>,
-    )>,
+    input_blobs: Option<crate::blobs::BlobService>,
+    /// Checks every run input against the schema of the version it pins (design 043); fail-closed until wired.
+    run_inputs: Arc<crate::run_input::RunInputGate>,
     /// Evaluates the declared Update an Update-with-Start carries; absent, that request is refused.
     declared_updates: Option<Arc<dyn DeclaredOperationEvaluator>>,
     /// Whether a reset may deliver signals and Updates again (`SAGAT_RESET_REAPPLY_ENABLED`, off by default).
@@ -852,7 +853,7 @@ where
     C: Clock,
     E: ExpressionEvaluator,
 {
-    pub const fn new(store: S, clock: C, engine: Engine<E>, cache: DefinitionCache) -> Self {
+    pub fn new(store: S, clock: C, engine: Engine<E>, cache: DefinitionCache) -> Self {
         Self {
             store,
             clock,
@@ -860,6 +861,7 @@ where
             cache,
             lag_budget: Duration::from_secs(30),
             input_blobs: None,
+            run_inputs: crate::run_input::RunInputGate::unwired(),
             declared_updates: None,
             reset_reapply: false,
             reset_cancel_source: false,
@@ -899,13 +901,23 @@ where
     }
 
     #[must_use]
-    pub fn with_input_blobs(
-        mut self,
-        blobs: crate::blobs::BlobService,
-        checker: Arc<dyn crate::blobs::RunInputChecker>,
-    ) -> Self {
-        self.input_blobs = Some((blobs, checker));
+    pub fn with_input_blobs(mut self, blobs: crate::blobs::BlobService) -> Self {
+        self.input_blobs = Some(blobs);
         self
+    }
+
+    /// The gate every start of this service goes through (design 043). Without it a start of a version with an
+    /// `inputSchema` is refused as transient (`503`), never admitted unchecked.
+    #[must_use]
+    pub fn with_run_inputs(mut self, gate: Arc<crate::run_input::RunInputGate>) -> Self {
+        self.run_inputs = gate;
+        self
+    }
+
+    /// The gate of this service, for the creators that share it (the schedules, the batch executor).
+    #[must_use]
+    pub fn run_inputs(&self) -> &Arc<crate::run_input::RunInputGate> {
+        &self.run_inputs
     }
 
     /// The codec that reads the result of the probe of an Iceberg connection back from what the store kept (D035-150). Without it the checks
@@ -918,7 +930,7 @@ where
 
     #[must_use]
     pub fn input_blobs(&self) -> Option<&crate::blobs::BlobService> {
-        self.input_blobs.as_ref().map(|(service, _)| service)
+        self.input_blobs.as_ref()
     }
 
     /// Builds the chain command facade from the same store, clock and engine semantics.
@@ -1647,7 +1659,7 @@ where
         }
         let (input, input_binding) = match input_blob {
             Some(id) => {
-                let (blobs, checker) = self.input_blobs.as_ref().ok_or(AppError::Unavailable)?;
+                let blobs = self.input_blobs.as_ref().ok_or(AppError::Unavailable)?;
                 let access = crate::blobs::BlobAccess {
                     tenant_id: principal.tenant_id(),
                     namespace_id: namespace.id(),
@@ -1670,9 +1682,6 @@ where
                     Err(_) => return Err(AppError::Unavailable),
                 };
                 let input = crate::blobs::descriptor_json(&descriptor);
-                checker
-                    .check(&version.document, &input)
-                    .map_err(AppError::NotAllowed)?;
                 (
                     input,
                     Some(crate::blobs::RunInputBinding::Uploaded(descriptor)),
@@ -1683,12 +1692,86 @@ where
                 rerun.map(|r| crate::blobs::RunInputBinding::Inherit(r.of)),
             ),
         };
+        // Design 043, rows 1 to 8: the input is checked against the schema of the version the run pins, before the
+        // transaction that creates it opens. A refused start does not consume its key: a run created under the same key
+        // and fingerprint (before the upgrade, or by a peer in `report` mode) is replayed first (D043-004).
+        let creator = if rerun.is_some() {
+            crate::run_input::Creator::Repeat
+        } else if scheduled.is_some() {
+            crate::run_input::Creator::Schedule
+        } else {
+            crate::run_input::Creator::Api
+        };
+        // A repeat says `/` and `other`: the caller's view of the source input may withhold what the field would
+        // name (D043-037, D043-121).
+        let policy = if rerun.is_some() {
+            crate::run_input::FieldPolicy::Root
+        } else {
+            crate::run_input::FieldPolicy::Show
+        };
+        // a schedule's action was checked by the firing before its decision (`check_scheduled`), which counted only what
+        // would have stopped it: checked again here, against the version resolved now, and counted as any start
+        // (D043-147, D043-184)
+        let checked = if scheduled.is_some() {
+            self.run_inputs
+                .recheck(
+                    principal.tenant_id(),
+                    version.version.id(),
+                    &definition,
+                    input,
+                    creator,
+                    policy,
+                )
+                .await
+        } else {
+            self.run_inputs
+                .check(
+                    principal.tenant_id(),
+                    version.version.id(),
+                    &definition,
+                    input,
+                    creator,
+                    policy,
+                )
+                .await
+        };
+        let input = match checked {
+            Ok(input) => input,
+            Err(refusal) => {
+                // any refusal, a transient one too, first answers a run its key already holds, as a retry was answered
+                // before design 043 (D043-151)
+                if let Some(existing) = self
+                    .replay_start_authorized(principal, workflow.id(), &idempotency, ctx)
+                    .await?
+                {
+                    // the request of the run its key holds is answered as any replay is (correctness review M1,
+                    // D043-141): what a with-start delivered or applied, "already acted" for a schedule, "already
+                    // completed" for a pending reset
+                    let start_receipt = idempotency.clone();
+                    return Box::pin(self.finish_start(
+                        principal,
+                        run_id,
+                        Admitted::Replayed(existing),
+                        scheduled.is_some(),
+                        engine_tick.is_some(),
+                        None,
+                        with.map(|with| (with, &start_receipt)),
+                        reset,
+                        rerun.and_then(|rerun| rerun.item),
+                        None,
+                        ctx,
+                    ))
+                    .await;
+                }
+                return Err(refusal.into());
+            }
+        };
         let pending_completion = reset.is_some_and(|reset| reset.pending.is_some());
         let limits = RunLimits::of(&self.store, principal.tenant_id(), namespace.id())
             .await
             .map_err(|error| store_failure(pending_completion, error))?;
         self.cache
-            .initial_declared_state(&version.document, &input)
+            .initial_declared_state(&version.document, input.bytes())
             .map_err(|error| {
                 tracing::debug!(%error, version = %version.version.id(), "declared initial state rejected the run input");
                 AppError::NotAllowed(
@@ -1712,6 +1795,10 @@ where
         let scheduled_start = new.schedule.is_some();
         let by_dispatcher = engine_tick.is_some();
         let start_receipt = new.idempotency.clone();
+        let reported = new
+            .input
+            .reported()
+            .map(|refusal| (new.audit.clone(), refusal));
         // The instant the entry is held until, to the microsecond: the journal and the column hold
         // the same number, so a replay of the one is the other.
         let held_until_us = options
@@ -1753,6 +1840,7 @@ where
             with.map(|with| (with, &start_receipt)),
             reset,
             rerun.and_then(|rerun| rerun.item),
+            reported,
             ctx,
         ))
         .await
@@ -1770,6 +1858,7 @@ where
         with: Option<(WithStart<'_>, &Idempotency)>,
         reset: Option<ResetStart<'_>>,
         item: Option<&ItemSettlement>,
+        reported: Option<(AuditRecord, crate::run_input::ReportedRefusal)>,
         ctx: &RequestContext,
     ) -> Result<Started, AppError> {
         match created {
@@ -1825,6 +1914,9 @@ where
                 let mut started = self
                     .known_start(principal, &target.to_string(), true)
                     .await?;
+                // `report` mode: no run is created, so the refusal of the start's input is audited with the holder's
+                // answer (correctness review of 2026-11-15, Major 2)
+                let reported = reported.map(|(audit, refusal)| refusal.audit(&audit, target));
                 match with {
                     Some((WithStart::Signal(signal), start)) => {
                         // an open holder is signalled exactly as `signalRun` would
@@ -1835,7 +1927,7 @@ where
                                 signal.name,
                                 signal.payload,
                                 &start.key,
-                                HolderReceipt::Keep(start),
+                                HolderReceipt::Keep(start, reported.as_ref()),
                                 WaitVia::SignalWithStart,
                                 None,
                                 ctx,
@@ -1859,14 +1951,23 @@ where
                                 target,
                                 started.run.info.namespace_id,
                                 update,
-                                HolderReceipt::Keep(start),
+                                HolderReceipt::Keep(start, reported.as_ref()),
                                 None,
                                 ctx,
                             )
                             .await?;
                         started.update = Some(applied);
                     }
-                    None => {}
+                    None => {
+                        // a plain start keeps no receipt of its own: each answer is audited, as each is counted
+                        if let Some(audit) = &reported
+                            && let Err(error) = self.store.record_refusal(audit).await
+                        {
+                            metrics::counter!("audit_write_failures_total", "action" => audit.action().as_str())
+                                .increment(1);
+                            tracing::error!(%error, action = %audit.action(), "failed to record audit entry");
+                        }
+                    }
                 }
                 Ok(started)
             }
@@ -2113,8 +2214,8 @@ where
         let applied = tx.apply_declared_update(&command, evaluator).await?;
         let served = match receipt {
             HolderReceipt::None => false,
-            HolderReceipt::Keep(start) => {
-                tx.remember_start_served(start, &served_marker(start), run)
+            HolderReceipt::Keep(start, reported) => {
+                tx.remember_start_served(start, &served_marker(start), run, reported)
                     .await?;
                 true
             }
@@ -2902,8 +3003,8 @@ where
         };
         let served = match receipt {
             HolderReceipt::None => false,
-            HolderReceipt::Keep(start) => {
-                tx.remember_start_served(start, &served_marker(start), id)
+            HolderReceipt::Keep(start, reported) => {
+                tx.remember_start_served(start, &served_marker(start), id, reported)
                     .await?;
                 true
             }
@@ -3045,6 +3146,45 @@ where
         Ok(woken)
     }
 
+    /// The version a start of `workflow` in the namespace `slug` would pin (`version`, or the active one) and its parsed
+    /// definition, read as a start reads them (design 043: what a schedule checks its input against before it decides).
+    pub(crate) async fn target_definition(
+        &self,
+        principal: &Principal,
+        slug: &str,
+        workflow: WorkflowId,
+        version: Option<WorkflowVersionId>,
+    ) -> Result<(WorkflowVersionId, Arc<WorkflowDefinition>), AppError> {
+        let namespace = self.namespace(principal, slug).await?;
+        let workflow = self
+            .store
+            .get_workflow(principal.tenant_id(), workflow)
+            .await?
+            .filter(|r| r.workflow.namespace_id() == namespace.id())
+            .ok_or(AppError::NotFound)?
+            .workflow;
+        let version_id = match version {
+            Some(id) => id,
+            None => workflow
+                .active_version()
+                .ok_or(AppError::StateConflict(NO_PUBLISHED_VERSION))?,
+        };
+        let version = self
+            .store
+            .get_version_by_id(principal.tenant_id(), version_id)
+            .await?
+            .filter(|v| v.version.workflow_id() == workflow.id())
+            .ok_or(AppError::NotFound)?;
+        let definition = self
+            .cache
+            .get_or_parse(version.version.id(), &version.document)
+            .map_err(|error| {
+                tracing::error!(%error, version = %version.version.id(), "a stored version no longer parses");
+                AppError::Internal
+            })?;
+        Ok((version.version.id(), definition))
+    }
+
     async fn namespace(&self, principal: &Principal, slug: &str) -> Result<Namespace, AppError> {
         let slug = sagat_domain::identity::Slug::parse(slug).map_err(|_| AppError::NotFound)?;
         self.store
@@ -3184,6 +3324,33 @@ where
         } else {
             crate::schedule_firing::ScheduledRun::Started(started.run.info.run_id)
         })
+    }
+
+    async fn check_scheduled(
+        &self,
+        principal: &Principal,
+        request: &crate::schedule_firing::ScheduledStart<'_>,
+    ) -> Result<(), AppError> {
+        let (version, definition) = self
+            .target_definition(
+                principal,
+                request.namespace,
+                request.workflow,
+                request.version,
+            )
+            .await?;
+        self.run_inputs
+            .check_before_its_start(
+                principal.tenant_id(),
+                version,
+                &definition,
+                request.input.to_vec(),
+                crate::run_input::Creator::Schedule,
+                crate::run_input::FieldPolicy::Show,
+            )
+            .await
+            .map(|_| ())
+            .map_err(AppError::from)
     }
 
     async fn cancel_run(

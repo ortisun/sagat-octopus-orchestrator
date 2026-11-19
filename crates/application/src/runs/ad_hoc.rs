@@ -397,10 +397,13 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
         }
         // The platform's own probe documents are the only ones that may carry a private node (ADR-0080): they are parsed by the private
         // entry, whose grammar is the public one plus the private node types. Every other origin is parsed by the public one.
+        // The caller's document is parsed in the process's mode, as a publication is: in `report` a schema outside the
+        // subset is a warning, and the gate reports it with the run (architecture review of 2026-11-16, Major 2).
         let parsed = if origin == RunOrigin::ConnectionProbe {
             self.cache.parse_private_document(request.document)
         } else {
-            self.cache.parse_document(request.document)
+            self.cache
+                .parse_document_in(request.document, self.run_inputs.mode())
         }
         .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
         validate_definition(&parsed.definition, origin)?;
@@ -501,13 +504,64 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
                 QuotaResource::Workflows,
             )
             .await?;
+        // Design 043, row 13: the document's own `inputSchema`, compiled for this call alone (its version is new on every
+        // call) under the same permits as every other row (G043-031). A refused start replays a run of its key first
+        // (D043-029).
+        let input = match self
+            .run_inputs
+            .check(
+                principal.tenant_id(),
+                info.version_id,
+                &parsed.definition,
+                request.input.to_vec(),
+                crate::run_input::Creator::AdHoc,
+                // a private rerun says nothing of the source's input, as every repeat (review of phase 2, D043-148)
+                if rerun.is_some() {
+                    crate::run_input::FieldPolicy::Root
+                } else {
+                    crate::run_input::FieldPolicy::Show
+                },
+            )
+            .await
+        {
+            Ok(input) => input,
+            Err(refusal) => {
+                // any refusal, a transient one too, first answers a run its key already holds, as a retry was answered
+                // before design 043 (D043-151)
+                if let Some(existing) = self
+                    .replay_start_authorized(principal, info.workflow_id, &idempotency, ctx)
+                    .await?
+                {
+                    // answered as any replay of a private start is (D043-141), and counted as the store path counts one
+                    metrics::counter!("database_executions_total", "origin" => origin.as_str(), "outcome" => "admitted").increment(1);
+                    return self
+                        .finish_start(
+                            principal,
+                            run_id,
+                            Admitted::Replayed(existing),
+                            false,
+                            false,
+                            None,
+                            None,
+                            None,
+                            rerun.and_then(|rerun| rerun.item),
+                            None,
+                            ctx,
+                        )
+                        .await
+                        .map(|started| started.run);
+                }
+                metrics::counter!("database_executions_total", "origin" => origin.as_str(), "outcome" => "refused").increment(1);
+                return Err(refusal.into());
+            }
+        };
         let new = NewRun {
             schedule: None,
             business: None,
             limits: RunLimits::of(&self.store, principal.tenant_id(), request.namespace).await?,
             info,
             definition: Arc::new(parsed.definition),
-            input: request.input.to_vec(),
+            input,
             input_blob: None,
             audit,
             idempotency,
@@ -532,6 +586,7 @@ impl<S: RunStore + DefinitionStore, C: Clock, E: ExpressionEvaluator> RunService
                     None,
                     None,
                     rerun.and_then(|rerun| rerun.item),
+                    None,
                     ctx,
                 )
                 .await
