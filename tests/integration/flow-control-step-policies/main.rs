@@ -8,6 +8,7 @@
 mod support;
 
 mod admission;
+mod ceilings;
 mod migrations;
 mod publication;
 mod queue;

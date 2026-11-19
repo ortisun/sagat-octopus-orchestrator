@@ -4305,8 +4305,9 @@ impl RunTx for PgRunTx {
         &'a mut self,
         steps: &'a [sagat_application::flow_control::StepGateKeys],
         pending: &'a [RunEvent],
-    ) -> impl Future<Output = Result<Vec<sagat_domain::execution::GateEvent>, StoreError>> + Send + 'a
-    {
+    ) -> impl Future<Output = Result<sagat_application::flow_control::StepGateAnswer, StoreError>>
+    + Send
+    + 'a {
         self.decide_gates(steps, pending)
     }
 

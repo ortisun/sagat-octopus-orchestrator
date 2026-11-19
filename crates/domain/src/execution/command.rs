@@ -2513,11 +2513,10 @@ fn resolve_gates(
     let mut events = Vec::with_capacity(decisions.len() + refused.len());
     let asked = super::undecided_gates(state).unwrap_or_default();
     for (node, code) in refused {
-        if code != FailureCode::flow_control_key_invalid()
-            || !asked.iter().any(|request| request.node == node)
-        {
+        if !code.is_readiness_refusal() || !asked.iter().any(|request| request.node == node) {
             return Err(ExecutionError::Invariant(
-                "the readiness gate fails only a step it was asked about, with FLOW_CONTROL_KEY_INVALID",
+                "the readiness gate fails only a step it was asked about, with FLOW_CONTROL_KEY_INVALID or \
+                 FLOW_CONTROL_LIMIT",
             ));
         }
         let failed = RunEvent::StepFailed {

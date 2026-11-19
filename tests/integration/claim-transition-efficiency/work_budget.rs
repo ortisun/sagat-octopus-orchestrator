@@ -335,10 +335,14 @@ measured!(
 /// Measured 2026-11-19: the plain completion (50, 1, 11) and eight statements (the key versions in force, the window
 /// filed and locked, the database clock after the lock, the window's count, the grant row, its journal event and the
 /// extra quota check of the second event) and two rows (the grant and `rate_limit.granted`).
-const COMPLETION_WITH_A_RATE_LIMITED_NEXT_STEP: Work = cost(58, 1, 13);
+/// Raised 2026-11-19 by one statement (58 to 59): the namespace ceilings the decision applies, read once per round
+/// (`concurrency_limit`, `flow_control_queue_timeout_ms`, `concurrency_live_keys`; G1199, FR-022-047). A rate limit
+/// alone files no semaphore, so the live-keys check costs nothing here.
+const COMPLETION_WITH_A_RATE_LIMITED_NEXT_STEP: Work = cost(59, 1, 13);
 /// An admission whose entry step declares `rateLimit`: the plain admission and the decision of its entry.
-/// Measured 2026-11-19: the plain admission (33, 1, 11) and the same eight statements and two rows.
-const RATE_LIMITED_ENTRY_ADMISSION: Work = cost(41, 1, 13);
+/// Measured 2026-11-19: the plain admission (33, 1, 11) and the same eight statements and two rows; raised to nine
+/// statements (41 to 42) the same day for the ceilings read (G1199).
+const RATE_LIMITED_ENTRY_ADMISSION: Work = cost(42, 1, 13);
 
 async fn a_rate_limited_step_costs_what_the_budget_says_once() -> Result<(), Evicted> {
     let w = crate::support::flow_control::gated_world().await;

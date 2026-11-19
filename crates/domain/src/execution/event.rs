@@ -90,6 +90,20 @@ impl FailureCode {
         Self::system("FLOW_CONTROL_KEY_INVALID")
     }
 
+    /// A step's key would be a new key beyond the namespace's live-keys ceiling, or a ceiling of the namespace is zero
+    /// (feature 022, FR-022-054, FR-022-047): the step fails through its failure route with no attempt spent and is
+    /// never granted.
+    #[must_use]
+    pub fn flow_control_limit() -> Self {
+        Self::system("FLOW_CONTROL_LIMIT")
+    }
+
+    /// The two codes the readiness gate fails a step with, before any attempt (feature 022).
+    #[must_use]
+    pub fn is_readiness_refusal(&self) -> bool {
+        *self == Self::flow_control_key_invalid() || *self == Self::flow_control_limit()
+    }
+
     #[must_use]
     pub fn branch_failed() -> Self {
         Self::system("BRANCH_FAILED")

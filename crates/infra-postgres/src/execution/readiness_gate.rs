@@ -87,7 +87,7 @@ impl PgRunTx {
         &mut self,
         steps: &[StepGateKeys],
         pending_events: &[RunEvent],
-    ) -> Result<Vec<GateEvent>, StoreError> {
+    ) -> Result<sagat_application::flow_control::StepGateAnswer, StoreError> {
         let Some(ring) = self.flow_control_keys.clone() else {
             return Err(StoreError::FlowControl(
                 FlowControlRefusal::BinaryCapabilityMissing,
@@ -96,6 +96,8 @@ impl PgRunTx {
         let tenant = self.info.tenant_id;
         let namespace = self.info.namespace_id;
         let versions = key_versions(&mut self.tx).await?;
+        // the namespace's ceilings bound what a declaration asks (G1199; FR-022-047, FR-022-054)
+        let ceilings = crate::quotas::step_gate_ceilings(&mut self.tx, tenant, namespace).await?;
         let mut pending = Vec::new();
         let (mut semaphores, mut windows) = (Vec::new(), Vec::new());
         for step in steps {
@@ -161,6 +163,14 @@ impl PgRunTx {
                         windows.len() - 1
                     }
                 };
+                let limit = match kind {
+                    GateKind::Concurrency => {
+                        u32::try_from(u64::from(limit).min(ceilings.concurrency_limit))
+                            .unwrap_or(limit)
+                    }
+                    // a namespace ceiling of a rate limit is T022-077's
+                    GateKind::RateLimit => limit,
+                };
                 pending.push((
                     index,
                     Pending {
@@ -170,11 +180,21 @@ impl PgRunTx {
                         group,
                         limit,
                         per,
-                        timeout,
+                        timeout: ceilings.queue_timeout(timeout),
                         filed: None,
                     },
                 ));
             }
+        }
+        let refused = self
+            .refused_by_ceilings(&pending, &semaphores, &ceilings)
+            .await?;
+        if !refused.is_empty() {
+            // nothing is filed: the domain fails these steps and the next round decides the others
+            return Ok(sagat_application::flow_control::StepGateAnswer {
+                decisions: Vec::new(),
+                refused,
+            });
         }
         // what this transaction gives back is locked in the same pass and given back first, so that the counts below
         // see it (a permit released and a successor decided on the same key in one commit) and no key row is locked
@@ -251,6 +271,22 @@ impl PgRunTx {
                 };
                 self.gate_outcomes
                     .push((gate.kind, GateOutcome::of(change)));
+                // the span names the group, never the key (FR-022-033)
+                let outcome = if admits { "granted" } else { "queued" };
+                match gate.kind {
+                    GateKind::Concurrency => tracing::info_span!(
+                        sagat_telemetry::FlowControlSpan::ConcurrencyAcquire.as_str(),
+                        "sagat.concurrency.group" = gate.group.as_str(),
+                        "sagat.outcome" = outcome,
+                    )
+                    .in_scope(|| ()),
+                    GateKind::RateLimit => tracing::info_span!(
+                        sagat_telemetry::FlowControlSpan::RateLimitAdmit.as_str(),
+                        "sagat.rate_limit.group" = gate.group.as_str(),
+                        "sagat.outcome" = outcome,
+                    )
+                    .in_scope(|| ()),
+                }
                 // the row is the same whatever the window its grants were counted for: every count of it moves
                 let (rate, group, digest, _) = count_key(gate, filed);
                 let mut moved = false;
@@ -281,7 +317,100 @@ impl PgRunTx {
                 });
             }
         }
-        Ok(events)
+        Ok(sagat_application::flow_control::StepGateAnswer {
+            decisions: events,
+            refused: Vec::new(),
+        })
+    }
+
+    /// The steps of this round a namespace ceiling refuses `FLOW_CONTROL_LIMIT` (G1199): a ceiling of zero (the effective
+    /// limit or queue timeout), or a new step key beyond the live-keys ceiling (FR-022-054; counted on the semaphores,
+    /// D022-043). The keys that exist cost one statement; only a round that would create a key counts the namespace's
+    /// keys. Not serialized between transactions: concurrent rounds that each create a key at the boundary can pass it
+    /// by at most their number (G022-002).
+    async fn refused_by_ceilings(
+        &mut self,
+        pending: &[(usize, Pending)],
+        semaphores: &[KeyToFile],
+        ceilings: &sagat_domain::workflow::FlowControlCeilings,
+    ) -> Result<Vec<(NodeId, sagat_domain::execution::FailureCode)>, StoreError> {
+        let code = sagat_domain::execution::FailureCode::flow_control_limit;
+        let mut refused: Vec<NodeId> = pending
+            .iter()
+            .filter(|(_, gate)| gate.limit == 0 || gate.timeout.is_zero())
+            .map(|(_, gate)| gate.node.clone())
+            .collect();
+        if !semaphores.is_empty() {
+            let (mut groups, mut digests, mut owners) = (Vec::new(), Vec::new(), Vec::new());
+            for (index, key) in semaphores.iter().enumerate() {
+                for digest in
+                    std::iter::once(&key.candidates.active).chain(key.candidates.retiring.as_ref())
+                {
+                    groups.push(key.group.as_str().to_owned());
+                    digests.push(digest.as_bytes().to_vec());
+                    owners.push(i32::try_from(index).map_err(|_| corrupt("key index"))?);
+                }
+            }
+            let existing: Vec<i32> = sqlx::query_scalar(
+                "SELECT DISTINCT k.owner FROM unnest($3::text[], $4::bytea[], $5::integer[]) AS k(g, d, owner) \
+                  WHERE EXISTS (SELECT 1 FROM concurrency_semaphores s \
+                                 WHERE s.tenant_id = $1 AND s.namespace_id = $2 AND s.pool = 'ORDINARY' \
+                                   AND s.permit_scope = 'STEP' AND s.group_name = k.g AND s.key_digest = k.d)",
+            )
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.namespace_id.as_uuid())
+            .bind(&groups)
+            .bind(&digests)
+            .bind(&owners)
+            .fetch_all(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+            // a key the round would create, once each (two steps may share one), in the order the steps are decided
+            let mut new_keys: Vec<(String, [u8; 32])> = Vec::new();
+            let mut new_of_step: Vec<(NodeId, (String, [u8; 32]))> = Vec::new();
+            for (index, gate) in pending {
+                if gate.kind != GateKind::Concurrency || refused.contains(&gate.node) {
+                    continue;
+                }
+                let exists = i32::try_from(*index).is_ok_and(|i| existing.contains(&i));
+                if !exists {
+                    let key = &semaphores[*index];
+                    let id = (
+                        key.group.as_str().to_owned(),
+                        *key.candidates.active.as_bytes(),
+                    );
+                    if !new_keys.contains(&id) {
+                        new_keys.push(id.clone());
+                    }
+                    new_of_step.push((gate.node.clone(), id));
+                }
+            }
+            if !new_keys.is_empty() {
+                let live: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2",
+                )
+                .bind(self.info.tenant_id.as_uuid())
+                .bind(self.info.namespace_id.as_uuid())
+                .fetch_one(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
+                let room = usize::try_from(
+                    ceilings
+                        .live_keys
+                        .saturating_sub(u64::try_from(live).unwrap_or(u64::MAX)),
+                )
+                .unwrap_or(usize::MAX);
+                let admitted = &new_keys[..new_keys.len().min(room)];
+                for (node, id) in new_of_step {
+                    if !admitted.contains(&id) && !refused.contains(&node) {
+                        refused.push(node);
+                    }
+                }
+            }
+        }
+        refused.sort();
+        refused.dedup();
+        Ok(refused.into_iter().map(|node| (node, code())).collect())
     }
 
     /// The holders (or the grants that count for `gate`'s window) and the waiters of a key, read once per key and
@@ -845,5 +974,69 @@ pub(super) fn record_gate_outcomes(outcomes: &[(GateKind, GateOutcome)]) {
                 },
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GateOutcome, record_gate_outcomes};
+    use sagat_domain::workflow::GateKind;
+
+    /// G022-001: what a committed transaction decided is counted once per gate, step scope, in the closed vocabulary;
+    /// a released permit is not an acquisition and is not counted as one.
+    #[test]
+    fn each_committed_gate_outcome_is_counted_in_the_closed_vocabulary() {
+        let (telemetry, recorder) =
+            sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(60));
+        let all = [
+            GateOutcome::Granted,
+            GateOutcome::Queued,
+            GateOutcome::GrantedFromQueue,
+            GateOutcome::TimedOut,
+            GateOutcome::Dequeued,
+            GateOutcome::GivenBack,
+        ];
+        let outcomes: Vec<_> = [GateKind::Concurrency, GateKind::RateLimit]
+            .into_iter()
+            .flat_map(|kind| all.map(|outcome| (kind, outcome)))
+            .collect();
+        metrics::with_local_recorder(&recorder, || record_gate_outcomes(&outcomes));
+        let rendered = telemetry.render();
+        let counted = |family: &str, outcome: &str| {
+            rendered.lines().any(|line| {
+                line.starts_with(family)
+                    && line.contains("scope=\"step\"")
+                    && line.contains(&format!("outcome=\"{outcome}\""))
+                    && line.ends_with(" 1")
+            })
+        };
+        for outcome in ["acquired", "queued", "granted", "timed_out", "dequeued"] {
+            assert!(
+                counted("concurrency_acquisitions_total", outcome),
+                "{outcome}: {rendered}"
+            );
+        }
+        for outcome in [
+            "granted",
+            "queued",
+            "granted_from_queue",
+            "timed_out",
+            "dequeued",
+            "slot_returned",
+        ] {
+            assert!(
+                counted("rate_limit_decisions_total", outcome),
+                "{outcome}: {rendered}"
+            );
+        }
+        let concurrency_series = rendered
+            .lines()
+            .filter(|line| line.starts_with("concurrency_acquisitions_total{"))
+            .count();
+        assert_eq!(
+            concurrency_series, 5,
+            "a release is not counted: {rendered}"
+        );
+        assert!(!rendered.contains("tenant"), "no tenant label: {rendered}");
     }
 }

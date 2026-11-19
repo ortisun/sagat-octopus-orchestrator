@@ -671,6 +671,11 @@ pub(crate) async fn effective(
             .await
             .map_err(store_error)?
         };
+    Ok(resolve_rows(resource, &rows))
+}
+
+/// The effective value of `resource` from its stored rows: (namespace, value, whether it is the tenant's ceiling).
+fn resolve_rows(resource: QuotaResource, rows: &[(Option<uuid::Uuid>, i64, bool)]) -> u64 {
     let value = |scoped: bool| {
         rows.iter()
             .find(|(ns, _, ceiling)| !ceiling && ns.is_some() == scoped)
@@ -681,7 +686,52 @@ pub(crate) async fn effective(
         .find(|(_, _, ceiling)| *ceiling)
         .map(|(_, v, _)| u64::try_from(*v).unwrap_or(0));
     let ceiling = quota::ceiling(resource, granted);
-    Ok(quota::resolve(resource, value(true), value(false), ceiling).0)
+    quota::resolve(resource, value(true), value(false), ceiling).0
+}
+
+/// The namespace ceilings the readiness gate applies to a step (feature 022, G1199): `concurrency_limit`,
+/// `flow_control_queue_timeout_ms` and `concurrency_live_keys`, read in one statement of the caller's transaction,
+/// effective as everywhere else (namespace, tenant and deployment).
+///
+/// # Errors
+/// A store error.
+pub(crate) async fn step_gate_ceilings(
+    conn: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    namespace: NamespaceId,
+) -> Result<sagat_domain::workflow::FlowControlCeilings, StoreError> {
+    const READ: [QuotaResource; 3] = [
+        QuotaResource::ConcurrencyLimit,
+        QuotaResource::FlowControlQueueTimeoutMs,
+        QuotaResource::ConcurrencyLiveKeys,
+    ];
+    let rows: Vec<(String, Option<uuid::Uuid>, i64, bool)> = sqlx::query_as(
+        "SELECT resource, namespace_id, max_value, false FROM quota_limits \
+          WHERE tenant_id = $1 AND resource = ANY($2) AND (namespace_id IS NULL OR namespace_id = $3) \
+         UNION ALL \
+         SELECT resource, NULL, max_value, true FROM quota_ceilings \
+          WHERE tenant_id = $1 AND resource = ANY($2)",
+    )
+    .bind(tenant.as_uuid())
+    .bind(READ.map(QuotaResource::as_str).to_vec())
+    .bind(namespace.as_uuid())
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(store_error)?;
+    let of = |resource: QuotaResource| {
+        let mine: Vec<_> = rows
+            .iter()
+            .filter(|(name, ..)| name == resource.as_str())
+            .map(|(_, ns, value, ceiling)| (*ns, *value, *ceiling))
+            .collect();
+        resolve_rows(resource, &mine)
+    };
+    Ok(sagat_domain::workflow::FlowControlCeilings {
+        concurrency_limit: of(QuotaResource::ConcurrencyLimit),
+        queue_timeout_ms: of(QuotaResource::FlowControlQueueTimeoutMs),
+        live_keys: of(QuotaResource::ConcurrencyLiveKeys),
+        ..sagat_domain::workflow::FlowControlCeilings::DEFAULT
+    })
 }
 
 impl QuotaLookup for PgRunStore {

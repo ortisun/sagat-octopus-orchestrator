@@ -5501,12 +5501,26 @@ where
             else {
                 return Ok(Granted::Refused);
             };
-            let span = tracing::info_span!(
-                "workflow.concurrency.grant",
-                run_id = %waiter.run_id,
-                tenant_id = %waiter.tenant_id,
-                parent_span_id = %sagat_telemetry::run_span_id(waiter.run_id.as_uuid()),
-            );
+            // the span names the group, never the key (FR-022-033); a slot's grant is a rate-limit grant
+            let rate = grants.iter().find(|grant| {
+                grant.change.kind() == sagat_domain::workflow::GateKind::RateLimit
+            });
+            let span = match rate {
+                Some(grant) => tracing::info_span!(
+                    sagat_telemetry::FlowControlSpan::RateLimitGrant.as_str(),
+                    "sagat.rate_limit.group" = grant.gate.group.as_str(),
+                    run_id = %waiter.run_id,
+                    tenant_id = %waiter.tenant_id,
+                    parent_span_id = %sagat_telemetry::run_span_id(waiter.run_id.as_uuid()),
+                ),
+                None => tracing::info_span!(
+                    sagat_telemetry::FlowControlSpan::ConcurrencyGrant.as_str(),
+                    "sagat.concurrency.group" = grants.first().map_or("", |grant| grant.gate.group.as_str()),
+                    run_id = %waiter.run_id,
+                    tenant_id = %waiter.tenant_id,
+                    parent_span_id = %sagat_telemetry::run_span_id(waiter.run_id.as_uuid()),
+                ),
+            };
             self.engine
                 .run(&mut tx, self.effects(), move |def, state, now| {
                     Ok(((), execution::grant_step_gates(def, state, now, grants)?))

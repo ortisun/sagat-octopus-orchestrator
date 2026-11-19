@@ -193,6 +193,19 @@ impl std::fmt::Debug for StepGateKeys {
     }
 }
 
+/// The readiness gate's answer for the steps of one round (T28): the grants or waits of every gate of the steps it
+/// decided, or, when a namespace ceiling refuses some of them (a new key beyond the live-keys ceiling, a ceiling of
+/// zero: `FLOW_CONTROL_LIMIT`, G1199), only those refusals: nothing is filed then, and the next round asks again for the
+/// others.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StepGateAnswer {
+    pub decisions: Vec<sagat_domain::execution::GateEvent>,
+    pub refused: Vec<(
+        sagat_domain::workflow::NodeId,
+        sagat_domain::execution::FailureCode,
+    )>,
+}
+
 /// The canonical value of the single key of a group whose declaration has no key expression.
 pub const SINGLE_KEY: &[u8] = b"null";
 

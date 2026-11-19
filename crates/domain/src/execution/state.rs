@@ -4012,7 +4012,7 @@ impl RunState {
                 // feature 022: a step whose flow-control key does not evaluate fails before any attempt, from the wait
                 // for its gates; the journal alone, which does not know the node is gated, sees that step READY
                 let allowed: &[StepStatus] = if fence.is_none()
-                    && *code == FailureCode::flow_control_key_invalid()
+                    && code.is_readiness_refusal()
                     && (self.gated.is_empty() || self.gated.contains_key(node))
                 {
                     &[Ready, Waiting]

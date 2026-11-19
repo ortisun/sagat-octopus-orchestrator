@@ -1060,7 +1060,7 @@ pub trait RunTx: Send {
         &'a mut self,
         _steps: &'a [crate::flow_control::StepGateKeys],
         _pending: &'a [RunEvent],
-    ) -> impl Future<Output = Result<Vec<sagat_domain::execution::GateEvent>, StoreError>> + Send + 'a
+    ) -> impl Future<Output = Result<crate::flow_control::StepGateAnswer, StoreError>> + Send + 'a
     {
         async {
             Err(StoreError::FlowControl(
@@ -2141,10 +2141,10 @@ impl<E: ExpressionEvaluator> Engine<E> {
                 refused,
             });
         }
-        let decisions = tx.decide_step_gates(&keys, pending).await?;
+        let answer = tx.decide_step_gates(&keys, pending).await?;
         Ok(Resolution::Gates {
-            decisions,
-            refused: Vec::new(),
+            decisions: answer.decisions,
+            refused: answer.refused,
         })
     }
 }
