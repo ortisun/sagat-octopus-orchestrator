@@ -7,13 +7,16 @@
 -- scanned under the `ACCESS EXCLUSIVE` lock of the `ADD` (design 043, D043-145, D043-153).
 --
 -- Additive: an older reader never reads the new column. An older replica cannot parse a step-log resource name, so
--- once a step-log row exists in quota_limits or quota_ceilings its quota listing fails on it: the runbook says to
--- finish the upgrade before setting one (design 041 section 10).
+-- once a step-log row exists in quota_limits or quota_ceilings its quota listing fails on it: finish the upgrade
+-- before setting one (design 041 section 10; the runbook docs/runbooks/step-logs.md of T041-10 and T041-25 says so).
 --
 -- REBASE HAZARD: the three CHECKs below restate the whole list of resources of the ceilings tables, as every
 -- migration that adds a resource name does. This file follows 20270108000000_pending_resets; feature 022
--- (20270130000300_flow_control_quota_resources, not merged when this was written) adds names too: whoever merges the
--- second rebases it onto the first and restates the list with both sets of names.
+-- (20270130000300_flow_control_quota_resources, not merged when this was written) adds names too. Migrations run in
+-- version order, not merge order: whichever of the two merges second is re-stamped after the other's last migration
+-- and restates both lists, in its up and in its down. The test
+-- the_last_restatement_of_each_quota_resource_list_names_every_resource (integration_platform_foundation) fails
+-- while the list in force misses a resource the code knows.
 ALTER TABLE quota_ceilings DROP CONSTRAINT quota_ceilings_resource_valid;
 ALTER TABLE quota_ceilings ADD CONSTRAINT quota_ceilings_resource_valid CHECK (resource IN
     ('active_runs', 'tenant_active_runs', 'workflows', 'worker_sessions', 'secrets',

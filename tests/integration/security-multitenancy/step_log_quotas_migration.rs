@@ -117,6 +117,70 @@ async fn limit_of(
     .map(|_| ())
 }
 
+async fn namespace_of(pool: &PgPool, tenant: Uuid) -> Uuid {
+    let workspace: Uuid = sqlx::query_scalar(
+        "INSERT INTO workspaces (id, tenant_id, slug, created_at) VALUES (gen_random_uuid(), $1, 'main', now()) RETURNING id",
+    )
+    .bind(tenant)
+    .fetch_one(pool)
+    .await
+    .expect("a workspace");
+    sqlx::query_scalar(
+        "INSERT INTO namespaces (id, tenant_id, workspace_id, slug, environment, created_at) \
+         VALUES (gen_random_uuid(), $1, $2, 'dev', 'dev', now()) RETURNING id",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .fetch_one(pool)
+    .await
+    .expect("a namespace")
+}
+
+async fn namespace_limit(
+    pool: &PgPool,
+    tenant: Uuid,
+    namespace: Uuid,
+    resource: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO quota_limits (tenant_id, namespace_id, resource, max_value, updated_by) \
+         VALUES ($1, $2, $3, $4, 'test')",
+    )
+    .bind(tenant)
+    .bind(namespace)
+    .bind(resource)
+    .bind(if resource == "step_log_retention_days" {
+        14_i64
+    } else {
+        1024
+    })
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+async fn ceiling_of(
+    pool: &PgPool,
+    tenant: Uuid,
+    resource: &str,
+    value: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM quota_ceilings WHERE tenant_id = $1 AND resource = $2")
+        .bind(tenant)
+        .bind(resource)
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO quota_ceilings (tenant_id, resource, max_value, granted_by) VALUES ($1, $2, $3, 'test')",
+    )
+    .bind(tenant)
+    .bind(resource)
+    .bind(value)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
 async fn has_usage_column(pool: &PgPool) -> bool {
     sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
@@ -159,6 +223,33 @@ async fn the_step_log_resources_are_accepted_and_a_rollback_keeps_them() {
             "{resource} = {value}"
         );
     }
+    // A ceiling takes the byte range too: the 1 GiB default and 2^50 (the ELSE branch capped it at 10^9).
+    for (value, accepted) in [
+        (1_i64 << 30, true),
+        (1_i64 << 50, true),
+        ((1_i64 << 50) + 1, false),
+    ] {
+        assert_eq!(
+            ceiling_of(&db.pool, t, "tenant_step_log_bytes", value)
+                .await
+                .is_ok(),
+            accepted,
+            "tenant_step_log_bytes ceiling = {value}"
+        );
+    }
+    // The three namespace resources may be set per namespace; the tenant quota may not.
+    let ns = namespace_of(&db.pool, t).await;
+    for resource in &RESOURCES[1..] {
+        namespace_limit(&db.pool, t, ns, resource)
+            .await
+            .unwrap_or_else(|error| panic!("{resource} per namespace: {error}"));
+    }
+    assert!(
+        namespace_limit(&db.pool, t, ns, "tenant_step_log_bytes")
+            .await
+            .is_err(),
+        "tenant_step_log_bytes is tenant-scoped"
+    );
     let usage: i64 = sqlx::query_scalar(
         "INSERT INTO tenant_retained_usage (tenant_id, content_bytes, content_reserved_bytes, log_bytes) \
          VALUES ($1, 0, 0, 0) ON CONFLICT (tenant_id) DO UPDATE SET tenant_id = EXCLUDED.tenant_id \
@@ -169,6 +260,38 @@ async fn the_step_log_resources_are_accepted_and_a_rollback_keeps_them() {
     .await
     .expect("a usage row");
     assert_eq!(usage, 0, "the usage of the step-log class starts at 0");
+
+    // Retained step-log usage refuses the rollback on its own.
+    sqlx::query("DELETE FROM quota_limits WHERE tenant_id = $1")
+        .bind(t)
+        .execute(&db.pool)
+        .await
+        .expect("drop the limits");
+    sqlx::query("DELETE FROM quota_ceilings WHERE tenant_id = $1")
+        .bind(t)
+        .execute(&db.pool)
+        .await
+        .expect("drop the ceilings");
+    sqlx::query("UPDATE tenant_retained_usage SET step_log_bytes = 1 WHERE tenant_id = $1")
+        .bind(t)
+        .execute(&db.pool)
+        .await
+        .expect("usage");
+    assert!(
+        undo_to(&db, MIGRATION - 1).await.is_err(),
+        "retained step-log usage refuses the rollback"
+    );
+    sqlx::query("UPDATE tenant_retained_usage SET step_log_bytes = 0 WHERE tenant_id = $1")
+        .bind(t)
+        .execute(&db.pool)
+        .await
+        .expect("usage");
+    for resource in RESOURCES {
+        ceiling(&db.pool, t, resource)
+            .await
+            .expect("a ceiling again");
+        limit(&db.pool, t, resource).await.expect("a limit again");
+    }
 
     // A limit or a ceiling of a step-log resource is a decision: the rollback refuses while one exists.
     assert!(

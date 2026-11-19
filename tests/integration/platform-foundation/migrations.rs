@@ -242,7 +242,61 @@ fn a_constraint_added_not_valid_is_validated_by_a_later_migration() {
                 "{}: {name} is added NOT VALID and validated in the same transaction",
                 migration.version
             );
+            // ... and a later migration validates it (architecture review of feature 041, m5).
+            assert!(
+                MIGRATOR
+                    .iter()
+                    .any(|later| later.migration_type.is_up_migration()
+                        && later.version > migration.version
+                        && later
+                            .sql
+                            .as_str()
+                            .contains(&format!("VALIDATE CONSTRAINT {name}"))),
+                "{}: {name} is added NOT VALID and no later migration validates it",
+                migration.version
+            );
         }
+    }
+}
+
+/// Feature 041 (architecture review of 2026-11-19, M3): the migration with the highest version that restates a
+/// resource list of the ceilings tables is the one in force on a fresh database, whatever order branches merged in.
+/// Its list must name every resource the code knows, so a migration of another branch that restates the list
+/// without the names of this one (or is stamped earlier and merged later) fails here.
+#[test]
+fn the_last_restatement_of_each_quota_resource_list_names_every_resource() {
+    use sagat_domain::quota::{QuotaResource, QuotaScope};
+    for constraint in [
+        "quota_limits_resource_valid",
+        "quota_ceilings_resource_valid",
+        "quota_limits_tenant_scoped",
+    ] {
+        let marker = format!("ADD CONSTRAINT {constraint}");
+        let last = MIGRATOR
+            .iter()
+            .filter(|m| m.migration_type.is_up_migration() && m.sql.as_str().contains(&marker))
+            .max_by_key(|m| m.version)
+            .expect("a migration restates the list");
+        let statement = last
+            .sql
+            .as_str()
+            .split(&marker)
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .unwrap_or_default();
+        let named: std::collections::BTreeSet<&str> =
+            statement.split('\'').skip(1).step_by(2).collect();
+        let expected: std::collections::BTreeSet<&str> = QuotaResource::ALL
+            .iter()
+            .filter(|resource| match constraint {
+                "quota_limits_tenant_scoped" => resource.scope() == QuotaScope::Namespace,
+                // Iteration capacity is a tenant setting stored apart from quota_limits.
+                "quota_limits_resource_valid" => **resource != QuotaResource::IterationConcurrency,
+                _ => true,
+            })
+            .map(|resource| resource.as_str())
+            .collect();
+        assert_eq!(named, expected, "{constraint} in {}", last.version);
     }
 }
 
