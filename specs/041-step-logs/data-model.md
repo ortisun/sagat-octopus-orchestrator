@@ -56,7 +56,9 @@ CREATE TABLE step_log_streams (
     ceiling_reason        text,
     truncated_records     integer     NOT NULL DEFAULT 0,
     retention_days        smallint    NOT NULL,            -- step_log_retention_days of the namespace at creation (ADR-0027)
-    final_at              timestamptz,
+    last_stored_xid       xid8,                            -- id of the last transaction that recorded a batch or the carry
+                                                           -- (design section 2a, the order guard); null before the first
+    final_at              timestamptz,                     -- set only by the attempt's carry (its final mark)
     first_at              timestamptz,                     -- server time of the first recorded batch
     last_at               timestamptz NOT NULL,            -- server time (clock_timestamp()) of the last recorded batch
     expires_at            timestamptz NOT NULL,            -- last_at + retention_days, written with every batch
@@ -89,7 +91,8 @@ CREATE INDEX step_log_streams_removal_idx ON step_log_streams (tenant_id, stream
     WHERE removed_at IS NOT NULL AND purged_at IS NULL;
 -- A BEFORE UPDATE trigger, enabled ALWAYS, refuses a change of tenant_id, stream_id, public_id, namespace_id, run_id,
 -- step_id, node, the instance path, attempt, generation, source or retention_days, a lower last_sequence, and any of
--- final_at, deleted_at, removed_at, purged_at going from set to null, so no writer can undo a delete or a removal.
+-- final_at, deleted_at, removed_at, purged_at, last_stored_xid going from set to null, so no writer can undo a delete or
+-- a removal.
 
 CREATE TABLE step_log_lines (
     tenant_id     uuid        NOT NULL,
@@ -231,8 +234,11 @@ it, rounded down, at least 1.
 ## 7. Metrics (bare names; labels are closed sets, never tenant, namespace, run, node or worker)
 
 Server: `step_log_batches_total{outcome}` (`stored`, `duplicate`, `final_only`, `stop_attempt`, `stop_capture`,
-`retry_later`, `invalid`); `step_log_lines_stored_total{level}`; `step_log_bytes_stored_total`;
-`step_log_lines_dropped_total{reason}` (`worker_gap`, `attempt_records`, `attempt_bytes`, `tenant_quota`); `step_log_script_markers_total{outcome}` (`written`, `skipped_quota`, `skipped_off`,
+`retry_later`, `invalid`); `step_log_carries_total{outcome}` (`stored`, `mark_only`, `off`, `invalid`, `removed`,
+`final_recorded`, `out_of_order`, `quota_rerun`, `failed`, `dropped_fallback`), counted once per report the carry
+rode on, by T041-36 (design section 2a); `step_log_lines_stored_total{level}`; `step_log_bytes_stored_total`;
+`step_log_lines_dropped_total{reason}` (`worker_gap`, `attempt_records`, `attempt_bytes`, `tenant_quota`,
+`out_of_order`); `step_log_script_markers_total{outcome}` (`written`, `skipped_quota`, `skipped_off`,
 `skipped_finished`, `failed`); `step_log_lines_truncated_total`; `step_log_redactions_total{rule}` (`shape`, `field_name`);
 `step_log_ingest_seconds`; `step_log_lock_timeouts_total`; `step_log_quota_retries_total`;
 `step_log_purged_lines_total`; `step_log_purge_backlog` (the streams whose `expires_at` has passed or whose removal has
@@ -259,7 +265,7 @@ timeout is `SET LOCAL lock_timeout = '200ms'`.
   `run_id`, the instance path of `instance` and its node as `lease_unexpired_instance` matches them
   (`crates/infra-postgres/src/execution.rs:4783-4817`), with status `LEASED` or `RUNNING`, the same attempt and
   generation, the lease-token hash and `lease_expires_at > clock_timestamp()`; the row's `cancel_requested`, the
-  run's `finished_at` and `stop_reason` and the node's kind are passed to `report_fence_allows` (pending O041-025). It
+  run's `finished_at` and `stop_reason` and the node's kind are passed to `report_fence_allows` (OD-2026-11-16-11). It
   returns the namespace, the node, the instance path and
   `steps.activity`. No row: the run is checked with `run_exists_outside`, and a foreign run is audited as
   `access.denied.cross_tenant` through `record_denial`, outside this transaction, as `missing_task_error` does
@@ -276,7 +282,7 @@ timeout is `SET LOCAL lock_timeout = '200ms'`.
   columns it guards); it only locks the row to commit, so only batches of the same attempt wait on it. `removed_at` set
   or `expires_at <= clock_timestamp()` is `REMOVED`; `final_at` set is `FINAL_RECORDED`.
 - **T5.** `plan_batch`: records at or below `last_sequence` are dropped (a resend, or a late batch the worker gave up
-  on). The batch's high mark is the highest of its sequences and, for a final batch, `highest_sequence`; the sequences
+  on). The batch's high mark is the highest of its sequences and, for a carry (§8a), its `highest_sequence`; the sequences
   between `last_sequence` and that mark that the batch does not hold are a gap: those above `ceiling_sequence`, once a
   ceiling has been met, are counted as dropped by the server, the others as dropped by the worker, each saturating at
   2^53.
@@ -302,11 +308,40 @@ timeout is `SET LOCAL lock_timeout = '200ms'`.
   size of each inserted row.
 - **T9.** From the rows T8 returned: `last_sequence = GREATEST(last_sequence, high mark)`, records, bytes, truncated
   records, both drop counts, `ceiling_sequence`, `ceiling_reason`, `first_at`, `last_at = clock_timestamp()`,
-  `expires_at = last_at + retention_days`, and `final_at` when `final_batch` is true, even when nothing was stored.
+  `expires_at = last_at + retention_days` and `last_stored_xid = pg_current_xact_id()`. A batch never sets `final_at`
+  (D041-090): only the carry of §8a does.
 - **T10.** `COMMIT`. `tenant_step_log_quota_exceeded` from the finalizer is mapped to `RETRY_LATER`.
 
 A marker line (either kind) has the level `info`, and `minLevel` never hides a marker: the filter applies to
 `kind = 'line'` only.
+
+## 8a. The carry, in the report's transaction (design section 2a, CA to CD)
+
+Run by the four methods of `StepLogCarryTx` right before the report transaction's commit, after its engine change and
+journal writes, and only when the report is recorded now. Every statement binds no request value that is not first
+checked (C2) and maps its database error with `store_error_without_text` to `StoreError::StepLogCarry`. No `SET LOCAL`:
+the report transaction's own settings apply (no lock timeout; the pool's statement timeout). The identity is the report's
+lease (tenant, namespace, run, `steps.step_id`, node, instance path, attempt, generation).
+
+- **CA.** One `SELECT`: `pg_advisory_xact_lock_shared` on the six policy fences of the three namespace resources of §6
+  (tenant fence then namespace fence, the resources in the order of `QuotaResource`, the keys `content_usage` uses),
+  then, in the same statement, the three values through `effective_policy` and `sagat_quota_step_log_allowance(tenant)`.
+  `step_log_attempt_records = 0`: stop (`off`).
+- **CB.** The `INSERT … ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO UPDATE SET tenant_id =
+  step_log_streams.tenant_id RETURNING` of T4 (a new row takes the namespace's retention), also returning
+  `last_stored_xid IS NULL OR last_stored_xid < pg_current_xact_id()` as `in_order`. `removed_at` set or `expires_at <=
+  clock_timestamp()`: stop (`removed`); `final_at` set: stop (`final_recorded`).
+- **Plan** (domain, no statement): `plan_batch` with `final = true` and the carry's `highest_sequence`; when `in_order`
+  is false, no record is kept and all are counted as dropped by the server with the reason `out_of_order`.
+- **CC.** The `INSERT … SELECT … FROM unnest(…) ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING RETURNING` of T8,
+  for the kept lines and the planned marker. Not run when nothing is kept.
+- **CD.** The `UPDATE` of T9 from CC's rows, plus `final_at = clock_timestamp()`; it runs also when nothing was kept.
+- **Commit.** The report's `COMMIT`; the finalizer's `tenant_step_log_quota_exceeded` is mapped to a typed refusal that
+  the application answers with one re-run of the report carrying a mark-only carry (CA, CB, CD; the records counted
+  `tenant_quota`); `StoreError::StepLogCarry` with one re-run carrying nothing.
+
+Top-level statements added to the report (`work_budget.rs`'s measure): capture off 1; removed or final 2 (1 row); a
+mark only 3 (2 rows); *k* rows kept 4 (2 + *k* rows).
 
 ## 9. The script marker's transaction (design section 7)
 

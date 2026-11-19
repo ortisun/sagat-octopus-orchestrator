@@ -161,6 +161,11 @@ row; a marker refused at the limit is skipped and counted. So `sagat_quota_lock_
 `take_log_prefix` keeps its present form, and item 1's "the script-output marker, which is skipped when it does not fit"
 holds without a lock.
 
+Note (2026-11-19, OD-2026-11-19-1): [ADR-0095](ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md),
+Proposed, would let a report store its attempt's last step-log rows in its own transaction; item 1's rule that a step-log
+charge never blocks a terminal state would then hold by one re-run of the report without those rows. Item 1 is unchanged
+until that ADR is accepted.
+
 ## Implementation slices and ownership contract
 
 1. **Shared policy and manifest:** domain resource names/units/ranges; application ports and typed rate result; migration, durable usage/rate state, exhaustive classification manifest and backfill tests; existing quota REST/CLI/OpenAPI views. Own `domain/quota.rs`, `application/quotas.rs`, `infra-postgres/quotas.rs`, new `infra-postgres/content_usage.rs` and migration. Preserve T010-040 activity lock hierarchy and broker resource arms.

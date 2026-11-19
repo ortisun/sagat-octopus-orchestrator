@@ -1,15 +1,9 @@
 # Step logs per run
 
 *   **Author:** Claude Code, for the owner
-*   **Status:** Approved
-*   **Date:** 2026-11-16
-*   **Reviewed-commit:** f9d4a65fa278e1c782a59e3d15adadd6e764371a
-*   **EGM-hash:** 003679ced8d0c6ffa103b14109aa8f8bab83aaf817a3e15479e122fc0f1683f9
-*   **Claude-Code:** 2.1.325
-*   **Reports:** docs/designs/041-step-logs.reviews/2026-11-16/egm-review-final.md sha256:ab54cb98f696963ec98413bc6699cb7c2ca2116f537eb51f52e1cc890c17d764; docs/designs/041-step-logs.reviews/2026-11-16/architecture-reread-3.md sha256:ba22a09f282a360ebabce3f620967c39d8356d7956c553344cb9f29b3cafd611; docs/designs/041-step-logs.reviews/2026-11-16/security-reread-3.md sha256:9c234cd6a9ccd5fa7bdc92c673e701442e62521053437efda022f047f77ac460; docs/designs/041-step-logs.reviews/2026-11-16/correctness-reread-3.md sha256:06d8ad8919b609795b012c5b0755cb3b23fab982d82bea5e5a56846cdba22562
-*   **Open findings:** Blocker 0, Major 0
-*   **Accepted:** 63; OD-2026-11-16-200, OD-2026-11-16-201, OD-2026-11-16-202, OD-2026-11-16-203, OD-2026-11-16-204, OD-2026-11-16-205, OD-2026-11-16-206, OD-2026-11-16-207, OD-2026-11-16-208, OD-2026-11-16-209, OD-2026-11-16-210, OD-2026-11-16-211, OD-2026-11-16-212, OD-2026-11-16-213, OD-2026-11-16-214, OD-2026-11-16-215, OD-2026-11-16-216, OD-2026-11-16-217, OD-2026-11-16-218, OD-2026-11-16-219, OD-2026-11-16-220, OD-2026-11-16-221, OD-2026-11-16-222, OD-2026-11-16-223, OD-2026-11-16-224, OD-2026-11-16-225, OD-2026-11-16-226, OD-2026-11-16-227, OD-2026-11-16-228, OD-2026-11-16-229, OD-2026-11-16-230, OD-2026-11-16-231, OD-2026-11-16-232, OD-2026-11-16-233, OD-2026-11-16-234, OD-2026-11-16-235, OD-2026-11-16-236, OD-2026-11-16-237, OD-2026-11-16-238, OD-2026-11-16-239, OD-2026-11-16-240, OD-2026-11-16-241, OD-2026-11-16-242, OD-2026-11-16-243, OD-2026-11-16-244, OD-2026-11-16-245, OD-2026-11-16-246, OD-2026-11-16-247, OD-2026-11-16-248, OD-2026-11-16-249, OD-2026-11-16-250, OD-2026-11-16-251, OD-2026-11-16-252, OD-2026-11-16-253, OD-2026-11-16-254, OD-2026-11-16-255, OD-2026-11-16-256, OD-2026-11-16-257, OD-2026-11-16-258, OD-2026-11-16-259, OD-2026-11-16-260, OD-2026-11-16-261, OD-2026-11-16-262
-*   **Owner-acceptance:** OD-2026-11-15-17 (the design, for 0.3.0); OD-2026-11-16-7 (the approval path)
+*   **Status:** Draft
+*   **Date:** 2026-11-19
+*   **Owner-acceptance:** OD-2026-11-15-17 (the design, for 0.3.0); OD-2026-11-16-7 (the approval path); OD-2026-11-19-1 (the redesign of the transport)
 
 --------------------------------------------------------------------------------
 
@@ -21,16 +15,29 @@ on 2026-11-13 (OD-2026-11-13-9: "step logs per run in 0.3.0 — a new feature: w
 the platform keeps them with retention and limits, and there is a route and a Studio screen").
 
 The design treats a step log as a bounded diagnostic record kept **beside** the journal. It is never execution state:
-no transition reads it, a lost line never changes a step's outcome, and the transactions that lease and complete a step
-run no statement on it. It MUST NOT be a second place where another tenant's data can be read, or where a secret can be read beyond the limit
+no transition reads it, a lost line never changes a step's outcome, and the transaction that leases a step runs no
+statement on it. The last records of an attempt ride on its report (`CompleteStep` or `FailStep`) and are written by the
+report's own transaction, at a fixed cost of at most four statements and no transaction (section 2a); a step that logs
+for longer than one flush interval also streams its earlier records through an RPC of their own, `AppendStepLogs`. It
+MUST NOT be a second place where another tenant's data can be read, or where a secret can be read beyond the limit
 of G041-001 (a value the code transformed, a short one, or one obtained outside the platform). A log batch
 can delay a completion with output of the same tenant only by being queued ahead of it on the tenant's usage row
-(section 2, "What a completion can wait for").
+(section 2, "What a report can wait for").
 
-The approval record in the header follows `docs/designs/constitution-4.0.0-egm.md` section 3. The owner's acceptance of
-the design for release 0.3.0 (OD-2026-11-15-17) decides scope. The review findings of the last complete review run were
-either fixed and re-read by the three repository reviewers or accepted by the owner, one row each, on the approval path
-the owner chose ("Corrigir e aceitar o resto", OD-2026-11-16-7).
+**Revision of 2026-11-19 (Draft).** The design was approved on 2026-11-16 (commit `f9d4a65f`; the four reports of
+`041-step-logs.reviews/2026-11-16/`). Its spike before the schema, T041-31, failed SC-041-007: with an `AppendStepLogs`
+transaction per batch and a final batch before every report, the rate with capture on reached 79% and 87% of the rate
+with capture off on a quiet machine, against 90% (`specs/041-step-logs/validation-report.md`). The owner chose to cut what a
+step pays ("Redesenhar (CompleteStep)", OD-2026-11-19-1, O041-036 option (d)): the last records travel on the report, so a
+short step needs no transaction of its own. The change is [ADR-0095](../adr/ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md)
+(Proposed), which would supersede ADR-0084 decisions 2 and 6. It changes the body of an approved doc, so by the approval
+rule of `docs/designs/constitution-4.0.0-egm.md` (section 4, "Amending an approved doc") the design is `Draft` until it is
+reviewed again; the reviews of the revision are in `041-step-logs.reviews/2026-11-20-redesign/`. A new spike, T041-35,
+with its acceptance rule fixed in its task, replaces T041-31 as the gate before the schema.
+
+The owner's acceptance of the design for release 0.3.0 (OD-2026-11-15-17) decides scope. The review findings of the
+approval of 2026-11-16 were either fixed and re-read by the three repository reviewers or accepted by the owner, one row
+each, on the approval path the owner chose ("Corrigir e aceitar o resto", OD-2026-11-16-7).
 
 The decisions, gaps and owner questions are registered in [specs/041-step-logs/research.md](../../specs/041-step-logs/research.md);
 the contract this design freezes is [specs/041-step-logs/contracts.md](../../specs/041-step-logs/contracts.md) and the
@@ -109,16 +116,20 @@ Each requirement is binding as written, whether or not it says MUST.
   finite doubles or booleans. Each SDK maps its language's levels onto the five by the table of section 6. The capture
   level is `info` unless the worker's option says otherwise. A NUL character becomes U+FFFD; a double that is not finite
   is stored as the string `NaN`, `Infinity` or `-Infinity`.
-- **FR-041-004 Transport.** Lines travel in batches through a new unary RPC, `AppendStepLogs`, added in protocol minor
-  1.7 (contracts.md §1). A batch names one attempt with the identity and fence a heartbeat carries plus the worker's
-  session id and current session token, and holds at most 500 records and 192 KiB. The server MUST answer only after the
-  lines are committed and MUST store a record at most once however many times its batch arrives (identity: attempt,
-  generation, sequence). After the final batch of an attempt is recorded, every later batch for it MUST store nothing
-  and be answered `STOP_ATTEMPT` with the reason `FINAL_RECORDED`, which a resent final batch takes as its success.
+- **FR-041-004 Transport.** Lines travel in protocol minor 1.7 (contracts.md §1) in two ways (OD-2026-11-19-1). The
+  **carry**: the attempt's last records, at most 500 and 48 KiB encoded, and the highest sequence its logger assigned,
+  travel as an optional `StepLogCarry` on the attempt's own `CompleteStep` or `FailStep` and are stored by the
+  transaction that records the report (section 2a); the carry is the attempt's final mark. A **batch**: while the attempt
+  runs, records the SDK flushes before the report travel through a unary RPC, `AppendStepLogs`, that names one attempt
+  with the identity and fence a heartbeat carries plus the worker's session id and current session token, and holds at
+  most 500 records and 192 KiB. The server MUST answer a batch only after its lines are committed, and MUST store a
+  record at most once however many times its batch or its report arrives (identity: attempt, generation, sequence).
+  After the final mark of an attempt is recorded, every later batch for it MUST store nothing and be answered
+  `STOP_ATTEMPT` with the reason `FINAL_RECORDED`.
 - **FR-041-005 Logging never decides the step.** A call to the logger MUST NOT block on the network or on a full buffer,
   and MUST NOT throw into the activity. No failure of capture (refused batch, timeout, server down, ceiling reached,
-  invalid line, bug in the capture path) may change the outcome, the output, the retry or the timing of a step beyond the
-  bounded final flush of FR-041-015.
+  invalid line, a carry the server cannot store, bug in the capture path) may change the outcome, the output or the retry
+  of a step, nor its timing beyond the bounded wait of FR-041-015 and the carry's own statements (section 2a).
 - **FR-041-006 Ceilings and drop counts.** The server enforces these from counters, regardless of what the worker sends:
   - per line: 8 KiB per message and per exception text, 2 KiB and 32 keys per field map, measured after redaction; a
     message or exception over its ceiling is cut at a character boundary and the line is flagged `truncated`;
@@ -148,8 +159,10 @@ Each requirement is binding as written, whether or not it says MUST.
   - (e) What this cannot catch is G041-001: a value the code transformed, a value shorter than 6 bytes, a value obtained
     outside `ResolveSecrets`, and anything a client that does not use an official SDK sends.
 - **FR-041-008 Storage beside the journal.** Lines are stored in PostgreSQL in tables of their own. Storing a batch MUST
-  NOT take, or wait for, a lock on a row of `runs`, `steps` or `run_events`, and leasing, heartbeat and completion MUST
-  NOT read or write the log tables. A batch MUST NOT take the tenant's `tenant_retained_usage` row before its commit.
+  NOT take, or wait for, a lock on a row of `runs`, `steps` or `run_events`; leasing and heartbeat MUST NOT read or write
+  the log tables; a report MUST NOT read or write them except to store its own carry, through one store function, at the
+  cost section 2a states as an equality. Neither a batch nor a carry may take the tenant's `tenant_retained_usage` row
+  before its commit.
   The attempt ceilings count text bytes (the UTF-8 octets of message, exception and fields); the bytes charged to the tenant, each row's text plus a fixed 128 bytes
   (OD-2026-11-15-6), are counted in a storage class of their own, `step_log` (ADR-0027 Amendment of 2026-11-15), and released when the rows are
   deleted.
@@ -195,13 +208,17 @@ Each requirement is binding as written, whether or not it says MUST.
   write it returns no line.
 - **FR-041-014 Mixed versions.** A worker accepted below 1.7 sends nothing and behaves as today. A 1.7 SDK
   against a server that accepts a lower minor, or whose policy says capture is off, sends nothing and logs locally. An SDK
-  that gets `UNIMPLEMENTED` for `AppendStepLogs` (an older API replica) stops capture for that attempt only. No published
-  workflow, run in progress or existing RPC changes meaning.
+  that gets `UNIMPLEMENTED` for `AppendStepLogs` (an older API replica) stops sending batches for that attempt only and
+  still sends its carry. An API replica older than 1.7 ignores a carry as an unknown field and records the report; the
+  carry is lost and the stream, if the attempt had one, shows "ended without its final flush". No published workflow,
+  run in progress or existing RPC changes meaning.
 - **FR-041-015 The six SDKs.** Each SDK keeps its present logger type, adds the calls of section 6 that it lacks, and
   adds capture behind it: a bounded buffer per attempt (1,000 records or 256 KiB, whichever is met first) and per process
-  (16 MiB across attempts), a flush every second or at 256 records, one batch in flight per attempt, the answers of
-  contracts.md §4, and a final batch before `CompleteStep` or `FailStep` that waits at most 2 seconds. These numbers are
-  constants of `sdks/SPEC.md`, not values the server sends. The Rust SDK gains the logger its `ActivityContext` lacks.
+  (16 MiB across attempts), a flush through `AppendStepLogs` one second after the attempt's first captured record and
+  every second after, or at 256 records, one batch in flight per attempt, the answers of contracts.md §4, and the carry
+  on the report. Before it reports, an SDK waits for its batch in flight, if any, and sends what does not fit one carry
+  as batches, at most 2 seconds in all; a step that never flushed waits for nothing. These numbers are constants of
+  `sdks/SPEC.md`, not values the server sends. The Rust SDK gains the logger its `ActivityContext` lacks.
 - **FR-041-016 Steps the platform runs.** A script step's log stays where feature 005 stores it and is never copied.
   Right after the script runner's report is recorded, in a short transaction of its own, the platform also stores one
   marker line, with no text, that points to
@@ -214,7 +231,7 @@ Each requirement is binding as written, whether or not it says MUST.
 - **FR-041-017 Studio.** The run screen gains a Logs tab for the whole run and a Logs section for the selected step and
   attempt, with filters, search, a live tail that pauses when the reader scrolls up, markers (the attempt ceiling's and the script output's) shown as rows, and the states
   "not allowed" (naming the permission or the grant that is missing), "no log", "expired", "deleted", "ended without its
-  final flush" (the attempt's lease is gone and no final batch was stored), "some lines are delayed" (`heldBack`) and
+  final flush" (the attempt's lease is gone and no final mark was stored), "some lines are delayed" (`heldBack`) and
   "log withheld" for a script execution, with full keyboard operation.
 - **FR-041-018 Observability.** The platform counts records stored, dropped (by reason), truncated and redacted, batches
   by outcome, ingest duration, lock-timeout retries, purged records, open tails and the age of the database's oldest open
@@ -255,8 +272,10 @@ Each requirement is binding as written, whether or not it says MUST.
 ### Success criteria
 
 - **SC-041-001 The hot path.**
-  - With the migration applied, `work_budget.rs` passes with its constants unmodified: the migration adds no trigger,
-    statement or lock to a lease or a completion.
+  - With the migration applied, `work_budget.rs` passes with its three constants unmodified for leases and for reports
+    that carry nothing: the migration adds no trigger, statement or lock to them. Three new equalities hold for a
+    completion with a next step whose report carries records: ten records kept, 54 statements, 1 transaction, 23 rows;
+    a carry with no record, 53, 1, 13; capture off in the namespace, 51, 1, 11 (section 2a, "Cost").
   - A batch for a run commits, under `lock_timeout = 50ms`, while another transaction holds that run's row `FOR UPDATE`
     and has updated the leased `steps` row.
   - One ingest of tenant T is held after its quota flush (`SET CONSTRAINTS ALL IMMEDIATE`), so it holds the tenant usage
@@ -266,6 +285,8 @@ Each requirement is binding as written, whether or not it says MUST.
     backends only, and it commits after the K-th.
   - One ingest of the namespace is held after T7: a `lock_secrets` of the namespace and a completion of the namespace
     both commit while it is held, since the ingest takes no secrets lock and no membership lock (OD-2026-11-16-7).
+  - A report whose carry the commit's finalizer refuses at the tenant's step-log limit, and a report whose carry
+    statement fails, are each recorded by one re-run, with the same outcome and output as without a carry (section 2a).
   - The bound in time is SC-041-007's.
 - **SC-041-002 A flood.** An activity that writes 1,000,000 lines as fast as it can completes with the same outcome and
   output as one that writes none; the store holds at most the attempt ceiling plus its marker; and for the stream,
@@ -303,10 +324,11 @@ Each requirement is binding as written, whether or not it says MUST.
 
 - What a step's code logged is readable from the run, by the people allowed to, during the run and for a stated number
   of days after (FR-041-010 to FR-041-013, SC-041-005).
-- Capture adds no statement to a lease or a completion, and a completion with output waits on log ingest only within
-  the bound of section 2 (SC-041-001, SC-041-007, T041-31).
-- Before it reports, a step that logged makes one final flush, which takes at most 2 seconds (FR-041-015), resends
-  included; T041-31 measures what it adds to a completion.
+- Capture adds no statement to a lease or a heartbeat, no transaction to a step that logs less than one flush, and at
+  most four statements to the report that carries its last records; a completion with output waits on log ingest only
+  within the bound of section 2 (SC-041-001, SC-041-007, T041-35).
+- A step that never flushed reports without waiting; one that did waits for its batch in flight at most 2 seconds
+  before it reports (FR-041-015); T041-35 measures what the carry adds to a completion.
 - The Studio shows a run's log and each step's log, live and after the run, to keyboard and screen-reader users too
   (FR-041-017, SC-041-006).
 - Every line of an attempt log that is not there is accounted for by a count and a reason the reader can see
@@ -336,9 +358,10 @@ Each requirement is binding as written, whether or not it says MUST.
 
 Technical, each closed by the task named:
 
-- **Does a completion's p99 stay within 10% of its value with capture off (SC-041-007)?** T041-31 measures it on a
-  scratch schema before T041-5 starts, with the workload of that task; a failure stops the feature for a design change
-  and a new review, and nothing after T041-31 starts until then.
+- **Does a completion's p99 stay within 10% of its value with capture off, and the rate within 90% (SC-041-007)?**
+  T041-31 measured the approved transport and it failed (OD-2026-11-19-1). T041-35 measures the carry on a scratch schema
+  before T041-5 starts, with the workloads and the acceptance rule of that task; a failure stops the feature for a design
+  change and a new review, and nothing after T041-35 starts until then.
 - **Does the read horizon and its end rule hold on PostgreSQL 16 and 18?** T041-11 and T041-12, with held transactions
   on both, each in a disposable container of its own (the horizon is cluster-wide).
 
@@ -346,22 +369,16 @@ Technical, each closed by the task named:
 
 ### Open
 
-- **O041-025 One reading of ADR-0084** (restated on 2026-11-16 to the code's stop rule, OD-2026-11-16-7; asked by
-  T041-33). Decision 5 says a batch is accepted on a run "neither finished nor stopping"; decision 11 lists the locks of a
-  writer from the stream row on. (a) Decision 5: a batch is accepted when a report of its attempt would be, short of the
-  run lock: the step is not cancel-requested, the run is not finished, and the run is not stopping unless the node is a
-  compensation or reconciliation node (the predicate of `attempt_authority_fence`, `crates/application/src/worker.rs:2824-2831`,
-  made one domain function both use); decision 11: the shared policy fences of the namespace's step-log resources come
-  first, before the stream row, as ADR-0027 asks of every authoritative limit read. (b) Keep the text: a stopping run's
-  compensations show "no log", and the three resources are read without a fence. Recommended: (a). The design carries
-  (a), marked pending. Gates T041-6.
-- **O041-026 A step-log usage row of its own** (asked by T041-31, only if its completion wait on the tenant row fails
+Conditional on the spike T041-35; neither is asked unless its condition is met.
+
+- **O041-026 A step-log usage row of its own** (asked by T041-35, only if its completion wait on the tenant row fails
   SC-041-007). (a) Keep `tenant_retained_usage.step_log_bytes`, as the ADR-0027 Amendment was accepted
-  (OD-2026-11-15-16). (b) A per-tenant row of its own for the step-log class, which completions never take; the
-  Amendment is revised. Recommended: (a) if T041-31 passes; (b) if that wait is what fails.
-- **O041-021 Chunk rows** (asked by T041-31, only if the per-line rows fail SC-041-007 and chunk rows pass). (a) Keep
-  one row per line (O041-004). (b) One row per batch, with the reads, filters and search done in the application.
-  Recommended: whichever T041-31 shows passes; (a) if both do.
+  (OD-2026-11-15-16). (b) A per-tenant row of its own for the step-log class; the Amendment is revised. With the carry, a
+  report that carries records takes the step-log usage row at its commit whatever its output, so (b) moves the queue
+  of a tenant's logging reports to a row of their own rather than removing it. Recommended: (a) if T041-35 passes; (b)
+  if T041-35 shows that more than half of a failing p99 excess is spent waiting on the tenant row.
+- **O041-021 Chunk rows**: not put. T041-31 measured chunk rows and they failed SC-041-007 too; the carry keeps one
+  row per line (O041-004).
 
 ### Answered
 
@@ -430,6 +447,13 @@ Recorded in `docs/owner-decisions.md` and in research.md:
     the rest", OD-2026-11-16-7): the script marker in its own transaction after the report commits; the ingest reads the
     binding and the membership without the namespace secrets lock; O041-025 restated to the code's stop rule; G041-017
     accepted in writing; a Note on ADR-0085.
+- **O041-025**, "Sim, como os reports" ("yes, as the reports"), option (a), answered 2026-11-16 (OD-2026-11-16-11).
+- **O041-036**, "Redesenhar (CompleteStep)" ("redesign (CompleteStep)"), option (d), answered 2026-11-19
+  (OD-2026-11-19-1): cut what a step pays by carrying its lines on the report, then a new spike. Rejected: (a) only a
+  quiet rerun (it was run and confirmed the failure); (b) restating the workload to one ingest per step (its medians,
+  89.4% and 89.9%, missed the criterion); (c) a lower criterion; (e) deferring step logs from 0.3.0. O041-037 follows
+  from it and is recorded as a decision (D041-091), not an owner answer: T041-3 and T041-4 stay held and unticked until
+  this revision is approved, and T041-3's 1.7 contract changes (D041-090).
 
 
 ## Critical User Journeys (CUJs)
@@ -534,6 +558,10 @@ Recorded in `docs/owner-decisions.md` and in research.md:
   *discovery* is the class of polls for new work, shed first under load.
 - *Tickets*: the per-tenant share of the Logs class on one replica (section 1); *R* is the number of API replicas.
 - *Design 038*: `docs/designs/038-claim-transition-efficiency.md`, which set the hot-path budget and its selector rule.
+- *Carry*: the optional `StepLogCarry` of a `CompleteStep` or `FailStep` request, the attempt's last records and the
+  highest sequence its logger assigned (its *final mark*); *a carrying report* is a report that holds one. *Batch* is
+  kept for `AppendStepLogs`. *Report transaction*: the transaction that records a report (`finish` in
+  `crates/application/src/worker.rs:2861`, `finish_path_report` in `crates/application/src/worker/scoped_reports.rs:419`).
 
 ```text
 activity code
@@ -541,14 +569,22 @@ activity code
    v
 SDK capture in the per-attempt logger: level -> sequence -> format -> redact with the process's secret set
    -> cut -> bounded buffer (attempt and process)
-   | AppendStepLogs (unary, 1.7): attempt identity + fence + session id and token, <=500 records, <=192 KiB
-   v
-api-grpc: Class::Logs admission -> per-tenant ticket -> application::step_logs (validate, scrub, cut, size, plan)
-   | one transaction, separate from lease/heartbeat/complete, lock_timeout 200 ms:
-   |   xid -> lease read (no lock) -> session, policy fences and values -> stream row -> plan (gaps, duplicates)
-   |   -> tenant usage read (no lock) -> binding and membership read (no lock) -> insert -> counters
+   |                                                      |
+   | while the attempt runs, past its                     | at the end: the rest (<=500 records, <=48 KiB)
+   | first 1 s flush or 256 records:                      | and the highest sequence, as the StepLogCarry
+   | AppendStepLogs (unary, 1.7): attempt identity        | of its CompleteStep or FailStep (1.7)
+   | + fence + session id and token, <=500, <=192 KiB     v
+   v                                                api-grpc -> WorkerService::complete / fail
+api-grpc: Class::Logs admission -> per-tenant          | the report transaction (run row, lease, binding, membership,
+   ticket -> application::step_logs                   |   engine) and, before its commit, at most four statements:
+   (validate, scrub, cut, size, plan)                  |   fences and values -> stream row -> insert -> counters
+   | one transaction of its own, lock_timeout 200 ms:  |   -> commit (ADR-0027 finalizer: fences, tenant row)
+   |   xid -> lease read (no lock) -> session,         |   a refused or failed carry: the report is re-run once
+   |   policy fences and values -> stream row -> plan  |   without it (section 2a)
+   |   -> tenant usage read (no lock) -> binding and   |
+   |   membership read (no lock) -> insert -> counters |
    |   -> commit (ADR-0027 finalizer: fences, tenant row)
-   v
+   v                                                   v
 PostgreSQL: step_log_streams, step_log_lines   (no foreign key to runs or steps)
    ^ purge pass (scheduler)        ^ GET /runs/{runId}/logs, /logs/streams, /logs/stream; DELETE /runs/{runId}/logs
                                    |    (script_executions read for source = script; after record_execution, the script marker)
@@ -559,12 +595,18 @@ PostgreSQL: step_log_streams, step_log_lines   (no foreign key to runs or steps)
 ### 1. Wire: protocol minor 1.7
 
 `specs/001-platform-foundation/contracts/worker.proto` (the canonical copy; the six SDK copies are byte-identical) gains
-the rpc, messages and enums of contracts.md §1, additively. The verdicts are: `CONTINUE`; `FINAL_ONLY` (a ceiling was
-met: send no more records, but still send the empty final batch, so that the server learns the highest sequence and
-records the final flush); `STOP_ATTEMPT` with a reason (`FINAL_RECORDED`, `LEASE`, `AUTHORITY`, `REMOVED`);
-`STOP_CAPTURE` with a reason (`CAPTURE_OFF`, `SESSION`); `RETRY_LATER` with `retry_after_ms`. A record has no kind: a
-gap in the sequences is the server's evidence of a drop, and the final batch carries `highest_sequence` so that drops at
-the end are counted too.
+the rpc, messages and enums of contracts.md §1, additively, and `CompleteStepRequest` and `FailStepRequest` gain
+`StepLogCarry step_logs = 13` (D041-090). The verdicts of a batch are: `CONTINUE`; `FINAL_ONLY` (a ceiling was met: send
+no more records; the report still carries the final mark, with no record, so that the server learns the highest sequence);
+`STOP_ATTEMPT` with a reason (`FINAL_RECORDED`, `LEASE`, `AUTHORITY`, `REMOVED`); `STOP_CAPTURE` with a reason
+(`CAPTURE_OFF`, `SESSION`); `RETRY_LATER` with `retry_after_ms`. A record has no kind: a gap in the sequences is the
+server's evidence of a drop, and the carry's `highest_sequence` counts the drops at the end too. A carry gets no verdict:
+nothing follows it, and the report's answer (`StepCommandResponse`) does not change.
+
+**The carry's size.** The server decodes at most `MAX_PAYLOAD_BYTES` plus 64 KiB per worker message
+(`crates/api-grpc/src/server.rs:14`), and an output may be 256 KiB. So a carry holds at most 500 records and 48 KiB
+encoded, which leaves room for the report's other fields; the SDK sends what does not fit as batches before the report
+(section 6). The decoding cap does not change.
 
 `RegisterWorkerResponse` gains `StepLogPolicy step_logs = 4` with one field, `enabled`, computed at registration from the
 deployment switch and the namespace's `step_log_attempt_records` (a session belongs to one namespace,
@@ -578,7 +620,7 @@ by every implementation of the generated trait. In T041-3 these answer `UNIMPLEM
 `sdks/rust/src/worker_tests.rs:42`. From T041-7 on, `WorkerGrpc` answers it in a file of its own,
 `crates/api-grpc/src/step_logs.rs`, so that the test selector can match the step-log code by path (T041-32). The
 committed Go and Python stubs are regenerated with the tool versions they record (T041-3 names them).
-`AppendStepLogsRequest`, `StepLogRecord`, `StepLogField` and its `oneof` join `skip_debug` (`build.rs:17-25`), with
+`AppendStepLogsRequest`, `StepLogCarry`, `StepLogRecord`, `StepLogField` and its `oneof` join `skip_debug` (`build.rs:17-25`), with
 `Debug` impls that print counts only, written beside each generated module (`crates/api-grpc/src/lib.rs`, the private
 `protocol` module of `sdks/rust/src/lib.rs:39-42`, the `pb` module of `sdks/rust/conformance/src/faults/grpc.rs:4-7`).
 
@@ -594,9 +636,16 @@ refuses it to a caller who does not own the managed executor and its live capabi
 refusal rests on that ownership. `sdks/SPEC.md` §7.1 says ordinary SDKs keep 1.5; T041-7, which makes the server offer
 1.7, amends it, and the `step-logs-negotiation` scenario asserts the refusal for a worker token and for an admin token.
 
-**Why a separate unary RPC.** A field on `Heartbeat` would tie the size and the failure of a log batch to the call that
-keeps the lease alive. A client stream would need acknowledgement and resend rules in six languages for a gain the batch
-already gives. Riding on `CompleteStep` would add statements to the completion.
+**Why the report carries the last records, and a unary RPC the rest.** T041-31 measured a transaction of its own per
+batch and a final batch before every report: what a step paid was the extra transactions, not the rows
+(validation-report.md, 2026-11-19). The report's transaction already exists, holds the attempt's fence and its authority
+checks under their locks, and commits once; adding at most four statements to it costs a step that logs less than one
+flush nothing else (ADR-0095). A step that logs for longer must still be readable while it runs (CUJ 2), so its earlier
+records stream through `AppendStepLogs`, one batch a second, which its own length amortises. A field on `Heartbeat` was
+weighed again and rejected: a heartbeat renews the lease under the run row, so records there would add statements under
+the run lock once a second per long step, where `AppendStepLogs` takes no run row, and a batch's size and failure would
+ride on the call that keeps the lease alive. A client stream would need acknowledgement and resend rules in six
+languages for a gain the batch already gives.
 
 **Admission.** `AppendStepLogs` gets a fourth class, `Class::Logs`, in `crates/api-grpc/src/limits.rs:489-508`, with its
 own counter outside `Shared.in_flight`, so that a flood of log calls never moves the threshold at which discovery is
@@ -607,10 +656,11 @@ keeps ingest from holding the connections that lease calls need: at most that ma
 log transaction at once. The tenant is known only after authentication, so the per-tenant share is taken in the handler: a
 ticket set built as `TaskStreams` is (`crates/api-grpc/src/limits.rs:47-129`), `SAGAT_STEP_LOGS_TENANT_CALLS` per tenant
 per replica (default half the cap rounded down, at least 1: 2 at the default cap of 5). A batch that finds no ticket free
-is answered `RETRY_LATER` with 200 ms at once, a final batch included: no call waits for a ticket, so a call holds its
-class slot only while it runs and one tenant cannot fill the Logs class with waiting calls. The SDK resends within the
-final flush's 2 seconds. Both defaults are placeholders until T041-31 measures the ingest's service time (section 2,
-"Capacity") and records the defaults it sets in data-model.md §6. The class test `only_the_calls_that_keep_leased_work_alive_are_reserved_capacity` (`limits.rs:706`) lists
+is answered `RETRY_LATER` with 200 ms at once: no call waits for a ticket, so a call holds its class slot only while it
+runs and one tenant cannot fill the Logs class with waiting calls. The SDK resends up to a batch's age of 10 seconds,
+or within the 2 seconds before a report. A carry is not admitted in this class: it is part of its report, whose class
+is the reserved one of calls that keep leased work alive. Both defaults are placeholders until T041-35 measures the
+ingest's service time (section 2, "Capacity") and records the defaults it sets in data-model.md §6. The class test `only_the_calls_that_keep_leased_work_alive_are_reserved_capacity` (`limits.rs:706`) lists
 `Logs`. T041-7's tests show, with admission counters and no timing, that a full Logs class leaves discovery admission
 (the class that sheds polls for new work) unchanged, and that a second tenant's batch is admitted while the first
 tenant's tickets are all taken; the p99 of lease calls with a full Logs class is measured by T041-9.
@@ -624,7 +674,7 @@ in the domain and the application: `crates/domain/src/step_logs.rs` holds the ty
 server's sequence range), the validation of a batch, and a pure `plan_batch(stream counters, policy, batch) -> Plan`
 that removes duplicates, counts gaps, applies the attempt allowance and decides the marker and the verdict, with
 property tests. The stop rule of a report becomes one domain function, `report_fence_allows`, in
-`crates/domain/src/execution/state.rs`, which `attempt_authority_fence` and T2 both call (pending O041-025). The application reuses `first_uncovered` (`crates/domain/src/binding.rs:224`) and the role rule of
+`crates/domain/src/execution/state.rs`, which `attempt_authority_fence` and T2 both call (O041-025, answered (a), OD-2026-11-16-11). The application reuses `first_uncovered` (`crates/domain/src/binding.rs:224`) and the role rule of
 `ensure_bound` (`crates/application/src/worker.rs:2715`), which it cannot call because `ensure_bound` works on the run
 transaction. `WorkerGrpc` (`crates/api-grpc/src/service.rs:53-84`) gains a field holding the service, built where the
 execution engine builds `WorkerGrpc` (`apps/execution-engine/src/lib.rs:775`) and, for tests, in
@@ -636,8 +686,8 @@ execution engine builds `WorkerGrpc` (`apps/execution-engine/src/lib.rs:775`) an
   `PERMISSION_DENIED`. (A membership whose role is one of those, read at T7, is answered `AUTHORITY`.)
 - P2. `SAGAT_STEP_LOGS_ENABLED=false` answers `STOP_CAPTURE` (`CAPTURE_OFF`).
 - P3. The tenant's ticket, taken by the gRPC handler before it calls the service (section 1), or `RETRY_LATER`.
-- P4. `validate_batch`: at most 500 records and 192 KiB encoded, sequences strictly increasing in 1 to 2^62 − 1, a
-  known level, `highest_sequence` at least the last record's when `final_batch`; otherwise `INVALID_ARGUMENT`.
+- P4. `validate_batch`: 1 to 500 records and at most 192 KiB encoded, sequences strictly increasing in 1 to 2^62 − 1, a
+  known level; otherwise `INVALID_ARGUMENT`. (A batch carries no final mark: the carry does, section 2a.)
 - P5. Normalise (FR-041-003); scrub the message, the exception text, every field key and every string field value with
   the server's shapes, and replace the value of a field whose key is a sensitive name (FR-041-007 (c)); cut each message
   and exception to 8 KiB at a character boundary; build the fields' canonical JSON and keep fields up to 32 keys and
@@ -658,7 +708,7 @@ statements are in data-model.md §8.
 - T2. The lease, read without a lock: the `steps` row of the request's step, attempt, generation, instance and
   lease-token hash, `LEASED` or `RUNNING`, unexpired, and the run, both passed to `report_fence_allows` (the step not
   cancel-requested; the run not finished; the run not stopping unless the node is a compensation or reconciliation
-  node; pending O041-025). Every later step takes the run, namespace, node, path and activity from this row, never from
+  node; OD-2026-11-16-11). Every later step takes the run, namespace, node, path and activity from this row, never from
   the request. No row, or a refusal: `LEASE`, and a run of another tenant is audited as `access.denied.cross_tenant`
   outside the transaction.
 - T3. The session (tenant, id, the lease's namespace, the caller's subject, token, unexpired, accepted at 1.7 or later),
@@ -666,8 +716,8 @@ statements are in data-model.md §8.
   tenant then namespace, as `content_usage::admission_policy` reads a policy (`crates/infra-postgres/src/content_usage.rs:95-106`),
   so that a change of a resource waits for the batches that read the old value. `step_log_attempt_records = 0` is
   `CAPTURE_OFF`.
-- T4. The stream row, created or locked to commit. Removal begun, or `expires_at` passed, is `REMOVED`; a final batch
-  already recorded is `FINAL_RECORDED`.
+- T4. The stream row, created or locked to commit. Removal begun, or `expires_at` passed, is `REMOVED`; a final mark
+  already recorded (by the attempt's carry) is `FINAL_RECORDED`.
 - T5. The plan (`plan_batch`): duplicates dropped, gaps counted (data-model.md §8).
 - T6. The allowances, from counters: the attempt's (lines and bytes on the stream row, against the attempt ceilings);
   then the tenant's, `sagat_quota_step_log_allowance(tenant)`, read without a lock. Records are kept in sequence order
@@ -681,8 +731,8 @@ statements are in data-model.md §8.
   delays a report, a lease, a heartbeat, a secret change or a managed-database admission; a batch that commits just
   after its worker's binding or membership is revoked is still stored, a cost the owner accepted for a lossy record.
 - T8. Insert the kept records and the marker, at most once each (attempt, generation, sequence).
-- T9. Counters on the stream row, from the rows the insert returned, never from the batch; `last_at` and `expires_at`
-  on every recorded batch, and `final_at` with the final batch.
+- T9. Counters on the stream row, from the rows the insert returned, never from the batch; `last_at`, `expires_at` and
+  `last_stored_xid` (this transaction's id, section 2a) on every recorded batch.
 - T10. Commit, then answer.
 
 The control flow, so that a caller whose binding or membership is gone learns only `AUTHORITY` from the transaction,
@@ -695,55 +745,162 @@ regardless of what else is true (D041-050):
   since the answer is a verdict and not an error status (`crates/api-grpc/src/service.rs:367-385` audits only errors).
 - `FINAL_ONLY` (T6) is not a stop: the transaction goes on through T7 to T10, so that the counters record the drops.
 - `stored_through_sequence` is sent only with `CONTINUE`, `FINAL_ONLY` and `FINAL_RECORDED`, and is 0 otherwise.
+- A batch never sets `final_at`; only a carry does (section 2a).
 
 At T10 the finalizer of ADR-0027 runs. If it raises `tenant_step_log_quota_exceeded` (batches of other attempts crossed
 the limit at the same time), nothing was stored or counted, and the answer is `RETRY_LATER` with 200 ms (D041-061). The
 SDK sends the same batch again, and its T6 reads the tenant over the limit and counts the records as `tenant_quota`. A
-batch the SDK gives up on after its 10 seconds is counted later as a gap, dropped by the worker; a final batch never
-stored leaves the stream "ended without its final flush", as any lost final batch does (G041-002). ADR-0084 decision 3
-holds: the batch stores no line, and its records are counted on its stream. A crash before the commit leaves nothing and
-the SDK sends the batch again; a crash after it leaves the lines, and the resend stores nothing and gets `CONTINUE`, or
-`FINAL_RECORDED` for a final batch. The counting rule, held by a property test of `plan_batch` over any sequence of
-plans and refusals: for a stream, lines stored (markers excluded) + dropped by the worker + dropped by the server =
-`last_sequence`, the highest worker sequence the server has recorded (for a final batch, its `highest_sequence`).
+batch the SDK gives up on after its 10 seconds is counted later as a gap, dropped by the worker; a stream whose final
+mark is never stored shows "ended without its final flush" (G041-002). ADR-0084 decision 3 holds: the batch stores no
+line, and its records are counted on its stream. A crash before the commit leaves nothing and the SDK sends the batch
+again; a crash after it leaves the lines, and the resend stores nothing and gets `CONTINUE`, or `FINAL_RECORDED` once
+the carry is recorded. The counting rule, held by a property test of `plan_batch` over any sequence of batches, carries
+and refusals: for a stream, lines stored (markers excluded) + dropped by the worker + dropped by the server =
+`last_sequence`, the highest worker sequence the server has recorded (once the carry is recorded, its
+`highest_sequence`). `plan_batch` plans a batch and a carry alike; a carry differs only in being final.
 
 **Statements per batch** (by reading; budgeted as an equality in T041-6, whatever the number of records): `BEGIN`, the
 lock timeout, T1, T2, the session, one statement that takes the six policy fences in order, one that reads the three
 values, T4, the tenant allowance, the binding's patterns, the membership, T8, T9 and `COMMIT`: 14 round trips.
 
-**One lock order** for everything that writes step logs:
+**One lock order** for everything that writes step logs (ADR-0095 rule 7):
 
+- L0. what a report already takes before its carry: the run rows, then the authority locks of ADR-0050 decision 7 (the
+  binding lock, the namespace secrets lock shared, the membership row). Only a report takes them; an ingest, the purge,
+  the delete route and the script marker take none;
 - L1. the policy fences of the namespace's step-log resources (shared, tenant then namespace);
 - L2. the stream row;
 - L3. at commit, the policy fences of the classes the transaction charges, in ADR-0027's order (content, log, then
-  step-log; an ingest charges the step-log class only);
+  step-log; an ingest charges the step-log class only, a report with output and a carry both content and step-log);
 - L4. the tenant's `tenant_retained_usage` row.
 
 The finalizer takes L3 and L4 in that order for every writer; a change of a namespace step-log resource takes its own
 L1 fence exclusively and nothing else of this order. The purge and the delete route take stream rows (L2) in
 `stream_id` order, and nothing earlier. The script marker (section 7) takes L1, then a stream row no other transaction
-can see, then L3 and L4. Reports take none of L1 and L2. Putting L1 before L2 is the reading of ADR-0084 decision 11
-asked as O041-025. The lock-order test, built on `tests/support/lock_order.rs` with new slots for L1 and L2 placed
-between the run rows and the authority locks of ADR-0050 decision 7 (no transaction takes both a run row and a step-log
-fence), grows with the tasks that add a writer: T041-6 runs an ingest, a report and a change of a step-log resource;
-T041-10 adds the purge, T041-13 the script marker and T041-30 the delete route.
+can see, then L3 and L4. A report that carries nothing takes none of L1 and L2; a carrying report takes L0, then L1 and
+L2 for its own attempt's stream only, then L3 and L4. Putting L1 before L2 is the reading of ADR-0084 decision 11 the
+owner accepted (O041-025, OD-2026-11-16-11). No cycle can form: no holder of L1, L2, L3 or L4 then waits for a run row or
+an authority lock. The lock-order test, built on `tests/support/lock_order.rs` with new slots for L1 and L2 placed after
+the authority locks of ADR-0050 decision 7, grows with the tasks that add a writer: T041-6 runs an ingest, a report that
+carries nothing and a change of a step-log resource; T041-36 adds a carrying report beside an ingest of the same
+attempt; T041-10 adds the purge, T041-13 the script marker and T041-30 the delete route.
 
-**What a completion can wait for** (the bound). A completion with output of tenant T takes T's usage row (L4) in its
-own commit. It waits only for the commits queued ahead of it on that row: at most the tenant's tickets summed over the
-API replicas (tickets × R, R the number of API replicas), each holding the row from its first deferred flush call to the
-end of its commit; the purge's delete transactions, each holding it for at most 500 rows; and script markers, each
-holding it for the flush of one row. The ingest takes no lock
-a report, a lease or a heartbeat takes. In time, the bound is SC-041-007's: the p99 of a completion that stores output
-stays within 10% of its value with capture off. A per-tenant step-log usage row of its own would remove the wait on the
-tenant row; it is O041-026.
+**What a report can wait for** (the bound). A report of tenant T takes T's usage row (L4) in its own commit when it
+stores output or carries a kept record. It waits there only for the commits queued ahead of it on that row: the other
+reports of T that store output or carry records, as completions with output already queue today; at most the tenant's
+tickets summed over the API replicas (tickets × R, R the number of API replicas) of ingests, each holding the row from
+its first deferred flush call to the end of its commit; the purge's delete transactions, each holding it for at most 500
+rows; and script markers, each holding it for the flush of one row. Before its commit, a carrying report can also wait
+for a change of a step-log resource queued on L1, which itself waits only for the transactions in flight that hold L1
+shared, and for an ingest of its own attempt that still holds L2, which happens only when the SDK's 2-second wait for
+its batch in flight expired (section 6). The ingest takes no lock a report, a lease or a heartbeat takes before L1. In
+time, the bound is SC-041-007's, measured by T041-35. A per-tenant step-log usage row of its own (O041-026) would move
+the step-log part of that queue to a row of its own; it would not remove it, since every carrying report would take it.
 
-**Capacity.** At the "1 API replica, 16 workers" row of SC-041-007 (about 1,026 transitions a second,
-`tests/performance/reports/scalability-ha.md:281`), a step that writes ten lines sends one batch with them and a final
-batch, so one tenant's ingest serves about 2,000 batches a second on one replica. By Little's law it holds rate × S
-tickets on average, S being the service time of one batch: the default of 2 tickets serves that rate only if S is under
-1 ms at full use. The defaults of section 1 are therefore placeholders until T041-31 measures S: the tenant tickets
-are then set from the p99 of S so that use stays under 70% at the measured rate (tickets ≥ rate × S / 0.7, the cap at
-least the tickets), and if that needs more than half the pool, the design changes and is reviewed again.
+**Capacity.** `AppendStepLogs` now serves only attempts that run past their first flush (one second, or 256 records):
+each sends about one batch a second while it runs. One tenant's batch rate on a replica is therefore about the number of
+its long logging attempts in flight there. By Little's law the ingest holds rate × S tickets on average, S being the
+service time of one batch; T041-31 measured S p99 at 4 to 8 ms, so ten tickets (half the default pool) at 70% use serve
+about 875 to 1,750 batches a second, that many long logging attempts of one tenant in flight on one replica. The
+defaults of section 1 stay placeholders until T041-35 measures S under a stress shape in which every step sends one batch
+and a carry (its workload (g)): the tenant tickets are then set from the p99 of S so that use stays under 70% at the
+measured batch rate (tickets ≥ rate × S / 0.7, the cap at least the tickets), and if that needs more than half the pool,
+the design changes and is reviewed again.
+
+### 2a. The carry on a report
+
+The last records of an attempt travel on its report and are written by the report's own transaction (OD-2026-11-19-1,
+ADR-0095). Nothing here changes what the report itself checks or decides.
+
+**Before the transaction**, in the application, so that no CPU work of the carry runs under the run lock:
+
+- The gRPC handlers of `CompleteStep` and `FailStep` (`crates/api-grpc/src/service.rs:931, 1244`) pass the request's
+  `step_logs`, when present, to `WorkerService::complete`, `complete_with_blob` and `fail`, which gain an optional
+  carry argument; the handlers measure its encoded size. Without the field, nothing below runs and the report costs
+  what it costs today.
+- C1. `SAGAT_STEP_LOGS_ENABLED=false`: the carry is ignored (`off`), no statement.
+- C2. `validate_carry`: at most 500 records and 48 KiB encoded, sequences strictly increasing in 1 to 2^62 − 1, a known
+  level, `highest_sequence` at least the last record's sequence, at least 1 and below 2^62. A carry that fails is
+  ignored (`invalid`) and the report is recorded without it: a carry never makes a report fail (FR-041-005). The
+  stream, if any, keeps no final mark and shows "ended without its final flush".
+- C3. P5 of section 2: normalise, scrub with the server's shapes and sensitive names, cut, build the canonical fields
+  and size each record.
+
+**In the report transaction**, after the report's own checks (lease, `ensure_bound`), the engine's change and the
+journal writes, right before the commit: in `finish` (`crates/application/src/worker.rs:2861`) for a root attempt, in
+`finish_path_report` (`crates/application/src/worker/scoped_reports.rs:419`) for an attempt inside a collection or loop,
+and in the transaction of `reject_secret_output`, which records the attempt's outcome itself. It runs only when the
+report is recorded now: a resent report whose idempotency key is already recorded is answered by `replayed` before it,
+so a carry is stored at most once, and its lines are keyed (attempt, generation, sequence) besides. The stream's
+identity (tenant, namespace, run, step, node, instance path, attempt, generation) comes from the report's lease, never
+from the request. The statements are four methods of a port the report transaction implements, `StepLogCarryTx`
+(`PgRunTx` and the path transaction in `crates/infra-postgres/src/step_logs.rs`), each one statement and no rule; the
+rules are `plan_batch` and the domain's carry decision. data-model.md §8a lists the SQL.
+
+- CA. One statement: the six shared policy fences of the namespace's three step-log resources (L1, tenant then
+  namespace), their values, and `sagat_quota_step_log_allowance(tenant)` read without a lock.
+  `step_log_attempt_records = 0` is capture off in the namespace: nothing more is written (`off`).
+- CB. The stream row, created or locked to commit (L2), as T4 creates it, returning its counters, `removed_at`,
+  `expires_at`, `final_at` and whether its `last_stored_xid` is below this transaction's id. Removal begun or expiry
+  passed: nothing more is written (`removed`). A final mark already recorded: nothing more (`final_recorded`; a second
+  report of one attempt is refused before this point, so only a hand-written client gets here).
+- The plan: `plan_batch` with the carry as a final batch: duplicates dropped, gaps counted, the attempt allowance, the
+  ceiling marker, the tenant allowance from CA's unlocked read (the kept bytes plus 128 a row, the marker included). If
+  the stream's last batch was stored by a transaction whose id is not below this one's (an ingest that began after the
+  report did and committed first; the SDK's wait of section 6 makes this rare), no record of the carry is kept and all are
+  counted as dropped by the server (`out_of_order`), so that within an attempt stored lines stay in sequence order
+  under the read order of section 5 (ADR-0095 rule 6).
+- CC. One insert of the kept lines and the marker, if any, at most once each (attempt, generation, sequence),
+  returning the text size of each row. Absent when nothing is kept.
+- CD. The stream's counters from CC's rows, never from the carry; `last_sequence`, both drop counts, `ceiling_sequence`,
+  `ceiling_reason`, `first_at`, `last_at`, `expires_at`, `last_stored_xid`, and `final_at`, which only a carry sets.
+
+**At the commit** the finalizer of ADR-0027 charges the kept rows to `tenant_step_log_bytes` (L3, L4), as for a batch.
+
+**When the carry makes the report's transaction fail**, the report is recorded anyway, by one re-run (ADR-0095 rule 5),
+as `recover_success_storage_quota` (`crates/application/src/worker/output.rs:441`) re-runs a completion whose content
+did not fit:
+
+- The finalizer raises `tenant_step_log_quota_exceeded` (other writers of the tenant crossed the limit since CA's
+  read): the store maps it to a typed refusal; the application re-runs the report once with a *mark-only* carry: CA,
+  CB and CD with no record kept, the records counted as `tenant_quota`. A mark-only carry charges nothing, so it cannot
+  raise again (`quota_rerun`).
+- A carry statement fails (a lock wait the database breaks, a lost connection, a bug): the store maps the error of CA to
+  CD to `StoreError::StepLogCarry`, without its text (`store_error_without_text`); the application re-runs the report
+  once with no carry at all (`failed`), and the stream keeps no final mark.
+- The re-run is a whole report transaction (lease, `ensure_bound`, the engine). It can be refused as any report can
+  (the lease expired meanwhile); then the worker gets that answer, as today.
+- A report re-run for its retained content (`fail_success_for_storage_quota`) carries nothing (`dropped_fallback`).
+
+**What a report pays** (the bound that replaces "capture adds no statement to a lease or a completion", ADR-0084
+decision 2, superseded by ADR-0095 rule 2 when accepted):
+
+| Report | Statements | Transactions | Rows (the budget's measure) |
+|---|---|---|---|
+| carries nothing, or capture is off by the deployment switch or invalid | as today | as today | as today |
+| capture off in the namespace | + 1 | + 0 | + 0 |
+| the stream is removed or already final | + 2 | + 0 | + 1 |
+| a carry with no record kept (a final mark only, or every record dropped) | + 3 | + 0 | + 2 |
+| a carry with *k* records kept (a ceiling marker counts as one) | + 4 | + 0 | + 2 + *k* |
+
+So `work_budget.rs` keeps its three constants for leases and reports that carry nothing, and gains six equalities, each
+counted as its constants are (T041-36): a completion with a next step that carries ten records (54 statements, 1
+transaction, 23 rows), a final mark only (53, 1, 13) and capture off in the namespace (51, 1, 11); and the completion that
+ends the run in the same three cases (51, 1, 21; 50, 1, 11; 48, 1, 9). Inside its statements a carry with *k* kept rows
+also fires *k* row-trigger calls (each an upsert of the transaction's `quota_transaction_deltas` row) and, at the commit,
+*k* deferred flush calls, the first of which takes L3 and L4; the budget's measure counts top-level statements only, so
+T041-35 measures their time. A report that carries a kept record takes the tenant's usage row at its commit whatever its
+output. A lease and a heartbeat pay nothing. A step pays no transaction of its own unless it runs past its first flush,
+and then about one batch transaction a second while it runs.
+
+**What does not change.** The ceilings, the 128 bytes a row and the separate tenant quota (OD-2026-11-15-5, -6), the
+configurable attempt ceilings (OD-2026-11-16-9), the absence of a run ceiling (OD-2026-11-16-10), the SDK's redaction with
+the process's secret set and the server's scrubbing (OD-2026-11-15-7), the reads and the PII reveal grant on every read
+(OD-2026-11-16-8): a carry's lines are rows of the same tables, read by the same routes. A compensation or reconciliation
+of a stopping run carries its lines whenever its report is accepted, by the stop rule both share (OD-2026-11-16-11). The
+carry needs no worker session: a report is fenced by its lease and by the binding and membership read under their locks,
+which is more than the ingest's T3 and T7 check; a report of a client that negotiated below 1.7 can carry records and
+they are stored, a case of G041-001 (D041-092).
 
 ### 3. Storage
 
@@ -854,7 +1011,9 @@ read transaction and takes `end = pg_current_xact_id()` in a new, short transact
 assigned after the statement that saw the run finished (the read transaction may already hold an id, for instance from
 the audit insert, assigned before it). Every ingest that saw the lease
 live took its id before it read the lease (T1), and that read did not see the run finished, so its id is below
-`end`. A read whose cursor holds `end` answers `complete: true`, and the tail sends `event: end`, only when the run is
+`end`. A carry is written by its report's transaction, which holds the run row; the run is finished only by a
+transaction that holds that row, so a carry commits before any reader can see the run finished, or in the very
+transaction that finishes it, and its id is below `end` too. A read whose cursor holds `end` answers `complete: true`, and the tail sends `event: end`, only when the run is
 finished, `pg_snapshot_xmin(pg_current_snapshot()) > end` in the reading statement, and the request's scan ended because
 no row below the horizon was left in the index range it reads (neither the page limit nor the 5,000-row bound stopped
 it), whether or not the filters matched any row. That predicate is one pure function of (run finished, horizon, `end`,
@@ -959,8 +1118,8 @@ Common rules, each a line of `sdks/SPEC.md` and a conformance assertion:
 
 - **The process's secret set** (OD-2026-11-15-7): every value `ResolveSecrets` returns in the
   process is added and kept for the life of the process, up to 1,024 values or 256 KiB; when the set is full, capture
-  stops for the process, one local line says so, and the records not captured count as `secret_set_full`; each attempt that has a stream still sends its empty final batch
-  with `highest_sequence`, so its drops are counted. The SDKs add the value where they resolve it (Java
+  stops for the process, one local line says so, and the records not captured count as `secret_set_full`; each attempt that assigned a sequence still sends its carry
+  with `highest_sequence` and no record, so its drops are counted. The SDKs add the value where they resolve it (Java
   `WorkerHost.java:977-992`, TypeScript `host.ts:896-913`, Go `task.go:456-460`, Python `host.py:1111-1150`, C#
   `WorkerHost.cs:1299-1351`, Rust `capabilities.rs:111-113`). Every captured line is redacted with the whole set
   (FR-041-007 (a)).
@@ -969,18 +1128,25 @@ Common rules, each a line of `sdks/SPEC.md` and a conformance assertion:
   dropped then, before any formatting or redaction, so that a flood past a ceiling costs no redaction. Otherwise it
   formats, redacts, cuts to the line ceilings and appends to the attempt's buffer, without waiting. A dropped record
   leaves a gap that is the server's evidence, and the SDK counts the reason locally (data-model.md §7).
-- A sender per attempt flushes every second, or at 256 records, one batch in flight. Its answers are those of
-  contracts.md §4: two retries of the same bytes for `UNAVAILABLE` and `DEADLINE_EXCEEDED` (after 200 ms and 1 s, ±20%),
-  then the batch is dropped; `RETRY_LATER` and `RESOURCE_EXHAUSTED` wait the given delay and do not count, up to 10 s of
-  a batch's age; after `FINAL_ONLY` nothing but the final batch is sent, and `FINAL_ONLY` or `FINAL_RECORDED` in answer
-  to the final batch is its success.
-- Before `CompleteStep` or `FailStep`, an attempt that assigned at least one sequence sends one final batch (its
-  remaining records, or none) with `final_batch = true` and `highest_sequence`, waiting at most 2 seconds; then it
-  reports the step whatever the flush did. An attempt that assigned none sends nothing (no stream, "no log").
+- A sender per attempt flushes through `AppendStepLogs` one second after the attempt's first captured record and every
+  second after, or as soon as 256 records are buffered, one batch in flight. A step that reports before its first flush
+  makes no `AppendStepLogs` call. The answers are those of contracts.md §4: two retries of the same bytes for
+  `UNAVAILABLE` and `DEADLINE_EXCEEDED` (after 200 ms and 1 s, ±20%), then the batch is dropped; `RETRY_LATER` and
+  `RESOURCE_EXHAUSTED` wait the given delay and do not count, up to 10 s of a batch's age; after `FINAL_ONLY` no record
+  is sent, in a batch or in the carry.
+- **The carry** (OD-2026-11-19-1). When the activity returns or fails, an attempt that assigned at least one sequence
+  puts its remaining records and `highest_sequence` in the `step_logs` field of its `CompleteStep` or `FailStep`. Before
+  that it waits for its batch in flight, if any, to be answered, and sends as batches what does not fit one carry (500
+  records or 48 KiB encoded), all within 2 seconds of the activity's end; records still buffered when the 2 seconds end
+  are dropped, and the carry's `highest_sequence` counts them. Then it reports whatever the batches did. An attempt that
+  assigned no sequence sends no carry (no stream, "no log"); one that was answered `STOP_ATTEMPT` or `STOP_CAPTURE`, or
+  whose capture is off for the session, sends none either. A resent report (a lost answer, `UNAVAILABLE`) carries the
+  same bytes, and the server stores the carry at most once. Nothing about the carry is in the report's answer.
 - After `STOP_CAPTURE` (`CAPTURE_OFF`, or `SESSION` when the token sent is the one held) capture stays off for the
   session until the next successful registration, which brings a new policy.
 - The buffer is in memory only and dropped with the attempt. Capture uses no thread or task that can keep the process
-  alive after shutdown; worker shutdown sends each attempt's final batch once within the shutdown deadline.
+  alive after shutdown; worker shutdown sends each attempt's buffered records once, as a batch, within the shutdown
+  deadline, and an attempt that still reports before the process exits carries the rest.
 - The SDK never logs a batch, and nothing about capture is written at a level the host logs by default except one line
   per process when the server stops capture or the secret set is full.
 
@@ -1016,7 +1182,8 @@ stays green between T041-14 and T041-20. Five scenarios, one file and one golden
    sequence.
 4. `step-logs-transport-faults`: a lost response (the same batch twice), `INVALID_ARGUMENT`, `RETRY_LATER`,
    `RESOURCE_EXHAUSTED`, `UNIMPLEMENTED`, `FINAL_ONLY`, a re-registration in the middle of an attempt, the server down for
-   the whole attempt; no duplicate; the step completes.
+   the whole attempt; a lost answer to a carrying `CompleteStep` and to a carrying `FailStep` (the report sent twice); a
+   short step (one carry, no batch) and a long one (batches, then a carry); no duplicate; the step completes.
 5. `step-logs-negotiation`: a worker pinned to 1.5 sends nothing; a 1.7 worker told `enabled = false` sends nothing;
    both log locally; a 1.7 ordinary worker calling `ResolveDatabase` is refused, with a worker token and with an admin
    token.
@@ -1143,7 +1310,8 @@ snapshot built as the `count_and_age` reads of `crates/infra-postgres/src/operat
 unless the deployment grants it `pg_read_all_stats`, so a long transaction of another role (a backup, a person in
 `psql`) can hold the read horizon unseen by the alert (G041-016); the reader still sees `heldBack`, and the runbook
 names the grant. Drops at a ceiling are the customer's code and are shown on the run, not alerted. The ingest has a
-span, `worker.append_step_logs`, with counts and the verdict and no text. The runbook `docs/runbooks/step-logs.md`
+span, `worker.append_step_logs`, with counts and the verdict and no text; a carry adds counts and its outcome as
+attributes of the report's existing span, and no text. The runbook `docs/runbooks/step-logs.md`
 (created by T041-10, extended by T041-30 and completed by T041-25) covers the four resources and how to size
 `tenant_step_log_bytes` against the retention and the log rate, the deployment switch, the purge, what each state and marker means, that a change of retention applies to new streams and a change of capture or a
 ceiling to new batches, that capture turned back on reaches a worker at its next registration, the PII grant every
@@ -1156,9 +1324,11 @@ retention, G041-013). `docs/architecture/overview.md` and the storage documentat
 ### 10. Rollout and rollback
 
 The migrations are additive. `SAGAT_STEP_LOGS_ENABLED` defaults to true from T041-7, which serves the RPC; the purge
-lands earlier, in T041-10. When it is false, the policy answers `enabled = false`, the RPC answers `STOP_CAPTURE`
-without touching the database, and the control plane writes no script marker. Old and new binaries run together: an
-old API replica answers `UNIMPLEMENTED`, which an SDK treats as a stop for that attempt. An old replica cannot parse a
+lands earlier, in T041-10; the carry is stored from T041-36, which lands after T041-7. When it is false, the policy
+answers `enabled = false`, the RPC answers `STOP_CAPTURE` without touching the database, a report ignores its carry
+before any statement, and the control plane writes no script marker. Old and new binaries run together: an old API
+replica answers `UNIMPLEMENTED`, which an SDK treats as a stop of batches for that attempt, and ignores a carry as an
+unknown field, recording the report without it. An old replica cannot parse a
 step-log resource name (`crates/infra-postgres/src/quotas.rs:1302-1308`), so once a step-log `quota_limits` or
 `quota_ceilings` row exists every quota listing and change of that tenant fails on it; the runbook says to finish the
 upgrade before setting a step-log quota, and to delete step-log quota rows before rolling a binary back. Rolling back
@@ -1172,9 +1342,15 @@ the binary leaves the tables unread; rolling back the migration needs the lines 
 | Capture is on by default and sends text a customer wrote for their own machines | O041-001 chosen by the owner; the release notes say it first; the namespace switch and the worker option; the runbook |
 | The six SDKs' redaction drifts apart | One rule (`redact`) and one canonical number form in `sdks/SPEC.md`; `step-logs-redaction` with the same goldens in six languages |
 | A hand-written 1.7 client skips redaction | ADR-0085 rule 12 states it; the server's shapes and sensitive names still apply; the permission and the grant bound who reads |
-| Log batches make completions wait | The tenant row only at commit; no lock a report, lease or heartbeat takes; per-tenant tickets; the queue bound of section 2, shown by the barrier tests of T041-6; the time bound of SC-041-007, measured by T041-31 before the schema and T041-9 at the end |
-| Each logging step adds a transaction and up to 500 trigger calls | Per-tenant tickets and shedding; a step that logs nothing sends nothing; T041-9 measures trigger cost and commit latency of a full batch |
-| The final flush delays the completion of every step that logs | One call, bounded at 2 seconds; measured in T041-9 |
+| Log batches make completions wait | The tenant row only at commit; no lock a report, lease or heartbeat takes before L1; per-tenant tickets; the queue bound of section 2, shown by the barrier tests of T041-6; the time bound of SC-041-007, measured by T041-35 before the schema and T041-9 at the end |
+| Each logging step adds transactions | A step that reports before its first flush adds none: its lines ride on its report (OD-2026-11-19-1); a longer step adds about one batch a second while it runs; per-tenant tickets and shedding; a step that logs nothing sends nothing |
+| The carry adds work under the run lock to every report that carries records | At most four statements, an equality of the budget (section 2a); the CPU work (validation, scrubbing, sizing) is done before the transaction; *k* trigger calls at insert and *k* deferred calls at commit, measured by T041-35 |
+| A carrying report takes the tenant's usage row at its commit even when its output stores nothing, so a tenant's logging reports queue on it | Measured by T041-35 with an output that stores nothing (workload (f)), against the rate criterion; O041-026 if more than half a failing p99 excess is that wait |
+| A carry makes its report fail or loop | Everything that can be checked is checked before the transaction and an invalid carry is ignored; a finalizer raise or a failed carry statement re-runs the report once, without the carry's lines (section 2a); tested by T041-36 |
+| A report waits for an ingest of its own attempt that holds the stream row | The SDK reports only after its batch in flight is answered or 2 seconds passed; the ingest's own lock timeout of 200 ms bounds the hold; a barrier test in T041-36 |
+| Lines of one attempt shown out of sequence order (a carry whose transaction id is below that of a batch stored after it) | The stream records `last_stored_xid`; such a carry keeps no record and counts them (`out_of_order`, section 2a); tested by T041-36 |
+| A carry sent to an API replica older than 1.7 is lost | The replica ignores the unknown field and records the report; the stream shows "ended without its final flush"; the runbook says to finish the upgrade before turning capture on |
+| The SDK's wait before a report delays the completion of a step that streamed | Only a step that flushed waits, for its batch in flight, at most 2 seconds; a short step waits for nothing; measured in T041-9 |
 | A revoked or re-registered worker | Session (namespace, expiry, token) and lease checked as reports do; binding and membership read without a lock, so a batch committed just after a revocation is stored (accepted, OD-2026-11-16-7); a re-registered worker resends with its new token; T041-8 tests each |
 | A long or prepared transaction holds the read horizon | Lines arrive late, never out of order or missing; `heldBack`; the oldest-transaction gauge and alert; the runbook's settings |
 | The tail ends before a late batch commits | The end rule of D1958 with a strict comparison and the scan reaching the run's last row; tested on PostgreSQL 16 and 18, each on a server of its own |
@@ -1182,16 +1358,16 @@ the binary leaves the tables unread; rolling back the migration needs the lines 
 | Rows without log bytes escape the tenant quota | Every row is charged 128 bytes on top of its text (OD-2026-11-15-6, D041-054) |
 | Step logs fill a quota other writers need | Step logs have their own quota, `tenant_step_log_bytes`; `tenant_log_bytes` keeps script, dispatch and connector logs (OD-2026-11-15-5, D041-053) |
 | The script marker makes the script report fail or deadlock | Written after the report commits, in a transaction of its own that takes no lock the report takes; skipped at the step-log quota; a barrier test with an ingest, a delete and a policy change (section 7) |
-| Each line upserts the transaction's `quota_transaction_deltas` row, which bloats while the horizon is held | T041-31 runs one workload with a held transaction and records the table's size and the commit time of other writers |
+| Each line upserts the transaction's `quota_transaction_deltas` row, which bloats while the horizon is held | T041-35 runs one workload with a held transaction and records the table's size and the commit time of other writers |
 | Stream rows grow with every logging attempt until feature 020 deletes runs | One small row per attempt, of the order of the `steps` rows that are never purged either; the size per row is measured in T041-9 and stated in the runbook; G041-004 |
 | An ordinary 1.7 SDK carries `ResolveDatabase` on the wire | The server refuses it without managed-executor ownership; `step-logs-negotiation` asserts it for a worker and an admin token |
 | Readers without the PII grant lose the script log they read today, and every reader needs the grant for step logs | OD-2026-11-13-18 and OD-2026-11-16-8; the release notes; a viewer test and a test without the grant in T041-29 |
 | The missing foreign key leaves log rows of a deleted run | Nothing deletes a run today; G041-004 is registered in feature 020 (G1618); T041-26 asserts that every stream's run exists after its scenarios |
 | The Studio renders log text as markup, links or reordered text | Text only, no links, escape sequences removed, bidirectional and zero-width characters made visible; tested |
 | A read with a filter that matches nothing scans a whole run | Each request scans at most 5,000 rows and its cursor moves past them; a step's view scans only its stream (section 5); the route's statement timeout |
-| Ingest overload makes every step that logs wait at completion | The final flush is bounded at 2 seconds and no call waits for a ticket; `SagatStepLogIngestShedding`; the runbook names the deployment and namespace switches as the levers; T041-31 runs a saturated-ingest workload and records worker throughput |
-| The tenant step-log quota fills in hours at a high log rate and drops the newest lines until old streams expire | `ceiling = tenant_quota` shown on each stream; the runbook's sizing of `tenant_step_log_bytes` against the retention and the log rate; T041-31 and T041-9 set the quota explicitly |
-| A worker's secret set fills (1,024 values) and capture stops for the process | One local line and the SDK's drop reason `secret_set_full`; the runbook says to restart the worker; each stream still gets its final batch |
+| Ingest overload makes every step that streams wait at completion | The wait before a report is bounded at 2 seconds and no call waits for a ticket; a short step does not use the ingest; `SagatStepLogIngestShedding`; the runbook names the deployment and namespace switches as the levers; T041-35 runs a saturated-ingest workload and records worker throughput |
+| The tenant step-log quota fills in hours at a high log rate and drops the newest lines until old streams expire | `ceiling = tenant_quota` shown on each stream; the runbook's sizing of `tenant_step_log_bytes` against the retention and the log rate; T041-35 and T041-9 set the quota explicitly |
+| A worker's secret set fills (1,024 values) and capture stops for the process | One local line and the SDK's drop reason `secret_set_full`; the runbook says to restart the worker; each attempt still sends its carry with its final mark |
 | A caller who can steer logged text learns, by seeing `[REDACTED]`, that a guessed value is a secret the process resolved | G041-017, accepted by the owner (OD-2026-11-16-7); the permission and the grant bound who reads; the runbook says so |
 | Purge falls behind ingest | 500 lines per transaction, purge rate against ingest rate measured in T041-9; `SagatStepLogPurgeBehind` |
 | The cursor shows the database's transaction counter (G041-008) | Accepted by the owner as stated (OD-2026-11-15-11); no row identity and no tenant's data are in it |
@@ -1202,14 +1378,14 @@ the binary leaves the tables unread; rolling back the migration needs the lines 
 
 | Principle | Result | Evidence |
 |---|---|---|
-| I. State and retry semantics are explicit and durable | Pass | A log is not execution state: no transition reads it, and lease, heartbeat and completion run no statement on it (FR-041-008, SC-041-001). The lease and fencing token, its expiry, the session, the binding and the membership decide whether a batch is accepted; a stale attempt is refused, never merged (section 2, T2, T3 and T7). The journal and its sequence are unchanged |
+| I. State and retry semantics are explicit and durable | Pass | A log is not execution state: no transition reads it; lease and heartbeat run no statement on it, and a report runs at most four, only to store its own carry, after the engine has decided and never read by it (FR-041-008, SC-041-001, section 2a); a carry that cannot be stored never changes the report (one re-run without it). The lease and fencing token, its expiry, the session, the binding and the membership decide whether a batch is accepted; a stale attempt is refused, never merged (section 2, T2, T3 and T7). The journal and its sequence are unchanged |
 | II. Modular domain, ports and adapters | Pass | Domain types and the pure `plan_batch` and `script_marker_decision` in `crates/domain/src/step_logs.rs` with no wire or SQL import; ports `StepLogTx` and `StepLogReader`; scrubbing and sizing in the application; adapters in `infra-postgres`, `api-grpc`, `api-http`. `scripts/check-architecture.py` checks the layering, run by the author before each pull request and by CI at release (the plan's "Gates"), and T041-5 adds two architecture tests (no foreign key to `runs` or `steps`; the hot-path modules never name the log tables) |
-| III. External effects are at-least-once; sagas compensate | Pass | Delivery of a batch is at-least-once and made idempotent by (attempt, generation, sequence); nothing here is an external effect |
-| IV. Compatibility is versioned and pinned | Pass with conditions | Additive minor 1.7 (ADR-0015; held by 041 in the register of `sdks/SPEC.md` §9, OD-2026-11-15-8); older workers and servers behave as today; four new operations; the six SDKs pass the same five scenarios; the `ScriptExecution` schema change is additive. The condition: viewers get `getScriptExecution` without its `log` (OD-2026-11-13-18), a documented change of behaviour |
+| III. External effects are at-least-once; sagas compensate | Pass | Delivery of a batch or of a report's carry is at-least-once and made idempotent by (attempt, generation, sequence) and by the report's idempotency key; nothing here is an external effect |
+| IV. Compatibility is versioned and pinned | Pass with conditions | Additive minor 1.7 (ADR-0015; held by 041 in the register of `sdks/SPEC.md` §9, OD-2026-11-15-8), changed in place before any release (D041-090: a field on `CompleteStep` and `FailStep`, two fields of `AppendStepLogsRequest` reserved); older workers and servers behave as today, and an older API replica ignores a carry; four new operations; the six SDKs pass the same five scenarios; the `ScriptExecution` schema change is additive. The condition: viewers get `getScriptExecution` without its `log` (OD-2026-11-13-18), a documented change of behaviour |
 | V. Code, tenant boundary and secrets are isolated | Pass with conditions | Tenant in every key and predicate, 404 and audit for another tenant's run, a permission of its own, the PII reveal grant on every read (OD-2026-11-16-8), reads audited, an audited delete. Values the process resolved, written verbatim and at least 6 bytes long, are removed by an official SDK before a line leaves it. Conditions, each accepted by the owner: G041-001 (O041-011, ADR-0085); G041-008, the cursor shows the transaction counter (OD-2026-11-15-11); and G041-017, the `[REDACTED]` oracle over the process's secret set (OD-2026-11-16-7). The rows without text are charged 128 bytes each (OD-2026-11-15-6), so no row escapes the step-log quota; the step-log quota's usage is shown only to readers of step logs (D041-066), so G041-015 is closed |
 | VI. Observability and audit are part of the feature | Pass | FR-041-018: metrics with closed labels, a span without text, typed errors, alerts on shedding, purge and old transactions, `run.logs_read` and `run.logs_deleted` |
 | VII. Events are redeliverable; inbox and outbox are the contract | Pass | No broker, inbox or outbox is involved: a batch is a synchronous call whose answer the worker waits for, and it is safe to deliver twice. Backpressure is designed (bounded buffers, admission and tickets, `RETRY_LATER`, counted drops). A dropped line is counted, not parked, so the dead-letter rule has nothing to apply to (ADR-0084 decision 7) |
-| VIII. Failure is tested and contracts are verified, honestly | Pass | The Verification Plan names the crash, duplicate, lost-batch, stale and expired lease, revocation, re-registration, flood, old-worker, lock-order, tail-end and restart tests, a compensation that logs while its run is stopping and after its forward step failed, and a lease that expires while its batch is in flight, with barriers and held locks; each is written first and seen failing on its own assertion before the code it tests exists. What is not proven is listed as gaps G041-001 to G041-017 (G041-015 closed; G041-009, G041-010 and G041-011 moot) |
+| VIII. Failure is tested and contracts are verified, honestly | Pass | The Verification Plan names the crash, duplicate, lost-batch, stale and expired lease, revocation, re-registration, flood, old-worker, lock-order, tail-end and restart tests, a compensation that logs while its run is stopping and after its forward step failed, and a lease that expires while its batch is in flight, a carry refused at commit by the step-log quota, a carry statement that fails, a lost answer to a carrying report and a carry behind an ingest of its own attempt, with barriers and held locks; each is written first and seen failing on its own assertion before the code it tests exists. What is not proven is listed as gaps G041-001 to G041-017 (G041-015 closed; G041-009, G041-010 and G041-011 moot) |
 | Delivery Constraints | Pass | Rust, tonic, Axum, SQLx, PostgreSQL as the only store; no new component; SC-041-007 is a criterion on a stated machine |
 
 ## Complexity Tracking
@@ -1221,7 +1397,8 @@ the binary leaves the tables unread; rolling back the migration needs the lines 
 | Condition on principle V: the `[REDACTED]` oracle over the process's secret set (G041-017) | The secret set lives for the process (OD-2026-11-15-7), so a line is redacted with every value the process resolved; accepted by the owner (OD-2026-11-16-7) | A set per attempt, rejected by the owner (O041-017) |
 | Condition on principle V: the read cursor shows the database's transaction counter (G041-008) | The read order is the storing transactions' ids; the owner accepted the plain cursor (OD-2026-11-15-11) | A cursor encrypted with a server key, which no other cursor of the API needs (D041-035) |
 | Tables with no foreign key to `runs` | A foreign key makes each insert take a lock that conflicts with the engine's run lock | Keeping the convention |
-| A new RPC, protocol minor and session token on it | The batch must not share the fate of the heartbeat or the cost of the completion; the session's namespace, minor and subject must be checkable | A field on `Heartbeat` or `CompleteStep`; an RPC with no session |
+| A new RPC, protocol minor and session token on it, for a running attempt's batches | A long step must be readable while it runs, and its batches must not share the fate of the heartbeat; the session's namespace, minor and subject must be checkable | A field on `Heartbeat` (statements under the run lock once a second per long step); an RPC with no session |
+| The last records on the report, four statements in its transaction, a re-run when the carry fails it, and an order guard (ADR-0095) | T041-31 showed that a transaction per batch and a final batch cost a step 13% to 21% of the rate; the owner chose to cut it (OD-2026-11-19-1) | Every record on the report with nothing streamed (a long step shows nothing until it ends); a second transaction in the same call (the cost that failed); a savepoint around the carry (two statements more, and it cannot catch the commit's raise) |
 | A read horizon on transaction ids, and an end horizon in the cursor | A tail over concurrent writers otherwise skips a late commit or ends before it | A per-run sequence taken under the run lock |
 | A second server-sent event route | The graph stream has one resume point and a wider audience | Log events on `/runs/{runId}/stream` |
 | A stream row per attempt beside the lines | Ceilings and drop counts from counters; the "expired", "deleted" and "no final flush" states | Deriving them from the lines on every batch and read |
@@ -1237,16 +1414,26 @@ the binary leaves the tables unread; rolling back the migration needs the lines 
 The options the ADRs weighed, with their reasons, are in ADR-0084 ("Considered options", 1 to 10) and ADR-0085 (1 to
 11); the owner's rejected options are in "Owner decisions needed". The ones this design weighed on its own:
 
-- **A field on `Heartbeat`, a client stream, or riding on `CompleteStep`** for transport. Rejected: section 1, "Why a
-  separate unary RPC".
+- **Every record in batches of their own, and a final batch before the report** (the approved transport of
+  2026-11-16). Replaced (OD-2026-11-19-1): T041-31 measured it at 79% and 87% of the rate with capture off on a quiet
+  machine, against 90%; the cost was the extra transactions. The carry of section 2a replaces the final batch, and a short
+  step sends no batch.
+- **A field on `Heartbeat`, or a client stream,** for a running attempt's records. Rejected: section 1, "Why the report
+  carries the last records, and a unary RPC the rest".
 - **A `DROPPED` record kind** that names the range an SDK lost. Rejected (D041-028): the server already sees every gap
   in the sequences, so the kind only added a record type, a fold step and a "lying range" case in six SDKs.
 - **Tuning numbers in the policy** (buffer, flush, batch). Rejected (D041-033): each would be a permanent 1.7 field
   that six SDKs must honour, for a choice no deployment has asked to make per server.
 - **A locking path near the tenant limit** (`sagat_quota_lock_log_usage`, keep what fits). Rejected (D041-029): it holds
   the row a completion needs; a lossy log can drop one counted batch at the limit.
-- **A grouped commit on the server** (several requests' batches in one transaction). Rejected as a planned fallback: it
-  lengthens each hold of the tenant row while cutting their number. T041-31 decides whether any change is needed.
+- **A grouped commit on the server** (several requests' batches in one transaction). Rejected again (ADR-0095 option
+  4): it lengthens each hold of the tenant row while cutting their number, and a short step would still pay a round trip
+  and a wait for its group.
+- **The carry written by a second transaction after the report commits, in the same call**, or **inside a savepoint**.
+  Rejected (ADR-0095 options 5 and 6): the first is the extra commit the owner chose to remove; the second adds two
+  statements to every carrying report and cannot catch the finalizer's raise at commit.
+- **Lines on the report only when the attempt never flushed**, and a final batch otherwise. Rejected: two final paths
+  in six SDKs and on the server; the carry is the one final mark for every attempt that logged.
 - **A sealed cursor.** Rejected (D041-035): key management no other cursor of the API needs; the run id in a plain
   cursor is compared instead.
 - **Script output through the streams list only, with no marker row.** Proposed by the design (D041-030) and not chosen
@@ -1269,7 +1456,7 @@ The options the ADRs weighed, with their reasons, are in ADR-0084 ("Considered o
   Logs class; every batch is answered `RETRY_LATER` at once.
 - **A per-tenant step-log usage row of its own**, apart from `tenant_retained_usage`. Not chosen now: it would remove the
   completion's wait on the tenant row (section 2), but it changes the ADR-0027 Amendment the owner accepted as written
-  (OD-2026-11-15-16); it is O041-026, recommended if T041-31 shows that wait failing SC-041-007.
+  (OD-2026-11-15-16); it is O041-026, recommended if T041-35 shows that wait failing SC-041-007.
 - **A switch that turns the read routes off** (`SAGAT_STEP_LOGS_READ_ENABLED`, the 2026-11-15 text). Rejected (D041-069):
   no owner decision asks for it, and rate admission and a binary rollback already shed read load.
 - **Expiry computed at purge time from the retention in force.** Rejected (D041-049): ADR-0027 forbids retroactive
@@ -1292,9 +1479,10 @@ The options the ADRs weighed, with their reasons, are in ADR-0084 ("Considered o
 ## Non-Functional Requirements
 
 - **NFR-041-PERF (performance)** SC-041-001 by test on every pull request that touches the hot-path files (the selector
-  rule of design 038 picks `integration_claim_transition_efficiency`, where the lock tests live); SC-041-007 by T041-31
+  rule of design 038 picks `integration_claim_transition_efficiency`, where the lock tests live); SC-041-007 by T041-35
   before the schema and T041-9 at the end, with the machine, its load and the PostgreSQL configuration stated, in
-  `specs/041-step-logs/validation-report.md`. The ingest's statement count is budgeted as an equality.
+  `specs/041-step-logs/validation-report.md`. The ingest's statement count and the carry's cost on a report (section 2a)
+  are budgeted as equalities.
 - **NFR-041-SEC (security)** No grant beyond those of data-model.md §4, no new `SECURITY DEFINER` function beyond the
   accessor `sagat_quota_step_log_allowance` of ADR-0027's Amendment, no role membership. The
   cross-tenant battery covers the RPC and the four routes. The canary (SC-041-004) runs in the conformance suite and in
@@ -1319,8 +1507,8 @@ documentation only. Each slice leaves `develop` releasable.
 - **Owner gates.** A task that builds what an owner answer decided carries an `Owner-gate:` line citing its row of
   `docs/owner-decisions.md`; a task that waits for an owner question still open says "Waits for", right after its first
   line, and gains its `Owner-gate:` line when the answer is recorded. Task numbers are never reused; T041-28 to T041-30
-  were added on 2026-11-13, T041-31 and T041-32 on 2026-11-15 and T041-33 on 2026-11-16, each in the slice it belongs
-  to. T041-28 (the tests of the classified-namespace record) was withdrawn on 2026-11-16, since no record is kept
+  were added on 2026-11-13, T041-31 and T041-32 on 2026-11-15, T041-33 on 2026-11-16, T041-34 on 2026-11-18, and
+  T041-35 and T041-36 on 2026-11-19 (the revision of OD-2026-11-19-1), each in the slice it belongs to. T041-28 (the tests of the classified-namespace record) was withdrawn on 2026-11-16, since no record is kept
   (OD-2026-11-16-8).
 - **Tests first.** Each test is written in the pull request of the task that builds what it tests and is seen failing
   on its own assertion (not on a compile error or a missing fixture) before that code exists; the pull request names,
@@ -1371,7 +1559,7 @@ Slice A, decisions, contracts and the spike:
     questions; the ADR Revision sections corrected (ADR-0084 and ADR-0085 Revision of 2026-11-15, ADR-0027 Amendment);
     every task building one of those answers cites its row on an Owner-gate line (T041-3 to T041-7, T041-10 to T041-14,
     T041-29, T041-30, T041-32 and the SDK tasks); python3 scripts/check-design-docs.py: design docs ok.
-- [x] T041-33 Put the restated O041-025 to the owner and record the answer as a row of `docs/owner-decisions.md` and in
+- [ ] T041-33 Put the restated O041-025 to the owner and record the answer as a row of `docs/owner-decisions.md` and in
   research.md; for (a), add the reading as a Note of ADR-0084's Revision; for (b), change this design (T2 and the lock
   order) and have it reviewed again. Done when the row is `Decided` and T041-6 cites it on an `Owner-gate:` line.
   Refs: FR-041-005, FR-041-020
@@ -1379,6 +1567,9 @@ Slice A, decisions, contracts and the spike:
     recorded as docs/owner-decisions.md row OD-2026-11-16-11 (owner, Decided); research.md's O041-025 row says it is
     answered; ADR-0084's Revision has the Note of 2026-11-18 with the reading. The approved body of T041-6 cannot gain a
     line, so its Owner-gate is carried by the follow-up task T041-34; python3 scripts/check-design-docs.py: design docs ok.
+  Evidence continued (2026-11-19): unticked while the design is Draft for its revision of 2026-11-19, because R9 of
+    scripts/check-design-docs.py lets a task ticked since develop stand only in an Approved doc; the evidence above is
+    unchanged, and the box is ticked again when the revision is approved.
 - [ ] T041-31 Spike, before the schema is fixed. A log driver in `tests/performance/scalability-ha/main.rs` works in the
   benchmark's own disposable database; nothing it creates reaches a migration.
   - **Switches.** `SAGAT_PERF_STEP_LOG_SPIKE=1` selects the spike's workload (the engine completes steps with a 1 KiB
@@ -1426,12 +1617,63 @@ Slice A, decisions, contracts and the spike:
     (10). By this task's rule and the Open Questions the design changes and is reviewed again, and nothing after T041-31
     starts until then: asked as O041-036 (research.md, D041-087). O041-021 is not put (chunk rows fail too); O041-026 is
     not settled by this run. T041-3 and T041-4, built on the branch nonetheless, are held unticked (O041-037).
-- [ ] T041-3 Contracts. Copy contracts.md §1 into `worker.proto` and its six SDK copies and update `worker.baseline.json`
+  Evidence continued (2026-11-19): the quiet rerun (validation-report.md, three rounds under a load of 3) failed again
+    (rate medians 79.2% and 87.0%). The owner answered O041-036 with (d), "Redesenhar (CompleteStep)" (OD-2026-11-19-1):
+    this task is not run again and stays unticked; its gate passes to T041-35, the spike of the carry.
+- [ ] T041-35 Spike of the carry (the new spike of OD-2026-11-19-1, called T041-31′ in its question), before the schema
+  is fixed. It replaces T041-31 as the gate: nothing after it in this plan starts until it passes and this revision is
+  approved. It extends the driver of T041-31 (`tests/performance/scalability-ha/step_log_spike.rs`) in the benchmark's own
+  disposable database; nothing it creates reaches a migration.
+  - **Switches.** `SAGAT_PERF_STEP_LOG_SPIKE=1` with `SAGAT_PERF_STEP_LOG_CARRY=1` selects this spike; without the
+    second, T041-31's spike runs as it did; without either, the benchmark runs as today.
+  - **Scratch schema** `spike_041` as T041-31 builds it, plus `step_log_streams.last_stored_xid` (data-model.md §2).
+  - **Prototype.** The carry's statements CA to CD of data-model.md §8a run inside the real report transaction of a root
+    attempt, right before its `COMMIT`, through a seam the spike installs: `PgStore::with_report_hook`, compiled only
+    with a cargo feature `perf-spike` of `sagat-infra-postgres` that only the benchmark's crate enables, which
+    `PgRunTx::commit` calls with its connection and the reported attempt's identity. The hook writes the step's ten
+    lines and its final mark. The policy fences are taken by their keys and the resources' defaults used, as in T041-31;
+    `plan_batch` is not built yet, so the hook plans the one case the workloads meet (a new stream, nothing dropped). The
+    ingest of workload (g) is T041-31's SQL without the final batch and with `last_stored_xid` written. The seam does
+    not reach a production binary and is removed by T041-36, which builds the carry itself.
+  - **Workloads**, on the benchmark's replicas, 3,000 runs of three chained activities per row (rows "1 replica,
+    16 workers" and "8 replicas, 128 workers"), each beside a baseline of the same row with capture off, taken first and
+    again at the row's end: (a) every step carries ten 200-byte `info` lines on its completion and completes with a
+    1 KiB output that differs per task, as T041-31's (a); (f) the same with the output `{}`, which stores nothing new, so
+    that the carry's own take of the tenant usage row is measured; (g) at 1 × 16, every step sends one `AppendStepLogs`
+    batch of ten lines and then carries ten more, with a Logs class cap and tickets of 10 (half the pool), a stress shape
+    for the ingest that only long steps use; (d) workload (a) at 1 × 16 while one connection holds
+    `BEGIN; SELECT pg_current_xact_id();` for the row.
+  - **The acceptance rule, fixed before the first round.** The off figure of a row is its first baseline; the second is
+    recorded beside it. Gates: (1) the rate of (a) with capture on is at least 90% of off, at 1 × 16 and at 8 × 128;
+    (2) the completion p99 of (a) with capture on is at most off + 10%, at both sizes; (3) the rate of (f) is at least
+    90% of its own off, at both sizes; (4) the tickets that (g) needs, ceil(batch rate × p99 of S / 0.7), are at most 10.
+    Three rounds, each begun only once the 1-minute load average is under 3 (the runner waits at most 10 minutes; a
+    round that cannot begin is reported as not run, never run on a loaded machine). Gates (1) to (3) pass when the median
+    of the three rounds meets the criterion and at least two of the three rounds meet it; gate (4) passes when every
+    round needs at most 10. T041-35 passes when all four pass.
+  - **Recorded with no threshold:** the carry's statement time per completion (CA to CD, p50 and p99); (g)'s rate against
+    (a)'s off; the commit waits sampled every 10 ms as T041-31 sampled them, and how many of them were behind a carrying
+    report or an ingest; under (d), the size of `quota_transaction_deltas` and the completion p99; the machine, its load
+    before and after each round and the PostgreSQL configuration. Not measured: a carry on the scoped report path
+    (collections and loops), which the prototype does not reach; T041-9 measures it on the built code.
+  - **Then.** If it passes: the tenant tickets and the cap are set from (g)'s highest p99 of S (section 2, "Capacity") and
+    recorded in data-model.md §6; O041-026 is recorded in research.md as not needed, with the figures; ADR-0095 is put to
+    the owner for acceptance; the revision goes to its approval review. If a gate fails: stop; the design changes and is
+    reviewed again before T041-5 starts. A failing p99 whose excess the sampled commit waits explain by more than half is
+    put to the owner as O041-026. The figures go to `specs/041-step-logs/validation-report.md`.
+  Refs: NFR-041-PERF, SC-041-001, SC-041-007
+  Owner-gate: OD-2026-11-19-1
+  Files: modify `tests/performance/scalability-ha/{main.rs,step_log_spike.rs}`, `tests/Cargo.toml` (the feature),
+  `crates/infra-postgres/{Cargo.toml,src/execution.rs,src/lib.rs}` (the seam, behind the feature),
+  `specs/041-step-logs/{validation-report.md,data-model.md,research.md}`.
+- [ ] T041-3 Contracts. Copy contracts.md §1, as revised on 2026-11-19 (D041-090: `StepLogCarry` on `CompleteStep` and
+  `FailStep`, `final_batch` and `highest_sequence` of `AppendStepLogsRequest` reserved), into `worker.proto` and its six
+  SDK copies and update `worker.baseline.json`
   (`SAGAT_UPDATE_BASELINE=1 cargo test -p sagat-api-grpc --test compatibility`) after reading the diff; answer
   `UNIMPLEMENTED` in the seven implementations of section 1; regenerate the Go stubs (`sdks/go/scripts/generate.sh`,
   protoc v7.36.2, protoc-gen-go v1.36.11, protoc-gen-go-grpc v1.6.1) and the Python stubs
   (`sdks/python/scripts/sync_shared.py`, protobuf 7.35.1, grpcio 1.84.0), the versions the committed stubs record; add
-  the three messages and the `oneof` of section 1 to `skip_debug` in `crates/api-grpc/build.rs`, and in
+  the four messages and the `oneof` of section 1 to `skip_debug` in `crates/api-grpc/build.rs`, and in
   `sdks/rust/build.rs` and `sdks/rust/conformance/build.rs`, which first switch to `compile_fds_with_config` as
   `crates/api-grpc/build.rs:16-34` does, with `Debug` impls that print counts beside each generated module and a unit
   test beside each that `format!("{:?}")` of a request holds no message text. Copy contracts.md §2 into `openapi.yaml`:
@@ -1447,7 +1689,7 @@ Slice A, decisions, contracts and the spike:
   `contract_rest_security_multitenancy` and `npm run check:api` pass, and regenerating the Go and Python stubs a second
   time leaves `git diff --exit-code` clean.
   Refs: FR-041-004, FR-041-010, FR-041-011, FR-041-012, FR-041-014, FR-041-022, FR-041-023
-  Owner-gate: OD-2026-11-15-4, OD-2026-11-15-8, OD-2026-11-15-9, OD-2026-11-15-16
+  Owner-gate: OD-2026-11-15-4, OD-2026-11-15-8, OD-2026-11-15-9, OD-2026-11-15-16, OD-2026-11-19-1
   Files: modify `specs/001-platform-foundation/contracts/{worker.proto,worker.baseline.json,openapi.yaml}`, the six SDK
   proto copies, `crates/api-grpc/build.rs`, `crates/api-grpc/src/{lib.rs,service.rs}`, `sdks/rust/build.rs`,
   `sdks/rust/src/lib.rs`, `sdks/rust/src/worker_tests.rs`, `sdks/rust/conformance/build.rs`,
@@ -1460,9 +1702,10 @@ Slice A, decisions, contracts and the spike:
 
 Slice B, the server stores:
 
-- [ ] T041-4 Domain and quota resources. `crates/domain/src/step_logs.rs`: the types, `validate_batch` and `plan_batch`,
-  with property tests of the counting rule of section 2 (lines stored, markers excluded, + dropped by the worker +
-  dropped by the server = `last_sequence`, over any sequence of plans and refusals). The four quota resources of
+- [ ] T041-4 Domain and quota resources. `crates/domain/src/step_logs.rs`: the types, `validate_batch` (no final mark,
+  D041-090), `validate_carry` (section 2a, C2) and `plan_batch`, which plans a batch and a carry alike, with property
+  tests of the counting rule of section 2 (lines stored, markers excluded, + dropped by the worker + dropped by the
+  server = `last_sequence`, over any sequence of batches, carries and refusals). The four quota resources of
   data-model.md §6, named `step_log_attempt_records`, `step_log_attempt_bytes`, `step_log_retention_days` and
   `tenant_step_log_bytes` (their `as_str` and `limit_name`): `QuotaResource` variants, a `minimum()` per resource checked
   by `validate` and `validate_ceiling`, and the one named exception that lets `step_log_attempt_records` take 0 (the
@@ -1490,7 +1733,8 @@ Slice B, the server stores:
   `crates/application/src/quotas.rs`, `crates/infra-postgres/src/quotas.rs`,
   `tests/integration/security-multitenancy/{main.rs,quotas.rs}`,
   `tests/integration/workflow-primitives/{release_upgrade.rs,release_upgrade_inflight.rs,release_upgrade_callback_cutover.rs}`.
-- [ ] T041-5 The migration of data-model.md §2 to §4, named `<timestamp>_step_logs`: the two tables, their indexes (the
+- [ ] T041-5 The migration of data-model.md §2 to §4, named `<timestamp>_step_logs`: the two tables (with
+  `step_log_streams.last_stored_xid`, section 2a), their indexes (the
   run index and the stream index), the no-update trigger on lines and the guard trigger on streams; the rest of the
   ADR-0027 Amendment's accounting (data-model.md §3) but its locking accessor, with the manifest test taught the class
   and the kind; the quota triggers on `step_log_lines`; the storage-classification entries with the migration as owner
@@ -1550,9 +1794,9 @@ Slice B, the server stores:
   authority cases (binding removed, membership revoked, a membership whose role is runner or database-runner), each
   answered `AUTHORITY` even where another answer was due, with the denial audited; a runner token refused by P1 with the
   application's `Forbidden`; a lease sent with another run's id; a forward step of a stopping run refused `LEASE` and a
-  compensation step of it stored (pending O041-025); duplicates; gaps; a late batch after a newer one; the tenant limit by
+  compensation step of it stored (OD-2026-11-16-11); duplicates; gaps; a late batch after a newer one; the tenant limit by
   the unlocked read (`FINAL_ONLY`, counted, the planned marker's 128 bytes included) and by the finalizer's raise
-  (`RETRY_LATER`, nothing counted, then the resend's `FINAL_ONLY`), with a gap in the batch and a final batch after it,
+  (`RETRY_LATER`, nothing counted, then the resend's `FINAL_ONLY`), with a gap in the batch and a later batch after it,
   asserting the counts; capture off in the namespace (no row written); a change of `step_log_attempt_records` to 0 that
   waits for a batch held after T3 and commits after it; a scrubber case for each shape of both scrubbers in the message,
   the exception, a key and a string value, and for each sensitive field name with a value of each type;
@@ -1606,7 +1850,7 @@ Slice B, the server stores:
   `tests/integration/step-logs/retention.rs`.
 - [ ] T041-7 The gRPC handler, in `crates/api-grpc/src/step_logs.rs`, called from `WorkerGrpc`, taking the tenant ticket
   (P3) before it calls the service and auditing an `AUTHORITY` answer with `spawn_audit_access_denied`; `Class::Logs` and
-  the per-tenant tickets with their configuration keys and the defaults T041-31 set, no call waiting for a ticket; tests
+  the per-tenant tickets with their configuration keys and the defaults T041-35 set, no call waiting for a ticket; tests
   with admission counters that a full Logs class leaves discovery admission unchanged and that a second tenant's batch
   is admitted while the first tenant's tickets are all taken; protocol 1.7 in `negotiate_protocol_details` and
   `protocol_ceiling` (1.6 kept for the database runner) with the ceiling tests; the policy in `RegisterWorkerResponse`;
@@ -1631,10 +1875,12 @@ Slice B, the server stores:
 - [ ] T041-8 Server fault and security tests with barriers and held locks. Crash points use the `StepLogTx` wrapper of
   T041-6. A lost answer through the RPC uses the gRPC proxy of `tests/integration/database-runner/proxy.rs`, which this
   task moves to `tests/support/worker_proxy.rs`, declared by the two targets that use it through `#[path]` (not by
-  `tests/support/mod.rs`), and teaches a `lose_append_ack` fault that forwards `AppendStepLogs` and drops its answer.
+  `tests/support/mod.rs`), and teaches a `lose_append_ack` fault that forwards `AppendStepLogs` and drops its answer
+  and a `lose_report_ack` fault that forwards a carrying `CompleteStep` or `FailStep` and drops its answer (the resent
+  report stores nothing more).
   Cases: crash before the commit; crash after the commit and before the answer; the same batch twice at once
   (`RETRY_LATER`, then a resend that stores nothing); a stale lease; an expired lease not yet reclaimed; a batch after
-  the final one; a batch for another tenant's run (audited, the audit kept after the rollback); two attempts of one run
+  the attempt's carry recorded its final mark (`FINAL_RECORDED`); a batch for another tenant's run (audited, the audit kept after the rollback); two attempts of one run
   at their attempt ceilings and two runs of one tenant at its `tenant_step_log_bytes` limit, at once; a value that
   redaction lengthens at the tenant limit; a client that ignores every verdict (stored bytes stay at the ceilings);
   two tenants that flood and a third whose batches are still admitted (admission counters); a restart of the API in the
@@ -1648,6 +1894,41 @@ Slice B, the server stores:
   Files: create modules under `tests/integration/step-logs/` and `tests/support/worker_proxy.rs` (moved from
   `tests/integration/database-runner/proxy.rs`); modify `tests/integration/database-runner/main.rs`,
   `tests/integration/step-logs/main.rs`.
+- [ ] T041-36 The carry on a report (section 2a). Builds: the optional carry argument of `WorkerService::complete`,
+  `complete_with_blob` and `fail` and of the scoped report path, passed by the gRPC handlers of `CompleteStep` and
+  `FailStep`; C1 to C3 before the transaction; the port `StepLogCarryTx` with its four methods CA to CD (data-model.md
+  §8a), implemented for `PgRunTx` and the path transaction in `crates/infra-postgres/src/step_logs.rs`, each mapping its
+  errors to `StoreError::StepLogCarry` through `store_error_without_text`; the carry in `finish`, `finish_path_report`
+  and the transaction of `reject_secret_output`; the two re-runs of section 2a beside `recover_success_storage_quota`
+  (a mark-only carry after `tenant_step_log_quota_exceeded`, none after `StoreError::StepLogCarry`) and none in
+  `fail_success_for_storage_quota`; `last_stored_xid` written by T9 and by CD and the order guard; the metric
+  `step_log_carries_total{outcome}`; the removal of T041-35's seam and its feature. Tests, in
+  `tests/integration/claim-transition-efficiency/`: the six equalities of section 2a in `work_budget.rs`, each counted
+  as the existing three are and beside them, which stay unmodified; the source-text test of T041-5 amended so that the
+  worker and execution modules name only `StepLogCarryTx` and its methods, never the log tables; the lock-order test
+  with a carrying report, an ingest of the same attempt held after T4 and a change of a step-log resource held
+  exclusively, at barriers, all committing; a carrying report blocked on its stream row by an ingest held after T4,
+  committing after it with its lines after the ingest's. Tests, in `integration_step_logs`: a carry stored with a
+  completion and with a failure, at the root and inside a collection; a resent report stores nothing more; two runs of one
+  tenant whose carries cross its `tenant_step_log_bytes` limit at a barrier: one report re-run, its outcome and output
+  as without a carry, its records counted `tenant_quota` and its final mark recorded; a failing carry statement (a
+  `BEFORE INSERT` trigger the test installs on `step_log_lines`) re-runs the report once with the same outcome and
+  output, counts `failed` and leaves no final mark; an invalid carry, capture off in the namespace, the deployment switch
+  off and a removed stream, each recorded by the report with the cost of section 2a; the order guard (an ingest whose
+  transaction id is above the report's commits first: its lines kept, the carry's counted `out_of_order`, the final
+  mark recorded); a carry on a compensation of a stopping run stored (OD-2026-11-16-11); the counting rule over batches
+  and a carry; a lost answer to a carrying report through `lose_report_ack` of T041-8; the canary of SC-041-004 carried
+  on a report, searched as T041-8 searches it. Done when these pass, also as the runtime role, and `work_budget.rs`'s
+  three existing constants pass unmodified.
+  Refs: FR-041-004, FR-041-005, FR-041-008, SC-041-001, SC-041-002, SC-041-003, SC-041-004
+  Owner-gate: OD-2026-11-19-1, OD-2026-11-15-5, OD-2026-11-15-6, OD-2026-11-16-9, OD-2026-11-16-10, OD-2026-11-16-11
+  Files: create `crates/application/src/step_logs/carry.rs`; modify `crates/domain/src/step_logs.rs`,
+  `crates/application/src/{worker.rs,worker/output.rs,worker/scoped_reports.rs,execution.rs,step_logs.rs}`,
+  `crates/infra-postgres/src/{step_logs.rs,execution.rs,execution/path.rs,identity.rs}`,
+  `crates/api-grpc/src/service.rs`, `crates/telemetry/src/metrics.rs`,
+  `tests/integration/claim-transition-efficiency/{work_budget.rs,step_log_isolation.rs}`,
+  `tests/integration/step-logs/main.rs` and a module of its own there, `crates/infra-postgres/Cargo.toml` and
+  `tests/Cargo.toml` (the seam's feature removed).
 
 Slice C, the server serves:
 
@@ -1744,8 +2025,8 @@ Slice C, the server serves:
   `tests/integration/claim-transition-efficiency/step_log_isolation.rs`, `docs/reference/api.md`,
   `docs/runbooks/step-logs.md`; tests in `tests/integration/step-logs/`.
 
-Slice D, the SDKs. Each SDK task builds the rows of section 6 for its language, its buffer, sender and final batch, its
-protocol constant at 1.7, the `AppendStepLogs` call in its RPC wrapper, and, in its conformance runner, the behaviours
+Slice D, the SDKs. Each SDK task builds the rows of section 6 for its language, its buffer, sender and carry, its
+protocol constant at 1.7, the `AppendStepLogs` call and the carry on `CompleteStep` and `FailStep` in its RPC wrapper, and, in its conformance runner, the behaviours
 `logs` and `logsSecret`, the `stepLogs` op and the `verdict` fault; it adds the micro-benchmark of section 6 and removes
 its language from the five scenarios' pending lists. Each is done when the five scenarios (`step-logs-capture`,
 `step-logs-redaction`, `step-logs-limits`, `step-logs-transport-faults`, `step-logs-negotiation`) pass in that SDK
@@ -1755,7 +2036,7 @@ report, is under 1 ms.
 
 - [ ] T041-14 `sdks/SPEC.md`: the logger's semantics, the two tables of section 6, the capture section (per-attempt
   object, the secret set and §6.7's rule for it, keys, numbers, exceptions, language context, the answers of
-  contracts.md §4), its sections 10, 10 and 11 renumbered 10, 11 and 12; the harness additions of section 6 (the scenario
+  contracts.md §4, the carry and the wait before a report of section 6), its sections 10, 10 and 11 renumbered 10, 11 and 12; the harness additions of section 6 (the scenario
   schema of the behaviours, of the `stepLogs` op, which each SDK runner executes with a plain HTTP request and polls
   until `heldBack` is false, and of the pending languages, matched against the six unknown-op refusals of section 6;
   `mustNotStore` and its self-test with a planted canary); the five scenarios and their goldens, written by hand from
@@ -1826,14 +2107,15 @@ Slice E, the Studio:
 
 Slice F, measure, operate and close:
 
-- [ ] T041-9 Measure the built ingest on the benchmark of SC-041-007. The driver of T041-31 in
+- [ ] T041-9 Measure the built ingest and carry on the benchmark of SC-041-007, the scoped report path included. The
+  driver of T041-31 and T041-35 in
   `tests/performance/scalability-ha/main.rs` gains a mode that calls the application's ingest
   (`sagat_application::step_logs`) on each in-process replica, as the benchmark calls the application's completion,
   with the ticket semaphore of T041-31 set to T041-7's defaults (the gRPC tickets themselves are covered by T041-7's
   tests); the baseline is the same workload with the ingest off, as SC-041-007 states, and the tenant quota is set as
   in T041-31. It records SC-041-007's two figures for both rows; the p99 of lease calls while the modelled Logs class is
   full; the trigger cost and commit latency of a 500-record batch (T041-31's workload (b)); the purge rate against the
-  ingest rate and the completion p99 during a purge; what the final flush adds; the stored size per line and per stream
+  ingest rate and the completion p99 during a purge; what the carry and the wait before a report add; the stored size per line and per stream
   row and the stream table's dead tuples after the run, in the dated section of the validation report. Done when the
   figures are recorded; a failure of SC-041-007 stops the release of the feature for a design change.
   Refs: NFR-041-COST, NFR-041-PERF, SC-041-007
@@ -1899,15 +2181,17 @@ until `heldBack` is false, within a bound.
 
 | What is proven | How |
 |---|---|
-| The hot path is unchanged (SC-041-001) | `work_budget.rs` with its constants unmodified while ingest runs between its windows; a batch commits under `lock_timeout = 50ms` while another transaction holds the run row `FOR UPDATE` and has updated the leased step row; a source-text test that the worker and execution modules never name the log tables |
-| What a completion waits for (SC-041-001) | The barrier tests of SC-041-001: every one of K ingests held after its quota flush, the completion blocked only by them; and an ingest held after T7 that blocks neither a `lock_secrets` nor a completion (T041-6). The time bound is SC-041-007's |
+| The hot path is unchanged for what carries nothing (SC-041-001) | `work_budget.rs` with its constants unmodified while ingest runs between its windows; a batch commits under `lock_timeout = 50ms` while another transaction holds the run row `FOR UPDATE` and has updated the leased step row; a source-text test that the worker and execution modules never name the log tables and reach them only through `StepLogCarryTx` (T041-5, T041-36) |
+| What a carry adds to a report (SC-041-001, section 2a) | The six equalities of section 2a in `work_budget.rs` (T041-36); the time bound by T041-35 before the schema and T041-9 at the end |
+| A carry never changes a report | A finalizer raise at the tenant's step-log limit and a failing carry statement each re-run the report once with the same outcome and output; an invalid carry, capture off and a removed stream leave the report as it would be (T041-36) |
+| What a report waits for (SC-041-001) | The barrier tests of SC-041-001: every one of K ingests held after its quota flush, the completion blocked only by them; and an ingest held after T7 that blocks neither a `lock_secrets` nor a completion (T041-6); a carrying report behind an ingest of its own attempt held after T4, committing after it (T041-36). The time bound is SC-041-007's |
 | Crash between accept and store | The `StepLogTx` wrapper fails before the commit: nothing stored, the resend stores all, once |
-| Crash between store and answer | The wrapper commits and then fails (T041-6, T041-8); separately, the proxy of `tests/support/worker_proxy.rs` drops the answer of `AppendStepLogs` (T041-8): the resend stores nothing and gets `CONTINUE` (`FINAL_RECORDED` for a final batch) |
+| Crash between store and answer | The wrapper commits and then fails (T041-6, T041-8); separately, the proxy of `tests/support/worker_proxy.rs` drops the answer of `AppendStepLogs` (T041-8): the resend stores nothing and gets `CONTINUE`; the same proxy drops the answer of a carrying report (T041-8, T041-36): the resent report is answered as a replay and stores nothing more |
 | Duplicate batch | The same batch twice at a barrier: the second waits on the stream row and gets `RETRY_LATER` at the lock timeout; its resend stores nothing; counters rise once |
-| Gaps and late batches | A batch the SDK gave up on is counted as dropped by the worker once; a late batch after a newer one stores nothing and does not lower `last_sequence`; a final batch's `highest_sequence` counts the drops at the end |
+| Gaps and late batches | A batch the SDK gave up on is counted as dropped by the worker once; a late batch after a newer one stores nothing and does not lower `last_sequence`; the carry's `highest_sequence` counts the drops at the end; a carry whose transaction id is below that of a batch stored after it keeps no record and counts them (T041-36) |
 | A worker that floods (SC-041-002) | `step-logs-limits` for the SDKs; a client that ignores verdicts for the server: stored bytes stay at the ceilings, tickets hold, another tenant's completion latency is recorded; lines stored + dropped = highest sequence |
-| Ceilings under concurrency | Two attempts of one run at their attempt ceilings, and two runs of one tenant at its `tenant_step_log_bytes` limit, at a barrier: the ceilings hold exactly; the finalizer's raise answers `RETRY_LATER` and stores and counts nothing, and the resend, with a gap in the batch and a final batch after it, keeps lines stored + dropped = `last_sequence` (T041-6, T041-8); a value that redaction lengthens is charged at its stored size |
-| Revocation, session and fence | Binding removed, membership revoked, lease expired but not reclaimed, a membership of the runner or database-runner role, a runner token, an expired session, a session of another namespace or subject or below 1.7, a replaced token, a valid lease sent with another run's id: each stores nothing and gets its verdict; a revoked caller gets `AUTHORITY` whatever else was due, and is audited; a forward step of a stopping run gets `LEASE` and a compensation of it is stored (pending O041-025) (T041-6, T041-8) |
+| Ceilings under concurrency | Two attempts of one run at their attempt ceilings, and two runs of one tenant at its `tenant_step_log_bytes` limit, at a barrier: the ceilings hold exactly; the finalizer's raise answers `RETRY_LATER` and stores and counts nothing, and the resend, with a gap in the batch and a carry after it, keeps lines stored + dropped = `last_sequence` (T041-6, T041-8); a value that redaction lengthens is charged at its stored size |
+| Revocation, session and fence | Binding removed, membership revoked, lease expired but not reclaimed, a membership of the runner or database-runner role, a runner token, an expired session, a session of another namespace or subject or below 1.7, a replaced token, a valid lease sent with another run's id: each stores nothing and gets its verdict; a revoked caller gets `AUTHORITY` whatever else was due, and is audited; a forward step of a stopping run gets `LEASE` and a compensation of it is stored (OD-2026-11-16-11) (T041-6, T041-8) |
 | An old worker, an old server | `step-logs-negotiation`; a released (v0.2.0) engine beside a current one (T041-26 (b)) |
 | Redelivery does not duplicate lines | A task delivered again under a new generation writes a new stream; the same generation's resend inserts nothing; rebuilding the projections of a run changes no log row (T041-8) |
 | Reset, rerun, continue-as-new, retry | `e2e_step_logs` (T041-26): each new run starts with no log and the source keeps its own |
@@ -1936,13 +2220,13 @@ closed.
 
 ### Estimate
 
-An estimate by reading, not a measurement. Slice A (T041-1 to T041-3, T041-31, T041-33): the reviews, two documentation
-pull requests of owner answers, the spike (about 800 lines of Rust in the benchmark) and the contracts. Server (T041-4 to
-T041-8, T041-10 to T041-13, T041-29, T041-30): about 6,000 to 7,000 lines of Rust, most of them tests, in 11 pull
-requests, and T041-32, a Python selector rule. SDKs: the specification and harness (T041-14), six SDK tasks of 600 to 900
+An estimate by reading, not a measurement. Slice A (T041-1 to T041-3, T041-31, T041-33, T041-35): the reviews, two
+documentation pull requests of owner answers, the two spikes (about 800 lines of Rust in the benchmark, and about 400 more
+for the carry and its seam) and the contracts. Server (T041-4 to T041-8, T041-36, T041-10 to T041-13, T041-29, T041-30):
+about 7,000 to 8,000 lines of Rust, most of them tests, in 12 pull requests, and T041-32, a Python selector rule. SDKs: the specification and harness (T041-14), six SDK tasks of 600 to 900
 lines each with their tests (T041-15 to T041-20), and the matrix run (T041-21). Studio (T041-22 to T041-24): about 1,300
 to 1,600 lines with tests, in 3 pull requests. Measure, operate and close (T041-9, T041-25 to T041-27): 4 pull requests.
-That is 32 tasks (T041-28 withdrawn) and 32 pull requests. A pull request's CI takes up to two hours, and they land one
+That is 35 tasks (T041-28 withdrawn; T041-31 replaced by T041-35) and 34 pull requests. A pull request's CI takes up to two hours, and they land one
 at a time where they touch research.md or the contracts, so the calendar is set by the queue: about four weeks for one
 agent session working alone, less with the six SDK tasks in parallel after T041-14. The places most likely to move it are
-T041-31 (a failure stops for a design change) and the read horizon on two PostgreSQL versions.
+T041-35 (a failure stops for a design change) and the read horizon on two PostgreSQL versions.

@@ -4,6 +4,18 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-19 — Design 041 (step logs): the redesign of the transport after the ingest spike
+
+The spike T041-31 of design 041 failed SC-041-007 on a quiet machine: with an `AppendStepLogs` transaction per batch and
+a final batch before every report, the rate with capture on was 79% and 87% of the rate with capture off (medians of
+three rounds, criterion 90%), and 89.4% and 89.9% with the lines in the final batch itself
+(`specs/041-step-logs/validation-report.md`). The assistant asked O041-036 (`specs/041-step-logs/research.md`) with five
+options.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-19-1 | O041-036, "Redesenhar (CompleteStep)" ("redesign (CompleteStep)"), option (d): cut what a step pays; the lines travel in the step's own `CompleteStep` (and `FailStep`) so that a short step needs no extra transaction, a long step still streams before its completion, and a new spike with the same criteria (rate at least 90%, completion p99 within +10%, tickets within half the pool) runs before the schema. O041-037 follows from it (T041-3 and T041-4 stay held; T041-3's 1.7 contract changes), recorded as decision D041-091 | owner | Decided | docs/designs/041-step-logs.md T041-3, T041-35, T041-36 |
+
 ## 2026-11-16 — Design 041 (step logs): the approval path and the answers to Q1 to Q8
 
 After the third approval run of design 041 the assistant listed every open finding with a question to the owner

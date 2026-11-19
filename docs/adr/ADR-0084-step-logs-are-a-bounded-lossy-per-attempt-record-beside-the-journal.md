@@ -242,6 +242,11 @@ ADR's "Enforced by" fired: the feature stops for a design change and a new revie
 `specs/041-step-logs/research.md`. The completion's wait on the tenant usage row was small on average; whether it
 explains the tail is not settled by that run.
 
+Note (2026-11-19, OD-2026-11-19-1): the owner answered O041-036 with (d), "Redesenhar (CompleteStep)". The text above is
+unchanged. [ADR-0095](ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md), Proposed, would supersede
+decisions 2 and 6 (an attempt's last records ride on its report, at most four statements in the report's transaction)
+and refine decisions 3, 9 and 11, once the owner accepts it after design 041's spike T041-35.
+
 ## Evidence
 
 None measured yet; nothing is built. The reasoning rests on facts read in the code at `2e90dbb8`: the budgets in `work_budget.rs`;

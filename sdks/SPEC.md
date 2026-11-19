@@ -656,7 +656,7 @@ where the language can express one. The shared scenario is `collection-operators
   | 1.4 | Bounded task streams (`StreamTasks`) | ADR-0029 |
   | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
   | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
-  | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
+  | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`, the `StepLogCarry` of `CompleteStep` and `FailStep`) | feature 041, OD-2026-11-15-8, OD-2026-11-19-1; served from its tasks T041-7 and T041-36 |
   | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one when its contract merges | |
 
 ## 10. Observability and safety
