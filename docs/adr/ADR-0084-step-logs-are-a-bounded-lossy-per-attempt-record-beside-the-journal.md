@@ -227,6 +227,15 @@ scan ended because no row below the horizon was left in the index range it reads
 bound having stopped it, whether or not a filter matched" (design 041, D041-084): a filtered read can otherwise declare
 the log complete before it has scanned to the end.
 
+Note (2026-11-18, OD-2026-11-16-11): the owner answered O041-025 with (a), "Sim, como os reports" ("yes, as the
+reports"). Decision 5's "a run neither finished nor stopping" reads: a batch is accepted when a report of its attempt
+would be, short of the run lock: the step is not cancel-requested, the run is not finished, and the run is not stopping
+unless the node is a compensation or reconciliation node. One domain function, `report_fence_allows`
+(`crates/domain/src/execution/state.rs`), states that rule, and both `attempt_authority_fence` and the ingest's lease
+read call it. Decision 11's order starts, for every writer of step logs, with the shared policy fences of the
+namespace's step-log resources (tenant then namespace), before the stream row, as ADR-0027 asks of every authoritative
+limit read; then the stream row, then at commit the fences of the charged classes and the tenant usage row.
+
 ## Evidence
 
 None measured yet; nothing is built. The reasoning rests on facts read in the code at `2e90dbb8`: the budgets in `work_budget.rs`;

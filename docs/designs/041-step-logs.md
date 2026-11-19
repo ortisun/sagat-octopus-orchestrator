@@ -1371,10 +1371,14 @@ Slice A, decisions, contracts and the spike:
     questions; the ADR Revision sections corrected (ADR-0084 and ADR-0085 Revision of 2026-11-15, ADR-0027 Amendment);
     every task building one of those answers cites its row on an Owner-gate line (T041-3 to T041-7, T041-10 to T041-14,
     T041-29, T041-30, T041-32 and the SDK tasks); python3 scripts/check-design-docs.py: design docs ok.
-- [ ] T041-33 Put the restated O041-025 to the owner and record the answer as a row of `docs/owner-decisions.md` and in
+- [x] T041-33 Put the restated O041-025 to the owner and record the answer as a row of `docs/owner-decisions.md` and in
   research.md; for (a), add the reading as a Note of ADR-0084's Revision; for (b), change this design (T2 and the lock
   order) and have it reviewed again. Done when the row is `Decided` and T041-6 cites it on an `Owner-gate:` line.
   Refs: FR-041-005, FR-041-020
+  Evidence (2026-11-18): the owner answered (a), "Sim, como os reports", received by the coordinator on 2026-11-16 and
+    recorded as docs/owner-decisions.md row OD-2026-11-16-11 (owner, Decided); research.md's O041-025 row says it is
+    answered; ADR-0084's Revision has the Note of 2026-11-18 with the reading. The approved body of T041-6 cannot gain a
+    line, so its Owner-gate is carried by the follow-up task T041-34; python3 scripts/check-design-docs.py: design docs ok.
 - [ ] T041-31 Spike, before the schema is fixed. A log driver in `tests/performance/scalability-ha/main.rs` works in the
   benchmark's own disposable database; nothing it creates reaches a migration.
   - **Switches.** `SAGAT_PERF_STEP_LOG_SPIKE=1` selects the spike's workload (the engine completes steps with a 1 KiB
@@ -1870,7 +1874,12 @@ Slice F, measure, operate and close:
 
 #### Follow-up tasks
 
-None yet.
+- [ ] T041-34 Build T041-6 on the owner's answer to O041-025 (option (a), OD-2026-11-16-11): `report_fence_allows` in
+  `crates/domain/src/execution/state.rs`, called by `attempt_authority_fence` and by T2 of the ingest, and the step-log
+  policy fences taken first (L1) in every writer. It carries the Owner-gate that the approved body of T041-6, which says
+  "Waits for O041-025", cannot gain. Done when T041-6 is ticked.
+  Refs: FR-041-005, FR-041-020
+  Owner-gate: OD-2026-11-16-11
 
 ### Verification Plan
 
