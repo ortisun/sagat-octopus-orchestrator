@@ -204,6 +204,10 @@ to `QuotaResource` with a new `minimum()` that `validate` and `validate_ceiling`
 only), to the CHECK constraints `quota_limits_resource_valid`, `quota_ceilings_resource_valid` and
 `quota_limits_tenant_scoped` (the latest restatement is `20270108000000_pending_resets.up.sql:15, 28-30`; T041-4's
 migration restates the three), and, in T041-3, to `Quota.resource` and `QuotaResourceName` in `openapi.yaml`.
+Correction of T041-4 (2026-11-19): the migration also restates `quota_limits_value_range` and
+`quota_ceilings_value_range` (last restated by `20261127000000_database_policies`) with the ranges of the table below,
+since their `ELSE` branch caps a value at 10^9 and refused the 1 GiB default of `tenant_step_log_bytes` at the ceiling;
+every CHECK is added `NOT VALID` and validated by `20270201000100_step_log_quotas_validate` (design 043, D043-145).
 
 | Name | Kind | Unit | Range | Default (= default ceiling) | Meaning of 0 |
 |---|---|---|---|---|---|
