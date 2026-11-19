@@ -955,11 +955,13 @@ O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`) and
   an absent `$schema` only. (c) Treat `prefixItems` as an annotation in an `inputSchema`: the check would admit inputs the
   author meant to refuse. **Recommended: (a)** — no 0.3.0 schema of the platform's own needs tuples, and (b) adds a
   dialect rule and oracle work to a release that is closing.
+  **Answered (a)**, OD-2026-11-19-5 ("Sim, como recomendado", 2026-11-19).
 - **O043-006 — The field of a repeat** (correctness review Major 5, security review Major 1). Repeats, trigger-now and
   the private rerun answer `/` and `other` to every caller (D043-121, D043-144, D043-148), which is never a disclosure
   but says less than D043-037 allowed to a caller who may read the source input (G043-040). (a) Accept for 0.3.0 as
   built. (b) Build the graded-disclosure check on the start path for 0.3.0. **Recommended: (a)** — the caller can fix the
   input from the source run, which they may read, and (b) adds a disclosure evaluation to every repeat.
+  **Answered (a)**, OD-2026-11-19-6 ("Sim, como recomendado", 2026-11-19).
 - **O043-007 — ADR-0092** (architecture review of 2026-11-16, Major 1). It refines accepted ADR-0090 with what the build
   needed: (1) `tokio` `rt` in one file of `sagat-application`; (2) every composition root wires the gate; (3) the 1 KiB
   name limit, the `oneOf` bound and the tenant share; (4) `/` for every repeat; (5) the audit of a holder's answer in
@@ -974,6 +976,7 @@ O043-001 to O043-004 were answered on 2026-11-14 (`docs/owner-decisions.md`) and
   never a silent edit; the pin test of D043-178 and D043-186 fails on a silent edit. (b) Leave it to each release's notes
   and the pin test alone. **Recommended: (a)** — the pin test already refuses a silent edit, and the capability is how
   ADR-0082 lets the operator lock a fleet to one meaning. Nothing built depends on the answer.
+  **Answered (a)**, OD-2026-11-19-7 ("Sim, como recomendado", 2026-11-19).
 
 
 
