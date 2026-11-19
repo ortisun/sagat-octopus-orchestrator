@@ -1778,6 +1778,8 @@ async fn step_log_ingest_spike() {
             hold: false,
             single_final: false,
             chunk: false,
+            carry: None,
+            empty_output: false,
         },
         &chain_activities,
     )
@@ -1829,6 +1831,8 @@ async fn step_log_ingest_spike() {
                         hold: false,
                         single_final: false,
                         chunk: false,
+                        carry: None,
+                        empty_output: false,
                     },
                     &chain_activities,
                 )
@@ -1853,6 +1857,8 @@ async fn step_log_ingest_spike() {
                         hold: false,
                         single_final: false,
                         chunk: false,
+                        carry: None,
+                        empty_output: false,
                     },
                     &chain_activities,
                 )
@@ -1887,6 +1893,8 @@ async fn step_log_ingest_spike() {
                     hold: false,
                     single_final: true,
                     chunk: false,
+                    carry: None,
+                    empty_output: false,
                 },
                 &chain_activities,
             )
@@ -1915,6 +1923,8 @@ async fn step_log_ingest_spike() {
                     hold: false,
                     single_final: false,
                     chunk: true,
+                    carry: None,
+                    empty_output: false,
                 },
                 &chain_activities,
             )
@@ -1955,6 +1965,8 @@ async fn step_log_ingest_spike() {
                     hold: false,
                     single_final: false,
                     chunk: false,
+                    carry: None,
+                    empty_output: false,
                 },
                 &chain_activities,
             )
@@ -2037,6 +2049,8 @@ async fn step_log_ingest_spike() {
                 hold: false,
                 single_final: false,
                 chunk: false,
+                carry: None,
+                empty_output: false,
             },
             &["act.line"],
         )
@@ -2070,6 +2084,8 @@ async fn step_log_ingest_spike() {
                 hold: true,
                 single_final: false,
                 chunk: false,
+                carry: None,
+                empty_output: false,
             },
             &chain_activities,
         )
@@ -2098,6 +2114,8 @@ async fn step_log_ingest_spike() {
                 hold: false,
                 single_final: false,
                 chunk: false,
+                carry: None,
+                empty_output: false,
             },
             &chain_activities,
         )
@@ -2114,4 +2132,173 @@ async fn step_log_ingest_spike() {
     eprintln!("spike verdicts:\n{verdict}");
     body.push_str(&format!("\nVerdicts:\n\n{verdict}"));
     section("Step-log ingest spike (design 041, T041-31)", &body);
+}
+
+/// T041-35 (design 041): the spike of the step-log carry. One round of its rule: per size, capture off with a 1 KiB
+/// output, (a), capture off with `{}`, (f), (g), the two baselines again; then (h) and (d) at 1 × 16. Runs only with
+/// `SAGAT_PERF_STEP_LOG_SPIKE=1 SAGAT_PERF_STEP_LOG_CARRY=1` and `--features perf-spike`. Each measurement is printed as
+/// one `spike-carry-json` line, from which the rounds are judged.
+#[cfg(feature = "perf-spike")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "benchmark: run on purpose with --ignored"]
+#[allow(clippy::too_many_lines)]
+async fn step_log_carry_spike() {
+    use step_log_spike::{RowResult, RowSpec, Shape};
+    if std::env::var("SAGAT_PERF_STEP_LOG_SPIKE").as_deref() != Ok("1")
+        || std::env::var("SAGAT_PERF_STEP_LOG_CARRY").as_deref() != Ok("1")
+    {
+        eprintln!(
+            "step_log_carry_spike runs only with SAGAT_PERF_STEP_LOG_SPIKE=1 and SAGAT_PERF_STEP_LOG_CARRY=1"
+        );
+        return;
+    }
+    let runs = env_usize("SAGAT_PERF_TRANSITION_RUNS", 3_000);
+    let w = Arc::new(world().await);
+    // A round registers 16 or 128 workers per measurement, more live sessions than the default 1,000 allows.
+    for resource in [
+        QuotaResource::TenantLogBytes,
+        QuotaResource::TenantContentBytes,
+        QuotaResource::WorkerSessions,
+    ] {
+        let max = resource.maximum();
+        w.quotas
+            .grant_ceiling(w.admin.tenant_id(), resource, Some(max))
+            .await
+            .expect("grant the ceiling");
+        w.quotas
+            .set(&w.admin, None, resource, max, &ctx())
+            .await
+            .expect("set the tenant's limit");
+    }
+    step_log_spike::install(&w.db.pool).await;
+    let (chain, _) = w
+        .publish(document(
+            "spike-chain",
+            "a",
+            vec![
+                with(activity("a"), "next", json!("b")),
+                with(activity("b"), "next", json!("c")),
+                activity("c"),
+            ],
+        ))
+        .await;
+    let activities = ["act.a", "act.b", "act.c"];
+    let half_pool = usize::try_from(API_POOL / 2).unwrap_or(10);
+    let mut body = format!("{}\n", environment(&w).await);
+    body.push_str(&format!(
+        "Design 041, T041-35: the carry of section 2a (CA to CE of data-model.md §8a) run by the report hook inside the report transaction of each root completion, against the scratch schema `spike_041`. {runs} runs of three chained activities per measurement. Logs class cap and tickets of (g): {half_pool}.\n\n| Measurement | Transitions/s | Complete p50 / p99 | Carry calls / written / contended / neither | Carry p50 / p99 | S p99 | Batches | Ticket refusals | Commit waits / by ingest / by carry |\n|---|---:|---|---|---|---:|---:|---:|---|\n"
+    ));
+    let measure = |label: &'static str,
+                   replicas: usize,
+                   workers: usize,
+                   carry: Option<usize>,
+                   ingest: bool,
+                   empty: bool,
+                   hold: bool| {
+        let w = Arc::clone(&w);
+        async move {
+            let spec = RowSpec {
+                label,
+                api_replicas: replicas,
+                workers,
+                runs,
+                shape: Shape::Chain,
+                admission: ingest.then_some((half_pool, half_pool)),
+                lines: (10, 200),
+                hold,
+                single_final: false,
+                chunk: false,
+                carry,
+                empty_output: empty,
+            };
+            let row = step_log_spike::run_row(&w, chain, &spec, &activities).await;
+            (label, replicas, workers, row)
+        }
+    };
+    let mut lines = Vec::new();
+    let mut push =
+        |body: &mut String, (label, replicas, workers, row): (&str, usize, usize, RowResult)| {
+            let (calls, written, contended, neither, times) =
+                row.carry.clone().unwrap_or((0, 0, 0, 0, Vec::new()));
+            if row.carry.is_some() {
+                assert_eq!(
+                    usize::try_from(calls).unwrap_or(0),
+                    row.transitions,
+                    "{label}: the report hook fired once per completion"
+                );
+            }
+            let refusals = step_log_spike::Tally::get(&row.tally.retry_ticket)
+                + step_log_spike::Tally::get(&row.tally.retry_ticket_final);
+            let batches = step_log_spike::Tally::get(&row.tally.calls);
+            let json = json!({
+                "label": label, "replicas": replicas, "workers": workers,
+                "transitions": row.transitions, "per_second": row.per_second,
+                "complete_p50_ms": ms(percentile(&row.completes, 0.50)),
+                "complete_p99_ms": ms(percentile(&row.completes, 0.99)),
+                "carry_calls": calls, "carry_written": written, "carry_contended": contended, "carry_neither": neither,
+                "carry_p50_ms": ms(percentile(&times, 0.50)), "carry_p99_ms": ms(percentile(&times, 0.99)),
+                "s_p99_ms": ms(percentile(&row.services, 0.99)), "batches": batches, "ticket_refusals": refusals,
+                "commit_waits": row.commit_waits.0, "commit_waits_by_ingest": row.commit_waits.1,
+                "commit_waits_by_carry": row.carry_waits,
+                "deltas_bytes": [row.deltas_bytes.0, row.deltas_bytes.1],
+                "held_ms": row.held_for.map(ms),
+            });
+            eprintln!("spike-carry-json {json}");
+            body.push_str(&format!(
+            "| {label} {replicas}×{workers} | {:.0} | {:.1} / {:.1} ms | {calls} / {written} / {contended} / {neither} | {:.2} / {:.2} ms | {:.2} ms | {batches} | {refusals} | {} / {} / {} |\n",
+            row.per_second,
+            ms(percentile(&row.completes, 0.50)),
+            ms(percentile(&row.completes, 0.99)),
+            ms(percentile(&times, 0.50)),
+            ms(percentile(&times, 0.99)),
+            ms(percentile(&row.services, 0.99)),
+            row.commit_waits.0,
+            row.commit_waits.1,
+            row.carry_waits,
+        ));
+            lines.push(json);
+        };
+    for (replicas, workers) in [(1, 16), (8, 128)] {
+        push(
+            &mut body,
+            measure("off-1K", replicas, workers, None, false, false, false).await,
+        );
+        push(
+            &mut body,
+            measure("a", replicas, workers, Some(10), false, false, false).await,
+        );
+        push(
+            &mut body,
+            measure("off-{}", replicas, workers, None, false, true, false).await,
+        );
+        push(
+            &mut body,
+            measure("f", replicas, workers, Some(10), false, true, false).await,
+        );
+        push(
+            &mut body,
+            measure("g", replicas, workers, Some(10), true, false, false).await,
+        );
+        push(
+            &mut body,
+            measure("off-1K again", replicas, workers, None, false, false, false).await,
+        );
+        push(
+            &mut body,
+            measure("off-{} again", replicas, workers, None, false, true, false).await,
+        );
+    }
+    push(
+        &mut body,
+        measure("h", 1, 16, Some(64), false, false, false).await,
+    );
+    push(
+        &mut body,
+        measure("d", 1, 16, Some(10), false, false, true).await,
+    );
+    let _ = lines.len();
+    section(
+        "Step-log carry spike (design 041, T041-35), one round",
+        &body,
+    );
 }

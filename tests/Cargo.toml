@@ -12,6 +12,11 @@ autotests = false
 [lints]
 workspace = true
 
+[features]
+# Design 041's spike T041-35 only (`cargo test -p sagat-tests --features perf-spike --test perf_scalability_ha`):
+# the report hook of sagat-infra-postgres. Removed by T041-36.
+perf-spike = ["sagat-infra-postgres/perf-spike"]
+
 [dev-dependencies]
 tempfile = "3"
 tokio-stream.workspace = true

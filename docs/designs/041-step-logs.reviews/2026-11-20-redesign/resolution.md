@@ -91,3 +91,9 @@ step and six for a long one; the six equalities are 55/1/23, 54/1/13, 52/1/11 an
 - Correctness: one new Major, CC's speculative insertion waiting for an updater of an existing stream row (the purge's
   mark and delete, the delete route). Fixed by D041-098 (`INSERT … SELECT … WHERE NOT EXISTS … ON CONFLICT DO NOTHING`),
   with T041-36 tests that hold each of those updaters after its update.
+- Correctness re-read of 7e7dcc3b: the Major is closed (the `NOT EXISTS` cannot miss a row: worker streams are created
+  only by ingests holding the stream lock, and an ingest that committed before CA is in CC's snapshot); the six
+  equalities unchanged; at most four transactions confirmed. Counts: Blocker 0, Major 0, Nit 0.
+
+No Blocker and no Major is open after the targeted re-reads; the design stays `Draft` until a complete approval run
+(all five `egm-review` stages and the three repository reviewers) on the revised text, after T041-35.

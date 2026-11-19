@@ -88,6 +88,7 @@ HEAD
 # SAGAT_PERF_SCENARIOS names the ones to run (default: all four), e.g. to repeat one.
 for scenario in ${SAGAT_PERF_SCENARIOS:-waits_at_scale firing_scales_with_concurrency_and_replicas a_noisy_tenant_and_a_quiet_one step_transitions_per_second}; do
   echo "== $scenario"
-  cargo test -p sagat-tests --test perf_scalability_ha --release -- --ignored --nocapture --exact "$scenario"
+  # SAGAT_PERF_CARGO_FEATURES: features of sagat-tests a scenario needs (design 041's T041-35: perf-spike).
+  cargo test -p sagat-tests --test perf_scalability_ha --release ${SAGAT_PERF_CARGO_FEATURES:+--features "$SAGAT_PERF_CARGO_FEATURES"} -- --ignored --nocapture --exact "$scenario"
 done
 echo "report: $REPORT"

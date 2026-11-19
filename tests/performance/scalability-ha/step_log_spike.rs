@@ -79,6 +79,7 @@ pub async fn install(pool: &PgPool) {
                 OR public.execution_instance_path_valid(instance_path_nodes, instance_path_indices)),
             CONSTRAINT step_log_streams_retention_valid CHECK (retention_days BETWEEN 1 AND 365)
         )",
+        "ALTER TABLE spike_041.step_log_streams ADD COLUMN last_stored_xid xid8",
         "CREATE INDEX step_log_streams_run_idx ON spike_041.step_log_streams (tenant_id, run_id, stream_id)",
         "CREATE INDEX step_log_streams_expiry_idx ON spike_041.step_log_streams (expires_at) WHERE removed_at IS NULL",
         "CREATE INDEX step_log_streams_removal_idx ON spike_041.step_log_streams (tenant_id, stream_id) \
@@ -232,6 +233,8 @@ pub struct Ingest {
     pub tally: Arc<Tally>,
     /// Chunk rows (O041-021): one row per batch holding its records, instead of one row per line.
     pub chunk: bool,
+    /// T041-35: T3 also takes the attempt's stream lock and T9 raises `last_stored_xid` (design section 2a).
+    pub stream_lock: bool,
 }
 
 /// What the ingest learnt of the stream, for the plan of T5 and T6.
@@ -379,13 +382,31 @@ impl Ingest {
                 ]
             })
             .collect();
-        sqlx::query(
-            "SELECT count(pg_advisory_xact_lock_shared(hashtextextended(k, 0))) \
-               FROM (SELECT k FROM unnest($1::text[]) WITH ORDINALITY AS f(k, n) ORDER BY n) ordered",
-        )
-        .bind(&keys)
-        .execute(&mut *tx)
-        .await?;
+        if self.stream_lock {
+            sqlx::query(
+                "SELECT (SELECT count(pg_advisory_xact_lock_shared(hashtextextended(k, 0))) \
+                           FROM (SELECT k FROM unnest($1::text[]) WITH ORDINALITY AS f(k, n) ORDER BY n) ordered), \
+                        pg_advisory_xact_lock(hashtextextended($2, 0))",
+            )
+            .bind(&keys)
+            .bind(stream_lock_key(
+                tenant,
+                task.run_id.as_uuid(),
+                task.step_id,
+                i32::try_from(task.fence.attempt).unwrap_or(i32::MAX),
+                i64::try_from(task.fence.generation).unwrap_or(i64::MAX),
+            ))
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query(
+                "SELECT count(pg_advisory_xact_lock_shared(hashtextextended(k, 0))) \
+                   FROM (SELECT k FROM unnest($1::text[]) WITH ORDINALITY AS f(k, n) ORDER BY n) ordered",
+            )
+            .bind(&keys)
+            .execute(&mut *tx)
+            .await?;
+        }
         let stored: Vec<(String, Option<Uuid>, i64)> = sqlx::query_as(
             "SELECT resource, namespace_id, max_value FROM quota_limits \
               WHERE tenant_id = $1 AND resource = ANY($2) AND (namespace_id IS NULL OR namespace_id = $3) \
@@ -545,7 +566,9 @@ impl Ingest {
                     ceiling_reason = CASE WHEN $8 AND ceiling_reason IS NULL THEN 'attempt_bytes' ELSE ceiling_reason END, \
                     first_at = coalesce(first_at, clock_timestamp()), last_at = clock_timestamp(), \
                     expires_at = clock_timestamp() + make_interval(days => retention_days::integer), \
-                    final_at = CASE WHEN $9 THEN coalesce(final_at, clock_timestamp()) ELSE final_at END \
+                    final_at = CASE WHEN $9 THEN coalesce(final_at, clock_timestamp()) ELSE final_at END, \
+                    last_stored_xid = CASE WHEN $10 AND $4 > 0 \
+                        THEN GREATEST(coalesce(last_stored_xid, '0'::xid8), pg_current_xact_id()) ELSE last_stored_xid END \
               WHERE tenant_id = $1 AND stream_id = $2",
         )
         .bind(tenant)
@@ -557,6 +580,7 @@ impl Ingest {
         .bind(dropped_by_server)
         .bind(over)
         .bind(final_batch)
+        .bind(self.stream_lock)
         .execute(&mut *tx)
         .await?;
         // T10: the commit runs the finalizer (the log fence and the tenant usage row).
@@ -626,6 +650,236 @@ pub async fn send_until(
     }
 }
 
+// ---------------------------------------------------------------------------------- the carry (T041-35)
+
+/// The application name a carrying report's backend takes in CA, so the sampler can tell it apart.
+pub const CARRY_APPLICATION: &str = "spike041carry";
+
+/// The attempt's stream lock (design 041 section 2a, L1b): an advisory key of tenant, run, step, attempt and generation.
+fn stream_lock_key(tenant: Uuid, run: Uuid, step: Uuid, attempt: i32, generation: i64) -> String {
+    format!("step-log-stream:{tenant}:{run}:{step}:{attempt}:{generation}")
+}
+
+/// What CB reads: the three resources' rows as arrays (names, namespaces, values) and the tenant's usage.
+#[cfg(feature = "perf-spike")]
+type PolicyRead = (
+    Option<Vec<String>>,
+    Option<Vec<Option<Uuid>>>,
+    Option<Vec<i64>>,
+    Option<i64>,
+);
+
+/// The carry of design 041 section 2a, statements CA to CE of data-model.md §8a, run by the report hook inside the
+/// report transaction of a root attempt, before its commit. It plans inline the two cases the workloads meet: a new
+/// stream, and a stream holding one batch, every record kept.
+#[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+pub struct CarryHook {
+    /// Records per carry.
+    pub records: usize,
+    pub bytes: usize,
+    pub calls: AtomicU64,
+    pub written: AtomicU64,
+    pub contended: AtomicU64,
+    pub neither: AtomicU64,
+    pub times: std::sync::Mutex<Vec<Duration>>,
+}
+
+impl CarryHook {
+    pub fn new(records: usize, bytes: usize) -> Self {
+        Self {
+            records,
+            bytes,
+            calls: AtomicU64::new(0),
+            written: AtomicU64::new(0),
+            contended: AtomicU64::new(0),
+            neither: AtomicU64::new(0),
+            times: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    #[cfg(feature = "perf-spike")]
+    #[allow(clippy::too_many_lines)]
+    async fn carry(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        a: &sagat_infra_postgres::report_hook::ReportedAttempt,
+    ) -> Result<(), sqlx::Error> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let started = Instant::now();
+        let keys: Vec<String> = RESOURCES
+            .iter()
+            .flat_map(|resource| {
+                [
+                    format!("quota-policy:{resource}:{}", a.tenant),
+                    format!("quota-policy:{resource}:{}:{}", a.tenant, a.namespace),
+                ]
+            })
+            .collect();
+        // CA: the fences and the stream lock, tried, never waited for.
+        let (_, fences, stream_lock): (String, Option<bool>, bool) = sqlx::query_as(
+            "SELECT set_config('application_name', $3, true), \
+                    (SELECT bool_and(pg_try_advisory_xact_lock_shared(hashtextextended(k, 0))) \
+                       FROM (SELECT k FROM unnest($1::text[]) WITH ORDINALITY AS f(k, n) ORDER BY n) ordered), \
+                    pg_try_advisory_xact_lock(hashtextextended($2, 0))",
+        )
+        .bind(&keys)
+        .bind(stream_lock_key(a.tenant, a.run, a.step, a.attempt, a.generation))
+        .bind(CARRY_APPLICATION)
+        .fetch_one(&mut *conn)
+        .await?;
+        if fences != Some(true) || !stream_lock {
+            self.contended.fetch_add(1, Ordering::Relaxed);
+            self.record(started);
+            return Ok(());
+        }
+        // CB: the three resources' rows and the tenant's allowance, read after the locks are held.
+        let (names, scopes, values, _usage): PolicyRead = sqlx::query_as(
+            "SELECT array_agg(resource), array_agg(namespace_id), array_agg(max_value), \
+                    (SELECT log_bytes FROM tenant_retained_usage WHERE tenant_id = $1) \
+               FROM (SELECT resource, namespace_id, max_value FROM quota_limits \
+                      WHERE tenant_id = $1 AND resource = ANY($2) AND (namespace_id IS NULL OR namespace_id = $3) \
+                     UNION ALL SELECT resource, NULL::uuid, max_value FROM quota_ceilings \
+                      WHERE tenant_id = $1 AND resource = ANY($2)) q",
+        )
+        .bind(a.tenant)
+        .bind(RESOURCES.map(str::to_owned).to_vec())
+        .bind(a.namespace)
+        .fetch_one(&mut *conn)
+        .await?;
+        let stored: Vec<(String, Option<Uuid>, i64)> = names
+            .unwrap_or_default()
+            .into_iter()
+            .zip(scopes.unwrap_or_default())
+            .zip(values.unwrap_or_default())
+            .map(|((n, s), v)| (n, s, v))
+            .collect();
+        if value_of(&stored, RESOURCES[0], ATTEMPT_RECORDS) == 0 {
+            self.neither.fetch_add(1, Ordering::Relaxed);
+            self.record(started);
+            return Ok(());
+        }
+        let retention = i32::try_from(value_of(&stored, RESOURCES[2], i64::from(RETENTION_DAYS)))
+            .unwrap_or(RETENTION_DAYS);
+        // CC: a new stream; the NOT EXISTS keeps the insert from reaching a unique check that could wait.
+        let created: Option<i64> = sqlx::query_scalar(
+            "INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node, \
+                 instance_path_nodes, instance_path_indices, attempt, generation, retention_days, last_at, expires_at) \
+             SELECT $1, $2, $3, $4, $5, $6, '{}'::text[], '{}'::integer[], $7, $8, $9, clock_timestamp(), \
+                    clock_timestamp() + make_interval(days => $9) \
+              WHERE NOT EXISTS (SELECT 1 FROM spike_041.step_log_streams WHERE tenant_id = $1 AND run_id = $4 \
+                                   AND step_id = $5 AND attempt = $7 AND generation = $8 AND source = 'worker') \
+             ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING \
+             RETURNING stream_id",
+        )
+        .bind(a.tenant)
+        .bind(Uuid::new_v4())
+        .bind(a.namespace)
+        .bind(a.run)
+        .bind(a.step)
+        .bind(&a.node)
+        .bind(a.attempt)
+        .bind(a.generation)
+        .bind(retention)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let (stream_id, last_sequence) = if let Some(id) = created {
+            (id, 0)
+        } else {
+            // CC′: the existing stream, locked only if free.
+            let row = sqlx::query(
+                "SELECT stream_id, last_sequence, final_at IS NOT NULL AS final_recorded, \
+                        (removed_at IS NOT NULL OR expires_at <= clock_timestamp()) AS removed, \
+                        (last_stored_xid IS NULL OR last_stored_xid < pg_current_xact_id()) AS in_order \
+                   FROM spike_041.step_log_streams \
+                  WHERE tenant_id = $1 AND run_id = $2 AND step_id = $3 AND attempt = $4 AND generation = $5 \
+                    AND source = 'worker' \
+                    FOR UPDATE SKIP LOCKED",
+            )
+            .bind(a.tenant)
+            .bind(a.run)
+            .bind(a.step)
+            .bind(a.attempt)
+            .bind(a.generation)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let Some(row) = row else {
+                self.contended.fetch_add(1, Ordering::Relaxed);
+                self.record(started);
+                return Ok(());
+            };
+            let removed: bool = row.try_get("removed")?;
+            let final_recorded: bool = row.try_get("final_recorded")?;
+            let in_order: bool = row.try_get("in_order")?;
+            if removed || final_recorded || !in_order {
+                self.neither.fetch_add(1, Ordering::Relaxed);
+                self.record(started);
+                return Ok(());
+            }
+            (
+                row.try_get("stream_id")?,
+                row.try_get::<i64, _>("last_sequence")?,
+            )
+        };
+        // The plan, inline: every record kept, numbered after the stream's last sequence.
+        let batch = records(last_sequence + 1, self.records, self.bytes);
+        let highest = last_sequence + i64::try_from(self.records).unwrap_or(0);
+        // CD: the kept lines.
+        let inserted: Vec<i32> = sqlx::query_scalar(
+            "INSERT INTO spike_041.step_log_lines (tenant_id, stream_id, sequence, run_id, worker_time, level, kind, message) \
+             SELECT $1, $2, s, $3, clock_timestamp(), 'info', 'line', m FROM unnest($4::bigint[], $5::text[]) AS u(s, m) \
+             ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING RETURNING octet_length(message)",
+        )
+        .bind(a.tenant)
+        .bind(stream_id)
+        .bind(a.run)
+        .bind(batch.iter().map(|r| r.sequence).collect::<Vec<_>>())
+        .bind(batch.iter().map(|r| r.message.as_str()).collect::<Vec<_>>())
+        .fetch_all(&mut *conn)
+        .await?;
+        let stored_bytes: i64 = inserted.iter().map(|n| i64::from(*n)).sum();
+        // CE: the counters, the final mark and the order guard.
+        sqlx::query(
+            "UPDATE spike_041.step_log_streams SET last_sequence = GREATEST(last_sequence, $3), \
+                    records = records + $4, bytes = bytes + $5, \
+                    first_at = coalesce(first_at, clock_timestamp()), last_at = clock_timestamp(), \
+                    expires_at = clock_timestamp() + make_interval(days => retention_days::integer), \
+                    final_at = clock_timestamp(), \
+                    last_stored_xid = CASE WHEN $4 > 0 \
+                        THEN GREATEST(coalesce(last_stored_xid, '0'::xid8), pg_current_xact_id()) ELSE last_stored_xid END \
+              WHERE tenant_id = $1 AND stream_id = $2",
+        )
+        .bind(a.tenant)
+        .bind(stream_id)
+        .bind(highest)
+        .bind(i32::try_from(inserted.len()).unwrap_or(i32::MAX))
+        .bind(stored_bytes)
+        .execute(&mut *conn)
+        .await?;
+        self.written.fetch_add(1, Ordering::Relaxed);
+        self.record(started);
+        Ok(())
+    }
+
+    #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+    fn record(&self, started: Instant) {
+        if let Ok(mut times) = self.times.lock() {
+            times.push(started.elapsed());
+        }
+    }
+}
+
+#[cfg(feature = "perf-spike")]
+impl sagat_infra_postgres::report_hook::ReportHook for CarryHook {
+    fn on_report_commit<'a>(
+        &'a self,
+        conn: &'a mut sqlx::PgConnection,
+        attempt: &'a sagat_infra_postgres::report_hook::ReportedAttempt,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), sqlx::Error>> + Send + 'a>>
+    {
+        Box::pin(self.carry(conn, attempt))
+    }
+}
+
 // ---------------------------------------------------------------------------------- the driver
 
 /// The workflow a configuration runs.
@@ -655,6 +909,11 @@ pub struct RowSpec {
     pub single_final: bool,
     /// Chunk rows instead of one row per line (O041-021).
     pub chunk: bool,
+    /// T041-35: the records each completion carries (the report hook is installed); with `admission`, each step
+    /// first sends one non-final batch of `lines` and awaits its answer (workload (g)).
+    pub carry: Option<usize>,
+    /// T041-35 (f): the completion's output is `{}`, which stores nothing new.
+    pub empty_output: bool,
 }
 
 pub struct RowResult {
@@ -669,6 +928,13 @@ pub struct RowResult {
     pub commit_waits: (u64, u64),
     pub deltas_bytes: (i64, i64),
     pub held_for: Option<Duration>,
+    /// T041-35: the carry hook's counters (calls, written, contended, neither) and statement times, sorted. Read
+    /// only by the carry spike, which needs `perf-spike`.
+    #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+    pub carry: Option<(u64, u64, u64, u64, Vec<Duration>)>,
+    /// 10 ms samples of a commit wait whose blocker was a carrying report.
+    #[cfg_attr(not(feature = "perf-spike"), allow(dead_code))]
+    pub carry_waits: u64,
 }
 
 /// A 1 KiB output that differs per task, so every completion stores a payload not yet stored.
@@ -737,9 +1003,26 @@ pub async fn run_row(
     activities: &[&str],
 ) -> RowResult {
     let fanout = matches!(spec.shape, Shape::Fanout { .. });
+    let hook = spec
+        .carry
+        .map(|records| Arc::new(CarryHook::new(records, spec.lines.1)));
     let mut apis = Vec::new();
     for _ in 0..spec.api_replicas {
         let mut replica = w.replica_with_pool(crate::API_POOL).await;
+        #[cfg(not(feature = "perf-spike"))]
+        assert!(hook.is_none(), "a carry row needs `--features perf-spike`");
+        #[cfg(feature = "perf-spike")]
+        if let Some(hook) = &hook {
+            let hook: Arc<dyn sagat_infra_postgres::report_hook::ReportHook> = hook.clone();
+            replica.store = replica.store.clone().with_report_hook(hook);
+            replica.workers = sagat_application::worker::WorkerService::new(
+                replica.store.clone(),
+                sagat_application::clock::SystemClock,
+                sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+                sagat_application::entropy::SystemEntropy,
+                sagat_application::worker::WorkerSettings::default(),
+            );
+        }
         if fanout {
             // Steps inside a collection need the scoped claim and report path (protocol 1.5).
             replica.store = replica.store.clone().with_scoped_worker_protocol();
@@ -762,6 +1045,7 @@ pub async fn run_row(
                 admission: Admission::new(cap, tickets),
                 tally: Arc::clone(&tally),
                 chunk: spec.chunk,
+                stream_lock: spec.carry.is_some(),
             })
         })
         .collect();
@@ -858,26 +1142,31 @@ pub async fn run_row(
     let sampler = tokio::spawn({
         let (pool, stop) = (w.db.pool.clone(), Arc::clone(&stop));
         async move {
-            let (mut waits, mut by_ingest) = (0u64, 0u64);
+            let (mut waits, mut by_ingest, mut by_carry) = (0u64, 0u64, 0u64);
             while !stop.load(Ordering::Relaxed) {
-                let row: Result<(i64, i64), _> = sqlx::query_as(
+                let row: Result<(i64, i64, i64), _> = sqlx::query_as(
                     "SELECT count(*), count(*) FILTER (WHERE EXISTS ( \
                          SELECT 1 FROM pg_stat_activity b WHERE b.pid = ANY (pg_blocking_pids(a.pid)) \
-                            AND b.application_name = $1)) \
+                            AND b.application_name = $1)), \
+                            count(*) FILTER (WHERE EXISTS ( \
+                         SELECT 1 FROM pg_stat_activity b WHERE b.pid = ANY (pg_blocking_pids(a.pid)) \
+                            AND b.application_name = $2)) \
                        FROM pg_stat_activity a \
                       WHERE a.wait_event_type = 'Lock' AND a.backend_type = 'client backend' \
                         AND a.pid <> pg_backend_pid() AND a.application_name <> $1 AND a.query = 'COMMIT'",
                 )
                 .bind(INGEST_APPLICATION)
+                .bind(CARRY_APPLICATION)
                 .fetch_one(&pool)
                 .await;
-                if let Ok((n, m)) = row {
+                if let Ok((n, m, c)) = row {
                     waits += u64::try_from(n).unwrap_or(0);
                     by_ingest += u64::try_from(m).unwrap_or(0);
+                    by_carry += u64::try_from(c).unwrap_or(0);
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            (waits, by_ingest)
+            (waits, by_ingest, by_carry)
         }
     });
     let holder = if spec.hold {
@@ -901,6 +1190,8 @@ pub async fn run_row(
             let ingest = ingests[n % spec.api_replicas].clone();
             let lines = spec.lines;
             let single = spec.single_final;
+            let carrying = spec.carry.is_some();
+            let empty_output = spec.empty_output;
             let patience = if matches!(spec.shape, Shape::Fanout { .. }) {
                 50
             } else {
@@ -926,7 +1217,26 @@ pub async fn run_row(
                     }
                     empty = 0;
                     for task in &tasks {
-                        if let Some(ingest) = &ingest {
+                        if carrying && let Some(ingest) = &ingest {
+                            // (g): one batch before the report, its answer awaited, as a long step's SDK does.
+                            let flush = Instant::now();
+                            let batch = records(1, lines.0, lines.1);
+                            let sent = send_until(
+                                ingest,
+                                session,
+                                task,
+                                &batch,
+                                false,
+                                0,
+                                flush + Duration::from_secs(2),
+                                &mut services,
+                            )
+                            .await;
+                            if sent.is_none() {
+                                ingest.tally.flush_given_up.fetch_add(1, Ordering::Relaxed);
+                            }
+                            flushes.push(flush.elapsed());
+                        } else if let Some(ingest) = &ingest {
                             let flush = Instant::now();
                             let deadline = flush + Duration::from_secs(2);
                             let batch = records(1, lines.0, lines.1);
@@ -986,7 +1296,11 @@ pub async fn run_row(
                             .complete(
                                 &session.principal,
                                 &crate::support::engine::task_ref(task),
-                                &output(task),
+                                &if empty_output {
+                                    b"{}".to_vec()
+                                } else {
+                                    output(task)
+                                },
                                 &format!("done-{}", task.task_id()),
                             )
                             .await
@@ -1014,7 +1328,8 @@ pub async fn run_row(
     } else {
         None
     };
-    let commit_waits = sampler.await.expect("the sampler");
+    let (waits, by_ingest, carry_waits) = sampler.await.expect("the sampler");
+    let commit_waits = (waits, by_ingest);
     let deltas_after = deltas_size(&w.db.pool).await;
     let (mut completes, mut flushes, mut services) = (Vec::new(), Vec::new(), Vec::new());
     let mut finished = started;
@@ -1068,6 +1383,18 @@ pub async fn run_row(
         commit_waits,
         deltas_bytes: (deltas_before, deltas_after),
         held_for,
+        carry: hook.map(|hook| {
+            let mut times = hook.times.lock().map(|t| t.clone()).unwrap_or_default();
+            times.sort_unstable();
+            (
+                hook.calls.load(Ordering::Relaxed),
+                hook.written.load(Ordering::Relaxed),
+                hook.contended.load(Ordering::Relaxed),
+                hook.neither.load(Ordering::Relaxed),
+                times,
+            )
+        }),
+        carry_waits,
     }
 }
 
@@ -1096,6 +1423,7 @@ pub async fn full_batches(
         admission: Admission::new(cap, tickets),
         tally: Arc::clone(&tally),
         chunk: false,
+        stream_lock: false,
     };
     let session = w.session_as(&w.worker, &["act.big"], 1000).await;
     let mut services = Vec::new();

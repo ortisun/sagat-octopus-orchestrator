@@ -146,6 +146,9 @@ pub struct PgRunStore {
     verify_skipped_loads: bool,
     /// The deployment's `lake.enabled` (feature 035): whether a run may carry an Iceberg write. Off unless set.
     pub(crate) lake_enabled: bool,
+    /// Design 041's spike only: the hook a report transaction runs before its commit.
+    #[cfg(feature = "perf-spike")]
+    report_hook: crate::report_hook::HookSlot,
 }
 
 impl PgRunStore {
@@ -160,7 +163,17 @@ impl PgRunStore {
             scoped_worker_protocol: false,
             verify_skipped_loads: false,
             lake_enabled: false,
+            #[cfg(feature = "perf-spike")]
+            report_hook: crate::report_hook::HookSlot::default(),
         }
+    }
+
+    /// Design 041's spike T041-35 only: runs `hook` in every root report transaction, before its commit.
+    #[cfg(feature = "perf-spike")]
+    #[must_use]
+    pub fn with_report_hook(mut self, hook: Arc<dyn crate::report_hook::ReportHook>) -> Self {
+        self.report_hook = crate::report_hook::HookSlot(Some(hook));
+        self
     }
 
     /// Makes every command check that a projection its definition excludes is in fact empty. For
@@ -456,6 +469,10 @@ impl PgRunStore {
             chain_lock,
             initialize_chain: false,
             cancelled_waits: Vec::new(),
+            #[cfg(feature = "perf-spike")]
+            report_hook: self.report_hook.clone(),
+            #[cfg(feature = "perf-spike")]
+            reported_attempt: None,
         }))
     }
 
@@ -1526,6 +1543,10 @@ impl RunStore for PgRunStore {
                     chain_lock: None,
                     initialize_chain: true,
                     cancelled_waits: Vec::new(),
+                    #[cfg(feature = "perf-spike")]
+                    report_hook: self.report_hook.clone(),
+                    #[cfg(feature = "perf-spike")]
+                    reported_attempt: None,
                 }));
             }
         }
@@ -3840,6 +3861,11 @@ pub struct PgRunTx {
     /// How long each approval request this transaction cancelled had waited, recorded as
     /// `workflow_approval_wait_seconds{outcome="cancelled"}` when (and only when) it commits.
     cancelled_waits: Vec<f64>,
+    /// Design 041's spike only: the store's report hook, and the attempt this transaction reported.
+    #[cfg(feature = "perf-spike")]
+    report_hook: crate::report_hook::HookSlot,
+    #[cfg(feature = "perf-spike")]
+    reported_attempt: Option<crate::report_hook::ReportedAttempt>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -5631,6 +5657,14 @@ impl RunTx for PgRunTx {
                     },
                 })?;
         }
+        #[cfg(feature = "perf-spike")]
+        if let (Some(hook), Some(attempt)) =
+            (self.report_hook.0.clone(), self.reported_attempt.take())
+        {
+            hook.on_report_commit(&mut self.tx, &attempt)
+                .await
+                .map_err(store_error)?;
+        }
         self.tx.commit().await.map_err(store_error)?;
         for waited in self.cancelled_waits {
             metrics::histogram!(
@@ -7287,6 +7321,18 @@ impl PgRunTx {
         let switch_case_id = stored_switch_case_id(&step);
         let attempt = i32::try_from(step.attempt()).map_err(|_| corrupt("attempt"))?;
         let generation = i64::try_from(step.generation()).map_err(|_| corrupt("generation"))?;
+        #[cfg(feature = "perf-spike")]
+        if reported.is_some() && self.report_hook.0.is_some() {
+            self.reported_attempt = Some(crate::report_hook::ReportedAttempt {
+                tenant: self.info.tenant_id.as_uuid(),
+                namespace: self.info.namespace_id.as_uuid(),
+                run: self.info.run_id.as_uuid(),
+                step: step_uuid,
+                node: node.as_str().to_owned(),
+                attempt,
+                generation,
+            });
+        }
         let inserted = !self.stored.contains(&instance);
         // The secrets the step declares, copied onto its row so that the claim query can leave out
         // the steps a worker is not entitled to receive (G48). None when it declares none.
