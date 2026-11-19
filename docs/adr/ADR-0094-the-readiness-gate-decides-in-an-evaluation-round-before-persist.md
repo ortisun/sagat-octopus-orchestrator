@@ -1,8 +1,8 @@
 # ADR-0094: The readiness gate decides in an evaluation round, before `persist`
 
-**Status:** Proposed
-**Decided by:** agent proposal (feature 022, T022-096, 2026-11-19) after the security, correctness and architecture reviews of that day (`specs/022-flow-control-step-policies/reviews/2026-11-18/`); the owner accepts or changes it (O1171 of feature 022)
-**Refines / supersedes:** would refine ADR-0089 decision 2 ("One adapter at the persistence point"), where it says that `persist` collects the gate keys after the reducer. The rest of ADR-0089 stands, decision 1 (the reducer's mapping) included.
+**Status:** Accepted (2026-11-19, OD-2026-11-19-3, "Sim, como recomendado": O1171 option (a))
+**Decided by:** agent proposal (feature 022, T022-096, 2026-11-19) after the security, correctness and architecture reviews of that day (`specs/022-flow-control-step-policies/reviews/2026-11-18/`); accepted by the owner (OD-2026-11-19-3)
+**Refines / supersedes:** refines ADR-0089 decision 2 ("One adapter at the persistence point"), where it says that `persist` collects the gate keys after the reducer. The rest of ADR-0089 stands, decision 1 (the reducer's mapping) included.
 **Enforced by:** `crates/domain/tests/readiness_gate.rs` (the planner asks `Evaluation::Gates`, an answer that leaves a declared gate undecided or fails anything but an asked step's key is refused); `integration_flow_control_step_policies::readiness` (one test per readiness source, the release and the decision on one key counted once, the sorted lock order with a held lock); `verify_run` (the journal alone agrees; invariant 11); `persist` refuses to write a gated step waiting without a decision.
 
 ## Context

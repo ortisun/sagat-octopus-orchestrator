@@ -160,4 +160,10 @@ Accepted by the owner on 2026-11-13 (OD-2026-11-13-17); the "Decided by" line ab
 The reviews of feature 022's release 0.3.0 slice found that decision 3's step permit at claim leaves
 permit-less steps `READY` in the claim's window and that decision 5's strict oldest-first per waiter shard
 limits throughput and starves dual-gated heads. [ADR-0089](ADR-0089-a-gated-step-waits-outside-ready-and-one-fenced-grant-routine-serves-every-waiter-by-key.md)
-(proposed) would supersede those two decisions; until the owner decides, they stand as accepted.
+(proposed at the time) would supersede those two decisions; it was accepted the same day (OD-2026-11-13-19).
+
+Note (2026-11-19, OD-2026-11-19-2): the last sentence of decision 7 (no new digest key version while any holder or waiter
+exists under the old one) is superseded by ADR-0093, accepted with the operator's force: a key version is rotated per key
+with live rows, and an emergency rotation (the operator's force, ADR-0093 decision 5) may over-admit a key by at most what
+its old row holds until it drains; meanwhile the order of decision 5 holds within each of the key's two rows, not across
+them.

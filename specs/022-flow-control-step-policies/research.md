@@ -584,6 +584,37 @@ taken after `git grep D022-04` on every `origin/*` branch.
   - *Fitness function*: only `execution/readiness_gate.rs` and `execution/gate_queue.rs` write holder, waiter and grant
     rows (`scripts/check-architecture.py`, `gate_row_write_errors`).
   - Reviews of 2026-11-19 (second set) in `reviews/2026-11-19/`, with their resolutions.
+- **D022-046 — The operator's force ends a rotation at once (T022-095, T022-108; ADR-0093 decision 5; OD-2026-11-19-2;
+  2026-11-19, revised after the reviews of 2026-11-20).** The owner answered O1170 (a) with (b) for incidents. The force
+  is a separate, operator-only command, `flow_control_key_force_retire(version, actor, reason)` (migration
+  `20270202000000`), rather than a flag on the activation: it applies only to a `RETIRING` version, so an emergency
+  rotation away from a leaked active key is the ordinary activation of a successor followed by the force (one
+  transaction if the operator wants), and a leaked retiring key is forced out without a new version. It takes the
+  version table `EXCLUSIVE`, as the activation does, so it waits for every decider in flight and every later decider
+  waits for it. From its commit `flow_control_key_versions_in_force()` no longer answers that version: no process needs
+  its key, a key decided afterwards is filed under the active version (a second row), and the old row keeps its holders,
+  grants and waiters, gains no waiter (a decider files a waiter only under the row it resolved; only the gate's two files
+  write waiter rows) and grants only its own waiters within its own limit. The over-admission is therefore, at any
+  moment, at most what the old row holds at that moment (never more than its limit), until its holders and waiters drain;
+  order holds within each row, not across them (the exception to ADR-0088 decision 2 and ADR-0056 decision 5 that
+  ADR-0093 states; O1174 asks the owner to confirm this reading of "its old row's holders"). One forced version drains at
+  a time (`FORCED_VERSION_DRAINING`), so a key has at most two rows (reviews of 2026-11-20). No release, grant or timeout
+  path digests a key, so no Rust change is needed there; the readiness round's live-keys count reads only the rows of
+  the versions in force, so a key filed again after a force is not refused for the row it replaces (correctness review
+  M2). A rate window's grants never drain in this build (G022-003): a forced rate over-admission lasts until T022-074.
+  Every force is a row of the append-only `flow_control_key_forced_retirements` (operator and reason each one line and
+  bounded as typed, `session_user`, rows left); the down migration refuses while one is on the record.
+  `flow_control_key_version_runs(version)` lists the runs whose holders, waiters or grants use the version's rows, for
+  O1170 (a). Evidence: `integration_flow_control_step_policies::{rotation::a_forced_retirement_over_admits_a_key_by_at_most_its_old_rows_holders_until_they_drain, rotation::a_key_filed_again_after_a_force_is_not_refused_by_the_live_keys_ceiling, migrations::the_force_is_the_operators_audited_and_retires_only_a_retiring_version}`.
+- **D022-047 — The live-keys overshoot is documented, not locked (G022-002; OD-2026-11-19-4; 2026-11-19).** The
+  readiness round counts the namespace's committed semaphore rows before it files a key (`refused_by_ceilings`) and
+  creates new keys while the count plus its new keys stays within the ceiling. Transactions that create keys at the same
+  moment do not see each other's uncommitted rows, so together they can pass the ceiling by at most the new keys that
+  the others create. When each creates one key (one gated step decided per round, the usual case) that is at most their
+  number minus one, within the owner's bound; a round that decides several gated steps with distinct new keys (parallel
+  branches released in one commit) can add up to its own room, so the exact bound is in keys, not transactions (O1173).
+  The bound is written in `docs/runbooks/flow-control.md`; the text of `contracts/errors.md` (`FLOW_CONTROL_LIMIT`) gains
+  it when the approved texts are next revised with G1195.
 
 ## Gaps
 
@@ -621,18 +652,19 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1198 | No deployment configuration carries the digest keys (`KeyRing`) to the stores of the control plane and the engine: a gated step is refused `BINARY_CAPABILITY_MISSING` without them. Lands with the capability listing (D022-037). *Extended 2026-11-19 (D022-045): a scheduler replica needs the ring too; without it the grant pass grants nothing (`unsupported`) and keeps its keys due; the timeout routine does not need it.* | Open; capability listing |
 | G1199 | The readiness gate applies the declared `limit` and `queueTimeout`; the namespace's `concurrency_limit` and `flow_control_queue_timeout_ms` ceilings (`FlowControlCeilings`) are not read there yet, nor the live-keys ceiling (`FLOW_CONTROL_LIMIT` of FR-022-054) or a waiters-per-key bound (security review of 2026-11-19, Major): with distinct keys a caller can create key rows without bound in one namespace. No process may list the capabilities before these are applied. *Partly closed 2026-11-19 (D022-045): the namespace limit, queue timeout and live-keys ceilings apply at readiness (`FLOW_CONTROL_LIMIT`); step waiters are bounded by the plan per run and gated node, not per key. Open: a namespace ceiling of rate-limit keys and values (T022-077); run waiters per key (T022-022, T022-072).* | Open; T022-077, T022-022 |
 | G022-001 | The readiness gate records no metric or span yet (`concurrency_acquisitions_total`, `rate_limit_decisions_total`, `workflow.concurrency.acquire`, `workflow.rate_limit.admit`, rule 10; architecture review of 2026-11-19, M3). A grant counts as unleased until the pass records its lease (T022-074), so a rate-limited step key admits only `limit` steps in all until then. A key that yields `null` shares the group's single key. *Partly closed 2026-11-19 (D022-045): decisions, grants, timeouts, dequeues and returns of the step scope are counted after commit and spanned by group. Open: the wait histograms and waiter gauges, the grant-lag and unleased-grant series and their alerts (T022-082).* | Open; T022-082, T022-074, T022-104 |
-| G022-002 | The live-keys ceiling is checked without a namespace lock: concurrent transactions that each create a new key at the boundary can pass it by at most their number. | Open; O1172 |
+| G022-002 | The live-keys ceiling is checked without a namespace lock: concurrent transactions that each create a new key at the boundary can pass it by at most the new keys the others create (their number minus one when each creates one key). *Accepted 2026-11-19 by the owner (O1172 (a), OD-2026-11-19-4) for 0.3.0; the bound is documented in `docs/runbooks/flow-control.md` (D022-047). The exact bound is in keys when a round creates several (O1173).* | Accepted for one key per transaction (OD-2026-11-19-4); O1173 open |
 | G022-003 | A rate-limit grant's lease instant is recorded by a pass that is not built (T23, T022-074): a leased grant counts for ever, so a rate key that reached its limit frees only by a returned slot or a dequeue, and its window never rests until an age-out instant. T022-097's rate half rests on it. | Open; T022-074 |
 | G022-004 | `verify_run` does not check that a `wait_timed_out` comes at or after the deadline its `*.queued` journaled; the reservation counts an eligible waiter ahead without its own position (conservative). | Open |
 | G022-005 | An orphaned waiter (of a run that ended) is logged and counted (`outcome="orphan"`), not alerted; the runbook does not list the `gate_grant` and `gate_timeout` action kinds. | Open; T022-061, T022-082 |
+| G022-006 | The digest-key commands (activation, force, listing) are SQL functions with no audited API, CLI, span or metric (NFR-022-005, constitution VI; security review of 2026-11-20, finding 4); the force's history is append-only only for roles that may not drop its trigger, and a deployment where operators share the schema owner's login records whatever name they type and can retire a version by a direct `UPDATE` with no record (finding 5). The runbook tells operators to use their own login and never to edit the table by hand. | Open; T022-061, T022-082; a dedicated operator role |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
-| G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once.* | Open; runbook (T022-061) |
+| G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once. 2026-11-19 (D022-046): every force has an append-only history row with the database role and a reason; the runbook part is `docs/runbooks/flow-control.md`.* | Open; T022-061 (the rest of the runbook) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |
 | G1192 | An older replica's quota views read every stored limit and refuse a resource name its build does not know (`stored_limits`): a tenant that sets one of the new limits gets an error from an older replica's quota listing until it is upgraded. True of every resource added before. | Accepted; the next resource change could make the reader skip unknown names |
 | G1193 | Activating a digest key version that a live process was not configured with makes that process refuse every gated decision (`UnknownVersion`) until it is; the registry does not check the key versions processes hold. | Open; ADR-0093, runbook (T022-061) |
 | G1194 | The pinned operation baseline of `contract_iceberg_writes` digests each operation without following `$ref`, so a change to a shared parameter or schema (as the quota enum of D022-040) moves no digest; `contract_flow_control_step_policies::quotas` pins this enum to the code instead. | Accepted |
-| G1195 | Approved texts still describe the drain-first rotation: FR-022-020's last sentence, `data-model.md` (key versions, "only by an audited operator command"), G1163; `data-model.md` does not list `flow_control_group_declarations` or `activated_role`; `contracts/errors.md` does not say that `*_POLICY_INVALID` covers the namespace's ceiling of node-level declarations. Changing them makes the docs drafts again (constitution, Approval). | Open; with the owner's answer to O1170 / ADR-0093 |
-| G1196 | A rotation's progress (rows left under the retiring version) has no metric and no audit record; the operator learns it by running the command again. | Open; T022-061, T022-082 |
+| G1195 | Approved texts still describe the drain-first rotation: FR-022-020's last sentence, `data-model.md` (key versions, "only by an audited operator command"), G1163; `data-model.md` does not list `flow_control_group_declarations` or `activated_role`; `contracts/errors.md` does not say that `*_POLICY_INVALID` covers the namespace's ceiling of node-level declarations. Changing them makes the docs drafts again (constitution, Approval). *O1170 answered 2026-11-19 (OD-2026-11-19-2). Also out of date since the force (D022-046): FR-022-056's "no key is ever split between two rows" and SC-022-028 (a forced rotation splits a key into at most two rows), and `data-model.md` lacks `flow_control_key_forced_retirements`. The texts, and the bound of D022-047 in `contracts/errors.md`, are revised when the approved texts are next re-approved (a change makes them drafts again).* | Open; re-approval of the texts |
+| G1196 | A rotation's progress (rows left under the retiring version) has no metric and no audit record; the operator learns it by running the command again. *2026-11-19: likewise the rows left under a forced version (an over-admission in progress, D022-046); a force has an audit row, an activation does not.* | Open; T022-061, T022-082 |
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
 
 ## Owner questions
@@ -708,6 +740,7 @@ the owner wants more time on the ADR; (c) is not safe for a shared activity.
 
 ### O1170 — What ends a digest-key rotation that live rows keep open?
 
+**Answered 2026-11-19 (OD-2026-11-19-2, "Sim, como recomendado"): (a) with (b) for incidents — ADR-0093 accepted; an operator-only, audited force retires the old version at once, a key may over-admit by at most its old row's holders until they drain (built under T022-095, D022-046).**
 Asked 2026-11-16 (ADR-0093, proposed; security review S1, architecture review M2). As built, a rotation ends when the old
 version's last semaphore or window row goes, and a third version is refused until then. A run-level permit lives as long
 as its run, so one long-lived run of any tenant can keep a rotation open for weeks; an emergency rotation of a leaked key
@@ -724,6 +757,7 @@ safe and bounded by the workload, and a leak can be answered at once with a stat
 also accepts or changes ADR-0093 (it supersedes the last sentence of ADR-0056 decision 7).
 
 ### O1171 — May the readiness gate decide in an evaluation round before `persist` (ADR-0094)?
+**Answered 2026-11-19 (OD-2026-11-19-3, "Sim, como recomendado"): (a) — ADR-0094 accepted.**
 ADR-0089 decision 2 (accepted) puts the decision inside `persist`. The build (T022-096, D022-044) decides it in an
 evaluation round the planner asks for, before `persist`, because `persist` locks usage rows before it could lock a key and
 cannot route a key that fails to evaluate (ADR-0094, proposed). Options: (a) accept ADR-0094; (b) keep ADR-0089 decision 2
@@ -732,6 +766,7 @@ step instead of FR-022-054's failure route); (c) another placement. **Recommende
 owner answers.
 
 ### O1172 — May the live-keys ceiling be passed by concurrent key creations (G022-002)?
+**Answered 2026-11-19 (OD-2026-11-19-4, "Sim, como recomendado"): (a) — the bounded overshoot is accepted for 0.3.0 and documented (`docs/runbooks/flow-control.md`, D022-047); no new lock.**
 The readiness gate checks a step's new key against the namespace's live-keys ceiling in its own transaction, without a
 namespace lock (D022-045): transactions that each create a new key at the boundary at the same moment can pass it by at
 most their number. Options: (a) accept the bounded overshoot for 0.3.0 and document it (no new lock); (b) serialize key
@@ -739,6 +774,28 @@ creation per namespace with a transaction-scoped advisory lock taken before any 
 new key, and a new lock to keep in the one order); (c) a counter row per namespace kept by the key rows' triggers.
 **Recommended: (a)** for 0.3.0, the ceiling's purpose (no unbounded growth, the security review's Major) holding; (b)
 if the owner wants the ceiling exact.
+
+### O1173 — Is the live-keys overshoot bounded in keys rather than in transactions?
+Asked 2026-11-19 (D022-047), after OD-2026-11-19-4 accepted O1172 (a) as "at most the number of transactions creating
+keys at the same moment". That holds when each transaction creates one key. A round that releases several gated steps
+with distinct new keys in one commit (parallel branches) creates up to the room it saw, so concurrent rounds can pass the
+ceiling by up to the new keys the others create. Options: (a) **accept the bound in keys** (at most the new keys created
+by the other transactions of the same moment; each is bounded by the plan's gated steps per commit) and document it;
+(b) a round creates at most one new key without a namespace lock and takes the advisory lock of O1172 (b) to create more;
+(c) O1172 (b) for every new key. **Recommended: (a)**: the ceiling's purpose (no unbounded growth) holds, and the case
+needs several gated nodes released together at the boundary. Nothing is built differently until the owner answers.
+
+### O1174 — Does "at most its old row's holders" count the waiters the old row grants after the force?
+Asked 2026-11-20 (correctness review M1, D022-046). As built, a forced key's old row keeps its waiters and grants them
+within its own limit, so the key is over-admitted at any moment by what the old row holds then, which can grow back to
+its limit after the force while its waiters are granted (for instance a dual-gated head that waited on its other gate).
+Options: (a) **accept this reading**: the excess is the old row's holders at each moment, never more than its limit,
+until its holders and waiters drain; (b) the old row grants nothing after the force and its waiters are re-decided under
+the active version (a new journal transition from a dequeue back to a decision, its replay rule and `verify_run` check):
+the excess is then the holders at the force and falls as they finish; (c) the old row's waiters time out. **Recommended:
+(a)**: it is bounded by the limit and by the drain, needs no change to the journal, and keeps each waiter's place in
+its own row. (b) is the exact reading of the words, at the cost of a design change; nothing waits on the answer except
+the wording of ADR-0093 decision 5.
 
 ## Owner decision of 2026-11-13: throughput control in release 0.3.0
 
@@ -766,6 +823,20 @@ resources of the OpenAPI").
 - **OD-2026-11-16-2 — "Autorizar, ler o diff".** The quota-resource enum of the canonical OpenAPI gains the
   concurrency resources of T022-013 (D022-040). The pinned operation baseline of `contract_iceberg_writes` is changed
   once, after reading its diff; T022-013's evidence block records what was read and which digests moved.
+
+## Owner decisions of 2026-11-19
+
+Recorded in `docs/owner-decisions.md` (section "2026-11-19 — Feature 022: the digest-key rotation, the readiness round and
+the live-keys bound"). The assistant asked "Há seis decisões pendentes, todas com recomendação … Aceitas todas como
+recomendado?"; the owner answered "Sim, como recomendado".
+
+- **OD-2026-11-19-2 — O1170 (a) with (b) for incidents.** ADR-0093 is Accepted. The per-key rotation stands, and an
+  operator-only, audited force retires the old version at once for an emergency; a key may over-admit by at most its old
+  row's holders until they drain (T022-095).
+- **OD-2026-11-19-3 — O1171 (a).** ADR-0094 is Accepted: the readiness gate decides in an evaluation round before
+  `persist` (T022-096).
+- **OD-2026-11-19-4 — O1172 (a).** The live-keys ceiling may be overshot by at most the number of transactions creating
+  keys at the same moment, in 0.3.0; the bound is documented (G022-002).
 
 ## External semantics for rate limits (not re-read on 2026-11-13)
 

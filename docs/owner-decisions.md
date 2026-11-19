@@ -4,6 +4,19 @@ Decisions that only the product owner could take, with what each one unblocks. E
 recorded where the open item lived (gap register, ADR, runbook or specification). "Not built"
 means the decision is taken and the implementation is still to be done; it is not evidence.
 
+## 2026-11-19 — Feature 022: the digest-key rotation, the readiness round and the live-keys bound
+
+The fourth build of feature 022's 0.3.0 slice (pull request 237) left the owner six pending decisions, each with a
+recommendation. The assistant asked "Há seis decisões pendentes, todas com recomendação … Aceitas todas como
+recomendado?" and the owner answered "Sim, como recomendado" on 2026-11-19. The three rows of feature 022 follow; the
+other numbers of the 2026-11-19 range are recorded on the branches they belong to.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-19-2 | "Sim, como recomendado": O1170 option (a) with (b) for incidents. The per-key rotation of ADR-0093 is accepted: a rotation ends when the old version's last row goes, and the runbook tells the operator to wait for or cancel the runs that hold old keys. For an emergency (a leaked key) an operator-only, audited **force** retires the old version at once; a key may then have two rows until the old one drains, and its limit may be over-admitted by at most the holders of its old row. ADR-0093 is Accepted | owner | Decided; the force is built under T022-108 (ADR-0093 decision 5) | docs/adr/ADR-0093-*.md, specs/022-flow-control-step-policies/research.md O1170, tasks.md T022-095 |
+| OD-2026-11-19-3 | "Sim, como recomendado": O1171 option (a). The readiness gate decides in an evaluation round the planner asks for, before `persist` (ADR-0094); ADR-0089 decision 2 is refined accordingly. ADR-0094 is Accepted | owner | Decided | docs/adr/ADR-0094-*.md, specs/022-flow-control-step-policies/research.md O1171, tasks.md T022-096 |
+| OD-2026-11-19-4 | "Sim, como recomendado": O1172 option (a). In release 0.3.0 the namespace's live-keys ceiling is checked without a namespace lock and may be overshot by at most the number of transactions creating keys at the same moment; the bound is documented, no new lock is added | owner | Decided | specs/022-flow-control-step-policies/research.md O1172, G022-002, D022-047, docs/runbooks/flow-control.md section 4 |
+
 ## 2026-11-16 — Feature 022: the checklist deviations and the quota resources of the OpenAPI
 
 The foundation of the 0.3.0 slice of feature 022 (pull request 237) left two things that only the owner could settle:

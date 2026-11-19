@@ -161,3 +161,9 @@ driven by key, with a reservation rule instead of strict oldest-first) in
 [ADR-0089](ADR-0089-a-gated-step-waits-outside-ready-and-one-fenced-grant-routine-serves-every-waiter-by-key.md)
 (proposed). Decision 2's instant is read with `clock_timestamp()` after the window lock (feature 022
 NFR-022-008); this states what decision 2 already requires.
+
+Note (2026-11-19, OD-2026-11-19-2): the last sentence of decision 8 (no new digest key version while any waiter or grant
+exists under the old one) is superseded by ADR-0093: a key version is rotated per key with live rows. During an
+emergency rotation (ADR-0093 decision 5) a key may have two windows until the old one drains; each keeps decision 2's
+rule on its own, so the key admits at most what its old window still counts beyond its limit, and order holds within
+each window, not across them.

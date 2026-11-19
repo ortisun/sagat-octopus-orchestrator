@@ -26,7 +26,12 @@ const KINDS: [InstanceKind; 2] = [InstanceKind::ControlPlane, InstanceKind::Exec
 /// A world whose store runs the readiness gate: both switches on, a digest key ring whose version 1 is active, both
 /// capabilities activated for a fleet of processes that list them, and step gates admitted (tests only).
 pub async fn gated_world() -> World {
-    let ring = KeyRing::parse(&format!("1:{}", "5a".repeat(32))).expect("a key ring");
+    gated_world_with_keys(&format!("1:{}", "5a".repeat(32))).await
+}
+
+/// [`gated_world`], whose processes hold the digest key ring `ring` (`version:hex,...`); version 1 is activated.
+pub async fn gated_world_with_keys(ring: &str) -> World {
+    let ring = KeyRing::parse(ring).expect("a key ring");
     let w = super::engine::world_with_store(
         sagat_application::worker::WorkerSettings::default(),
         sagat_application::execution::BreakerPolicy::default(),

@@ -1259,3 +1259,184 @@ async fn the_rotation_migration_retires_what_the_old_command_left_and_its_down_r
         .expect("rolled back once the rotation is over");
     MIGRATOR.run(pool).await.expect("forward again");
 }
+
+// ------------------------------------------------------------------ the force of 2026-11-19 (OD-2026-11-19-2)
+
+/// The migration before the force's (`20270202000000`, ADR-0093 decision 5): the last flow-control migration.
+const BEFORE_FORCE: i64 = 20_270_130_000_700;
+
+async fn force_retire(
+    pool: &PgPool,
+    version: i16,
+    reason: &str,
+) -> Result<(String, i64), sqlx::Error> {
+    sqlx::query_as(
+        "SELECT out_outcome, out_rows FROM flow_control_key_force_retire($1, 'operator:incident', $2)",
+    )
+    .bind(version)
+    .bind(reason)
+    .fetch_one(pool)
+    .await
+}
+
+/// OD-2026-11-19-2: the force retires only a retiring version, is the operator's alone, needs a reason, lists the runs
+/// that hold the version's keys, is recorded in an append-only history, lets the next rotation start at once, and its
+/// down migration refuses while a forced retirement is on the record.
+#[tokio::test]
+async fn the_force_is_the_operators_audited_and_retires_only_a_retiring_version() {
+    let w = world().await;
+    let pool = &w.db.pool;
+    let runtime = w.db.runtime_pool().await;
+    let run = a_run(&w).await;
+    assert_eq!(activate_key(pool, 1).await.0, "ACTIVATED");
+    assert_eq!(
+        force_retire(pool, 1, "leaked").await.expect("answered"),
+        ("ACTIVE".to_owned(), 0),
+        "the active version is retired by activating a successor first"
+    );
+    assert_eq!(
+        force_retire(pool, 9, "leaked").await.expect("answered"),
+        ("UNKNOWN".to_owned(), 0)
+    );
+    semaphore(pool, run, 1).await;
+    holder(pool, run).await.expect("a holder");
+    assert_eq!(activate_key(pool, 2).await, ("ACTIVATED".to_owned(), 1));
+    assert_eq!(activate_key(pool, 3).await.0, "ROTATION_IN_PROGRESS");
+
+    // the reason is bounded as typed, padding included (security review of 2026-11-20, finding 1)
+    let padded = format!("x{}", " ".repeat(1_000));
+    for reason in ["", "   ", "line\nbreak", padded.as_str()] {
+        let refused = force_retire(pool, 1, reason).await.expect_err("no reason");
+        assert_eq!(db_error(refused).0, "22023", "{reason:?}");
+    }
+    // the operator's name is one line, as the reason (security review of 2026-11-20, finding 3)
+    for actor in [None, Some(""), Some("alice\nFORCED by bob")] {
+        let refused =
+            sqlx::query("SELECT * FROM flow_control_key_force_retire(1::smallint, $1, 'leaked')")
+                .bind(actor)
+                .fetch_one(pool)
+                .await
+                .expect_err("no such operator");
+        assert_eq!(db_error(refused).0, "22023", "{actor:?}");
+    }
+    let refused = force_retire(&runtime, 1, "leaked")
+        .await
+        .expect_err("not the runtime role's");
+    assert_eq!(db_error(refused).0, "42501");
+    for statement in [
+        "SELECT * FROM flow_control_key_version_runs(1::smallint)",
+        "SELECT * FROM flow_control_key_forced_retirements",
+    ] {
+        let refused = sqlx::query(statement)
+            .fetch_all(&runtime)
+            .await
+            .expect_err("the operator's");
+        assert_eq!(db_error(refused).0, "42501", "{statement}");
+    }
+
+    // what the operator waits for (or cancels) before an ordinary rotation can end
+    let holding: Vec<(Uuid, Uuid, Uuid, i64, i64, i64)> =
+        sqlx::query_as("SELECT * FROM flow_control_key_version_runs(1::smallint)")
+            .fetch_all(pool)
+            .await
+            .expect("the runs of version 1");
+    assert_eq!(holding, vec![(run.0, run.1, run.2, 1, 0, 0)]);
+
+    assert_eq!(
+        force_retire(pool, 1, "version 1 leaked")
+            .await
+            .expect("forced"),
+        ("FORCED".to_owned(), 1)
+    );
+    assert_eq!(versions_in_force(pool).await, (2, None));
+    assert_eq!(
+        counts(pool, run.0).await,
+        Some((1, 0)),
+        "its row lives on until it drains"
+    );
+    assert_eq!(
+        force_retire(pool, 1, "again").await.expect("answered"),
+        ("ALREADY_RETIRED".to_owned(), 1),
+        "with the rows it still has"
+    );
+    assert_eq!(
+        activate_key(pool, 1).await.0,
+        "RETIRED",
+        "never active again"
+    );
+    // a key row under 2, then the next rotation, which starts at once
+    sqlx::query(
+        "INSERT INTO concurrency_semaphores (tenant_id, namespace_id, pool, permit_scope, group_name, key_digest, \
+         key_version, key_shard, updated_at) VALUES ($1, $2, 'ORDINARY', 'RUN', '=flow-anchor', $3, 2, 7, clock_timestamp())",
+    )
+    .bind(run.0)
+    .bind(run.1)
+    .bind([8_u8; 32].as_slice())
+    .execute(pool)
+    .await
+    .expect("a key under 2");
+    assert_eq!(
+        activate_key(pool, 3).await,
+        ("ACTIVATED".to_owned(), 1),
+        "the next rotation starts at once"
+    );
+    // a second force while the first one's rows drain would split a key into three rows (reviews of 2026-11-20)
+    assert_eq!(
+        force_retire(pool, 2, "version 2 leaked too")
+            .await
+            .expect("answered"),
+        ("FORCED_VERSION_DRAINING".to_owned(), 1),
+        "the rows a force left under 1 drain first"
+    );
+
+    let recorded: Vec<(i16, i64, String, String)> = sqlx::query_as(
+        "SELECT version, rows_left, actor, reason FROM flow_control_key_forced_retirements ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("history");
+    assert_eq!(
+        recorded,
+        vec![(
+            1,
+            1,
+            "operator:incident".to_owned(),
+            "version 1 leaked".to_owned()
+        )]
+    );
+    for statement in [
+        "UPDATE flow_control_key_forced_retirements SET reason = 'nothing'",
+        "DELETE FROM flow_control_key_forced_retirements",
+        "TRUNCATE flow_control_key_forced_retirements",
+    ] {
+        let refused = sqlx::query(statement)
+            .execute(pool)
+            .await
+            .expect_err("append-only");
+        assert_eq!(db_error(refused).0, "23001", "{statement}");
+    }
+
+    sqlx::query("DELETE FROM concurrency_holders")
+        .execute(pool)
+        .await
+        .expect("drain");
+    assert_eq!(
+        force_retire(pool, 2, "version 2 leaked too")
+            .await
+            .expect("forced"),
+        ("FORCED".to_owned(), 1),
+        "once 1's rows are gone"
+    );
+    let forced: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM flow_control_key_forced_retirements")
+            .fetch_one(pool)
+            .await
+            .expect("history");
+    assert_eq!(forced, 2);
+    let refused = undo(pool, BEFORE_FORCE).await;
+    assert!(
+        format!("{refused:?}")
+            .contains("a forced retirement of a digest key version is on the record"),
+        "{refused:?}"
+    );
+}

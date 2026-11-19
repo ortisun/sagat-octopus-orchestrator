@@ -107,3 +107,7 @@ None yet; the tests named under "Enforced by" are required before acceptance of 
 implementation, plus the benchmark of feature 022 SC-022-029 (three engines, one key at 100 a second).
 Spec: `specs/022-flow-control-step-policies/spec.md` FR-022-019, FR-022-044, FR-022-046, FR-022-051..053;
 research: D022-019..023, O1169; reviews: `specs/022-flow-control-step-policies/reviews/2026-11-13/`.
+
+Note (2026-11-19, OD-2026-11-19-2 and OD-2026-11-19-3): decision 2 is refined by ADR-0094 (the readiness gate decides in
+an evaluation round the planner asks for, before `persist`), and decision 6's "the current keyed-digest version" reads
+"the versions in force" under ADR-0093. The rest stands.

@@ -4,7 +4,8 @@
 //! A deciding transaction (admission, readiness, grant, timeout) reads the digest key versions in force in its own
 //! transaction ([`key_versions`]), digests each key under them ([`sagat_application::keyed_digest::KeyRing::candidates`])
 //! and files its keys of one table with [`file_keys`]: during a rotation the row that exists under the retiring version
-//! wins, else the key is filed under the active one, so no key is ever split between two rows. The keys are locked in
+//! wins, else the key is filed under the active one, so no key is split between two rows (until an operator forces the
+//! retiring version out, ADR-0093 decision 5: then a key has at most two until the old one drains). The keys are locked in
 //! one order, by the digest each one resolved to (pool, scope, group, digest), which is the order every other writer of
 //! the same rows uses (D022-038); semaphores are filed before windows by the caller.
 //!

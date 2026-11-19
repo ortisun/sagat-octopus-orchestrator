@@ -187,7 +187,7 @@ impl PgRunTx {
             }
         }
         let refused = self
-            .refused_by_ceilings(&pending, &semaphores, &ceilings)
+            .refused_by_ceilings(&pending, &semaphores, &ceilings, versions)
             .await?;
         if !refused.is_empty() {
             // nothing is filed: the domain fails these steps and the next round decides the others
@@ -326,13 +326,15 @@ impl PgRunTx {
     /// The steps of this round a namespace ceiling refuses `FLOW_CONTROL_LIMIT` (G1199): a ceiling of zero (the effective
     /// limit or queue timeout), or a new step key beyond the live-keys ceiling (FR-022-054; counted on the semaphores,
     /// D022-043). The keys that exist cost one statement; only a round that would create a key counts the namespace's
-    /// keys. Not serialized between transactions: concurrent rounds that each create a key at the boundary can pass it
-    /// by at most their number (G022-002).
+    /// keys, under the versions in force only: a row a forced retirement left (ADR-0093 decision 5) is being replaced and
+    /// drains on its own, so the ceiling is passed by at most those rows meanwhile. Not serialized between transactions:
+    /// concurrent rounds pass it by at most the new keys the others create (G022-002, D022-047, O1173).
     async fn refused_by_ceilings(
         &mut self,
         pending: &[(usize, Pending)],
         semaphores: &[KeyToFile],
         ceilings: &sagat_domain::workflow::FlowControlCeilings,
+        versions: sagat_application::keyed_digest::KeyVersions,
     ) -> Result<Vec<(NodeId, sagat_domain::execution::FailureCode)>, StoreError> {
         let code = sagat_domain::execution::FailureCode::flow_control_limit;
         let mut refused: Vec<NodeId> = pending
@@ -386,11 +388,17 @@ impl PgRunTx {
                 }
             }
             if !new_keys.is_empty() {
+                let in_force: Vec<i16> = std::iter::once(versions.active)
+                    .chain(versions.retiring)
+                    .map(|v| i16::try_from(v).map_err(|_| corrupt("digest key version")))
+                    .collect::<Result<_, _>>()?;
                 let live: i64 = sqlx::query_scalar(
-                    "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2",
+                    "SELECT count(*) FROM concurrency_semaphores WHERE tenant_id = $1 AND namespace_id = $2 \
+                     AND key_version = ANY($3)",
                 )
                 .bind(self.info.tenant_id.as_uuid())
                 .bind(self.info.namespace_id.as_uuid())
+                .bind(&in_force)
                 .fetch_one(&mut *self.tx)
                 .await
                 .map_err(store_error)?;

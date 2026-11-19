@@ -218,7 +218,8 @@ pub struct KeyVersions {
 }
 
 /// A key's digests under the versions in force. The row filed under [`Self::retiring`] wins when it exists, else the key
-/// is filed under [`Self::active`]: no key is ever split between two rows during a rotation (FR-022-056).
+/// is filed under [`Self::active`]: no key is ever split between two rows during a rotation (FR-022-056), unless the
+/// operator forces the retiring version out (ADR-0093 decision 5), which leaves a key at most two rows until the old drains.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyCandidates {
     pub active: KeyedDigest,
