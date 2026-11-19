@@ -20,6 +20,8 @@ public class SagatException extends RuntimeException {
     private final String traceId;
     private final String reason;
     private final Long retryAfterMs;
+    private final String field;
+    private final String rule;
     // Known to the SDK alone: set by the SDK when the token provider failed before anything was sent, never read from an
     // answer, never derived from a reason string (a server must not be able to make a call repeatable by naming it).
     private final boolean tokenProviderFailure;
@@ -39,6 +41,8 @@ public class SagatException extends RuntimeException {
         this.retryable = builder.retryable != null ? builder.retryable : builder.code.retryableByDefault();
         this.traceId = builder.traceId != null && TRACE_ID.matcher(builder.traceId).matches() ? builder.traceId : "";
         this.reason = builder.reason == null ? null : Text.cut(builder.reason, 128);
+        this.field = builder.field == null ? null : Text.cut(builder.field, 512);
+        this.rule = builder.rule == null ? null : Text.cut(builder.rule, 64);
         this.retryAfterMs = builder.retryAfterMs == null ? null : Math.max(0, Math.min(builder.retryAfterMs, MAX_SERVER_WAIT_MS));
         this.tokenProviderFailure = builder.tokenProviderFailure;
     }
@@ -112,6 +116,19 @@ public class SagatException extends RuntimeException {
         return Optional.ofNullable(reason);
     }
 
+    /**
+     * The server's {@code details.field}, if any (design 043): a JSON pointer whose segments are names the version's
+     * {@code inputSchema} declares and array indices, never a value.
+     */
+    public Optional<String> field() {
+        return Optional.ofNullable(field);
+    }
+
+    /** The server's {@code details.rule}, if any (design 043): the closed keyword of the input schema that failed. */
+    public Optional<String> rule() {
+        return Optional.ofNullable(rule);
+    }
+
     /** From {@code Retry-After} / {@code retry-after-ms}, in milliseconds, if the server sent one. */
     public OptionalLong retryAfterMs() {
         return retryAfterMs == null ? OptionalLong.empty() : OptionalLong.of(retryAfterMs);
@@ -142,6 +159,8 @@ public class SagatException extends RuntimeException {
         private String traceId;
         private String reason;
         private Long retryAfterMs;
+        private String field;
+        private String rule;
         private Throwable cause;
         private boolean tokenProviderFailure;
 
@@ -183,6 +202,18 @@ public class SagatException extends RuntimeException {
         /** The wait the server asked for. */
         public Builder retryAfterMs(Long value) {
             this.retryAfterMs = value;
+            return this;
+        }
+
+        /** The server's {@code details.field} (design 043). */
+        public Builder field(String value) {
+            this.field = value;
+            return this;
+        }
+
+        /** The server's {@code details.rule} (design 043). */
+        public Builder rule(String value) {
+            this.rule = value;
             return this;
         }
 

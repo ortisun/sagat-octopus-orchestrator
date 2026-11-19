@@ -89,6 +89,7 @@
         "createdAt": "<time>",
         "deadline": null,
         "depth": 0,
+        "failureCode": "ITERATION_LIMIT",
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,

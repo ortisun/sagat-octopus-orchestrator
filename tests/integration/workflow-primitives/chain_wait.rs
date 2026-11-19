@@ -572,10 +572,31 @@ async fn write_directly(
         .await
 }
 
-fn selection(input: &Value) -> ContinuationSelection {
+/// The version the chain's current run pins: the one its successor's input is checked against (design 043).
+async fn chain_version(world: &World, chain: RunId) -> sagat_domain::definition::WorkflowVersionId {
+    let version: Uuid = sqlx::query_scalar(
+        "SELECT run.workflow_version_id FROM execution_chains chain \
+           JOIN runs run ON run.tenant_id=chain.tenant_id AND run.id=chain.current_run_id \
+         WHERE chain.tenant_id=$1 AND chain.chain_id=$2",
+    )
+    .bind(world.admin.tenant_id().as_uuid())
+    .bind(chain.as_uuid())
+    .fetch_one(&world.db.pool)
+    .await
+    .expect("chain version");
+    sagat_domain::definition::WorkflowVersionId::new(version)
+}
+
+fn selection(
+    input: &Value,
+    version: sagat_domain::definition::WorkflowVersionId,
+) -> ContinuationSelection {
     ContinuationSelection::new(
         NodeId::parse("rollover").expect("boundary"),
-        serde_json::to_vec(input).expect("input"),
+        sagat_application::run_input::CheckedRunInput::unchecked(
+            version,
+            serde_json::to_vec(input).expect("input"),
+        ),
         None,
         None,
     )
@@ -607,7 +628,10 @@ async fn the_store_refuses_a_selection_that_does_not_match_the_entry_the_definit
     let missing_key = write_directly(
         &waiting.world,
         waiting.chain,
-        selection(&json!({"key": "order-2"})),
+        selection(
+            &json!({"key": "order-2"}),
+            chain_version(&waiting.world, waiting.chain).await,
+        ),
     )
     .await;
     assert_eq!(missing_key, Err(ChainProgressError::RuntimeNotIntegrated));
@@ -641,16 +665,26 @@ async fn the_store_refuses_a_selection_that_does_not_match_the_entry_the_definit
     let stray_key = write_directly(
         &world,
         chain,
-        selection(&json!({"key": "order-2"}))
-            .with_correlation_key(CorrelationKey::parse("order-2").expect("key")),
+        selection(
+            &json!({"key": "order-2"}),
+            chain_version(&world, chain).await,
+        )
+        .with_correlation_key(CorrelationKey::parse("order-2").expect("key")),
     )
     .await;
     assert_eq!(stray_key, Err(ChainProgressError::RuntimeNotIntegrated));
     assert_eq!(segments(&world, chain).await, 1);
     assert!(
-        write_directly(&world, chain, selection(&json!({"key": "order-2"})))
-            .await
-            .is_ok(),
+        write_directly(
+            &world,
+            chain,
+            selection(
+                &json!({"key": "order-2"}),
+                chain_version(&world, chain).await
+            )
+        )
+        .await
+        .is_ok(),
         "the matching selection still commits"
     );
 }

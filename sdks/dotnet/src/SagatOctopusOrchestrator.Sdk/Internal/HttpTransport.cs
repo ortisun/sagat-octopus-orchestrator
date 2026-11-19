@@ -303,9 +303,14 @@ internal sealed class HttpTransport : IDisposable
         }
 
         string? reason = null;
+        string? field = null;
+        string? rule = null;
         if (envelope is { } found && found.TryGetProperty("details", out var details) && details.ValueKind == JsonValueKind.Object)
         {
             reason = StringOf(details, "reason");
+            // design 043: the pointer and the closed rule of a refused run input, as the server sent them
+            field = StringOf(details, "field") is { } pointer ? Limits.Cut(pointer, Limits.MaxMessage) : null;
+            rule = StringOf(details, "rule") is { } keyword ? Limits.Cut(keyword, Limits.MaxReason) : null;
         }
 
         // The envelope's trace id when it is one, else the header's, else none: a trace id that is not 32 hex characters is not repeated.
@@ -341,7 +346,11 @@ internal sealed class HttpTransport : IDisposable
             retryable: retryable,
             traceId: traceId,
             reason: reason,
-            retryAfter: retryAfter);
+            retryAfter: retryAfter)
+        {
+            Field = given is not null ? field : null,
+            Rule = given is not null ? rule : null,
+        };
     }
 
     /// <summary><c>retry-after-ms</c> or <c>Retry-After</c> in seconds, nothing else (an HTTP date is ignored), capped at a minute.</summary>

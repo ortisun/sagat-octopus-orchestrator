@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use sagat_application::definitions::InputValidationMode;
+
 pub const USAGE: &str = "\
 sagat: write, check, publish, run and roll back workflows, from a laptop or a pipeline
 
@@ -22,7 +24,9 @@ GETTING STARTED:
     new <TEMPLATE> [DIR] [--force]       write a workflow from a template (new --list shows them)
 
 ONE WORKFLOW:
-    workflow validate <FILE>             check a document: where each problem is, what to do, where it is explained
+    workflow validate <FILE> [--input-validation enforce|report]
+                          check a document: where each problem is, what to do, where it is explained; an
+                          inputSchema outside the supported subset is an error (enforce, the default) or a warning
     workflow publish <FILE> [--notes <TEXT>] [--dry-run] [--accept-breaking]
     workflow run <NAME> [--input <JSON|@FILE>] [--wait] [--timeout <SECONDS>] [--key <KEY>]
                          [--business-id <ID> [--if-exists fail|use-existing] [--reuse allow-duplicate|allow-duplicate-failed-only|reject-duplicate]]
@@ -93,7 +97,8 @@ SCHEDULES AND BATCH JOBS:
                           the runs a selector names, at a rate the platform bounds
 
 A MANIFEST KEPT IN GIT:
-    validate              check the manifest and every document: locally, and against the server
+    validate [--input-validation enforce|report]
+                          check the manifest and every document: locally, and against the server
     diff [--check]        what publish would change; with --check exit 5 when anything would
     export --out <DIR>    write the active version of every workflow of the namespace and a manifest
     publish [--dry-run] [--accept-breaking]
@@ -130,7 +135,10 @@ pub struct Common {
 pub enum Command {
     Help,
     Version,
-    Validate,
+    /// `validate [--input-validation enforce|report]`.
+    Validate {
+        input_validation: InputValidationMode,
+    },
     Diff {
         check: bool,
     },
@@ -178,6 +186,9 @@ pub enum Command {
     },
     WorkflowValidate {
         file: PathBuf,
+        /// What the local check does with an `inputSchema` outside the supported subset (design 043): `enforce`
+        /// (the default) reports an error, `report` a warning, as publication does in each mode.
+        input_validation: InputValidationMode,
     },
     WorkflowPublish {
         file: PathBuf,
@@ -545,7 +556,8 @@ impl Flags {
 }
 
 /// Flags that take a value; every other `--flag` is a switch.
-const WITH_VALUE: [&str; 52] = [
+const WITH_VALUE: [&str; 53] = [
+    "--input-validation",
     "--definition",
     "--note",
     "--revision",
@@ -944,6 +956,15 @@ fn start_options(flags: &mut Flags) -> Result<StartOptions, UsageError> {
     })
 }
 
+/// `--input-validation enforce|report`, `enforce` when absent (D043-073).
+fn input_validation(flags: &mut Flags) -> Result<InputValidationMode, UsageError> {
+    match flags.take_value(&["--input-validation"]) {
+        None => Ok(InputValidationMode::Enforce),
+        Some(text) => InputValidationMode::parse(&text)
+            .ok_or_else(|| UsageError("--input-validation is enforce or report".to_owned())),
+    }
+}
+
 fn sequence(text: &str) -> Result<u64, UsageError> {
     text.parse::<u64>()
         .ok()
@@ -1003,7 +1024,9 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
         }
         Some("validate") => {
             nothing(rest)?;
-            Command::Validate
+            Command::Validate {
+                input_validation: input_validation(&mut flags)?,
+            }
         }
         Some("diff") => {
             nothing(rest)?;
@@ -1106,6 +1129,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, UsageError> {
         Some("workflow") => match rest.split_first() {
             Some((sub, tail)) if sub == "validate" => Command::WorkflowValidate {
                 file: PathBuf::from(argument(tail, "the document (a file)")?),
+                input_validation: input_validation(&mut flags)?,
             },
             Some((sub, tail)) if sub == "publish" => Command::WorkflowPublish {
                 file: PathBuf::from(argument(tail, "the document (a file)")?),

@@ -55,6 +55,14 @@ impl std::fmt::Display for Failure {
         if let Some(reason) = &self.reason {
             write!(f, ", {}", crate::one_line(reason))?;
         }
+        // design 043: where the run input is refused and by which keyword of its schema (a pointer of declared names,
+        // never a value)
+        if let Some(field) = self.details.get("field").and_then(Value::as_str) {
+            write!(f, ", at {}", crate::one_line(field))?;
+        }
+        if let Some(rule) = self.details.get("rule").and_then(Value::as_str) {
+            write!(f, ", rule {}", crate::one_line(rule))?;
+        }
         write!(f, ")")?;
         if let Some(todo) = &self.remediation {
             write!(f, ". {}", crate::one_line(todo))?;
@@ -407,5 +415,30 @@ impl Client {
                 status, &value,
             ))))
         }
+    }
+}
+
+#[cfg(test)]
+mod run_input_tests {
+    use super::*;
+
+    /// Design 043 (T043-16): a refused start is shown with its reason, its field and its rule.
+    #[test]
+    fn a_refused_run_input_is_shown_with_its_field_and_its_rule() {
+        let failure = Failure::from_body(
+            422,
+            &serde_json::json!({
+                "code": "VALIDATION_FAILED",
+                "message": "the run input does not match the workflow's input schema: RUN_INPUT_INVALID",
+                "remediation": "Fix the input at `details.field`.",
+                "details": {"reason": "RUN_INPUT_INVALID", "field": "/orderId", "rule": "type"},
+                "traceId": "a".repeat(32),
+            }),
+        );
+        let shown = failure.to_string();
+        assert!(
+            shown.contains("VALIDATION_FAILED, RUN_INPUT_INVALID, at /orderId, rule type)"),
+            "{shown}"
+        );
     }
 }

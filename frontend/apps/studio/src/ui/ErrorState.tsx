@@ -13,6 +13,9 @@ export function ErrorState({ error, onRetry, what }: { error: unknown; onRetry?:
   }
   // What the platform says to do wins over the general advice for the kind of error.
   const advice = error.remediation ?? remedy(error.code);
+  // design 043: where a run input is refused and by which keyword of its schema; a pointer of declared names, never a value
+  const field = typeof error.details?.['field'] === 'string' ? error.details['field'] : undefined;
+  const rule = typeof error.details?.['rule'] === 'string' && /^[A-Za-z]{1,32}$/.test(error.details['rule']) ? error.details['rule'] : undefined;
   return (
     <Banner tone="error" title={what ? `${what} failed.` : 'The request failed.'}>
       {error.message}{' '}
@@ -27,6 +30,22 @@ export function ErrorState({ error, onRetry, what }: { error: unknown; onRetry?:
         ) : null}
         .{' '}
       </span>
+      {field || rule ? (
+        <span>
+          {field ? (
+            <>
+              At <code>{field}</code>
+            </>
+          ) : null}
+          {field && rule ? ', ' : null}
+          {rule ? (
+            <>
+              rule <code>{rule}</code>
+            </>
+          ) : null}
+          .{' '}
+        </span>
+      ) : null}
       {error.traceId ? (
         <span>
           Trace <code>{error.traceId}</code>.{' '}

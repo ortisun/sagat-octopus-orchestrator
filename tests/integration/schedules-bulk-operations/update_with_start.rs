@@ -80,34 +80,42 @@ impl<'a> Call<'a> {
     }
 
     async fn send(&self, f: &Fixture) -> Result<UpdateStarted, AppError> {
+        self.send_through(f, &f.w.runs).await
+    }
+
+    /// [`Self::send`] through another run service (design 043: one whose gate refuses the input).
+    async fn send_through(
+        &self,
+        f: &Fixture,
+        runs: &crate::support::engine::Runs,
+    ) -> Result<UpdateStarted, AppError> {
         let operation = ActivityName::parse(self.operation).expect("an operation name");
         let update_key = UpdateKey::parse(self.update_key).expect("an update key");
-        f.w.runs
-            .update_with_start(
-                &f.w.admin,
-                &StartRun {
-                    namespace: "payments",
-                    workflow: self.workflow,
-                    version: None,
-                    input: INPUT,
-                    correlation_id: None,
-                    deadline: None,
-                    key: &self.key,
-                },
-                StartOptions {
-                    business: Some(business(self.id, self.conflict)),
-                    start_delay: self.delay,
-                },
-                UpdateAtStart {
-                    operation: &operation,
-                    update_key: &update_key,
-                    arguments: &self.arguments,
-                    expected_state_revision: self.expected_revision,
-                    batch_job: None,
-                },
-                &ctx(),
-            )
-            .await
+        runs.update_with_start(
+            &f.w.admin,
+            &StartRun {
+                namespace: "payments",
+                workflow: self.workflow,
+                version: None,
+                input: INPUT,
+                correlation_id: None,
+                deadline: None,
+                key: &self.key,
+            },
+            StartOptions {
+                business: Some(business(self.id, self.conflict)),
+                start_delay: self.delay,
+            },
+            UpdateAtStart {
+                operation: &operation,
+                update_key: &update_key,
+                arguments: &self.arguments,
+                expected_state_revision: self.expected_revision,
+                batch_job: None,
+            },
+            &ctx(),
+        )
+        .await
     }
 }
 
@@ -715,4 +723,69 @@ async fn it_needs_the_right_to_start_and_the_right_to_update() {
         "{refused:?}"
     );
     assert!(runs_of(&f, "acct-10").await.is_empty());
+}
+
+/// Design 043, correctness review M1: a retry refused by the gate whose key already holds the run of the first request is
+/// answered as a replay of that request (its run and its receipt), never an internal error.
+#[tokio::test]
+async fn a_retry_the_gate_refuses_replays_the_update_of_the_run_its_key_holds() {
+    let f = fixture().await;
+    let mut document = declared_waiter(&format!("update-with-start-{}", uuid::Uuid::now_v7()));
+    document["inputSchema"] = json!({"type": "object"});
+    let workflow = f.w.publish(document).await.0;
+    let call = Call::new(workflow, "acct-replay", 25);
+    let first = call.send(&f).await.expect("started and updated");
+    let refusing = crate::run_input::refusing(&f.w);
+    let again = call
+        .send_through(&f, &refusing)
+        .await
+        .expect("a replay of the first request, not a refusal or a 500");
+    assert_eq!(again.run.info.run_id, first.run.info.run_id);
+    assert_eq!(
+        again.started, first.started,
+        "the retry answers what the first request did"
+    );
+    assert_eq!(
+        again.update.resolution.receipt().status(),
+        UpdateReceiptStatus::Applied
+    );
+    assert_eq!(balance_of(&again), balance_of(&first));
+}
+
+/// Row 3 for Update-with-Start (FR-043-005, OD-2026-11-14-10): an input the version refuses is refused also when an open
+/// holder would answer, and the holder gets no Update.
+#[tokio::test]
+async fn an_update_with_start_whose_input_is_refused_applies_nothing_to_an_open_holder() {
+    let f = fixture().await;
+    let mut document = declared_waiter(&format!("update-with-start-{}", uuid::Uuid::now_v7()));
+    // INPUT has `account` and `k`; this version also requires `orderId`
+    document["inputSchema"] =
+        json!({"type": "object", "required": ["k"], "properties": {"k": {"type": "string"}}});
+    let workflow = f.w.publish(document.clone()).await.0;
+    let holder = Call::new(workflow, "acct-riv", 25)
+        .send(&f)
+        .await
+        .expect("the holder starts");
+    let receipts = receipts_of(&f, holder.run.info.run_id).await;
+    document["inputSchema"] = json!({"type": "object", "required": ["orderId"]});
+    f.w.publish_new_version(workflow, document).await;
+    let mut call = Call::new(workflow, "acct-riv", 30);
+    call.update_key = "update-key-0002";
+    let refused = call
+        .send(&f)
+        .await
+        .expect_err("refused although the holder is open");
+    assert_eq!(
+        refused,
+        AppError::InvalidRunInput {
+            reason: "RUN_INPUT_INVALID",
+            field: Some("/orderId".to_owned()),
+            rule: Some("required"),
+        }
+    );
+    assert_eq!(
+        receipts_of(&f, holder.run.info.run_id).await,
+        receipts,
+        "the holder got no Update"
+    );
 }

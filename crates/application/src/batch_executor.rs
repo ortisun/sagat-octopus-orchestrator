@@ -139,6 +139,8 @@ fn error_code(error: &AppError) -> &'static str {
         | AppError::InvalidBatch { .. }
         | AppError::InvalidDefinition(_)
         | AppError::InvalidStart { .. }
+        // design 043: an input or a schema the version refuses is final; the item is not tried again (D043-013)
+        | AppError::InvalidRunInput { .. }
         | AppError::ResetRefused { .. }
         | AppError::InvalidScript(_) => "VALIDATION_FAILED",
         AppError::StateConflict(_)
@@ -630,6 +632,21 @@ mod tests {
     use super::*;
     use crate::declared_operations::DeclaredOperationStoreError as Refused;
     use sagat_domain::execution::{OperationError, RunStatus};
+
+    /// Design 043, row 4: a `RERUN` item whose input the version refuses ends `FAILED` with `VALIDATION_FAILED`, never
+    /// retried; a validator with no room is not a failure of the item (it is deferred).
+    #[test]
+    fn a_rerun_refused_for_its_input_fails_with_validation_failed() {
+        for reason in ["RUN_INPUT_INVALID", "RUN_INPUT_SCHEMA_UNUSABLE"] {
+            let error = AppError::InvalidRunInput {
+                reason,
+                field: Some("/".to_owned()),
+                rule: Some("other"),
+            };
+            assert_eq!(error_code(&error), "VALIDATION_FAILED");
+        }
+        assert!(AppError::Unavailable.is_retryable());
+    }
 
     /// A failed `UPDATE` item carries the `Error.code` the single `updateRun` call answers.
     #[test]

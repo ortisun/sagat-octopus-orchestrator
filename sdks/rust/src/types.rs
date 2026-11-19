@@ -158,6 +158,11 @@ pub struct Run {
     /// The run a reset made this one from and the journal sequence of it that this run keeps, or
     /// `None` for a run no reset made (a rerun has `rerun_of` and not this).
     pub reset_from: Option<RunResetFrom>,
+    /// The failure code the stop of the run carries (design 043): the code of the step whose
+    /// failure failed the run, a ceiling such as `STORAGE_QUOTA_EXCEEDED`, or
+    /// `CONTINUATION_INPUT_INVALID` for a continue-as-new refused for its input; `None` for every
+    /// other run.
+    pub failure_code: Option<String>,
     #[serde(skip)]
     pub raw: Value,
 }

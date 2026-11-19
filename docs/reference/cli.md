@@ -24,7 +24,9 @@ GETTING STARTED:
     new <TEMPLATE> [DIR] [--force]       write a workflow from a template (new --list shows them)
 
 ONE WORKFLOW:
-    workflow validate <FILE>             check a document: where each problem is, what to do, where it is explained
+    workflow validate <FILE> [--input-validation enforce|report]
+                          check a document: where each problem is, what to do, where it is explained; an
+                          inputSchema outside the supported subset is an error (enforce, the default) or a warning
     workflow publish <FILE> [--notes <TEXT>] [--dry-run] [--accept-breaking]
     workflow run <NAME> [--input <JSON|@FILE>] [--wait] [--timeout <SECONDS>] [--key <KEY>]
                          [--business-id <ID> [--if-exists fail|use-existing] [--reuse allow-duplicate|allow-duplicate-failed-only|reject-duplicate]]
@@ -95,7 +97,8 @@ SCHEDULES AND BATCH JOBS:
                           the runs a selector names, at a rate the platform bounds
 
 A MANIFEST KEPT IN GIT:
-    validate              check the manifest and every document: locally, and against the server
+    validate [--input-validation enforce|report]
+                          check the manifest and every document: locally, and against the server
     diff [--check]        what publish would change; with --check exit 5 when anything would
     export --out <DIR>    write the active version of every workflow of the namespace and a manifest
     publish [--dry-run] [--accept-breaking]

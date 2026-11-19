@@ -32,6 +32,7 @@
         "createdAt": "<time>",
         "deadline": null,
         "depth": 0,
+        "failureCode": "NO_STOCK",
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,

@@ -1192,6 +1192,9 @@ fn run_service(fixture: &Fixture) -> RunService<PgRunStore, SystemClock, JsonEva
         Engine::new(JsonEvaluator),
         cache,
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
 }
 
 async fn raw_signals_are_refused(fixture: &Fixture, round: &str) {

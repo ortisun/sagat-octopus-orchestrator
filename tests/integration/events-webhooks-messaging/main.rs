@@ -12,6 +12,7 @@ mod ingress;
 mod outbound;
 mod outbound_brokers;
 mod rate_quotas;
+mod run_input;
 mod run_provenance;
 mod sender;
 

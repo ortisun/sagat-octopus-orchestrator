@@ -693,6 +693,10 @@ pub struct RunRecord {
     /// The run a reset made this one from, and the journal sequence it keeps (feature 018, `FR-018-037`).
     /// Read by `get` and `list`; `None` for every run a reset did not make.
     pub reset_from: Option<ResetProvenance>,
+    /// The failure code the run's stop carries (`runs.stop_code`): what failed the run (a step's own code, a ceiling, a
+    /// continuation refused for its input, design 043), for a run stopped with one. Read by `get` and `list`; `None`
+    /// for every other run and for a record loaded inside a command transaction.
+    pub failure_code: Option<FailureCode>,
 }
 
 /// Which schedule started a run, for which nominal time, by which kind of action and under which
@@ -1043,16 +1047,36 @@ pub trait RunTx: Send {
         async { Err(scoped_execution_adapter_required()) }
     }
 
+    /// Whether the child `child` of this run's step `node` was created, read under the step's row lock (design 043,
+    /// D043-164): a creation that committed first is seen, and one that comes later waits for this transaction and
+    /// then finds the step moved on, so a refusal of the child's input never fails a step whose child exists. A step
+    /// that no longer waits for that child is reported started (there is nothing to fail). An adapter that cannot
+    /// refuses.
+    fn child_started<'a>(
+        &'a mut self,
+        _node: &'a NodeId,
+        _child: RunId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send + 'a {
+        async {
+            Err(StoreError::Internal {
+                detail: "this adapter cannot read whether a child was started".into(),
+            })
+        }
+    }
+
     /// Keeps, in this transaction, the receipts of a start that an existing holder served instead of
     /// a new run (Signal-with-Start and Update-with-Start, feature 018): `start` under the key of the
     /// request, so that a retry is answered from it even after the holder has closed and the identifier
     /// is free, and `marker`, which says that the holder, not a new run, was the answer. Both name
-    /// `holder`, the run the effect reached. An adapter that cannot refuses.
+    /// `holder`, the run the effect reached. `reported`, the audit of a start input refused in `report` mode
+    /// (design 043), is written with them when the receipt of `start` is new, so a retry does not audit it again.
+    /// An adapter that cannot refuses.
     fn remember_start_served<'a>(
         &'a mut self,
         _start: &'a Idempotency,
         _marker: &'a Idempotency,
         _holder: RunId,
+        _reported: Option<&'a AuditRecord>,
     ) -> impl Future<Output = Result<(), StoreError>> + Send + 'a {
         async {
             Err(StoreError::Internal {
@@ -2015,6 +2039,16 @@ impl DefinitionCache {
         document: &[u8],
     ) -> Result<crate::definitions::ParsedDefinition, IrError> {
         self.codec.parse(document)
+    }
+
+    /// As [`Self::parse_document`], with its `inputSchema` checked in `mode`, as a publication in that mode checks it
+    /// (design 043): a schema outside the subset is refused in `enforce` and a warning in `report`.
+    pub fn parse_document_in(
+        &self,
+        document: &[u8],
+        mode: crate::definitions::InputValidationMode,
+    ) -> Result<crate::definitions::ParsedDefinition, IrError> {
+        self.codec.parse_with(document, mode)
     }
 
     /// The same for a **private** document (ADR-0080), which only the platform writes. Only the entry that builds one calls it.

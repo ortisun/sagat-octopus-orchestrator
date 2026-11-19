@@ -531,6 +531,11 @@ pub struct RunBody {
     /// that is `SUCCEEDED` with `completionKind` `CONTINUED` is not the process outcome.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain: Option<RunChainBody>,
+    /// The failure code of the run's stop, when it stopped with one (design 043, FR-043-015): a step's own code that
+    /// failed the run, a ceiling, `CONTINUATION_INPUT_INVALID` or `RUN_INPUT_SCHEMA_UNUSABLE` for a continuation refused
+    /// for its input. Absent for every other run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<String>,
 }
 
 /// Which schedule started a run, for which nominal time, by which kind of action and under which
@@ -618,6 +623,7 @@ impl From<&RunRecord> for RunBody {
                 }),
                 successor_run_id: segment.successor.map(|run| run.to_string()),
             }),
+            failure_code: r.failure_code.as_ref().map(|code| code.as_str().to_owned()),
         }
     }
 }
@@ -1263,6 +1269,7 @@ mod switch_graph_tests {
                 chain: None,
                 schedule: None,
                 reset_from: None,
+                failure_code: None,
             },
             definition: std::sync::Arc::new(definition),
             steps: vec![
@@ -1468,6 +1475,7 @@ mod provenance_tests {
             chain: None,
             schedule: None,
             reset_from: None,
+            failure_code: None,
         }
     }
 
@@ -1476,6 +1484,20 @@ mod provenance_tests {
         let body = serde_json::to_value(RunBody::from(&record())).expect("json");
         assert!(body.get("schedule").is_none(), "{body}");
         assert!(body.get("resetFrom").is_none(), "{body}");
+        assert!(body.get("failureCode").is_none(), "{body}");
+    }
+
+    /// Design 043, FR-043-015: the failure code of the run's stop reaches the run view as it is.
+    #[test]
+    fn a_run_stopped_with_a_failure_code_says_it() {
+        let mut stopped = record();
+        stopped.status = RunStatus::Failed;
+        stopped.failure_code = Some(
+            sagat_domain::execution::FailureCode::parse("CONTINUATION_INPUT_INVALID")
+                .expect("code"),
+        );
+        let body = serde_json::to_value(RunBody::from(&stopped)).expect("json");
+        assert_eq!(body["failureCode"], "CONTINUATION_INPUT_INVALID", "{body}");
     }
 
     #[test]

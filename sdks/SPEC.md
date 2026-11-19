@@ -61,6 +61,8 @@ language's native shape: exception, error value, result):
 | `retryable` | Whether the same call may be made again as it is. From the server's own `retryable` when it sent one |
 | `traceId` | 32 lowercase hex characters from `X-Trace-Id` / the error envelope; empty when the server did not answer |
 | `reason` | The server's stable sub-reason (`details.reason`, or the gRPC `x-sagat-error` value), if any |
+| `field` | The server's `details.field`, if any: a JSON pointer into the request (or, for a refused run input, into the input) whose segments are only names the version's `inputSchema` declares and array indices, never a value (design 043) |
+| `rule` | The server's `details.rule`, if any: the closed keyword of the input schema that failed (`type`, `required`, `pattern`, ..., `workLimit`, `maxDepth`, `other`; design 043). An SDK passes a value it does not know through unchanged |
 | `retryAfterMs` | From `Retry-After` / `retry-after-ms`, if any |
 | `remediation` | What to do about it: the fixed sentence of the catalog for `code` |
 
@@ -213,6 +215,9 @@ Rules:
   `revision` below 1, and a `resetFrom` without `runId` or with a `sequence` below 1, is the SDK's `PROTOCOL` error, never a run with half of
   it), and an instant keeps the language's native precision (the server writes microseconds). The conformance observation of a `Run` carries the
   two objects only when the run has them, so the observations of every other run are what they were.
+- A `Run` carries `failureCode` (design 043, FR-043-015), a string, when its stop carries a failure code (the code of the step whose failure
+  failed it, a ceiling such as `STORAGE_QUOTA_EXCEEDED`, or `CONTINUATION_INPUT_INVALID`) and is absent/null/None/nil/empty otherwise; the
+  conformance observation of a `Run` carries the key only when it is present, never as `null`.
 - The action of a schedule may name a business-id prefix (FR-018-016): `businessIdPrefix` (a string), `businessIdConflictPolicy` and
   `businessIdReusePolicy` (the two policies of `start`), optional on the schedule write (create and update) and on the `action` of what is
   read back. **Absent means absent**: a write that sets none of them sends none of the three keys (not `null`, not empty), and a schedule whose
@@ -501,6 +506,14 @@ workflow(name).description(text).label(key, value)
   .trigger(kind, {...}) .inputSchema(schema) .outputSchema(schema)
   .build()
 ```
+
+`.inputSchema(schema)` must stay within the supported subset of JSON Schema (design 043, ADR-0090: the keyword list is
+in `specs/001-platform-foundation/contracts/workflow.schema.json`): from release 0.3.0 the platform checks every run
+input against it before the run is created, refuses a publication whose schema is outside it in `enforce` mode, and
+answers a refused start `VALIDATION_FAILED` with `reason` `RUN_INPUT_INVALID` and the error's `field` and `rule`, or
+`RUN_INPUT_SCHEMA_UNUSABLE`. An SDK checks nothing of it locally. `CHILD_INPUT_INVALID`, `CONTINUATION_INPUT_INVALID`
+and `RUN_INPUT_SCHEMA_UNUSABLE` reach a run view as failure codes, unchanged, and a schedule action's `INPUT_INVALID`
+as an outcome.
 
 A `Flow` (the body of a saga, a branch of a parallel) is **read when `build()` is called**, not when it is joined: a
 step added to it after it was joined is part of the document. Ids are checked when a node is added to its flow and again

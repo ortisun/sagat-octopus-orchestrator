@@ -22,6 +22,12 @@ pub enum Command {
     /// Hand the cron triggers over from the legacy cron pass to the schedule pass (feature 018), then exit. Needs the
     /// schema-owning database role.
     ScheduleTriggerHandover(HandoverArgs),
+    /// List the stored workflow versions whose `inputSchema` is outside the supported subset (design 043), then exit
+    /// 0 (none), 1 (at least one) or 2 (the command failed). Reads only; it runs with the process's database settings (the runtime role is enough).
+    /// A superseded version nothing starts never counts; `--all` (`all`) lists those as well (OD-2026-11-16-5).
+    InputSchemaInventory {
+        all: bool,
+    },
     /// Print a new signing key for scripts (`SAGAT_SCRIPT_SIGNING_KEY`) and exit. Needs no database.
     ScriptKey,
     /// Probe the local API's liveness endpoint; for container health checks.
@@ -56,6 +62,15 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
     let first = args.next();
     if first == Some("schedule-trigger-handover") {
         return parse_handover(args);
+    }
+    if first == Some("input-schema-inventory") {
+        return match (args.next(), args.next()) {
+            (None, _) => Ok(Command::InputSchemaInventory { all: false }),
+            (Some("--all"), None) => Ok(Command::InputSchemaInventory { all: true }),
+            (Some("--all"), Some(extra)) | (Some(extra), _) => {
+                Err(UsageError(format!("unexpected argument '{extra}'")))
+            }
+        };
     }
     let command = match first {
         None | Some("serve") => Command::Serve,
@@ -142,6 +157,11 @@ COMMANDS:
     scheduling-weight  Set a tenant's weight in the scheduler's passes, 1 to 16 (SAGAT_WEIGHT_TENANT_ID, SAGAT_WEIGHT_VALUE; a number or default)
     schedule-trigger-handover  Hand the cron triggers over from the legacy cron pass to the schedule pass; audited, once, with the
                   owner role: schedule-trigger-handover --operator NAME [--expect-live N] [--dry-run | --apply]
+    input-schema-inventory [--all]  List the stored workflow versions whose inputSchema is outside the supported subset (every
+                  start of them is refused in enforce mode), and for information those with an inputSchema and a trigger;
+                  reads only, with the process's database settings. A superseded version nothing starts (not active, no
+                  open run, no run in 30 days) is only counted; --all lists those too. Exit 0: none would be refused; 1:
+                  at least one; 2: it failed
     script-key    Print a new Ed25519 key for SAGAT_SCRIPT_SIGNING_KEY (it signs the artifacts of scripts)
     healthcheck   Probe the local API (GET /v1/health); exit 0 when healthy
     version       Print the version
@@ -196,6 +216,9 @@ ENVIRONMENT (serve):
                                       alone expires one whose run does not end (SAGAT_RESET_CANCEL_SOURCE_EXPIRY_SECS,
                                       a setting of the engine only: nothing here reads it) [false]
     SAGAT_LAKE_ENABLED                let a workflow hold an Apache Iceberg write (publication still waits for its checks) [false]
+    SAGAT_RUN_INPUT_VALIDATION        enforce | report: a run input its version's inputSchema refuses, and an inputSchema
+                                      outside the supported subset at publication, are refused, or counted, audited and
+                                      admitted (published with a warning); anything else stops the process [enforce]
     SAGAT_COLLECTION_OPERATORS_ENABLED  let a forEach declare operators; every replica must run this release first [false]
     SAGAT_SECRETS_KEYS                key ring that seals secrets: id:base64,id2:base64; without it the
                                       secret routes do not exist. The engine needs the same ring

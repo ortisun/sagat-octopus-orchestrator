@@ -84,6 +84,7 @@
         "createdAt": "<time>",
         "deadline": null,
         "depth": 0,
+        "failureCode": "PAYLOAD_TOO_LARGE",
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,

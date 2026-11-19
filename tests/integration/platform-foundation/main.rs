@@ -11,5 +11,6 @@ mod migrations;
 mod runtime_privileges;
 mod runtime_role;
 mod store;
+mod test_database;
 
 mod idempotency;

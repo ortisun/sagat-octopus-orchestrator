@@ -231,14 +231,32 @@ pub async fn sqs() -> TestSqs {
         .get_host_port_ipv4(9324)
         .await
         .expect("mapped SQS port");
-    TestSqs {
+    let sqs = TestSqs {
         _container: container,
         endpoint: format!("http://127.0.0.1:{port}"),
         client: reqwest::Client::builder()
             .no_proxy()
             .build()
             .expect("client"),
+    };
+    // ElasticMQ says "Started SQS rest server" on stdout, which is what the image waits for, a moment before its routes
+    // answer: a first call in that moment was answered `404 not found` (a run of design 043's gates, D043-155). The queue
+    // API is asked until it answers, a bounded number of times, before any test uses it.
+    for attempt in 0..50 {
+        let ready = sqs
+            .client
+            .post(format!("{}/", sqs.endpoint))
+            .form(&[("Action", "ListQueues".to_owned())])
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success());
+        if ready {
+            return sqs;
+        }
+        assert!(attempt < 49, "ElasticMQ never answered ListQueues");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
+    sqs
 }
 
 impl TestSqs {

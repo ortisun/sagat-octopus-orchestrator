@@ -445,6 +445,20 @@ public sealed class ClientTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ARunStoppedWithAFailureCodeCarriesItAndARunWithoutOneHasNone()
+    {
+        server.Handler = _ => Reply(200, Run(run =>
+        {
+            run["status"] = "FAILED";
+            run["failureCode"] = "CONTINUATION_INPUT_INVALID";
+        }));
+        Assert.Equal("CONTINUATION_INPUT_INVALID", (await NewClient().GetAsync(Ids.Run)).FailureCode);
+
+        server.Handler = _ => Reply(200, Run());
+        Assert.Null((await NewClient().GetAsync(Ids.Run)).FailureCode);
+    }
+
+    [Fact]
     public async Task RerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin()
     {
         const string started = "0190aaaa-0000-7000-8000-000000000021";
@@ -821,6 +835,25 @@ public sealed class ClientTests : IAsyncLifetime
         using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             NewClient().WaitForCompletionAsync(Ids.Run, new WaitOptions { PollInterval = TimeSpan.FromMilliseconds(20), Timeout = TimeSpan.FromSeconds(30) }, cancel.Token));
+    }
+
+    [Fact]
+    public async Task ARefusedRunInputCarriesTheFieldAndTheRuleBesideTheReason()
+    {
+        // design 043 (FR-043-015): field and rule beside reason, as the server sent them, and nothing of the value
+        var envelope = Envelope("VALIDATION_FAILED", "the run input does not match", retryable: false);
+        envelope["details"] = new JsonObject { ["reason"] = "RUN_INPUT_INVALID", ["field"] = "/orderId", ["rule"] = "type" };
+        server.Handler = _ => Reply(422, envelope);
+        var error = await Assert.ThrowsAsync<SagatException>(() => NewClient().StartAsync(Workflow, new { orderId = 42 }));
+        Assert.Equal(SagatErrorCode.ValidationFailed, error.Code);
+        Assert.Equal("RUN_INPUT_INVALID", error.Reason);
+        Assert.Equal("/orderId", error.Field);
+        Assert.Equal("type", error.Rule);
+
+        server.Handler = _ => Reply(422, Envelope("VALIDATION_FAILED", "unusable", retryable: false, reason: "RUN_INPUT_SCHEMA_UNUSABLE"));
+        var unusable = await Assert.ThrowsAsync<SagatException>(() => NewClient().StartAsync(Workflow, new { orderId = "o" }));
+        Assert.Null(unusable.Field);
+        Assert.Null(unusable.Rule);
     }
 
     [Fact]
