@@ -50,7 +50,8 @@ fn check_list(sql: &str, constraint: &str) -> BTreeSet<String> {
         .rfind(&format!("ADD CONSTRAINT {constraint} CHECK"))
         .unwrap_or_else(|| panic!("{constraint} is restated"));
     let body = &sql[at..];
-    let body = &body[..body.find(");").expect("the end of the constraint")];
+    // the statement ends at its `;`, after `)` or `) NOT VALID` (the CHECKs since design 043 are added NOT VALID)
+    let body = &body[..body.find(';').expect("the end of the constraint")];
     body.split('\'')
         .skip(1)
         .step_by(2)
