@@ -20,7 +20,7 @@
 
 ALTER TABLE flow_control_key_versions ADD COLUMN activated_role text;
 ALTER TABLE flow_control_key_versions ADD CONSTRAINT flow_control_key_versions_role_bounded
-    CHECK (activated_role IS NULL OR char_length(activated_role) BETWEEN 1 AND 63);
+    CHECK (activated_role IS NULL OR char_length(activated_role) BETWEEN 1 AND 63) NOT VALID;
 
 UPDATE flow_control_key_versions k SET state = 'RETIRED', retired_at = clock_timestamp()
  WHERE k.state = 'RETIRING'

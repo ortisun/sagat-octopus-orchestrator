@@ -65,8 +65,8 @@ pub use event::{
     ReviewOutcome, RunEvent, ScopedPlannedEntry, StopReason, SwitchSelection, WaitVia,
 };
 pub use flow_control::{
-    GateChange, GateEvent, GatePhase, GatePool, GateRef, GateSlot, GateTarget, Gates,
-    KEY_LABEL_LEN, KeyLabel,
+    DeclaredGates, GateChange, GateEvent, GatePhase, GatePool, GateRef, GateRequest, GateSlot,
+    GateTarget, Gates, KEY_LABEL_LEN, KeyLabel,
 };
 pub use instance::{
     ExecutionInstanceId, InstanceIdentityError, InstancePath, MAX_ITERATION_INDEX, MAX_SCOPE_DEPTH,
@@ -82,7 +82,7 @@ pub use path_state::{
     AncestorExecutionFence, GlobalExecutionFence, PathCollectionState, PathExecutionState,
     PathLoopState, PathScopeSagaState,
 };
-pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed, plan_path};
+pub use plan::{AddressedPlan, Evaluation, Plan, plan, plan_addressed, plan_path, undecided_gates};
 pub use reset::{
     EffectMarkers, RULES as RESET_RULES, ReexecutedStep, ResetBlock, ResetId, ResetPlan,
     ResetPoint, ResetPoints, ResetRefusal, ResetRule, RestoredStep, reset_plan, reset_points,

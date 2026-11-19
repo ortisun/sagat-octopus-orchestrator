@@ -19,9 +19,12 @@
 //! for is granted. A run cannot finish while it waits for a gate or holds a run permit: the planner dequeues a waiter
 //! that is stopped and releases the permit before the run's last event (FR-022-021, ADR-0056 decision 4).
 //!
-//! Scope of this build (0.3.0 slice, foundation): the reducer rules and their replay. The readiness mapping that
-//! makes a gated step wait instead of becoming `READY` (FR-022-051) is T022-096; until it lands a step-scope `queued`
-//! is applied to a step the planner made `READY` in the same transition.
+//! Readiness (T022-096, FR-022-051, D022-020): a state that knows its definition's gated nodes
+//! ([`super::RunState::with_gated_steps`]) maps `step.released`, `step.retry_due` and `step.retry_requested` of such a
+//! node to `WAITING` ([`super::WaitingOn::Gate`]), and only the grant of the last gate it declares makes it `READY`. The
+//! planner then asks for the decision ([`super::Evaluation::Gates`]) and the adapter journals a grant or a wait of each
+//! gate in the same commit. A state rebuilt from the journal alone does not know the gated nodes: it sees the step
+//! `READY` for the length of one commit and reaches the same state through the decisions that commit journals.
 
 use std::fmt;
 
@@ -271,6 +274,62 @@ impl GateSlot {
     const fn is_queued(&self) -> bool {
         matches!(self.phase, GatePhase::Queued { .. })
     }
+
+    /// Rebuilds a slot from trusted storage (the step projection written from a state the reducer produced).
+    #[must_use]
+    pub const fn restore(
+        kind: crate::workflow::GateKind,
+        gate: GateRef,
+        phase: GatePhase,
+        attempt: u32,
+    ) -> Self {
+        Self {
+            gate,
+            phase,
+            attempt,
+            gate_is_permit: matches!(kind, crate::workflow::GateKind::Concurrency),
+        }
+    }
+}
+
+/// One root step whose gates the readiness gate decides, for the attempt it would start next (feature 022, T28).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateRequest {
+    pub node: NodeId,
+    pub attempt: u32,
+}
+
+/// The gates a root step declares (feature 022): what its readiness waits for. A step of a node that declares one is
+/// never `READY` without a grant of each (FR-022-051, invariant 11 of `data-model.md`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeclaredGates {
+    pub concurrency: bool,
+    pub rate: bool,
+}
+
+impl DeclaredGates {
+    /// The gates `flow` declares, or `None` for a level that declares none.
+    #[must_use]
+    pub const fn of(flow: &crate::workflow::FlowControl) -> Option<Self> {
+        if flow.is_gated() {
+            Some(Self {
+                concurrency: flow.concurrency().is_some(),
+                rate: flow.rate_limit().is_some(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// The kinds declared, rate first (the precedence of FR-022-052).
+    pub fn kinds(self) -> impl Iterator<Item = crate::workflow::GateKind> {
+        [
+            (self.rate, crate::workflow::GateKind::RateLimit),
+            (self.concurrency, crate::workflow::GateKind::Concurrency),
+        ]
+        .into_iter()
+        .filter_map(|(declared, kind)| declared.then_some(kind))
+    }
 }
 
 /// The gates of a run (its start) or of a step: at most one of each kind.
@@ -358,6 +417,42 @@ impl Gates {
 
     fn slots(&self) -> impl Iterator<Item = &GateSlot> {
         self.concurrency.iter().chain(self.rate.iter())
+    }
+
+    /// Rebuilds the gates of a step from trusted storage.
+    #[must_use]
+    pub const fn restore(concurrency: Option<GateSlot>, rate: Option<GateSlot>) -> Self {
+        Self { concurrency, rate }
+    }
+
+    /// The slot of `kind`, whatever its attempt.
+    #[must_use]
+    pub const fn of_kind(&self, kind: crate::workflow::GateKind) -> Option<&GateSlot> {
+        match kind {
+            crate::workflow::GateKind::Concurrency => self.concurrency.as_ref(),
+            crate::workflow::GateKind::RateLimit => self.rate.as_ref(),
+        }
+    }
+
+    /// Whether attempt `attempt` holds a grant of every gate in `declared` (FR-022-051).
+    #[must_use]
+    pub fn holds_all(&self, declared: DeclaredGates, attempt: u32) -> bool {
+        declared.kinds().all(|kind| {
+            self.of_kind(kind)
+                .is_some_and(|slot| slot.attempt == attempt && slot.phase == GatePhase::Held)
+        })
+    }
+
+    /// Whether every gate in `declared` is decided for attempt `attempt` (granted, or waited for): what a commit that
+    /// leaves a gated step waiting must hold (invariant 11).
+    #[must_use]
+    pub fn decided_all(&self, declared: DeclaredGates, attempt: u32) -> bool {
+        declared.kinds().all(|kind| {
+            self.of_kind(kind).is_some_and(|slot| {
+                slot.attempt == attempt
+                    && matches!(slot.phase, GatePhase::Held | GatePhase::Queued { .. })
+            })
+        })
     }
 
     fn slot_mut(&mut self, kind: crate::workflow::GateKind) -> &mut Option<GateSlot> {

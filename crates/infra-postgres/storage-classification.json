@@ -8514,6 +8514,25 @@
       ]
     },
     {
+      "table": "steps",
+      "column": "flow_control_gates",
+      "sql_type": "jsonb",
+      "class": "protected_system",
+      "tenant_key": {
+        "kind": "column",
+        "column": "tenant_id"
+      },
+      "measurement": {
+        "kind": "protected_bound",
+        "expression": null,
+        "evidence": "Feature 022's projection of a step's gates: closed phases, attempts, pool, a group of at most 130 characters and a 12-hex key label, never a key's value; CHECK `steps_flow_control_gates_bounded` (an object of at most 1,024 bytes). Writer/source: `execution/readiness_gate.rs`."
+      },
+      "owner_paths": [
+        "crates/infra-postgres/src/execution.rs",
+        "crates/infra-postgres/src/execution/readiness_gate.rs"
+      ]
+    },
+    {
       "table": "tenant_collection_policies",
       "column": "updated_by",
       "sql_type": "text",

@@ -821,6 +821,22 @@ class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("feature `testing` enables", out)
 
+    def test_the_step_gates_feature_of_the_postgres_adapter_belongs_in_dev_dependencies_only(self):
+        # feature 022 (T022-096, D022-037): the test-only admission of step gates never reaches a production build
+        def packages(dependency):
+            postgres = pkg("sagat-infra-postgres", "crates/infra-postgres", [])
+            user = pkg("sagat-tests", "tests", [])
+            user["dependencies"] = [dependency]
+            return [postgres, user]
+
+        dev = {"name": "sagat-infra-postgres", "kind": "dev", "features": ["step-gates-for-tests"]}
+        code, out = creator_check(creator_tree(), packages(dev))
+        self.assertNotIn("step-gates-for-tests", out)
+        normal = {"name": "sagat-infra-postgres", "kind": None, "features": ["step-gates-for-tests"]}
+        code, out = creator_check(creator_tree(), packages(normal))
+        self.assertEqual(code, 1, out)
+        self.assertIn("`sagat-infra-postgres/step-gates-for-tests` as a normal dependency", out)
+
 
 if __name__ == "__main__":
     unittest.main()

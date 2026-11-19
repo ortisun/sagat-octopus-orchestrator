@@ -17,6 +17,12 @@ pub(in crate::execution) trait InstanceSteps {
         instance: &ExecutionInstanceId,
     ) -> Result<&mut StepState, ExecutionError>;
 
+    /// Whether `instance` is a root step of a node that declares a flow-control gate (feature 022): its readiness waits
+    /// for its gates. A scoped step never declares one (publication refuses it).
+    fn waits_for_gates(&self, _instance: &ExecutionInstanceId) -> bool {
+        false
+    }
+
     fn locate_effect_step(
         &mut self,
         instance: &ExecutionInstanceId,
@@ -69,6 +75,9 @@ impl InstanceSteps for RunState {
             .steps
             .entry(instance.clone())
             .or_insert_with(StepState::pending))
+    }
+    fn waits_for_gates(&self, instance: &ExecutionInstanceId) -> bool {
+        instance.path().is_root() && self.gated.contains_key(instance.node())
     }
 }
 
@@ -206,12 +215,19 @@ pub(in crate::execution) fn apply_effect_event<S: InstanceSteps>(
             // made by `retry_review` / `retry_scoped_review` under the run lock for every role. The
             // reducer does not repeat it: v0.1/v0.2 let an operator with `saga:override` retry such
             // a step, and those committed events must still replay.
+            let gated = state.waits_for_gates(instance);
             let step = state.locate_effect_step(instance, name, &[Waiting, RetryWait])?;
             if step.status == Waiting && !matches!(step.waiting, Some(WaitingOn::Operator { .. })) {
                 return Err(illegal_transition(instance, step.status, name));
             }
-            step.status = Ready;
-            step.waiting = None;
+            // feature 022: a step of a gated node waits for its gates before its next attempt (FR-022-051)
+            if gated {
+                step.status = Waiting;
+                step.waiting = Some(WaitingOn::Gate);
+            } else {
+                step.status = Ready;
+                step.waiting = None;
+            }
             step.next_attempt_at = None;
         }
         RunEvent::StepSkipped { .. } => {

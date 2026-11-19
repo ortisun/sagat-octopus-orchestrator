@@ -51,6 +51,10 @@ pub enum Evaluation {
         node: NodeId,
         expression: Expression,
     },
+    /// Decide the flow-control gates of the root steps that wait for them (feature 022, T28 of the plan): for each,
+    /// the attempt it would start next. Asked once the planner has nothing else to do, so that every step this
+    /// transition makes ready is decided in one round, under one sorted lock of its keys (D022-020, D022-038).
+    Gates { steps: Vec<super::GateRequest> },
 }
 
 /// One planning decision.
@@ -325,6 +329,9 @@ pub fn plan(
     if let Some(action) = route_finished(def, state)? {
         return Ok(action);
     }
+    if let Some(steps) = undecided_gates(state) {
+        return Ok(Plan::Evaluate(Evaluation::Gates { steps }));
+    }
     let all_done = state.has_started()
         && state
             .instances()
@@ -393,6 +400,28 @@ fn give_back_ended_gates(state: &RunState) -> Option<RunEvent> {
     None
 }
 
+/// The root steps that wait for their gates without a decision of each for the attempt they would start next (feature
+/// 022): what the readiness gate decides. Only a state that knows its definition's gated nodes has any.
+#[must_use]
+pub fn undecided_gates(state: &RunState) -> Option<Vec<super::GateRequest>> {
+    let steps: Vec<_> = state
+        .instances()
+        .filter(|(instance, _)| instance.path().is_root())
+        .filter_map(|(instance, step)| {
+            let declared = state.declared_gates(instance.node())?;
+            let next = step.attempt().saturating_add(1);
+            (step.status() == StepStatus::Waiting
+                && matches!(step.waiting_on(), Some(WaitingOn::Gate))
+                && !step.gates().decided_all(declared, next))
+            .then(|| super::GateRequest {
+                node: instance.node().clone(),
+                attempt: next,
+            })
+        })
+        .collect();
+    (!steps.is_empty()).then_some(steps)
+}
+
 /// The run's last event, preceded by giving back the run permit it holds (feature 022, ADR-0056 decision 4): a run
 /// never finishes with a permit, and gives it back only once nothing of it is active.
 fn finishing(state: &RunState, finished: RunEvent) -> Plan {
@@ -420,12 +449,37 @@ fn dequeue_stopped_start(state: &RunState) -> Option<RunEvent> {
     }))
 }
 
+/// A stopped run's steps that wait for their gates leave their queues first, rate first (FR-022-021, FR-022-052): they
+/// are never granted, and the step is then cancelled with the run's other waiting steps.
+fn dequeue_stopped_steps(state: &RunState) -> Option<RunEvent> {
+    state.instances().find_map(|(instance, step)| {
+        if !instance.path().is_root() {
+            return None;
+        }
+        let (kind, slot) = step.gates().waiting().next()?;
+        Some(RunEvent::Gate(super::GateEvent {
+            target: super::GateTarget::Step {
+                node: instance.node().clone(),
+                attempt: slot.attempt(),
+            },
+            gate: slot.gate().clone(),
+            change: match kind {
+                crate::workflow::GateKind::RateLimit => super::GateChange::RateDequeued,
+                crate::workflow::GateKind::Concurrency => super::GateChange::ConcurrencyDequeued,
+            },
+        }))
+    })
+}
+
 fn drain(
     def: &WorkflowDefinition,
     state: &RunState,
     reason: StopReason,
 ) -> Result<Plan, ExecutionError> {
     if let Some(dequeued) = dequeue_stopped_start(state) {
+        return Ok(Plan::Emit(dequeued));
+    }
+    if let Some(dequeued) = dequeue_stopped_steps(state) {
         return Ok(Plan::Emit(dequeued));
     }
     if let Some(action) = sagas::advance(def, state, Some(reason))? {

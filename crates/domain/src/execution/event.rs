@@ -83,6 +83,13 @@ impl FailureCode {
         Self::system("RATE_LIMIT_WAIT_TIMEOUT")
     }
 
+    /// A step's flow-control key failed to evaluate or is longer than 256 bytes (feature 022, FR-022-054): the step
+    /// fails through its failure route with no attempt spent and is never granted.
+    #[must_use]
+    pub fn flow_control_key_invalid() -> Self {
+        Self::system("FLOW_CONTROL_KEY_INVALID")
+    }
+
     #[must_use]
     pub fn branch_failed() -> Self {
         Self::system("BRANCH_FAILED")

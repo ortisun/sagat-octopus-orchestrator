@@ -80,6 +80,13 @@ pub enum Resolution {
         node: NodeId,
         outcome: Result<(), FailureCode>,
     },
+    /// The readiness gate's answer to [`super::Evaluation::Gates`] (feature 022): for each step asked about, a grant
+    /// or a wait of each gate it declares, decided under the keys' locks; or, for a step whose key could not be
+    /// evaluated, the code it fails with (no attempt spent, FR-022-054).
+    Gates {
+        decisions: Vec<super::GateEvent>,
+        refused: Vec<(NodeId, FailureCode)>,
+    },
 }
 
 /// What a heartbeat tells the worker.
@@ -299,7 +306,7 @@ pub fn start_run(
     run_id: RunId,
     now: OffsetDateTime,
 ) -> Result<(RunState, Progress), ExecutionError> {
-    let mut state = RunState::new(run_id);
+    let mut state = RunState::new(run_id).with_gated_steps(def);
     let started = RunEvent::RunStarted {
         entrypoint: def.entrypoint().clone(),
     };
@@ -319,7 +326,7 @@ pub fn start_run_delayed(
     now: OffsetDateTime,
     until_us: i64,
 ) -> Result<(RunState, Progress), ExecutionError> {
-    let mut state = RunState::new(run_id);
+    let mut state = RunState::new(run_id).with_gated_steps(def);
     let started = RunEvent::RunStarted {
         entrypoint: def.entrypoint().clone(),
     };
@@ -357,7 +364,7 @@ pub fn start_run_gated(
             "an admission decides each gate the definition declares at its start, once",
         ));
     }
-    let mut state = RunState::new(run_id);
+    let mut state = RunState::new(run_id).with_gated_steps(def);
     let started = RunEvent::RunStarted {
         entrypoint: def.entrypoint().clone(),
     };
@@ -2320,8 +2327,59 @@ pub fn resolve(
                 fence: None,
             },
         },
+        Resolution::Gates { decisions, refused } => {
+            return resolve_gates(def, state, now, decisions, refused);
+        }
     };
     apply_then_settle(def, state, now, event)
+}
+
+/// Journals the readiness gate's answer (feature 022, T28): every step asked about is then either failed or decided for
+/// each gate it declares; an answer that leaves one undecided, or decides anything else, is refused.
+fn resolve_gates(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+    decisions: Vec<super::GateEvent>,
+    refused: Vec<(NodeId, FailureCode)>,
+) -> Result<Progress, ExecutionError> {
+    let mut events = Vec::with_capacity(decisions.len() + refused.len());
+    for (node, code) in refused {
+        let failed = RunEvent::StepFailed {
+            node,
+            code,
+            fence: None,
+        };
+        state.apply(&failed)?;
+        events.push(failed);
+    }
+    for decision in decisions {
+        if !matches!(decision.target, super::GateTarget::Step { .. })
+            || !matches!(
+                decision.change,
+                super::GateChange::ConcurrencyQueued { .. }
+                    | super::GateChange::ConcurrencyAcquired
+                    | super::GateChange::RateQueued { .. }
+                    | super::GateChange::RateGranted { .. }
+            )
+        {
+            return Err(ExecutionError::Invariant(
+                "the readiness gate grants or queues the gates of steps only",
+            ));
+        }
+        let event = RunEvent::Gate(decision);
+        state.apply(&event)?;
+        events.push(event);
+    }
+    if let Some((_, breach)) = state.flow_control_breach() {
+        return Err(ExecutionError::Invariant(breach));
+    }
+    if events.is_empty() {
+        return Err(ExecutionError::Invariant(
+            "the readiness gate answered nothing for the steps it was asked about",
+        ));
+    }
+    settle(def, state, now, events)
 }
 
 /// The child run of a waiting `child` step ended (or could not be started).

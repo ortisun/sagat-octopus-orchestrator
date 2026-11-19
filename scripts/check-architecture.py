@@ -29,8 +29,9 @@ Reads `cargo metadata` and fails when:
     (FR-043-016): every run row is written where the input of the run is a `CheckedRunInput`;
   * the legacy continue-as-new (`.continue_as_new(`, which carries an input nobody checked) is called outside the tests, other
     than by the one forwarder, `continue_as_new` in `crates/infra-postgres/src/chain_progress.rs` (FR-043-016, D043-122);
-  * the `test-support` feature of `sagat-application` (the constructor of `CheckedRunInput` that skips the gate) is enabled
-    anywhere but a `[dev-dependencies]` entry (FR-043-016);
+  * the `test-support` feature of `sagat-application` (the constructor of `CheckedRunInput` that skips the gate), or the
+    `step-gates-for-tests` feature of `sagat-infra-postgres` (feature 022's test-only admission of step gates), is enabled
+    anywhere but a `[dev-dependencies]` entry (FR-043-016, D022-037);
   * a `CheckedRunInput` is built (a struct expression or an associated function call) outside
     `crates/application/src/run_input.rs` and the tests, or has a `Default` or a `Deserialize` anywhere (FR-043-016, D043-045).
 
@@ -641,23 +642,33 @@ def gate_wiring_errors(root):
     return errors
 
 
+# The features that open a door only a test may open, each with why: `sagat-application/test-support` builds a
+# `CheckedRunInput` no gate checked (FR-043-016); `sagat-infra-postgres/step-gates-for-tests` admits a definition gated
+# at its steps before the run-level admission and the grant and timeout routines exist (feature 022, T022-096, D022-037).
+TEST_ONLY_FEATURES = (
+    (APPLICATION_PACKAGE, TEST_SUPPORT_FEATURE, "it builds a `CheckedRunInput` no gate checked", "FR-043-016"),
+    ("sagat-infra-postgres", "step-gates-for-tests", "it admits runs past the flow-control fleet gate", "D022-037"),
+)
+
+
 def test_support_errors(pkgs):
-    """`sagat-application`'s `test-support` feature enabled outside `[dev-dependencies]`, as a dependency or by a feature."""
+    """A test-only feature (`TEST_ONLY_FEATURES`) enabled outside `[dev-dependencies]`, as a dependency or by a feature."""
     errors = []
-    for p in pkgs.values():
-        for d in p["dependencies"]:
-            if d["name"] == APPLICATION_PACKAGE and TEST_SUPPORT_FEATURE in d.get("features", []) and d.get("kind") != "dev":
-                errors.append(
-                    f"'{p['name']}' enables `{APPLICATION_PACKAGE}/{TEST_SUPPORT_FEATURE}` as a {d.get('kind') or 'normal'} "
-                    f"dependency: it builds a `CheckedRunInput` no gate checked, and belongs in `[dev-dependencies]` only (FR-043-016)"
-                )
-        for feature, enables in (p.get("features") or {}).items():
-            for item in enables:
-                if item.replace("?", "") == f"{APPLICATION_PACKAGE}/{TEST_SUPPORT_FEATURE}":
+    for package, feature_name, why, ref in TEST_ONLY_FEATURES:
+        for p in pkgs.values():
+            for d in p["dependencies"]:
+                if d["name"] == package and feature_name in d.get("features", []) and d.get("kind") != "dev":
                     errors.append(
-                        f"'{p['name']}' feature `{feature}` enables `{APPLICATION_PACKAGE}/{TEST_SUPPORT_FEATURE}`: it belongs in "
-                        f"`[dev-dependencies]` only (FR-043-016)"
+                        f"'{p['name']}' enables `{package}/{feature_name}` as a {d.get('kind') or 'normal'} "
+                        f"dependency: {why}, and belongs in `[dev-dependencies]` only ({ref})"
                     )
+            for feature, enables in (p.get("features") or {}).items():
+                for item in enables:
+                    if item.replace("?", "") == f"{package}/{feature_name}":
+                        errors.append(
+                            f"'{p['name']}' feature `{feature}` enables `{package}/{feature_name}`: it belongs in "
+                            f"`[dev-dependencies]` only ({ref})"
+                        )
     return errors
 
 

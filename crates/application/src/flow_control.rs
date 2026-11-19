@@ -167,3 +167,31 @@ impl FlowControlRefusal {
         }
     }
 }
+
+/// The keys of one gated step, evaluated by the application for the readiness gate (feature 022, T28): the canonical
+/// value of each gate the step's node declares, at most [`sagat_domain::workflow::flow_control::MAX_KEY_BYTES`] bytes. A gate without a
+/// key expression has the single key of its group (`null`). The adapter digests and files them under the keys'
+/// locks; the values never leave the transaction (D1168).
+#[derive(Clone, PartialEq, Eq)]
+pub struct StepGateKeys {
+    pub node: sagat_domain::workflow::NodeId,
+    /// The attempt the decision is for: the step's attempt plus one.
+    pub attempt: u32,
+    pub concurrency: Option<Vec<u8>>,
+    pub rate: Option<Vec<u8>>,
+}
+
+/// A key's values are run data: only their sizes are shown.
+impl std::fmt::Debug for StepGateKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StepGateKeys")
+            .field("node", &self.node)
+            .field("attempt", &self.attempt)
+            .field("concurrency_len", &self.concurrency.as_ref().map(Vec::len))
+            .field("rate_len", &self.rate.as_ref().map(Vec::len))
+            .finish()
+    }
+}
+
+/// The canonical value of the single key of a group whose declaration has no key expression.
+pub const SINGLE_KEY: &[u8] = b"null";

@@ -12,6 +12,7 @@ mod ad_hoc;
 mod database;
 mod path;
 mod path_read;
+mod readiness_gate;
 mod resets;
 #[doc(hidden)]
 pub use resets::EXPIRED_RESETS_SQL;
@@ -149,6 +150,12 @@ pub struct PgRunStore {
     /// The deployment's `flow-control.*` switches (feature 022): whether a run of a gated definition may be admitted
     /// at all. Off unless set.
     flow_control: sagat_application::flow_control::FlowControlSwitches,
+    /// The digest keys of the gates (feature 022): without them a gated step is never decided (fail closed).
+    flow_control_keys: Option<Arc<sagat_application::keyed_digest::KeyRing>>,
+    /// Tests only (`step-gates-for-tests`): admit a definition whose gates are all on its steps, so that the
+    /// readiness gate can be exercised before the run-level admission and the grant and timeout routines exist. No
+    /// production build can set it.
+    step_gates_for_tests: bool,
 }
 
 impl PgRunStore {
@@ -167,7 +174,29 @@ impl PgRunStore {
                 concurrency_keys: false,
                 rate_limits: false,
             },
+            flow_control_keys: None,
+            step_gates_for_tests: false,
         }
+    }
+
+    /// The digest keys of the flow-control gates (feature 022, `KeyRing::parse` of the deployment's configuration).
+    #[must_use]
+    pub fn with_flow_control_keys(
+        mut self,
+        keys: Arc<sagat_application::keyed_digest::KeyRing>,
+    ) -> Self {
+        self.flow_control_keys = Some(keys);
+        self
+    }
+
+    /// Tests only: admits a definition whose gates are all on its root steps, past the fleet's activation and this
+    /// build's refusal (D022-037), so that the readiness gate (T022-096) can be exercised against PostgreSQL. A run
+    /// of it is gated at every step; nothing grants a queued step yet (T022-097) or times it out (T022-098).
+    #[cfg(feature = "step-gates-for-tests")]
+    #[must_use]
+    pub const fn admitting_step_gates_for_tests(mut self) -> Self {
+        self.step_gates_for_tests = true;
+        self
     }
 
     /// The deployment's `flow-control.*` switches (feature 022), read by the one admission point.
@@ -379,7 +408,7 @@ impl PgRunStore {
         let step_rows = sqlx::query(concat!(
             "SELECT node, instance_path_nodes, instance_path_indices, status, attempt, generation, cancel_requested, routed, condition, switch_case_id, \
                     timed_out, failure_code, next_attempt_at, waiting_kind, due_at, correlation_key, event_type, event_since, \
-                    child_run_id, approval_request_id, s.namespace_id, s.step_id, s.node_kind AS stored_node_kind, (",
+                    child_run_id, approval_request_id, s.namespace_id, s.step_id, s.node_kind AS stored_node_kind, s.flow_control_gates, (",
             scoped_control_metadata_empty!(),
             ") AS control_metadata_empty, (",scoped_timer_metadata_valid!(),") AS timer_metadata_valid, (",scoped_event_metadata_valid!(),") AS event_metadata_valid \
              FROM steps s WHERE tenant_id = $1 AND run_id = $2",
@@ -399,7 +428,11 @@ impl PgRunStore {
             let instance = ExecutionInstanceId::in_path(path, node);
             stored.insert(instance.clone());
             stored_kinds.insert(instance.clone(), col::<String>(row, "stored_node_kind")?);
-            steps.insert(instance, step_state(row)?);
+            let mut step = step_state(row)?;
+            if let Some(gates) = col::<Option<serde_json::Value>>(row, "flow_control_gates")? {
+                step = step.with_restored_gates(readiness_gate::restore_gates(&gates)?);
+            }
+            steps.insert(instance, step);
         }
         // The pinned definition says which kinds of state the run can have; the others are not read.
         let definition = self
@@ -441,7 +474,8 @@ impl PgRunStore {
                         .map_err(|_| corrupt("run start delay"))
                 })
                 .transpose()?,
-        );
+        )
+        .with_gated_steps(&definition);
         if kinds.collections {
             load_collections(&mut tx, tenant, run, &definition, &mut state).await?;
         }
@@ -517,6 +551,7 @@ impl PgRunStore {
             chain_lock,
             initialize_chain: false,
             cancelled_waits: Vec::new(),
+            flow_control_keys: self.flow_control_keys.clone(),
         }))
     }
 
@@ -663,11 +698,27 @@ impl PgRunStore {
                 })?,
             );
         }
-        let replayed =
-            RunState::replay_addressed(run, &events).map_err(|e| format!("replay failed: {e}"))?;
+        let replayed = RunState::replay_addressed_gated(run, &stored_tx.def, &events)
+            .map_err(|e| format!("replay failed: {e}"))?;
         if replayed != stored {
             return Err(format!(
                 "projection differs from the journal:\n  replayed: {replayed:?}\n  stored:   {stored:?}"
+            ));
+        }
+        // feature 022: the journal alone reaches the same state, without knowing which nodes are gated (every commit
+        // that makes a gated step ready journals its decisions), and no gated step is ready or leased without a grant
+        // of each gate it declares, nor waits without a decision of each (invariant 11, T022-096)
+        let alone = RunState::replay_addressed(run, &events)
+            .map_err(|e| format!("replay of the journal alone failed: {e}"))?
+            .with_gated_steps(&stored_tx.def);
+        if alone != replayed {
+            return Err(format!(
+                "the journal alone does not reach the state its transactions folded:\n  alone:    {alone:?}\n  folded:   {replayed:?}"
+            ));
+        }
+        if let Some((node, breach)) = replayed.flow_control_breach() {
+            return Err(format!(
+                "invariant 11 of feature 022 fails at node '{node}': {breach}"
             ));
         }
         drop(stored_tx);
@@ -1192,7 +1243,9 @@ impl RunStore for PgRunStore {
             }
             // Feature 022: every run creator passes here, so a gated definition is decided here, before any lock of the
             // admission is taken (FR-022-059); this build refuses it whatever the registry says (D022-037).
-            if new.definition.declares_gates() {
+            if new.definition.declares_gates()
+                && !(self.step_gates_for_tests && !new.definition.run_flow_control().is_gated())
+            {
                 let refusal = self.flow_control_admission(&mut tx, &new.definition).await;
                 let _ = tx.rollback().await;
                 return Err(StoreError::FlowControl(refusal?));
@@ -1574,7 +1627,7 @@ impl RunStore for PgRunStore {
                     scoped_event_delivery_attempted: false,
                     scoped_event_persistence_failed: false,
                     def: Arc::clone(&new.definition),
-                    state: RunState::new(new.info.run_id),
+                    state: RunState::new(new.info.run_id).with_gated_steps(&new.definition),
                     persisted: 0,
                     data: Some(RunData {
                         run_id: Some(new.info.run_id),
@@ -1594,6 +1647,7 @@ impl RunStore for PgRunStore {
                     chain_lock: None,
                     initialize_chain: true,
                     cancelled_waits: Vec::new(),
+                    flow_control_keys: self.flow_control_keys.clone(),
                 }));
             }
         }
@@ -2550,6 +2604,8 @@ pub(crate) fn step_state(row: &PgRow) -> Result<StepState, StoreError> {
                     .ok_or_else(|| corrupt("approval request"))?,
             ),
         }),
+        // feature 022: a step waiting for its gates; their state is restored from `flow_control_gates`
+        (Some("CONCURRENCY" | "RATE_LIMIT"), _) => Some(WaitingOn::Gate),
         _ => return Err(corrupt("waiting step")),
     };
     let failure: Option<String> = col(row, "failure_code")?;
@@ -3908,6 +3964,8 @@ pub struct PgRunTx {
     /// How long each approval request this transaction cancelled had waited, recorded as
     /// `workflow_approval_wait_seconds{outcome="cancelled"}` when (and only when) it commits.
     cancelled_waits: Vec<f64>,
+    /// The digest keys of the flow-control gates, from the store (feature 022).
+    flow_control_keys: Option<Arc<sagat_application::keyed_digest::KeyRing>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -4193,6 +4251,14 @@ fn micros(duration: Duration) -> i64 {
 }
 
 impl RunTx for PgRunTx {
+    fn decide_step_gates<'a>(
+        &'a mut self,
+        steps: &'a [sagat_application::flow_control::StepGateKeys],
+    ) -> impl Future<Output = Result<Vec<sagat_domain::execution::GateEvent>, StoreError>> + Send + 'a
+    {
+        self.decide_gates(steps)
+    }
+
     async fn restore_prefix<'a>(
         &'a mut self,
         prefix: &'a sagat_application::runs::RestoredPrefix,
@@ -5143,6 +5209,15 @@ impl RunTx for PgRunTx {
         let tenant = self.info.tenant_id;
         let run = self.info.run_id;
 
+        // 0. Feature 022: what the events give back of a gate, before any usage row is locked (the keys come before
+        // slot 8b, D022-038). Nothing for a transaction without a flow-control event.
+        if events
+            .iter()
+            .any(|event| matches!(event, RunEvent::Gate(_)))
+        {
+            self.persist_gate_returns(events).await?;
+        }
+
         // 1. Outputs: content-addressed payloads, remembered per root node.
         let output_charges = effects
             .outputs
@@ -5312,9 +5387,16 @@ impl RunTx for PgRunTx {
                 | RunEvent::CompensationPlanned { node, .. } => {
                     sagas.insert(node.clone());
                 }
+                // no task is announced for a step that waits for its gates (feature 022): the grant announces it
                 RunEvent::StepReleased { node }
                 | RunEvent::StepRetryDue { node }
-                | RunEvent::StepRetryRequested { node } => {
+                | RunEvent::StepRetryRequested { node }
+                    if self.state.declared_gates(node).is_none()
+                        || self
+                            .state
+                            .step(node)
+                            .is_some_and(|step| step.status() == StepStatus::Ready) =>
+                {
                     hinted.insert(node.clone());
                     self.outbox_task_ready(node).await?;
                 }
@@ -7320,15 +7402,10 @@ impl PgRunTx {
                         .into(),
                 });
             }
-            // feature 022: the wait of a gated step is written by the readiness gate (T022-096), which this build
-            // does not have; a definition that declares a gate is refused before a run of it exists (FR-022-059)
-            Some(WaitingOn::Gate) => {
-                return Err(StoreError::Internal {
-                    detail: "a step waiting for a flow-control gate is not persisted by this build"
-                        .into(),
-                });
-            }
+            // feature 022: the first gate the step still waits for, rate first; a wait with no decision is refused
+            Some(WaitingOn::Gate) => (Some(readiness_gate::gate_waiting_kind(&step)?), None, None),
         };
+        let gates = readiness_gate::gates_projection(&step)?;
         // How far back an event wait accepts events, beyond the moment it began waiting.
         let lookback = match def_node.map(sagat_domain::workflow::Node::kind) {
             Some(NodeKind::WaitEvent { lookback, .. }) => micros(*lookback),
@@ -7386,11 +7463,11 @@ impl PgRunTx {
                   cancel_requested, routed, condition, timed_out, failure_code, next_attempt_at, \
                   waiting_kind, due_at, event_type, correlation_key, activity, ready_at, \
                   last_hinted_at, output_digest, child_run_id, child_input, updated_at, kind, \
-                  event_since, switch_case_id, secrets, node_kind) \
+                  event_since, switch_case_id, secrets, node_kind, flow_control_gates) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, \
                          $18, $19, CASE WHEN $6 = 'READY' THEN $20 END, CASE WHEN $21 THEN $20 END, \
                          $22, $23, $24, $20, $25, \
-                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END, $27, $28, $29)",
+                         CASE WHEN $15 = 'EVENT' THEN $20 - $26 * interval '1 microsecond' END, $27, $28, $29, $30)",
             )
             .bind(self.info.tenant_id.as_uuid())
             .bind(self.info.run_id.as_uuid())
@@ -7425,6 +7502,7 @@ impl PgRunTx {
             .bind(switch_case_id)
             .bind(declared)
             .bind(node_kind)
+            .bind(&gates)
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -7473,7 +7551,7 @@ impl PgRunTx {
                                                  $20 - $31 * interval '1 microsecond') END, \
                 event_scanned_at = CASE WHEN $15 = 'EVENT' AND waiting_kind = 'EVENT' \
                                         THEN event_scanned_at END, \
-                updated_at = $20, switch_case_id = $33 \
+                updated_at = $20, switch_case_id = $33, flow_control_gates = $34 \
              WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
                AND cardinality(instance_path_nodes) = 0",
         )
@@ -7514,6 +7592,7 @@ impl PgRunTx {
         .bind(lookback)
         .bind(reported.map(|r| r.token_hash.clone()))
         .bind(switch_case_id)
+        .bind(&gates)
         .execute(&mut *self.tx)
         .await
         .map_err(store_error)?;

@@ -5,21 +5,21 @@
 --
 -- Additive: the three checks are widened, nothing else changes. No row uses the new values until a process lists one.
 -- The checks are the ones `20270118000000_run_input_validation` named `*_known` (design 043); each is replaced under the same
--- name with the six values. The tables are small and bounded (at most 1,000 registered processes, one row per capability), so
--- the new CHECK is validated in place.
+-- name with the six values, added `NOT VALID` (a superset of the old one, so every stored row satisfies it) and validated by
+-- `20270130000700_flow_control_validate` in a transaction of its own (D043-145).
 ALTER TABLE serving_instances DROP CONSTRAINT serving_instances_capabilities_known;
 ALTER TABLE serving_instances ADD CONSTRAINT serving_instances_capabilities_known CHECK (
     capabilities <@ ARRAY['schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1',
                           'flow-control-concurrency-v1', 'flow-control-rate-v1']::text[]
-    AND cardinality(capabilities) <= 32);
+    AND cardinality(capabilities) <= 32) NOT VALID;
 ALTER TABLE platform_requirements DROP CONSTRAINT platform_requirements_capability_known;
 ALTER TABLE platform_requirements ADD CONSTRAINT platform_requirements_capability_known CHECK (
     capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1',
-                   'flow-control-concurrency-v1', 'flow-control-rate-v1'));
+                   'flow-control-concurrency-v1', 'flow-control-rate-v1')) NOT VALID;
 ALTER TABLE platform_requirement_history DROP CONSTRAINT platform_requirement_history_capability_known;
 ALTER TABLE platform_requirement_history ADD CONSTRAINT platform_requirement_history_capability_known CHECK (
     capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1',
-                   'flow-control-concurrency-v1', 'flow-control-rate-v1'));
+                   'flow-control-concurrency-v1', 'flow-control-rate-v1')) NOT VALID;
 
 -- The feature step of a flow-control activation (T022-094): how many of the required kinds have no live process (seen
 -- within 30 seconds) that lists the capability. The registry records a requirement whenever no live process lacks it, an

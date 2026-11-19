@@ -484,6 +484,7 @@ impl Harness {
                 node,
                 outcome: Ok(()),
             },
+            Evaluation::Gates { .. } => panic!("resolve gates with explicit decisions"),
         };
         self.resolve(resolution).expect("resolution applies");
     }

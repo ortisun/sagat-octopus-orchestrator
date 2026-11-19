@@ -1465,7 +1465,7 @@ impl StepState {
             condition,
             switch_selection: None,
             timed_out,
-            // a gated step is restored by the readiness gate's projection (T022-096); no stored step has one yet
+            // a gated step's gates are restored from their own projection ([`Self::with_restored_gates`])
             gates: super::flow_control::Gates::NONE,
         }
     }
@@ -1474,6 +1474,13 @@ impl StepState {
     #[must_use]
     pub fn with_restored_switch_selection(mut self, selection: Option<SwitchSelection>) -> Self {
         self.switch_selection = selection;
+        self
+    }
+
+    /// Restores the gates of the step's attempts from their projection (feature 022).
+    #[must_use]
+    pub fn with_restored_gates(mut self, gates: super::flow_control::Gates) -> Self {
+        self.gates = gates;
         self
     }
 
@@ -1827,6 +1834,10 @@ pub struct RunState {
     start_delayed_until_us: Option<i64>,
     /// The gates of the run's start (feature 022): a run whose start waits for one holds its entry.
     run_gates: super::flow_control::Gates,
+    /// The root nodes of the run's definition that declare a gate, and which (feature 022): a readiness event of one
+    /// leaves it `WAITING` for its gates, never `READY` (FR-022-051, D022-020). Empty for a state rebuilt from the
+    /// journal alone, which then reaches the same state through the decisions every such commit journals.
+    gated: BTreeMap<NodeId, super::flow_control::DeclaredGates>,
     applied: u64,
 }
 
@@ -1847,8 +1858,63 @@ impl RunState {
             chain: None,
             start_delayed_until_us: None,
             run_gates: super::flow_control::Gates::NONE,
+            gated: BTreeMap::new(),
             applied: 0,
         }
+    }
+
+    /// The state with the gated root nodes of `def` (feature 022), which the readiness events of those nodes obey: given
+    /// to every state a transaction folds or restores for a run of `def`, before any event is applied.
+    #[must_use]
+    pub fn with_gated_steps(mut self, def: &crate::workflow::WorkflowDefinition) -> Self {
+        self.gated = def
+            .gated_nodes()
+            .filter_map(|node| {
+                super::flow_control::DeclaredGates::of(node.flow_control())
+                    .map(|declared| (node.id().clone(), declared))
+            })
+            .collect();
+        self
+    }
+
+    /// The gates root node `node` declares, when this state knows its definition declares any.
+    #[must_use]
+    pub fn declared_gates(&self, node: &NodeId) -> Option<super::flow_control::DeclaredGates> {
+        self.gated.get(node).copied()
+    }
+
+    /// The first breach of invariant 11 of feature 022 (`data-model.md`), if any: a step of a gated node that is `READY`
+    /// or leased without a grant of each gate it declares for its attempt, or that waits for its gates without a
+    /// decision (a grant or a wait) of each of them for the attempt it would start next.
+    #[must_use]
+    pub fn flow_control_breach(&self) -> Option<(NodeId, &'static str)> {
+        for (node, declared) in &self.gated {
+            let Some(step) = self.steps.get(&ExecutionInstanceId::root(node.clone())) else {
+                continue;
+            };
+            let next = step.attempt.saturating_add(1);
+            let breach = match step.status {
+                StepStatus::Ready if !step.gates.holds_all(*declared, next) => {
+                    Some("a gated step is READY without a grant of each gate it declares")
+                }
+                StepStatus::Leased | StepStatus::Running
+                    if !step.gates.holds_all(*declared, step.attempt) =>
+                {
+                    Some("a gated step was leased without a grant of each gate it declares")
+                }
+                StepStatus::Waiting
+                    if step.waiting == Some(WaitingOn::Gate)
+                        && !step.gates.decided_all(*declared, next) =>
+                {
+                    Some("a gated step waits for its gates without a decision of each")
+                }
+                _ => None,
+            };
+            if let Some(breach) = breach {
+                return Some((node.clone(), breach));
+            }
+        }
+        None
     }
 
     /// Whether the entry of the run is held by a start delay that has not ended yet.
@@ -1880,6 +1946,23 @@ impl RunState {
         let mut state = Self::new(run_id);
         for event in events {
             state.apply(event)?;
+        }
+        Ok(state)
+    }
+
+    /// Rebuilds the state of a run of `def` as its transactions fold it: knowing the gated nodes of `def` (feature
+    /// 022), so that the readiness events of those nodes are folded as they were applied.
+    ///
+    /// # Errors
+    /// The first event the reducer rejects.
+    pub fn replay_addressed_gated<'a>(
+        run_id: RunId,
+        def: &crate::workflow::WorkflowDefinition,
+        events: impl IntoIterator<Item = &'a AddressedRunEvent>,
+    ) -> Result<Self, ExecutionError> {
+        let mut state = Self::new(run_id).with_gated_steps(def);
+        for event in events {
+            state.apply_addressed(event)?;
         }
         Ok(state)
     }
@@ -1951,6 +2034,7 @@ impl RunState {
             chain: None,
             start_delayed_until_us: None,
             run_gates: super::flow_control::Gates::NONE,
+            gated: BTreeMap::new(),
             applied: version,
         }
     }
@@ -3847,19 +3931,31 @@ impl RunState {
                 }
             }
             RunEvent::StepReleased { node } => {
-                self.step_mut(node, name, &[Pending])?.status = Ready;
+                let gated = self.gated.contains_key(node);
+                let step = self.step_mut(node, name, &[Pending])?;
+                // feature 022: a gated step waits for its gates; only the grant of the last one makes it ready
+                if gated {
+                    step.status = Waiting;
+                    step.waiting = Some(WaitingOn::Gate);
+                } else {
+                    step.status = Ready;
+                }
             }
             RunEvent::StepLeased {
                 node,
                 attempt,
                 generation,
             } => {
+                let declared = self.gated.get(node).copied();
                 let step = self.step_mut(node, name, &[Ready])?;
                 if *attempt != step.attempt + 1 || *generation != step.generation + 1 {
                     return Err(ExecutionError::StaleAttempt { node: node.clone() });
                 }
-                // feature 022: an attempt is leased only on gates it holds (none given back, none given up on)
-                if !step.gates.admits_lease(*attempt) {
+                // feature 022: an attempt is leased only on gates it holds (none given back, none given up on), and a
+                // step of a gated node only with a grant of each gate it declares
+                if !step.gates.admits_lease(*attempt)
+                    || declared.is_some_and(|declared| !step.gates.holds_all(declared, *attempt))
+                {
                     return Err(ExecutionError::Invariant(
                         "a gated step is leased only with every gate of its attempt granted",
                     ));
@@ -3902,12 +3998,26 @@ impl RunState {
                 step.next_attempt_at = Some(*not_before);
             }
             RunEvent::StepRetryDue { node } => {
+                let gated = self.gated.contains_key(node);
                 let step = self.step_mut(node, name, &[RetryWait])?;
-                step.status = Ready;
+                if gated {
+                    step.status = Waiting;
+                    step.waiting = Some(WaitingOn::Gate);
+                } else {
+                    step.status = Ready;
+                }
                 step.next_attempt_at = None;
             }
             RunEvent::StepFailed { node, code, fence } => {
-                let step = self.step_mut(node, name, &[Leased, Running, Pending, Waiting])?;
+                // feature 022: a step whose flow-control key does not evaluate fails before any attempt, from the wait
+                // for its gates; the journal alone, which does not know the node is gated, sees that step READY
+                let allowed: &[StepStatus] =
+                    if fence.is_none() && *code == FailureCode::flow_control_key_invalid() {
+                        &[Ready, Waiting]
+                    } else {
+                        &[Leased, Running, Pending, Waiting]
+                    };
+                let step = self.step_mut(node, name, allowed)?;
                 match (step.status.is_leased(), fence) {
                     (true, Some(f)) if step.fenced_by(f.attempt, f.generation) => {}
                     (true, _) => return Err(ExecutionError::StaleAttempt { node: node.clone() }),
@@ -4773,6 +4883,24 @@ impl RunState {
                 self.run_gates.apply(event, 0, fresh)
             }
             GateTarget::Step { node, attempt } => {
+                let declared = self.gated.get(node).copied();
+                if self
+                    .steps
+                    .contains_key(&ExecutionInstanceId::root(node.clone()))
+                    && !self.gated.is_empty()
+                    && declared.is_none()
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a flow-control event names a step whose node declares no gate",
+                    ));
+                }
+                if let Some(declared) = declared
+                    && !declared.kinds().any(|kind| kind == event.change.kind())
+                {
+                    return Err(ExecutionError::Invariant(
+                        "a flow-control event names a gate its node does not declare",
+                    ));
+                }
                 let step = self
                     .steps
                     .get_mut(&ExecutionInstanceId::root(node.clone()))
@@ -4828,8 +4956,10 @@ impl RunState {
                         event.change,
                         GateChange::ConcurrencyAcquired | GateChange::RateGranted { .. }
                     )
+                    && declared.is_none_or(|declared| step.gates.holds_all(declared, *attempt))
                 {
-                    // the grant that completes the last gate it waited for makes it ready (FR-022-051)
+                    // the grant that completes the last gate it waited for makes it ready (FR-022-051); a step whose
+                    // definition is known waits until it holds every gate it declares
                     step.status = StepStatus::Ready;
                     step.waiting = None;
                 }

@@ -11,6 +11,12 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Feature 022 (T022-096): `PgRunStore::admitting_step_gates_for_tests`, which admits a definition gated only at its steps
+# before the run-level admission and the grant and timeout routines exist. Test suites only, enabled in
+# `[dev-dependencies]` (scripts/check-architecture.py).
+step-gates-for-tests = []
+
 [dependencies]
 sagat-application.workspace = true
 metrics.workspace = true

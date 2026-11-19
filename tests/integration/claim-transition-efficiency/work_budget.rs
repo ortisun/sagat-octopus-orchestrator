@@ -327,6 +327,102 @@ measured!(
     a_plain_admission_costs_what_the_budget_says_once
 );
 
+/// Feature 022 (T022-076, NFR-022-007, FR-038-001): the hot path of a definition whose middle step declares `rateLimit`.
+/// The claim of the rate-limited step is the plain claim (a gated step is granted before it is `READY`, ADR-0089, and its
+/// lease instant is recorded by a pass, T022-074); the completion whose next step declares the gate pays for the
+/// decision (the key versions, the window filed and locked, its count, the grant row); the other commands are the plain
+/// lines. Measured before any call site of the gate in a completion (T022-096).
+/// Measured 2026-11-19: the plain completion (50, 1, 11) and eight statements (the key versions in force, the window
+/// filed and locked, the database clock after the lock, the window's count, the grant row, its journal event and the
+/// extra quota check of the second event) and two rows (the grant and `rate_limit.granted`).
+const COMPLETION_WITH_A_RATE_LIMITED_NEXT_STEP: Work = cost(58, 1, 13);
+/// An admission whose entry step declares `rateLimit`: the plain admission and the decision of its entry.
+/// Measured 2026-11-19: the plain admission (33, 1, 11) and the same eight statements and two rows.
+const RATE_LIMITED_ENTRY_ADMISSION: Work = cost(41, 1, 13);
+
+async fn a_rate_limited_step_costs_what_the_budget_says_once() -> Result<(), Evicted> {
+    let w = crate::support::flow_control::gated_world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("the test PostgreSQL preloads pg_stat_statements");
+    // no key: the single key of the group, so that every run of the measure counts on one existing row
+    let gate = json!({"limit": 10_000, "per": "hour"});
+    let workflow = crate::support::flow_control::publish(
+        &w,
+        document(
+            "budget-gated-chain",
+            "a",
+            vec![
+                with(activity("a"), "next", json!("b")),
+                with(
+                    with(activity("b"), "rateLimit", gate.clone()),
+                    "next",
+                    json!("c"),
+                ),
+                activity("c"),
+            ],
+        ),
+    )
+    .await;
+    let session = w.session(&["act.a", "act.b", "act.c"]).await;
+    one_run_measured(&w, workflow, &session).await?;
+    let first = one_run_measured(&w, workflow, &session).await?;
+    let second = one_run_measured(&w, workflow, &session).await?;
+    assert_eq!(first, second, "the counts of a quiet database do not vary");
+    let [lease_a, done_a, lease_b, done_b, lease_c, done_c] = first;
+    let entry = crate::support::flow_control::publish(
+        &w,
+        document(
+            "budget-gated-entry",
+            "a",
+            vec![
+                with(with(activity("a"), "rateLimit", gate), "next", json!("b")),
+                activity("b"),
+            ],
+        ),
+    )
+    .await;
+    for _ in 0..2 {
+        w.start(entry, &json!({})).await;
+    }
+    let mut admissions = Vec::new();
+    for _ in 0..2 {
+        let before = reading(&w).await;
+        w.start(entry, &json!({})).await;
+        admissions.push(spent(&w, before).await?);
+    }
+    assert_eq!(
+        admissions[0], admissions[1],
+        "the counts of a quiet database do not vary"
+    );
+    if (lease_a, lease_b, lease_c) != (LEASE, LEASE, LEASE)
+        || done_a != COMPLETION_WITH_A_RATE_LIMITED_NEXT_STEP
+        || done_b != COMPLETION_WITH_A_NEXT_STEP
+        || done_c != COMPLETION_THAT_ENDS_THE_RUN
+        || admissions[0] != RATE_LIMITED_ENTRY_ADMISSION
+    {
+        panic!(
+            "the work of a rate-limited path left its budget (lower the budget with the change that earns it; raise it \
+             only with the reason beside it).\n\
+             lease (a, the rate-limited b, c): {lease_a:?} {lease_b:?} {lease_c:?}, budget {LEASE:?} each\n\
+             completion whose next step is rate-limited: {done_a:?}, budget {COMPLETION_WITH_A_RATE_LIMITED_NEXT_STEP:?}\n\
+             completion of the rate-limited step: {done_b:?}, budget {COMPLETION_WITH_A_NEXT_STEP:?}\n\
+             completion that ends the run: {done_c:?}, budget {COMPLETION_THAT_ENDS_THE_RUN:?}\n\
+             admission of a rate-limited entry: {:?}, budget {RATE_LIMITED_ENTRY_ADMISSION:?}\n\
+             statements of the second and third steps of one more run:{}",
+            admissions[0],
+            itemised(&w, workflow, &session).await
+        );
+    }
+    Ok(())
+}
+
+measured!(
+    a_rate_limited_step_costs_what_the_budget_says,
+    a_rate_limited_step_costs_what_the_budget_says_once
+);
+
 /// Sets the stored kind of the one step row of `run` at `node`, as the owner.
 async fn store_kind(w: &World, run: sagat_domain::execution::RunId, node: &str, kind: &str) {
     let changed = sqlx::query(

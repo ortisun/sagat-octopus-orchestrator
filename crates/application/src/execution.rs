@@ -432,6 +432,19 @@ pub trait ExpressionEvaluator: Send + Sync {
         data: &RunData,
     ) -> Result<Vec<u8>, ExpressionFailure>;
 
+    /// The canonical value of a flow-control key (feature 022): the JSON text of what `expression` yields over the
+    /// run's data, the same evaluation as [`Self::run_result`].
+    ///
+    /// # Errors
+    /// [`ExpressionFailure`] when the expression fails.
+    fn flow_control_key(
+        &self,
+        expression: &Expression,
+        data: &RunData,
+    ) -> Result<Vec<u8>, ExpressionFailure> {
+        self.run_result(expression, data)
+    }
+
     /// The result of a run: the `outputExpr` of the `end` node that finishes it, evaluated over the
     /// run's data (G21). Any JSON value.
     ///
@@ -1036,6 +1049,22 @@ pub enum PoolCheck {
 /// One locked run, mutated in memory and written back in a single transaction.
 pub trait RunTx: Send {
     fn info(&self) -> &RunInfo;
+
+    /// Feature 022 (T28 of the plan, FR-022-051, D022-020): decides, in this transaction and under one sorted lock of
+    /// their keys, the gates of the steps the readiness gate asks about: for each step, a grant of every gate it
+    /// declares or a wait of every one (both or neither, FR-022-044), as the events to journal. The run's state is not
+    /// changed; the domain applies the events. An adapter that does not run the gate refuses (fail closed, D022-037).
+    fn decide_step_gates<'a>(
+        &'a mut self,
+        _steps: &'a [crate::flow_control::StepGateKeys],
+    ) -> impl Future<Output = Result<Vec<sagat_domain::execution::GateEvent>, StoreError>> + Send + 'a
+    {
+        async {
+            Err(StoreError::FlowControl(
+                crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+            ))
+        }
+    }
 
     /// Full-model counterpart of [`PathExecutionTx::record_scoped_event_delivery`].
     /// Legacy adapters explicitly refuse this operation; root delivery is unchanged.
@@ -1854,10 +1883,16 @@ impl<E: ExpressionEvaluator> Engine<E> {
         tx: &mut Tx,
         evaluation: &Evaluation,
     ) -> Result<(Resolution, Option<ChildSpawn>, Option<(NodeId, Vec<u8>)>), EngineError> {
+        if let Evaluation::Gates { steps } = evaluation {
+            return Ok((self.decide_gates(tx, steps).await?, None, None));
+        }
         let depth = tx.info().depth;
         let parent = tx.info().run_id;
         let data = tx.data().await?;
         let (resolution, spawn) = match evaluation {
+            Evaluation::Gates { .. } => {
+                return Err(ExecutionError::Invariant("the gates were decided above").into());
+            }
             Evaluation::Condition { node, expression } => (
                 Resolution::Condition {
                     node: node.clone(),
@@ -1976,6 +2011,91 @@ impl<E: ExpressionEvaluator> Engine<E> {
             }
         };
         Ok((resolution, spawn, None))
+    }
+}
+
+impl<E: ExpressionEvaluator> Engine<E> {
+    /// The readiness gate's round (feature 022, T28): evaluates the key of each gate the asked steps declare over the
+    /// run's data, then lets the adapter decide them all under one sorted lock. A key that does not evaluate, or whose
+    /// canonical value is longer than 256 bytes, fails its step `FLOW_CONTROL_KEY_INVALID` (no attempt spent, never
+    /// granted, FR-022-054), and then nothing is locked in this round: the planner asks again for the others once the
+    /// failure is routed, so the keys are still locked once.
+    async fn decide_gates<Tx: RunTx>(
+        &self,
+        tx: &mut Tx,
+        asked: &[sagat_domain::execution::GateRequest],
+    ) -> Result<Resolution, EngineError> {
+        use sagat_domain::workflow::flow_control::MAX_KEY_BYTES;
+        let declared = {
+            let (def, state) = tx.parts();
+            // every step undecided now, not only those asked about: a command that settled several targets keeps the
+            // first evaluation it was given, and the keys of one transition are locked in one round (D022-038)
+            let steps = sagat_domain::execution::undecided_gates(state).unwrap_or_default();
+            if steps.is_empty() || !asked.iter().all(|request| steps.contains(request)) {
+                return Err(ExecutionError::Invariant(
+                    "the readiness gate was asked about a step that does not wait for its gates",
+                )
+                .into());
+            }
+            steps
+                .iter()
+                .map(|request| {
+                    def.node(&request.node)
+                        .map(|node| (request.clone(), node.flow_control().clone()))
+                        .ok_or_else(|| ExecutionError::UnknownStep(request.node.clone()))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let data = tx.data().await?;
+        let mut keys = Vec::with_capacity(declared.len());
+        let mut refused = Vec::new();
+        for (request, flow) in &declared {
+            let value = |expression: Option<&Expression>| -> Result<Vec<u8>, ()> {
+                let Some(expression) = expression else {
+                    return Ok(crate::flow_control::SINGLE_KEY.to_vec());
+                };
+                let value = self
+                    .evaluator
+                    .flow_control_key(expression, data)
+                    .map_err(log_failure(&request.node))?;
+                if value.len() > MAX_KEY_BYTES {
+                    tracing::warn!(node = %request.node, "a flow-control key is longer than 256 bytes");
+                    return Err(());
+                }
+                Ok(value)
+            };
+            let concurrency = flow
+                .concurrency()
+                .map(|policy| value(policy.key()))
+                .transpose();
+            let rate = flow
+                .rate_limit()
+                .map(|policy| value(policy.key()))
+                .transpose();
+            match (concurrency, rate) {
+                (Ok(concurrency), Ok(rate)) => keys.push(crate::flow_control::StepGateKeys {
+                    node: request.node.clone(),
+                    attempt: request.attempt,
+                    concurrency,
+                    rate,
+                }),
+                _ => refused.push((
+                    request.node.clone(),
+                    FailureCode::flow_control_key_invalid(),
+                )),
+            }
+        }
+        if !refused.is_empty() {
+            return Ok(Resolution::Gates {
+                decisions: Vec::new(),
+                refused,
+            });
+        }
+        let decisions = tx.decide_step_gates(&keys).await?;
+        Ok(Resolution::Gates {
+            decisions,
+            refused: Vec::new(),
+        })
     }
 }
 

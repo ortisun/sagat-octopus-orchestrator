@@ -130,6 +130,16 @@ pub async fn world_with_breaker(
     settings: WorkerSettings,
     breaker: sagat_application::execution::BreakerPolicy,
 ) -> World {
+    world_with_store(settings, breaker, |store| store).await
+}
+
+/// A world whose run store is `configure`d before any service of the world is built over it (feature 022: the
+/// flow-control switches, the digest keys and the test-only admission of step gates).
+pub async fn world_with_store(
+    settings: WorkerSettings,
+    breaker: sagat_application::execution::BreakerPolicy,
+    configure: impl FnOnce(PgRunStore) -> PgRunStore,
+) -> World {
     // `RUST_LOG=debug cargo test ...` shows the causes the API deliberately hides from clients.
     static LOGGING: std::sync::Once = std::sync::Once::new();
     LOGGING.call_once(|| {
@@ -153,11 +163,13 @@ pub async fn world_with_breaker(
     // `SAGAT_VERIFY_SKIPPED_LOADS=1`: every command of this world's store checks that the
     // projections its definition lets it skip are empty (design 038, FR-038-005). `verify_run` makes
     // that check whatever this is set to.
-    let store = PgRunStore::new(store_pool.clone(), cache.clone())
-        .with_breaker(breaker)
-        .with_skipped_load_verification(
-            std::env::var("SAGAT_VERIFY_SKIPPED_LOADS").is_ok_and(|value| value == "1"),
-        );
+    let store = configure(
+        PgRunStore::new(store_pool.clone(), cache.clone())
+            .with_breaker(breaker)
+            .with_skipped_load_verification(
+                std::env::var("SAGAT_VERIFY_SKIPPED_LOADS").is_ok_and(|value| value == "1"),
+            ),
+    );
     let engine = Engine::new(JsonEvaluator);
     let key_k1 = sagat_infra_secrets::generate_key().expect("a key");
     let keys =

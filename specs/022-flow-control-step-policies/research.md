@@ -508,6 +508,35 @@ taken after `git grep D022-04` on every `origin/*` branch.
     declaration bounds are the domain's constants.
   - *Sort order* (correctness F10): `file_keys` sorts by byte order; an SQL path that locks the same rows sorts
     `group_name COLLATE "C"` (D022-038).
+- **D022-044 — How the readiness gate is built (T022-096, 2026-11-19).** D022-020 places the gate in the reducer and one
+  adapter call; the build keeps both and says where each half lives.
+  - *The reducer knows the gated nodes of its run* (`RunState::with_gated_steps`, given by every transaction that folds
+    or restores a run of a definition): `step.released`, `step.retry_due` and `step.retry_requested` of such a node leave
+    it `WAITING` (`WaitingOn::Gate`), and only the grant that completes every gate the node declares makes it `READY`; a
+    lease of it without them is refused. The journal alone still folds (a state rebuilt without the gated nodes sees the
+    step `READY` for one commit and reaches the same state through the decisions that commit journals); `verify_run`
+    checks both foldings agree and invariant 11 (`RunState::flow_control_breach`).
+  - *The decision is an evaluation round, not a step of `persist`*: the planner, once it has nothing else to emit, asks
+    `Evaluation::Gates` for every step that waits without a decision; the application evaluates the keys (a key that
+    fails or exceeds 256 bytes fails its step `FLOW_CONTROL_KEY_INVALID` through its route, and that round locks
+    nothing) and the adapter (`PgRunTx::decide_gates`) files and locks every key once, semaphores then windows, sorted,
+    before `persist` locks any usage row (slot 8b); `persist` writes no task-ready hint for a step left waiting. Doing it
+    inside `persist` would have locked the keys after the usage rows `persist` charges first, and could not route a key
+    failure. `persist` gives back what the planner releases (`concurrency.released`, `rate_limit.returned`, a stopped
+    run's `*.dequeued`) before it charges anything, for the same order.
+  - *A new arrival is granted only behind the queue*: a gate admits at once when its holders (or counted grants) plus
+    the waiters already queued are below the acquirer's own limit (the reservation rule of D022-021 for the last
+    position); both or neither (FR-022-044), with the earlier deadline of the two.
+  - *The claim is untouched*: the lease instant of a rate-limited step's grant is recorded by the pass (T23, T022-074);
+    until then the grant counts as unleased, which never admits more than the limit. The claim of a rate-limited step
+    costs what the plain claim costs (T022-076).
+  - *The step projection*: `steps.flow_control_gates` (bounded `jsonb`: phase, attempt, pool, group, the key's label and a
+    wait's deadline; never a value) and `waiting_kind` `RATE_LIMIT` / `CONCURRENCY` (migration `20270130000600`), so a
+    transaction restores a gated step as replay folds it (closes the step half of G1188).
+  - *Tests admit step gates through a test-only door*: `PgRunStore::admitting_step_gates_for_tests` (feature
+    `step-gates-for-tests`, `[dev-dependencies]` only, a rule of `scripts/check-architecture.py`) admits a definition
+    gated only at its steps; production keeps refusing every gated definition until the run-level admission, the grant
+    and the timeout routines exist (D022-037).
 
 ## Gaps
 
@@ -540,7 +569,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1185 | A key label is an online oracle: a caller who may see labels and start runs can confirm a guessed key value by the label it gets (like G1171). FR-022-057 limits labels to callers who may disclose the key's source. | Accepted; documented |
 | G1186 | Review findings not relayed to this author (architecture N2–N5, security three nits, correctness N2) are not addressed in this revision; the review records say so. | Open |
 | G1187 | The namespace-level warnings `CONCURRENCY_LIMIT_MISMATCH` and `RATE_LIMIT_MISMATCH` need the declarations of the other published definitions of the namespace; the codec cannot see them and no store keeps them yet. *Closed 2026-11-16 (D022-041): the declarations table and the publication check; proved by `integration_flow_control_step_policies::publication`.* | Closed |
-| G1188 | `RunState::restore` (a run rebuilt from its projection) does not restore gate state. No stored run has any in this build (admission refuses gated definitions; the projection writer refuses a gated step's wait). | Open; T022-022, T022-096 |
+| G1188 | `RunState::restore` (a run rebuilt from its projection) does not restore gate state. No stored run has any in this build (admission refuses gated definitions; the projection writer refuses a gated step's wait). *Partly closed 2026-11-19 (D022-044): a step's gates are restored from `steps.flow_control_gates`; a run's start gates are not (T022-022).* | Open; T022-022 |
+| G1197 | The collection-finish paths (`crates/infra-postgres/src/primitives.rs`, `crates/scheduler/src/passes.rs`) refuse an evaluation they do not expect: a gated root node after a `forEach` is refused there (fail closed, the collection's finish is retried) instead of being decided. | Open; T022-096 follow-up |
+| G1198 | No deployment configuration carries the digest keys (`KeyRing`) to the stores of the control plane and the engine: a gated step is refused `BINARY_CAPABILITY_MISSING` without them. Lands with the capability listing (D022-037). | Open; T022-097 |
+| G1199 | The readiness gate applies the declared `limit` and `queueTimeout`; the namespace's `concurrency_limit` and `flow_control_queue_timeout_ms` ceilings (`FlowControlCeilings`) are not read there yet. | Open; T022-025 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once.* | Open; runbook (T022-061) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |
