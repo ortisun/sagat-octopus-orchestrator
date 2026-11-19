@@ -169,3 +169,94 @@ within the row, so that row's verdict sits inside the noise of this machine; the
 in this run, so the earlier single run of it is not evidence for O041-036 (b) on its own; the ticket gate failed again
 (16 against 10). The fan-out still did not load the ingest enough to show a lock wait: the scheduler's passes, not the
 ingest, bound it. O041-036 is restated with these figures.
+
+## Quiet rerun (2026-11-19)
+
+The coordinator stopped the other builds on the machine so the spike could be measured quietly. This run uses the same
+method as the two runs above, unchanged: `SAGAT_PERF_STEP_LOG_SPIKE=1 SAGAT_PERF_SCENARIOS=step_log_ingest_spike
+tests/performance/scalability-ha/run.sh`, release build, the driver at commit a8512cf2 (the fixed driver of the
+second run), the same PostgreSQL 18.6 configuration and the same rows. It ran three times in a row. Before each round
+the runner waited, for at most 10 minutes, until the 1-minute load average was under 3. Other work still on the
+machine (a virtual machine and another project's test suites) was not touched. `LC_ALL=en_US.UTF-8` was set because
+PostgreSQL refused to start without a locale in the runner's shell. That setting is environment only, not method.
+
+| Round | Waited for load < 3 | Load at start (1 / 5 / 15 min) | Load at end |
+|---|---:|---|---|
+| 1 | 45 s | 2.74 / 5.78 / 7.75 | 6.44 / 8.18 / 8.39 |
+| 2 | 256 s | 2.95 / 5.15 / 6.95 | 7.53 / 8.49 / 8.10 |
+| 3 | 556 s | 2.71 / 4.58 / 6.10 | 6.83 / 8.62 / 7.71 |
+
+Each round started under 3, and the load rose to about 7 during the round. Most of that rise is the benchmark itself
+(PostgreSQL, up to 8 replicas and 128 workers on 16 cores).
+
+### Transitions per second and completion p99, per round (3,000 runs of three activities per row)
+
+| Row | Round 1 | Round 2 | Round 3 |
+|---|---|---|---|
+| 1×16 off | 1,093/s, 12.2 ms | 1,031/s, 14.8 ms | 1,089/s, 10.2 ms |
+| 1×16 per-line rows (a) | 854/s, 10.6 ms | 865/s, 10.5 ms | 862/s, 12.4 ms |
+| 1×16 lines in the final batch (a') | 977/s, 9.3 ms | 977/s, 9.1 ms | 934/s, 14.5 ms |
+| 1×16 chunk rows | 853/s, 10.2 ms | 887/s, 8.4 ms | 816/s, 13.0 ms |
+| 1×16 off, again | 1,107/s, 11.5 ms | 1,133/s, 9.0 ms | 1,064/s, 10.1 ms |
+| 8×128 off | 540/s, 89.0 ms | 531/s, 85.6 ms | 561/s, 85.3 ms |
+| 8×128 per-line rows (a) | 476/s, 78.1 ms | 462/s, 93.7 ms | 476/s, 108.2 ms |
+| 8×128 lines in the final batch (a') | 489/s, 84.3 ms | 477/s, 88.5 ms | 480/s, 83.6 ms |
+| 8×128 chunk rows | 476/s, 75.8 ms | 476/s, 84.7 ms | 456/s, 91.2 ms |
+| 8×128 off, again | 542/s, 78.3 ms | 550/s, 81.9 ms | 545/s, 81.7 ms |
+
+The baseline moved within a row by +1.3%, +9.9% and −2.3% at 1×16, and by +0.4%, +3.6% and −2.9% at 8×128. On the
+shared machine it moved by 11% to 33%.
+
+### Against SC-041-007 (on / off, against the first baseline of the row, as the earlier runs)
+
+| Variant | Size | Rate per round | Rate median (spread) | p99 excess per round | p99 median (spread) |
+|---|---|---|---|---|---|
+| per-line rows (a), the design's | 1×16 | 78.2%, 83.9%, 79.2% | **79.2%** (78.2–83.9) | −12.8%, −29.1%, +22.2% | −12.8% (−29.1 to +22.2) |
+| per-line rows (a), the design's | 8×128 | 88.2%, 87.0%, 84.7% | **87.0%** (84.7–88.2) | −12.2%, +9.5%, +26.8% | +9.5% (−12.2 to +26.8) |
+| chunk rows | 1×16 | 78.0%, 86.0%, 74.9% | 78.0% (74.9–86.0) | −15.8%, −43.2%, +28.1% | −15.8% (−43.2 to +28.1) |
+| chunk rows | 8×128 | 88.1%, 89.7%, 81.2% | 88.1% (81.2–89.7) | −14.8%, −1.0%, +6.9% | −1.0% (−14.8 to +6.9) |
+| lines in the final batch (a') | 1×16 | 89.4%, 94.7%, 85.8% | 89.4% (85.8–94.7) | −23.7%, −38.7%, +42.4% | −23.7% (−38.7 to +42.4) |
+| lines in the final batch (a') | 8×128 | 90.6%, 89.9%, 85.6% | 89.9% (85.6–90.6) | −5.3%, +3.4%, −2.0% | −2.0% (−5.3 to +3.4) |
+
+Against the second baseline (taken at the end of each row), the per-line rows reach 77.2%, 76.4% and 81.0% at 1×16 and
+87.9%, 84.0% and 87.3% at 8×128.
+
+| Criterion, per-line rows | Round 1 | Round 2 | Round 3 |
+|---|---|---|---|
+| Rate ≥ 90%, 1×16 / 8×128 | fail / fail | fail / fail | fail / fail |
+| Completion p99 ≤ +10%, 1×16 / 8×128 | pass / pass | pass / pass | **fail** / **fail** |
+| Tickets ≤ half the pool (10) | 13 (1,697 batches/s, S p99 5.34 ms): fail | 15 (1,684/s, 6.05 ms): fail | 11 (1,729/s, 4.19 ms): fail |
+| Fan-out: RETRY_LATER for a lock timeout < 1% | 0.00% of 12,000: pass | 0.00% of 12,001: pass | 0.00% of 12,000: pass |
+
+The other workloads, recorded with no threshold:
+
+- (b): S p99 of 240.7, 199.2 and 206.4 ms for 500 records, with no refusal and no lock timeout.
+- (c): 135, 136 and 135 transitions/s.
+- (d): a transaction held for 11.1 to 12.2 s, `quota_transaction_deltas` unchanged, completion p99 of 12.2 to 14.7 ms.
+- (e): 230 to 235 transitions/s, 12 to 14 final flushes given up at 2 s, and 1.02% to 1.33% of final batches refused
+  for a ticket.
+- Commit waits caused by an ingest, during (a) per-line: 8, 8 and 37 samples at 1×16, and 65, 54 and 177 at 8×128.
+  That is at most 0.20 ms per completion on average.
+
+### Reading
+
+On a quiet machine, the design's variant, one row per line, fails SC-041-007 in every round. Its rate with capture on
+is 78% to 84% of the rate with capture off at 1×16 (median 79.2%) and 85% to 88% at 8×128 (median 87.0%). The gap is
+larger than the baseline's own drift within a row (at most 10% at 1×16, 4% at 8×128). The completion p99 passes in
+rounds 1 and 2 and fails in round 3 at both sizes (+22.2%, +26.8%). The ticket rule fails in all three rounds (11 to 15
+tickets needed against 10).
+
+T041-31 stays unticked and the design is unchanged. Chunk rows fail the rate too (median 78.0% / 88.1%), so by
+T041-31's rule O041-021 is not put to the owner.
+
+O041-026 is still not settled. The p99 fails in only one round of three, and the waits on the tenant row are sampled
+as a mean (at most 0.20 ms per completion). That mean cannot show whether more than half of the round-3 excess was
+spent there. The failure that holds in every round is the rate, and the rate is not O041-026's trigger.
+
+The one-ingest shape (a') sits at the edge: median 89.4% / 89.9%. It meets the rate in two of six round-rows
+(1×16 round 2, 8×128 round 1), and its p99 fails at 1×16 in round 3 (+42.4%). So it does not meet SC-041-007 in all
+three rounds either.
+
+For O041-036, which is the owner's to answer: option (a), measuring on a quiet machine, is now done. It shows the
+failure is not noise. By the path O041-036 recommends ("(b) if (a') meets the criterion there and (c) or (e) if it
+does not"), (a') did not meet the criterion consistently. It fell short by less than one point at the medians.
