@@ -1802,8 +1802,9 @@ async fn step_log_ingest_spike() {
     ));
     body.push_str(header);
     body.push_str(&spike_row_line("calibration 1×16", &calibration));
+    // The design allows at most half the pool for the tenant's tickets and the cap.
     let tickets = tickets.min(half_pool);
-    let cap = cap.min(half_pool.max(cap));
+    let cap = cap.min(half_pool).max(tickets);
     let mut verdict = String::new();
     let only_fanout = std::env::var("SAGAT_PERF_STEP_LOG_ONLY").as_deref() == Ok("fanout");
     let rows: &[(usize, usize)] = if only_fanout {
@@ -1937,6 +1938,43 @@ async fn step_log_ingest_spike() {
                         - 1.0),
             );
         }
+        // The baseline again, after the rows with the driver on, so the drift of the database and of the
+        // machine over the row shows (each row runs off, on, a', chunk rows, off again).
+        if want_off && want_on {
+            let again = step_log_spike::run_row(
+                &w,
+                chain,
+                &RowSpec {
+                    label: "off again",
+                    api_replicas: replicas,
+                    workers,
+                    runs,
+                    shape: Shape::Chain,
+                    admission: None,
+                    lines: (10, 200),
+                    hold: false,
+                    single_final: false,
+                    chunk: false,
+                },
+                &chain_activities,
+            )
+            .await;
+            body.push_str(&spike_row_line(
+                &format!("(a) {replicas}×{workers} off, again"),
+                &again,
+            ));
+            if let Some(on) = &on {
+                let _ = writeln!(
+                    verdict,
+                    "- (a) {replicas}×{workers} against the second baseline: rate on/off {:.1}%, completion p99 {:+.1}%.",
+                    100.0 * on.per_second / again.per_second.max(1e-9),
+                    100.0
+                        * (percentile(&on.completes, 0.99).as_secs_f64()
+                            / percentile(&again.completes, 0.99).as_secs_f64().max(1e-9)
+                            - 1.0),
+                );
+            }
+        }
         if let (Some(off), Some(single)) = (&off, &single) {
             let _ = writeln!(
                 verdict,
@@ -1984,7 +2022,7 @@ async fn step_log_ingest_spike() {
             step_log_spike::Tally::get(&tally.retry_lock),
         );
         // (c) The fan-out.
-        let fan_runs = env_usize("SAGAT_PERF_STEP_LOG_FANOUT_RUNS", 10);
+        let fan_runs = env_usize("SAGAT_PERF_STEP_LOG_FANOUT_RUNS", 30);
         let fan = step_log_spike::run_row(
             &w,
             fanout,

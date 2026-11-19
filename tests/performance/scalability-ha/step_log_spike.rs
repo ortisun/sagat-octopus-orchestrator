@@ -255,6 +255,9 @@ impl Ingest {
         final_batch: bool,
         highest: i64,
     ) -> (Verdict, Option<Duration>) {
+        // A batch is a call of its own: yield before taking a slot, so the slot the previous batch of this
+        // worker released can go to another worker, as it would after a network round trip.
+        tokio::task::yield_now().await;
         let Ok(_class) = self.admission.class.try_acquire() else {
             self.tally.count(Verdict::RetryTicket, final_batch);
             return (Verdict::RetryTicket, None);
@@ -279,7 +282,11 @@ impl Ingest {
         };
         let elapsed = started.elapsed();
         self.tally.count(verdict, final_batch);
-        (verdict, (!verdict.is_retry()).then_some(elapsed))
+        // Every transaction that ran counts in S, the ones a lock timeout or the quota rolled back included.
+        (
+            verdict,
+            (verdict != Verdict::RetryTicket).then_some(elapsed),
+        )
     }
 
     #[allow(clippy::too_many_lines)]
@@ -836,14 +843,12 @@ pub async fn run_row(
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let handle = tokio::spawn(async move {
-            let mut shown = 0;
             while !flag.load(Ordering::Relaxed) {
                 let report = scheduler.tick().await;
-                if shown < 3 {
-                    eprintln!("spike fan-out tick: {report:?}");
-                    shown += 1;
+                // Tick again at once while there is work, so the fan-out is not paced by the loop.
+                if report.collections_advanced == 0 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(20)).await;
             }
         });
         (stop, handle)
