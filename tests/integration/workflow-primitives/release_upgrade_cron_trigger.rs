@@ -331,7 +331,7 @@ async fn a_released_cron_trigger_fires_once_a_tick_through_the_migration_a_mixed
         let env = default_engine_env(&db, &idp);
         let mut engine = RunningEngine::start(env.clone()).await;
         let capabilities: Vec<String> = sqlx::query_scalar("SELECT capabilities FROM serving_instances WHERE kind = 'EXECUTION_ENGINE'").fetch_one(&pool).await.expect("registered");
-        assert_eq!(capabilities, ["schedules-v1"], "the default engine runs the schedule pass");
+        assert_eq!(capabilities, ["run-input-validation-v1", "schedules-v1"], "the default engine runs the schedule pass and, in enforce (design 043), validates run input");
         until("the reconciliation converges every trigger", || async {
             let made: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules WHERE origin = 'TRIGGER'").fetch_one(&pool).await.expect("schedules");
             let unconverged: i64 = sqlx::query_scalar("SELECT count(*) FROM schedule_trigger_drift").fetch_one(&pool).await.expect("drift");
