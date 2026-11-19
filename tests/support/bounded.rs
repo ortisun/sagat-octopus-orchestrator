@@ -77,11 +77,32 @@ pub async fn start_openbao(root_token: &str) -> ContainerAsync<GenericImage> {
 }
 
 /// Starts the PostgreSQL 16 a managed connection points at.
+///
+/// The container is returned once a query works on its published port. On Docker Desktop for macOS that port can share
+/// its number with a listener this process already holds on 127.0.0.1, which then answers instead of PostgreSQL
+/// (`unexpected response from SSLRequest: 0x48`, D043-171); such a container is replaced by one on another port, at most
+/// three times.
 pub async fn start_postgres_target() -> ContainerAsync<Postgres> {
-    let started = Postgres::default().with_tag("16-alpine").start();
-    within("pull and start postgres:16-alpine", START_LIMIT, started)
-        .await
-        .unwrap_or_else(|error| panic!("start postgres:16-alpine: {error}"))
+    for attempt in 1..=3 {
+        let started = Postgres::default().with_tag("16-alpine").start();
+        let container = within("pull and start postgres:16-alpine", START_LIMIT, started)
+            .await
+            .unwrap_or_else(|error| panic!("start postgres:16-alpine: {error}"));
+        let port = mapped_port(&container, 5432).await;
+        let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+        match super::wait_until_queryable(&url).await {
+            Ok(()) => return container,
+            Err(super::AnotherServer) => {
+                eprintln!(
+                    "the host port {port} of the target PostgreSQL is answered by another server; starting another container ({attempt} of 3)"
+                );
+                drop(container);
+            }
+        }
+    }
+    panic!(
+        "three target PostgreSQL containers in a row were published on a port another server answers"
+    )
 }
 
 /// Runs a child process to its end, killing it (the command must set `kill_on_drop`) at `limit`.

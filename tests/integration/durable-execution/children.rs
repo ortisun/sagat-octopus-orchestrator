@@ -633,7 +633,10 @@ async fn a_child_cannot_be_created_for_a_step_that_stopped_waiting_after_the_can
             business_id: None,
         },
         definition,
-        input: candidate.input.clone(),
+        input: sagat_application::run_input::CheckedRunInput::unchecked(
+            kid_version,
+            candidate.input.clone(),
+        ),
         input_blob: None,
         audit: AuditRecord::engine(
             w.admin.tenant_id(),

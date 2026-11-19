@@ -155,6 +155,8 @@ function runJson(run: Run): Obj {
       ? { schedule: { scheduleId: run.schedule.scheduleId, nominalTime: iso(run.schedule.nominalTime), kind: run.schedule.kind, revision: run.schedule.revision } }
       : {}),
     ...(run.resetFrom !== null ? { resetFrom: { runId: run.resetFrom.runId, sequence: run.resetFrom.sequence } } : {}),
+    // Present only for a run stopped with a failure code (design 043).
+    ...(run.failureCode !== null ? { failureCode: run.failureCode } : {}),
   };
 }
 
@@ -185,7 +187,12 @@ function receiptJson(r: UpdateWithStartReceipt | null): Obj | null {
 }
 
 function errorJson(error: unknown): Obj {
-  if (error instanceof SagatError) return error.toJSON();
+  if (error instanceof SagatError) {
+    // design 043: the field of an error is compared with the rule of a refused run input, not for the other reasons
+    const fields = error.toJSON();
+    if (!('rule' in fields)) delete fields['field'];
+    return fields;
+  }
   return { code: 'UNEXPECTED', message: error instanceof Error ? error.name : 'unknown' };
 }
 

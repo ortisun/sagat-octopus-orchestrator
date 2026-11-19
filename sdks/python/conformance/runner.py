@@ -379,6 +379,9 @@ def run_json(run: Run) -> Obj:
         }
     if run.reset_from is not None:
         observed["resetFrom"] = {"runId": run.reset_from.run_id, "sequence": run.reset_from.sequence}
+    # Present only for a run stopped with a failure code (design 043).
+    if run.failure_code is not None:
+        observed["failureCode"] = run.failure_code
     return observed
 
 
@@ -652,7 +655,11 @@ def batch_request_of(raw: Obj) -> BatchRequest:
 
 def error_json(error: BaseException) -> Obj:
     if isinstance(error, SagatError):
-        return error.to_dict()
+        fields = error.to_dict()
+        # design 043: the field of an error is compared with the rule of a refused run input, not for the other reasons
+        if "rule" not in fields:
+            fields.pop("field", None)
+        return fields
     sys.stderr.write("".join(traceback.format_exception(error)))
     return {"code": "UNEXPECTED", "message": type(error).__name__}
 

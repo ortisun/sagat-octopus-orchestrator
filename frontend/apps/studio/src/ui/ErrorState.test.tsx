@@ -28,6 +28,18 @@ describe('ErrorState', () => {
     expect(screen.queryByText(/Ask an administrator/)).not.toBeInTheDocument();
   });
 
+  it('says where a run input was refused and by which rule, never the value (design 043)', () => {
+    render(
+      <ErrorState
+        error={new ApiError({ code: 'VALIDATION_FAILED', status: 422, message: "the run input does not match the workflow's input schema", details: { reason: 'RUN_INPUT_INVALID', field: '/orderId', rule: 'type' }, traceId: TRACE })}
+        what="Starting the run"
+      />,
+    );
+    const alert = screen.getByText(/Starting the run failed/).closest('div') as HTMLElement;
+    expect(alert).toHaveTextContent('Code VALIDATION_FAILED (RUN_INPUT_INVALID).');
+    expect(alert).toHaveTextContent('At /orderId, rule type.');
+  });
+
   it('shows nothing of what is not an answer of the platform: no message, no code, no trace', () => {
     render(<ErrorState error={new Error('TypeError: x is undefined at /src/secret.ts:12')} what="Opening the run" />);
     expect(screen.getByText(/Opening the run failed/)).toBeInTheDocument();

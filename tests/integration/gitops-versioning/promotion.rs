@@ -416,3 +416,112 @@ async fn a_promotion_with_the_longest_key_creates_the_workflow_in_the_target() {
         .expect("promoted");
     assert!(matches!(promoted, Promotion::Published(_)));
 }
+
+/// A codec whose pre-check finds no permit on every parse of a stored document (`report`, the mode publication uses for a
+/// document that is already a version): the rest is the real codec.
+#[derive(Clone)]
+struct BusyStoredParse;
+
+impl sagat_application::definitions::IrCodec for BusyStoredParse {
+    fn check_draft(&self, document: &[u8]) -> Result<(), sagat_application::definitions::IrError> {
+        sagat_application::definitions::IrCodec::check_draft(&sagat_infra_ir::JsonIrCodec, document)
+    }
+
+    fn parse(
+        &self,
+        document: &[u8],
+    ) -> Result<
+        sagat_application::definitions::ParsedDefinition,
+        sagat_application::definitions::IrError,
+    > {
+        sagat_application::definitions::IrCodec::parse(&sagat_infra_ir::JsonIrCodec, document)
+    }
+
+    fn parse_with(
+        &self,
+        document: &[u8],
+        mode: sagat_application::definitions::InputValidationMode,
+    ) -> Result<
+        sagat_application::definitions::ParsedDefinition,
+        sagat_application::definitions::IrError,
+    > {
+        if mode == sagat_application::definitions::InputValidationMode::Report {
+            return Err(sagat_application::definitions::IrError::ValidatorBusy);
+        }
+        sagat_application::definitions::IrCodec::parse_with(
+            &sagat_infra_ir::JsonIrCodec,
+            document,
+            mode,
+        )
+    }
+
+    fn diff(
+        &self,
+        from: &[u8],
+        to: &[u8],
+    ) -> Result<sagat_application::diff::DocumentDiff, sagat_application::definitions::IrError>
+    {
+        sagat_application::definitions::IrCodec::diff(&sagat_infra_ir::JsonIrCodec, from, to)
+    }
+}
+
+/// Re-read of design 043 after round 2 (correctness 1, architecture 1): a promotion whose parse of the target's clean
+/// draft finds no permit of the run-input validator is unavailable, a retryable `503`, never a final
+/// `DRAFT_HAS_CHANGES` for a draft that has none; the same promotion then goes through.
+#[tokio::test]
+async fn a_promotion_whose_parse_finds_no_permit_is_unavailable_not_draft_has_changes() {
+    let w = world().await;
+    namespace(&w, "shop-dev", Environment::Dev).await;
+    namespace(&w, "shop-staging", Environment::Staging).await;
+    let author = developer(&w, "author").await;
+    let source = published_in(&w, "shop-dev", "checkout", &doc("checkout", "release 7")).await;
+    let staged = published_in(
+        &w,
+        "shop-staging",
+        "checkout",
+        &doc("checkout", "release 6"),
+    )
+    .await;
+    let staging_id = w
+        .defs
+        .get_workflow(&w.admin, staged, &ctx())
+        .await
+        .expect("workflow")
+        .workflow
+        .namespace_id();
+    let busy = sagat_application::publishing::PublishingService::new(
+        w.store.clone(),
+        sagat_application::clock::SystemClock,
+        BusyStoredParse,
+    );
+    let error = busy
+        .promote(
+            &author,
+            source,
+            1,
+            staging_id,
+            "release 7 is ready",
+            false,
+            "promote-busy-0123456789",
+            &ctx(),
+        )
+        .await
+        .expect_err("not judged");
+    assert!(
+        matches!(&error, AppError::InvalidDefinition(e) if matches!(e.as_ref(), sagat_application::definitions::IrError::ValidatorBusy)),
+        "{error:?}"
+    );
+    w.publishing
+        .promote(
+            &author,
+            source,
+            1,
+            staging_id,
+            "release 7 is ready",
+            false,
+            "promote-busy-0123456789",
+            &ctx(),
+        )
+        .await
+        .expect("the same promotion goes through once there is a permit");
+}

@@ -212,7 +212,10 @@ async fn the_runtime_role_keeps_the_counters_by_writing_runs_and_cannot_write_th
     let pool = connect(&config).await.expect("connect as the runtime role");
     let cache = DefinitionCache::new(std::sync::Arc::new(JsonIrCodec), 8);
     let store = PgRunStore::new(pool.clone(), cache.clone());
-    let service = RunService::new(store, SystemClock, Engine::new(JsonEvaluator), cache);
+    let service = RunService::new(store, SystemClock, Engine::new(JsonEvaluator), cache)
+        .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+            sagat_application::run_input::InputValidationMode::Enforce,
+        ));
     let input = b"{}".to_vec();
     for i in 0..4 {
         service
@@ -320,7 +323,10 @@ async fn a_temporary_table_cannot_stand_in_for_the_counters_or_borrow_the_functi
         SystemClock,
         Engine::new(JsonEvaluator),
         cache,
-    );
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ));
     let input = b"{}".to_vec();
     for i in 0..3 {
         service

@@ -188,3 +188,49 @@ async fn the_decisions_of_a_schedule_are_not_seen_by_another_tenant_and_are_read
         .expect("a viewer reads the decisions");
     assert_eq!(seen.len(), 1);
 }
+
+/// G043-001 (design 043, T043-11): a reader meets an outcome it does not know, as a control plane of 0.2.x meets
+/// `INPUT_INVALID` written by a new engine during the upgrade. The listing passes it through as a string, beside the
+/// outcomes it knows, and a filter on another outcome leaves it out. The outcome CHECK of this test's own database is
+/// dropped to write a value no binary knows yet.
+#[tokio::test]
+async fn the_listing_passes_an_outcome_it_does_not_know_through_as_a_string() {
+    let f = fixture().await;
+    let schedule = f.create("upgrade", &hourly(), &json!({}), None).await;
+    sqlx::query("ALTER TABLE schedule_actions DROP CONSTRAINT schedule_actions_outcome_known")
+        .execute(&f.w.db.pool)
+        .await
+        .expect("a database that accepts an outcome of a later release");
+    let base = OffsetDateTime::now_utc();
+    decide(&f, base, &schedule, "SPEC", 2, 2, "SKIPPED_OVERLAP").await;
+    decide(
+        &f,
+        base,
+        &schedule,
+        "SPEC",
+        1,
+        1,
+        "OUTCOME_OF_A_LATER_RELEASE",
+    )
+    .await;
+    decide(&f, base, &schedule, "SPEC", 3, 3, "INPUT_INVALID").await;
+    let listed: Vec<String> = pages(&f, &schedule, None, 10)
+        .await
+        .into_iter()
+        .map(|view| view.outcome)
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            "OUTCOME_OF_A_LATER_RELEASE",
+            "SKIPPED_OVERLAP",
+            "INPUT_INVALID"
+        ]
+    );
+    let skipped: Vec<String> = pages(&f, &schedule, Some(Outcome::SkippedOverlap), 10)
+        .await
+        .into_iter()
+        .map(|view| view.outcome)
+        .collect();
+    assert_eq!(skipped, vec!["SKIPPED_OVERLAP"]);
+}

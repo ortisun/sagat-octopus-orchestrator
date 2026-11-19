@@ -33,6 +33,7 @@ fn cfg(url: &str) -> (Config, ServeConfig) {
             reset_reapply_enabled: false,
             reset_cancel_source_enabled: false,
             lake_enabled: false,
+            run_input_validation: sagat_application::definitions::InputValidationMode::Enforce,
             collection_operators_enabled: false,
             openbao: Default::default(),
             bind_addr: "127.0.0.1:0".parse().expect("addr"),

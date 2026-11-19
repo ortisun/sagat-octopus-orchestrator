@@ -198,6 +198,9 @@ export class HttpTransport {
       traceId: typeof envelope?.['traceId'] === 'string' ? envelope['traceId'] : traceId,
       reason,
       retryAfterMs,
+      // design 043: the pointer and the closed rule of a refused run input, as the server sent them
+      field: typeof details?.['field'] === 'string' && given ? details['field'] : null,
+      rule: typeof details?.['rule'] === 'string' && given ? details['rule'] : null,
     });
   }
 }

@@ -653,6 +653,10 @@ public final class Runner {
             resetFrom.put("runId", run.resetFrom().runId());
             resetFrom.put("sequence", run.resetFrom().sequence());
         }
+        // Present only for a run stopped with a failure code (design 043).
+        if (run.failureCode() != null) {
+            out.put("failureCode", run.failureCode());
+        }
         return out;
     }
 
@@ -691,6 +695,12 @@ public final class Runner {
             }
             out.put("remediation", e.remediation());
             out.put("message", e.getMessage());
+            // design 043: only when the server sent them, so every other refusal reads as it always has
+            // (the field is compared with the rule of a refused run input, not for the other reasons)
+            e.rule().ifPresent(rule -> {
+                out.put("rule", rule);
+                e.field().ifPresent(value -> out.put("field", value));
+            });
             return out;
         }
         out.put("code", "UNEXPECTED");

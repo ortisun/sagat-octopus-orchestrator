@@ -102,6 +102,7 @@
         "createdAt": "<time>",
         "deadline": null,
         "depth": 0,
+        "failureCode": "INSTANCE_LIMIT",
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,

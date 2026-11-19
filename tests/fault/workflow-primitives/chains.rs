@@ -1145,7 +1145,10 @@ async fn grandchild_handoff_and_root_child_admission_do_not_deadlock_on_the_root
             .cache
             .get_or_parse(leaf_version, &version.document)
             .expect("definition"),
-        input: serde_json::to_vec(&input).expect("input"),
+        input: sagat_application::run_input::CheckedRunInput::unchecked(
+            leaf_version,
+            serde_json::to_vec(&input).expect("input"),
+        ),
         input_blob: None,
         audit: AuditRecord::engine(
             tenant,

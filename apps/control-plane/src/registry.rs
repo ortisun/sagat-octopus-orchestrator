@@ -27,9 +27,19 @@ use crate::config::DatabaseConfig;
 /// The version a process announces: the version of the binary.
 pub const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// What the control plane's binary can do. A constant of the code, not of its settings. Empty until a feature
-/// whose control plane must honour a requirement ships (029's `access-narrowing-v1`, 031's `payload-encoding-v1`).
-pub const CAPABILITIES: &[Capability] = &[];
+/// What this control plane process will honour: the code of the binary narrowed by its configuration, read once, so the
+/// list is true for the life of the process. Design 043: `run-input-validation-v1` only in `enforce` mode
+/// (`SAGAT_RUN_INPUT_VALIDATION`, FR-043-013), so that a replica in `report` is refused once the operator requires it.
+#[must_use]
+pub fn capabilities(
+    run_input_validation: sagat_application::run_input::InputValidationMode,
+) -> Vec<Capability> {
+    let mut listed = Vec::new();
+    if run_input_validation == sagat_application::run_input::InputValidationMode::Enforce {
+        listed.push(Capability::RunInputValidationV1);
+    }
+    listed
+}
 
 /// A new random instance id: two processes never share one, and a restart is a new instance.
 #[must_use]
@@ -391,8 +401,13 @@ mod tests {
     }
 
     #[test]
-    fn the_control_plane_lists_no_capability_until_a_feature_gives_it_one() {
-        assert!(CAPABILITIES.is_empty());
+    fn the_control_plane_lists_run_input_validation_only_in_enforce() {
+        use sagat_application::run_input::InputValidationMode;
+        assert_eq!(
+            capabilities(InputValidationMode::Enforce),
+            vec![Capability::RunInputValidationV1]
+        );
+        assert!(capabilities(InputValidationMode::Report).is_empty());
     }
 
     #[test]

@@ -94,6 +94,12 @@ type Error struct {
 	RetryAfter *time.Duration
 	// Remediation is the fixed sentence of the catalog for Code.
 	Remediation string
+	// Field is the server's details.field (design 043): a JSON pointer whose segments are names the version's
+	// inputSchema declares and array indices, never a value; empty when there is none.
+	Field string
+	// Rule is the server's details.rule (design 043): the closed keyword of the input schema that failed; empty when
+	// there is none.
+	Rule string
 
 	cause error
 }

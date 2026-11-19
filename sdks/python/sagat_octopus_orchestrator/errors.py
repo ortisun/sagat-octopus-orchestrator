@@ -95,6 +95,8 @@ class SagatError(Exception):
     reason: str | None
     retry_after_ms: int | None
     remediation: str
+    field: str | None
+    rule: str | None
 
     def __init__(
         self,
@@ -106,6 +108,8 @@ class SagatError(Exception):
         trace_id: str = "",
         reason: str | None = None,
         retry_after_ms: int | None = None,
+        field: str | None = None,
+        rule: str | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -116,10 +120,14 @@ class SagatError(Exception):
         self.reason = reason
         self.retry_after_ms = retry_after_ms
         self.remediation = remediation_of(code)
+        # design 043: ``details.field`` (a JSON pointer whose segments are names the schema declares and array indices,
+        # never a value) and ``details.rule`` (the closed keyword that failed), if the server sent them
+        self.field = field
+        self.rule = rule
 
     def to_dict(self) -> dict[str, Any]:
         """The fields that are compared across SDKs (the message is the SDK's own words)."""
-        return {
+        fields: dict[str, Any] = {
             "code": self.code,
             "status": self.status,
             "retryable": self.retryable,
@@ -129,6 +137,12 @@ class SagatError(Exception):
             "remediation": self.remediation,
             "message": self.message,
         }
+        # only when the server sent them, so the errors of every other refusal read as they always have
+        if self.field is not None:
+            fields["field"] = self.field
+        if self.rule is not None:
+            fields["rule"] = self.rule
+        return fields
 
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
         return (_rebuild, (self.to_dict(),))
@@ -149,6 +163,8 @@ def _rebuild(fields: dict[str, Any]) -> SagatError:
         trace_id=fields["traceId"],
         reason=fields["reason"],
         retry_after_ms=fields["retryAfterMs"],
+        field=fields.get("field"),
+        rule=fields.get("rule"),
     )
 
 

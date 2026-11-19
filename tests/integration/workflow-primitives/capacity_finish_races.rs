@@ -368,9 +368,20 @@ async fn evaluated_handoff(
     old: &CapacityFinishCommand,
     successor: RunId,
 ) -> EvaluatedChainHandoffCommand {
+    let version: Uuid =
+        sqlx::query_scalar("SELECT workflow_version_id FROM runs WHERE tenant_id=$1 AND id=$2")
+            .bind(n.f.w.admin.tenant_id().as_uuid())
+            .bind(n.f.chain)
+            .fetch_one(&n.f.w.db.pool)
+            .await
+            .expect("the predecessor's version");
     let selection = ContinuationSelection::new(
         NodeId::parse("rollover").expect("boundary"),
-        serde_json::to_vec(&serde_json::json!({"continue":false})).expect("evaluated input.next"),
+        sagat_application::run_input::CheckedRunInput::unchecked(
+            sagat_domain::definition::WorkflowVersionId::new(version),
+            serde_json::to_vec(&serde_json::json!({"continue":false}))
+                .expect("evaluated input.next"),
+        ),
         None,
         None,
     )
