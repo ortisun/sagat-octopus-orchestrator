@@ -56,4 +56,13 @@ ignore = [
   # links it. sqlx-sqlite 0.9.0 requires `>=0.30.1, <0.38.0`, so the fix needs a sqlx release. Re-evaluate
   # on 2026-12-02 or when sqlx takes libsqlite3-sys >= 0.39 (research.md, gap G707).
   "RUSTSEC-2026-0459",
+  # 2026-11-18: three "unmaintained" notices (informational; no vulnerability is named), dated 2026-09-14 and
+  # added to the advisory database after 2026-11-11. chrono 0.4.45 is reached through croner (cron), object_store,
+  # rskafka (vendored), sagat-infra-ir and sagat-infra-connectors; chrono-tz 0.10.4 through sagat-infra-ir (time
+  # zones of schedules); humantime 2.4.0 through object_store (sagat-infra-blobstore). Each ships in the binaries,
+  # and none has a drop-in successor: moving off chrono (to jiff or time) touches croner, object_store and the IR,
+  # which is not a change for the closing of 0.3.0. Re-evaluate on 2026-12-02 (research.md, gap G708).
+  "RUSTSEC-2026-0543", # chrono is unmaintained
+  "RUSTSEC-2026-0555", # chrono-tz is unmaintained
+  "RUSTSEC-2026-0542", # humantime is unmaintained
 ]
