@@ -112,13 +112,17 @@ pub enum Capability {
     AccessNarrowingV1,
     /// Feature 031: the control plane and the engine read and write the payload encoding.
     PayloadEncodingV1,
+    /// Design 043: the process refuses every run input its version's `inputSchema` refuses (`enforce` mode); one in
+    /// `report` mode does not list it (FR-043-013).
+    RunInputValidationV1,
 }
 
 impl Capability {
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 4] = [
         Self::SchedulesV1,
         Self::AccessNarrowingV1,
         Self::PayloadEncodingV1,
+        Self::RunInputValidationV1,
     ];
 
     #[must_use]
@@ -127,6 +131,7 @@ impl Capability {
             Self::SchedulesV1 => "schedules-v1",
             Self::AccessNarrowingV1 => "access-narrowing-v1",
             Self::PayloadEncodingV1 => "payload-encoding-v1",
+            Self::RunInputValidationV1 => crate::run_input::CAPABILITY,
         }
     }
 

@@ -187,6 +187,16 @@ impl ErrorCode {
             (Self::ValidationFailed, "SCHEDULE_INPUT_INVALID") => {
                 "The input does not match the target version's input schema (no excerpt)."
             }
+            (Self::ValidationFailed, "NOMINAL_TIME_FIELD_INVALID") => {
+                "The field is not a declared top-level string property of the input schema."
+            }
+            // design 043: the sentences of `specs/043-run-input-validation/contracts/errors.md`
+            (Self::ValidationFailed, "RUN_INPUT_INVALID") => {
+                "Fix the input at `details.field`: `details.rule` names the keyword of the input schema it fails (no excerpt)."
+            }
+            (Self::ValidationFailed, "RUN_INPUT_SCHEMA_UNUSABLE") => {
+                "The version's input schema is outside the supported subset; publish a version within it (`control-plane input-schema-inventory` lists them)."
+            }
             (Self::ValidationFailed, "BACKFILL_RANGE_INVALID") => {
                 "`start` must be before `end` and `end` not after now."
             }
@@ -801,6 +811,10 @@ impl ApiError {
                 e.parts.details = Some(json!({ "reason": "IDEMPOTENCY_KEY_REUSED" }));
                 e
             }
+            // design 043: the pre-check of the `inputSchema` had no permit within its wait, as a start's `Busy`
+            AppError::InvalidDefinition(error) if matches!(*error, IrError::ValidatorBusy) => {
+                Self::unavailable()
+            }
             AppError::InvalidDefinition(error) => {
                 let mut e = Self::validation(error.to_string());
                 e.parts.details = Some(definition_details(&error));
@@ -849,6 +863,25 @@ impl ApiError {
                     Some(field) => json!({ "reason": reason, "field": field }),
                     None => json!({ "reason": reason }),
                 });
+                e
+            }
+            // design 043: the reason, the pointer and the closed rule; never a value of the input
+            AppError::InvalidRunInput {
+                reason,
+                field,
+                rule,
+            } => {
+                let mut e = Self::validation(format!(
+                    "the run input does not match the workflow's input schema: {reason}"
+                ));
+                let mut details = json!({ "reason": reason });
+                if let Some(field) = field {
+                    details["field"] = json!(field);
+                }
+                if let Some(rule) = rule {
+                    details["rule"] = json!(rule);
+                }
+                e.parts.details = Some(details);
                 e
             }
             AppError::InvalidStart { reason, field } => {
@@ -1224,6 +1257,19 @@ fn definition_details(error: &IrError) -> Value {
         IrError::UnknownScript { digest } => {
             json!({ "reason": "UNKNOWN_SCRIPT", "artifactDigest": digest })
         }
+        // Design 043: the closed issue, the keyword and its pointer, as a schema problem of the document.
+        IrError::InputSchema {
+            issue,
+            keyword,
+            path,
+        } => json!({
+            "reason": "SCHEMA",
+            "issues": [{
+                "code": issue.as_str(), "keyword": keyword, "path": path, "message": error.to_string(),
+            }],
+        }),
+        // answered `503` before the details are built (`AppError::InvalidDefinition` above)
+        IrError::ValidatorBusy => json!({ "reason": "VALIDATOR_BUSY" }),
         IrError::TooLarge => json!({ "reason": "TOO_LARGE" }),
         IrError::Malformed => json!({ "reason": "MALFORMED" }),
         IrError::EscapingBodyEdge { body, from, .. } => {

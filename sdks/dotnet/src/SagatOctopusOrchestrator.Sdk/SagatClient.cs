@@ -997,6 +997,7 @@ public sealed partial class SagatClient : ISagatClient, IDisposable
             StartDelayedUntil = OptDate(raw, "startDelayedUntil"),
             Schedule = ToRunSchedule(raw),
             ResetFrom = ToRunResetFrom(raw),
+            FailureCode = OptStr(raw, "failureCode"),
             Raw = raw,
         };
     }

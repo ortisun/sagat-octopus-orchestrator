@@ -266,7 +266,7 @@ fn schema_depth(root: &Value) -> usize {
     maximum
 }
 #[path = "classification/cache.rs"]
-mod cache;
+pub(crate) mod cache;
 #[path = "classification/numbers.rs"]
 mod numbers;
 #[path = "classification/walk.rs"]

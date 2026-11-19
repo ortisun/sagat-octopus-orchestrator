@@ -148,7 +148,12 @@ async fn a_control_plane_registers_before_it_serves_and_its_row_is_gone_when_it_
         .await
         .expect("it registered before it answered its first call");
     assert_eq!(version, sagat_control_plane::registry::BINARY_VERSION);
-    assert!(capabilities.is_empty(), "{capabilities:?}");
+    // design 043: a control plane in `enforce` (the default) lists `run-input-validation-v1`, and nothing else yet
+    assert_eq!(
+        capabilities,
+        vec!["run-input-validation-v1"],
+        "{capabilities:?}"
+    );
     assert_eq!(
         cp.get("/v1/ready").await.0,
         200,
@@ -373,8 +378,8 @@ async fn an_engine_registers_before_its_first_pass_with_the_capabilities_of_its_
     use sqlx::Row;
     assert_eq!(
         row.get::<Vec<String>, _>("capabilities"),
-        vec!["schedules-v1"],
-        "the capabilities of the binary, narrowed by the passes its configuration runs"
+        vec!["run-input-validation-v1", "schedules-v1"],
+        "the capabilities of the binary, narrowed by the passes its configuration runs (and by its run-input mode)"
     );
     assert_eq!(
         row.get::<String, _>("binary_version"),
@@ -615,7 +620,11 @@ async fn an_engine_lists_schedules_v1_only_when_it_runs_the_schedule_pass_and_an
     let (quiet_id, _, capabilities) = instance_of_kind(&r, "EXECUTION_ENGINE")
         .await
         .expect("registered");
-    assert!(capabilities.is_empty(), "{capabilities:?}");
+    assert_eq!(
+        capabilities,
+        vec!["run-input-validation-v1"],
+        "{capabilities:?}"
+    );
     let refused = r
         .require(Capability::SchedulesV1, &[InstanceKind::ExecutionEngine])
         .await
@@ -639,7 +648,10 @@ async fn an_engine_lists_schedules_v1_only_when_it_runs_the_schedule_pass_and_an
     let (_, _, capabilities) = instance_of_kind(&r, "EXECUTION_ENGINE")
         .await
         .expect("registered");
-    assert_eq!(capabilities, vec!["schedules-v1"]);
+    assert_eq!(
+        capabilities,
+        vec!["run-input-validation-v1", "schedules-v1"]
+    );
     assert_eq!(
         r.require(Capability::SchedulesV1, &[InstanceKind::ExecutionEngine])
             .await
@@ -659,6 +671,77 @@ async fn an_engine_lists_schedules_v1_only_when_it_runs_the_schedule_pass_and_an
         "{answer}"
     );
     assert!(instance_of_kind(&r, "EXECUTION_ENGINE").await.is_none());
+    restarted.finish().await.expect("a clean stop");
+}
+
+// --- design 043: `run-input-validation-v1` follows the mode (FR-043-013, T043-12) --------------------------------------------
+
+/// Recording `run-input-validation-v1` is refused while a live engine runs in `report`; recorded once every engine is in
+/// `enforce`, an engine restarted in `report` stays up with its gate closed, so replicas cannot answer differently.
+#[tokio::test]
+async fn the_run_input_requirement_is_refused_while_an_engine_reports_and_closes_one_started_in_report_after()
+ {
+    let r = registry().await;
+    let idp = TestIdp::start().await;
+    let mut reporting = start_engine_with(
+        &r,
+        &idp,
+        BEAT_MS,
+        &[("SAGAT_RUN_INPUT_VALIDATION", "report")],
+    )
+    .await
+    .expect("starts");
+    let (reporting_id, _, capabilities) = instance_of_kind(&r, "EXECUTION_ENGINE")
+        .await
+        .expect("registered");
+    assert!(
+        capabilities.is_empty(),
+        "an engine in report mode does not list it: {capabilities:?}"
+    );
+    let refused = r
+        .require(
+            Capability::RunInputValidationV1,
+            &[InstanceKind::ExecutionEngine],
+        )
+        .await
+        .expect_err("a live engine in report mode would admit what the others refuse");
+    assert_eq!(
+        refused,
+        sagat_application::instances::ChangeRefused::InstancesLackCapability {
+            missing: 1,
+            examples: vec![reporting_id]
+        }
+    );
+    reporting.finish().await.expect("a clean stop");
+
+    let mut enforcing = start_engine(&r, &idp, BEAT_MS).await.expect("starts");
+    assert_eq!(
+        r.require(
+            Capability::RunInputValidationV1,
+            &[InstanceKind::ExecutionEngine]
+        )
+        .await
+        .expect("recorded once every engine is in enforce"),
+        sagat_application::instances::Activated::Recorded { epoch: 1 }
+    );
+    enforcing.finish().await.expect("a clean stop");
+
+    let mut restarted = start_engine_with(
+        &r,
+        &idp,
+        BEAT_MS,
+        &[("SAGAT_RUN_INPUT_VALIDATION", "report")],
+    )
+    .await
+    .expect("it stays up");
+    assert_eq!(restarted.status("/livez").await, Some(200));
+    assert_eq!(restarted.status("/readyz").await, Some(503));
+    let answer: Value =
+        serde_json::from_str(&restarted.body("/readyz").await).expect("an error envelope");
+    assert_eq!(
+        answer["details"]["reason"], "BINARY_CAPABILITY_MISSING",
+        "{answer}"
+    );
     restarted.finish().await.expect("a clean stop");
 }
 

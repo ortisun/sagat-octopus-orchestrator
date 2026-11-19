@@ -74,6 +74,10 @@ func runJSON(run *client.Run) object {
 	if run.ResetFrom != nil {
 		observed["resetFrom"] = object{"runId": run.ResetFrom.RunID, "sequence": run.ResetFrom.Sequence}
 	}
+	// Present only for a run stopped with a failure code (design 043).
+	if run.FailureCode != "" {
+		observed["failureCode"] = run.FailureCode
+	}
 	return observed
 }
 
@@ -101,10 +105,18 @@ func errorJSON(err error) object {
 	if se.RetryAfter != nil {
 		retryAfter = se.RetryAfter.Milliseconds()
 	}
-	return object{
+	fields := object{
 		"code": string(se.Code), "status": status, "retryable": se.Retryable, "traceId": se.TraceID, "reason": orNull(se.Reason),
 		"retryAfterMs": retryAfter, "remediation": se.Remediation, "message": se.Message,
 	}
+	// design 043: the field is compared with the rule of a refused run input, not for the other reasons
+	if se.Rule != "" {
+		fields["rule"] = se.Rule
+		if se.Field != "" {
+			fields["field"] = se.Field
+		}
+	}
+	return fields
 }
 
 type hostEntry struct {

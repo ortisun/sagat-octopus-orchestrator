@@ -93,6 +93,19 @@ pub trait ScheduledStarts: Send + Sync {
         ctx: &RequestContext,
     ) -> impl Future<Output = Result<ScheduledRun, AppError>> + Send;
 
+    /// Checks the input of an action against the schema of the version it would pin, as the start would, without starting
+    /// anything (design 043): the firing checks before it decides, so a refused action is never buffered and trigger-now
+    /// answers `422` instead of `BUFFERED` (`FR-043-006`).
+    ///
+    /// # Errors
+    /// [`AppError::InvalidRunInput`] for an input or a schema the version refuses; [`AppError::Unavailable`] when the
+    /// validator had no room; the errors of resolving the version (left to the start to answer).
+    fn check_scheduled(
+        &self,
+        principal: &Principal,
+        request: &ScheduledStart<'_>,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
     /// Cancels `run` through the ordinary cancel use case, as the schedule (`CANCEL_OTHER`). The cancel
     /// is idempotent under `key`: a repeat of it, by this process or another, changes nothing more.
     ///
@@ -268,6 +281,17 @@ where
             .overlap
             .map_or(record.policies, |o| record.policies.with_overlap(o));
         crate::schedules::authorize_cancelling(caller, policies.overlap())?;
+        // Design 043: trigger-now checks the input before it decides, and answers a refusal `422` with nothing recorded
+        // (FR-043-006, row 8); no room in the validator is a retryable `503`.
+        let checker = Principal::new(
+            record.tenant_id,
+            Subject::schedule(record.id.as_uuid()),
+            caller.role(),
+        );
+        let tick = self.trigger_tick(&record, false).await?;
+        if let Some(refused) = self.input_refusal(&record, &checker, nominal, tick).await? {
+            return Err(refused.into_error());
+        }
         let dedupe = ActionDedupe {
             idempotency: idempotency.clone(),
             resource: format!(
@@ -310,7 +334,7 @@ where
                     after,
                     manual: Some(ManualRequest { dedupe, audit }),
                     backfill: None,
-                    trigger: self.trigger_tick(&record, false).await?,
+                    trigger: tick,
                 };
                 match self.start_run(&record, &principal, admission, ctx).await {
                     Ok(_) => {}
@@ -456,6 +480,7 @@ where
             cursor,
             outcome,
             finished,
+            cancelled: false,
         };
         let decision = |actions, progress| ScheduleDecision {
             tenant_id: record.tenant_id,
@@ -515,6 +540,47 @@ where
             remaining: None,
         };
         let policies = record.policies.with_overlap(backfill.overlap);
+        let trigger_tick = trigger_tick?;
+        // Design 043: the input is checked before the decision; a refusal records `INPUT_INVALID` and ends the backfill
+        // `CANCELLED` in the same decision, and no room in the validator makes the backfill wait (FR-043-006).
+        let checker = Principal::new(record.tenant_id, system.clone(), membership.role());
+        match self
+            .input_refusal(&record, &checker, time, trigger_tick)
+            .await
+        {
+            Ok(None) => {}
+            Ok(Some(refused)) => {
+                let admission = ScheduleAdmission {
+                    schedule: record.id,
+                    authority: backfill.requested_by.clone(),
+                    nominal_at: time,
+                    kind: ActionKind::Backfill,
+                    revision: record.revision,
+                    expected_state_version: record.state_version,
+                    fence,
+                    after: ScheduleAfter {
+                        next_action_at: record.next_action_at,
+                        next_actual_at: record.next_actual_at,
+                        remaining_actions: record.remaining_actions,
+                        recovery: record.recovery,
+                        extra: Vec::new(),
+                    },
+                    manual: None,
+                    backfill: Some(progress(time, Some("INPUT_INVALID"), false)),
+                    trigger: trigger_tick,
+                };
+                return self.fired(
+                    self.record_input_invalid(&record, &admission, refused.reason)
+                        .await,
+                );
+            }
+            Err(AppError::Unavailable) => {
+                return Ok(Fired::Refused(
+                    "the input could not be checked now; the backfill waits",
+                ));
+            }
+            Err(other) => return Err(other),
+        }
         match decide(&policies, &standing, &self.ceilings) {
             Decision::Start => {
                 let principal = Principal::new(record.tenant_id, system.clone(), membership.role());
@@ -535,7 +601,7 @@ where
                     },
                     manual: None,
                     backfill: Some(progress(time, Some("STARTED"), false)),
-                    trigger: trigger_tick?,
+                    trigger: trigger_tick,
                 };
                 match self
                     .start_run(&record, &principal, admission, &RequestContext::default())
@@ -761,7 +827,22 @@ where
                 backfill: None,
                 trigger: self.trigger_tick(&record, false).await?,
             };
-            return self.start(&record, &principal, admission, now, &ctx).await;
+            // checked again at its release, and counted, as any action is before it starts (D043-026, D043-147)
+            return match self
+                .input_refusal(&record, &principal, waiting.nominal_at, admission.trigger)
+                .await
+            {
+                Ok(Some(refused)) => self.fired(
+                    self.record_input_invalid(&record, &admission, refused.reason)
+                        .await,
+                ),
+                Ok(None) => self.start(&record, &principal, admission, now, &ctx).await,
+                Err(AppError::Unavailable) => {
+                    self.owed(&record, waiting.kind, waiting.nominal_at, now)
+                        .await
+                }
+                Err(other) => Err(other),
+            };
         }
 
         // a waiting action that an open run still holds back is looked at again soon; with none
@@ -942,6 +1023,40 @@ where
             return self
                 .record_owing(&record, fence, vec![action], after, Vec::new(), now)
                 .await;
+        }
+        // Design 043: the input is checked before the decision, so a refused action is never buffered or skipped; it is
+        // acted on as `INPUT_INVALID`, and no room in the validator keeps the time owed (FR-043-006). A schedule with nothing
+        // left to give is exhausted whatever its input (correctness review M2, D043-142): there is no action to check.
+        let refusal = if standing.exhausted() {
+            Ok(None)
+        } else {
+            self.input_refusal(&record, &principal, time, tick).await
+        };
+        match refusal {
+            Ok(None) => {}
+            Ok(Some(refused)) => {
+                let admission = ScheduleAdmission {
+                    schedule: record.id,
+                    authority: record.authorized_by.clone(),
+                    nominal_at: time,
+                    kind: ActionKind::Scheduled,
+                    revision: record.revision,
+                    expected_state_version: record.state_version,
+                    fence,
+                    after,
+                    manual: None,
+                    backfill: None,
+                    trigger: tick,
+                };
+                return self.fired(
+                    self.record_input_invalid(&record, &admission, refused.reason)
+                        .await,
+                );
+            }
+            Err(AppError::Unavailable) => {
+                return self.owed(&record, ActionKind::Scheduled, time, now).await;
+            }
+            Err(other) => return Err(other),
         }
         match decide(&record.policies, &standing, &self.ceilings) {
             Decision::Start => {
@@ -1229,47 +1344,9 @@ where
         // without a trace): a run with no trace id is not told to the collector (D2084). A request's own trace is kept.
         let ctx = &ctx.traced();
         let nominal = admission.nominal_at;
-        let version = match (admission.trigger, record.target.version()) {
-            // a cron trigger's schedule starts the version in force of its trigger, as the legacy pass does
-            (Some(tick), _) => Some(tick.version),
-            (None, VersionPolicy::Active) => None,
-            (None, VersionPolicy::Pinned(id)) => Some(id),
-        };
-        let workflow = admission
-            .trigger
-            .map_or_else(|| record.target.workflow(), |tick| tick.workflow);
-        let namespace = self
-            .store
-            .namespace_slug(record.tenant_id, record.namespace_id)
-            .await?
-            .ok_or(AppError::Internal)?;
-        let input = if let Some(tick) = admission.trigger {
-            // the `cron.fired` event of feature 004, whoever asks for the time: a workflow with a cron trigger reads it
-            cron_document(tick.trigger, nominal, self.clock.now())
-        } else {
-            let input = match record.input_digest {
-                Some(digest) => self
-                    .store
-                    .input(record.tenant_id, &digest)
-                    .await?
-                    .ok_or(AppError::Internal)?,
-                None => b"{}".to_vec(),
-            };
-            with_nominal_time(input, record.target.nominal_time_field(), nominal)?
-        };
-        // The id of the run is the prefix of the action, a dash and the nominal time (`FR-018-016`). A cron trigger's schedule
-        // has none: its run is the tick of feature 004 and is never bound.
-        let business = match (record.target.business_id(), admission.trigger) {
-            (Some(target), None) => Some(BusinessStart {
-                id: target
-                    .for_nominal_time(&nominal_text(nominal)?)
-                    .map_err(|_| AppError::Internal)?,
-                conflict: target.conflict(),
-                reuse: target.reuse(),
-                window: ReuseWindow::default(),
-            }),
-            _ => None,
-        };
+        let (namespace, workflow, version, input, business) = self
+            .action_request(record, nominal, admission.trigger)
+            .await?;
         let request = ScheduledStart {
             namespace: &namespace,
             workflow,
@@ -1318,7 +1395,138 @@ where
                 self.record_held(record, &decided, Outcome::BusinessIdConflict, reason, None)
                     .await
             }
+            // design 043: the version refused the input after the check before the decision passed it (a buffered action
+            // released later, a version promoted meanwhile): the time is acted on as `INPUT_INVALID`, never retried
+            Err(AppError::InvalidRunInput {
+                reason,
+                field,
+                rule,
+            }) => {
+                let reason =
+                    action_reason(reason, field.as_deref(), record.target.nominal_time_field());
+                // a manual request (trigger-now) answers its caller and records nothing, as when the check before the
+                // decision refuses it (security review of phase 2, D043-146)
+                if decided.manual.is_some() {
+                    return Err(InputRefused {
+                        reason,
+                        field,
+                        rule,
+                    }
+                    .into_error());
+                }
+                self.record_input_invalid(record, &decided, reason).await
+            }
             Err(other) => Err(other),
+        }
+    }
+
+    /// What the run of an action at `nominal` is started with: the namespace's slug, the workflow and the version it
+    /// targets, its input (the nominal time set in its declared field) and its business id.
+    async fn action_request(
+        &self,
+        record: &ScheduleRecord,
+        nominal: OffsetDateTime,
+        trigger: Option<TriggerTick>,
+    ) -> Result<
+        (
+            String,
+            sagat_domain::definition::WorkflowId,
+            Option<sagat_domain::definition::WorkflowVersionId>,
+            Vec<u8>,
+            Option<BusinessStart>,
+        ),
+        AppError,
+    > {
+        let version = match (trigger, record.target.version()) {
+            // a cron trigger's schedule starts the version in force of its trigger, as the legacy pass does
+            (Some(tick), _) => Some(tick.version),
+            (None, VersionPolicy::Active) => None,
+            (None, VersionPolicy::Pinned(id)) => Some(id),
+        };
+        let workflow = trigger.map_or_else(|| record.target.workflow(), |tick| tick.workflow);
+        let namespace = self
+            .store
+            .namespace_slug(record.tenant_id, record.namespace_id)
+            .await?
+            .ok_or(AppError::Internal)?;
+        let input = if let Some(tick) = trigger {
+            // the `cron.fired` event of feature 004, whoever asks for the time: a workflow with a cron trigger reads it
+            cron_document(tick.trigger, nominal, self.clock.now())
+        } else {
+            let input = match record.input_digest {
+                Some(digest) => self
+                    .store
+                    .input(record.tenant_id, &digest)
+                    .await?
+                    .ok_or(AppError::Internal)?,
+                None => b"{}".to_vec(),
+            };
+            with_nominal_time(input, record.target.nominal_time_field(), nominal)?
+        };
+        // The id of the run is the prefix of the action, a dash and the nominal time (`FR-018-016`). A cron trigger's schedule
+        // has none: its run is the tick of feature 004 and is never bound.
+        let business = match (record.target.business_id(), trigger) {
+            (Some(target), None) => Some(BusinessStart {
+                id: target
+                    .for_nominal_time(&nominal_text(nominal)?)
+                    .map_err(|_| AppError::Internal)?,
+                conflict: target.conflict(),
+                reuse: target.reuse(),
+                window: ReuseWindow::default(),
+            }),
+            _ => None,
+        };
+        Ok((namespace, workflow, version, input, business))
+    }
+
+    /// Records an action whose input the target version refused (design 043, `FR-043-006`, D043-026): one decision with the
+    /// action `INPUT_INVALID` and its reason, the time acted on and not owed, nothing used up, the auto-pause and its audit
+    /// when `pause_on_failure` is set, and a backfill's end as `CANCELLED`.
+    async fn record_input_invalid(
+        &self,
+        record: &ScheduleRecord,
+        admission: &ScheduleAdmission,
+        reason: &'static str,
+    ) -> Result<(), AppError> {
+        self.record_held(record, admission, Outcome::InputInvalid, reason, None)
+            .await
+    }
+
+    /// Checks the input of the action at `nominal` before anything is decided (design 043): `Some` with the refusal for an
+    /// input or a schema the version refuses, `None` when it passes or when the version cannot be resolved (the start
+    /// answers that as it always has).
+    ///
+    /// # Errors
+    /// [`AppError::Unavailable`] when the validator had no room: the time stays owed.
+    async fn input_refusal(
+        &self,
+        record: &ScheduleRecord,
+        principal: &Principal,
+        nominal: OffsetDateTime,
+        trigger: Option<TriggerTick>,
+    ) -> Result<Option<InputRefused>, AppError> {
+        let (namespace, workflow, version, input, business) =
+            self.action_request(record, nominal, trigger).await?;
+        let request = ScheduledStart {
+            namespace: &namespace,
+            workflow,
+            version,
+            input: &input,
+            business,
+        };
+        match self.starts.check_scheduled(principal, &request).await {
+            Ok(()) => Ok(None),
+            Err(AppError::InvalidRunInput {
+                reason,
+                field,
+                rule,
+            }) => Ok(Some(InputRefused {
+                reason: action_reason(reason, field.as_deref(), record.target.nominal_time_field()),
+                field,
+                rule,
+            })),
+            Err(AppError::Unavailable) => Err(AppError::Unavailable),
+            Err(_) => Ok(None),
         }
     }
 
@@ -1339,6 +1547,9 @@ where
         run: Option<RunId>,
     ) -> Result<(), AppError> {
         let now = self.clock.now();
+        let pauses = outcome == Outcome::InputInvalid
+            && admission.kind != ActionKind::Backfill
+            && record.policies.pause_on_failure();
         let mut after = ScheduleAfter {
             remaining_actions: record.remaining_actions,
             ..admission.after.clone()
@@ -1371,11 +1582,17 @@ where
                 run: run.map(RunId::as_uuid),
             }],
             after,
-            pause: None,
+            // design 043: a refused input pauses the schedule as a failed run does, when its policy says so, in the same
+            // decision (D043-026)
+            pause: pauses.then(|| AutoPause {
+                note: "the target version refused the input of an action".to_owned(),
+            }),
             at: now,
             dedupe: admission.manual.as_ref().map(|m| m.dedupe.clone()),
             backfill: admission.backfill.clone().map(|progress| BackfillProgress {
                 outcome: progress.outcome.map(|_| outcome.as_str()),
+                // and a backfill ends with it, as `CANCELLED`: every later time would be refused the same way
+                cancelled: outcome == Outcome::InputInvalid,
                 ..progress
             }),
             obligations: Vec::new(),
@@ -1395,12 +1612,22 @@ where
         } else {
             None
         };
+        let paused = pauses.then(|| {
+            self.audit(
+                record,
+                &Subject::schedule(record.id.as_uuid()),
+                AuditAction::ScheduleAutoPaused,
+                &format!("the input of an action was refused: {reason}"),
+                now,
+            )
+        });
         let audits: Vec<&AuditRecord> = admission
             .manual
             .as_ref()
             .map(|m| &m.audit)
             .into_iter()
             .chain(conflict.as_ref())
+            .chain(paused.as_ref())
             .collect();
         self.commit_decision(&decision, &audits)
             .await
@@ -1495,6 +1722,36 @@ where
         result
     }
 
+    /// What a decision recorded by a helper that answers `AppError` comes to: a decision refused by the fence or the
+    /// compare-and-swap decided nothing.
+    #[allow(clippy::unused_self)]
+    fn fired(&self, result: Result<(), AppError>) -> Result<Fired, AppError> {
+        match result {
+            Ok(()) => Ok(Fired::Acted),
+            Err(AppError::StateConflict(reason)) => Ok(Fired::Refused(reason)),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// The time stays owed and is tried again later under the same key: the platform had no room, nothing of the input
+    /// was decided (design 043: the validator had no permit, or its backstop stopped it; never remembered).
+    async fn owed(
+        &self,
+        record: &ScheduleRecord,
+        kind: ActionKind,
+        nominal: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<Fired, AppError> {
+        let retry_at = now + retry_delay(now - nominal);
+        self.store
+            .defer_schedule(record.tenant_id, record.id, record.state_version, retry_at)
+            .await?;
+        count_action(kind, "ADMISSION_RETRY");
+        Ok(Fired::Refused(
+            "the admission was refused; the time stays owed",
+        ))
+    }
+
     fn committed(&self, result: Result<(), StoreError>) -> Result<Fired, AppError> {
         match result {
             Ok(()) => Ok(Fired::Acted),
@@ -1528,6 +1785,45 @@ where
     }
 }
 
+/// An action's input refused by its target version: the reason the action records, and what trigger-now answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputRefused {
+    reason: &'static str,
+    field: Option<String>,
+    rule: Option<&'static str>,
+}
+
+impl InputRefused {
+    /// What trigger-now answers: `422` with the reason, nothing recorded. The stored input of a schedule comes out only through the audited read of FR-018-042, which trigger-now is not,
+    /// so neither the pointer nor the rule is told: `/` and `other` (security review of phase 2, D043-144).
+    fn into_error(self) -> AppError {
+        AppError::InvalidRunInput {
+            reason: self.reason,
+            field: self.field.map(|_| "/".to_owned()),
+            rule: self.rule.map(|_| crate::run_input::Rule::Other.as_str()),
+        }
+    }
+}
+
+/// The reason a schedule action records for a refused input (design 043, D043-123): `RUN_INPUT_SCHEMA_UNUSABLE` for a schema
+/// outside the subset, `NOMINAL_TIME_FIELD_INVALID` when what failed is the field the nominal time is written to, and
+/// `SCHEDULE_INPUT_INVALID` for anything else of the input.
+fn action_reason(
+    reason: &'static str,
+    field: Option<&str>,
+    nominal_field: Option<&str>,
+) -> &'static str {
+    if reason == crate::run_input::RUN_INPUT_SCHEMA_UNUSABLE {
+        return crate::run_input::RUN_INPUT_SCHEMA_UNUSABLE;
+    }
+    let nominal =
+        nominal_field.map(|name| format!("/{}", name.replace('~', "~0").replace('/', "~1")));
+    match (field, nominal) {
+        (Some(field), Some(nominal)) if field == nominal => "NOMINAL_TIME_FIELD_INVALID",
+        _ => "SCHEDULE_INPUT_INVALID",
+    }
+}
+
 /// The nominal time as text: RFC 3339 in UTC to the whole second, ending in `Z` (`2026-11-10T12:00:00Z`). It is what the
 /// declared input field receives and what ends the business id of a run (`FR-018-016`), so the two always agree. The
 /// seconds are whole on purpose: the instant is kept in microseconds by PostgreSQL and in nanoseconds by some clocks, and an
@@ -1541,8 +1837,9 @@ fn nominal_text(nominal: OffsetDateTime) -> Result<String, AppError> {
         .map_err(|_| AppError::Internal)
 }
 
-/// The input of the run, with the nominal time set in the declared field (RFC 3339, UTC, seconds).
-fn with_nominal_time(
+/// The input of the run, with the nominal time set in the declared field (RFC 3339, UTC, seconds). The write check of a
+/// schedule fills it the same way (design 043, row 14).
+pub(crate) fn with_nominal_time(
     input: Vec<u8>,
     field: Option<&str>,
     nominal: OffsetDateTime,

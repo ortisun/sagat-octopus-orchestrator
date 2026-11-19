@@ -387,3 +387,342 @@ class EveryRunFinishedBodySaysItsSchedule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def run_input_check(files, packages=None):
+    """The checker over a run-input validator tree made of `files` ({name: source}), and a dependency graph of `packages`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = pathlib.Path(tmp) / "run_input"
+        src.mkdir()
+        for name, source in files.items():
+            (src / name).write_text(source)
+        packages = packages or [pkg("d", "crates/domain", [])]
+        metadata = {
+            "workspace_root": "/r",
+            "workspace_members": [p["id"] for p in packages],
+            "packages": packages,
+        }
+        meta = pathlib.Path(tmp) / "metadata.json"
+        meta.write_text(json.dumps(metadata))
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--metadata", str(meta), "--run-input-src", str(src)],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode, result.stdout
+
+
+VALIDATOR = "pub fn validate(input: &[u8]) -> bool { let _ = input; true }\n"
+
+
+class TheRunInputValidatorIsThePlatformsOwn(unittest.TestCase):
+    """Design 043, D043-074: `jsonschema` stays out of `crates/infra-schema/src/run_input/`."""
+
+    def test_the_validator_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("no jsonschema in the run-input validator", result.stdout)
+
+    def test_a_validator_without_it_passes(self):
+        code, out = run_input_check({"mod.rs": VALIDATOR})
+        self.assertEqual(code, 0, out)
+
+    def test_a_use_of_jsonschema_is_refused_and_named(self):
+        code, out = run_input_check({"mod.rs": VALIDATOR, "validate.rs": "use jsonschema::Validator;\nfn f() {}\n"})
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/infra-schema/src/run_input/validate.rs:1", out)
+        self.assertIn("D043-074", out)
+
+    def test_a_qualified_path_and_an_extern_crate_are_refused(self):
+        for source in (
+            "fn f(s: &serde_json::Value) -> bool {\n    ::jsonschema::is_valid(s, s)\n}\n",
+            "extern crate jsonschema;\n",
+            "fn f() { let o = jsonschema :: options(); }\n",
+        ):
+            with self.subTest(source=source):
+                code, out = run_input_check({"compile.rs": source})
+                self.assertEqual(code, 1, out)
+                self.assertIn("compile.rs", out)
+
+    def test_the_name_in_a_comment_or_a_string_is_not_a_use(self):
+        code, out = run_input_check({
+            "mod.rs": "//! `jsonschema` is the oracle of a test only.\n/* jsonschema */\nconst A: &str = \"jsonschema\";\n" + VALIDATOR,
+        })
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_over_a_directory_with_no_source_is_an_error_and_not_a_pass(self):
+        code, out = run_input_check({})
+        self.assertEqual(code, 1, out)
+        self.assertIn("the rule would check nothing", out)
+
+
+class TheApplicationHoldsNoRuntime(unittest.TestCase):
+    """Design 043, D043-077: `tokio` is at most a dev-dependency of `sagat-application`."""
+
+    def packages(self, tokio):
+        """A workspace whose application has `tokio` as `tokio` says: a dependency name or a (name, kind) pair."""
+        return [
+            pkg("sagat-domain", "crates/domain", []),
+            pkg("sagat-application", "crates/application", ["sagat-domain", tokio]),
+            # named by the lake-runner rule whenever the application is in the graph
+            pkg("sagat-database-runner", "apps/database-runner", ["sagat-application"]),
+            pkg("sagat-infra-lake", "crates/infra-lake", ["sagat-application"]),
+        ]
+
+    def test_a_dev_dependency_passes(self):
+        code, out = run_input_check({"mod.rs": VALIDATOR}, self.packages(("tokio", "dev")))
+        self.assertEqual(code, 0, out)
+
+    def test_a_normal_dependency_is_refused(self):
+        code, out = run_input_check({"mod.rs": VALIDATOR}, self.packages("tokio"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("must not have `tokio` as a normal dependency", out)
+
+    def test_rt_alone_without_default_features_passes_and_any_more_is_refused(self):
+        def tokio(features, defaults=False):
+            packages = self.packages("tokio")
+            packages[1]["dependencies"][1].update({"features": features, "uses_default_features": defaults})
+            return packages
+        code, out = run_input_check({"mod.rs": VALIDATOR}, tokio(["rt"]))
+        self.assertEqual(code, 0, out)
+        for refused in (tokio(["rt", "sync"]), tokio(["time"]), tokio(["rt"], defaults=True)):
+            code, out = run_input_check({"mod.rs": VALIDATOR}, refused)
+            self.assertEqual(code, 1, out)
+
+    def test_the_gate_naming_a_runtime_is_refused(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/application/src/run_input.rs": GATE + "async fn f() { tokio::task::yield_now().await; }\n",
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/application/src/run_input.rs:3: `sagat-application` names `tokio`", out)
+
+    def test_tokio_is_named_only_by_the_blob_source_parse_and_the_tests(self):
+        """ADR-0092 (architecture review of 2026-11-15, Blocker 1): the `rt` exception serves one file."""
+        code, out = creator_check(creator_tree(**{
+            "crates/application/src/runs.rs": "async fn f() { tokio::task::spawn_blocking(|| ()).await; }\n",
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/application/src/runs.rs:1: `sagat-application` names `tokio`", out)
+        self.assertIn("ADR-0092", out)
+        code, out = creator_check(creator_tree(**{
+            "crates/application/src/collection_source.rs": "async fn f() { tokio::task::spawn_blocking(|| ()).await; }\n",
+            "crates/application/src/runs.rs": "//! not `tokio`\n#[cfg(test)]\nmod tests {\n    #[tokio::test]\n    async fn t() {}\n}\n",
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_build_dependency_is_refused(self):
+        code, out = run_input_check({"mod.rs": VALIDATOR}, self.packages(("tokio", "build")))
+        self.assertEqual(code, 1, out)
+        self.assertIn("as a build dependency", out)
+
+    def test_the_application_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("the application's runtime confined to one file", result.stdout)
+
+
+def creator_check(files, packages=None):
+    """The checker over a tree of Rust sources `files` ({relative path: source}) and a dependency graph of `packages`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp) / "repo"
+        for rel, source in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(source)
+        run_input = pathlib.Path(tmp) / "run_input"
+        run_input.mkdir()
+        (run_input / "mod.rs").write_text(VALIDATOR)
+        packages = packages or [pkg("d", "crates/domain", [])]
+        metadata = {
+            "workspace_root": "/r",
+            "workspace_members": [p["id"] for p in packages],
+            "packages": packages,
+        }
+        meta = pathlib.Path(tmp) / "metadata.json"
+        meta.write_text(json.dumps(metadata))
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--metadata", str(meta), "--run-input-src", str(run_input), "--rust-root", str(root)],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode, result.stdout
+
+
+EXECUTION = 'async fn create() {\n    sqlx::query("INSERT INTO runs (id) VALUES ($1)");\n}\n'
+CHAINS = (
+    'async fn continue_as_new() {\n    let q = "INSERT INTO runs (id) VALUES ($1)";\n}\n'
+    'async fn continue_evaluated() {\n    let q = "INSERT INTO runs \\\n     (id) VALUES ($1)";\n}\n'
+)
+GATE = "pub struct CheckedRunInput { version: u8 }\nfn check() -> CheckedRunInput { CheckedRunInput { version: 1 } }\n"
+
+
+def creator_tree(**extra):
+    files = {
+        "crates/infra-postgres/src/execution.rs": EXECUTION,
+        "crates/infra-postgres/src/chain_progress.rs": CHAINS,
+        "crates/application/src/run_input.rs": GATE,
+    }
+    files.update(extra)
+    return files
+
+
+class EveryRunIsCreatedWithACheckedInput(unittest.TestCase):
+    """Design 043, FR-043-016: the run-insert, legacy-continuation, test-support and construction rules."""
+
+    def test_the_three_places_and_the_gate_pass(self):
+        code, out = creator_check(creator_tree())
+        self.assertEqual(code, 0, out)
+        self.assertIn("every run created with a checked input", out)
+
+    def test_an_insert_in_another_function_is_refused_and_a_test_module_is_not_read(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/src/other.rs": 'fn shortcut() { let q = "insert into runs (id) values ($1)"; }\n',
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/infra-postgres/src/other.rs:1", out)
+        self.assertIn("FR-043-016", out)
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/src/other.rs": '#[cfg(test)]\nmod tests {\n    fn f() { let q = "INSERT INTO runs (id)"; }\n}\n',
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_second_insert_in_an_allowed_function_is_refused_and_a_moved_one_is_not(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/src/execution.rs": EXECUTION.replace("}\n", '    let again = "INSERT INTO runs (id)";\n}\n'),
+        }))
+        self.assertEqual(code, 1, out)
+        code, out = creator_check(creator_tree(**{"crates/infra-postgres/src/execution.rs": "\n\n\n" + EXECUTION}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_place_that_is_gone_is_an_error_and_not_a_pass(self):
+        code, out = creator_check(creator_tree(**{"crates/infra-postgres/src/execution.rs": "async fn create() {}\n"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("the rule would check nothing", out)
+
+    def test_the_legacy_continuation_is_refused_outside_the_tests_but_a_forwarder_passes(self):
+        code, out = creator_check(creator_tree(**{"crates/scheduler/src/passes.rs": "async fn go(s: S) { s.continue_as_new(&c).await; }\n"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/scheduler/src/passes.rs:1: the legacy continue-as-new", out)
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/src/chain_progress.rs": CHAINS
+            + "async fn continue_as_new(&self, c: &C) { self.inner.continue_as_new(c).await }\n",
+            "crates/scheduler/src/passes.rs": "#[cfg(test)]\nmod tests { fn t() { s.continue_as_new(&c); } }\n",
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_forwarder_named_continue_as_new_elsewhere_is_refused(self):
+        """Architecture review of 2026-11-15, Major 2: the exemption is the one forwarder's, by file and function."""
+        for rel in ("crates/infra-postgres/src/forward.rs", "crates/scheduler/src/passes.rs"):
+            with self.subTest(rel=rel):
+                code, out = creator_check(creator_tree(**{
+                    rel: "async fn continue_as_new(&self, c: &C) { self.inner.continue_as_new(c).await }\n",
+                }))
+                self.assertEqual(code, 1, out)
+                self.assertIn(f"{rel}:1: the legacy continue-as-new", out)
+
+    def test_a_qualified_or_quoted_table_name_and_a_migration_are_read_too(self):
+        """Architecture review of 2026-11-15, Nit 16."""
+        for sql in ("INSERT INTO public.runs (id) VALUES ($1)", 'INSERT INTO \\"runs\\" (id) VALUES ($1)',
+                    'insert into \\"public\\".\\"runs\\" (id)'):
+            with self.subTest(sql=sql):
+                code, out = creator_check(creator_tree(**{
+                    "crates/infra-postgres/src/other.rs": f'fn shortcut() {{ let q = "{sql}"; }}\n',
+                }))
+                self.assertEqual(code, 1, out)
+                self.assertIn("crates/infra-postgres/src/other.rs:1", out)
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/migrations/20990101000000_x.up.sql": "CREATE FUNCTION f() AS $$\n  INSERT INTO runs (id) VALUES (1);\n$$;\n",
+        }))
+        self.assertEqual(code, 1, out)
+        self.assertIn("crates/infra-postgres/migrations/20990101000000_x.up.sql:2", out)
+        code, out = creator_check(creator_tree(**{
+            "crates/infra-postgres/migrations/20990101000000_x.up.sql": "INSERT INTO runs_archive (id) VALUES (1);\n",
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_composition_root_wires_the_gate_into_every_creator_it_builds(self):
+        """Architecture review of 2026-11-15, Major 3: a service built without `.with_run_inputs` holds the unwired gate,
+        which refuses every start of a version with a schema as busy (D043-120)."""
+        for ctor in ("RunService::new", "sagat_application::runs::RunService::new", "Scheduler::new",
+                     "EventDispatcher::new", "ScheduleService::new"):
+            with self.subTest(ctor=ctor):
+                code, out = creator_check(creator_tree(**{
+                    "apps/control-plane/src/lib.rs": f"fn build() -> S {{\n    {ctor}(a, b)\n        .with_lag_budget(x)\n}}\n",
+                }))
+                self.assertEqual(code, 1, out)
+                self.assertIn("apps/control-plane/src/lib.rs:2: ", out)
+                self.assertIn("with_run_inputs", out)
+        code, out = creator_check(creator_tree(**{
+            "apps/control-plane/src/lib.rs": (
+                "fn build() -> S {\n    RunService::new(a, f(b, c))\n        .with_run_inputs(gate(m))\n        .with_lag_budget(x)\n}\n"
+                "fn other() { let s = Scheduler::new(a).with_children(c).with_run_inputs(g); }\n"
+                "#[cfg(test)]\nmod tests { fn t() { let _ = RunService::new(a); } }\n"
+            ),
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_checked_input_built_outside_the_gate_is_refused(self):
+        for source in (
+            "fn f() -> X { CheckedRunInput { version: 1 } }\n",
+            "fn f() -> X { sagat_application::run_input::CheckedRunInput { version: 1 } }\n",
+            "fn f() -> X { CheckedRunInput::unchecked(v, b) }\n",
+            "fn f() -> X { crate::run_input::CheckedRunInput :: unchecked(v, b) }\n",
+        ):
+            with self.subTest(source=source):
+                code, out = creator_check(creator_tree(**{"crates/scheduler/src/events.rs": source}))
+                self.assertEqual(code, 1, out)
+                self.assertIn("crates/scheduler/src/events.rs:1: a `CheckedRunInput` is built outside", out)
+
+    def test_naming_the_type_is_not_building_it(self):
+        code, out = creator_check(creator_tree(**{
+            "crates/application/src/runs.rs": (
+                "pub struct NewRun { pub input: crate::run_input::CheckedRunInput, }\n"
+                "fn input(&self) -> &crate::run_input::CheckedRunInput { &self.input }\n"
+                "fn f(x: Vec<CheckedRunInput>) {}\n"
+                "#[cfg(test)]\nmod tests { fn t() { let _ = CheckedRunInput::unchecked(v, b); } }\n"
+            ),
+        }))
+        self.assertEqual(code, 0, out)
+
+    def test_a_default_or_a_deserialize_is_refused_even_in_the_gate(self):
+        for source in (
+            "#[derive(Clone, Default)]\npub struct CheckedRunInput { version: u8 }\n",
+            "#[derive(serde::Deserialize)]\n#[serde(deny_unknown_fields)]\npub struct CheckedRunInput { version: u8 }\n",
+            GATE + "impl Default for CheckedRunInput { fn default() -> Self { todo!() } }\n",
+            GATE + "impl<'de> serde::Deserialize<'de> for CheckedRunInput { }\n",
+        ):
+            with self.subTest(source=source):
+                code, out = creator_check(creator_tree(**{"crates/application/src/run_input.rs": source}))
+                self.assertEqual(code, 1, out)
+                self.assertIn("D043-045", out)
+
+    def test_the_test_support_feature_belongs_in_dev_dependencies_only(self):
+        def packages(dependency, features=None):
+            application = pkg("sagat-application", "crates/application", [])
+            user = pkg("sagat-tests", "tests", [])
+            user["dependencies"] = [dependency]
+            user["features"] = features or {}
+            # named by the lake-runner rule whenever the application is in the graph
+            return [
+                application,
+                user,
+                pkg("sagat-database-runner", "apps/database-runner", ["sagat-application"]),
+                pkg("sagat-infra-lake", "crates/infra-lake", ["sagat-application"]),
+            ]
+
+        dev = {"name": "sagat-application", "kind": "dev", "features": ["test-support"]}
+        code, out = creator_check(creator_tree(), packages(dev))
+        self.assertEqual(code, 0, out)
+        normal = {"name": "sagat-application", "kind": None, "features": ["test-support"]}
+        code, out = creator_check(creator_tree(), packages(normal))
+        self.assertEqual(code, 1, out)
+        self.assertIn("as a normal dependency", out)
+        plain = {"name": "sagat-application", "kind": None, "features": []}
+        code, out = creator_check(creator_tree(), packages(plain, {"testing": ["sagat-application/test-support"]}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("feature `testing` enables", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
+

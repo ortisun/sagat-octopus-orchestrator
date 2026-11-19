@@ -22,6 +22,7 @@ mod output;
 mod output_blobs;
 mod policies;
 mod results;
+mod run_input;
 mod signing_consumers;
 #[path = "../../support/mod.rs"]
 mod support;
@@ -83,15 +84,21 @@ fn durable_provider_intents_reconcile_without_plaintext_or_duplicate_rotation() 
         .name("managed-secret-lifecycle".into())
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(bounded::lifecycle(
-                    "managed secret lifecycle",
-                    LIFECYCLE_LIMIT,
-                    managed_secret_lifecycle,
-                ))
+            // the scenarios that count what they did read this recorder (design 043, `run_input::METRICS`)
+            let (telemetry, recorder) =
+                sagat_telemetry::Metrics::detached(std::time::Duration::from_secs(3600));
+            let _ = run_input::METRICS.set(telemetry);
+            metrics::with_local_recorder(&recorder, || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(bounded::lifecycle(
+                        "managed secret lifecycle",
+                        LIFECYCLE_LIMIT,
+                        managed_secret_lifecycle,
+                    ))
+            })
         })
         .unwrap()
         .join()
@@ -314,6 +321,8 @@ async fn managed_secret_lifecycle(progress: Progress) {
     Box::pin(lake_blobs::run(&w)).await;
     progress.enter("ad_hoc::run");
     Box::pin(ad_hoc::run(&w)).await;
+    progress.enter("run_input::run");
+    Box::pin(run_input::run(&w)).await;
     progress.enter("admission::run");
     Box::pin(admission::run(&w, &service)).await;
     progress.enter("cleanup::run");

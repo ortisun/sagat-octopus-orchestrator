@@ -12,6 +12,8 @@ mod pinning;
 mod pinning_routes;
 mod rest;
 mod result;
+mod run_input_sentinel;
+mod run_input_sentinel_rows;
 mod security;
 mod step_outputs;
 #[path = "../../support/mod.rs"]

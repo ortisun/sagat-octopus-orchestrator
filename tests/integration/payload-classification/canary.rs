@@ -34,7 +34,13 @@ struct Fixture {
 
 impl Fixture {
     async fn new(label: &str) -> Self {
-        let api = support::api::start().await;
+        // design 043: the canary keeps a run whose input its schema refuses (`invalid-canary`), as one admitted before
+        // 0.3.0 would be; the API serves in `report` so it can still be made
+        let api = support::api::start_with(support::api::Options {
+            run_input_validation: sagat_application::run_input::InputValidationMode::Report,
+            ..support::api::Options::default()
+        })
+        .await;
         let tenant = api.tenant(TENANT, ADMIN).await;
         let workspace = api
             .create_workspace(ADMIN, TENANT, "canary-workspace")

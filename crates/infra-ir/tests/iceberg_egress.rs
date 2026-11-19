@@ -9,7 +9,7 @@
 
 use sagat_application::{
     classification::ClassificationFindingCode,
-    definitions::{IrCodec, IrError},
+    definitions::{InputValidationMode, IrCodec, IrError},
 };
 use sagat_domain::{
     classification::Level,
@@ -71,7 +71,22 @@ fn flow(input_schema: Option<Value>, save: Value) -> Vec<u8> {
 }
 
 fn levels_of(bytes: &[u8]) -> Vec<(String, Level)> {
-    let parsed = JsonIrCodec.parse(bytes).expect("a published document");
+    // A document inside the run-input subset publishes in enforce mode. Tuple positions (`prefixItems`) are outside it
+    // (D043-046): enforce refuses them, naming the keyword, and they publish only in report mode, where the levels an
+    // Iceberg write sends out are read the same (D043-095, D043-110).
+    let parsed = match JsonIrCodec.parse(bytes) {
+        Ok(parsed) => {
+            assert!(
+                !String::from_utf8_lossy(bytes).contains("prefixItems"),
+                "enforce refuses tuple positions"
+            );
+            parsed
+        }
+        Err(IrError::InputSchema { keyword, .. }) if keyword == "prefixItems" => JsonIrCodec
+            .parse_with(bytes, InputValidationMode::Report)
+            .expect("a published document in report mode"),
+        Err(other) => panic!("a published document: {other:?}"),
+    };
     let node = parsed
         .definition
         .node(&NodeId::parse("save").expect("id"))

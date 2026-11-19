@@ -1874,6 +1874,9 @@ fn without_reapply(f: &Fixture) -> crate::support::engine::Runs {
         Engine::new(sagat_infra_ir::JsonEvaluator),
         f.w.cache.clone(),
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .with_declared_updates(std::sync::Arc::new(
         sagat_infra_ir::JsonDeclaredOperationEvaluator,
     ))
@@ -2050,6 +2053,9 @@ async fn counting_runs(
         Engine::new(sagat_infra_ir::JsonEvaluator),
         f.w.cache.clone(),
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .with_declared_updates(std::sync::Arc::new(
         sagat_infra_ir::JsonDeclaredOperationEvaluator,
     ))

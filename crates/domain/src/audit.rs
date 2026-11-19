@@ -29,6 +29,9 @@ pub enum AuditAction {
     RunStarted,
     /// A quiescent run segment closed and atomically handed off to its successor.
     RunContinued,
+    /// A run input was refused by its version's `inputSchema` where nobody waits for the answer (a trigger), or was
+    /// reported and admitted in `report` mode (design 043). The reason names the closed refusal, never a value.
+    RunInputRefused,
     /// A scheduler committed the terminal outcome of a run and its execution chain.
     RunFinished,
     /// A current member settled its capacity membership from the evidence required by its kind.
@@ -324,6 +327,7 @@ impl AuditAction {
             Self::WorkflowPublished => "workflow.published",
             Self::RunStarted => "run.started",
             Self::RunContinued => "run.continued",
+            Self::RunInputRefused => "run.input_refused",
             Self::RunFinished => "run.finished",
             Self::CapacityMemberFinished => "capacity.member.finished",
             Self::CapacityMemberVacated => "capacity.member.vacated",

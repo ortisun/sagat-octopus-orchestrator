@@ -1,0 +1,101 @@
+{
+  "canonical": {
+    "chain": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"chainPolicy\":{\"maxSegments\":3,\"timeoutMs\":86400000},\"entrypoint\":\"work\",\"inputSchema\":{\"properties\":{\"segment\":{\"type\":\"integer\"}},\"required\":[\"segment\"],\"type\":\"object\"},\"kind\":\"Workflow\",\"metadata\":{\"description\":\"One activity, then a continue-as-new with the next member of its input, which the schema checks.\",\"name\":\"riv-chain\"},\"nodes\":[{\"activity\":\"riv.work\",\"id\":\"work\",\"next\":\"rollover\",\"type\":\"activity\"},{\"id\":\"rollover\",\"input\":\"input.next\",\"type\":\"continueAsNew\"}]}",
+    "order": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"work\",\"inputSchema\":{\"properties\":{\"orderId\":{\"maxLength\":64,\"type\":\"string\"}},\"required\":[\"orderId\"],\"type\":\"object\"},\"kind\":\"Workflow\",\"metadata\":{\"description\":\"One activity, and an input schema that requires orderId as a string.\",\"name\":\"riv-order\"},\"nodes\":[{\"activity\":\"riv.work\",\"id\":\"work\",\"next\":\"done\",\"type\":\"activity\"},{\"id\":\"done\",\"type\":\"end\"}]}",
+    "parent": "{\"apiVersion\":\"sagat-octopus-orchestrator.io/v1\",\"entrypoint\":\"kid\",\"kind\":\"Workflow\",\"metadata\":{\"description\":\"Starts riv-order as a child with the kid member of its own input.\",\"name\":\"riv-parent\"},\"nodes\":[{\"id\":\"kid\",\"input\":\"input.kid\",\"next\":\"done\",\"type\":\"child\",\"workflowId\":\"riv-order\"},{\"id\":\"done\",\"type\":\"end\"}]}"
+  },
+  "workflows": {
+    "chain": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "chainPolicy": {
+        "maxSegments": 3,
+        "timeoutMs": 86400000
+      },
+      "entrypoint": "work",
+      "inputSchema": {
+        "properties": {
+          "segment": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "segment"
+        ],
+        "type": "object"
+      },
+      "kind": "Workflow",
+      "metadata": {
+        "description": "One activity, then a continue-as-new with the next member of its input, which the schema checks.",
+        "name": "riv-chain"
+      },
+      "nodes": [
+        {
+          "activity": "riv.work",
+          "id": "work",
+          "next": "rollover",
+          "type": "activity"
+        },
+        {
+          "id": "rollover",
+          "input": "input.next",
+          "type": "continueAsNew"
+        }
+      ]
+    },
+    "order": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "work",
+      "inputSchema": {
+        "properties": {
+          "orderId": {
+            "maxLength": 64,
+            "type": "string"
+          }
+        },
+        "required": [
+          "orderId"
+        ],
+        "type": "object"
+      },
+      "kind": "Workflow",
+      "metadata": {
+        "description": "One activity, and an input schema that requires orderId as a string.",
+        "name": "riv-order"
+      },
+      "nodes": [
+        {
+          "activity": "riv.work",
+          "id": "work",
+          "next": "done",
+          "type": "activity"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    },
+    "parent": {
+      "apiVersion": "sagat-octopus-orchestrator.io/v1",
+      "entrypoint": "kid",
+      "kind": "Workflow",
+      "metadata": {
+        "description": "Starts riv-order as a child with the kid member of its own input.",
+        "name": "riv-parent"
+      },
+      "nodes": [
+        {
+          "id": "kid",
+          "input": "input.kid",
+          "next": "done",
+          "type": "child",
+          "workflowId": "riv-order"
+        },
+        {
+          "id": "done",
+          "type": "end"
+        }
+      ]
+    }
+  }
+}

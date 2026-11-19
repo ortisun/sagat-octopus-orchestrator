@@ -234,7 +234,7 @@ async fn create_declared_run(
                 business_id: None,
             },
             definition: std::sync::Arc::new(declared.parsed().definition.clone()),
-            input,
+            input: sagat_application::run_input::CheckedRunInput::unchecked(version, input),
             input_blob: None,
             audit: AuditRecord::by(
                 &w.admin,

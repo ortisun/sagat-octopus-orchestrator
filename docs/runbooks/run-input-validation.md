@@ -1,0 +1,119 @@
+# Run input validation (design 043)
+
+From release 0.3.0 every run input is checked against the `inputSchema` of the workflow version the run pins, before the
+run is created (ADR-0090). This runbook is what an operator does before, during and after the upgrade. The contract of
+the refusals is `specs/043-run-input-validation/contracts/errors.md`.
+
+## What changes
+
+- A start whose input the version's `inputSchema` refuses is `422 VALIDATION_FAILED` with `details.reason`
+  `RUN_INPUT_INVALID`, `details.field` (a JSON pointer of names the schema declares, never a value) and `details.rule`.
+  It used to be accepted.
+- An `inputSchema` must stay within the supported subset of JSON Schema (`workflow.schema.json`, `inputSchema`). A
+  stored version whose schema is outside it refuses every start (`RUN_INPUT_SCHEMA_UNUSABLE`), and 0.3.0 publication
+  refuses a new one in `enforce` mode. `format` is an annotation and never refuses an input (G043-005); `pattern`
+  refuses `\d`, `\w`, `\s`, `\b`, Unicode and POSIX classes, flags and named groups (write `[0-9]` and the like,
+  G043-016); `multipleOf` takes only positive integers (G043-015).
+- Creators nobody waits for record a final outcome instead: a trigger records a delivery without a run and one audit
+  record `run.input_refused`; a schedule records the action `INPUT_INVALID` (and pauses when `pauseOnFailure` is set); a
+  child fails its parent step with `CHILD_INPUT_INVALID`; a continuation fails its run with
+  `CONTINUATION_INPUT_INVALID`; a batch rerun item ends `FAILED VALIDATION_FAILED`; a pending reset ends
+  `ADMISSION_REFUSED`.
+- **Runs in progress are affected** (OD-2026-11-14-9): a run started before the upgrade can fail at the step that creates
+  a child or continues, when that new run's input does not match its version's schema.
+- A trigger on a version whose schema describes a manual input (and not the event envelope `{event, data}`) stops
+  starting runs (G043-004).
+
+## Before the upgrade
+
+1. List the versions at risk, with the control plane's database settings (the runtime role is enough: it only reads):
+
+   ```sh
+   control-plane input-schema-inventory
+   ```
+
+   It prints, for each stored version whose schema would be refused, its ids, the keyword and its pointer, and, for
+   information, the versions within the subset that have an `inputSchema` and a non-manual trigger. It prints no schema
+   text and no input and writes nothing. A version outside the subset that nothing starts any more (not its workflow's
+   active version, pinned by no schedule that is not deleted, no open run, no run created in the last 30 days) is
+   superseded: the summary counts it and it does not
+   change the exit status; `control-plane input-schema-inventory --all` lists those too (OD-2026-11-16-5). Exit 0:
+   nothing anyone still starts would be refused; 1: at least one version would; 2: the command failed or could not
+   judge a version (it could not connect, a stored document could not be read, or a schema made the validator panic). It needs `SELECT` on `workflow_versions`, `workflows`,
+   `schedules`, `schedule_revisions` and `runs`, which the runtime role holds where they exist (the schedules are feature
+   018's tables, which the database of the v0.2.0 release does not have: the inventory looks them up and reads them only
+   when they exist). Each version outside the subset costs one statement over the runs of
+   its workflow and the schedules of its tenant, bounded by the statement timeout of the control plane's settings. A
+   rerun or a reset of a superseded version's run created more than 30 days ago is not foreseen: it is refused `422`
+   when asked for. A version whose schema makes the validator panic is listed `interrupted`, the scan goes on, and the
+   command exits 2: report it with its ids.
+2. Decide the mode. If callers or schemas cannot be fixed before the upgrade, set
+   `SAGAT_RUN_INPUT_VALIDATION=report` in the manifest of **every** execution engine and control plane **before you
+   migrate** (D043-040): the engines are upgraded first and default to `enforce`, so the first upgraded engine would
+   otherwise record final outcomes (rows 4 to 12 of the design) before anyone could choose. The variable is read
+   strictly: `enforce`, `report`, or unset or empty (`enforce`); anything else stops the process naming it.
+
+## During the upgrade
+
+The order of OD-2026-11-14-3 holds: the migration, then the engines, then the control planes. The migration adds the
+action outcome `INPUT_INVALID` and the capability `run-input-validation-v1`; each constraint is added `NOT VALID` and
+then validated. Until the requirement is recorded, a 0.2.x control plane admits what a new one refuses, and replicas may
+run different modes (G043-010). An old control plane passes an unknown action outcome through in a listing, and refuses
+`INPUT_INVALID` as a filter (G043-001).
+
+In `report` mode every check still runs; a refusal is counted (`run_input_validations_total{outcome="reported"}`),
+audited once with the run it admits (`run.input_refused`, reason `reported: ...`), and the run is created. The final
+outcomes recorded before a switch to `report` stay as they were recorded.
+
+## After the upgrade: lock it
+
+When every caller and schema is fixed:
+
+1. Run `control-plane input-schema-inventory` again and expect exit 0: a version published while a control plane ran
+   in `report` may be outside the subset, and in `enforce` every start of it is refused.
+1. Restart every engine and control plane in `enforce` (unset the variable).
+2. Record the requirement `run-input-validation-v1` for `CONTROL_PLANE` and `EXECUTION_ENGINE` through the instance
+   registry ([instance-registry](instance-registry.md)). Recording is refused while any live replica lacks the capability,
+   that is, while one runs in `report` or is a 0.2.x binary (ADR-0082 decision 2).
+3. From then on a process started in `report`, or a 0.2.x binary, stays up with its gate closed.
+
+Going back to `report`: remove the requirement first, then restart in `report`.
+
+## Watching it
+
+- `run_input_validations_total{creator, outcome}`: `accepted`, `no_schema`, `refused`, `schema_unusable`, `reported`,
+  `deadline` (no permit within 5 s, or the backstop: transient, never remembered) and `interrupted` (a panic of the
+  validator, logged at `error` with the schema's digest: transient, and a defect).
+- `run_input_prechecks_total{outcome}`: `admitted`, `unusable`, `busy`, `interrupted` (a panic, logged at `error` with
+  the schema's size), for the pre-check of a document outside a start
+  (publication, a dry run, an ad hoc document). It shares the four permits of the starts; `busy` is answered a
+  retryable `503`, and the caller sends the document again.
+- `run_input_schema_cache_total{result}`: `hit`, `miss`, `evicted`, `failure_remembered`, `unshared` (ad hoc starts).
+- `trigger_events_total{outcome="input_invalid" | "input_schema_unusable"}`; `scheduler_continuation_input_refusals_total`.
+- Audit records `run.input_refused`. No metric label, log line, span or audit record carries an input value, a field
+  name or a tenant.
+
+What to alert on:
+
+- `refused` or `schema_unusable` rising after the upgrade: callers or schemas the release now refuses; the inventory
+  lists the schemas, and `report` buys time while callers are fixed.
+- `reported` above zero for long: a deployment left in `report`; fix the callers and lock it.
+- `deadline` sustained, or `run_input_prechecks_total{outcome="busy"}` rising: the validator has no permit free. Four
+  validations and pre-checks run at once per process, a tenant alone may use all four, and a caller who waits more than
+  5 s gets a retryable `503`; add replicas.
+- Any `interrupted`: a defect of the validator. Report it with the digest from the `error` log; a schema whose compile
+  panics is tried again on every start until the validator is fixed (G043-053).
+- `run_input_schema_cache_total{result="miss"}` steady on a process with one busy tenant: the tenant starts more than
+  64 schemas often, and its share of the cache (a quarter) makes it recompile some of them. Each recompile runs under a
+  permit and is bounded; the owner kept the share with this limit (OD-2026-11-16-6). More replicas spread the tenant's
+  schemas.
+
+A version used both by manual starts and by a trigger needs a schema that accepts both shapes: the manual input and the
+envelope `{event, data}`. The subset has no `if`/`then`, so write an `anyOf` of the two.
+
+## Rollback
+
+Remove the requirement, then downgrade the binaries. The down migration refuses while an `INPUT_INVALID` action, a
+recorded requirement, a history row or a registered process naming `run-input-validation-v1` exists. A history row is
+evidence and is kept, so once the requirement has been recorded the schema cannot be rolled back: a 0.2.x binary runs on
+the 0.3.0 schema instead (its CHECKs are supersets).

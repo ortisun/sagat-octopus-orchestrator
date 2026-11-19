@@ -85,6 +85,10 @@ fn run_json(run: Run) -> Value {
     if let Some(reset) = &run.reset_from {
         result["resetFrom"] = json!({"runId": reset.run_id, "sequence": reset.sequence});
     }
+    // Present only for a run stopped with a failure code (design 043).
+    if let Some(code) = &run.failure_code {
+        result["failureCode"] = json!(code);
+    }
     result
 }
 fn log_entry(ctx: &ActivityContext, input: &Value, name: &str, kind: &str, outcome: &str) -> Value {
@@ -488,7 +492,16 @@ if tokio::time::Instant::now()>=end{return Err(SagatError::validation("the scena
                 observation["result"] = result;
             }
             Ok(None) => {}
-            Err(error) => observation["error"] = error.as_json(),
+            Err(error) => {
+                let mut fields = error.as_json();
+                // design 043: the field is compared with the rule of a refused run input, not for the other reasons
+                if fields.get("rule").is_none()
+                    && let Some(map) = fields.as_object_mut()
+                {
+                    map.remove("field");
+                }
+                observation["error"] = fields;
+            }
         }
         observations.push(observation);
     }

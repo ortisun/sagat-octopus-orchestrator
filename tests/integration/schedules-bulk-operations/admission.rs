@@ -545,3 +545,44 @@ async fn the_provenance_of_a_run_is_all_or_nothing_and_of_a_known_kind() {
         );
     }
 }
+
+/// Design 043, correctness review M1: an action retried by an engine whose gate refuses its input, after another engine
+/// started its run, is told the schedule already acted on that time, so the caller records nothing more.
+#[tokio::test]
+async fn an_action_the_gate_refuses_after_its_run_was_made_is_already_acted() {
+    let f = fixture().await;
+    let mut checked = crate::support::engine::chain("scheduled");
+    checked["inputSchema"] = serde_json::json!({"type": "object"});
+    f.w.publish_new_version(f.workflow, checked).await;
+    let admission = f.admission(nominal());
+    f.fire(admission.clone())
+        .await
+        .expect("the first engine starts the run");
+    let key = admission.run_key();
+    let again = crate::run_input::refusing(&f.w)
+        .start_scheduled(
+            &f.principal(),
+            &StartRun {
+                namespace: "payments",
+                workflow: f.workflow,
+                version: None,
+                input: br#"{"region":"eu"}"#,
+                correlation_id: None,
+                deadline: None,
+                key: &key,
+            },
+            admission,
+            &ctx(),
+        )
+        .await;
+    assert!(
+        matches!(
+            again,
+            Err(AppError::StateConflict(
+                "the schedule already acted on that time"
+            ))
+        ),
+        "{again:?}"
+    );
+    assert_eq!(f.runs_of_the_schedule().await, 1);
+}

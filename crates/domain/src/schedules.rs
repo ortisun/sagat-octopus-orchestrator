@@ -944,6 +944,10 @@ pub enum Outcome {
     AlreadyActed,
     AuthorityRevoked,
     BusinessIdConflict,
+    /// The target version refused the action's input (design 043, `FR-043-006`): the time is acted on, nothing starts,
+    /// nothing is retried. The reason is `SCHEDULE_INPUT_INVALID`, `NOMINAL_TIME_FIELD_INVALID` or
+    /// `RUN_INPUT_SCHEMA_UNUSABLE`.
+    InputInvalid,
 }
 
 impl Outcome {
@@ -960,6 +964,7 @@ impl Outcome {
             Self::AlreadyActed => "ALREADY_ACTED",
             Self::AuthorityRevoked => "AUTHORITY_REVOKED",
             Self::BusinessIdConflict => "BUSINESS_ID_CONFLICT",
+            Self::InputInvalid => "INPUT_INVALID",
         }
     }
 
@@ -992,6 +997,7 @@ impl FromStr for Outcome {
             "ALREADY_ACTED" => Self::AlreadyActed,
             "AUTHORITY_REVOKED" => Self::AuthorityRevoked,
             "BUSINESS_ID_CONFLICT" => Self::BusinessIdConflict,
+            "INPUT_INVALID" => Self::InputInvalid,
             _ => return Err(()),
         })
     }
@@ -1028,6 +1034,18 @@ pub struct Standing {
     pub reserved: u32,
     /// `None` when the schedule has no limit.
     pub remaining: Option<u32>,
+}
+
+impl Standing {
+    /// Nothing is left to give: the remaining actions, if limited, are all kept by the actions that wait. `decide` answers
+    /// such a time `Exhausted`, and the firing does not check the input of an action it will not take (D043-142).
+    #[must_use]
+    pub const fn exhausted(&self) -> bool {
+        match self.remaining {
+            Some(remaining) => remaining.saturating_sub(self.reserved) == 0,
+            None => false,
+        }
+    }
 }
 
 /// What a due time becomes.
@@ -1069,9 +1087,7 @@ impl Decision {
 #[must_use]
 pub fn decide(policies: &Policies, standing: &Standing, ceilings: &Ceilings) -> Decision {
     let ceilings = ceilings.clamped();
-    if let Some(remaining) = standing.remaining
-        && remaining.saturating_sub(standing.reserved) == 0
-    {
+    if standing.exhausted() {
         return Decision::Exhausted;
     }
     let idle = standing.open_runs == 0 && standing.buffered == 0;

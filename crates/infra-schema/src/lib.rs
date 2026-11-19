@@ -4,6 +4,7 @@
 
 pub mod bundle;
 pub mod classification;
+pub mod run_input;
 
 use sagat_application::scripts::{SchemaChecker, SchemaProblem};
 use sagat_domain::scripts::MAX_SCHEMA_BYTES;
@@ -13,38 +14,32 @@ use serde_json::{Map, Value, json};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Schemas;
 
-impl sagat_application::blobs::RunInputChecker for Schemas {
-    fn check(&self, workflow: &[u8], input: &[u8]) -> Result<(), &'static str> {
-        let workflow: Value = serde_json::from_slice(workflow)
-            .map_err(|_| "the stored workflow is not valid JSON")?;
-        let input: Value =
-            serde_json::from_slice(input).map_err(|_| "the run input is not valid JSON")?;
-        let Some(schema) = workflow.get("inputSchema") else {
-            return Ok(());
-        };
-        let validator = compile(schema).map_err(|()| "the workflow input schema is not valid")?;
-        if validator.is_valid(&input) {
-            Ok(())
-        } else {
-            Err("the blob descriptor does not satisfy the workflow input schema")
-        }
-    }
-}
-
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod run_input_tests {
-    use super::*;
-    use sagat_application::blobs::RunInputChecker;
+    use sagat_application::run_input::{SchemaKey, SchemaRefusal, SchemaValidator};
+    use sagat_domain::identity::TenantId;
+    use sagat_domain::workflow::InputSchema;
 
-    #[test]
-    fn claim_check_schema_validation_refuses_external_refs_without_exposing_payloads() {
+    use super::*;
+
+    /// The uploaded-input start goes through the gate like every start (design 043): a reference outside the document
+    /// makes the schema unusable, and the refusal holds nothing of the input.
+    #[tokio::test]
+    async fn claim_check_schema_validation_refuses_external_refs_without_exposing_payloads() {
+        let validator = run_input::RunInputValidator::default();
         let input = br#"{"$blob":{"id":"private-reference"}}"#;
         for reference in ["https://example.invalid/schema.json", "file:///etc/passwd"] {
-            let workflow = json!({"inputSchema":{"$ref":reference}}).to_string();
-            let error = RunInputChecker::check(&Schemas, workflow.as_bytes(), input)
-                .expect_err("external ref");
-            assert_eq!(error, "the workflow input schema is not valid");
-            assert!(!error.contains("private-reference"));
+            let bytes = json!({"$ref": reference}).to_string().into_bytes();
+            let schema = InputSchema::new(bytes, [9; 32]);
+            let key = SchemaKey {
+                tenant: TenantId::generate(),
+                digest: *schema.digest(),
+                shared: true,
+            };
+            let refusal = validator.check(key, &schema, input).await.unwrap_err();
+            assert!(matches!(refusal, SchemaRefusal::Unusable(_)), "{refusal:?}");
+            assert!(!format!("{refusal:?}").contains("private-reference"));
         }
     }
 }

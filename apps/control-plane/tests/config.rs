@@ -1133,3 +1133,116 @@ fn redis_callback_activation_is_an_explicit_strict_operator_switch() {
     values.push(("SAGAT_REDIS_CALLBACKS_ENABLED", "maybe"));
     assert!(ServeConfig::from_lookup(&env(&values)).is_err());
 }
+
+/// Design 043, FR-043-013 (the publication half of T043-12, D043-109): `SAGAT_RUN_INPUT_VALIDATION` is read strictly.
+/// Unset or empty is `enforce`; `enforce` and `report` are themselves; anything else stops the process naming the
+/// variable. The control plane passes the mode to publication.
+#[test]
+fn the_run_input_validation_mode_is_read_strictly_and_enforce_by_default() {
+    use sagat_application::definitions::InputValidationMode;
+    let mode = |value: Option<&str>| {
+        let mut values = OIDC.to_vec();
+        if let Some(value) = value {
+            values.push(("SAGAT_RUN_INPUT_VALIDATION", value));
+        }
+        ServeConfig::from_lookup(&env(&values)).map(|serve| serve.run_input_validation)
+    };
+    assert_eq!(mode(None).expect("unset"), InputValidationMode::Enforce);
+    assert_eq!(mode(Some("")).expect("empty"), InputValidationMode::Enforce);
+    assert_eq!(
+        mode(Some("enforce")).expect("enforce"),
+        InputValidationMode::Enforce
+    );
+    assert_eq!(
+        mode(Some("report")).expect("report"),
+        InputValidationMode::Report
+    );
+    for refused in ["Report", "off", "true", " report", "enforce "] {
+        let error = mode(Some(refused)).expect_err(refused);
+        assert!(
+            error.to_string().contains("SAGAT_RUN_INPUT_VALIDATION"),
+            "{refused}: {error}"
+        );
+    }
+}
+
+fn files_under(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files_under(&path, found);
+        } else {
+            found.push(path);
+        }
+    }
+}
+
+/// The value a line gives `name`, when it gives one (`NAME=value`, `NAME: value`), the default of `${NAME:-default}`.
+fn value_given(line: &str, name: &str) -> Option<String> {
+    let after = line.split_once(name)?.1.trim_start();
+    let value = after
+        .strip_prefix('=')
+        .or_else(|| after.strip_prefix(':'))?;
+    let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+    let value = match value.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
+        Some(interpolation) => interpolation
+            .split_once(":-")
+            .or_else(|| interpolation.split_once('-'))
+            .map_or("", |(_, default)| default),
+        None => value,
+    };
+    Some(
+        value
+            .trim_matches(|c| c == '"' || c == '\'')
+            .to_ascii_lowercase(),
+    )
+}
+
+/// The lines under `root` that set `SAGAT_RUN_INPUT_VALIDATION` to anything but `enforce` (or nothing).
+fn lines_that_set_report(root: &std::path::Path) -> (usize, Vec<String>) {
+    let mut files = Vec::new();
+    files_under(root, &mut files);
+    let scanned = files.len();
+    let mut report = Vec::new();
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for (number, line) in text.lines().enumerate() {
+            if let Some(value) = value_given(line, "SAGAT_RUN_INPUT_VALIDATION")
+                && !["", "enforce"].contains(&value.as_str())
+            {
+                report.push(format!("{}:{}: {line}", path.display(), number + 1));
+            }
+        }
+    }
+    (scanned, report)
+}
+
+/// FR-043-013: no compose file, chart or example this repository ships sets `report`.
+#[test]
+fn no_shipped_manifest_sets_run_input_validation_to_report() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut scanned = 0;
+    for dir in ["infra", "examples"] {
+        let (count, report) = lines_that_set_report(&root.join(dir));
+        scanned += count;
+        assert!(report.is_empty(), "a manifest sets report: {report:#?}");
+    }
+    assert!(scanned > 10, "the manifests were not found under {root:?}");
+    // and the scan finds one that does, interpolated or not
+    let dir = std::env::temp_dir().join(format!("sagat-run-input-scan-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    std::fs::write(
+        dir.join("compose.yaml"),
+        "      SAGAT_RUN_INPUT_VALIDATION: ${SAGAT_RUN_INPUT_VALIDATION:-report}\n      SAGAT_RUN_INPUT_VALIDATION: enforce\n",
+    )
+    .expect("a manifest");
+    std::fs::write(dir.join(".env"), "SAGAT_RUN_INPUT_VALIDATION=report\n").expect("an env file");
+    let (count, report) = lines_that_set_report(&dir);
+    std::fs::remove_dir_all(&dir).expect("remove the scratch directory");
+    assert_eq!((count, report.len()), (2, 2), "{report:#?}");
+}

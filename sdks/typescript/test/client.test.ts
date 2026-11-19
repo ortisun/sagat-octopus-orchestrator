@@ -404,6 +404,13 @@ test('RERUN_AS_NEW is an operation whose answer names the new run, and the new r
   assert.equal((await client().operate(ended, 'RERUN_AS_NEW', 'run it again after the fix')).newRunId, started);
 });
 
+test('a run stopped with a failure code carries it, and a run without one has none', async () => {
+  prepare((_req, res) => reply(res, 200, run({ status: 'FAILED', failureCode: 'CONTINUATION_INPUT_INVALID' })));
+  assert.equal((await client().get('0190aaaa-0000-7000-8000-000000000001')).failureCode, 'CONTINUATION_INPUT_INVALID');
+  prepare((_req, res) => reply(res, 200, run()));
+  assert.equal((await client().get('0190aaaa-0000-7000-8000-000000000001')).failureCode, null);
+});
+
 test('waiting for completion polls until the run is terminal', async () => {
   let polls = 0;
   prepare((_req, res) => reply(res, 200, run({ status: ++polls < 3 ? 'RUNNING' : 'SUCCEEDED' })));
@@ -594,4 +601,32 @@ test('the runs of a chain are listed in pages that follow the server cursor and 
   prepare((_req, res) => reply(res, 200, { items: [{ ...item(0), index: 10_000 }], nextCursor: null }));
   await assert.rejects(client().listChainRuns(namespaceId, chainId), (error: unknown) => error instanceof SagatError && error.code === 'PROTOCOL');
   await assert.rejects(client().listChainRuns('not-an-id', chainId), /namespace/i);
+});
+
+test('a refused run input carries the field and the rule beside the reason, and nothing of the value (design 043)', async () => {
+  prepare((_req, res) =>
+    reply(res, 422, {
+      code: 'VALIDATION_FAILED',
+      message: "the run input does not match the workflow's input schema: RUN_INPUT_INVALID",
+      retryable: false,
+      traceId: 'e'.repeat(32),
+      details: { reason: 'RUN_INPUT_INVALID', field: '/orderId', rule: 'type' },
+    }),
+  );
+  await assert.rejects(client().start(WORKFLOW, { orderId: 42 }, { idempotencyKey: 'key-12345678' }), (error: unknown) => {
+    assert.ok(error instanceof SagatError);
+    assert.equal(error.reason, 'RUN_INPUT_INVALID');
+    assert.equal(error.field, '/orderId');
+    assert.equal(error.rule, 'type');
+    assert.deepEqual(Object.keys(error.toJSON()).sort(), ['code', 'field', 'message', 'reason', 'remediation', 'retryAfterMs', 'retryable', 'rule', 'status', 'traceId']);
+    return true;
+  });
+  prepare((_req, res) => reply(res, 422, { code: 'VALIDATION_FAILED', message: 'x', retryable: false, traceId: 'e'.repeat(32), details: { reason: 'RUN_INPUT_SCHEMA_UNUSABLE' } }));
+  await assert.rejects(client().start(WORKFLOW, {}, { idempotencyKey: 'key-87654321' }), (error: unknown) => {
+    assert.ok(error instanceof SagatError);
+    assert.equal(error.field, null);
+    assert.equal(error.rule, null);
+    assert.equal('field' in error.toJSON(), false);
+    return true;
+  });
 });

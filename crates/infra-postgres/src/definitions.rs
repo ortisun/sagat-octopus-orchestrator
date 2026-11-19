@@ -1021,3 +1021,118 @@ async fn insert_saga_plan(
     }
     Ok(())
 }
+
+/// One stored version as `control-plane input-schema-inventory` reads it (design 043, T043-24, FR-043-018): its ids and
+/// its canonical document. Nothing else of the version, and nothing of any run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredVersion {
+    pub tenant: TenantId,
+    pub namespace: NamespaceId,
+    pub workflow: WorkflowId,
+    pub version: WorkflowVersionId,
+    pub number: i32,
+    /// Whether the workflow is one the platform writes for itself (ADR-0080).
+    pub internal: bool,
+    pub document: Vec<u8>,
+}
+
+/// Whether something may still start `version` of `workflow` (design 043, OD-2026-11-16-5, D043-179, D043-185): it is its
+/// workflow's active version, or a schedule that is not deleted pins it in its current revision (however seldom it fires),
+/// or a run of it is open (a reset, a continuation or a child of it would start it again), or a run of it was created in
+/// the last `quiet_days` days (a caller that names it). The inventory does not count a version outside the subset that
+/// nothing starts. It reads `workflows`, `runs` (by `runs_by_workflow_idx`, every run of the workflow) and, when
+/// `schedules` is true, `schedules` and `schedule_revisions` (every live schedule of the tenant), and writes nothing. A
+/// database of 0.2.x, which the inventory reads before the migration, has no schedules: [`schedules_exist`] says so, and
+/// then nothing is pinned (D043-187).
+///
+/// # Errors
+/// [`StoreError`] when the read fails.
+pub async fn version_still_started(
+    pool: &PgPool,
+    tenant: TenantId,
+    workflow: WorkflowId,
+    version: WorkflowVersionId,
+    quiet_days: u16,
+    schedules: bool,
+) -> Result<bool, StoreError> {
+    const ACTIVE_OR_RUN: &str = "SELECT EXISTS (SELECT 1 FROM workflows w \
+                         WHERE w.tenant_id = $1 AND w.id = $2 AND w.active_version_id = $3) \
+             OR EXISTS (SELECT 1 FROM runs r \
+                         WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.workflow_version_id = $3 \
+                           AND (r.finished_at IS NULL OR r.created_at > now() - make_interval(days => $4)))";
+    const OR_PINNED: &str = "SELECT EXISTS (SELECT 1 FROM workflows w \
+                         WHERE w.tenant_id = $1 AND w.id = $2 AND w.active_version_id = $3) \
+             OR EXISTS (SELECT 1 FROM schedules s \
+                          JOIN schedule_revisions sr ON sr.tenant_id = s.tenant_id AND sr.schedule_id = s.id \
+                                                    AND sr.revision = s.head_revision \
+                         WHERE s.tenant_id = $1 AND s.state <> 'DELETED' \
+                           AND sr.action->>'versionPolicy' = 'PINNED' AND sr.action->>'versionId' = $3::text) \
+             OR EXISTS (SELECT 1 FROM runs r \
+                         WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.workflow_version_id = $3 \
+                           AND (r.finished_at IS NULL OR r.created_at > now() - make_interval(days => $4)))";
+    sqlx::query_scalar(if schedules { OR_PINNED } else { ACTIVE_OR_RUN })
+        .bind(tenant.as_uuid())
+        .bind(workflow.as_uuid())
+        .bind(version.as_uuid())
+        .bind(i32::from(quiet_days))
+        .fetch_one(pool)
+        .await
+        .map_err(store_error)
+}
+
+/// Whether the database has the schedules of feature 018: a database of 0.2.x, which the inventory reads before the
+/// migration, does not (D043-187).
+///
+/// # Errors
+/// [`StoreError`] when the read fails.
+pub async fn schedules_exist(pool: &PgPool) -> Result<bool, StoreError> {
+    // looked up as the inventory's statement finds it, through the search path (re-read 3, architecture Nit 3)
+    sqlx::query_scalar("SELECT to_regclass('schedule_revisions') IS NOT NULL")
+        .fetch_one(pool)
+        .await
+        .map_err(store_error)
+}
+
+/// The stored versions of every tenant whose id is after `after`, ascending by id, at most `limit`: a page of the
+/// inventory, which runs with the control plane's database settings (the runtime role where one is set). This page needs
+/// `SELECT` on `workflow_versions` and `workflows`; the inventory also reads `runs`, `schedules` and
+/// `schedule_revisions` ([`version_still_started`]). It writes nothing.
+///
+/// # Errors
+/// [`StoreError`] when the read fails.
+pub async fn stored_versions_page(
+    pool: &PgPool,
+    after: Option<WorkflowVersionId>,
+    limit: u32,
+) -> Result<Vec<StoredVersion>, StoreError> {
+    // tenant, namespace, workflow, version, number, internal, document
+    type Row = (Uuid, Uuid, Uuid, Uuid, i32, bool, Vec<u8>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT v.tenant_id, w.namespace_id, v.workflow_id, v.id, v.version_number, w.internal, v.document \
+           FROM workflow_versions v \
+           JOIN workflows w ON w.tenant_id = v.tenant_id AND w.id = v.workflow_id \
+          WHERE v.id > $1 \
+          ORDER BY v.id \
+          LIMIT $2",
+    )
+    // the first page starts after the nil uuid, which no version has (ids are UUIDv7)
+    .bind(after.map_or(Uuid::nil(), |id| id.as_uuid()))
+    .bind(i64::from(limit))
+    .fetch_all(pool)
+    .await
+    .map_err(store_error)?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(tenant, namespace, workflow, version, number, internal, document)| StoredVersion {
+                tenant: TenantId::new(tenant),
+                namespace: NamespaceId::new(namespace),
+                workflow: WorkflowId::new(workflow),
+                version: WorkflowVersionId::new(version),
+                number,
+                internal,
+                document,
+            },
+        )
+        .collect())
+}

@@ -199,12 +199,19 @@ final class RestClient {
                 ? envelope.path("retryable").booleanValue()
                 : null;
         String traceId = envelope != null && envelope.path("traceId").isTextual() ? envelope.path("traceId").textValue() : headerTraceId;
+        // design 043: the pointer and the closed rule of a refused run input, as the server sent them
+        JsonNode fieldNode = envelope == null ? null : envelope.path("details").path("field");
+        JsonNode ruleNode = envelope == null ? null : envelope.path("details").path("rule");
+        String field = given != null && fieldNode != null && fieldNode.isTextual() ? fieldNode.textValue() : null;
+        String rule = given != null && ruleNode != null && ruleNode.isTextual() ? ruleNode.textValue() : null;
         return SagatException.builder(code, message)
                 .httpStatus(result.status())
                 .retryable(retryable)
                 .traceId(traceId)
                 .reason(reason)
                 .retryAfterMs(retryAfterMs)
+                .field(field)
+                .rule(rule)
                 .build();
     }
 }
