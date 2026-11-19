@@ -31,7 +31,13 @@ pub(crate) struct Fixture {
 }
 
 pub(crate) async fn fixture(label: &str) -> Fixture {
-    let api = support::api::start().await;
+    // design 043: the canary keeps a run whose input its schema refuses (`invalid-canary`), as one admitted before
+    // 0.3.0 would be; the API serves in `report` so it can still be made, as the integration canary does
+    let api = support::api::start_with(support::api::Options {
+        run_input_validation: sagat_application::run_input::InputValidationMode::Report,
+        ..support::api::Options::default()
+    })
+    .await;
     let tenant = api.tenant(TENANT, ADMIN).await;
     let workspace = api.create_workspace(ADMIN, TENANT, "canary-e2e").await;
     let namespace = api
@@ -107,11 +113,10 @@ async fn publish_and_start(api: &TestApi, schema: Value, input: Value) -> String
         .send()
         .await
         .expect("start e2e canary run");
-    assert_eq!(started.status(), StatusCode::ACCEPTED);
-    json_of(started).await["runId"]
-        .as_str()
-        .expect("run id")
-        .to_owned()
+    let status = started.status();
+    let body = json_of(started).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    body["runId"].as_str().expect("run id").to_owned()
 }
 
 impl Fixture {
