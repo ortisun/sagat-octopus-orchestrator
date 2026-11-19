@@ -292,7 +292,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   without the guard in `down.sql` the first fails); also as the runtime role; `integration_platform_foundation` 101,
   `integration_security_multitenancy` 126, `integration_durable_execution` 178; workspace clippy
   `-D warnings`, `cargo fmt --check`, `check-architecture.py` and `check-agent-config.py` clean.
-- [ ] T018-016 [US1] `ScheduleService` and `ScheduleFiring` (version policy, input check at action,
+- [x] T018-016 [US1] `ScheduleService` and `ScheduleFiring` (version policy, input check at action,
   `nominalTimeField`, business-id prefix, retry backoff) — `crates/application/src/schedules.rs` —
   tests over the real store — FR-018-001, FR-018-005, FR-018-016.
   *Part done 2026-10-29 (task stays open).* `ScheduleService` is built: create, get, list, update, delete, pause and resume,
@@ -350,6 +350,7 @@ Format: `- [ ] T018-NNN [P?] [USn?] Description — files — evidence — trace
   for every selector: `batch_jobs.selection_failures` (migration `20270116000000`), the wait in `next_slot_at`, the eleventh failed round in a row ends the job
   `SELECTION_FAILED` (`verification.md` (k)).
   *Note 2026-11-18, stays open:* the input check against the target's schema is feature 043 (run input validation: branches `feature/043-run-input-validation`, `-validator`, `-creators`; pull request #238 per the maintainer), not on `develop`; G1955 and G2081 stay with it.
+  *Reconciled 2026-11-19, ticked.* What was left (the input check against the target version's schema at write and at action, and `nominalTimeField` against it: G1955, G2081) was built by feature 043 (pull request #238, merged into `develop` on 2026-11-19; design 043 rows 6 to 8 and 14, the outcome `INPUT_INVALID` and the reason `NOMINAL_TIME_FIELD_INVALID`; `specs/043-run-input-validation/research.md` D043-123 to D043-126), with its tests in this feature's suite: `run_input::` (a write whose input the target refuses is refused under `action.input`; the nominal time field must be declared and an unusable schema refuses; an action the new version refuses is `INPUT_INVALID` and pauses once; a backfill whose input is refused ends `CANCELLED`; trigger-now answers 422 and records nothing; a buffered action is checked again at its release; the write fills the next nominal time) and `run_input_repeats::`. Run on `feature/018-reconcile-tasks` (`develop` at `170abcd0` plus this reconciliation, private `CARGO_TARGET_DIR`, `RUST_TEST_THREADS=2`, real PostgreSQL in Docker Desktop, one process per command, every output kept): `integration_schedules_bulk_operations` 757 passed, 0 failed, 2 ignored as the owner and as `sagat_app`, among them 21 `run_input::` and 8 `run_input_repeats::` in each role; `fault_schedules_bulk_operations` 131 in each role; `integration_platform_foundation` 107 and `integration_security_multitenancy` 126 in each role. The rest of the task was done earlier (the service, the firing, the version policy, the business-id prefix with its policies: D2171 to D2183, the retry backoff).*
 - [x] T018-017 [US1] Schedule pass (owned shards, fairness, round ceiling, metrics) and engine wiring —
   `crates/scheduler/src/{schedules.rs,lib.rs,monitor.rs}`, `apps/execution-engine/src/lib.rs` — two-replica
   pass tests — FR-018-005, FR-018-044.
