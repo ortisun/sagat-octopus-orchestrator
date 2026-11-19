@@ -239,10 +239,10 @@ async fn a_batch_rerun_keeps_the_identifier_unless_the_job_says_to_drop_it() {
     let exec = executor(&f);
 
     let keeping = create(&f, rerun_job(kept, false), "rerun-keeps-the-id").await;
-    select(&exec, &keeping).await;
+    select(&f, &exec, &keeping).await;
     settle(&exec, &keeping).await;
     let dropping = create(&f, rerun_job(dropped, true), "rerun-drops-the-id").await;
-    select(&exec, &dropping).await;
+    select(&f, &exec, &dropping).await;
     settle(&exec, &dropping).await;
 
     for finished in [&keeping, &dropping] {
@@ -286,7 +286,7 @@ async fn a_batch_rerun_whose_identifier_is_held_fails_the_item_as_a_conflict_and
     let exec = executor(&f);
 
     let held = create(&f, rerun_job(source, false), "rerun-meets-a-holder").await;
-    select(&exec, &held).await;
+    select(&f, &exec, &held).await;
     settle(&exec, &held).await;
 
     let done = job(&f, held.id).await;

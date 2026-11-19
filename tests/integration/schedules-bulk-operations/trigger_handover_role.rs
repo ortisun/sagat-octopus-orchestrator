@@ -264,6 +264,7 @@ async fn the_role_is_ensured_granted_logged_in_refused_when_wider_and_retired_fo
         .with_max_level(tracing::Level::TRACE)
         .with_writer(writer)
         .finish();
+    crate::support::logs::keep_interest_shared();
     {
         let _guard = tracing::subscriber::set_default(subscriber);
         sagat_control_plane::run_migrations_with(&database(&url), Some(PASSWORD))

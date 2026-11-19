@@ -561,7 +561,7 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
                 create_job(&f, by_prefix_job, "observability-batch-prefix-key").await;
             live(&f);
             let exec = executor(&f);
-            select(&exec, &by_prefix_job).await;
+            select(&f, &exec, &by_prefix_job).await;
             let _ = settle(&exec, &by_prefix_job).await;
             let reached: Vec<Uuid> = sqlx::query_scalar(
                 "SELECT run_id FROM batch_items WHERE job_id = $1 ORDER BY run_id",
@@ -585,7 +585,7 @@ fn customer_text_of_a_schedule_a_batch_a_reset_and_an_identifier_is_in_no_export
             // the clock of the test follows the database's, which the job was stamped with
             live(&f);
             let exec = executor(&f);
-            select(&exec, &job).await;
+            select(&f, &exec, &job).await;
             let _ = settle(&exec, &job).await;
             assert!(
                 f.w.run_status(batch_target).await.is_terminal()
