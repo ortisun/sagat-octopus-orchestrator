@@ -410,7 +410,8 @@ engines; assert one run per tick, the 004 input document and key; pause and trig
   `CANCELLED`, undoes nothing, is audited.
 - **FR-018-033 — Rate, concurrency, retention.** Items are applied no faster than the job rate (durable
   slot); active jobs per namespace are bounded; jobs and items are retained for the window (default
-  30 d, ≤ 90 d) and purged in bounded batches.
+  30 d, ≤ 90 d) and purged in bounded batches. A job that ended after its window is kept for at
+  least 14 days after it ended (pending O1958).
 - **FR-018-034 — Batch authorization and actions.** Creation requires `run:batch` plus every
   permission of the single action. Actions: `CANCEL`, `SIGNAL`, `UPDATE`, `RERUN`, `RETRY_STEP`,
   `PAUSE`, `RESUME`, `MARK_MANUAL_REVIEW`, and `REPIN` (only when feature 019 is enabled, else
