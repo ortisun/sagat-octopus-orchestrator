@@ -47,6 +47,15 @@ fn step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
     })
 }
 
+fn gate_waiter(row: &PgRow) -> Result<sagat_application::flow_control::GateWaiter, StoreError> {
+    let node: String = col(row, "node")?;
+    Ok(sagat_application::flow_control::GateWaiter {
+        tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+        run_id: RunId::new(col::<Uuid>(row, "run_id")?),
+        node: NodeId::parse_stored(&node).map_err(|_| corrupt("waiter node"))?,
+    })
+}
+
 fn addressed_step_ref(row: &PgRow) -> Result<StepRef, StoreError> {
     let mut step = step_ref(row)?;
     let nodes: Vec<String> = col(row, "instance_path_nodes")?;
@@ -99,6 +108,159 @@ fn window_params(window: &Window) -> (i64, Vec<i16>, Vec<Uuid>) {
 }
 
 impl MaintenanceStore for PgRunStore {
+    async fn due_gate_keys(
+        &self,
+        window: &Window,
+    ) -> Result<Vec<sagat_application::flow_control::GateKey>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        // the partial indexes `(key_shard, next_eligible_at) WHERE waiters > 0` of both key tables serve this
+        let rows = sqlx::query(
+            "SELECT k.tenant_id, k.namespace_id, k.kind, k.group_name, k.key_digest, k.key_shard, k.next_eligible_at \
+               FROM unnest($2::smallint[]) AS sh(s) \
+               CROSS JOIN LATERAL ( \
+                 (SELECT tenant_id, namespace_id, 'CONCURRENCY' AS kind, group_name, key_digest, key_shard, \
+                         next_eligible_at \
+                    FROM concurrency_semaphores \
+                   WHERE key_shard = sh.s AND waiters > 0 AND next_eligible_at <= now() \
+                     AND pool = 'ORDINARY' AND permit_scope = 'STEP' AND tenant_id <> ALL($3::uuid[]) \
+                   ORDER BY next_eligible_at LIMIT $1) \
+                 UNION ALL \
+                 (SELECT tenant_id, namespace_id, 'RATE' AS kind, group_name, key_digest, key_shard, \
+                         next_eligible_at \
+                    FROM rate_limit_windows \
+                   WHERE key_shard = sh.s AND waiters > 0 AND next_eligible_at <= now() \
+                     AND pool = 'ORDINARY' AND limit_scope = 'STEP' AND tenant_id <> ALL($3::uuid[]) \
+                   ORDER BY next_eligible_at LIMIT $1) \
+               ) k \
+              ORDER BY k.next_eligible_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?;
+        rows.iter()
+            .map(|row| {
+                let kind: String = col(row, "kind")?;
+                let group: String = col(row, "group_name")?;
+                let digest: Vec<u8> = col(row, "key_digest")?;
+                let shard: i16 = col(row, "key_shard")?;
+                Ok(sagat_application::flow_control::GateKey {
+                    tenant_id: TenantId::new(col::<Uuid>(row, "tenant_id")?),
+                    namespace_id: sagat_domain::identity::NamespaceId::new(col::<Uuid>(
+                        row,
+                        "namespace_id",
+                    )?),
+                    kind: if kind == "RATE" {
+                        sagat_domain::workflow::GateKind::RateLimit
+                    } else {
+                        sagat_domain::workflow::GateKind::Concurrency
+                    },
+                    group: sagat_domain::workflow::ResolvedGroup::parse(&group)
+                        .map_err(|_| corrupt("key group"))?,
+                    digest: digest.try_into().map_err(|_| corrupt("key digest"))?,
+                    shard: u8::try_from(shard)
+                        .ok()
+                        .and_then(sagat_domain::sharding::Shard::new)
+                        .ok_or_else(|| corrupt("key shard"))?,
+                    hint: col(row, "next_eligible_at")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn gate_key_waiters(
+        &self,
+        key: &sagat_application::flow_control::GateKey,
+        limit: u32,
+    ) -> Result<Vec<sagat_application::flow_control::GateWaiter>, StoreError> {
+        let statement = match key.kind {
+            sagat_domain::workflow::GateKind::Concurrency => {
+                "SELECT tenant_id, run_id, node FROM concurrency_waiters \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND permit_scope = 'STEP' \
+                    AND group_name = $3 AND key_digest = $4 \
+                  ORDER BY enqueued_at, run_id, node LIMIT $5"
+            }
+            sagat_domain::workflow::GateKind::RateLimit => {
+                "SELECT tenant_id, run_id, node FROM rate_limit_waiters \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND limit_scope = 'STEP' \
+                    AND group_name = $3 AND key_digest = $4 \
+                  ORDER BY enqueued_at, run_id, node LIMIT $5"
+            }
+        };
+        sqlx::query(statement)
+            .bind(key.tenant_id.as_uuid())
+            .bind(key.namespace_id.as_uuid())
+            .bind(key.group.as_str())
+            .bind(key.digest.as_slice())
+            .bind(i64::from(limit))
+            .fetch_all(self.pool())
+            .await
+            .map_err(store_error)?
+            .iter()
+            .map(gate_waiter)
+            .collect()
+    }
+
+    async fn rest_gate_key(
+        &self,
+        key: &sagat_application::flow_control::GateKey,
+    ) -> Result<(), StoreError> {
+        let statement = match key.kind {
+            sagat_domain::workflow::GateKind::Concurrency => {
+                "UPDATE concurrency_semaphores SET next_eligible_at = NULL, updated_at = clock_timestamp() \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND permit_scope = 'STEP' \
+                    AND group_name = $3 AND key_digest = $4 AND next_eligible_at = $5"
+            }
+            sagat_domain::workflow::GateKind::RateLimit => {
+                "UPDATE rate_limit_windows SET next_eligible_at = NULL, updated_at = clock_timestamp() \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND limit_scope = 'STEP' \
+                    AND group_name = $3 AND key_digest = $4 AND next_eligible_at = $5"
+            }
+        };
+        // the update re-reads the hint under the row's lock: a release that moved it since is kept (never late)
+        sqlx::query(statement)
+            .bind(key.tenant_id.as_uuid())
+            .bind(key.namespace_id.as_uuid())
+            .bind(key.group.as_str())
+            .bind(key.digest.as_slice())
+            .bind(key.hint)
+            .execute(self.pool())
+            .await
+            .map_err(store_error)?;
+        Ok(())
+    }
+
+    async fn due_gate_waits(
+        &self,
+        window: &Window,
+    ) -> Result<Vec<sagat_application::flow_control::GateWaiter>, StoreError> {
+        let (limit, shards, exclude) = window_params(window);
+        // a step queued for both gates has one deadline, the earlier, on both rows: `UNION` names it once
+        sqlx::query(
+            "SELECT t.tenant_id, t.run_id, t.node FROM unnest($2::smallint[]) AS sh(s) \
+             CROSS JOIN LATERAL ( \
+                 (SELECT tenant_id, run_id, node, deadline_at FROM concurrency_waiters \
+                   WHERE shard = sh.s AND permit_scope = 'STEP' AND deadline_at <= now() \
+                     AND tenant_id <> ALL($3::uuid[]) ORDER BY deadline_at LIMIT $1) \
+                 UNION \
+                 (SELECT tenant_id, run_id, node, deadline_at FROM rate_limit_waiters \
+                   WHERE shard = sh.s AND limit_scope = 'STEP' AND deadline_at <= now() \
+                     AND tenant_id <> ALL($3::uuid[]) ORDER BY deadline_at LIMIT $1) \
+             ) t ORDER BY t.deadline_at LIMIT $1",
+        )
+        .bind(limit)
+        .bind(shards)
+        .bind(exclude)
+        .fetch_all(self.pool())
+        .await
+        .map_err(store_error)?
+        .iter()
+        .map(gate_waiter)
+        .collect()
+    }
+
     /// Boundaries that can be handed off now. A run that still holds open work is not a candidate: it
     /// would sit at the head of the oldest-first list and keep the others from being examined
     /// (D296). The store proves quiescence again under the chain and run locks.

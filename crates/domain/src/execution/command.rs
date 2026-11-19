@@ -406,6 +406,173 @@ pub fn apply_gate(
     apply_then_settle(def, state, now, RunEvent::Gate(decision))
 }
 
+/// The gates a root step waits for, for the attempt it would start next: its declaration and that attempt. Refused
+/// unless the step waits for its gates with every gate it declares queued for that attempt (the grant and the timeout
+/// routines act only on such a waiter; whatever reached it first, a grant, a timeout or a cancellation, won).
+fn queued_step(
+    state: &RunState,
+    node: &NodeId,
+    event: &'static str,
+) -> Result<(super::DeclaredGates, u32), ExecutionError> {
+    let declared = state.declared_gates(node).ok_or(ExecutionError::Invariant(
+        "only a step of a node that declares a gate waits in a queue",
+    ))?;
+    let step = require_step(state, node)?;
+    let attempt = step.attempt().saturating_add(1);
+    let queued = declared.kinds().all(|kind| {
+        step.gates().of_kind(kind).is_some_and(|slot| {
+            slot.attempt() == attempt && matches!(slot.phase(), super::GatePhase::Queued { .. })
+        })
+    });
+    if step.status() != StepStatus::Waiting
+        || !matches!(step.waiting_on(), Some(WaitingOn::Gate))
+        || !queued
+    {
+        return Err(ExecutionError::IllegalTransition {
+            node: node.clone(),
+            status: step.status(),
+            event,
+        });
+    }
+    Ok((declared, attempt))
+}
+
+/// Grants a queued step every gate it waits for (feature 022, the grant routine T26; FR-022-052, ADR-0089 decision 3):
+/// `decisions` are the grants the adapter took under the keys' locks, one per gate the step declares, for the attempt
+/// it would start next. The step becomes `READY` and what that lets go is settled. Both or neither (FR-022-044): an
+/// answer that grants one gate of two is refused, as is one for a step that no longer waits.
+///
+/// # Errors
+/// [`ExecutionError::IllegalTransition`] when the step no longer waits for its gates (another commit won);
+/// [`ExecutionError::Invariant`] when `decisions` are not the grants of exactly the gates the step waits for.
+pub fn grant_step_gates(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+    decisions: Vec<super::GateEvent>,
+) -> Result<Progress, ExecutionError> {
+    let node = match decisions.first().map(|decision| &decision.target) {
+        Some(super::GateTarget::Step { node, .. }) => node.clone(),
+        _ => {
+            return Err(ExecutionError::Invariant(
+                "a grant from the queue names one step",
+            ));
+        }
+    };
+    let (_, attempt) = queued_step(state, &node, "concurrency.acquired")?;
+    for decision in &decisions {
+        let is_grant = matches!(
+            decision.change,
+            super::GateChange::ConcurrencyAcquired
+                | super::GateChange::RateGranted {
+                    from_queue: true,
+                    ..
+                }
+        );
+        if !is_grant
+            || decision.target
+                != (super::GateTarget::Step {
+                    node: node.clone(),
+                    attempt,
+                })
+        {
+            return Err(ExecutionError::Invariant(
+                "a grant from the queue grants the gates of the attempt the step would start next",
+            ));
+        }
+    }
+    // a gate granted twice is refused by the reducer, and one left out leaves the step waiting (refused below)
+    let mut events = Vec::with_capacity(decisions.len());
+    for decision in decisions {
+        let event = RunEvent::Gate(decision);
+        state.apply(&event)?;
+        events.push(event);
+    }
+    if require_step(state, &node)?.status() != StepStatus::Ready {
+        return Err(ExecutionError::Invariant(
+            "a grant from the queue grants every gate the step declares, once",
+        ));
+    }
+    settle(def, state, now, events)
+}
+
+/// A queued step's wait ended at its deadline (feature 022, the timeout routine T27; FR-022-052, ADR-0089 decision 5):
+/// the gate that refuses it then (`refusing`, decided by the adapter under the keys' locks, rate first when both do)
+/// journals `wait_timed_out`, the other gate it waits for is dequeued, and the step fails with
+/// `RATE_LIMIT_WAIT_TIMEOUT` or `CONCURRENCY_WAIT_TIMEOUT` through its failure route, with no attempt spent.
+///
+/// # Errors
+/// [`ExecutionError::NotYetDue`] before the earliest deadline of its gates; [`ExecutionError::IllegalTransition`] when
+/// the step no longer waits (a grant or a cancellation won); [`ExecutionError::Invariant`] when `refusing` is a gate
+/// the step does not declare.
+pub fn time_out_step_gates(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+    node: &NodeId,
+    refusing: crate::workflow::GateKind,
+) -> Result<Progress, ExecutionError> {
+    let (declared, attempt) = queued_step(state, node, "concurrency.wait_timed_out")?;
+    if !declared.kinds().any(|kind| kind == refusing) {
+        return Err(ExecutionError::Invariant(
+            "a wait times out on a gate its step declares",
+        ));
+    }
+    let step = require_step(state, node)?;
+    let now_us = i64::try_from(now.unix_timestamp_nanos() / 1_000)
+        .map_err(|_| ExecutionError::Invariant("an instant out of range"))?;
+    let mut slots = Vec::new();
+    for kind in declared.kinds() {
+        let slot = step
+            .gates()
+            .of_kind(kind)
+            .ok_or(ExecutionError::Invariant("a queued gate has its slot"))?;
+        let super::GatePhase::Queued { deadline_us } = slot.phase() else {
+            return Err(ExecutionError::Invariant("a queued gate has its deadline"));
+        };
+        slots.push((kind, slot.gate().clone(), deadline_us));
+    }
+    if slots.iter().map(|(_, _, deadline)| *deadline).min() > Some(now_us) {
+        return Err(ExecutionError::NotYetDue(node.clone()));
+    }
+    // the refusing gate first, then the other
+    slots.sort_by_key(|(kind, _, _)| *kind != refusing);
+    let mut events = Vec::with_capacity(slots.len() + 1);
+    for (kind, gate, _) in slots {
+        let change = match (kind == refusing, kind) {
+            (true, crate::workflow::GateKind::Concurrency) => {
+                super::GateChange::ConcurrencyWaitTimedOut
+            }
+            (true, crate::workflow::GateKind::RateLimit) => super::GateChange::RateWaitTimedOut,
+            (false, crate::workflow::GateKind::Concurrency) => {
+                super::GateChange::ConcurrencyDequeued
+            }
+            (false, crate::workflow::GateKind::RateLimit) => super::GateChange::RateDequeued,
+        };
+        let event = RunEvent::Gate(super::GateEvent {
+            target: super::GateTarget::Step {
+                node: node.clone(),
+                attempt,
+            },
+            gate,
+            change,
+        });
+        state.apply(&event)?;
+        events.push(event);
+    }
+    let failed = RunEvent::StepFailed {
+        node: node.clone(),
+        code: match refusing {
+            crate::workflow::GateKind::Concurrency => FailureCode::concurrency_wait_timeout(),
+            crate::workflow::GateKind::RateLimit => FailureCode::rate_limit_wait_timeout(),
+        },
+        fence: None,
+    };
+    state.apply(&failed)?;
+    events.push(failed);
+    settle(def, state, now, events)
+}
+
 /// Releases the entry of a delayed run, as `start_run` would have released it at the start.
 ///
 /// # Errors

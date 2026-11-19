@@ -10,5 +10,6 @@ mod support;
 mod admission;
 mod migrations;
 mod publication;
+mod queue;
 mod readiness;
 mod readiness_sources;

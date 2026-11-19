@@ -249,6 +249,8 @@ impl PgRunTx {
                     self.queue(&node, attempt, gate, filed, now, deadline)
                         .await?
                 };
+                self.gate_outcomes
+                    .push((gate.kind, GateOutcome::of(change)));
                 // the row is the same whatever the window its grants were counted for: every count of it moves
                 let (rate, group, digest, _) = count_key(gate, filed);
                 let mut moved = false;
@@ -511,7 +513,7 @@ impl PgRunTx {
                     "SELECT key_digest FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 \
                      AND holder_scope = 'STEP' AND node = $3 AND attempt = $4",
                 ),
-                GateChange::ConcurrencyDequeued => (
+                GateChange::ConcurrencyDequeued | GateChange::ConcurrencyWaitTimedOut => (
                     KeyTable::Semaphores,
                     "SELECT key_digest FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 \
                      AND permit_scope = 'STEP' AND node = $3 AND attempt = $4",
@@ -521,7 +523,7 @@ impl PgRunTx {
                     "SELECT key_digest FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 \
                      AND limit_scope = 'STEP' AND node = $3 AND attempt = $4 AND leased_at IS NULL",
                 ),
-                GateChange::RateDequeued => (
+                GateChange::RateDequeued | GateChange::RateWaitTimedOut => (
                     KeyTable::Windows,
                     "SELECT key_digest FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 \
                      AND limit_scope = 'STEP' AND node = $3 AND attempt = $4",
@@ -531,14 +533,6 @@ impl PgRunTx {
                 | GateChange::ConcurrencyAcquired
                 | GateChange::RateQueued { .. }
                 | GateChange::RateGranted { .. } => continue,
-                // a wait's timeout is the timeout routine's (T022-098), which this build does not run
-                GateChange::ConcurrencyWaitTimedOut | GateChange::RateWaitTimedOut => {
-                    return Err(StoreError::Internal {
-                        detail:
-                            "a flow-control wait timed out in a build without the timeout routine"
-                                .into(),
-                    });
-                }
             };
             let identity = (node.clone(), *attempt, gate.change.name());
             if self.gate_returns_applied.contains(&identity) {
@@ -583,7 +577,7 @@ impl PgRunTx {
                     "DELETE FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 AND holder_scope = 'STEP' \
                      AND node = $3 AND attempt = $4"
                 }
-                GateChange::ConcurrencyDequeued => {
+                GateChange::ConcurrencyDequeued | GateChange::ConcurrencyWaitTimedOut => {
                     "DELETE FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'STEP' \
                      AND node = $3 AND attempt = $4"
                 }
@@ -591,7 +585,7 @@ impl PgRunTx {
                     "DELETE FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'STEP' \
                      AND node = $3 AND attempt = $4 AND leased_at IS NULL"
                 }
-                GateChange::RateDequeued => {
+                GateChange::RateDequeued | GateChange::RateWaitTimedOut => {
                     "DELETE FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'STEP' \
                      AND node = $3 AND attempt = $4"
                 }
@@ -609,9 +603,10 @@ impl PgRunTx {
             if deleted != 1 {
                 return Err(corrupt("the row a flow-control event gives back"));
             }
-            if !matches!(r.change, GateChange::RateReturned) {
-                self.key_is_eligible(r.table, &r.key).await?;
-            }
+            // a permit released, a slot returned unleased, a waiter gone: each may let a waiter of the key through
+            self.key_is_eligible(r.table, &r.key).await?;
+            self.gate_outcomes
+                .push((r.change.kind(), GateOutcome::of(r.change)));
             self.gate_returns_applied
                 .insert((r.node, r.attempt, r.change.name()));
         }
@@ -780,4 +775,75 @@ fn period_ms(gate: &Pending) -> i64 {
 
 fn unix_micros(at: OffsetDateTime) -> Result<i64, StoreError> {
     i64::try_from(at.unix_timestamp_nanos() / 1_000).map_err(|_| corrupt("instant"))
+}
+
+/// What one gate decision or return of a committed transaction counts as (G022-001): recorded once the transaction
+/// commits, in the closed vocabulary of `sagat_telemetry::flow_control`, never with a tenant, a group or a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GateOutcome {
+    /// Granted at once by the readiness gate.
+    Granted,
+    Queued,
+    /// Granted by the grant routine.
+    GrantedFromQueue,
+    TimedOut,
+    Dequeued,
+    /// A permit released or an unleased slot returned.
+    GivenBack,
+}
+
+impl GateOutcome {
+    pub(super) const fn of(change: GateChange) -> Self {
+        match change {
+            GateChange::ConcurrencyAcquired => Self::Granted,
+            GateChange::RateGranted { from_queue, .. } => {
+                if from_queue {
+                    Self::GrantedFromQueue
+                } else {
+                    Self::Granted
+                }
+            }
+            GateChange::ConcurrencyQueued { .. } | GateChange::RateQueued { .. } => Self::Queued,
+            GateChange::ConcurrencyWaitTimedOut | GateChange::RateWaitTimedOut => Self::TimedOut,
+            GateChange::ConcurrencyDequeued | GateChange::RateDequeued => Self::Dequeued,
+            GateChange::ConcurrencyReleased | GateChange::RateReturned => Self::GivenBack,
+        }
+    }
+}
+
+/// Records the step-scope decisions of a committed transaction (G022-001; FR-022-033, FR-022-049).
+pub(super) fn record_gate_outcomes(outcomes: &[(GateKind, GateOutcome)]) {
+    use sagat_telemetry::flow_control::{
+        ConcurrencyOutcome, FlowControlScope, RateLimitOutcome, record_concurrency,
+        record_rate_limit,
+    };
+    for (kind, outcome) in outcomes {
+        match kind {
+            GateKind::Concurrency => {
+                let label = match outcome {
+                    GateOutcome::Granted => Some(ConcurrencyOutcome::Acquired),
+                    GateOutcome::Queued => Some(ConcurrencyOutcome::Queued),
+                    GateOutcome::GrantedFromQueue => Some(ConcurrencyOutcome::Granted),
+                    GateOutcome::TimedOut => Some(ConcurrencyOutcome::TimedOut),
+                    GateOutcome::Dequeued => Some(ConcurrencyOutcome::Dequeued),
+                    // a release is not an acquisition: the vocabulary has no outcome for it
+                    GateOutcome::GivenBack => None,
+                };
+                if let Some(label) = label {
+                    record_concurrency(FlowControlScope::Step, label);
+                }
+            }
+            GateKind::RateLimit => record_rate_limit(
+                FlowControlScope::Step,
+                match outcome {
+                    GateOutcome::Granted => RateLimitOutcome::Granted,
+                    GateOutcome::Queued => RateLimitOutcome::Queued,
+                    GateOutcome::GrantedFromQueue => RateLimitOutcome::GrantedFromQueue,
+                    GateOutcome::TimedOut => RateLimitOutcome::TimedOut,
+                    GateOutcome::Dequeued => RateLimitOutcome::Dequeued,
+                    GateOutcome::GivenBack => RateLimitOutcome::SlotReturned,
+                },
+            ),
+        }
+    }
 }

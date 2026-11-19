@@ -1069,6 +1069,51 @@ pub trait RunTx: Send {
         }
     }
 
+    /// Feature 022 (the grant routine T26, T022-097; ADR-0089 decisions 3 and 4): under one sorted lock of the keys of
+    /// the queued step `node` (semaphores, then windows), whether every gate it waits for admits it now by the
+    /// reservation rule, and if so its grants, as the events to journal, with their holder and grant rows written and its
+    /// waiter rows removed. `None` when a gate refuses it, or its queue deadline passed (the timeout routine's). The
+    /// run's state is not changed; the domain applies the events. An adapter that does not run the gate refuses.
+    fn grant_queued_step<'a>(
+        &'a mut self,
+        _node: &'a NodeId,
+        _attempt: u32,
+    ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
+    + Send
+    + 'a {
+        async {
+            Err(StoreError::FlowControl(
+                crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+            ))
+        }
+    }
+
+    /// Feature 022 (the timeout routine T27, T022-098; ADR-0089 decision 5): under one sorted lock of the keys of the
+    /// queued step `node`, the gate that refuses it now, rate first when both do (FR-022-052). The rows go when the
+    /// events are persisted.
+    fn refusing_gate<'a>(
+        &'a mut self,
+        _node: &'a NodeId,
+        _attempt: u32,
+    ) -> impl Future<Output = Result<sagat_domain::workflow::GateKind, StoreError>> + Send + 'a
+    {
+        async {
+            Err(StoreError::FlowControl(
+                crate::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+            ))
+        }
+    }
+
+    /// Feature 022 (ADR-0089 decision 3): whether `owner` still holds `lease` on a key's home shard, which need not be the
+    /// run's, checked inside this transaction. Without the gate, nothing is held.
+    fn holds_key_shard<'a>(
+        &'a mut self,
+        _owner: &'a str,
+        _lease: crate::shards::Lease,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send + 'a {
+        async { Ok(false) }
+    }
+
     /// Full-model counterpart of [`PathExecutionTx::record_scoped_event_delivery`].
     /// Legacy adapters explicitly refuse this operation; root delivery is unchanged.
     fn record_scoped_event_delivery(

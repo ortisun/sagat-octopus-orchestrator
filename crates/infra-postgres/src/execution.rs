@@ -10,6 +10,7 @@
 use crate::pool::BeginSafely;
 mod ad_hoc;
 mod database;
+mod gate_queue;
 mod path;
 mod path_read;
 mod readiness_gate;
@@ -553,6 +554,7 @@ impl PgRunStore {
             cancelled_waits: Vec::new(),
             flow_control_keys: self.flow_control_keys.clone(),
             gate_returns_applied: BTreeSet::new(),
+            gate_outcomes: Vec::new(),
         }))
     }
 
@@ -836,6 +838,44 @@ pub(crate) async fn locked_scheduler_time(
     locked_scheduler_time_sql(tx, run, owner, lease)
         .await
         .map_err(store_error)
+}
+
+/// The database clock while `owner` holds `lease` on its shard, whatever run the transaction locked: the fence of a
+/// flow-control key's home shard (feature 022, ADR-0089 decision 3), which is not the shard of the waiter's run.
+pub(crate) async fn locked_shard_time(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &str,
+    lease: sagat_application::shards::Lease,
+) -> Result<Option<OffsetDateTime>, StoreError> {
+    let Ok(generation) = i64::try_from(lease.generation) else {
+        return Ok(None);
+    };
+    // as `locked_scheduler_time_sql`: the row is locked first, then one fresh clock is compared with its expiry
+    let held: Option<i16> = sqlx::query_scalar(
+        "SELECT shard FROM scheduler_shards WHERE shard=$1 AND generation=$2 AND owner=$3 FOR SHARE",
+    )
+    .bind(i16::from(lease.shard.index()))
+    .bind(generation)
+    .bind(owner)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if held.is_none() {
+        return Ok(None);
+    }
+    let now: Option<Option<OffsetDateTime>> = sqlx::query_scalar(
+        "WITH tick AS MATERIALIZED (SELECT clock_timestamp() AS now) \
+         SELECT CASE WHEN s.expires_at>tick.now THEN tick.now END \
+         FROM scheduler_shards s CROSS JOIN tick \
+         WHERE s.shard=$1 AND s.generation=$2 AND s.owner=$3",
+    )
+    .bind(i16::from(lease.shard.index()))
+    .bind(generation)
+    .bind(owner)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    Ok(now.flatten())
 }
 
 /// Preserve the shared lock/clock order while letting sensitive callers redact driver failures.
@@ -1650,6 +1690,7 @@ impl RunStore for PgRunStore {
                     cancelled_waits: Vec::new(),
                     flow_control_keys: self.flow_control_keys.clone(),
                     gate_returns_applied: BTreeSet::new(),
+                    gate_outcomes: Vec::new(),
                 }));
             }
         }
@@ -3970,6 +4011,11 @@ pub struct PgRunTx {
     flow_control_keys: Option<Arc<sagat_application::keyed_digest::KeyRing>>,
     /// The gate returns (node, attempt, event) the gate round gave back already; `persist` skips them (feature 022).
     gate_returns_applied: BTreeSet<(NodeId, u32, &'static str)>,
+    /// The flow-control decisions and returns of this transaction, recorded once it commits (G022-001).
+    gate_outcomes: Vec<(
+        sagat_domain::workflow::GateKind,
+        readiness_gate::GateOutcome,
+    )>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -4262,6 +4308,37 @@ impl RunTx for PgRunTx {
     ) -> impl Future<Output = Result<Vec<sagat_domain::execution::GateEvent>, StoreError>> + Send + 'a
     {
         self.decide_gates(steps, pending)
+    }
+
+    fn grant_queued_step<'a>(
+        &'a mut self,
+        node: &'a NodeId,
+        attempt: u32,
+    ) -> impl Future<Output = Result<Option<Vec<sagat_domain::execution::GateEvent>>, StoreError>>
+    + Send
+    + 'a {
+        self.grant_from_queue(node, attempt)
+    }
+
+    fn refusing_gate<'a>(
+        &'a mut self,
+        node: &'a NodeId,
+        attempt: u32,
+    ) -> impl Future<Output = Result<sagat_domain::workflow::GateKind, StoreError>> + Send + 'a
+    {
+        self.gate_that_refuses(node, attempt)
+    }
+
+    async fn holds_key_shard<'a>(
+        &'a mut self,
+        owner: &'a str,
+        lease: sagat_application::shards::Lease,
+    ) -> Result<bool, StoreError> {
+        let Some(now) = locked_shard_time(&mut self.tx, owner, lease).await? else {
+            return Ok(false);
+        };
+        self.now = now;
+        Ok(true)
     }
 
     async fn restore_prefix<'a>(
@@ -5405,6 +5482,22 @@ impl RunTx for PgRunTx {
                     hinted.insert(node.clone());
                     self.outbox_task_ready(node).await?;
                 }
+                // a step the grant routine granted from its queue is announced by its grant (feature 022, T26)
+                RunEvent::Gate(sagat_domain::execution::GateEvent {
+                    target: sagat_domain::execution::GateTarget::Step { node, .. },
+                    change:
+                        sagat_domain::execution::GateChange::ConcurrencyAcquired
+                        | sagat_domain::execution::GateChange::RateGranted { .. },
+                    ..
+                }) if !hinted.contains(node)
+                    && self
+                        .state
+                        .step(node)
+                        .is_some_and(|step| step.status() == StepStatus::Ready) =>
+                {
+                    hinted.insert(node.clone());
+                    self.outbox_task_ready(node).await?;
+                }
                 RunEvent::StepCompleted { node, .. } if node.is_compensation() => {
                     self.breaker_outcome(node, true).await?;
                 }
@@ -5787,6 +5880,7 @@ impl RunTx for PgRunTx {
                 })?;
         }
         self.tx.commit().await.map_err(store_error)?;
+        readiness_gate::record_gate_outcomes(&self.gate_outcomes);
         for waited in self.cancelled_waits {
             metrics::histogram!(
                 WorkflowPrimitiveMetric::ApprovalWait.as_str(),

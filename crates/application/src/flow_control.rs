@@ -195,3 +195,30 @@ impl std::fmt::Debug for StepGateKeys {
 
 /// The canonical value of the single key of a group whose declaration has no key expression.
 pub const SINGLE_KEY: &[u8] = b"null";
+
+/// A key whose waiters the grant routine may serve now (feature 022, T26, ADR-0089 decision 3): a step key with
+/// waiters whose next-eligible hint has come, on a home shard this replica holds. Its digest is a keyed digest, never a
+/// value (D1168); `hint` is the hint as it was read, so a pass that grants nothing may clear it only if no release
+/// moved it since (early, never late).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateKey {
+    pub tenant_id: sagat_domain::identity::TenantId,
+    pub namespace_id: sagat_domain::identity::NamespaceId,
+    pub kind: GateKind,
+    pub group: sagat_domain::workflow::ResolvedGroup,
+    pub digest: [u8; 32],
+    pub shard: sagat_domain::sharding::Shard,
+    pub hint: time::OffsetDateTime,
+}
+
+/// A queued step of a key, or one whose queue deadline passed (T26, T27).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateWaiter {
+    pub tenant_id: sagat_domain::identity::TenantId,
+    pub run_id: sagat_domain::execution::RunId,
+    pub node: sagat_domain::workflow::NodeId,
+}
+
+/// How many waiters of one key one pass tries (D022-015, ADR-0089 decision 3: bounded per pass, so a flood on one key
+/// does not hold back the keys behind it).
+pub const GRANTS_PER_KEY_PER_PASS: u32 = 32;

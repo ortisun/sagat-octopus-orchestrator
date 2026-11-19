@@ -115,6 +115,33 @@ pub struct LostLease {
 /// Candidate queries and housekeeping. Implemented by `sagat-infra-postgres`; every time
 /// comparison uses the database clock, so instances with skewed clocks agree.
 pub trait MaintenanceStore: Send + Sync {
+    /// Feature 022 (T26): the step keys with waiters whose next-eligible hint has come, on the home shards of `window`,
+    /// oldest hint first. Only finds candidates; each grant is decided again under the waiter's run and the key's lock.
+    fn due_gate_keys(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<crate::flow_control::GateKey>, StoreError>> + Send;
+
+    /// The waiters of `key`, oldest first by the commit that queued them (ties by run, then node), at most `limit`.
+    fn gate_key_waiters(
+        &self,
+        key: &crate::flow_control::GateKey,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<crate::flow_control::GateWaiter>, StoreError>> + Send;
+
+    /// Clears the next-eligible hint of `key` when it is still the one the pass read: a pass that could grant none of
+    /// its waiters leaves the key to the next release, which sets the hint again (early, never late).
+    fn rest_gate_key(
+        &self,
+        key: &crate::flow_control::GateKey,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Feature 022 (T27): queued steps whose queue deadline passed, on the run shards of `window`, earliest first.
+    fn due_gate_waits(
+        &self,
+        window: &Window,
+    ) -> impl Future<Output = Result<Vec<crate::flow_control::GateWaiter>, StoreError>> + Send;
+
     /// Pending continuation boundaries whose run is still the current chain head.
     fn continuation_candidates(
         &self,

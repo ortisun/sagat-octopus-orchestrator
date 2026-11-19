@@ -75,6 +75,15 @@ pub async fn gated_world() -> World {
 
 /// Publishes `doc` with the switches on (a control plane of the fleet).
 pub async fn publish(w: &World, doc: Value) -> WorkflowId {
+    publish_as(w, &w.admin, doc).await
+}
+
+/// [`publish`], by `principal` in its tenant's `payments` namespace.
+pub async fn publish_as(
+    w: &World,
+    principal: &sagat_domain::identity::Principal,
+    doc: Value,
+) -> WorkflowId {
     let defs = DefinitionService::new(
         w.store.clone(),
         sagat_application::clock::SystemClock,
@@ -84,7 +93,7 @@ pub async fn publish(w: &World, doc: Value) -> WorkflowId {
     let name = doc["metadata"]["name"].as_str().expect("name").to_owned();
     let workflow = defs
         .create_workflow(
-            &w.admin,
+            principal,
             "payments",
             &name,
             &serde_json::to_vec(&doc).expect("json"),
@@ -96,7 +105,7 @@ pub async fn publish(w: &World, doc: Value) -> WorkflowId {
         .workflow
         .id();
     defs.publish(
-        &w.admin,
+        principal,
         workflow,
         1,
         None,
@@ -106,4 +115,49 @@ pub async fn publish(w: &World, doc: Value) -> WorkflowId {
     .await
     .expect("published");
     workflow
+}
+
+/// Moves the queue deadline of the waiting step `node` of `run` one second into the past, in its waiter rows and in
+/// its gates' projection, as the time it waited had passed (the journal keeps the deadline it was queued with; the
+/// projection agrees with it again once the wait has ended).
+pub async fn age_gate_deadline(w: &World, run: sagat_domain::execution::RunId, node: &str) {
+    // a waiter row is never changed (its trigger refuses an update): the test replaces it, in one transaction, by the
+    // same row with an earlier deadline (an empty key is pruned only at commit, and no count moves)
+    let mut tx = w.db.pool.begin().await.expect("tx");
+    for statement in [
+        "WITH gone AS (DELETE FROM concurrency_waiters WHERE run_id = $1 AND node = $2 RETURNING *) \
+         INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
+                group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
+         SELECT tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, group_name, key_digest, \
+                declared_limit, clock_timestamp() - interval '1 hour', clock_timestamp() - interval '1 second', shard \
+           FROM gone",
+        "WITH gone AS (DELETE FROM rate_limit_waiters WHERE run_id = $1 AND node = $2 RETURNING *) \
+         INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
+                group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard) \
+         SELECT tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, group_name, key_digest, \
+                declared_limit, period_ms, clock_timestamp() - interval '1 hour', \
+                clock_timestamp() - interval '1 second', shard \
+           FROM gone",
+    ] {
+        sqlx::query(statement)
+            .bind(run.as_uuid())
+            .bind(node)
+            .execute(&mut *tx)
+            .await
+            .expect("waiter aged");
+    }
+    tx.commit().await.expect("aged");
+    sqlx::query(
+        "UPDATE steps SET flow_control_gates = ( \
+             SELECT jsonb_object_agg(k, CASE WHEN v = 'null'::jsonb OR v->>'phase' <> 'QUEUED' THEN v \
+                 ELSE jsonb_set(v, '{deadlineUs}', \
+                      to_jsonb((extract(epoch FROM clock_timestamp()) * 1000000)::bigint - 1000000)) END) \
+               FROM jsonb_each(flow_control_gates) AS e(k, v)) \
+          WHERE run_id = $1 AND node = $2 AND flow_control_gates IS NOT NULL",
+    )
+    .bind(run.as_uuid())
+    .bind(node)
+    .execute(&w.db.pool)
+    .await
+    .expect("projection aged");
 }
