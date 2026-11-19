@@ -1052,11 +1052,14 @@ pub trait RunTx: Send {
 
     /// Feature 022 (T28 of the plan, FR-022-051, D022-020): decides, in this transaction and under one sorted lock of
     /// their keys, the gates of the steps the readiness gate asks about: for each step, a grant of every gate it
-    /// declares or a wait of every one (both or neither, FR-022-044), as the events to journal. The run's state is not
-    /// changed; the domain applies the events. An adapter that does not run the gate refuses (fail closed, D022-037).
+    /// declares or a wait of every one (both or neither, FR-022-044), as the events to journal. `pending` are the events
+    /// of this transaction not yet persisted: what they give back (a permit released, a wait dequeued) is given back in
+    /// the same sorted lock of the keys, first. The run's state is not changed; the domain applies the events. An
+    /// adapter that does not run the gate refuses (fail closed, D022-037).
     fn decide_step_gates<'a>(
         &'a mut self,
         _steps: &'a [crate::flow_control::StepGateKeys],
+        _pending: &'a [RunEvent],
     ) -> impl Future<Output = Result<Vec<sagat_domain::execution::GateEvent>, StoreError>> + Send + 'a
     {
         async {
@@ -1832,7 +1835,7 @@ impl<E: ExpressionEvaluator> Engine<E> {
             if rounds > limit {
                 return Err(ExecutionError::Invariant("evaluations did not settle").into());
             }
-            let (resolution, spawn, output) = self.resolve(tx, &evaluation).await?;
+            let (resolution, spawn, output) = self.resolve(tx, &evaluation, &events).await?;
             effects.children.extend(spawn);
             // A run result is the output of its `end` step, written with the step in `persist`.
             effects.outputs.extend(output);
@@ -1882,9 +1885,10 @@ impl<E: ExpressionEvaluator> Engine<E> {
         &self,
         tx: &mut Tx,
         evaluation: &Evaluation,
+        pending: &[RunEvent],
     ) -> Result<(Resolution, Option<ChildSpawn>, Option<(NodeId, Vec<u8>)>), EngineError> {
         if let Evaluation::Gates { steps } = evaluation {
-            return Ok((self.decide_gates(tx, steps).await?, None, None));
+            return Ok((self.decide_gates(tx, steps, pending).await?, None, None));
         }
         let depth = tx.info().depth;
         let parent = tx.info().run_id;
@@ -2024,6 +2028,7 @@ impl<E: ExpressionEvaluator> Engine<E> {
         &self,
         tx: &mut Tx,
         asked: &[sagat_domain::execution::GateRequest],
+        pending: &[RunEvent],
     ) -> Result<Resolution, EngineError> {
         use sagat_domain::workflow::flow_control::MAX_KEY_BYTES;
         let declared = {
@@ -2091,7 +2096,7 @@ impl<E: ExpressionEvaluator> Engine<E> {
                 refused,
             });
         }
-        let decisions = tx.decide_step_gates(&keys).await?;
+        let decisions = tx.decide_step_gates(&keys, pending).await?;
         Ok(Resolution::Gates {
             decisions,
             refused: Vec::new(),

@@ -194,8 +194,8 @@ async fn a_worker_completion_releases_a_gated_step_into_its_gates() {
     .await
     .expect("grant");
     assert!(
-        leased.is_some(),
-        "the lease instant is recorded on the grant"
+        leased.is_none(),
+        "the claim does not touch the grant: its lease instant is the pass's (T022-074)"
     );
     // the attempt's end gives the permit back; the run cannot finish holding it
     w.complete(&session, &task, &json!({}))
@@ -471,4 +471,123 @@ async fn a_cancelled_run_takes_its_queued_step_out_of_every_queue() {
     .expect("semaphore");
     assert!(hint.is_none(), "no waiter is left, so no hint is set");
     w.assert_consistent(run).await;
+}
+
+/// The correctness and architecture reviews of 2026-11-19 (finding 1 / M2): a commit that releases a permit and decides
+/// a successor on the same key gives the permit back before it counts, so a `limit: 1` successor is granted, not queued
+/// behind a permit that frees in that very commit.
+#[tokio::test]
+async fn a_permit_released_and_a_successor_decided_in_one_commit_is_counted_once() {
+    let w = gated_world().await;
+    let shared = json!({"group": "account-serial", "key": "input.accountId", "limit": 1});
+    let workflow = publish(
+        &w,
+        document(
+            "same-key-chain",
+            "x",
+            vec![
+                with(
+                    with(activity("x"), "concurrency", shared.clone()),
+                    "next",
+                    json!("y"),
+                ),
+                with(activity("y"), "concurrency", shared),
+            ],
+        ),
+    )
+    .await;
+    let session = w.session(&["act.x", "act.y"]).await;
+    let run = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    granted(&w, run, "x", (true, false)).await;
+    let task = w.one_task_of(&session, "act.x").await;
+    w.complete(&session, &task, &json!({}))
+        .await
+        .expect("x done");
+    granted(&w, run, "y", (true, false)).await;
+    assert_eq!(rows(&w, run, "x").await.0, 0, "x gave its permit back");
+}
+
+/// D022-038 with a held lock: a commit that releases a permit of group `a-…` and decides a successor of group `b-…`
+/// takes the semaphore of `a` before the one of `b` (sorted), so while another transaction holds `a`'s row it holds
+/// nothing of `b`'s; the decision round took them in decision order first (the reviews of 2026-11-19).
+#[tokio::test]
+async fn a_release_and_a_decision_lock_their_keys_in_one_sorted_order() {
+    let w = gated_world().await;
+    let workflow = publish(
+        &w,
+        document(
+            "lock-order",
+            "x",
+            vec![
+                with(
+                    with(
+                        activity("x"),
+                        "concurrency",
+                        json!({"group": "a-release", "limit": 5}),
+                    ),
+                    "next",
+                    json!("y"),
+                ),
+                with(
+                    activity("y"),
+                    "concurrency",
+                    json!({"group": "b-decide", "limit": 5}),
+                ),
+            ],
+        ),
+    )
+    .await;
+    let session = w.session(&["act.x", "act.y"]).await;
+    let run = w.start(workflow, &json!({})).await;
+    let task = w.one_task_of(&session, "act.x").await;
+    // `b-decide` exists before the commit, so a lock taken on it would be seen
+    let other = w.start(workflow, &json!({})).await;
+    let other_task = w.one_task_of(&session, "act.x").await;
+    assert_eq!(other_task.run_id, other);
+    w.complete(&session, &other_task, &json!({}))
+        .await
+        .expect("the other run reaches y");
+    let mut holder = w.db.pool.begin().await.expect("a transaction");
+    sqlx::query("SELECT 1 FROM concurrency_semaphores WHERE group_name = 'a-release' FOR UPDATE")
+        .execute(&mut *holder)
+        .await
+        .expect("a's row held");
+    let completing = {
+        let w = &w;
+        let session = &session;
+        let task = &task;
+        async move { w.complete(session, task, &json!({})).await }
+    };
+    let watch = async {
+        // the barrier: wait until the completion waits for a lock, then look at `b`'s row
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+                 AND wait_event_type = 'Lock' AND state = 'active'",
+            )
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("activity");
+            if waiting > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let mut probe = w.db.pool.begin().await.expect("a probe");
+        let free = sqlx::query(
+            "SELECT 1 FROM concurrency_semaphores WHERE group_name = 'b-decide' FOR UPDATE NOWAIT",
+        )
+        .execute(&mut *probe)
+        .await;
+        probe.rollback().await.expect("probe ends");
+        holder.rollback().await.expect("a's row freed");
+        free.is_ok()
+    };
+    let (done, b_was_free) = tokio::join!(completing, watch);
+    done.expect("x done");
+    assert!(
+        b_was_free,
+        "the commit locked b before a: out of the one order"
+    );
+    granted(&w, run, "y", (true, false)).await;
 }

@@ -26,7 +26,9 @@ use sagat_domain::workflow::{GateKind, GateLevel};
 use sha2::{Digest as _, Sha256};
 
 use super::*;
-use crate::flow_control::{FiledKey, KeyTable, KeyToFile, file_keys, key_versions};
+use crate::flow_control::{
+    ExistingKey, FiledKey, KeyTable, KeyToFile, file_keys_with, key_versions, lock_existing,
+};
 
 /// The longest a gate projection of one step may be (two slots of a 130-character group).
 const MAX_PROJECTION_BYTES: usize = 1024;
@@ -57,6 +59,15 @@ fn count_key(gate: &Pending, filed: &FiledKey) -> CountKey {
     )
 }
 
+/// One gate a transaction gives back, with the key row it is under.
+struct GateReturn {
+    table: KeyTable,
+    change: GateChange,
+    node: NodeId,
+    attempt: u32,
+    key: ExistingKey,
+}
+
 /// The counts of one locked key, kept as this transaction adds rows under it.
 #[derive(Clone, Copy, Default)]
 struct KeyCount {
@@ -75,6 +86,7 @@ impl PgRunTx {
     pub(super) async fn decide_gates(
         &mut self,
         steps: &[StepGateKeys],
+        pending_events: &[RunEvent],
     ) -> Result<Vec<GateEvent>, StoreError> {
         let Some(ring) = self.flow_control_keys.clone() else {
             return Err(StoreError::FlowControl(
@@ -164,9 +176,32 @@ impl PgRunTx {
                 ));
             }
         }
-        // semaphores before windows, each sorted (D022-038)
-        let filed_semaphores = file_keys(&mut self.tx, KeyTable::Semaphores, &semaphores).await?;
-        let filed_windows = file_keys(&mut self.tx, KeyTable::Windows, &windows).await?;
+        // what this transaction gives back is locked in the same pass and given back first, so that the counts below
+        // see it (a permit released and a successor decided on the same key in one commit) and no key row is locked
+        // twice or out of order: semaphores before windows, each sorted (D022-038)
+        let returns = self.pending_returns(pending_events).await?;
+        let returned = |table: KeyTable| -> Vec<ExistingKey> {
+            returns
+                .iter()
+                .filter(|r| r.table == table)
+                .map(|r| r.key.clone())
+                .collect()
+        };
+        let filed_semaphores = file_keys_with(
+            &mut self.tx,
+            KeyTable::Semaphores,
+            &semaphores,
+            &returned(KeyTable::Semaphores),
+        )
+        .await?;
+        let filed_windows = file_keys_with(
+            &mut self.tx,
+            KeyTable::Windows,
+            &windows,
+            &returned(KeyTable::Windows),
+        )
+        .await?;
+        self.apply_returns(returns).await?;
         for (index, gate) in &mut pending {
             let filed = match gate.kind {
                 GateKind::Concurrency => &filed_semaphores,
@@ -427,14 +462,38 @@ impl PgRunTx {
         }
     }
 
-    /// Gives back, before anything else `persist` writes, what the events of this transaction release: the holder row
-    /// of a permit an attempt no longer needs (`concurrency.released`, with the key's next-eligible hint set to now)
-    /// and the grant row of a slot a step returns unleased (`rate_limit.returned`). Nothing for a transaction without
-    /// a flow-control event.
+    /// Gives back, before anything else `persist` writes, what the events of this transaction release and the gate
+    /// round has not given back already: the holder row of a permit an attempt no longer needs (`concurrency.released`),
+    /// the grant row of a slot a step returns unleased (`rate_limit.returned`) and the waiter rows of a stopped run's
+    /// step (`*.dequeued`). The key rows are locked first, semaphores then windows, sorted (D022-038). Nothing for a
+    /// transaction without a flow-control event.
     pub(super) async fn persist_gate_returns(
         &mut self,
         events: &[RunEvent],
     ) -> Result<(), StoreError> {
+        let returns = self.pending_returns(events).await?;
+        if returns.is_empty() {
+            return Ok(());
+        }
+        for table in [KeyTable::Semaphores, KeyTable::Windows] {
+            let rows: Vec<ExistingKey> = returns
+                .iter()
+                .filter(|r| r.table == table)
+                .map(|r| r.key.clone())
+                .collect();
+            if !rows.is_empty() {
+                lock_existing(&mut self.tx, table, &rows).await?;
+            }
+        }
+        self.apply_returns(returns).await
+    }
+
+    /// The gate returns among `events` that have not been applied yet, each with the key row it is under.
+    async fn pending_returns(
+        &mut self,
+        events: &[RunEvent],
+    ) -> Result<Vec<GateReturn>, StoreError> {
+        let mut returns = Vec::new();
         for event in events {
             let RunEvent::Gate(gate) = event else {
                 continue;
@@ -446,82 +505,32 @@ impl PgRunTx {
                             .into(),
                 });
             };
-            let attempt = i32::try_from(*attempt).map_err(|_| corrupt("attempt"))?;
-            match gate.change {
-                GateChange::ConcurrencyReleased => {
-                    let released: Option<Vec<u8>> = sqlx::query_scalar(
-                        "DELETE FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 AND holder_scope = 'STEP' \
-                         AND node = $3 AND attempt = $4 RETURNING key_digest",
-                    )
-                    .bind(self.info.tenant_id.as_uuid())
-                    .bind(self.info.run_id.as_uuid())
-                    .bind(node.as_str())
-                    .bind(attempt)
-                    .fetch_optional(&mut *self.tx)
-                    .await
-                    .map_err(store_error)?;
-                    let digest = released.ok_or_else(|| corrupt("released permit"))?;
-                    // a release sets the hint to now: the grant routine looks at the key at once (ADR-0089)
-                    self.key_is_eligible(KeyTable::Semaphores, gate, &digest)
-                        .await?;
-                }
-                GateChange::RateReturned => {
-                    let returned = sqlx::query(
-                        "DELETE FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
-                         AND attempt = $4 AND leased_at IS NULL",
-                    )
-                    .bind(self.info.tenant_id.as_uuid())
-                    .bind(self.info.run_id.as_uuid())
-                    .bind(node.as_str())
-                    .bind(attempt)
-                    .execute(&mut *self.tx)
-                    .await
-                    .map_err(store_error)?
-                    .rows_affected();
-                    if returned != 1 {
-                        return Err(corrupt("returned slot"));
-                    }
-                }
-                // decisions wrote their rows under the keys' locks; a timeout and a dequeue are the grant and timeout
-                // routines' (T022-097, T022-098), which this build does not run
+            let (table, read) = match gate.change {
+                GateChange::ConcurrencyReleased => (
+                    KeyTable::Semaphores,
+                    "SELECT key_digest FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 \
+                     AND holder_scope = 'STEP' AND node = $3 AND attempt = $4",
+                ),
+                GateChange::ConcurrencyDequeued => (
+                    KeyTable::Semaphores,
+                    "SELECT key_digest FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 \
+                     AND permit_scope = 'STEP' AND node = $3 AND attempt = $4",
+                ),
+                GateChange::RateReturned => (
+                    KeyTable::Windows,
+                    "SELECT key_digest FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 \
+                     AND limit_scope = 'STEP' AND node = $3 AND attempt = $4 AND leased_at IS NULL",
+                ),
+                GateChange::RateDequeued => (
+                    KeyTable::Windows,
+                    "SELECT key_digest FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 \
+                     AND limit_scope = 'STEP' AND node = $3 AND attempt = $4",
+                ),
+                // decisions wrote their rows under the keys' locks
                 GateChange::ConcurrencyQueued { .. }
                 | GateChange::ConcurrencyAcquired
                 | GateChange::RateQueued { .. }
-                | GateChange::RateGranted { .. } => {}
-                // a stopped run's step leaves its queue: its waiter row goes, and the key's hint is set to now, since
-                // the waiters behind it may now fit (the reservation rule, D022-021)
-                GateChange::ConcurrencyDequeued => {
-                    let left: Option<Vec<u8>> = sqlx::query_scalar(
-                        "DELETE FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
-                         AND permit_scope = 'STEP' AND attempt = $4 RETURNING key_digest",
-                    )
-                    .bind(self.info.tenant_id.as_uuid())
-                    .bind(self.info.run_id.as_uuid())
-                    .bind(node.as_str())
-                    .bind(attempt)
-                    .fetch_optional(&mut *self.tx)
-                    .await
-                    .map_err(store_error)?;
-                    let digest = left.ok_or_else(|| corrupt("dequeued waiter"))?;
-                    self.key_is_eligible(KeyTable::Semaphores, gate, &digest)
-                        .await?;
-                }
-                GateChange::RateDequeued => {
-                    let left: Option<Vec<u8>> = sqlx::query_scalar(
-                        "DELETE FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND node = $3 \
-                         AND limit_scope = 'STEP' AND attempt = $4 RETURNING key_digest",
-                    )
-                    .bind(self.info.tenant_id.as_uuid())
-                    .bind(self.info.run_id.as_uuid())
-                    .bind(node.as_str())
-                    .bind(attempt)
-                    .fetch_optional(&mut *self.tx)
-                    .await
-                    .map_err(store_error)?;
-                    let digest = left.ok_or_else(|| corrupt("dequeued waiter"))?;
-                    self.key_is_eligible(KeyTable::Windows, gate, &digest)
-                        .await?;
-                }
+                | GateChange::RateGranted { .. } => continue,
                 // a wait's timeout is the timeout routine's (T022-098), which this build does not run
                 GateChange::ConcurrencyWaitTimedOut | GateChange::RateWaitTimedOut => {
                     return Err(StoreError::Internal {
@@ -530,7 +539,81 @@ impl PgRunTx {
                                 .into(),
                     });
                 }
+            };
+            let identity = (node.clone(), *attempt, gate.change.name());
+            if self.gate_returns_applied.contains(&identity) {
+                continue;
             }
+            let attempt_column = i32::try_from(*attempt).map_err(|_| corrupt("attempt"))?;
+            let digest: Option<Vec<u8>> = sqlx::query_scalar(read)
+                .bind(self.info.tenant_id.as_uuid())
+                .bind(self.info.run_id.as_uuid())
+                .bind(node.as_str())
+                .bind(attempt_column)
+                .fetch_optional(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
+            let digest: [u8; 32] = digest
+                .and_then(|d| d.try_into().ok())
+                .ok_or_else(|| corrupt("the row a flow-control event gives back"))?;
+            returns.push(GateReturn {
+                table,
+                change: gate.change,
+                node: node.clone(),
+                attempt: *attempt,
+                key: ExistingKey {
+                    tenant: self.info.tenant_id,
+                    namespace: self.info.namespace_id,
+                    pool: gate.gate.pool,
+                    level: GateLevel::Step,
+                    group: gate.gate.group.clone(),
+                    digest,
+                },
+            });
+        }
+        Ok(returns)
+    }
+
+    /// Deletes the rows of `returns`, whose key rows this transaction holds, and sets the hint of each key a release
+    /// or a dequeue may let a waiter through (early, never late).
+    async fn apply_returns(&mut self, returns: Vec<GateReturn>) -> Result<(), StoreError> {
+        for r in returns {
+            let delete = match r.change {
+                GateChange::ConcurrencyReleased => {
+                    "DELETE FROM concurrency_holders WHERE tenant_id = $1 AND run_id = $2 AND holder_scope = 'STEP' \
+                     AND node = $3 AND attempt = $4"
+                }
+                GateChange::ConcurrencyDequeued => {
+                    "DELETE FROM concurrency_waiters WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'STEP' \
+                     AND node = $3 AND attempt = $4"
+                }
+                GateChange::RateReturned => {
+                    "DELETE FROM rate_limit_grants WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'STEP' \
+                     AND node = $3 AND attempt = $4 AND leased_at IS NULL"
+                }
+                GateChange::RateDequeued => {
+                    "DELETE FROM rate_limit_waiters WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'STEP' \
+                     AND node = $3 AND attempt = $4"
+                }
+                _ => return Err(corrupt("flow-control return")),
+            };
+            let deleted = sqlx::query(delete)
+                .bind(self.info.tenant_id.as_uuid())
+                .bind(self.info.run_id.as_uuid())
+                .bind(r.node.as_str())
+                .bind(i32::try_from(r.attempt).map_err(|_| corrupt("attempt"))?)
+                .execute(&mut *self.tx)
+                .await
+                .map_err(store_error)?
+                .rows_affected();
+            if deleted != 1 {
+                return Err(corrupt("the row a flow-control event gives back"));
+            }
+            if !matches!(r.change, GateChange::RateReturned) {
+                self.key_is_eligible(r.table, &r.key).await?;
+            }
+            self.gate_returns_applied
+                .insert((r.node, r.attempt, r.change.name()));
         }
         Ok(())
     }
@@ -541,8 +624,7 @@ impl PgRunTx {
     async fn key_is_eligible(
         &mut self,
         table: KeyTable,
-        gate: &GateEvent,
-        digest: &[u8],
+        key: &ExistingKey,
     ) -> Result<(), StoreError> {
         let statement = match table {
             KeyTable::Semaphores => {
@@ -557,11 +639,11 @@ impl PgRunTx {
             }
         };
         sqlx::query(statement)
-            .bind(self.info.tenant_id.as_uuid())
-            .bind(self.info.namespace_id.as_uuid())
-            .bind(gate.gate.pool.as_str())
-            .bind(gate.gate.group.as_str())
-            .bind(digest)
+            .bind(key.tenant.as_uuid())
+            .bind(key.namespace.as_uuid())
+            .bind(key.pool.as_str())
+            .bind(key.group.as_str())
+            .bind(key.digest.as_slice())
             .execute(&mut *self.tx)
             .await
             .map_err(store_error)?;

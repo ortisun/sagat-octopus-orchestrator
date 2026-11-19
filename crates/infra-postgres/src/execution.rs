@@ -552,6 +552,7 @@ impl PgRunStore {
             initialize_chain: false,
             cancelled_waits: Vec::new(),
             flow_control_keys: self.flow_control_keys.clone(),
+            gate_returns_applied: BTreeSet::new(),
         }))
     }
 
@@ -1648,6 +1649,7 @@ impl RunStore for PgRunStore {
                     initialize_chain: true,
                     cancelled_waits: Vec::new(),
                     flow_control_keys: self.flow_control_keys.clone(),
+                    gate_returns_applied: BTreeSet::new(),
                 }));
             }
         }
@@ -3966,6 +3968,8 @@ pub struct PgRunTx {
     cancelled_waits: Vec<f64>,
     /// The digest keys of the flow-control gates, from the store (feature 022).
     flow_control_keys: Option<Arc<sagat_application::keyed_digest::KeyRing>>,
+    /// The gate returns (node, attempt, event) the gate round gave back already; `persist` skips them (feature 022).
+    gate_returns_applied: BTreeSet<(NodeId, u32, &'static str)>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -4254,9 +4258,10 @@ impl RunTx for PgRunTx {
     fn decide_step_gates<'a>(
         &'a mut self,
         steps: &'a [sagat_application::flow_control::StepGateKeys],
+        pending: &'a [RunEvent],
     ) -> impl Future<Output = Result<Vec<sagat_domain::execution::GateEvent>, StoreError>> + Send + 'a
     {
-        self.decide_gates(steps)
+        self.decide_gates(steps, pending)
     }
 
     async fn restore_prefix<'a>(

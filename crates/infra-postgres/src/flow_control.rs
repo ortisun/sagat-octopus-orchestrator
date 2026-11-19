@@ -152,6 +152,32 @@ pub async fn file_keys(
     table: KeyTable,
     keys: &[KeyToFile],
 ) -> Result<Vec<FiledKey>, StoreError> {
+    file_keys_with(conn, table, keys, &[]).await
+}
+
+/// A key row that exists and that the transaction gives something back under (a permit released, a slot returned, a
+/// wait dequeued): locked in the same sorted pass as the keys being decided, so that one transaction takes every key row
+/// of a table once, in the one order (D022-038).
+#[derive(Clone, PartialEq, Eq)]
+pub struct ExistingKey {
+    pub tenant: TenantId,
+    pub namespace: NamespaceId,
+    pub pool: GatePool,
+    pub level: GateLevel,
+    pub group: ResolvedGroup,
+    pub digest: [u8; 32],
+}
+
+/// [`file_keys`], with `existing` rows locked in the same sorted pass.
+///
+/// # Errors
+/// As [`file_keys`]; an `existing` row that is not there is a corrupt projection.
+pub async fn file_keys_with(
+    conn: &mut PgConnection,
+    table: KeyTable,
+    keys: &[KeyToFile],
+    existing: &[ExistingKey],
+) -> Result<Vec<FiledKey>, StoreError> {
     let mut resolved = Vec::with_capacity(keys.len());
     for (index, key) in keys.iter().enumerate() {
         let old = match &key.candidates.retiring {
@@ -161,17 +187,50 @@ pub async fn file_keys(
         let digest = old.unwrap_or(&key.candidates.active);
         resolved.push((index, *digest.as_bytes(), old.is_some()));
     }
-    resolved.sort_by(|(a, da, _), (b, db, _)| {
-        let (ka, kb) = (&keys[*a], &keys[*b]);
-        (ka.pool.as_str(), ka.level, ka.group.as_str(), da).cmp(&(
-            kb.pool.as_str(),
-            kb.level,
-            kb.group.as_str(),
-            db,
-        ))
-    });
+    // one sorted pass over the keys to decide and the rows to give back under
+    enum Entry<'a> {
+        Decide(usize, [u8; 32], bool),
+        Exists(&'a ExistingKey),
+    }
+    let mut entries: Vec<Entry<'_>> = resolved
+        .into_iter()
+        .map(|(index, digest, retiring)| Entry::Decide(index, digest, retiring))
+        .chain(existing.iter().map(Entry::Exists))
+        .collect();
+    let order = |entry: &Entry<'_>| match entry {
+        Entry::Decide(index, digest, _) => {
+            let key = &keys[*index];
+            (
+                key.pool.as_str(),
+                key.level,
+                key.group.as_str().to_owned(),
+                *digest,
+            )
+        }
+        Entry::Exists(row) => (
+            row.pool.as_str(),
+            row.level,
+            row.group.as_str().to_owned(),
+            row.digest,
+        ),
+    };
+    entries.sort_by_key(order);
     let mut filed = Vec::with_capacity(keys.len());
-    for (index, digest, retiring) in resolved {
+    for entry in entries {
+        let (index, digest, retiring) = match entry {
+            Entry::Decide(index, digest, retiring) => (index, digest, retiring),
+            Entry::Exists(row) => {
+                lock_row(
+                    conn,
+                    table,
+                    (row.tenant, row.namespace, row.pool, row.level, &row.group),
+                    &row.digest,
+                )
+                .await?
+                .ok_or_else(|| corrupt("a key row a transaction gives back under"))?;
+                continue;
+            }
+        };
         let key = &keys[index];
         if retiring {
             let version =
@@ -258,12 +317,45 @@ async fn lock(
     key: &KeyToFile,
     digest: &[u8; 32],
 ) -> Result<Option<u16>, StoreError> {
+    lock_row(
+        conn,
+        table,
+        (key.tenant, key.namespace, key.pool, key.level, &key.group),
+        digest,
+    )
+    .await
+}
+
+/// Locks the key rows of `rows`, sorted, for the rest of the transaction: what a transaction that only gives back takes.
+///
+/// # Errors
+/// A store error; a row that is not there is a corrupt projection.
+pub async fn lock_existing(
+    conn: &mut PgConnection,
+    table: KeyTable,
+    rows: &[ExistingKey],
+) -> Result<(), StoreError> {
+    file_keys_with(conn, table, &[], rows).await.map(|_| ())
+}
+
+async fn lock_row(
+    conn: &mut PgConnection,
+    table: KeyTable,
+    (tenant, namespace, pool, level, group): (
+        TenantId,
+        NamespaceId,
+        GatePool,
+        GateLevel,
+        &ResolvedGroup,
+    ),
+    digest: &[u8; 32],
+) -> Result<Option<u16>, StoreError> {
     let version: Option<i16> = sqlx::query_scalar(table.lock())
-        .bind(key.tenant.as_uuid())
-        .bind(key.namespace.as_uuid())
-        .bind(key.pool.as_str())
-        .bind(key.level.as_str())
-        .bind(key.group.as_str())
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(pool.as_str())
+        .bind(level.as_str())
+        .bind(group.as_str())
         .bind(digest.as_slice())
         .fetch_optional(&mut *conn)
         .await

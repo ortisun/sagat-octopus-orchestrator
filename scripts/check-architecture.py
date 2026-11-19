@@ -662,6 +662,14 @@ def test_support_errors(pkgs):
                         f"'{p['name']}' enables `{package}/{feature_name}` as a {d.get('kind') or 'normal'} "
                         f"dependency: {why}, and belongs in `[dev-dependencies]` only ({ref})"
                     )
+            # the owning package may not turn it on by default, nor through another of its own features
+            if p["name"] == package:
+                for feature, enables in (p.get("features") or {}).items():
+                    if feature != feature_name and feature_name in enables:
+                        errors.append(
+                            f"'{package}' feature `{feature}` enables its test-only `{feature_name}`: every build that "
+                            f"turns `{feature}` on would carry it ({ref})"
+                        )
             for feature, enables in (p.get("features") or {}).items():
                 for item in enables:
                     if item.replace("?", "") == f"{package}/{feature_name}":
@@ -669,6 +677,25 @@ def test_support_errors(pkgs):
                             f"'{p['name']}' feature `{feature}` enables `{package}/{feature_name}`: it belongs in "
                             f"`[dev-dependencies]` only ({ref})"
                         )
+    return errors
+
+
+# The test-only door of feature 022 is opened by tests alone: no production source calls it (T022-096, D022-037).
+STEP_GATES_DOOR = re.compile(r"\badmitting_step_gates_for_tests\s*\(")
+STEP_GATES_DOOR_HOME = "crates/infra-postgres/src/execution.rs"
+
+
+def step_gates_door_errors(root):
+    """`admitting_step_gates_for_tests` is called only under `tests/` (its definition aside)."""
+    errors = []
+    for rel, text, masked, _ in production_sources(root):
+        for m in STEP_GATES_DOOR.finditer(masked):
+            if rel == STEP_GATES_DOOR_HOME and re.search(r"fn\s+$", masked[max(0, m.start() - 8):m.start()]):
+                continue
+            errors.append(
+                f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: `admitting_step_gates_for_tests` is called outside the "
+                f"tests: it admits runs past the flow-control fleet gate (D022-037)"
+            )
     return errors
 
 
@@ -765,6 +792,7 @@ def main(argv):
     errors.extend(run_input_runtime_errors(rust_root))
     errors.extend(gate_wiring_errors(rust_root))
     errors.extend(test_support_errors(pkgs))
+    errors.extend(step_gates_door_errors(rust_root))
 
     # Cycle detection over workspace members (DFS, three colours).
     WHITE, GREY, BLACK = 0, 1, 2

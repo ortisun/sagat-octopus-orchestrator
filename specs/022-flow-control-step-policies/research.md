@@ -533,6 +533,13 @@ taken after `git grep D022-04` on every `origin/*` branch.
   - *The step projection*: `steps.flow_control_gates` (bounded `jsonb`: phase, attempt, pool, group, the key's label and a
     wait's deadline; never a value) and `waiting_kind` `RATE_LIMIT` / `CONCURRENCY` (migration `20270130000600`), so a
     transaction restores a gated step as replay folds it (closes the step half of G1188).
+  - *Reviews of 2026-11-19* (`reviews/2026-11-18/`): what the transaction gives back is locked in the same sorted pass as
+    what it decides and given back first (a release and a decision on one key are counted once, and no key row is locked
+    out of order, correctness 1 and architecture M2); a paused run's retry is decided in its commit (correctness 3); the
+    answer may fail only an asked step and only `FLOW_CONTROL_KEY_INVALID` (architecture m1); the collection- and
+    loop-finish paths refuse a gated successor instead of writing it `READY` (correctness 2, G1197 corrected); the
+    door's fitness rule also refuses a production call and a feature of the owning package that enables it
+    (architecture m2, security minor). The divergence from ADR-0089 decision 2 is ADR-0094 (proposed, O1171).
   - *Tests admit step gates through a test-only door*: `PgRunStore::admitting_step_gates_for_tests` (feature
     `step-gates-for-tests`, `[dev-dependencies]` only, a rule of `scripts/check-architecture.py`) admits a definition
     gated only at its steps; production keeps refusing every gated definition until the run-level admission, the grant
@@ -570,9 +577,10 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1186 | Review findings not relayed to this author (architecture N2–N5, security three nits, correctness N2) are not addressed in this revision; the review records say so. | Open |
 | G1187 | The namespace-level warnings `CONCURRENCY_LIMIT_MISMATCH` and `RATE_LIMIT_MISMATCH` need the declarations of the other published definitions of the namespace; the codec cannot see them and no store keeps them yet. *Closed 2026-11-16 (D022-041): the declarations table and the publication check; proved by `integration_flow_control_step_policies::publication`.* | Closed |
 | G1188 | `RunState::restore` (a run rebuilt from its projection) does not restore gate state. No stored run has any in this build (admission refuses gated definitions; the projection writer refuses a gated step's wait). *Partly closed 2026-11-19 (D022-044): a step's gates are restored from `steps.flow_control_gates`; a run's start gates are not (T022-022).* | Open; T022-022 |
-| G1197 | The collection-finish paths (`crates/infra-postgres/src/primitives.rs`, `crates/scheduler/src/passes.rs`) refuse an evaluation they do not expect: a gated root node after a `forEach` is refused there (fail closed, the collection's finish is retried) instead of being decided. | Open; T022-096 follow-up |
+| G1197 | The collection- and loop-finish paths (`crates/infra-postgres/src/primitives.rs`, `loop_progress.rs`, `crates/scheduler/src/passes.rs`) write their successor's step row directly: a gated root successor of a `forEach` or a loop is refused there (`RuntimeNotIntegrated`, fail closed; the finish is retried) instead of being decided. Corrected 2026-11-19: the first text said they refused an unexpected evaluation, which was true only for an `end` successor. | Open; T022-096 follow-up |
 | G1198 | No deployment configuration carries the digest keys (`KeyRing`) to the stores of the control plane and the engine: a gated step is refused `BINARY_CAPABILITY_MISSING` without them. Lands with the capability listing (D022-037). | Open; T022-097 |
-| G1199 | The readiness gate applies the declared `limit` and `queueTimeout`; the namespace's `concurrency_limit` and `flow_control_queue_timeout_ms` ceilings (`FlowControlCeilings`) are not read there yet. | Open; T022-025 |
+| G1199 | The readiness gate applies the declared `limit` and `queueTimeout`; the namespace's `concurrency_limit` and `flow_control_queue_timeout_ms` ceilings (`FlowControlCeilings`) are not read there yet, nor the live-keys ceiling (`FLOW_CONTROL_LIMIT` of FR-022-054) or a waiters-per-key bound (security review of 2026-11-19, Major): with distinct keys a caller can create key rows without bound in one namespace. No process may list the capabilities before these are applied. | Open; T022-025, T022-101 |
+| G022-001 | The readiness gate records no metric or span yet (`concurrency_acquisitions_total`, `rate_limit_decisions_total`, `workflow.concurrency.acquire`, `workflow.rate_limit.admit`, rule 10; architecture review of 2026-11-19, M3). A grant counts as unleased until the pass records its lease (T022-074), so a rate-limited step key admits only `limit` steps in all until then. A key that yields `null` shares the group's single key. | Open; T022-082, T022-074, T022-104 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once.* | Open; runbook (T022-061) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |
@@ -670,6 +678,14 @@ that finds a key under the retiring version moves the row to the active digest, 
 but not for permits held and never decided again. **Recommended: (a) with (b) for incidents** — the normal rotation stays
 safe and bounded by the workload, and a leak can be answered at once with a stated, bounded over-admission. The owner
 also accepts or changes ADR-0093 (it supersedes the last sentence of ADR-0056 decision 7).
+
+### O1171 — May the readiness gate decide in an evaluation round before `persist` (ADR-0094)?
+ADR-0089 decision 2 (accepted) puts the decision inside `persist`. The build (T022-096, D022-044) decides it in an
+evaluation round the planner asks for, before `persist`, because `persist` locks usage rows before it could lock a key and
+cannot route a key that fails to evaluate (ADR-0094, proposed). Options: (a) accept ADR-0094; (b) keep ADR-0089 decision 2
+as written, which needs `persist` reordered (usage rows after the keys) and a key failure that does not route (a stuck
+step instead of FR-022-054's failure route); (c) another placement. **Recommended: (a).** T022-096 is not ticked until the
+owner answers.
 
 ## Owner decision of 2026-11-13: throughput control in release 0.3.0
 

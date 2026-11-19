@@ -3673,6 +3673,14 @@ impl CollectionStore for PgCollectionStore {
             .ok_or(PrimitiveStoreError::RuntimeNotIntegrated)?;
         let successor =
             ExecutionInstanceId::in_path(finish.transition.owner().path().clone(), successor_node);
+        // feature 022 (G1197): this path writes its activity successor READY without the readiness gate; a successor that
+        // declares a gate is refused here (fail closed) until the gate decides it
+        if definition
+            .node_for_instance(&successor)
+            .is_some_and(|node| node.flow_control().is_gated())
+        {
+            return Err(PrimitiveStoreError::RuntimeNotIntegrated);
+        }
         let (successor_activity, successor_is_end) = match definition
             .node_for_instance(&successor)
             .map(sagat_domain::workflow::Node::kind)

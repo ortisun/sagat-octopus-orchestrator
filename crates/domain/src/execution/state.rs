@@ -4011,12 +4011,14 @@ impl RunState {
             RunEvent::StepFailed { node, code, fence } => {
                 // feature 022: a step whose flow-control key does not evaluate fails before any attempt, from the wait
                 // for its gates; the journal alone, which does not know the node is gated, sees that step READY
-                let allowed: &[StepStatus] =
-                    if fence.is_none() && *code == FailureCode::flow_control_key_invalid() {
-                        &[Ready, Waiting]
-                    } else {
-                        &[Leased, Running, Pending, Waiting]
-                    };
+                let allowed: &[StepStatus] = if fence.is_none()
+                    && *code == FailureCode::flow_control_key_invalid()
+                    && (self.gated.is_empty() || self.gated.contains_key(node))
+                {
+                    &[Ready, Waiting]
+                } else {
+                    &[Leased, Running, Pending, Waiting]
+                };
                 let step = self.step_mut(node, name, allowed)?;
                 match (step.status.is_leased(), fence) {
                     (true, Some(f)) if step.fenced_by(f.attempt, f.generation) => {}

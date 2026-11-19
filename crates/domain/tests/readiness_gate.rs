@@ -352,15 +352,22 @@ fn a_retry_of_a_gated_step_waits_again_for_the_next_attempt_after_its_permit_is_
 }
 
 #[test]
-fn a_paused_run_decides_nothing_and_its_resume_asks_for_the_gates() {
+fn a_paused_run_releases_nothing_and_its_resume_asks_for_the_gates() {
     let def = two_steps(true, false, activity("b"));
-    let (mut state, mut journal, done) = after_a(&def);
-    assert!(done.pending.is_some());
-    let paused = execution::pause_run(&mut state).expect("paused");
-    journal.push(paused);
+    let (mut state, started) = execution::start_run(&def, RunId::generate(), T0).expect("started");
+    let mut journal = started.events;
+    let (fence, leased) = execution::lease_step(&mut state, &sid("a")).expect("a leased");
+    journal.push(leased);
+    journal.push(execution::pause_run(&mut state).expect("paused"));
+    let done = execution::complete_step(&def, &mut state, &sid("a"), fence, T0).expect("a done");
+    journal.extend(done.events.iter().cloned());
     assert_eq!(
-        execution::plan(&def, &state, T0).expect("plan"),
-        execution::Plan::Idle
+        done.pending, None,
+        "a paused run releases nothing, so nothing waits"
+    );
+    assert!(
+        state.step(&sid("b")).is_none(),
+        "not even routed while paused"
     );
     let resumed = execution::resume_run(&def, &mut state, T0).expect("resumed");
     journal.extend(resumed.events.iter().cloned());
@@ -369,6 +376,80 @@ fn a_paused_run_decides_nothing_and_its_resume_asks_for_the_gates() {
         "{:?}",
         resumed.pending
     );
+}
+
+/// The retry pass does not look at the pause: a gated step it makes ready in a paused run is decided in that commit,
+/// never left waiting undecided (invariant 11; the correctness review of 2026-11-19, finding 3).
+#[test]
+fn a_retry_due_in_a_paused_run_is_decided_in_its_commit() {
+    let def = two_steps(true, false, flaky("b", 3));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, GateChange::ConcurrencyAcquired)],
+        Vec::new(),
+    )
+    .expect("granted");
+    let (fence, leased) = execution::lease_step(&mut state, &sid("b")).expect("leased");
+    journal.push(leased);
+    let failed = execution::fail_step(
+        &def,
+        &mut state,
+        &sid("b"),
+        Failure {
+            fence,
+            code: FailureCode::worker_error(),
+            retryable: true,
+            jitter_sample: 0.0,
+        },
+        T0,
+    )
+    .expect("retry scheduled");
+    journal.extend(failed.events.iter().cloned());
+    journal.push(execution::pause_run(&mut state).expect("paused"));
+    let due = execution::retry_due(&def, &mut state, &sid("b"), T0 + Duration::from_secs(1))
+        .expect("due");
+    journal.extend(due.events.iter().cloned());
+    assert_eq!(
+        due.pending,
+        Some(Evaluation::Gates {
+            steps: vec![GateRequest {
+                node: id("b"),
+                attempt: 2
+            }]
+        }),
+        "decided although the run is paused"
+    );
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 2, queued())],
+        Vec::new(),
+    )
+    .expect("queued while paused");
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+/// The answer may fail only a step it was asked about, and only for its key (the architecture review of 2026-11-19,
+/// m1): any other failure code or node is refused.
+#[test]
+fn the_gate_answer_fails_only_an_asked_step_and_only_for_its_key() {
+    let def = two_steps(false, true, activity("b").with_on_error(id("recover")));
+    let (state, mut journal, _) = after_a(&def);
+    for refused in [
+        vec![(id("b"), FailureCode::worker_error())],
+        vec![(id("recover"), FailureCode::flow_control_key_invalid())],
+    ] {
+        let mut state = state.clone();
+        let answer = resolve(&def, &mut state, &mut journal, Vec::new(), refused.clone());
+        assert!(
+            matches!(answer, Err(ExecutionError::Invariant(_))),
+            "{refused:?}: {answer:?}"
+        );
+    }
 }
 
 #[test]

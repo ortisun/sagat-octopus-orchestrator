@@ -302,6 +302,12 @@ pub fn plan(
         return drain(def, state, reason);
     }
     if state.is_paused() {
+        // feature 022: a step that the retry pass or an operator made ready while the run is paused waits for its
+        // gates and is decided in that commit (a pause keeps what a run holds, T022-025), never left undecided
+        // (invariant 11); a running run asks once everything else is planned, below
+        if let Some(steps) = undecided_gates(state) {
+            return Ok(Plan::Evaluate(Evaluation::Gates { steps }));
+        }
         return Ok(Plan::Idle);
     }
     // A start delay holds the entry: nothing is released, no timer starts, no wait begins until the
