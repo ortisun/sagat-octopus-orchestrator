@@ -115,6 +115,8 @@ purge pass exists); an older binary leaves the tables unread; the down migration
 
 ## Revision (2026-11-13, after review, before any code)
 
+Revision accepted 2026-11-15, OD-2026-11-15-4.
+
 The owner accepted the text of commit 35b752b3. The architecture, security and correctness reviews of commit 2e90dbb8 found that the
 ingest held the tenant's retained-usage row for its whole transaction, so completions with output would queue behind log batches
 (the blocker); that the fence was the lease token alone, with no binding, membership, expiry or session check; that ceilings were
@@ -122,6 +124,108 @@ applied before redaction and counters updated from the batch rather than the row
 that markers carried log bytes; that a tail could end before a late batch committed; and that the script marker could take locks in
 the opposite order. Decisions 3, 5, 6, 7, 8 and 9 were rewritten and decision 11 added; option 7 was added. The chosen option is
 unchanged. The reports are in `docs/designs/041-step-logs.reviews/2026-11-13/`.
+
+## Revision (2026-11-15), accepted 2026-11-15 (OD-2026-11-15-4)
+
+Revision accepted 2026-11-15, OD-2026-11-15-4.
+
+Note (2026-11-15, OD-2026-11-15-9): the owner kept a script-output marker. Its write takes the stream row before the
+fences and the tenant usage row, so it follows decision 11 with no exception (design 041, section 7); the words "the
+script marker is removed" of decision 11 no longer describe the design. The tenant's step-log bytes are a resource and a
+storage class of their own (OD-2026-11-15-5, ADR-0027 Amendment of 2026-11-15), so in decision 8 the lines are classified
+`step_log`, not `log`, and in decision 11 "the content policy fence, the log policy fence" reads "the policy fences of
+the classes the transaction charges, in ADR-0027's order (content, log, step-log)"; decision 3 applies to the new
+resource. In "Enforced by", the end test is the one of design 041's T041-12: an ingest with the largest id below the end
+horizon, held open. These readings follow from the owner's answers of the same day and change no rule's intent.
+
+The Status line above is unchanged; the decisions below replace those of the same numbers above. The egm-review and the second round of the
+architecture, security and correctness reviewers (`docs/designs/041-step-logs.reviews/2026-11-15/`) found that the end
+rule of decision 9 repeats the defect feature 018 fixed in D1958; that the locking path near the tenant limit of decision
+3 holds the row a completion needs and that a completion waits for every ingest commit queued ahead of it, not one; that
+the session and binding checks of decision 5 need the lease's namespace and activity and omitted the session's expiry,
+namespace and a replaced token; that at a ceiling the worker stopped before its final batch, so drops could not be
+counted (decision 7); that the lock order of decision 11 took locks held to commit first and had a script-marker
+exception; and that rules 1, 2 and 10 had no check. Its re-audit added that a purge computed at purge time from the
+retention in force deletes retroactively, which ADR-0027 forbids (decision 8). The revision replaces these decisions:
+
+- **3.** Storing a batch MUST NOT take, or wait for, a lock on a row of `runs`, `steps` or `run_events`, and MUST NOT
+  take the tenant's `tenant_retained_usage` row before its commit. Over the tenant's allowance, by a read without a lock
+  or by the commit-time finalizer's raise, the batch MUST store no line and MUST be counted on its stream. The rule of
+  ADR-0027 that keeps what fits applies to the terminal reports it was written for, not to step logs, which are lossy
+  (decision 7). The whole ingest runs under a lock timeout of 200 ms, answered as "retry later".
+- **5.** A batch MUST be accepted only from a caller that a report would accept short of the run lock: `worker:execute`,
+  not the database-runner or runner role (in the token and in the locked membership read), a current membership, an
+  activity binding that covers the step's `activity`, a session matched by tenant, id, the lease's namespace, subject and
+  current token hash, unexpired and accepted at 1.7 or later, and a lease that is `LEASED` or `RUNNING` for the same run,
+  node and instance path, with the same attempt, generation and token, unexpired, on a run neither finished nor
+  stopping; the run, namespace, node and path a batch is stored under MUST come from that lease, never from the
+  request. The lease is read first, without a
+  lock; the binding and membership checks, whose locks are held to commit, are the last statements before the insert.
+  Anything else MUST be refused and store nothing, and a caller who fails the binding or membership check MUST learn
+  nothing else about the stream.
+- **7.** The record is bounded and may lose lines. Ceilings per message, attempt, run and tenant MUST be enforced by the
+  server from counters, before the insert, on the text as it will be stored (after redaction and cutting), whatever the
+  worker sends; counters MUST be updated from the rows actually inserted. At a ceiling the first lines are kept. Every
+  sequence the worker numbered and the server did not store MUST be counted once, as dropped by the worker or by the
+  server, from the gaps in the sequences the server received and the highest sequence the final batch declares; a
+  ceiling MUST still let the worker send its final batch. Markers MUST NOT carry log-classified text. Meeting a ceiling,
+  a refused batch or an unreachable server MUST NOT fail, block, retry or delay a step beyond one bounded final flush.
+- **8.** Lines are rows of an ordinary PostgreSQL table, one row per line, classified `log` in the storage classification,
+  charged and released by the triggers of ADR-0027, and purged by batched `DELETE` once their stream has expired. A
+  stream MUST keep the retention its namespace had when the stream was created, as ADR-0027 requires of every retention
+  ("lowering policy does not rewrite stored expiry … or authorize retroactive deletion"); removal MUST begin by marking
+  the stream, after which no line of it is served and no batch is stored. The table MUST NOT be partitioned while those
+  triggers are how bytes are released.
+- **9.** Lines MUST be read in the order (storing transaction id, sequence), and only below the oldest transaction still
+  in progress, both computed in the reading statement, so that a page is final and a tail neither skips nor repeats. A
+  storing transaction MUST obtain its id before it reads the lease. A read MUST NOT declare a run's log complete until
+  the run is finished, `pg_snapshot_xmin` is strictly greater than an id taken by a transaction begun after the run was
+  seen finished (the rule of D1958 of feature 018), and the page is empty. The worker's time is shown and MUST NOT order
+  lines.
+- **11.** Every path that writes step logs MUST take its locks in one order: the stream row, the run's usage row, the
+  binding lock, the namespace secrets lock, the membership row, then, at commit, the content policy fence, the log policy
+  fence and the tenant usage row. No path takes a stream row after any later lock. No other exception exists (the script
+  marker is removed).
+
+Option 7 ("Taking the tenant allowance under the row lock in every batch") now also covers taking it only near the
+limit. The paragraph "What is not free" of the Consequences becomes: every step that logs adds transactions beside its
+lease and completion, each of which takes the tenant usage row at its commit and fires a deferred trigger call per row;
+a completion with output of the same tenant can wait for the ingest commits queued ahead of it on that row (at most the
+tenant's tickets on every replica) and, when an exclusive taker of the namespace secrets lock is queued, for the ingests
+of that namespace that hold it shared. The spike of design 041 (T041-31) measures both before the schema is fixed; a
+failure stops the feature for a design change.
+
+The paragraph "Bad, and stated to the reader" reads "any open transaction of the cluster, prepared ones included" where
+it says "a long write transaction anywhere in the database". The Evidence's "spike of T041-6" is the spike of T041-31.
+
+"Enforced by" is replaced, when built, by: in `tests/integration/claim-transition-efficiency/`, `work_budget.rs` passing
+with its constants unmodified while ingest runs, the lock-free test and the no-foreign-key test (rules 2, 3, 4); in
+`integration_step_logs`, the duplicate, gap, crash, revocation, session, expired-lease and ceiling-concurrency tests
+(rules 5, 6, 7), the purge and retention tests (rule 8), the held-transaction read and end tests on PostgreSQL 16 and 18
+(rule 9); the storage-classification manifest test and the runtime privilege audit (rule 8); the conformance scenarios
+`step-logs-limits` and `step-logs-transport-faults` in six SDKs (rules 6, 7); and a source-text test that the worker and execution modules never name the log tables or
+their port (rules 1 and 2, T041-5), the barrier tests with K held ingests and with a queued `lock_secrets` waiter (rule 3,
+T041-6), the session and authority cases (rule 5, T041-6), the end test with a held transaction whose id equals the end
+horizon on PostgreSQL 16 and 18 (rule 9, T041-12), and a contract test that `/runs/{runId}/stream` emits only `graph`,
+`reconnect` and `end` (rule 10, T041-12).
+
+Note (2026-11-16, OD-2026-11-16-7 and OD-2026-11-16-10): on the approval path the owner chose ("Corrigir e aceitar o
+resto"), an ingest reads the binding's patterns and the caller's membership without a lock: it takes no binding lock, no
+namespace secrets lock and no membership lock, so it never delays a report, a lease, a heartbeat, a secret change or a
+managed-database admission, and a batch that commits just after its worker is revoked is still stored. In decision 11,
+an ingest therefore takes the stream row, then at commit the fences and the tenant usage row. There is no run ceiling
+("Retirar", OD-2026-11-16-10): the attempt ceilings and the tenant's step-log quota bound what a run stores, and no run
+usage row exists, so decision 7's ceilings are the attempt's and the tenant's. The script-output marker is written in a
+transaction of its own right after the script report commits, and a crash between the two loses that one marker, as
+decision 7's lossy record allows. In "Enforced by", the barrier tests are those of design 041's SC-041-001 (one ingest
+held after its quota flush, K − 1 queued behind it), and decision 11 is checked by the lock-order test of design 041
+(T041-6, T041-10, T041-13, T041-30). The stop rule of decision 5 and the place of the policy fences in decision 11 are
+still the owner's question O041-025. Decision 5's "in the locked membership read" and "whose locks are held to commit"
+read, for an ingest, as a membership and a binding read without a lock; the Consequences' clause on a queued taker of
+the namespace secrets lock no longer applies to an ingest. In decision 9, "and the page is empty" reads "and the read's
+scan ended because no row below the horizon was left in the index range it reads, neither the page limit nor the scan
+bound having stopped it, whether or not a filter matched" (design 041, D041-084): a filtered read can otherwise declare
+the log complete before it has scanned to the end.
 
 ## Evidence
 
