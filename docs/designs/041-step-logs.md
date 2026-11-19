@@ -1784,7 +1784,9 @@ Slice A, decisions, contracts and the spike:
     installs it; `PgRunTx` keeps the reported attempt (`effects.reported`, with the step id, attempt and generation of
     the locked state) when `persist` sees one, and `PgRunTx::commit` calls the hook with its connection and that attempt
     only then, so that leases, heartbeats and the managed path's intermediate commits never fire it; a hook error
-    panics the benchmark, which also asserts that the hook fired once per measured completion. The hook and
+    panics the benchmark, which also asserts that the hook fired once per measured completion and records how many carries
+    were written, `contended`, or neither; a round in which more than 0.1% of a workload's carries were not written is void
+    and run again, so that gates (1) to (3) never measure a carry that stopped after its first statement. The hook and
     `with_report_hook` compile only under a `perf-spike` feature of `sagat-infra-postgres`, enabled only through an
     opt-in feature of `sagat-tests` of the same name that the spike's command passes
     (`cargo test -p sagat-tests --features perf-spike …`), so that `cargo test --workspace`, clippy and the release
