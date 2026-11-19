@@ -13,7 +13,7 @@ caller or another tenant's identifier. A foreign resource is `NOT_FOUND` without
 | `VALIDATION_FAILED` | 422 | `SCHEDULE_NEVER_FIRES` | no | create/update | The spec has no occurrence between `startAt` and `endAt`. |
 | `VALIDATION_FAILED` | 422 | `SCHEDULE_TOO_FREQUENT` | no | create/update | Two occurrences are closer than the minimum spacing; widen the spec. |
 | `VALIDATION_FAILED` | 422 | `SCHEDULE_ZONE_UNKNOWN` | no | create/update | Use an IANA zone name known to the platform. |
-| `VALIDATION_FAILED` | 422 | `SCHEDULE_INPUT_INVALID` | no | create/update, action time | The input does not match the target version's input schema (no excerpt). |
+| `VALIDATION_FAILED` | 422 | `SCHEDULE_INPUT_INVALID` | no | create/update (`details.field` under `/action/input`, `details.rule`), trigger-now; at action time the action is recorded `INPUT_INVALID` with this reason, or with `RUN_INPUT_SCHEMA_UNUSABLE` for a schema outside the subset (design 043, `specs/043-run-input-validation/contracts/errors.md`) | The input does not match the target version's input schema (no excerpt). |
 | `VALIDATION_FAILED` | 422 | `NOMINAL_TIME_FIELD_INVALID` | no | create/update | The field is not a declared top-level string property of the input schema. |
 | `VALIDATION_FAILED` | 422 | `BACKFILL_RANGE_INVALID` | no | backfill | `start` must be before `end` and `end` not after now. |
 | `VALIDATION_FAILED` | 422 | `BACKFILL_LIMIT` | no | backfill | The range holds more nominal times than one backfill may act on; split it. |

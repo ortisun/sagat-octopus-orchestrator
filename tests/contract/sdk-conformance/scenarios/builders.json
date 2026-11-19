@@ -196,7 +196,7 @@
           },
           "9": {
             "type": "number",
-            "multipleOf": 0.1,
+            "default": 0.1,
             "minimum": -1e-07,
             "maximum": 1e+21
           },

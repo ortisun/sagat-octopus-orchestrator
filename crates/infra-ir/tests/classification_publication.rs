@@ -48,12 +48,27 @@ fn production_codec_refuses_lowered_levels_and_keeps_sound_digests_stable() {
 
 #[test]
 fn production_compiles_annotated_root_schemas_but_preserves_unannotated_legacy_roots() {
+    use sagat_application::definitions::InputValidationMode;
     let invalid_schema = json!({"type":"not-a-json-schema-type"});
     let mut legacy = document();
     legacy["inputSchema"] = invalid_schema.clone();
+    let bytes = serde_json::to_vec(&legacy).expect("bytes");
+    // Design 043 (FR-043-012): a new publication pre-checks every inputSchema, annotated or not, so the unannotated
+    // root a 0.2.x publication accepted is refused in enforce mode. The classification carrier check still leaves it
+    // uncompiled: it publishes in report mode, and a stored version with it still restores.
+    assert!(
+        matches!(
+            JsonIrCodec.parse(&bytes),
+            Err(IrError::InputSchema { ref keyword, .. }) if keyword == "type"
+        ),
+        "a new publication runs the run-input pre-check"
+    );
     JsonIrCodec
-        .parse(&serde_json::to_vec(&legacy).expect("bytes"))
-        .expect("unannotated legacy root remains uncompiled");
+        .parse_with(&bytes, InputValidationMode::Report)
+        .expect("unannotated legacy root remains uncompiled by the carrier check");
+    JsonIrCodec
+        .parse_stored(&bytes)
+        .expect("a stored legacy root restores");
 
     legacy["inputSchema"]["x-sagat-classification"] = json!("pii");
     let error = JsonIrCodec

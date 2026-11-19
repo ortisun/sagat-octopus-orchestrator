@@ -13,6 +13,7 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Rule | Check that fails |
 |---|---|
 | Domain has no framework, SQL driver or broker dependency; layers point inwards; no cycles | `scripts/check-architecture.py` (CI `architecture`), tests in `scripts/tests/` |
+| Every run is created with an input the gate checked (design 043): an `INSERT INTO runs` only in its three places; the legacy continue-as-new only in its forwarder; `test-support` only in dev-dependencies; `CheckedRunInput` built only by the gate; no `jsonschema` in the run-input validator; `tokio` in `sagat-application` only in `collection_source.rs` (ADR-0092); every creator a composition root builds given the gate | `scripts/check-architecture.py` (`run_creator_errors`, `test_support_errors`, `run_input_errors`, `application_runtime_errors`, `run_input_runtime_errors`, `gate_wiring_errors`), fixtures in `scripts/tests/test_check_architecture.py` |
 | Every store statement is within the runtime role's privileges | `tests/integration/platform-foundation/runtime_privileges`; [supported static SQL forms](sql-privilege-audit.md) |
 | Every service works as the least-privilege role | `SAGAT_TEST_AS_RUNTIME_ROLE=1` over the suites |
 | Every variable-size column is classified | `storage-classification.json` + `integration_security_multitenancy` |

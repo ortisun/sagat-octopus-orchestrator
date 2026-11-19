@@ -274,6 +274,25 @@ pub trait PublishingStore: DefinitionStore {
     ) -> impl Future<Output = Result<Switched, StoreError>> + Send;
 }
 
+/// The `inputSchema` mode of a parse of a document that is already a version (a replay, an activation, a comparison):
+/// never a refusal, because publication already decided (D043-081).
+const STORED: crate::definitions::InputValidationMode =
+    crate::definitions::InputValidationMode::Report;
+
+/// The one error of a `STORED` parse that is not about the document: its pre-check found no permit of the run-input
+/// validator, so nothing was judged and the caller is answered unavailable (`503`), as a start is (design 043, D043-183).
+/// Every other error is handed back for the caller to judge.
+fn unless_busy(
+    error: crate::definitions::IrError,
+) -> Result<crate::definitions::IrError, AppError> {
+    match error {
+        crate::definitions::IrError::ValidatorBusy => Err(AppError::InvalidDefinition(Box::new(
+            crate::definitions::IrError::ValidatorBusy,
+        ))),
+        other => Ok(other),
+    }
+}
+
 /// Publishing use cases.
 #[derive(Debug, Clone)]
 pub struct PublishingService<S, C, X> {
@@ -302,6 +321,15 @@ where
     #[must_use]
     pub fn with_lake_enabled(mut self, enabled: bool) -> Self {
         self.definitions = self.definitions.with_lake_enabled(enabled);
+        self
+    }
+
+    /// What a publication does with an `inputSchema` outside the supported subset (design 043, D043-073). Only a new
+    /// version is refused for it: a version already stored is replayed, activated and compared in `report` mode, so
+    /// a version published in `report` mode stays reachable (D043-081).
+    #[must_use]
+    pub fn with_input_validation(mut self, mode: crate::definitions::InputValidationMode) -> Self {
+        self.definitions = self.definitions.with_input_validation(mode);
         self
     }
 
@@ -846,8 +874,11 @@ where
         }
         let parsed = self
             .codec
-            .parse(&stored.document)
-            .map_err(|_| AppError::Internal)?;
+            .parse_with(&stored.document, STORED)
+            .map_err(|error| match unless_busy(error) {
+                Err(busy) => busy,
+                Ok(_) => AppError::Internal,
+            })?;
         Ok(Published {
             version: stored.version,
             created: false,
@@ -971,7 +1002,7 @@ where
         }
         let parsed = self
             .codec
-            .parse(&target.document)
+            .parse_with(&target.document, STORED)
             .map_err(|e| AppError::InvalidDefinition(Box::new(e)))?;
         let kind = current.map_or(ActivationKind::Activate, |from| {
             ActivationKind::of_switch(from, version)
@@ -1119,7 +1150,7 @@ where
                 if active.digest() == from.version.digest() {
                     let parsed = self
                         .codec
-                        .parse(&from.document)
+                        .parse_with(&from.document, STORED)
                         .map_err(|error| AppError::InvalidDefinition(Box::new(error)))?;
                     if let Err(error) = self
                         .store
@@ -1142,7 +1173,14 @@ where
                         .document,
                 );
             }
-            let draft_digest = self.codec.parse(&existing.draft).ok().map(|p| p.digest);
+            let draft_digest = match self.codec.parse_with(&existing.draft, STORED) {
+                Ok(parsed) => Some(parsed.digest),
+                // a draft that does not parse is not clean; a parse that found no permit judged nothing
+                Err(error) => {
+                    unless_busy(error)?;
+                    None
+                }
+            };
             let clean = draft_digest.is_some_and(|d| {
                 &d == from.version.digest()
                     || existing.active.as_ref().is_some_and(|a| &d == a.digest())
@@ -1264,5 +1302,25 @@ fn paginate<T>(mut rows: Vec<T>, limit: u32, id_of: impl Fn(&T) -> String) -> Pa
             items: rows,
             next_cursor: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::definitions::IrError;
+
+    /// D043-183: a stored parse whose pre-check found no permit answers unavailable (the publication replay and the
+    /// promotion pass it on), and every other error is handed back for the caller to judge.
+    #[test]
+    fn a_busy_stored_parse_is_unavailable_and_any_other_error_is_the_callers() {
+        assert!(matches!(
+            unless_busy(IrError::ValidatorBusy),
+            Err(AppError::InvalidDefinition(error)) if matches!(*error, IrError::ValidatorBusy)
+        ));
+        assert!(matches!(
+            unless_busy(IrError::Malformed),
+            Ok(IrError::Malformed)
+        ));
     }
 }

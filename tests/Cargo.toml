@@ -43,7 +43,7 @@ regex = "1"
 reqwest = { workspace = true, features = ["json", "form"] }
 sagat-api-grpc.workspace = true
 sagat-api-http.workspace = true
-sagat-application.workspace = true
+sagat-application = { workspace = true, features = ["test-support"] }
 sagat-cli.workspace = true
 sagat-dev-idp.workspace = true
 sagat-control-plane.workspace = true
@@ -108,6 +108,12 @@ path = "integration/durable-execution/main.rs"
 [[test]]
 name = "integration_claim_transition_efficiency"
 path = "integration/claim-transition-efficiency/main.rs"
+
+[[test]]
+# Design 043, SC-043-004: one test in a process of its own, so the process-wide counters of the compiled-schema cache are
+# this test's only.
+name = "integration_run_input_cache"
+path = "integration/run-input-cache/main.rs"
 
 [[test]]
 name = "contract_rest_durable_execution"

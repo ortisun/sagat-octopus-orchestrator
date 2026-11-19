@@ -519,6 +519,13 @@ paths:
         `TIMED_OUT` with no step having run; a signal is refused (`409`, nothing waits for it yet). A
         delay out of range is `422` with `details.reason` `START_DELAY_INVALID` and `details.field`
         `/startDelayMs`. The same key with another delay is another request (`409 IDEMPOTENCY_KEY_REUSED`).
+
+        Design 043 (OD-2026-11-15-3): the input is checked against the `inputSchema` of the version the run pins before
+        anything is created. A refusal is `422 VALIDATION_FAILED`, `retryable: false`, with `details.reason`
+        `RUN_INPUT_INVALID` (`details.field`, a JSON pointer whose segments are only names the schema declares under
+        `properties` and array indices, never a key the caller chose, and `details.rule`, the closed keyword that failed) or
+        `RUN_INPUT_SCHEMA_UNUSABLE` (the version's schema is outside the supported subset). No value of the input is ever
+        echoed; nothing is created and the key is not consumed (a run already created under it is replayed).
       responses:
         '200': {description: 'An open execution already holds the business identifier and the start asked for USE_EXISTING: nothing was created', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
         '202': {description: 'Run durably accepted: its first steps exist and workers can claim them', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}
@@ -539,6 +546,13 @@ paths:
       x-implemented: '018'
       description: |
         Needs `run:start` and `run:signal`. Under the binding of the `businessId`: an open holder is signalled exactly as `signalRun` (`202` with `started: false`, or `409` `NOT_WAITING` when no step of it waits for the signal now, nothing changed); otherwise, subject to `businessIdReusePolicy`, a run is created and the signal is delivered to every step that waits for it after the initial reduction, in the same transaction (`202` with `started: true`). If no step of the new run waits for it the whole request is rolled back with `409` `SIGNAL_NOT_ACCEPTED_AT_START` and nothing is created. A signal is never buffered. `startDelayMs` is refused (`422` `START_DELAY_WITH_SIGNAL`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`.
+
+        Design 043 (OD-2026-11-15-3): the input is checked against the `inputSchema` of the version the run pins before
+        anything is created. A refusal is `422 VALIDATION_FAILED`, `retryable: false`, with `details.reason`
+        `RUN_INPUT_INVALID` (`details.field`, a JSON pointer whose segments are only names the schema declares under
+        `properties` and array indices, never a key the caller chose, and `details.rule`, the closed keyword that failed) or
+        `RUN_INPUT_SCHEMA_UNUSABLE` (the version's schema is outside the supported subset). No value of the input is ever
+        echoed; nothing is created and the key is not consumed (a run already created under it is replayed).
       parameters:
         - {$ref: '#/components/parameters/Namespace'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -566,6 +580,13 @@ paths:
       x-implemented: '018'
       description: |
         Needs `run:start` and `run:update`. One transaction: the run (when this request creates it), the Update's state, receipt, journal event, audit and outbox notification commit together. Under the binding of the `businessId`: an open holder receives the Update exactly as `updateRun` applies it (`started: false`; `businessIdConflictPolicy: FAIL` makes an open holder `409 BUSINESS_ID_IN_USE` instead); otherwise, subject to `businessIdReusePolicy`, a run is created and the Update applied to it after its initial reduction (`started: true`; with `startDelayMs` the run is held and still admits the Update). A business rejection (the validator said no, the expected revision is stale) is an answer, `200` with `outcome: REJECTED`, and leaves the run started with a stable receipt; a failure before admission creates nothing and reads as it does on `updateRun` (an undeclared operation is `404`, arguments the declaration does not accept are `422 INVALID_ARGUMENTS`, an update key reused with another request is `409 IDEMPOTENCY_KEY_REUSED`). The same `Idempotency-Key` with the same body answers what the first request did; with another body it is `409 IDEMPOTENCY_KEY_REUSED`. The result is business data: `Cache-Control: no-store` (ADR-0031).
+
+        Design 043 (OD-2026-11-15-3): the input is checked against the `inputSchema` of the version the run pins before
+        anything is created. A refusal is `422 VALIDATION_FAILED`, `retryable: false`, with `details.reason`
+        `RUN_INPUT_INVALID` (`details.field`, a JSON pointer whose segments are only names the schema declares under
+        `properties` and array indices, never a key the caller chose, and `details.rule`, the closed keyword that failed) or
+        `RUN_INPUT_SCHEMA_UNUSABLE` (the version's schema is outside the supported subset). No value of the input is ever
+        echoed; nothing is created and the key is not consumed (a run already created under it is replayed).
       parameters:
         - {$ref: '#/components/parameters/Namespace'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -961,6 +982,14 @@ paths:
         CANCEL, PAUSE and RESUME apply to the whole run. RETRY_STEP and RETRY_COMPENSATION ask for another attempt of a step that waits for a decision (needs `run:operate`; the old attempts stay in the journal; refused with 409 on a step of a saga that stopped going forward). Feature 037: a step whose last outcome is unknown (a lost lease, a timeout, OUTCOME_UNKNOWN, a lookup that could not say or said `not_applied`) is never retried by anyone, administrators included: RETRY_STEP is refused with 409 and `details.reason` `OUTCOME_UNRESOLVED`; settle it with RESOLVE_STEP after checking with the provider. SKIP_COMPENSATION gives up on a compensation, so the saga ends PARTIAL, and RESOLVE_STEP declares that a step happened or did not (both need `saga:override`, which only administrators have). All four need `stepId`, a justification in `reason`, and are audited with it. A step that does not wait for a decision, or one that another operator already decided, is refused with 409.
 
         Feature 008 adds: RETRY_STEP also asks for the attempt of a step that is only waiting out the delay of a retry, now and not when the delay ends (needs `run:operate`; the scheduler's own retry and the operator's cannot both start an attempt: the first to commit wins and the second is refused with 409). MARK_MANUAL_REVIEW holds a step that has not started (ready, or waiting out a retry delay) for a person to decide (needs `run:operate` and `stepId`; the run becomes MANUAL_REVIEW when no other step is still running, nothing more happens to the step until someone retries it or settles it, and what is known about its last attempt (a lost lease, a timeout) is kept, so a run that is stopped later keeps it for review instead of undoing it (feature 037); refused with 409 for a step in flight, one that already waits for a person or one that is done, and for a lookup, which is held by holding the step it is for). RERUN_AS_NEW starts a new run of the same version with the same input and correlation id from a run that ended (needs `run:operate` and `run:start`, takes no `stepId`; refused with 409 for a run that has not ended; the answer names the run in `newRunId`, which says where it came from in `rerunOf`; feature 018: the new run keeps the business identifier of the run it repeats unless the request says `businessId: DROP`). All of them need a justification in `reason` and are audited with it; the old attempts and the old run stay as they were.
+
+        Design 043 (OD-2026-11-15-3): the input is checked against the `inputSchema` of the version the run pins before
+        anything is created. A refusal is `422 VALIDATION_FAILED`, `retryable: false`, with `details.reason`
+        `RUN_INPUT_INVALID` (`details.field`, a JSON pointer whose segments are only names the schema declares under
+        `properties` and array indices, never a key the caller chose, and `details.rule`, the closed keyword that failed) or
+        `RUN_INPUT_SCHEMA_UNUSABLE` (the version's schema is outside the supported subset). No value of the input is ever
+        echoed; nothing is created and the key is not consumed (a run already created under it is replayed).
+        A run started again from another (`RERUN_AS_NEW`, a reset) says `details.field` `/` and `details.rule` `other`.
       parameters:
         - {$ref: '#/components/parameters/RunId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -1051,6 +1080,14 @@ paths:
       x-implemented: '018'
       description: |
         Needs `run:operate` and `run:start`, and a justification in `reason` (8 to 2000 characters, audited with it). The new run has the version and the input of the source and re-emits its journal up to `sequence` as the source stored it (who did each thing and when are the source's), then goes on from there; the events it restored say so in their detail. The source must have ended: an open run is `409 CONFLICT` with `details.reason` `RESET_SOURCE_NOT_TERMINAL`, unless the request says `sourcePolicy: CANCEL_SOURCE`: then the source is cancelled in the ordinary way (never terminated) and the answer is `202` with `state: PENDING_SOURCE` and `newRunId: null`; the engine creates the run once the source has ended, if the point is still eligible on the journal the source ended with and the member who asked still holds what a reset needs, and the entry becomes `CREATED` with `newRunId`, or `FAILED` with a `failureReason` (see `Reset`). The entry waits for as long as the source is open, a run in manual review included; nothing expires it. A namespace holds at most 16 such entries by default (`429 QUOTA_EXCEEDED` with `details.reason` `PENDING_RESET_LIMIT`). A deployment whose operator did not enable it answers `422` `RESET_CANCEL_SOURCE_NOT_AVAILABLE` for an open source (a source that has ended is reset at once, whatever the policy says, and a retry of a request that was accepted is answered from the register whatever the setting is now). A step of the open source that is in flight when the request is made usually completes after the cancellation, and then runs again when the run is created, so the request must say `acknowledgeReexecution: true` when a step after the point has completed or is in flight (see `previewReset`), else `422` with `RESET_REEXECUTION_NOT_ACKNOWLEDGED` and the source is not cancelled; the acknowledgement is looked at again on the journal the source ended with. When steps that completed in the source run again the request must say `acknowledgeReexecution: true`, else `422` with `RESET_REEXECUTION_NOT_ACKNOWLEDGED`. With `businessId: KEEP` (the default) the new run takes over the business identifier of the source, `409 BUSINESS_ID_IN_USE` if another open run holds it; `DROP` starts it without one. With `reapply` `SIGNALS`, `UPDATES` or `ALL` the reset also needs `run:signal` and `run:update` as the policy says, and delivers again, in the transaction that creates the run and in the order of the journal, the signals the source received after the point (`via: signal`) and the Updates whose declaration kept their arguments (`reapplyOnReset`), each as a signal or an Update of its own would be; `reapplyReport` of the answer says what came of each: `REAPPLIED`, `REJECTED` (a signal nobody waits for, which ends the signals; an Update the declaration declines, or whose state is not at the revision it was applied to in the source) or `NOT_REAPPLIED` with a reason, and never holds a payload or an argument. A `reapply` other than `NONE` on a deployment whose operator did not enable it is `422` `RESET_REAPPLY_NOT_AVAILABLE` (an entry of the register answers the same request again whatever the setting is now), and more than 256 candidates `RESET_REAPPLY_TOO_MANY`. The keys the platform derives for what it delivers again start with `reset:`, which is not a prefix an `Idempotency-Key` or an update key may have. The same `Idempotency-Key` with the same request answers the entry of the first one; with another sequence it is `409 IDEMPOTENCY_KEY_REUSED`. A reset is recorded in the register (`listRunResets`, `getRunReset`) in the transaction that creates the run.
+
+        Design 043 (OD-2026-11-15-3): the input is checked against the `inputSchema` of the version the run pins before
+        anything is created. A refusal is `422 VALIDATION_FAILED`, `retryable: false`, with `details.reason`
+        `RUN_INPUT_INVALID` (`details.field`, a JSON pointer whose segments are only names the schema declares under
+        `properties` and array indices, never a key the caller chose, and `details.rule`, the closed keyword that failed) or
+        `RUN_INPUT_SCHEMA_UNUSABLE` (the version's schema is outside the supported subset). No value of the input is ever
+        echoed; nothing is created and the key is not consumed (a run already created under it is replayed).
+        A run started again from another (`RERUN_AS_NEW`, a reset) says `details.field` `/` and `details.rule` `other`.
       parameters:
         - {$ref: '#/components/parameters/RunId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -1696,7 +1733,7 @@ paths:
     post:
       operationId: startDatabaseExecution
       summary: Retain and execute an ad hoc database step or workflow
-      description: Requires current run:start, database:adhoc, database:use, secret ACL and database:write for writes. Definition, pins and run admission commit together. Identical requests replay with current authorization. SQL executes in the managed runner. Private definitions consume workflow and retained-content quotas.
+      description: Requires current run:start, database:adhoc, database:use, secret ACL and database:write for writes. Definition, pins and run admission commit together. Identical requests replay with current authorization. SQL executes in the managed runner. Private definitions consume workflow and retained-content quotas. Design 043 (OD-2026-11-15-3) - the document's own `inputSchema`, if it declares one, checks the input before anything is created; a refusal is `422 VALIDATION_FAILED` with `details.reason` `RUN_INPUT_INVALID` (`details.field`, a pointer of names the schema declares, and `details.rule`; a private rerun says `/` and `other`) or `RUN_INPUT_SCHEMA_UNUSABLE`, never a value of the input, and a request already admitted under the same key is replayed.
       tags: [Runs]
       x-implemented: '017'
       parameters:
@@ -4892,6 +4929,20 @@ components:
         details:
           type: object
           additionalProperties: true
+          properties:
+            rule:
+              type: string
+              description: >-
+                With `reason` `RUN_INPUT_INVALID` or `SCHEDULE_INPUT_INVALID` (design 043): the keyword of the input
+                schema that failed, from a closed set; `workLimit` is the validation's work budget and `maxDepth` the
+                input's nesting limit, both final. Never a value of the input.
+              enum: [type, required, enum, const, minimum, maximum, exclusiveMinimum, exclusiveMaximum, multipleOf, minLength, maxLength, pattern, minItems, maxItems, minProperties, maxProperties, additionalProperties, anyOf, oneOf, workLimit, maxDepth, other]
+            field:
+              type: string
+              description: >-
+                The place of the request (or, for a run input, of the input) the refusal concerns, as a JSON pointer.
+                For a run input its segments are only names the version's `inputSchema` declares under `properties` and
+                array indices, never a key the caller chose and never a value; `/` when nothing more precise can be said.
           description: >-
             Extra, safe context. `reason` is a stable machine-readable refinement of `code` (for example
             `IDEMPOTENCY_KEY_REUSED`, `STATE_CONFLICT`). A call the server does not have is `NOT_FOUND` with the
@@ -4924,6 +4975,9 @@ components:
             with `BINARY_CAPABILITY_MISSING` (the replica that answered runs a version that lacks a capability the
             platform now requires of it, `FR-018-052`: every call but `GET /v1/health` is refused, with
             `Retry-After`; another replica serves the call);
+            run input validation (design 043) refines `VALIDATION_FAILED` (`retryable: false`) with
+            `RUN_INPUT_INVALID` (with `details.field` and `details.rule`), `RUN_INPUT_SCHEMA_UNUSABLE` and
+            `NOMINAL_TIME_FIELD_INVALID`;
             Iceberg writes and step-output destinations (feature 035) refine `VALIDATION_FAILED` with
             `ICEBERG_NODE_NOT_ROOT`, `DESTINATION_NOT_ROOT`, `MODE_NOT_ALLOWED`, `CLASSIFICATION_EGRESS_REFUSED`,
             `UNKNOWN_CONNECTION_KIND`, `BROKER_SOURCE_NOT_INLINE`, `FILTER_TOO_DEEP` (more than 8 levels or 64
@@ -5377,6 +5431,10 @@ components:
             segmentIndex: {type: integer, minimum: 0, maximum: 9999}
             completionKind: {type: [string, 'null'], enum: [CONTINUED, FINAL, null], description: 'Null while the segment is open.'}
             successorRunId: {type: [string, 'null'], format: uuid}
+        failureCode:
+          type: string
+          pattern: '^[A-Za-z0-9_.:-]{1,64}$'
+          description: 'Design 043 (FR-043-015): the failure code the stop of the run carries, when it stopped with one: the code of the step whose failure failed the run, a ceiling (`STORAGE_QUOTA_EXCEEDED`, ...), or `CONTINUATION_INPUT_INVALID` and `RUN_INPUT_SCHEMA_UNUSABLE` for a continue-as-new refused for its input. Absent for every other run. Read by getRun and listRuns. Never holds an input value.'
     RunPage:
       type: object
       required: [items]
@@ -8088,8 +8146,8 @@ components:
         nextCursor: {type: [string, 'null']}
     ScheduleActionOutcome:
       type: string
-      enum: [STARTED, BUFFERED, SKIPPED_OVERLAP, DROPPED_BUFFER_FULL, DROPPED_DELETED, COALESCED, MISSED_CATCHUP_WINDOW, ALREADY_ACTED, AUTHORITY_REVOKED, BUSINESS_ID_CONFLICT]
-      description: 'The set only grows; a client treats an unknown value as another outcome. BUSINESS_ID_CONFLICT: the business id of the action (see businessIdPrefix) was held and the policy refused it; nothing was started. ALREADY_ACTED with a business-id reason: the holder answered the action (USE_EXISTING) and nothing was started.'
+      enum: [STARTED, BUFFERED, SKIPPED_OVERLAP, DROPPED_BUFFER_FULL, DROPPED_DELETED, COALESCED, MISSED_CATCHUP_WINDOW, ALREADY_ACTED, AUTHORITY_REVOKED, BUSINESS_ID_CONFLICT, INPUT_INVALID]
+      description: 'The set only grows; a client treats an unknown value as another outcome. INPUT_INVALID (design 043): the target version refused the input of the action (reason SCHEDULE_INPUT_INVALID, NOMINAL_TIME_FIELD_INVALID or RUN_INPUT_SCHEMA_UNUSABLE); nothing was started, the time is acted on and not retried, and the schedule pauses when its pauseOnFailure is set. BUSINESS_ID_CONFLICT: the business id of the action (see businessIdPrefix) was held and the policy refused it; nothing was started. ALREADY_ACTED with a business-id reason: the holder answered the action (USE_EXISTING) and nothing was started.'
     ScheduleActionRecord:
       type: object
       required: [nominalTime, kind, revision, outcome, decidedAt]

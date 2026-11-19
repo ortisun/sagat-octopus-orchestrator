@@ -252,3 +252,46 @@ def test_the_backoff_doubles_up_to_its_cap_with_a_jitter_of_half_to_whole_and_ho
     error = SagatError("RATE_LIMITED", "slow", retry_after_ms=3000)
     assert delay_after(policy, 0, error, lambda: 1.0) == pytest.approx(3.0)
     assert delay_after(policy, 0, SagatError("TRANSPORT", "x"), lambda: 1.0) == pytest.approx(0.2)
+
+
+def test_a_refused_run_input_carries_the_field_and_the_rule_and_nothing_of_the_value() -> None:
+    """Design 043 (FR-043-015): ``field`` and ``rule`` beside ``reason``, passed through as the server sent them."""
+    import httpx
+
+    from sagat_octopus_orchestrator._http import HttpTransport
+
+    body = json.dumps(
+        {
+            "code": "VALIDATION_FAILED",
+            "message": "the run input does not match the workflow's input schema: RUN_INPUT_INVALID",
+            "retryable": False,
+            "traceId": "b" * 32,
+            "details": {"reason": "RUN_INPUT_INVALID", "field": "/orderId", "rule": "type"},
+        }
+    ).encode()
+    error = HttpTransport._error_of(422, httpx.Headers(), body, "b" * 32)
+    assert (error.code, error.reason, error.field, error.rule) == (
+        "VALIDATION_FAILED",
+        "RUN_INPUT_INVALID",
+        "/orderId",
+        "type",
+    )
+    assert error.to_dict()["field"] == "/orderId"
+    assert error.to_dict()["rule"] == "type"
+    assert pickle.loads(pickle.dumps(error)).to_dict() == error.to_dict()
+    unusable = HttpTransport._error_of(
+        422,
+        httpx.Headers(),
+        json.dumps(
+            {
+                "code": "VALIDATION_FAILED",
+                "message": "x",
+                "retryable": False,
+                "traceId": "b" * 32,
+                "details": {"reason": "RUN_INPUT_SCHEMA_UNUSABLE"},
+            }
+        ).encode(),
+        "b" * 32,
+    )
+    assert (unusable.field, unusable.rule) == (None, None)
+    assert "field" not in unusable.to_dict()

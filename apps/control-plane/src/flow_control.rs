@@ -140,9 +140,11 @@ mod tests {
     /// D022-037: this build's processes do not list a flow-control capability, so no activation can pass with them live.
     #[test]
     fn this_build_lists_no_flow_control_capability() {
+        use sagat_application::run_input::InputValidationMode;
         assert!(
-            crate::registry::CAPABILITIES
-                .iter()
+            [InputValidationMode::Enforce, InputValidationMode::Report]
+                .into_iter()
+                .flat_map(crate::registry::capabilities)
                 .all(|capability| !matches!(
                     capability,
                     sagat_application::instances::Capability::FlowControlConcurrencyV1

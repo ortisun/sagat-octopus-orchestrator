@@ -229,7 +229,9 @@ Rules (D1034, G1607):
    introduces them: `schedules-v1` (018,
    `EXECUTION_ENGINE`), `access-narrowing-v1` (029, `CONTROL_PLANE`; activated by the operator before the
    first restricted folder or operation list can be created), `payload-encoding-v1` (031, `CONTROL_PLANE`
-   and `EXECUTION_ENGINE`), `flow-control-concurrency-v1` and `flow-control-rate-v1` (022, `CONTROL_PLANE` and
+   and `EXECUTION_ENGINE`), `run-input-validation-v1` (043, `CONTROL_PLANE` and `EXECUTION_ENGINE`; listed only by a
+   process in `enforce` mode, `SAGAT_RUN_INPUT_VALIDATION`, so once it is required a process in `report` or a 0.2.x
+   binary is refused), `flow-control-concurrency-v1` and `flow-control-rate-v1` (022, `CONTROL_PLANE` and
    `EXECUTION_ENGINE`; listed only by a build that runs the gate, 022 D022-037).
 
 `scheduler_members` is unchanged (shard membership and the replica count for shard shares); adding

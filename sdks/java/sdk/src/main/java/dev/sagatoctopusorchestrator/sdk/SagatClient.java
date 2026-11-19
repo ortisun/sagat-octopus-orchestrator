@@ -1241,6 +1241,7 @@ public final class SagatClient implements AutoCloseable {
                 optInstant(raw, "startDelayedUntil"),
                 toRunSchedule(raw.path("schedule")),
                 toRunResetFrom(raw.path("resetFrom")),
+                optStr(raw, "failureCode"),
                 raw);
     }
 

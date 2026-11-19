@@ -234,6 +234,8 @@ pub fn failure_of(error: &AppError) -> Option<&'static str> {
         | AppError::FlowControl(_)
         | AppError::NotAllowed(_)
         | AppError::InvalidStart { .. }
+        // design 043: the version refuses the source's input or its schema is unusable: final (D043-013, D043-025)
+        | AppError::InvalidRunInput { .. }
         | AppError::NotFound => Some("ADMISSION_REFUSED"),
         _ => None,
     }
@@ -461,6 +463,21 @@ mod tests {
         ] {
             assert_eq!(failure_of(&error), Some("AUTHORITY_REVOKED"), "{error:?}");
         }
+    }
+
+    /// Design 043, row 5: a pending reset whose run the version refuses for its input ends `ADMISSION_REFUSED`; a
+    /// validator with no room leaves it pending.
+    #[test]
+    fn a_pending_reset_refused_for_its_input_ends_admission_refused_and_no_room_is_retried() {
+        for reason in ["RUN_INPUT_INVALID", "RUN_INPUT_SCHEMA_UNUSABLE"] {
+            let error = AppError::InvalidRunInput {
+                reason,
+                field: None,
+                rule: None,
+            };
+            assert_eq!(failure_of(&error), Some("ADMISSION_REFUSED"), "{error:?}");
+        }
+        assert_eq!(failure_of(&AppError::Unavailable), None);
     }
 
     #[test]

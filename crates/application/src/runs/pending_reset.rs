@@ -311,6 +311,36 @@ where
         let kept = usize::try_from(request.sequence).map_err(|_| AppError::Internal)?;
         let digest = prefix_digest(&source.events[..kept]);
         let tenant = principal.tenant_id();
+        // Design 043, row 5: the reset will pin the source's version and carry its stored input, both fixed now, so
+        // the input is checked here, before the source is cancelled, and a reset that could never be made is refused at
+        // its request (correctness review of 2026-11-16, Major 2). `/` and `other`, as every repeat (D043-121). The
+        // completion checks again and stays the authority; this check counts only what stops the request (a final or a
+        // transient refusal), so a reset that passes or is reported is counted once, when it is made (D043-184).
+        let Some(origin) = self.store.rerun_source(tenant, id).await? else {
+            return Err(self.missing(principal, id, ctx).await);
+        };
+        let version = self
+            .store
+            .get_version_by_id(tenant, record.info.version_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let definition = self
+            .cache
+            .get_or_parse(version.version.id(), &version.document)
+            .map_err(|error| {
+                tracing::error!(%error, version = %version.version.id(), "a stored version no longer parses");
+                AppError::Internal
+            })?;
+        self.run_inputs
+            .check_ahead(
+                tenant,
+                version.version.id(),
+                &definition,
+                origin.input,
+                crate::run_input::Creator::Repeat,
+                crate::run_input::FieldPolicy::Root,
+            )
+            .await?;
         let limit = self
             .store
             .effective_limit(

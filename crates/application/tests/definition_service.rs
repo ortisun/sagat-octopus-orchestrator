@@ -2531,3 +2531,25 @@ async fn a_definition_without_a_gate_never_reads_the_registry() {
             .with(|s| !s.calls.iter().any(|call| call.starts_with("activated")))
     );
 }
+
+/// Re-read of design 043 after round 2 (correctness 1, architecture 1): a dry run whose `inputSchema` pre-check found no
+/// permit of the validator is not judged. It is answered as unavailable (`503`), never as a valid `200` that lists a
+/// problem a CI job would read as "the document is wrong".
+#[tokio::test]
+async fn a_dry_run_whose_pre_check_found_no_permit_is_unavailable_not_a_problem() {
+    let f = fixture_with(FakeCodec {
+        name: "invoice-flow",
+        outcome: Err(IrError::ValidatorBusy),
+        secrets: &[],
+        saga: false,
+    });
+    let p = principal(f.tenant, Role::Developer);
+    let w = create(&f, Role::Developer, "key-0000001")
+        .await
+        .expect("created");
+    let answer = f.service.validate(&p, w.workflow.id(), None, &ctx()).await;
+    assert!(
+        matches!(&answer, Err(AppError::InvalidDefinition(e)) if **e == IrError::ValidatorBusy),
+        "{answer:?}"
+    );
+}

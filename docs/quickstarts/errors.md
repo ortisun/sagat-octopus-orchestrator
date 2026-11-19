@@ -388,3 +388,46 @@ Keep the classification carrier within the fixed schema size, depth and referenc
 ### CLASSIFICATION_INHERITED_OPEN
 
 A declared child inherits public or internal access. Declare a stricter level when that child should not stay open.
+
+### INPUT_SCHEMA_KEYWORD_UNSUPPORTED
+
+The inputSchema uses a keyword outside the supported subset, or one of the subset in a form it does not support (a tuple items, a boolean exclusive bound, a fractional multipleOf, a nested $id). Rewrite that keyword with the subset's keywords: see the subset in docs/designs/043-run-input-validation.md.
+
+### INPUT_SCHEMA_REFERENCE_INVALID
+
+A $ref of the inputSchema is not a local JSON pointer (#/...) to a schema of the document, has sibling keywords other than annotations, or closes a cycle. Point it at a $defs entry and move its siblings into that entry or an allOf.
+
+### INPUT_SCHEMA_PATTERN_UNSUPPORTED
+
+A pattern of the inputSchema is outside the supported syntax (no \d, \w, \s, \b, Unicode or POSIX classes, flags or named groups), past 512 NFA states or 16 KiB of program, or one of more than 32. Write classes such as [0-9] and pair the pattern with a maxLength.
+
+### INPUT_SCHEMA_TOO_LARGE
+
+The inputSchema is larger than 64 KiB. Move what repeats into $defs and refer to it, or check less of the input here.
+
+At publication a schema over 64 KiB, or nested deeper than 32, is answered `CLASSIFICATION_TOO_COMPLEX` instead: the
+classification bound of feature 016 reads every carrier first (G043-020, D043-112). The schema is refused either way;
+`INPUT_SCHEMA_TOO_LARGE` and `INPUT_SCHEMA_TOO_DEEP` are what the start gate and `control-plane input-schema-inventory`
+answer for a version already stored.
+
+### INPUT_SCHEMA_NAME_TOO_LONG
+
+A name under properties or required of the inputSchema is longer than 1 KiB. Use a shorter property name; a lookup compares names, and a long one costs every input that has it.
+
+### INPUT_SCHEMA_TOO_DEEP
+
+The inputSchema nests deeper than 32 or applies schemas through more than 128 levels of $ref and combinators. Flatten it: refer to $defs instead of nesting, and shorten chains of references.
+
+### INPUT_SCHEMA_TOO_COSTLY
+
+Every input this inputSchema accepts would cost more than the validation work budget (for example a wide allOf tree of references over a large enum). Reduce the fan-out of the references or the size of the enum.
+
+### INPUT_SCHEMA_APPLIES_TO_TRIGGERS
+
+This version has an inputSchema and a trigger: the schema is applied to the input a trigger builds, the event envelope {event, data}. Make sure the schema accepts the envelope, or the triggered runs are refused.
+
+### VALIDATOR_BUSY
+
+The platform could not pre-check the inputSchema now: the run-input validator had no permit free within 5 s, or it failed with a defect of its own. Nothing was judged; send the document again after a pause, and report it if it keeps happening.
+
+Through the API the same case is a retryable `503 UNAVAILABLE` (design 043, D043-177, D043-183).

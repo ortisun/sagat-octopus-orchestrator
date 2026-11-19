@@ -31,6 +31,7 @@ pub use flow_control::{
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::database::{
@@ -1114,6 +1115,17 @@ pub enum DefinitionWarning {
     /// A child node starts the workflow it belongs to. Legal (a condition can stop the recursion),
     /// but the depth limit ends it at the latest.
     RecursiveChild { node: NodeId },
+    /// The `inputSchema` is outside the supported subset (design 043, FR-043-012), published because
+    /// publication ran in `report` mode: every start of the version is refused in `enforce` mode.
+    /// `keyword` and `at` (a JSON pointer into the schema) are the author's vocabulary, never an input.
+    InputSchemaOutsideSubset {
+        issue: InputSchemaIssue,
+        keyword: String,
+        at: String,
+    },
+    /// The version has an `inputSchema` and a trigger other than a manual start: the schema is applied
+    /// to the run input a trigger builds, the event envelope `{event, data}` (FR-043-012, G043-004).
+    InputSchemaAppliesToTriggers,
     /// A child node starts this workflow, which declares a run-level `concurrency`: the child may wait for a
     /// permit of the same key its parent holds, and the parent for the child, until the queue timeout
     /// (feature 022, `CONCURRENCY_SELF_CHILD`).
@@ -1133,6 +1145,69 @@ pub enum DefinitionWarning {
         group: GroupName,
         other: Slug,
     },
+}
+
+/// Why an `inputSchema` is outside the supported subset of design 043 (D043-065): the closed codes of a
+/// publication refused, or warned, for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InputSchemaIssue {
+    /// A keyword outside the subset, or one of the subset in a form it does not support.
+    KeywordUnsupported,
+    /// A `$ref` that is not a local JSON pointer to a schema position, that has a sibling keyword, or
+    /// that closes a cycle.
+    ReferenceInvalid,
+    /// A `pattern` outside the syntax allowlist or past its compiled size, states or count.
+    PatternUnsupported,
+    /// More than 64 KiB of schema.
+    TooLarge,
+    /// A name of `properties` or `required` longer than 1 KiB (D043-102).
+    NameTooLong,
+    /// Nested deeper than 32, or an application path longer than 128.
+    TooDeep,
+    /// Every input the schema accepts would cost more than the work budget.
+    TooCostly,
+}
+
+impl InputSchemaIssue {
+    /// The stable code a client may branch on.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::KeywordUnsupported => "INPUT_SCHEMA_KEYWORD_UNSUPPORTED",
+            Self::ReferenceInvalid => "INPUT_SCHEMA_REFERENCE_INVALID",
+            Self::PatternUnsupported => "INPUT_SCHEMA_PATTERN_UNSUPPORTED",
+            Self::TooLarge => "INPUT_SCHEMA_TOO_LARGE",
+            Self::NameTooLong => "INPUT_SCHEMA_NAME_TOO_LONG",
+            Self::TooDeep => "INPUT_SCHEMA_TOO_DEEP",
+            Self::TooCostly => "INPUT_SCHEMA_TOO_COSTLY",
+        }
+    }
+
+    /// What is wrong, in words that hold nothing of the schema.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::KeywordUnsupported => {
+                "the inputSchema uses a keyword, or a form of one, outside the supported subset"
+            }
+            Self::ReferenceInvalid => {
+                "the inputSchema has a $ref that is not a local pointer to a schema, has sibling keywords or closes a cycle"
+            }
+            Self::PatternUnsupported => {
+                "the inputSchema has a pattern outside the supported syntax or its size and state bounds"
+            }
+            Self::TooLarge => "the inputSchema is larger than 64 KiB",
+            Self::NameTooLong => {
+                "the inputSchema has a name of properties or required longer than 1 KiB"
+            }
+            Self::TooDeep => {
+                "the inputSchema nests deeper than 32 or applies schemas more than 128 deep"
+            }
+            Self::TooCostly => {
+                "every input the inputSchema accepts would cost more than the validation work budget"
+            }
+        }
+    }
 }
 
 fn where_declared(node: Option<&NodeId>) -> String {
@@ -1168,6 +1243,16 @@ impl fmt::Display for DefinitionWarning {
                 "{}: rate-limit group '{}' is declared by workflow '{other}' of this namespace with a different limit or window; each run applies its own",
                 where_declared(node.as_ref()),
                 group.as_str()
+            ),
+            Self::InputSchemaOutsideSubset { issue, keyword, at } => write!(
+                f,
+                "{} (keyword '{}' at '{}'): published in report mode, every start of this version is refused in enforce mode",
+                issue.message(),
+                clip(keyword),
+                at
+            ),
+            Self::InputSchemaAppliesToTriggers => f.write_str(
+                "the inputSchema is applied to the run input of every trigger, the event envelope {event, data}: a schema written for a manual input refuses the triggered starts",
             ),
         }
     }
@@ -1348,6 +1433,62 @@ pub struct WorkflowDefinition {
     triggers: Vec<Trigger>,
     /// The gates of a run start (feature 022, top-level `concurrency` and `rateLimit`).
     run_flow_control: FlowControl,
+    /// The canonical bytes of the document's `inputSchema` and their digest (design 043, T043-1).
+    input_schema: Option<InputSchema>,
+}
+
+/// The `inputSchema` of a workflow version as the run-input check reads it (design 043): the canonical
+/// JSON bytes the IR codec wrote and their SHA-256, computed by the codec at parse. The domain holds them
+/// opaquely: it neither reads JSON nor hashes (D043-075).
+#[derive(Clone, PartialEq, Eq)]
+pub struct InputSchema {
+    bytes: Arc<[u8]>,
+    digest: [u8; 32],
+}
+
+impl InputSchema {
+    /// The schema whose canonical bytes are `bytes` and whose SHA-256 is `digest`. The caller (the IR
+    /// codec) computes both; nothing here checks that they agree.
+    #[must_use]
+    pub fn new(bytes: impl Into<Arc<[u8]>>, digest: [u8; 32]) -> Self {
+        Self {
+            bytes: bytes.into(),
+            digest,
+        }
+    }
+
+    /// The canonical JSON of the schema.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// The SHA-256 of [`Self::bytes`]: with the tenant, the key of a compiled schema.
+    #[must_use]
+    pub const fn digest(&self) -> &[u8; 32] {
+        &self.digest
+    }
+
+    /// How many bytes the schema holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+}
+
+/// The bytes of a schema are author data: only their size and digest are shown.
+impl fmt::Debug for InputSchema {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InputSchema")
+            .field("len", &self.bytes.len())
+            .field("digest", &Digest::new(self.digest).to_hex())
+            .finish()
+    }
 }
 
 /// Which kinds of projected state a definition's runs can have ([`WorkflowDefinition::projected_state`]).
@@ -1406,6 +1547,7 @@ impl WorkflowDefinition {
             continuation_policy: None,
             triggers: Vec::new(),
             run_flow_control: FlowControl::NONE,
+            input_schema: None,
         })
     }
 
@@ -1526,6 +1668,7 @@ impl WorkflowDefinition {
             continuation_policy,
             triggers: Vec::new(),
             run_flow_control: FlowControl::NONE,
+            input_schema: None,
         };
         definition.check_aggregate_limits()?;
         Ok(definition)
@@ -1798,6 +1941,19 @@ impl WorkflowDefinition {
         &self.triggers
     }
 
+    /// The definition with the `inputSchema` of its document, or with none.
+    #[must_use]
+    pub fn with_input_schema(mut self, schema: Option<InputSchema>) -> Self {
+        self.input_schema = schema;
+        self
+    }
+
+    /// The `inputSchema` every run of this definition is checked against, when the document has one.
+    #[must_use]
+    pub const fn input_schema(&self) -> Option<&InputSchema> {
+        self.input_schema.as_ref()
+    }
+
     #[must_use]
     pub const fn name(&self) -> &Slug {
         &self.name
@@ -2005,6 +2161,8 @@ impl WorkflowDefinition {
                 .filter_map(Node::database_operation)
                 .map(DatabaseOperation::footprint)
                 .sum::<usize>()
+            // the schema every run is checked against travels with the definition (design 043)
+            + self.input_schema.as_ref().map_or(0, InputSchema::len)
     }
 
     #[must_use]
@@ -2085,6 +2243,14 @@ impl WorkflowDefinition {
                 }
                 _ => {}
             }
+        }
+        if self.input_schema.is_some()
+            && self
+                .triggers
+                .iter()
+                .any(|trigger| trigger.kind() != crate::triggers::TriggerKind::Manual)
+        {
+            out.push(DefinitionWarning::InputSchemaAppliesToTriggers);
         }
         out
     }

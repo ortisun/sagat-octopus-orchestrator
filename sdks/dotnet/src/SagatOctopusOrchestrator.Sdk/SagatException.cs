@@ -80,5 +80,14 @@ public sealed class SagatException : Exception
     /// <summary>What to do about it: the fixed sentence of the catalog for <see cref="Code"/>.</summary>
     public string Remediation { get; }
 
+    /// <summary>
+    /// The server's <c>details.field</c>, if any (design 043): a JSON pointer whose segments are names the version's <c>inputSchema</c> declares and
+    /// array indices, never a value.
+    /// </summary>
+    public string? Field { get; init; }
+
+    /// <summary>The server's <c>details.rule</c>, if any (design 043): the closed keyword of the input schema that failed.</summary>
+    public string? Rule { get; init; }
+
     internal static SagatException Invalid(string message) => new(SagatErrorCode.ValidationFailed, message);
 }

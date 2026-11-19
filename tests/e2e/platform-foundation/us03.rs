@@ -43,6 +43,7 @@ fn serve_config(jwks_uri: &str) -> ServeConfig {
         reset_reapply_enabled: false,
         reset_cancel_source_enabled: false,
         lake_enabled: false,
+        run_input_validation: sagat_application::definitions::InputValidationMode::Enforce,
         collection_operators_enabled: false,
         flow_control: sagat_application::flow_control::FlowControlSwitches::default(),
         openbao: Default::default(),

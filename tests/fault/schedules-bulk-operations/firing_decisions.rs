@@ -27,6 +27,8 @@ use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime};
 
 use crate::support::digests::{all_table_digests, changed};
+use crate::support::engine::{activity, document};
+use crate::support::run_input::{order_schema, with_schema};
 use crate::support::schedules::{Fixture, fixture_from, hourly};
 use crate::tripwire::Tripwire;
 
@@ -72,6 +74,11 @@ enum Case {
     BackfillSeen,
     /// A backfill has no time left in its range.
     BackfillFinish,
+    /// Design 043, row 6: the version the time falls on refuses the schedule's input; the time is acted on as
+    /// `INPUT_INVALID` (T043-11).
+    InputInvalid,
+    /// The same on a schedule that pauses on failure: one decision with the action, the auto-pause and its audit.
+    InputInvalidPause,
 }
 
 impl Case {
@@ -261,6 +268,37 @@ impl Case {
                 Prepared {
                     schedule: f.read(&schedule).await,
                     backfill: Some(backfill),
+                }
+            }
+            Self::InputInvalid | Self::InputInvalidPause => {
+                let policies = if matches!(self, Self::InputInvalidPause) {
+                    json!({"pauseOnFailure": true})
+                } else {
+                    json!({})
+                };
+                // a target of its own, whose next version refuses the input the schedule was written with
+                let flow = |schema: Option<Value>| {
+                    let doc = document(&format!("input-{name}"), "a", vec![activity("a")]);
+                    match schema {
+                        Some(schema) => with_schema(doc, schema),
+                        None => doc,
+                    }
+                };
+                let (workflow, _) = f.w.publish(flow(None)).await;
+                let schedule = f
+                    .create(
+                        name,
+                        &hourly(),
+                        &policies,
+                        Some(json!({"workflowId": workflow.to_string()})),
+                    )
+                    .await;
+                f.w.publish_new_version(workflow, flow(Some(order_schema())))
+                    .await;
+                f.clock.set(first + Duration::seconds(5));
+                Prepared {
+                    schedule,
+                    backfill: None,
                 }
             }
             Self::BackfillFinish => {
@@ -613,4 +651,16 @@ async fn a_process_killed_after_any_write_of_a_time_a_backfill_finds_acted_on_co
 async fn a_process_killed_after_any_write_of_the_end_of_a_backfill_commits_nothing_and_it_ends_once()
  {
     Box::pin(die_at_every_write(Case::BackfillFinish)).await;
+}
+
+#[tokio::test]
+async fn a_process_killed_after_any_write_of_a_refused_input_commits_nothing_and_the_time_is_input_invalid_once()
+ {
+    Box::pin(die_at_every_write(Case::InputInvalid)).await;
+}
+
+#[tokio::test]
+async fn a_process_killed_after_any_write_of_a_refused_input_that_pauses_commits_nothing_and_pauses_once()
+ {
+    Box::pin(die_at_every_write(Case::InputInvalidPause)).await;
 }

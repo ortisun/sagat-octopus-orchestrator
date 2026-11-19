@@ -45,6 +45,7 @@ pub mod cli;
 pub mod config;
 pub mod flow_control;
 pub mod handover;
+pub mod inventory;
 pub mod registry;
 
 /// Parsed workflow versions kept in memory (they are immutable, so they never go stale).
@@ -457,6 +458,10 @@ pub fn run_service(
     serve: &ServeConfig,
 ) -> RunService<sagat_infra_postgres::PgRunStore, SystemClock, JsonEvaluator> {
     RunService::new(executions, SystemClock, Engine::new(JsonEvaluator), cache)
+        // every start is checked against its version's inputSchema, in the mode of the process (design 043)
+        .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+            serve.run_input_validation,
+        ))
         .with_lag_budget(serve.telemetry_lag_budget)
         .with_reset_reapply(serve.reset_reapply_enabled)
         .with_reset_cancel_source(serve.reset_cancel_source_enabled)
@@ -541,7 +546,7 @@ pub async fn serve_with_admin(
     let member = registry::member(
         &registry_pool,
         sagat_application::instances::InstanceKind::ControlPlane,
-        registry::CAPABILITIES,
+        &registry::capabilities(serve.run_input_validation),
         None,
     );
     // Install the metrics recorder before the first request so nothing is missed. Idle series are
@@ -602,6 +607,13 @@ pub async fn serve_with_admin(
                     sagat_infra_ir::schedule_calendar::SpecCalendar,
                     schedule_clock.clone(),
                     ceilings,
+                )
+                // a schedule's input is checked at write against the version it targets (design 043, row 14)
+                .with_run_inputs(
+                    sagat_infra_schema::run_input::RunInputValidator::gate(
+                        serve.run_input_validation,
+                    ),
+                    cache.clone(),
                 ),
                 // trigger-now starts a run in this process, as the schedule: it needs the run service
                 sagat_application::schedule_firing::ScheduleFiring::new(
@@ -614,6 +626,11 @@ pub async fn serve_with_admin(
                         SystemClock,
                         sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
                         cache.clone(),
+                    )
+                    .with_run_inputs(
+                        sagat_infra_schema::run_input::RunInputValidator::gate(
+                            serve.run_input_validation,
+                        ),
                     ),
                     ceilings,
                 ),
@@ -734,8 +751,13 @@ pub async fn serve_with_admin(
             ),
         );
     }
+    tracing::info!(
+        mode = serve.run_input_validation.as_str(),
+        "publication checks every inputSchema against the supported subset in this mode"
+    );
     let publishing = PublishingService::new(executions.clone(), SystemClock, JsonIrCodec)
         .with_lake_enabled(serve.lake_enabled)
+        .with_input_validation(serve.run_input_validation)
         .with_collection_operators_enabled(serve.collection_operators_enabled)
         .with_flow_control(serve.flow_control);
     let mut runs = run_service(executions.clone(), cache, serve);
@@ -747,14 +769,11 @@ pub async fn serve_with_admin(
             max_bytes = settings.limits.max_bytes,
             "run input blob store enabled"
         );
-        runs = runs.with_input_blobs(
-            sagat_application::blobs::BlobService::new(
-                Arc::new(sagat_infra_postgres::PgBlobCatalog::new(pool.clone())),
-                backend,
-                settings.limits,
-            ),
-            Arc::new(sagat_infra_schema::Schemas),
-        );
+        runs = runs.with_input_blobs(sagat_application::blobs::BlobService::new(
+            Arc::new(sagat_infra_postgres::PgBlobCatalog::new(pool.clone())),
+            backend,
+            settings.limits,
+        ));
     }
     let database_results = sagat_application::database_results::DatabaseResultService::new(
         executions.clone(),
@@ -767,6 +786,7 @@ pub async fn serve_with_admin(
         sagat_application::api_admission::ApiAdmissionService::new(executions.clone(), SystemClock),
         DefinitionService::new(executions.clone(), SystemClock, JsonIrCodec)
             .with_lake_enabled(serve.lake_enabled)
+            .with_input_validation(serve.run_input_validation)
             .with_collection_operators_enabled(serve.collection_operators_enabled)
             .with_flow_control(serve.flow_control),
         runs,

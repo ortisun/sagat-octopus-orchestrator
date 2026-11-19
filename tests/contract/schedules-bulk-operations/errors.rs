@@ -52,14 +52,12 @@ const RAISED: &[&str] = &[
     "RESET_REAPPLY_TOO_MANY",
     "BINARY_CAPABILITY_MISSING",
     "RESET_CANCEL_SOURCE_NOT_AVAILABLE",
+    // design 043: raised by the schedule writes (row 14)
+    "NOMINAL_TIME_FIELD_INVALID",
 ];
 
 /// The reasons the table lists that no operation raises yet, and why.
 const NOT_YET: &[(&str, &str)] = &[
-    (
-        "NOMINAL_TIME_FIELD_INVALID",
-        "a bad nominalTimeField is reported as SCHEDULE_SPEC_INVALID with its field pointer (G1975)",
-    ),
     (
         "SCHEDULE_DELETED",
         "a deleted schedule is NOT_FOUND, as one that never existed (G1975)",

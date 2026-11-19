@@ -320,7 +320,9 @@ async fn run_with(
             io.say(format!("sagat {}", env!("CARGO_PKG_VERSION")));
             Ok(EXIT_DONE)
         }
-        Command::Validate => validate::run(&common, env, &mut io).await,
+        Command::Validate { input_validation } => {
+            validate::run(&common, env, input_validation, &mut io).await
+        }
         Command::Diff { check } => sync::diff(&common, env, check, &mut io).await,
         Command::Publish {
             dry_run,
@@ -378,9 +380,10 @@ async fn run_with(
             reason,
             approve,
         } => versions::decide(&common, env, &request, &reason, approve, &mut io).await,
-        Command::WorkflowValidate { file } => {
-            workflow::validate(&common, env, &file, &mut io).await
-        }
+        Command::WorkflowValidate {
+            file,
+            input_validation,
+        } => workflow::validate(&common, env, &file, input_validation, &mut io).await,
         Command::WorkflowPublish {
             file,
             notes,

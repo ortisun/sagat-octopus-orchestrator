@@ -466,13 +466,15 @@ async fn advance_backfill(
     }
     sqlx::query(
         "UPDATE schedule_backfills SET state = $4, cursor_at = $5, counters = $6, \
-         finished_at = CASE WHEN $4 = 'COMPLETED' THEN $7 ELSE NULL END \
+         finished_at = CASE WHEN $4 IN ('COMPLETED', 'CANCELLED') THEN $7 ELSE NULL END \
          WHERE tenant_id = $1 AND schedule_id = $2 AND id = $3",
     )
     .bind(tenant.as_uuid())
     .bind(schedule.as_uuid())
     .bind(progress.id)
-    .bind(if progress.finished {
+    .bind(if progress.cancelled {
+        "CANCELLED"
+    } else if progress.finished {
         "COMPLETED"
     } else {
         "RUNNING"
@@ -723,6 +725,36 @@ impl ScheduleStore for PgScheduleStore {
             }
         }
         Ok(TargetCheck::Found)
+    }
+
+    async fn target_version(
+        &self,
+        tenant: TenantId,
+        namespace: NamespaceId,
+        target: &ScheduleTarget,
+    ) -> Result<Option<(sagat_domain::definition::WorkflowVersionId, Vec<u8>)>, StoreError> {
+        let row: Option<(Uuid, Vec<u8>)> = sqlx::query_as(
+            "SELECT v.id, v.document FROM workflows w \
+             JOIN workflow_versions v ON v.tenant_id = w.tenant_id AND v.workflow_id = w.id \
+             WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.id = $3 \
+               AND v.id = coalesce($4, w.active_version_id)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(namespace.as_uuid())
+        .bind(target.workflow().as_uuid())
+        .bind(match target.version() {
+            VersionPolicy::Pinned(version) => Some(version.as_uuid()),
+            VersionPolicy::Active => None,
+        })
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(row.map(|(id, document)| {
+            (
+                sagat_domain::definition::WorkflowVersionId::new(id),
+                document,
+            )
+        }))
     }
 
     async fn create_schedule(
@@ -1623,11 +1655,12 @@ impl ScheduleStore for PgScheduleStore {
             .map(|action| (by_backfill, action))
             .chain(decision.after.extra.iter().map(|action| (None, action)))
         {
-            // an action that waited for a run to end and then found its business id held is settled where it stands: it
-            // is the row of the decision, not a second one, and it does not wait any more
+            // an action that waited for a run to end and then found its business id held, or its input refused by the
+            // version it is released into (design 043), is settled where it stands: it is the row of the decision, not a
+            // second one, and it does not wait any more
             let settled = matches!(
                 action.outcome,
-                Outcome::BusinessIdConflict | Outcome::AlreadyActed
+                Outcome::BusinessIdConflict | Outcome::AlreadyActed | Outcome::InputInvalid
             ) && settle_waiting(
                 &mut tx,
                 decision.tenant_id,

@@ -110,6 +110,9 @@ fn service_on(
         Engine::new(sagat_infra_ir::JsonEvaluator),
         f.w.cache.clone(),
     )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
     .with_reset_reapply(true)
     .with_reset_cancel_source(true)
 }

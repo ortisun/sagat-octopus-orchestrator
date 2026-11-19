@@ -330,7 +330,7 @@ fn command_label(command: &Command) -> &'static str {
     match command {
         Command::Help => "help",
         Command::Version => "version",
-        Command::Validate => "manifest.validate",
+        Command::Validate { .. } => "manifest.validate",
         Command::Diff { .. } => "manifest.diff",
         Command::Export { .. } => "manifest.export",
         Command::Publish { .. } => "manifest.publish",

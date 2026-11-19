@@ -208,6 +208,17 @@ pub enum AppError {
         reason: &'static str,
         field: Option<String>,
     },
+    /// A run input that its version's `inputSchema` refuses (design 043, `FR-043-003`): `reason` is
+    /// `RUN_INPUT_INVALID` (with `field`, a pointer that holds only names the schema declares and array
+    /// indices, and `rule`, the closed keyword that failed) or `RUN_INPUT_SCHEMA_UNUSABLE`, or, for a
+    /// schedule, `SCHEDULE_INPUT_INVALID` and `NOMINAL_TIME_FIELD_INVALID`. Never a value. Nothing was
+    /// created.
+    #[error("invalid run input: {reason}")]
+    InvalidRunInput {
+        reason: &'static str,
+        field: Option<String>,
+        rule: Option<&'static str>,
+    },
     /// A signal that a with-start request cannot deliver (feature 018, `FR-018-024`): `reason` is the
     /// closed `details.reason` of the contract, `NOT_WAITING` (the open run does not wait for it now)
     /// or `SIGNAL_NOT_ACCEPTED_AT_START` (nothing in the new run waits for it, so nothing was

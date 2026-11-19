@@ -273,6 +273,7 @@
         "createdAt": "<time>",
         "deadline": null,
         "depth": 0,
+        "failureCode": "RECOVERY_FAILED",
         "finishedAt": "<time>",
         "parent": null,
         "paused": false,

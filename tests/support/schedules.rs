@@ -67,6 +67,14 @@ impl ScheduledStarts for Starts {
         ScheduledStarts::start_scheduled(&self.0.runs, principal, request, admission, ctx).await
     }
 
+    async fn check_scheduled(
+        &self,
+        principal: &Principal,
+        request: &ScheduledStart<'_>,
+    ) -> Result<(), AppError> {
+        ScheduledStarts::check_scheduled(&self.0.runs, principal, request).await
+    }
+
     async fn cancel_run(
         &self,
         principal: &Principal,
@@ -118,6 +126,12 @@ pub(crate) async fn fixture_with(start: OffsetDateTime, ceilings: Ceilings) -> F
         SpecCalendar,
         clock.clone(),
         Ceilings::default(),
+    )
+    .with_run_inputs(
+        sagat_infra_schema::run_input::RunInputValidator::gate(
+            sagat_application::run_input::InputValidationMode::Enforce,
+        ),
+        w.cache.clone(),
     );
     let firing = ScheduleFiring::new(
         store,
@@ -400,7 +414,10 @@ pub(crate) async fn fire_at(
             SystemClock,
             Engine::new(JsonEvaluator),
             DefinitionCache::new(Arc::new(JsonIrCodec), 64),
-        ),
+        )
+        .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+            sagat_application::run_input::InputValidationMode::Enforce,
+        )),
         Ceilings::default(),
     );
     firing

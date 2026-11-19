@@ -373,7 +373,8 @@ describe('the state of a schedule', () => {
 
 describe('the outcome of a decision', () => {
   it('has a word, a shape and a help for every outcome the contract names, each different', () => {
-    expect(OUTCOMES.length).toBe(10);
+    // the ten of feature 018 and INPUT_INVALID of design 043
+    expect(OUTCOMES.length).toBe(11);
     const labels = new Set<string>();
     for (const outcome of OUTCOMES) {
       const view = outcomeView(outcome);
@@ -383,6 +384,11 @@ describe('the outcome of a decision', () => {
       labels.add(view.label);
     }
     expect(labels.size).toBe(OUTCOMES.length);
+  });
+
+  it('names the outcome of an action whose input the target version refused (design 043)', () => {
+    expect(outcomeView('INPUT_INVALID')).toMatchObject({ label: 'Input refused', tone: 'bad' });
+    expect(outcomeView('INPUT_INVALID').help).toMatch(/nothing was started/i);
   });
 
   it('says "another outcome" for one this version does not know, and keeps its name as the help', () => {

@@ -1899,7 +1899,7 @@
       "measurement": {
         "kind": "protected_bound",
         "expression": null,
-        "evidence": "CHECK permits only the closed capability values (schedules-v1, access-narrowing-v1, payload-encoding-v1)."
+        "evidence": "CHECK permits only the closed capability values (schedules-v1, access-narrowing-v1, payload-encoding-v1, run-input-validation-v1)."
       },
       "owner_paths": [
         "crates/infra-postgres/src/instances.rs"
@@ -1950,7 +1950,7 @@
       "measurement": {
         "kind": "protected_bound",
         "expression": null,
-        "evidence": "CHECK permits only the closed capability values (schedules-v1, access-narrowing-v1, payload-encoding-v1, flow-control-concurrency-v1, flow-control-rate-v1); the primary key, so at most five rows."
+        "evidence": "CHECK permits only the closed capability values (schedules-v1, access-narrowing-v1, payload-encoding-v1, run-input-validation-v1, flow-control-concurrency-v1, flow-control-rate-v1); the primary key, so at most six rows."
       },
       "owner_paths": [
         "crates/infra-postgres/src/instances.rs"
@@ -4974,7 +4974,7 @@
       "measurement": {
         "kind": "protected_bound",
         "expression": null,
-        "evidence": "CHECK permits only the closed capability values and at most 32 entries (`serving_instances_capabilities_closed`); at most 1,000 rows."
+        "evidence": "CHECK permits only the closed capability values and at most 32 entries (`serving_instances_capabilities_known`); at most 1,000 rows."
       },
       "owner_paths": [
         "crates/infra-postgres/src/instances.rs"

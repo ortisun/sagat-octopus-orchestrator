@@ -833,3 +833,294 @@ fn a_poll_counts_what_it_fetched_probed_opened_and_leased() {
         "the stage is the only label: {rendered}"
     );
 }
+
+/// What one start of `workflow` with `input` costs, after a first start warmed the definition and the compiled schema.
+async fn a_start_once(
+    w: &World,
+    workflow: sagat_domain::definition::WorkflowId,
+    input: &serde_json::Value,
+) -> Result<Work, Evicted> {
+    w.start(workflow, input).await;
+    let before = reading(w).await;
+    w.start(workflow, input).await;
+    spent(w, before).await
+}
+
+/// SC-043-003, design 043 in `enforce` mode: a start of a version with an `inputSchema` costs exactly the statements,
+/// the transactions and the rows written of the same shape without one (NFR-043-PERF): the schema travels with the
+/// parsed definition and the check runs before the creation transaction, writing nothing.
+async fn a_checked_start_costs_what_an_unchecked_one_does_once() -> Result<(), Evicted> {
+    let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("statement accounting");
+    let (plain, _) = w
+        .publish(document("budget-plain", "a", vec![activity("a")]))
+        .await;
+    let mut checked = document("budget-checked", "a", vec![activity("a")]);
+    checked["inputSchema"] = json!({
+        "type": "object",
+        "required": ["orderId"],
+        "properties": {"orderId": {"type": "string", "maxLength": 64}}
+    });
+    let (checked, _) = w.publish(checked).await;
+    let input = json!({"orderId": "o-1"});
+    let without = a_start_once(&w, plain, &input).await?;
+    let with = a_start_once(&w, checked, &input).await?;
+    assert_eq!(
+        with, without,
+        "a start with an inputSchema costs what one without does"
+    );
+    Ok(())
+}
+
+measured!(
+    /// SC-043-003 for a start.
+    a_checked_start_costs_what_an_unchecked_one_does,
+    a_checked_start_costs_what_an_unchecked_one_does_once
+);
+
+/// What one triggered start costs: an event published, then one dispatch round that starts the run of its trigger.
+async fn a_triggered_start_once(w: &World, kind: &str) -> Result<Work, Evicted> {
+    let publish = |id: String| async move {
+        w.events
+            .publish(
+                &w.admin,
+                sagat_application::events::PublishRequest {
+                    namespace: "payments".to_owned(),
+                    event_id: Some(sagat_domain::events::EventId::parse(&id).expect("id")),
+                    event_type: sagat_domain::workflow::EventType::parse(kind).expect("type"),
+                    subject: None,
+                    correlation_key: None,
+                    occurred_at: None,
+                    data: br#"{"orderId":"o-1"}"#.to_vec(),
+                    dedupe_ttl: None,
+                },
+                &crate::support::engine::ctx(),
+            )
+            .await
+            .expect("published");
+    };
+    publish(format!("{kind}-warm")).await;
+    w.dispatcher.tick().await;
+    publish(format!("{kind}-measured")).await;
+    let before = reading(w).await;
+    let round = w.dispatcher.tick().await;
+    assert_eq!(round.runs_started, 1, "{kind}");
+    spent(w, before).await
+}
+
+/// SC-043-003 for a triggered start: the envelope checked against an `inputSchema` costs nothing more.
+async fn a_checked_triggered_start_costs_what_an_unchecked_one_does_once() -> Result<(), Evicted> {
+    let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("statement accounting");
+    let mut plain = document("budget-trigger-plain", "a", vec![activity("a")]);
+    plain["triggers"] = json!([{"kind": "event", "eventType": "budget.plain"}]);
+    w.publish(plain).await;
+    let mut checked = document("budget-trigger-checked", "a", vec![activity("a")]);
+    checked["triggers"] = json!([{"kind": "event", "eventType": "budget.checked"}]);
+    checked["inputSchema"] = json!({
+        "type": "object",
+        "required": ["data"],
+        "properties": {"data": {"type": "object", "required": ["orderId"]}}
+    });
+    w.publish(checked).await;
+    let without = a_triggered_start_once(&w, "budget.plain").await?;
+    let with = a_triggered_start_once(&w, "budget.checked").await?;
+    assert_eq!(
+        with, without,
+        "a triggered start with an inputSchema costs what one without does"
+    );
+    Ok(())
+}
+
+measured!(
+    /// SC-043-003 for a triggered start.
+    a_checked_triggered_start_costs_what_an_unchecked_one_does,
+    a_checked_triggered_start_costs_what_an_unchecked_one_does_once
+);
+
+/// What starting one child costs: a parent started, then one scheduler pass that creates its child.
+async fn a_child_start_once(
+    w: &World,
+    parent: sagat_domain::definition::WorkflowId,
+) -> Result<Work, Evicted> {
+    w.start(parent, &json!({"orderId": "o-1"})).await;
+    w.scheduler.tick().await; // warm: the definitions and the compiled schema
+    w.start(parent, &json!({"orderId": "o-1"})).await;
+    let before = reading(w).await;
+    let report = w.scheduler.tick().await;
+    assert_eq!(report.children_started, 1, "{report:?}");
+    spent(w, before).await
+}
+
+/// SC-043-003 for a child start: a child whose version has an `inputSchema` costs what one without does.
+async fn a_checked_child_start_costs_what_an_unchecked_one_does_once() -> Result<(), Evicted> {
+    use crate::support::engine::child_node;
+
+    let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("statement accounting");
+    w.publish(document("budget-kid-plain", "a", vec![activity("a")]))
+        .await;
+    let mut checked = document("budget-kid-checked", "a", vec![activity("a")]);
+    checked["inputSchema"] = json!({"type": "object", "required": ["orderId"], "properties": {"orderId": {"type": "string"}}});
+    w.publish(checked).await;
+    let (plain, _) = w
+        .publish(document(
+            "budget-mother-plain",
+            "c",
+            vec![child_node("c", "budget-kid-plain", None)],
+        ))
+        .await;
+    let (with_schema, _) = w
+        .publish(document(
+            "budget-mother-checked",
+            "c",
+            vec![child_node("c", "budget-kid-checked", None)],
+        ))
+        .await;
+    let without = a_child_start_once(&w, plain).await?;
+    let with = a_child_start_once(&w, with_schema).await?;
+    assert_eq!(
+        with, without,
+        "a child start with an inputSchema costs what one without does"
+    );
+    Ok(())
+}
+
+measured!(
+    /// SC-043-003 for a child start.
+    a_checked_child_start_costs_what_an_unchecked_one_does,
+    a_checked_child_start_costs_what_an_unchecked_one_does_once
+);
+
+/// A scheduler that holds every shard, so that its pass hands continuations off, and checks their input in `enforce`.
+async fn a_chain_scheduler(w: &World) -> crate::support::engine::Sched {
+    let placement = sagat_scheduler::Placement::new(format!("budget-{}", uuid::Uuid::now_v7()));
+    sagat_scheduler::Keeper::new(
+        w.store.clone(),
+        placement.clone(),
+        sagat_scheduler::KeeperSettings {
+            ttl: std::time::Duration::from_secs(60),
+        },
+    )
+    .round()
+    .await
+    .expect("acquire scheduler shards");
+    sagat_scheduler::Scheduler::new(
+        w.store.clone(),
+        sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+        sagat_application::entropy::SystemEntropy,
+        sagat_scheduler::SchedulerSettings::default(),
+    )
+    .with_run_inputs(sagat_infra_schema::run_input::RunInputValidator::gate(
+        sagat_application::run_input::InputValidationMode::Enforce,
+    ))
+    .with_children(w.cache.clone())
+    .with_placement(placement)
+}
+
+/// A chain of `name` whose activity is `name.work`, and whose continuation starts the next segment with `input.next`.
+fn a_rolling_chain(name: &str, schema: Option<serde_json::Value>) -> serde_json::Value {
+    let mut doc = json!({
+        "apiVersion": "sagat-octopus-orchestrator.io/v1",
+        "kind": "Workflow",
+        "metadata": {"name": name},
+        "entrypoint": "work",
+        "nodes": [
+            {"id": "work", "type": "activity", "activity": format!("{name}.work"), "next": "rollover"},
+            {"id": "rollover", "type": "continueAsNew", "input": "input.next"}
+        ],
+        "chainPolicy": {"maxSegments": 3, "timeoutMs": 3_600_000}
+    });
+    if let Some(schema) = schema {
+        doc["inputSchema"] = schema;
+    }
+    doc
+}
+
+/// What one continuation costs: a chain whose activity is done, then one scheduler pass that hands it off. A first chain
+/// of the same workflow warms the definition and the compiled schema; its successor's task is left leased, unfinished.
+async fn a_continuation_once(
+    w: &World,
+    scheduler: &crate::support::engine::Sched,
+    workflow: sagat_domain::definition::WorkflowId,
+    name: &str,
+) -> Result<Work, Evicted> {
+    let activity = format!("{name}.work");
+    let session = w.session(&[activity.as_str()]).await;
+    let input = json!({"segment": 1, "next": {"segment": 2}});
+    let finish = |chain: sagat_domain::execution::RunId| {
+        let session = &session;
+        async move {
+            let mut polls = 0;
+            let task = loop {
+                let tasks = w.poll(session, 8).await;
+                if let Some(task) = tasks.into_iter().find(|task| task.run_id == chain) {
+                    break task;
+                }
+                polls += 1;
+                assert!(polls < 100, "the chain's task never came");
+            };
+            w.complete(session, &task, &json!({}))
+                .await
+                .expect("the activity completes");
+        }
+    };
+    let warm = w.start(workflow, &input).await;
+    finish(warm).await;
+    assert_eq!(
+        scheduler.tick().await.continuations_advanced,
+        1,
+        "{name}: warm"
+    );
+    let measured = w.start(workflow, &input).await;
+    finish(measured).await;
+    let before = reading(w).await;
+    let report = scheduler.tick().await;
+    assert_eq!(report.continuations_advanced, 1, "{name}: {report:?}");
+    spent(w, before).await
+}
+
+/// SC-043-003 for a continuation (T043-18): a successor whose version has an `inputSchema` costs, in statements,
+/// transactions and rows written, what one without does; the check runs between the two transactions of the hand-off
+/// and writes nothing.
+async fn a_checked_continuation_costs_what_an_unchecked_one_does_once() -> Result<(), Evicted> {
+    let w = world().await;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .execute(&w.db.pool)
+        .await
+        .expect("statement accounting");
+    let (plain, _) = w.publish(a_rolling_chain("budgetplain", None)).await;
+    let (checked, _) = w
+        .publish(a_rolling_chain(
+            "budgetchecked",
+            Some(json!({
+                "type": "object",
+                "required": ["segment"],
+                "properties": {"segment": {"type": "integer"}}
+            })),
+        ))
+        .await;
+    let scheduler = a_chain_scheduler(&w).await;
+    let without = a_continuation_once(&w, &scheduler, plain, "budgetplain").await?;
+    let with = a_continuation_once(&w, &scheduler, checked, "budgetchecked").await?;
+    assert_eq!(
+        with, without,
+        "a continuation with an inputSchema costs what one without does"
+    );
+    Ok(())
+}
+
+measured!(
+    /// SC-043-003 for a continuation.
+    a_checked_continuation_costs_what_an_unchecked_one_does,
+    a_checked_continuation_costs_what_an_unchecked_one_does_once
+);

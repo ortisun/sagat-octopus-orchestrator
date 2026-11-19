@@ -112,6 +112,9 @@ pub enum Capability {
     AccessNarrowingV1,
     /// Feature 031: the control plane and the engine read and write the payload encoding.
     PayloadEncodingV1,
+    /// Design 043: the process refuses every run input its version's `inputSchema` refuses (`enforce` mode); one in
+    /// `report` mode does not list it (FR-043-013).
+    RunInputValidationV1,
     /// Feature 022: the control plane and the engine run the concurrency gate on every path that admits a run or makes
     /// a step ready (ADR-0089 decision 6). No build lists it before the gate exists (D022-037).
     FlowControlConcurrencyV1,
@@ -120,10 +123,11 @@ pub enum Capability {
 }
 
 impl Capability {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::SchedulesV1,
         Self::AccessNarrowingV1,
         Self::PayloadEncodingV1,
+        Self::RunInputValidationV1,
         Self::FlowControlConcurrencyV1,
         Self::FlowControlRateV1,
     ];
@@ -134,6 +138,7 @@ impl Capability {
             Self::SchedulesV1 => "schedules-v1",
             Self::AccessNarrowingV1 => "access-narrowing-v1",
             Self::PayloadEncodingV1 => "payload-encoding-v1",
+            Self::RunInputValidationV1 => crate::run_input::CAPABILITY,
             Self::FlowControlConcurrencyV1 => "flow-control-concurrency-v1",
             Self::FlowControlRateV1 => "flow-control-rate-v1",
         }

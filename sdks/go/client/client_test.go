@@ -922,6 +922,29 @@ func TestCancelAndSignalAreOperationsWithAReasonAndAPayloadAndTheResultIsTyped(t
 	}
 }
 
+func TestARunStoppedWithAFailureCodeCarriesItAndOtherRunsHaveNone(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 200, run(map[string]any{"status": "FAILED", "failureCode": "CONTINUATION_INPUT_INVALID"}))
+	})
+	c := newClient(t, f)
+	stopped, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.FailureCode != "CONTINUATION_INPUT_INVALID" {
+		t.Errorf("FailureCode %q", stopped.FailureCode)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) { reply(w, 200, run(nil)) })
+	plain, err := c.Get(context.Background(), runUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.FailureCode != "" {
+		t.Errorf("a run stopped without a failure code has none: %q", plain.FailureCode)
+	}
+}
+
 func TestRerunAsNewNamesTheNewRunAndTheNewRunNamesItsOrigin(t *testing.T) {
 	const started = "0190aaaa-0000-7000-8000-000000000021"
 	f := newFake(t)
@@ -1363,5 +1386,31 @@ func TestTheRunsOfAChainArePagedInSegmentOrderFollowingTheServerCursor(t *testin
 	}
 	if _, err := c.ListChainRuns(context.Background(), "nope", chain, client.ChainRunListOptions{}); err == nil {
 		t.Fatal("a namespace id is a UUID")
+	}
+}
+
+// Design 043 (FR-043-015): a refused run input carries Field and Rule beside Reason, as the server sent them.
+func TestARefusedRunInputCarriesTheFieldAndTheRuleBesideTheReason(t *testing.T) {
+	f := newFake(t)
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 422, map[string]any{
+			"code": "VALIDATION_FAILED", "message": "the run input does not match", "retryable": false,
+			"details": map[string]any{"reason": "RUN_INPUT_INVALID", "field": "/orderId", "rule": "type"},
+		})
+	})
+	_, err := newClient(t, f).Get(context.Background(), runUUID)
+	se := asSagat(t, err)
+	if se.Code != sagat.CodeValidationFailed || se.Reason != "RUN_INPUT_INVALID" || se.Field != "/orderId" || se.Rule != "type" {
+		t.Errorf("%+v", se)
+	}
+	f.answer(func(_ seen, w http.ResponseWriter) {
+		reply(w, 422, map[string]any{
+			"code": "VALIDATION_FAILED", "message": "unusable", "retryable": false,
+			"details": map[string]any{"reason": "RUN_INPUT_SCHEMA_UNUSABLE"},
+		})
+	})
+	_, err = newClient(t, f).Get(context.Background(), runUUID)
+	if se := asSagat(t, err); se.Field != "" || se.Rule != "" {
+		t.Errorf("%+v", se)
 	}
 }

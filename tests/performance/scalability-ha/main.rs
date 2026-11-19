@@ -86,6 +86,7 @@ fn app_error_variant(error: &AppError) -> &'static str {
         AppError::IdempotencyKeyReused => "IdempotencyKeyReused",
         AppError::InvalidDefinition(_) => "InvalidDefinition",
         AppError::NotAllowed(_) => "NotAllowed",
+        AppError::InvalidRunInput { .. } => "InvalidRunInput",
         AppError::NotBound => "NotBound",
         AppError::SecretUnavailable { .. } => "SecretUnavailable",
         AppError::StaleAttempt => "StaleAttempt",

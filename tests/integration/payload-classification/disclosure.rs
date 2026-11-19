@@ -236,7 +236,10 @@ async fn invalid_payloads_are_structural_only_for_inspectors_and_opaque_to_other
     let (workflow, _) = world
         .publish(classified_document("invalid-classified-input", schema))
         .await;
-    let run = world.start(workflow, &json!({"declared":7})).await;
+    // design 043: a run whose stored input its schema refuses exists only if it was admitted before 0.3.0 (here in
+    // `report` mode), and that is the run this test reads
+    let run =
+        crate::support::run_input::start_in_report(&world, workflow, &json!({"declared":7})).await;
     let developer = world.member("invalid-developer", Role::Developer).await;
     let operator = world.member("invalid-operator", Role::Operator).await;
 

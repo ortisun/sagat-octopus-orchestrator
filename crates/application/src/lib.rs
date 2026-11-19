@@ -50,6 +50,7 @@ pub mod publishing;
 pub mod quotas;
 pub mod reset_completion;
 pub mod reveal_grants;
+pub mod run_input;
 pub mod runs;
 pub mod sandbox;
 pub mod schedule_api;

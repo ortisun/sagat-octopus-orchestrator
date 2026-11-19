@@ -82,6 +82,10 @@ type Run struct {
 	// ResetFrom is the run a reset made this one from and the journal sequence of it that this run keeps,
 	// or nil for a run no reset made (a rerun has RerunOf and not this).
 	ResetFrom *RunResetFrom
+	// FailureCode is the failure code the stop of the run carries (design 043): the code of the step whose
+	// failure failed the run, a ceiling such as STORAGE_QUOTA_EXCEEDED, or CONTINUATION_INPUT_INVALID for a
+	// continue-as-new refused for its input. It is empty for every other run.
+	FailureCode string
 	// Raw is the answer as the server sent it, member by member, so that a field of a newer server
 	// is reachable.
 	Raw map[string]json.RawMessage
@@ -423,6 +427,7 @@ func runOf(m map[string]json.RawMessage) (*Run, error) {
 	run.CorrelationID, _ = jsonx.String(m, "correlationId")
 	run.RerunOf, _ = jsonx.String(m, "rerunOf")
 	run.BusinessID, _ = jsonx.String(m, "businessId")
+	run.FailureCode, _ = jsonx.String(m, "failureCode")
 	run.StartDelayedUntil, _ = jsonx.Time(m, "startDelayedUntil")
 	depth, _ := jsonx.Int(m, "depth")
 	run.Depth = int(depth)

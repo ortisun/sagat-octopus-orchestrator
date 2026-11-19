@@ -16,13 +16,13 @@ BEGIN
 END $guard$;
 
 DROP FUNCTION flow_control_kinds_without_capable_process(text, text[]);
-ALTER TABLE serving_instances DROP CONSTRAINT serving_instances_capabilities_closed;
-ALTER TABLE serving_instances ADD CONSTRAINT serving_instances_capabilities_closed CHECK (
-    capabilities <@ ARRAY['schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1']::text[]
+ALTER TABLE serving_instances DROP CONSTRAINT serving_instances_capabilities_known;
+ALTER TABLE serving_instances ADD CONSTRAINT serving_instances_capabilities_known CHECK (
+    capabilities <@ ARRAY['schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1']::text[]
     AND cardinality(capabilities) <= 32);
-ALTER TABLE platform_requirements DROP CONSTRAINT platform_requirements_capability_valid;
-ALTER TABLE platform_requirements ADD CONSTRAINT platform_requirements_capability_valid CHECK (
-    capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1'));
-ALTER TABLE platform_requirement_history DROP CONSTRAINT platform_requirement_history_capability_valid;
-ALTER TABLE platform_requirement_history ADD CONSTRAINT platform_requirement_history_capability_valid CHECK (
-    capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1'));
+ALTER TABLE platform_requirements DROP CONSTRAINT platform_requirements_capability_known;
+ALTER TABLE platform_requirements ADD CONSTRAINT platform_requirements_capability_known CHECK (
+    capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1'));
+ALTER TABLE platform_requirement_history DROP CONSTRAINT platform_requirement_history_capability_known;
+ALTER TABLE platform_requirement_history ADD CONSTRAINT platform_requirement_history_capability_known CHECK (
+    capability IN ('schedules-v1', 'access-narrowing-v1', 'payload-encoding-v1', 'run-input-validation-v1'));

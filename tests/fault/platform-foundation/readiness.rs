@@ -93,6 +93,7 @@ async fn the_reason_a_probe_failed_is_logged_but_not_returned() {
         reset_reapply_enabled: false,
         reset_cancel_source_enabled: false,
         lake_enabled: false,
+        run_input_validation: sagat_application::definitions::InputValidationMode::Enforce,
         collection_operators_enabled: false,
         flow_control: sagat_application::flow_control::FlowControlSwitches::default(),
         openbao: Default::default(),

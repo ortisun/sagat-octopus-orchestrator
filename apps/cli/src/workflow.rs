@@ -52,6 +52,7 @@ pub(crate) async fn validate(
     common: &Common,
     env: &Env,
     file: &Path,
+    input_validation: sagat_application::definitions::InputValidationMode,
     io: &mut Io<'_>,
 ) -> Result<u8, String> {
     let path = resolve(env, file);
@@ -62,7 +63,8 @@ pub(crate) async fn validate(
             return Ok(EXIT_FAILED);
         }
     };
-    let (diagnostics, classification) = crate::diagnostics::analyze_document(&loaded.document);
+    let (diagnostics, classification) =
+        crate::diagnostics::analyze_document_with(&loaded.document, input_validation);
     say_diagnostics(io, &diagnostics);
     if let Some(analysis) = classification {
         for line in crate::diagnostics::classification_report(
