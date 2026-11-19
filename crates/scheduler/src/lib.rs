@@ -31,9 +31,9 @@ pub use fairness::{DEFAULT_WEIGHT, ROUNDS, Selection, Weights, rest, rest_after,
 pub use monitor::{Monitor, MonitorRound, MonitorSettings};
 pub use outbox::{DispatchSettings, Dispatched, OutboxDispatcher};
 pub use passes::{
-    BeforeChildCheck, CollectionAdvance, CollectionAdvanceError, ContinuationAdvanceError,
-    LoopAdvance, LoopAdvanceError, MAX_CHAINED_ENTRIES_PER_TICK, MAX_CONCURRENT_CHAINS, Report,
-    Scheduler, SchedulerSettings,
+    BATCH_PURGE_JOBS, BATCH_PURGE_ROWS, BeforeChildCheck, CollectionAdvance,
+    CollectionAdvanceError, ContinuationAdvanceError, LoopAdvance, LoopAdvanceError,
+    MAX_CHAINED_ENTRIES_PER_TICK, MAX_CONCURRENT_CHAINS, Report, Scheduler, SchedulerSettings,
 };
 pub use resets::{Backoff, ResetPass, ResetRound, ResetSettings, delay_after};
 pub use schedules::{SchedulePass, ScheduleRound, ScheduleSettings};

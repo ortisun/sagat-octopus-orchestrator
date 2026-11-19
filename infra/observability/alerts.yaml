@@ -195,6 +195,18 @@ groups:
           summary: A batch job ended SELECTION_FAILED. A burst of these across many jobs means the database, not the selectors.
           runbook: docs/runbooks/batch-operations.md#51-a-selection-that-keeps-failing-selection_failed-g2093
 
+      - alert: SagatBatchPurgeFailing
+        # A call of the purge of finished batch jobs and their items failed (G2321, G2323). One in an hour is a statement that timed out
+        # or a deadlock the next pass absorbs; one at every pass means the job at the head of the queue (the oldest window) cannot be
+        # removed, and since the purge takes that job first, no other tenant's finished job is purged until it is fixed. Both series
+        # are on the page at zero from the start of the engine, so the first failure counts. It needs no `for`: a failure is an event,
+        # and the increase stays in the window for an hour.
+        expr: sum(increase(batch_purge_failures_total[1h])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: The purge of finished batch jobs failed in the last hour. If it keeps failing, the job at the head of its queue blocks the purge of every other tenant's jobs.
+          runbook: docs/runbooks/batch-operations.md#61-when-the-purge-fails-g2323
+
       - alert: SagatTriggerScheduleReconcileFailing
         # The reconciliation of the schedules of the cron triggers keeps failing for an entry or for the round: a trigger whose
         # expression or zone this build cannot read, every name taken, or a query that does not finish. Look at the logs: every line
