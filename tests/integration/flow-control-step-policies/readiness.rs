@@ -15,7 +15,7 @@ use crate::support::engine::{
 };
 use crate::support::flow_control::{gated_world, publish};
 
-fn serial(node: Value) -> Value {
+pub(super) fn serial(node: Value) -> Value {
     with(
         node,
         "concurrency",
@@ -23,7 +23,7 @@ fn serial(node: Value) -> Value {
     )
 }
 
-fn rated(node: Value) -> Value {
+pub(super) fn rated(node: Value) -> Value {
     with(
         node,
         "rateLimit",
@@ -32,7 +32,7 @@ fn rated(node: Value) -> Value {
 }
 
 /// The flow-control rows of a run's step: (holders, waiters, grants, waiting rate rows).
-async fn rows(w: &World, run: RunId, node: &str) -> (i64, i64, i64, i64) {
+pub(super) async fn rows(w: &World, run: RunId, node: &str) -> (i64, i64, i64, i64) {
     sqlx::query_as(
         "SELECT (SELECT count(*) FROM concurrency_holders WHERE run_id = $1 AND node = $2), \
                 (SELECT count(*) FROM concurrency_waiters WHERE run_id = $1 AND node = $2), \
@@ -47,7 +47,7 @@ async fn rows(w: &World, run: RunId, node: &str) -> (i64, i64, i64, i64) {
 }
 
 /// What the step's row says: (status, waiting kind, attempt).
-async fn step(w: &World, run: RunId, node: &str) -> (String, Option<String>, i32) {
+pub(super) async fn step(w: &World, run: RunId, node: &str) -> (String, Option<String>, i32) {
     sqlx::query_as(
         "SELECT status, waiting_kind, attempt FROM steps WHERE run_id = $1 AND node = $2",
     )
@@ -59,7 +59,7 @@ async fn step(w: &World, run: RunId, node: &str) -> (String, Option<String>, i32
 }
 
 /// How many task-ready hints the step was announced with.
-async fn hints(w: &World, run: RunId, node: &str) -> i64 {
+pub(super) async fn hints(w: &World, run: RunId, node: &str) -> i64 {
     sqlx::query_scalar(
         "SELECT count(*) FROM event_outbox WHERE event_type = 'task.ready' AND aggregate_id = $1 \
          AND payload->>'node' = $2",
@@ -72,7 +72,7 @@ async fn hints(w: &World, run: RunId, node: &str) -> i64 {
 }
 
 /// The step `node` of `run` was granted at once: READY, its rows written, its decision journaled, consistent.
-async fn granted(w: &World, run: RunId, node: &str, gates: (bool, bool)) {
+pub(super) async fn granted(w: &World, run: RunId, node: &str, gates: (bool, bool)) {
     assert_eq!(step(w, run, node).await.0, "READY", "granted at once");
     let (holders, waiters, grants, rate_waiters) = rows(w, run, node).await;
     assert_eq!(
@@ -96,12 +96,18 @@ async fn granted(w: &World, run: RunId, node: &str, gates: (bool, bool)) {
 }
 
 /// The step `node` of `run` waits for its gates: WAITING, a waiter row per gate, no attempt, consistent.
-async fn queued(w: &World, run: RunId, node: &str, gates: (bool, bool)) {
+pub(super) async fn queued(w: &World, run: RunId, node: &str, gates: (bool, bool)) {
     queued_after(w, run, node, gates, 0).await;
 }
 
 /// [`queued`], for a step whose earlier attempts numbered `attempts`.
-async fn queued_after(w: &World, run: RunId, node: &str, gates: (bool, bool), attempts: i32) {
+pub(super) async fn queued_after(
+    w: &World,
+    run: RunId,
+    node: &str,
+    gates: (bool, bool),
+    attempts: i32,
+) {
     let (status, kind, attempt) = step(w, run, node).await;
     assert_eq!(status, "WAITING");
     assert_eq!(
