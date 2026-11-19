@@ -5,9 +5,11 @@
 //! (`validate_batch`, design section 2, P4), the canonical form of a line's fields (data-model.md §5)
 //! and `plan_batch`, the pure rule that removes duplicates, counts gaps, applies the attempt and
 //! tenant allowances and decides the marker and the verdict (T5 and T6). The counting rule it keeps,
-//! for every stream over any sequence of plans and refusals: lines stored (markers excluded) +
-//! dropped by the worker + dropped by the server = `last_sequence`.
+//! for every stream over any sequence of plans and refusals while the drop counts are below their
+//! saturation at 2^53 (SC-041-002): lines stored (markers excluded) + dropped by the worker + dropped
+//! by the server = `last_sequence`.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// At most this many records in one batch.
@@ -58,19 +60,6 @@ impl StepLogLevel {
             Self::Info => "info",
             Self::Warn => "warn",
             Self::Error => "error",
-        }
-    }
-
-    /// The level of a wire value of `StepLogLevel` (1 to 5); 0 and anything else are unknown.
-    #[must_use]
-    pub const fn from_wire(value: i32) -> Option<Self> {
-        match value {
-            1 => Some(Self::Trace),
-            2 => Some(Self::Debug),
-            3 => Some(Self::Info),
-            4 => Some(Self::Warn),
-            5 => Some(Self::Error),
-            _ => None,
         }
     }
 
@@ -223,11 +212,12 @@ pub enum BatchInvalid {
     HighestOutOfRange,
 }
 
-/// What P4 needs of one record.
+/// What P4 needs of one record. `level` is `None` when the wire value names no level (the adapter maps
+/// the protobuf enumeration; an unspecified or unknown value is `None`).
 #[derive(Debug, Clone, Copy)]
 pub struct RecordShape {
     pub sequence: u64,
-    pub level: i32,
+    pub level: Option<StepLogLevel>,
 }
 
 /// P4: at most 500 records and 192 KiB encoded, sequences strictly increasing in 1 to 2^62 − 1, a
@@ -255,7 +245,7 @@ pub fn validate_batch(
         if record.sequence <= previous {
             return Err(BatchInvalid::NotIncreasing);
         }
-        if StepLogLevel::from_wire(record.level).is_none() {
+        if record.level.is_none() {
             return Err(BatchInvalid::UnknownLevel);
         }
         previous = record.sequence;
@@ -476,14 +466,26 @@ pub fn plan_batch(
 
 // ---------------------------------------------------------------------------------- fields
 
-/// The value of one field of a line (FR-041-003).
-#[derive(Debug, Clone, PartialEq)]
+/// The value of one field of a line (FR-041-003). Its `Debug` names the variant only: the value is text a
+/// step's code logged (FR-041-007 (d)).
+#[derive(Clone, PartialEq)]
 pub enum FieldValue {
     String(String),
     Int(i64),
     /// Finite only: a non-finite double is stored as the string `NaN`, `Infinity` or `-Infinity`.
     Double(f64),
     Bool(bool),
+}
+
+impl fmt::Debug for FieldValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::String(_) => "FieldValue::String(<redacted>)",
+            Self::Int(_) => "FieldValue::Int(<redacted>)",
+            Self::Double(_) => "FieldValue::Double(<redacted>)",
+            Self::Bool(_) => "FieldValue::Bool(<redacted>)",
+        })
+    }
 }
 
 impl FieldValue {
@@ -601,14 +603,25 @@ fn entry_json(key: &str, value: &FieldValue) -> String {
 /// kept.
 #[must_use]
 pub fn canonical_fields(fields: &[(String, FieldValue)]) -> (Option<String>, bool) {
+    // The names taken so far, and for each key the next suffix to try: renaming is linear in the number of
+    // fields however many collide (a batch of 192 KiB can carry tens of thousands of one key).
+    let mut taken: HashSet<String> = HashSet::with_capacity(fields.len());
+    let mut next: HashMap<&str, u64> = HashMap::new();
     let mut named: Vec<(String, &FieldValue)> = Vec::with_capacity(fields.len());
     for (key, value) in fields {
-        let mut candidate = key.clone();
-        let mut n = 2;
-        while named.iter().any(|(k, _)| *k == candidate) {
-            candidate = format!("{key}~{n}");
-            n += 1;
-        }
+        let candidate = if taken.contains(key.as_str()) {
+            let n = next.entry(key.as_str()).or_insert(2);
+            let mut candidate = format!("{key}~{n}");
+            while taken.contains(&candidate) {
+                *n += 1;
+                candidate = format!("{key}~{n}");
+            }
+            *n += 1;
+            candidate
+        } else {
+            key.clone()
+        };
+        taken.insert(candidate.clone());
         named.push((candidate, value));
     }
     named.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
@@ -671,7 +684,7 @@ mod tests {
     fn a_batch_is_refused_outside_its_bounds() {
         let ok = |s: u64| RecordShape {
             sequence: s,
-            level: 3,
+            level: Some(StepLogLevel::Info),
         };
         assert_eq!(validate_batch(&[ok(1), ok(2)], 10, false, 0), Ok(()));
         assert_eq!(
@@ -698,7 +711,7 @@ mod tests {
             validate_batch(
                 &[RecordShape {
                     sequence: 1,
-                    level: 0
+                    level: None
                 }],
                 10,
                 false,
@@ -933,10 +946,47 @@ mod tests {
     }
 
     #[test]
+    fn the_debug_of_a_field_value_prints_no_value() {
+        for value in [
+            FieldValue::String("canary-text".into()),
+            FieldValue::Int(918_273_645),
+            FieldValue::Double(0.918_273_645),
+            FieldValue::Bool(true),
+        ] {
+            let text = format!("{value:?}");
+            assert!(
+                !text.contains("canary") && !text.contains("918273645") && !text.contains("true"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn many_colliding_keys_are_renamed_in_linear_time() {
+        // 40,000 fields of one key fit in one 192 KiB batch; renaming them must not take quadratic or cubic time
+        // (security review of 2026-11-19, Major 1).
+        let fields: Vec<(String, FieldValue)> = vec![("k".into(), FieldValue::Bool(true)); 40_000];
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(canonical_fields(&fields));
+        });
+        let (json, dropped) = wait
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("canonical_fields finishes within 5 s");
+        assert!(dropped);
+        let json = json.expect("fields kept");
+        assert_eq!(json.matches(':').count(), MAX_FIELDS);
+        assert!(json.starts_with(r#"{"k":true,"k~10":true"#), "{json}");
+    }
+
+    #[test]
     fn text_is_cut_at_a_character_boundary() {
-        let text = "é".repeat(5000);
+        // One ASCII byte first, so that byte 8,192 falls inside a two-byte character and the cut must step back.
+        let text = format!("a{}", "é".repeat(5000));
         let (kept, cut_it) = cut(&text, MAX_TEXT_BYTES);
-        assert!(cut_it && kept.len() <= MAX_TEXT_BYTES && kept.len() % 2 == 0);
+        assert!(cut_it);
+        assert_eq!(kept.len(), MAX_TEXT_BYTES - 1);
+        assert!(kept.ends_with('é'));
         assert_eq!(normalise("a\0b"), "a\u{FFFD}b");
     }
 
@@ -983,6 +1033,7 @@ mod tests {
             let mut tenant_left = remaining;
             let mut stream = StreamCounters::new();
             let mut markers = 0;
+            let mut inserted = 0u64;
             for step in steps {
                 let Step::Batch { sequences, bytes, final_batch, highest_extra } = step else {
                     continue;
@@ -1001,11 +1052,17 @@ mod tests {
                     + ROW_CHARGE * u64::from(plan.marker.is_some());
                 tenant_left = tenant_left.map(|left| left - charged);
                 markers += u64::from(plan.marker.is_some());
+                inserted += plan.keep.len() as u64;
                 prop_assert!(plan.after.last_sequence >= stream.last_sequence);
                 prop_assert!(plan.after.records <= ceilings.records);
                 prop_assert!(plan.after.bytes <= ceilings.bytes);
                 stream = plan.after;
-                prop_assert!(holds(&stream), "{stream:?}");
+                // The rows the insert stores are the ones the counters count.
+                prop_assert_eq!(inserted, stream.records);
+                prop_assert_eq!(
+                    inserted + stream.dropped_by_worker + stream.dropped_by_server,
+                    stream.last_sequence
+                );
             }
             prop_assert!(markers <= 1);
         }

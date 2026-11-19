@@ -333,7 +333,8 @@ fn expected(role: Role) -> Vec<Permission> {
 
 #[test]
 fn payload_permissions_are_fail_closed_for_builtin_roles() {
-    assert_eq!(Permission::ALL.len(), 53);
+    // 53 before feature 041, which adds run:logs:read and run:logs:delete.
+    assert_eq!(Permission::ALL.len(), 55);
     assert_eq!(
         Permission::PayloadReadInternal.as_str(),
         "payload:read-internal"
