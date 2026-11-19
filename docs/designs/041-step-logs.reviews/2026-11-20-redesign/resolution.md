@@ -81,3 +81,13 @@ Decision D041-097. Fixed unless said otherwise.
 Stated, with the reason they may wait for T041-9 (Open Questions): K-3 (a remote database's round trips), K-4 (the
 scoped path in the gate) and K-5 (the purge beside the workloads). The cost table now gives five statements for a short
 step and six for a long one; the six equalities are 55/1/23, 54/1/13, 52/1/11 and 52/1/21, 51/1/11, 49/1/9.
+
+## Answers to the re-reads of fe99a99f
+
+- Architecture: no Blocker or Major; Nits fixed in 3b9cee4f (G041-014 lists a `contended` carry; T041-35 voids a round
+  where more than 0.1% of carries were not written).
+- Design critic: no Blocker or Major; K-3, K-4 and K-5 accepted as stated gaps before the spike; Nits fixed in d710de3b
+  (the fan-out fallback, the round-trip share in G041-022, at most four transactions).
+- Correctness: one new Major, CC's speculative insertion waiting for an updater of an existing stream row (the purge's
+  mark and delete, the delete route). Fixed by D041-098 (`INSERT … SELECT … WHERE NOT EXISTS … ON CONFLICT DO NOTHING`),
+  with T041-36 tests that hold each of those updaters after its update.

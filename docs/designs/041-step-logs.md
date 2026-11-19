@@ -947,9 +947,12 @@ commit:
   `effective_policy` makes, batched as T041-6's variant of `admission_policy`) and `sagat_quota_step_log_allowance(tenant)`
   read without a lock. Resolved in the application: `step_log_attempt_records = 0` is capture off in the namespace, and
   nothing more is written (`off`).
-- CC. `INSERT … ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING RETURNING` the new stream
-  row (a new row takes the namespace's retention). With the stream lock held no other transaction can be inserting
-  this row, so the insert never waits. A short step's stream is new: CC returns it, with zero counters and `in_order`
+- CC. `INSERT INTO step_log_streams … SELECT … WHERE NOT EXISTS (SELECT 1 FROM step_log_streams WHERE <the attempt's
+  key>) ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING RETURNING` the new stream row (a
+  new row takes the namespace's retention). An existing stream row, even one the purge or the delete route is updating,
+  is seen by the statement's own snapshot, so no row is offered for insertion and the unique check, which would wait for
+  a transaction that updated the conflicting row, never runs; and with the stream lock held no other transaction can be
+  inserting a new one. So CC never waits. A short step's stream is new: CC returns it, with zero counters and `in_order`
   true, and CC′ does not run.
 - CC′. Only when CC returned nothing (the stream exists, a long step's): `SELECT … FOR UPDATE SKIP LOCKED` of the stream
   row (L2), returning its counters, `removed_at`, `expires_at`, `final_at` and whether its `last_stored_xid` is below this
@@ -2165,8 +2168,12 @@ Slice B, the server stores:
   - C0 for a runner token on an ordinary step and a database-runner on a managed SQL and a lake step: nothing stored,
     the report unchanged;
   - an invalid carry with a valid `highest_sequence` (mark-only) and without one (ignored), capture off in the namespace,
-    the deployment switch off, the store proof missing, a removed stream and a stream the purge holds (`contended`), each
-    leaving the report's outcome and output as without a carry at the cost of section 2a;
+    the deployment switch off, the store proof missing and a removed stream, each leaving the report's outcome and output
+    as without a carry at the cost of section 2a;
+  - a long step's carrying report while its stream row is held, uncommitted, after the purge's mark has updated it
+    (`removed_at`), after the purge's delete has set `purged_at`, and by the delete route held at its audit write: in each
+    case CC offers no row and does not wait, CC′ finds the row locked, the carry is `contended` and the report commits at
+    once (the test asserts the report's commit while the other transaction is still held);
   - the order guard: a report held by the wrapper before CA after its transaction id is assigned, an ingest of its
     attempt that then begins (a higher id) and commits, the report released: the ingest's lines kept, the carry's records
     counted `out_of_order`, the final mark recorded; and a batch with a lower id that stores only duplicates after a

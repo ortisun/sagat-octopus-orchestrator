@@ -339,8 +339,12 @@ node, instance path, attempt, generation), captured before the engine applies th
   the three resources (the read `effective_policy` makes, batched as T041-6's variant of `admission_policy`; the
   resolution is the application's) and `sagat_quota_step_log_allowance(tenant)`. `step_log_attempt_records = 0`: stop
   (`off`).
-- **CC.** `INSERT … ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING RETURNING` the new
-  stream row (it takes the namespace's retention); with the stream lock held, no other transaction is inserting it, so
+- **CC.** `INSERT INTO step_log_streams (…) SELECT … WHERE NOT EXISTS (SELECT 1 FROM step_log_streams WHERE tenant_id = $1
+  AND run_id = $2 AND step_id = $3 AND attempt = $4 AND generation = $5 AND source = 'worker') ON CONFLICT (tenant_id,
+  run_id, step_id, attempt, generation, source) DO NOTHING RETURNING` the new stream row (it takes the namespace's
+  retention). The `NOT EXISTS` sees an existing row under the statement's snapshot even while the purge or the delete
+  route updates it, so no row is offered and the speculative insertion's unique check, which waits for an in-progress
+  updater of the conflicting row, never runs; with the stream lock held no other transaction is inserting the row. So
   this never waits. A row returned: a new stream, zero counters, `in_order` true; go to the plan.
 - **CC′.** Only when CC returned nothing: `SELECT … FROM step_log_streams WHERE <key> FOR UPDATE SKIP LOCKED`, returning
   the counters, `removed_at`, `expires_at`, `final_at` and `last_stored_xid IS NULL OR last_stored_xid <
