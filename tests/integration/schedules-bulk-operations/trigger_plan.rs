@@ -224,9 +224,12 @@ async fn the_check_holds(owner: &PgPool, runtime: &PgPool, statistics: &str) {
             !unconverged,
             "{statistics}: every trigger has a schedule ({who})"
         );
-        // the old plan took 2.85 s here; this one 20 ms: a machine ten times slower still answers in a fifth of this
+        // The old plan took 2.85 s here and this one 20 ms on a quiet machine; the shape of the plan, asserted above, is what tells
+        // the two apart. The time only says the check is inside the lock and statement timeouts, and the suite shares one
+        // PostgreSQL server with the other tests that run beside it (CI, 2026-11-19: 1.07 s with the plan right, while the
+        // purge tests of the batch jobs were writing 100,000 rows), so it has room: two seconds, still under the old plan's time.
         assert!(
-            took < Duration::from_millis(1_000),
+            took < Duration::from_millis(2_000),
             "{statistics}: the check took {took:?} ({who}), the plan was:\n{plan}"
         );
     }
