@@ -1422,9 +1422,10 @@ Slice A, decisions, contracts and the spike:
   Evidence (2026-11-19): not done. The spike ran (scenario step_log_ingest_spike of tests/performance/scalability-ha,
     driver step_log_spike.rs; figures, machine, load and configuration in specs/041-step-logs/validation-report.md):
     workload (a) fails SC-041-007 at both rows in three runs (rate 56% to 75% at 1 x 16 and 82% to 87% at 8 x 128;
-    completion p99 up to +76%); chunk rows fail at 1 x 16 (67%); the fan-out passes (0% lock timeouts). By this task's
-    rule the design changes and is reviewed again before T041-5: asked as O041-036 (research.md, D041-087); O041-021 and
-    O041-026 are not put by their rules.
+    completion p99 up to +76%); chunk rows fail at 1 x 16 (67%); one calibration needed 17 tickets against half the pool
+    (10). By this task's rule and the Open Questions the design changes and is reviewed again, and nothing after T041-31
+    starts until then: asked as O041-036 (research.md, D041-087). O041-021 is not put (chunk rows fail too); O041-026 is
+    not settled by this run. T041-3 and T041-4, built on the branch nonetheless, are held unticked (O041-037).
 - [ ] T041-3 Contracts. Copy contracts.md §1 into `worker.proto` and its six SDK copies and update `worker.baseline.json`
   (`SAGAT_UPDATE_BASELINE=1 cargo test -p sagat-api-grpc --test compatibility`) after reading the diff; answer
   `UNIMPLEMENTED` in the seven implementations of section 1; regenerate the Go stubs (`sdks/go/scripts/generate.sh`,

@@ -236,6 +236,12 @@ read call it. Decision 11's order starts, for every writer of step logs, with th
 namespace's step-log resources (tenant then namespace), before the stream row, as ADR-0027 asks of every authoritative
 limit read; then the stream row, then at commit the fences of the charged classes and the tenant usage row.
 
+Note (2026-11-19, design 041 T041-31): the spike before the schema ran
+(`specs/041-step-logs/validation-report.md`). Workload (a) failed SC-041-007 at both rows, so the condition of this
+ADR's "Enforced by" fired: the feature stops for a design change and a new review, asked as O041-036 of
+`specs/041-step-logs/research.md`. The completion's wait on the tenant usage row was small on average; whether it
+explains the tail is not settled by that run.
+
 ## Evidence
 
 None measured yet; nothing is built. The reasoning rests on facts read in the code at `2e90dbb8`: the budgets in `work_budget.rs`;
