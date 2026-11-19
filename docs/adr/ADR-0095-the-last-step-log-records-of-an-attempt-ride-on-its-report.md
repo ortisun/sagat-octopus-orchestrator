@@ -13,12 +13,12 @@ acceptance both are marked "partly superseded by ADR-0095". ADR-0084's other dec
 [design 041](../designs/041-step-logs.md), with its row in `docs/engineering/architecture-principles.md`:
 `work_budget.rs` with its three constants unmodified for reports without a carry, and six new equalities (a completion with a
 next step that carries ten records kept, 55 statements, 1 transaction, 23 rows; a mark-only carry, 54, 1, 13; capture off in the
-namespace, 53, 1, 11; and the completion that ends the run in the same cases, 52, 1, 21; 51, 1, 11; 50, 1, 9) (decision 2,
-T041-36); a source-text test that the worker and execution modules reach the step-log tables only through the port of decision
+namespace, 52, 1, 11; and the completion that ends the run in the same cases, 52, 1, 21; 51, 1, 11; 49, 1, 9), and the cost with
+and without a carry at every other call site (decision 2, T041-36); a source-text test that the worker and execution modules reach the step-log tables only through the port of decision
 3 (T041-36); the re-run tests of decision 5 for a completion and a failure, root and scoped (T041-36); the C0 tests of decision 3
 (T041-36); the order tests of decision 6 (T041-36); the lock-order test with a carrying report beside an ingest of its attempt,
-the purge and a queued change of a step-log resource, and the barrier tests of the 200 ms lock timeout (decision 7, T041-36; the
-delete route joins it in T041-30); the conformance scenarios `step-logs-capture` and `step-logs-transport-faults` in six SDKs,
+the purge and a change of a step-log resource, and the tests that a held step-log lock makes a carry `contended` with the report
+committed at once (decision 7, T041-36; the delete route joins them in T041-30); the conformance scenarios `step-logs-capture` and `step-logs-transport-faults` in six SDKs,
 the second asserting that a report waits for its batch's held answer at most 2 seconds (decisions 1 and 8, T041-21); the spike
 T041-35 before the schema (the time bound of decision 2).
 
@@ -43,7 +43,8 @@ Facts of the code that shape the change:
   principal (`crates/api-grpc/src/service.rs:931`). The runner and database-runner roles report steps too.
 - The server decodes at most `MAX_MESSAGE_BYTES` = `MAX_PAYLOAD_BYTES` (256 KiB) + 64 KiB per worker message
   (`crates/api-grpc/src/server.rs:14`), and an output may be 256 KiB.
-- The report transaction runs with no lock timeout, bounded only by the pool's statement timeout.
+- The report transaction runs with no lock timeout, bounded only by the pool's statement timeout, so a wait on a step-log
+  lock there would be a wait under the run lock.
 
 ## Decision
 
@@ -53,35 +54,39 @@ Facts of the code that shape the change:
    `STOP_CAPTURE` or its session's capture is off. The carry holds the attempt's final mark; `AppendStepLogs` carries none, and
    stays, unchanged in its checks, for the records of a long step. `Heartbeat` carries no records.
 2. A report without a carry MUST cost what it costs today: no additional statement, transaction or row. A carrying report MUST add
-   no transaction and at most five statements to the transaction that records it (the policy fences under a 200 ms lock timeout,
-   the policy values, the stream row, the kept lines when any, the stream's counters, which restore the lock timeout), and writes
-   the stream row twice (an upsert, then an update) and one row per kept line. These are equalities of the hot-path budget
-   (constitution, CI gates), beside the existing ones.
+   no transaction and at most five statements for a short step (the tried locks, the policy values, the new stream row, the kept
+   lines when any, the stream's counters) and six for a long one (the existing stream row is locked by a statement of its own).
+   These are equalities of the hot-path budget (constitution, CI gates), beside the existing ones, tested at every call site.
 3. The carry MUST be written by the transaction that records the report, after the report's own checks and the engine's change
    and before the commit, and only when the report is recorded now (never on a replay, never on a refused report). The worker and
-   execution modules MUST reach the step-log tables only through one port, `StepLogCarryTx`, whose methods are those statements,
-   one each, holding no rule. A carry needs no session: the report's own checks (lease, binding and membership under their locks)
+   execution modules MUST reach the step-log tables only through one port, `StepLogCarryTx`, whose six methods are those
+   statements, one each, holding no rule. A carry needs no session: the report's own checks (lease, binding and membership under their locks)
    apply, and a carry MUST be ignored when the caller's role is runner or database-runner or the step is a managed step, as the
    ingest refuses them.
-4. A carry MUST NOT change a report's outcome, output or retry, nor its timing beyond its statements and decision 5's one re-run.
+4. A carry MUST NOT change a report's outcome, output or retry, nor its timing beyond its statements and decision 5's re-run,
+   with one exception: decision 5's re-run is fenced as any report, so it is refused, and the worker told so, when between the
+   failed transaction and the re-run the lease expired or was reclaimed, a cancel was requested, the run began to stop (for a
+   forward step) or finished, or the worker's binding or membership was revoked.
    Everything that can be checked or computed before a statement (the deployment switch, the store's proof, size, sequences,
    levels, scrubbing, cutting, sizing) is, in the application; a carry that fails a check is ignored, or recorded as a final mark
    with no line when its highest sequence alone is valid, and the report is recorded.
-5. When the report's transaction fails because of its carry, the report MUST be recorded by one re-run of the report, with the
+5. When the report's transaction fails because of its carry, the report MUST be recorded by a re-run of the report with the
    carry downgraded: after any raise of the commit finalizer's step-log branch (`tenant_step_log_quota_exceeded` among them), a
-   mark-only carry that charges nothing; after a failed carry statement, none. A re-run is never re-run, and is fenced as any
-   report. Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
-   do not fit is recorded by one re-run without them". A report whose output holds a declared secret, and a report re-run for its
-   retained content, write a mark-only carry.
+   mark-only carry that charges nothing; after a failed carry statement, none. The carry only goes down, so a report runs at most
+   three transactions. The two causes MUST reach the re-run as values of their own, never as an ordinary unavailability, which is
+   never re-run. Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
+   do not fit is recorded by a re-run without them". A report whose output or failure code holds a declared secret, root or
+   scoped, and a report re-run for its retained content, write a mark-only carry.
 6. Within an attempt, stored lines MUST stay in sequence order under the read order of ADR-0084 decision 9 (storing transaction
    id, then sequence). The stream row records the highest id of a transaction that stored a line of it (`last_stored_xid`, never
    lowered); a carry whose transaction id is not above it stores none of its records above `last_sequence` (they are counted as
    dropped by the server) and still records the final mark.
 7. One lock order for every writer of step logs: the run rows, then the authority locks of ADR-0050 decision 7 (taken only by a
-   report), then the namespace's step-log policy fences (shared), then the stream row, then at commit the fences of the classes
-   the transaction charges (content, log, step-log) and the tenant usage row. An ingest takes no run row and no authority lock; a
-   carrying report takes all, and waits at most 200 ms on each step-log lock before its carry fails into decision 5's re-run. A
-   change of a step-log resource takes only its own fence.
+   report), then the namespace's step-log policy fences (shared), then the attempt's stream lock, then the stream row, then at
+   commit the fences of the classes the transaction charges (content, log, step-log) and the tenant usage row. An ingest takes no
+   run row and no authority lock, and waits for the fences, the stream lock and the stream row under its lock timeout. A carrying
+   report MUST NOT wait for a step-log lock: it tries the fences, the stream lock and the stream row, and when one is held it
+   writes nothing more and the report commits. A change of a step-log resource takes only its own fence.
 8. The SDK MUST send the report only after its in-flight `AppendStepLogs` call has answered, or after a wait of at most 2
    seconds; a short step (no flush before its report, and its records fit one carry) makes no `AppendStepLogs` call and no wait.
 
@@ -113,9 +118,10 @@ two-second wait disappears for short steps.
 Bad: a report that keeps a carried record takes the tenant's usage row at its commit even when its output stores nothing, so a
 tenant's logging reports queue on that row at commit, as completions with output do today; spike T041-35 measures it with an
 output that stores nothing. The report's transaction holds the run row while its carry runs up to five statements (five round
-trips to the database) and fires one trigger call per kept line at insert and one deferred call per kept line at commit. A carry
-can wait up to 200 ms on each step-log lock. A carry whose transaction fails costs one more report transaction, and that re-run
-can find the lease expired and be refused as a late report. A report of a client that negotiated below 1.7 may carry records,
+trips to the database, six for a long step) and fires one trigger call per kept line at insert and one deferred call per kept line
+at commit. A carry that finds a step-log lock held stores nothing (`contended`), so a rare contention loses that attempt's last
+lines. A carry whose transaction fails costs one or two more report transactions, and a re-run can be refused as a late report
+would be. A report of a client that negotiated below 1.7 may carry records,
 and they are stored (G041-001 already covers a client that does not redact).
 
 Compatibility: protocol minor 1.7 is not released, so its contract changes in place (D041-090): `AppendStepLogsRequest` loses

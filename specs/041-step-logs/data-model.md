@@ -60,9 +60,9 @@ CREATE TABLE step_log_streams (
                                                            -- (design section 2a, the order guard); never lowered; null
                                                            -- before the first
     final_at              timestamptz,                     -- set only by the attempt's carry (its final mark)
-    first_at              timestamptz,                     -- server time of the first recorded batch
-    last_at               timestamptz NOT NULL,            -- server time (clock_timestamp()) of the last recorded batch
-    expires_at            timestamptz NOT NULL,            -- last_at + retention_days, written with every batch
+    first_at              timestamptz,                     -- server time of the first recorded batch or carry
+    last_at               timestamptz NOT NULL,            -- server time (clock_timestamp()) of the last recorded batch or carry
+    expires_at            timestamptz NOT NULL,            -- last_at + retention_days, written with every batch and carry
     deleted_at            timestamptz,                     -- the delete route
     removed_at            timestamptz,                     -- removal began (purge mark or delete): no line is served
     purged_at             timestamptz,                     -- no line is left
@@ -228,7 +228,7 @@ Changing any of them is audited by the quota catalogue as every quota change is.
 the run's namespace in its transaction (design section 2, T3); a new stream keeps the retention it read
 (`retention_days`), so a later change of the retention applies to new streams only (ADR-0027).
 
-Admission defaults (set by T041-35 from its workload (g), design section 2, "Capacity"; placeholders until then):
+Admission defaults (set by T041-35 from its workload (g); one pool, `SAGAT_DB_MAX_CONNECTIONS`, the replica's database pool, which the benchmark builds as `API_POOL` = 20, design section 2, "Capacity"; placeholders until then):
 `SAGAT_GRPC_MAX_LOG_CALLS` a quarter of `SAGAT_DB_MAX_CONNECTIONS`, at least 1; `SAGAT_STEP_LOGS_TENANT_CALLS` half of
 it, rounded down, at least 1.
 
@@ -279,7 +279,8 @@ timeout is `SET LOCAL lock_timeout = '200ms'`.
   the token hash equal, `expires_at > clock_timestamp()` and `accepted_protocol_minor >= 7`. The three namespace resources
   of §6, through the rule of `content_usage::admission_policy` (`content_usage.rs:95-106`: the tenant fence shared, then
   the namespace fence shared, then `effective_policy`): one statement takes the six fences, the three resources in the
-  order of `QuotaResource`, and one reads their values.
+  order of `QuotaResource`, and then the attempt's stream lock (`pg_advisory_xact_lock` on a key of tenant, run, step,
+  attempt and generation, design section 2a), and one reads their values.
 - **T4.** `INSERT … ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO UPDATE SET tenant_id =
   step_log_streams.tenant_id RETURNING …` on `step_log_streams`; a new row takes the namespace's
   `step_log_retention_days` as `retention_days`. The update changes no column (the trigger of §2 refuses a change of the
@@ -322,40 +323,45 @@ A marker line (either kind) has the level `info`, and `minLevel` never hides a m
 
 ## 8a. The carry, in the report's transaction (design section 2a, CA to CE)
 
-Run by the five methods of `StepLogCarryTx` right before the report transaction's commit, after its engine change and
-journal writes, and only when the report is recorded now. Every statement binds only values C2 and C3 checked, maps its
-database error with `store_error_without_text` to `StoreError::StepLogCarry`, and those that write begin with `INSERT` or
-`UPDATE` (never `WITH`), so that `work_budget.rs` counts their rows. The identity is the attempt the report's fence
-verified (tenant, namespace, run, `steps.step_id`, node, instance path, attempt, generation), captured before the engine
-applies the report.
+Run by the six methods of `StepLogCarryTx` right before the report transaction's commit, after its engine change and
+journal writes, and only when the report is recorded now; at most five run for a short step, six for a long one. Every
+statement binds only values C2 and C3 checked and maps its database error with `store_error_without_text` to
+`StoreError::StepLogCarry`; those that write begin with `INSERT` or `UPDATE` (never `WITH`), so that `work_budget.rs`
+counts their rows. No lock is waited for: each is tried, and a refused one ends the carry (`contended`) with the report's
+transaction untouched. The identity is the attempt the report's fence verified (tenant, namespace, run, `steps.step_id`,
+node, instance path, attempt, generation), captured before the engine applies the report.
 
-- **CA.** One `SELECT`: `current_setting('lock_timeout')` (kept to be restored), `set_config('lock_timeout', '200ms',
-  true)`, then `pg_advisory_xact_lock_shared` on the six policy fences of the three namespace resources of §6 (tenant fence
-  then namespace fence, the resources in the order of `QuotaResource`, the keys `content_usage` uses), the select list
-  evaluated in that order as the ingest's T3 relies on.
+- **CA.** One `SELECT`: `pg_try_advisory_xact_lock_shared` on the six policy fences of the three namespace resources of
+  §6 (tenant fence then namespace fence, the resources in the order of `QuotaResource`, the keys `content_usage` uses),
+  then `pg_try_advisory_xact_lock` on the attempt's stream lock (the key the ingest's T3 takes). Any `false`: stop
+  (`contended`).
 - **CB.** One `SELECT`, whose snapshot begins after CA's locks are held: the `quota_limits` and `quota_ceilings` rows of
   the three resources (the read `effective_policy` makes, batched as T041-6's variant of `admission_policy`; the
-  resolution is the application's) and `sagat_quota_step_log_allowance(tenant)`. `step_log_attempt_records = 0`: then
-  **CR**, `SELECT set_config('lock_timeout', $prev, true)`, and stop (`off`).
-- **CC.** The `INSERT … ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO UPDATE SET tenant_id =
-  step_log_streams.tenant_id RETURNING` of T4 (a new row takes the namespace's retention), also returning
-  `last_stored_xid IS NULL OR last_stored_xid < pg_current_xact_id()` as `in_order`, and, when `removed_at` is set,
-  `expires_at <= clock_timestamp()` or `final_at` is set, `set_config('lock_timeout', $prev, true)`; in those cases stop
-  (`removed`, `final_recorded`).
+  resolution is the application's) and `sagat_quota_step_log_allowance(tenant)`. `step_log_attempt_records = 0`: stop
+  (`off`).
+- **CC.** `INSERT … ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) DO NOTHING RETURNING` the new
+  stream row (it takes the namespace's retention); with the stream lock held, no other transaction is inserting it, so
+  this never waits. A row returned: a new stream, zero counters, `in_order` true; go to the plan.
+- **CC′.** Only when CC returned nothing: `SELECT … FROM step_log_streams WHERE <key> FOR UPDATE SKIP LOCKED`, returning
+  the counters, `removed_at`, `expires_at`, `final_at` and `last_stored_xid IS NULL OR last_stored_xid <
+  pg_current_xact_id()` as `in_order`. No row: stop (`contended`). `removed_at` set, `expires_at <= clock_timestamp()` or
+  `final_at` set: stop (`removed`, `final_recorded`).
 - **Plan** (domain, no statement): `plan_batch` with `final = true`, the carry's `highest_sequence` and `in_order`; when
   `in_order` is false, no record above `last_sequence` is kept and those are counted as dropped by the server with the
   reason `out_of_order`. A mark-only carry keeps no record and plans no marker.
 - **CD.** The `INSERT … SELECT … FROM unnest(…) ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING RETURNING` of T8,
   for the kept lines and the planned marker. Not run when nothing is kept.
-- **CE.** The `UPDATE` of T9 from CD's rows, plus `final_at = clock_timestamp()`, `last_stored_xid` raised as T9 raises
-  it, and `RETURNING set_config('lock_timeout', $prev, true)`; it runs also when nothing was kept.
+- **CE.** The `UPDATE` of T9 from CD's rows, plus `final_at = clock_timestamp()`, and `last_stored_xid` raised as T9
+  raises it; it runs also when nothing was kept.
 - **Commit.** The report's `COMMIT`. Any raise of the finalizer's step-log branch (each with a constraint name of its own,
-  T041-5) is mapped to one typed refusal, which the application answers with one re-run of the report carrying a
-  mark-only carry (CA, CB, CC, CE; the records counted `tenant_quota`); `StoreError::StepLogCarry` with one re-run carrying
-  none.
+  T041-5) is mapped to `StoreError::StepLogRefused`, which the application answers with a re-run of the report carrying
+  a mark-only carry (the records counted `tenant_quota`); `StoreError::StepLogCarry` with a re-run carrying none. Both
+  cross into the application as internal variants (`AppError::StepLogRefused`, `AppError::StepLogCarry`) that only the
+  re-run wrapper consumes.
 
-Top-level statements added to the report (`work_budget.rs`'s measure): capture off 3 (CA, CB, CR; no row); removed or
-final 3 (CA, CB, CC; 1 row); a mark-only carry 4 (2 rows); *k* rows kept 5 (2 + *k* rows).
+Top-level statements added to the report (`work_budget.rs`'s measure): contended at CA 1; capture off 2; a short step 4
+with no row kept (2 rows) and 5 with *k* kept (2 + *k* rows); a long step 5 with none kept (1 row) and 6 with *k* kept
+(1 + *k* rows); an existing stream held, removed or final 4 (no row).
 
 ## 9. The script marker's transaction (design section 7)
 

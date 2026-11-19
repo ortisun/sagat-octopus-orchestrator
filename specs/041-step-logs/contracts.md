@@ -233,7 +233,7 @@ StepLogStream:
     ceiling: {type: [string, 'null'], enum: [attempt_records, attempt_bytes, tenant_quota, null]}
     firstAt: {type: [string, 'null'], format: date-time}
     lastAt: {type: [string, 'null'], format: date-time}
-    expiresAt: {type: [string, 'null'], format: date-time, description: 'worker: the last recorded batch plus the retention the stream took when it was created; script: the execution expiry.'}
+    expiresAt: {type: [string, 'null'], format: date-time, description: 'worker: the last recorded batch or carry plus the retention the stream took when it was created; script: the execution expiry.'}
     removedAt: {type: [string, 'null'], format: date-time}
     logTruncated: {type: boolean, description: 'script only'}
 ```
@@ -333,8 +333,10 @@ The SDK rules of `sdks/SPEC.md` (design section 6) are, per answer of `AppendSte
 
 A carry gets no answer of its own. The report that holds it is retried as the SDK retries a report today, with the same
 bytes, carry included; the server stores a carry at most once (a resent report already recorded is answered as a
-replay before its carry is read). When the report is refused (a stale lease, a refused output), its carry is lost with
-it, and the stream, if any, shows "ended without its final flush".
+replay before its carry is read). When the report is refused (a stale lease, a stopped or finished run, a revoked worker),
+its carry is lost with it, and the stream, if any, shows "ended without its final flush". When the report is recorded
+but its output or failure code held a declared secret, or its output did not fit, the carry is recorded as a final mark
+with no line (`ended`). A carry that found a step-log lock taken is skipped (`contended`) and leaves no final mark.
 
 ## Changes recorded after T041-3
 

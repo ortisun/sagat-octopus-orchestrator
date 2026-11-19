@@ -245,7 +245,7 @@ explains the tail is not settled by that run.
 Note (2026-11-19, OD-2026-11-19-1): the owner answered O041-036 with (d), "Redesenhar (CompleteStep)". The text above is
 unchanged. [ADR-0095](ADR-0095-the-last-step-log-records-of-an-attempt-ride-on-its-report.md), Proposed, would supersede
 decisions 2, 6 and 11 and the session clause of decision 5 for a carry (an attempt's last records ride on its report,
-at most five statements in the report's transaction) and refine decisions 3, 7 and 9, once the owner accepts it (O041-038)
+at most five or six statements in the report's transaction) and refine decisions 3, 7 and 9, once the owner accepts it (O041-038)
 after design 041's spike T041-35.
 
 ## Evidence

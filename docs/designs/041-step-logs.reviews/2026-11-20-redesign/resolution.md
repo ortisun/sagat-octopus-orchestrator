@@ -51,3 +51,33 @@ with its gap, and is not otherwise changed. The decisions are D041-095 and D041-
   the purge is not built; both are listed as not measured by T041-35 and measured by T041-9 (G041-019).
 - A-M3 (cost on FailStep, scoped and fallback paths): the six equalities are on root completions as the budget test is;
   T041-36's tests cover the other paths for behaviour, not for the statement count.
+
+## Answers to the re-reads of 78139ffb (`rereads-78139ffb.md`)
+
+Decision D041-097. Fixed unless said otherwise.
+
+1. **Leaked-secret paths** (correctness New 1, A-M4, codebase N1): every report whose output or failure code holds a
+   declared secret, root or scoped (`reject_secret_output`, the root `fail` with `leaked`, `apply_path_report` with
+   `leaked`, `refuse_scoped_output`), writes a mark-only carry; the table of section 2a and T041-36's tests name each.
+2. **A mark-only carry that fails** (correctness New 3, design critic N-1, readiness N-1): a carry never waits for a
+   step-log lock. CA tries the fences and a new per-attempt stream lock (L1b, also taken by the ingest's T3); CC inserts
+   a new stream, which with the stream lock held never waits; CC′ locks an existing one with `SKIP LOCKED`. A lock held
+   makes the carry `contended` and the report commits in its first transaction. The 200 ms lock timeout and its restore
+   statement are gone. A failed statement in a mark-only carry runs the transaction once more with none: `Full` →
+   `MarkOnly` → `None`, at most three transactions.
+3. **Telling the carry's failure apart** (codebase N2): `StoreError::StepLogRefused` and `StoreError::StepLogCarry`
+   become internal `AppError` variants that only the re-run wrapper consumes; an ordinary `Unavailable` is never re-run
+   (tested).
+4. **The re-run's refusals** (A-M5): listed in FR-041-005, G041-021 (restated) and ADR-0095 decision 4's exception.
+5. **Cost per call site** (A-M3): T041-36 measures the cost with and without a carry at every other call site.
+6. **Barriers and outcomes** (correctness New 2, IR-6): a test wrapper of `StepLogCarryTx` with pause points before CA
+   and before CC; no lock timeout remains in the carry; each test has one expected outcome.
+7. **T041-35's dependency** (A-NM1, SY9 N-2): the report hook plans its two cases inline, as T041-31's driver did.
+8. **Expiry and contracts §4** (ST-7, structural N-1): "last recorded batch or carry" in data-model.md §2 and the
+   contract's `expiresAt`; contracts §4 separates a lost carry (a refused report) from a mark-only one.
+9. **One pool** (SY9 N-1): `SAGAT_DB_MAX_CONNECTIONS` (the benchmark's `API_POOL`), with the two keys T041-7 reads.
+10. **Wording** (SY-2, SY-11, SY-12, style N-1, N-2, ST-10, SY9-14, SY9-17, SY9-18, the Nits): fixed.
+
+Stated, with the reason they may wait for T041-9 (Open Questions): K-3 (a remote database's round trips), K-4 (the
+scoped path in the gate) and K-5 (the purge beside the workloads). The cost table now gives five statements for a short
+step and six for a long one; the six equalities are 55/1/23, 54/1/13, 52/1/11 and 52/1/21, 51/1/11, 49/1/9.
