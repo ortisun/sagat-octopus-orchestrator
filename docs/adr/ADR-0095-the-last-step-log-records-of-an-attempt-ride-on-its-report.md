@@ -72,8 +72,8 @@ Facts of the code that shape the change:
    with no line when its highest sequence alone is valid, and the report is recorded.
 5. When the report's transaction fails because of its carry, the report MUST be recorded by a re-run of the report with the
    carry downgraded: after any raise of the commit finalizer's step-log branch (`tenant_step_log_quota_exceeded` among them), a
-   mark-only carry that charges nothing; after a failed carry statement, none. The carry only goes down, so a report runs at most
-   three transactions. The two causes MUST reach the re-run as values of their own, never as an ordinary unavailability, which is
+   mark-only carry that charges nothing; after a failed carry statement, none. The carry only goes down, and each downgrade can
+   meet the content-quota fallback once, so a report runs at most four transactions. The two causes MUST reach the re-run as values of their own, never as an ordinary unavailability, which is
    never re-run. Item 1 of ADR-0027's Amendment then reads "a step-log charge never blocks a terminal state: a report whose step-log rows
    do not fit is recorded by a re-run without them". A report whose output or failure code holds a declared secret, root or
    scoped, and a report re-run for its retained content, write a mark-only carry.

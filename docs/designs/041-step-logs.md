@@ -391,9 +391,12 @@ Technical, each closed by the task named:
   design change and a new review, and no task after T041-35 starts until that review approves the change. T041-35 does
   not reach the scoped report path (G041-019) nor a database on another host (G041-022), and runs no purge beside its
   workloads. Why the spike may still decide before the schema: a scoped report runs the same carry statements in a
-  transaction that also holds the run row, so its cost per report is the same, and the run-row queue of a fan-out exists
-  today without capture; the round trips (five for a short step) are counted by the budget, so a remote database adds a
-  known multiple of its round trip, which T041-9 records with the deployment's; and the purge's hold of the tenant usage
+  transaction that also holds the run row, so its cost per report is the same; but in a fan-out the run row is the
+  bottleneck, so each millisecond a carry adds to its hold lowers the fan-out's rate in proportion, and if T041-9 finds
+  that rate under SC-041-007's 90%, the server-side fallback is to carry nothing on the scoped path (the iteration's
+  records go as one batch before its report, as a long step's do), a change of the server and the SDK rule only; the
+  round trips (five for a short step) are counted by the budget, so a remote database adds a known multiple of its
+  round trip (G041-022), which T041-9 records with the deployment's; and the purge's hold of the tenant usage
   row (500 rows a transaction) is unchanged by the carry. T041-9 measures all three before the release, and a failure
   there stops the release.
 - **Does the read horizon and its end rule hold on PostgreSQL 16 and 18?** T041-11 and T041-12, with held transactions
@@ -968,8 +971,10 @@ bounded by the carry, and SC-041-007 bounds its effect.
 
 **When the carry makes the report's transaction fail**, the report is recorded anyway by a *downgrade re-run*: the
 report's method runs again from its start, as the worker's own resend of the same report would, with the carry
-downgraded (ADR-0095 decision 5). The carry only goes down, `Full` → `MarkOnly` → `None`, so a report runs at most three
-transactions, and a transaction whose carry is `None` cannot fail because of it.
+downgraded (ADR-0095 decision 5). The carry only goes down, `Full` → `MarkOnly` → `None`, and each
+step-log downgrade can meet the content-quota fallback once (which keeps the downgraded carry), so a report runs at most
+four transactions (`Full`; a step-log refusal, then `MarkOnly`; a content raise, then its fallback with `MarkOnly`; a
+failed statement, then `None`); a transaction whose carry is `None` cannot fail because of it.
 
 - Any error the finalizer's step-log branch raises at the commit (`tenant_step_log_quota_exceeded`, or a guard of that
   branch, each with a constraint name of its own, T041-5): the store maps it to `StoreError::StepLogRefused`, and the
@@ -1001,7 +1006,7 @@ decision 2, superseded by ADR-0095 decision 2 when accepted):
 | a short step: a new stream, *k* rows kept (a ceiling marker counts as one) | + 5 | + 0 | + 2 + *k* |
 | a long step: an existing stream, *k* rows kept (0 for a mark-only carry; CD absent when *k* is 0) | + 6, or + 5 when *k* is 0 | + 0 | + 1 + *k* |
 | an existing stream held, removed or already final | + 4 | + 0 | + 0 |
-| a carry whose transaction fails (above) | the failed transaction, then the report once or twice more | + 1 or + 2 | as the last transaction's row |
+| a carry whose transaction fails (above) | the failed transaction, then the report once to three times more | + 1 to + 3 | as the last transaction's row |
 
 So `work_budget.rs` keeps its three constants for leases and for reports without a carry, and gains six equalities, each
 counted as its constants are (T041-36): a completion with a next step whose short step carries ten records (55
@@ -1013,7 +1018,9 @@ table above. Inside its statements a carry with *k* kept rows also fires *k* row
 transaction's `quota_transaction_deltas` row) and, at the commit, *k* deferred flush calls, the first of which takes L3
 and L4; the budget counts top-level statements only, so T041-35 measures their time. Each statement is a round trip
 while the run row is held: at a round trip of *r* milliseconds to the database, a short step's carry holds the run row
-about 5*r* longer (G041-022; T041-35's database is on the same machine). The statements cannot be fewer: CB must start
+about 5*r* longer (G041-022; T041-35's database is on the same machine). A completion is about 50 round trips, so a short
+step's carry adds about 10% of them; on a remote database whose round trips dominate, that alone can reach SC-041-007's
++10% p99 margin, which is why T041-9 measures with the deployment's round trip. The statements cannot be fewer: CB must start
 after CA's locks are held, the plan needs CC's counters, and CE needs CD's sizes; only CD and CE could share a statement,
 whose rows the budget's measure would then not see. A report that keeps a carried record takes the tenant's usage row at
 its commit whatever its output. A lease and a heartbeat pay nothing. A short step pays no transaction of its own; a long
@@ -2117,7 +2124,7 @@ Slice B, the server stores:
     `AppError::StepLogRefused` they become, which `finish` and `finish_path_report` return unchanged and the API edge
     maps to `UNAVAILABLE` (a test shows that neither is ever answered by a report);
   - the downgrade re-run of section 2a around `complete_inner`, the root body of `fail` and `report_path` (reusing its
-    `loop`), consuming only those two variants, `Full` → `MarkOnly` → `None`, at most three transactions; the typed
+    `loop`), consuming only those two variants, `Full` → `MarkOnly` → `None`, at most four transactions; the typed
     refusal for every raise of the finalizer's step-log branch;
   - CE's `last_stored_xid` and the order guard (T9's is T041-6's; the stream lock in T3 is T041-6's, added by this
     revision); the metric `step_log_carries_total{outcome}`, and the carry's lines counted in the ingest's line, byte,

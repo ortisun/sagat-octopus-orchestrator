@@ -64,7 +64,7 @@ Decision D041-097. Fixed unless said otherwise.
    a new stream, which with the stream lock held never waits; CC′ locks an existing one with `SKIP LOCKED`. A lock held
    makes the carry `contended` and the report commits in its first transaction. The 200 ms lock timeout and its restore
    statement are gone. A failed statement in a mark-only carry runs the transaction once more with none: `Full` →
-   `MarkOnly` → `None`, at most three transactions.
+   `MarkOnly` → `None`, at most four transactions with the content fallback.
 3. **Telling the carry's failure apart** (codebase N2): `StoreError::StepLogRefused` and `StoreError::StepLogCarry`
    become internal `AppError` variants that only the re-run wrapper consumes; an ordinary `Unavailable` is never re-run
    (tested).
