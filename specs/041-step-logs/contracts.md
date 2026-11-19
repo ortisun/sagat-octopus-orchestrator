@@ -58,10 +58,12 @@ message AppendStepLogsRequest {
 
 // Added in 1.7. The last records of an attempt and its final mark, carried by the attempt's own
 // CompleteStepRequest or FailStepRequest (field 13) and stored by the transaction that records the report.
-// Sent by an attempt that assigned at least one sequence. A carry the server cannot check is ignored and never
-// makes the report fail; nothing about the carry is in the report's answer.
+// Sent by an attempt that assigned at least one sequence, unless it was answered STOP_ATTEMPT or STOP_CAPTURE or
+// its session's capture is off. A carry the server cannot check is ignored (or kept as a final mark with no line)
+// and never makes the report fail; a carry from a runner or database-runner token, or on a managed step, is
+// ignored; nothing about the carry is in the report's answer.
 message StepLogCarry {
-  repeated StepLogRecord records = 1;         // 0 to 500, sequences strictly increasing, at most 48 KiB encoded
+  repeated StepLogRecord records = 1;         // 0 to 64, sequences strictly increasing; the whole message at most 16 KiB
   uint64 highest_sequence = 2;                // the highest sequence the attempt's logger assigned: 1 to 2^62-1, and at
                                               // least the last record's
 }
@@ -107,7 +109,8 @@ enum StepLogVerdict {
 
 enum StepLogStopReason {
   STEP_LOG_STOP_REASON_UNSPECIFIED = 0;
-  STEP_LOG_STOP_REASON_FINAL_RECORDED = 1;    // STOP_ATTEMPT: the attempt's report has recorded its final mark
+  STEP_LOG_STOP_REASON_FINAL_RECORDED = 1;    // STOP_ATTEMPT: the attempt's report recorded its final mark after this batch
+                                              // read the lease (a batch that reads it later gets LEASE)
   STEP_LOG_STOP_REASON_LEASE = 2;             // STOP_ATTEMPT: the lease is not this attempt's or has expired, or a report of
                                               // the attempt would be refused (run finished, step cancelled, run
                                               // stopping and the node not a compensation)
@@ -145,9 +148,10 @@ the worker does.
   StepLogCarry step_logs = 13;
 ```
 
-The report's answer (`StepCommandResponse`) does not change. A carry adds at most 48 KiB to a report, which with a
-256 KiB output stays under the server's decoding cap of `MAX_PAYLOAD_BYTES` plus 64 KiB
-(`crates/api-grpc/src/server.rs:14`); the cap does not change.
+The report's answer (`StepCommandResponse`) does not change. A carry adds at most 16 KiB to a report, which with a
+256 KiB output stays under the server's decoding cap, `MAX_MESSAGE_BYTES` = `MAX_PAYLOAD_BYTES` (256 KiB) + 64 KiB
+(`crates/api-grpc/src/server.rs:14`); the cap does not change. The carry's 64 records are bounded by the time it runs
+under the run lock (design section 2a).
 
 `worker.baseline.json` records the new rpc, the seven messages, the field of `RegisterWorkerResponse` and the field 13
 of `CompleteStepRequest` and `FailStepRequest` (`SAGAT_UPDATE_BASELINE=1`, `crates/api-grpc/tests/compatibility.rs`),

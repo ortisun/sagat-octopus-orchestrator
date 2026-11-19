@@ -14,7 +14,7 @@ options.
 
 | ID | Decision | Decided by | Status | Covers |
 |---|---|---|---|---|
-| OD-2026-11-19-1 | O041-036, "Redesenhar (CompleteStep)" ("redesign (CompleteStep)"), option (d): cut what a step pays; the lines travel in the step's own `CompleteStep` (and `FailStep`) so that a short step needs no extra transaction, a long step still streams before its completion, and a new spike with the same criteria (rate at least 90%, completion p99 within +10%, tickets within half the pool) runs before the schema. O041-037 follows from it (T041-3 and T041-4 stay held; T041-3's 1.7 contract changes), recorded as decision D041-091 | owner | Decided | docs/designs/041-step-logs.md T041-3, T041-35, T041-36 |
+| OD-2026-11-19-1 | O041-036, "Redesenhar (CompleteStep)" ("redesign (CompleteStep)"), option (d): cut what a step pays; the lines travel in the step's own `CompleteStep` (and `FailStep`) so that a short step needs no extra transaction, a long step still streams before its completion, and a new spike with the same criteria (rate at least 90%, completion p99 within +10%, tickets within half the pool) runs before the schema. O041-037 follows from it (T041-3 and T041-4 stay held; T041-3's 1.7 contract changes), recorded as decision D041-091 | owner | Decided | docs/designs/041-step-logs.md T041-3, T041-4, T041-5, T041-6, T041-8, T041-9, T041-14, T041-15, T041-16, T041-17, T041-18, T041-19, T041-20, T041-32, T041-35, T041-36 |
 
 ## 2026-11-16 — Design 041 (step logs): the approval path and the answers to Q1 to Q8
 
