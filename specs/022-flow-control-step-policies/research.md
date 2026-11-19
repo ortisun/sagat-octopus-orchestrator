@@ -753,7 +753,7 @@ the owner wants more time on the ADR; (c) is not safe for a shared activity.
 
 ### O1170 — What ends a digest-key rotation that live rows keep open?
 
-**Answered 2026-11-19 (OD-2026-11-19-2, "Sim, como recomendado"): (a) with (b) for incidents — ADR-0093 accepted; an operator-only, audited force retires the old version at once, a key may over-admit by at most its old row's holders until they drain (built under T022-095, D022-046).**
+**Answered 2026-11-19 (OD-2026-11-19-2, "Sim, como recomendado"): (a) with (b) for incidents — ADR-0093 accepted; an operator-only, audited force retires the old version at once, a key may over-admit by at most its old row's holders until they drain (built under T022-108, D022-046).**
 Asked 2026-11-16 (ADR-0093, proposed; security review S1, architecture review M2). As built, a rotation ends when the old
 version's last semaphore or window row goes, and a third version is refused until then. A run-level permit lives as long
 as its run, so one long-lived run of any tenant can keep a rotation open for weeks; an emergency rotation of a leaked key
@@ -856,7 +856,7 @@ recomendado?"; the owner answered "Sim, como recomendado".
 
 - **OD-2026-11-19-2 — O1170 (a) with (b) for incidents.** ADR-0093 is Accepted. The per-key rotation stands, and an
   operator-only, audited force retires the old version at once for an emergency; a key may over-admit by at most its old
-  row's holders until they drain (T022-095).
+  row's holders until they drain (T022-095; the force is T022-108, D022-046).
 - **OD-2026-11-19-3 — O1171 (a).** ADR-0094 is Accepted: the readiness gate decides in an evaluation round before
   `persist` (T022-096).
 - **OD-2026-11-19-4 — O1172 (a).** The live-keys ceiling may be overshot by at most the number of transactions creating
