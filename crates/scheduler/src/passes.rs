@@ -33,8 +33,8 @@ use sagat_application::loop_progress::{
     LoopNextActivity, LoopProgressError, LoopProgressStore, LoopTransition,
 };
 use sagat_application::maintenance::{
-    EndedChild, LeaseLoss, MaintenanceStore, PendingChild, PendingContinuation, RunRef, StepRef,
-    Window,
+    BatchPurged, EndedChild, LeaseLoss, MaintenanceStore, PendingChild, PendingContinuation,
+    RunRef, StepRef, Window,
 };
 use sagat_application::primitives::{
     CollectionAdmission, CollectionCheckpoint, CollectionDataLimitEvidence, CollectionDrain,
@@ -77,6 +77,16 @@ use crate::shards::{Placement, Snapshot};
 const PURGE_BATCH: u32 = 5_000;
 /// How many schedules one call of the purge of schedule actions looks at.
 const SCHEDULE_PURGE_SCHEDULES: u32 = 50;
+/// How many jobs of batch operations one call of their purge removes at most. Each job costs a row lock held to the end of the call.
+pub const BATCH_PURGE_JOBS: u32 = 100;
+/// How many rows (items and jobs together) one call of the purge of batch jobs removes at most. A call of this size took 4 to 6 ms
+/// for the items of one job and 43 to 47 ms for 100 jobs of the heaviest rows (4,900 items among them) on the machine of the
+/// measurement (D2330), far inside the engine's statement timeout.
+pub const BATCH_PURGE_ROWS: u32 = 5_000;
+/// The most calls one pass makes of the purge of batch jobs, whatever they did: 500,000 rows.
+const BATCH_PURGE_CALLS: u32 = 100;
+/// The longest one pass spends on the purge of batch jobs, so that a backlog does not hold the rest of the housekeeping back.
+const BATCH_PURGE_TIME: Duration = Duration::from_secs(20);
 /// Batches one housekeeping call may purge (about 100 000 messages).
 const PURGE_ROUNDS: u32 = 20;
 
@@ -658,6 +668,107 @@ pub type BeforeChildCheck = Arc<
     dyn Fn(RunId) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
 >;
 
+/// Puts the series of the purge of batch jobs on the page at zero as soon as a scheduler exists. Prometheus's `increase`
+/// does not count the first sample of a series, so a counter that appears with the value 1 has increased by nothing
+/// (G2102, D2212): an engine that has purged nothing shows zeros, and the first purge, or the first failure of one, counts.
+fn register_batch_purge_series() {
+    for kind in ["job", "item"] {
+        metrics::counter!("batch_purged_total", "kind" => kind).absolute(0);
+    }
+    metrics::counter!("batch_purge_failures_total").absolute(0);
+}
+
+/// Counts what a call of the purge of batch jobs removed, once the call has committed (`batch_purged_total`). The label
+/// is one of two closed words; none is a tenant, a job, a selector or a run.
+fn count_batch_purged(gone: BatchPurged) {
+    if gone.jobs > 0 {
+        metrics::counter!("batch_purged_total", "kind" => "job").increment(gone.jobs);
+    }
+    if gone.items > 0 {
+        metrics::counter!("batch_purged_total", "kind" => "item").increment(gone.items);
+    }
+}
+
+/// Whether the pass calls the purge of batch jobs again after a call that removed `gone`: when the call used the whole of a
+/// bound it gave (its rows, or its jobs) it may be in the middle of a job or have more to do. So a job that a call began is finished
+/// by the next, in the same pass, and a person does not read a job with fewer items than its counts say for a whole interval of the
+/// housekeeping. It ends after `BATCH_PURGE_CALLS` calls or `BATCH_PURGE_TIME`, whatever they did.
+fn batch_purge_goes_on(gone: BatchPurged, calls: u32, elapsed: Duration) -> bool {
+    let used_a_bound =
+        gone.jobs >= u64::from(BATCH_PURGE_JOBS) || gone.rows() >= u64::from(BATCH_PURGE_ROWS);
+    used_a_bound && calls < BATCH_PURGE_CALLS && elapsed < BATCH_PURGE_TIME
+}
+
+#[cfg(test)]
+mod batch_purge_pass {
+    use super::*;
+
+    const QUICK: Duration = Duration::from_secs(1);
+
+    fn gone(jobs: u64, items: u64) -> BatchPurged {
+        BatchPurged { jobs, items }
+    }
+
+    /// A call that removed its whole row budget is in the middle of a job or has more; the pass calls again.
+    #[test]
+    fn a_call_that_used_its_row_budget_goes_on() {
+        assert!(batch_purge_goes_on(gone(0, 5_000), 1, QUICK));
+        assert!(batch_purge_goes_on(gone(40, 4_960), 1, QUICK));
+    }
+
+    /// A call that removed its whole job budget has more to do: the jobs have no items, so the rows are few.
+    #[test]
+    fn a_call_that_used_its_job_budget_goes_on() {
+        assert!(batch_purge_goes_on(gone(100, 0), 1, QUICK));
+    }
+
+    /// A call that used neither bound found nothing more to purge: the pass ends.
+    #[test]
+    fn a_call_that_used_neither_bound_ends_the_pass() {
+        assert!(!batch_purge_goes_on(gone(99, 4_800), 1, QUICK));
+        assert!(!batch_purge_goes_on(gone(0, 0), 1, QUICK));
+    }
+
+    /// Whatever the calls did, a pass ends at its time and at its number of calls: a backlog is drained by many passes and
+    /// does not hold the rest of the housekeeping for longer than the limit.
+    #[test]
+    fn the_time_and_the_number_of_calls_end_the_pass_whatever_they_did() {
+        assert!(!batch_purge_goes_on(gone(0, 5_000), 1, BATCH_PURGE_TIME));
+        assert!(batch_purge_goes_on(
+            gone(0, 5_000),
+            1,
+            BATCH_PURGE_TIME - Duration::from_millis(1)
+        ));
+        assert!(!batch_purge_goes_on(
+            gone(0, 5_000),
+            BATCH_PURGE_CALLS,
+            QUICK
+        ));
+        assert!(batch_purge_goes_on(
+            gone(0, 5_000),
+            BATCH_PURGE_CALLS - 1,
+            QUICK
+        ));
+    }
+
+    /// The key of the request that made a batch job is remembered for `idempotency_retention` and a job is kept for at least
+    /// `MIN_RETENTION` after it ended (`batch_jobs_purge`), so the key goes first and a replay never meets a job that was purged
+    /// (D2329). This test runs on every pull request that touches this crate, which the integration suites do not: a longer memory of
+    /// the key, or a shorter retention of the job, fails here (G2322, D2326).
+    #[test]
+    fn the_memory_of_a_key_is_shorter_than_the_least_a_job_is_kept() {
+        let memory = SchedulerSettings::default().idempotency_retention;
+        let least = Duration::from_secs(
+            u64::try_from(sagat_application::batch::MIN_RETENTION.whole_seconds())
+                .expect("seconds"),
+        );
+        assert!(
+            memory < least,
+            "a key is remembered for {memory:?} and a job kept for at least {least:?}"
+        );
+    }
+}
+
 /// The scheduler over a store, an evaluator and a source of jitter.
 pub struct Scheduler<S, E, R> {
     store: S,
@@ -710,6 +821,7 @@ where
     R: Entropy,
 {
     pub fn new(store: S, engine: Engine<E>, entropy: R, settings: SchedulerSettings) -> Self {
+        register_batch_purge_series();
         Self {
             store,
             engine,
@@ -4100,6 +4212,46 @@ where
             tracing::info!(
                 removed = actions,
                 "purged schedule actions past their retention"
+            );
+        }
+        // The jobs of batch operations and their items end with their retention (FR-018-033): the items
+        // first, in bounded chunks, and the job last, so a call that is cut short leaves a job with fewer
+        // items and the next one finishes it, in this pass while the calls use their bounds, up to a time
+        // and a number of calls. A failure is counted and logged by its SQLSTATE and the kind of the error and
+        // nothing else (the error of a statement over a job can quote its selector), and the round goes on.
+        let mut purged = BatchPurged::default();
+        let (started, mut calls) = (Instant::now(), 0_u32);
+        loop {
+            calls += 1;
+            match self
+                .store
+                .purge_batch_jobs(BATCH_PURGE_JOBS, BATCH_PURGE_ROWS)
+                .await
+            {
+                Ok(gone) => {
+                    count_batch_purged(gone);
+                    purged.jobs += gone.jobs;
+                    purged.items += gone.items;
+                    if !batch_purge_goes_on(gone, calls, started.elapsed()) {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    metrics::counter!("batch_purge_failures_total").increment(1);
+                    tracing::warn!(
+                        sqlstate = error.sqlstate().unwrap_or("none"),
+                        kind = error.kind(),
+                        "could not purge batch jobs"
+                    );
+                    break;
+                }
+            }
+        }
+        if purged.rows() > 0 {
+            tracing::info!(
+                jobs = purged.jobs,
+                items = purged.items,
+                "purged batch jobs and their items past their retention"
             );
         }
         // The bindings of business identifiers that are free again hold nothing but a row.
