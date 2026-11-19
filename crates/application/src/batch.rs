@@ -33,6 +33,13 @@ use crate::schedules::{ShardFence, StoredInput};
 /// How long a finished job and its items are kept (`FR-018-033`): 30 days by default, at most 90.
 pub const DEFAULT_RETENTION: Duration = Duration::days(30);
 pub const MAX_RETENTION: Duration = Duration::days(90);
+/// The least window a job is stamped with: 14 days. The purge keeps a job for 14 days after it ended whatever its window says
+/// (`batch_jobs_purge`), and that floor alone is what guarantees that a replay of the key of the request that made a job, kept for 7
+/// days (`SchedulerSettings::idempotency_retention`), never meets a purged job: a job is not eligible before `finished_at` plus 14 days,
+/// and a job ends after it was created. This constant is not load-bearing for that: it keeps the `expiresAt` a person is shown honest,
+/// so that no job is stamped with a window shorter than the least the purge keeps it. The number is written in two places, here and in
+/// the SQL of the purge, and unit tests of `infra-postgres` and `scheduler` hold them (D2326, D2331).
+pub const MIN_RETENTION: Duration = Duration::days(14);
 
 /// The most a signal payload or the arguments of an update may weigh, as for the single-run actions.
 pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
@@ -780,10 +787,10 @@ impl<S: BatchStore, C: Clock> BatchService<S, C> {
         }
     }
 
-    /// Keeps jobs for `retention` instead of the default, held inside the hard ceiling.
+    /// Keeps jobs for `retention` instead of the default, held between the floor ([`MIN_RETENTION`]) and the hard ceiling.
     #[must_use]
     pub fn with_retention(mut self, retention: Duration) -> Self {
-        self.retention = retention.clamp(Duration::days(1), MAX_RETENTION);
+        self.retention = retention.clamp(MIN_RETENTION, MAX_RETENTION);
         self
     }
 

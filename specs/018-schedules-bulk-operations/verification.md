@@ -907,6 +907,142 @@ installed); no mutation battery (OD-2026-11-06-2), only the three hand mutants o
 
 **Rerun by the maintainer on the merged tree, 2026-11-19** (`develop` at `170abcd0`, which brought feature 043 and the design 041 documents, merged into this branch; `gates60.sh`, a cold private build, every output kept, one process per command, no `ENOSPC`, no `PoisonError`): `cargo fmt --check`, workspace clippy `-D warnings`, `check-architecture.py`, `check-agent-config.py` and `check-design-docs.py` (pull-request mode) exit 0; `contract_schedules_bulk_operations` (with `unchanged::`), `contract_developer_experience` and `contract_rest_security_multitenancy` pass; `integration_schedules_bulk_operations` 757 passed, 2 ignored in the owner role (854 s) and in `sagat_app` (641 s); `fault_schedules_bulk_operations` 131 in each role; `integration_platform_foundation` 107 in each role; `integration_security_multitenancy` 126 in each role. **One check is red and is not this branch's:** `check-upgrade-boundary.py` says the three `release_upgrade*.rs` oracles name `20270116000000` while the newest migration is `20270118000100` (`run_input_validation_validate`, added by feature 043 without moving them). CI runs that script for a release only, so no pull request saw it; `feature/018-schedules-default-on` (pull request #226) already moves the oracles. T018-016 was ticked after this run: feature 043 built what it lacked, and its `run_input::` (21) and `run_input_repeats::` (8) ran in each role above.
 
+## (q) The purge of batch jobs and items (2026-11-19, T018-051 purge half, FR-018-033, G2317, D2324 to D2336, O1958, G2321 to G2325)
+
+Built by an implementation agent in the worktree of the branch `feature/018-batch-purge` (cut from `feature/018-reconcile-tasks`, `aad0af5d`) and corrected in a second round after three independent reviews (security, correctness,
+architecture: no blocker; five majors). Nothing was pushed, fetched, committed, merged, rebased, stashed or branched, and no golden, OpenAPI, SDK or contract file of the pinned set changed (`contracts/errors.md` gained a paragraph, not a row).
+The task T018-051 stays unticked (its other half, the selection through 020's `RunSelector`, waits for feature 020; its note says so). **Machine:** macOS (Darwin 25.3.0, arm64) shared with other sessions (load average 3 to 14), Docker
+Desktop; Rust 1.100.0; `CARGO_TARGET_DIR=/Users/marcelo/cargo-target-018r`, `CARGO_PROFILE_DEV_DEBUG=0`, `RUST_TEST_THREADS=2`; every command in one process, every output kept.
+
+**What was built.** The migration `20270119000000_batch_purge`: `batch_jobs_purge(p_jobs, p_rows)`, a `STRICT` `SECURITY DEFINER` function the runtime role may run, with its own ceilings (1,000 jobs and 100,000 rows a call), whose chunk of items is a
+range of the job's primary key (D2330), and `batch_jobs_purge_idx` built `IF NOT EXISTS` with the refusal of an `INVALID` leftover (D2336); its `down` drops both and loses nothing. The port `MaintenanceStore::purge_batch_jobs`, `BatchPurged`
+and `StoreError::kind()` (`crates/application`); the adapter (`crates/infra-postgres/src/maintenance.rs`, the error read without its text); the call in the housekeeping (`crates/scheduler/src/passes.rs`: 100 jobs and 5,000 rows a call, calls
+repeated while a call used a bound, up to 100 calls or 20 seconds a pass, D2332) with `batch_purged_total{kind}` and `batch_purge_failures_total` at zero from the start and a log of the SQLSTATE and the kind (D2333); the alert
+`SagatBatchPurgeFailing` and its `promtool` tests (D2334); `MIN_RETENTION` (14 days); the three pinned upgrade oracles (`20270119000000`; `check-upgrade-boundary.py` was already red on this branch and is green again); the runbook (section 6 and 6.1), `data-model.md`,
+`plan.md` (the row of the purge in the lock table), `spec.md` (one sentence of FR-018-033, pending O1958), `contracts/errors.md`, `research.md` (D2324 to D2336, O1958, G2317 and G2321 closed, G2322 to G2325), `tasks.md` (a dated note under T018-051, not
+ticked), `docs/releases/unreleased.md`, `observability.md` and `execution-engine.md`. No new column, so `storage-classification.json` is unchanged.
+
+**One call, measured** (`batch_purge::one_call_of_the_purge_measured`, `#[ignore]`, `-- --ignored --nocapture one_call_of_the_purge`; three runs each, as the owner, load average 3 to 14). Before the fix of D2330 and after it:
+
+| Case | Before (the chunk joined to a list of ordinals) | After (a range of the primary key) |
+| --- | --- | --- |
+| 5,000 item rows of one job | 3,212 to 3,239 ms | 4 to 6 ms |
+| 100 jobs with the heaviest rows (a selector of about 65,000 bytes, a reason of 2,000 characters) and their 4,900 items, 5,000 rows | 106 to 108 ms | 43 to 47 ms |
+| 100,000 item rows of one job (the largest call) | did not end (20,000 rows took 49.6 s: quadratic) | 89 to 97 ms |
+
+A call is far inside one second, so the rows per call stay 5,000. A call that exceeds the engine's 5-second statement timeout is rolled back and repeated identically (G2323).
+
+**Claims and tests** (`batch_purge::` in `integration_schedules_bulk_operations`: 37 tests and the measurement, which is ignored; in `fault_schedules_bulk_operations`: 3; unit tests: application 1, scheduler 5, infra-postgres 1; `promtool`: the tests of the rule; both
+database roles for every integration and fault test). *Red first* is the first run of a test that was written before its code, and says why it failed; where a test was written after its code, or is a characterization that was green at once, the column says so, and
+the mutants it kills are the proof that it fails for its reason.
+
+| Claim | Test | Red first | Killed by |
+| --- | --- | --- | --- |
+| a finished job past its retention goes with its items, in each of the three terminal states | `a_finished_job_past_its_retention_goes_with_its_items_in_each_of_the_three_terminal_states` | `sqlstate:42883` (the function did not exist) | M3, M4 |
+| a job that has not finished is never purged however old; the guard refuses the owner its `DELETE` | `a_job_that_has_not_finished_is_never_purged_whatever_its_age` | 42883 | M2 |
+| `expires_at` is the window, an hour either side | `a_job_inside_its_window_is_kept_with_every_item_and_one_past_it_by_an_hour_goes` | 42883 | M1 |
+| a job that ended after its window is kept for `MIN_RETENTION` after it ended, an hour either side | `a_job_that_ended_after_its_window_is_kept_for_the_least_retention_after_it_ended` | 42883 | M7, M7b, H1, H1b |
+| the stamp is 30 days, held between 14 and 90 | `the_window_a_job_is_stamped_is_thirty_days_and_is_held_between_the_least_and_the_most` | written after the first run | R7b, H1b |
+| bounded and resumed: 5,000 items over five calls of at most 1,200 rows, the job there until the last | `a_job_of_five_thousand_items_is_purged_over_several_calls_and_ends_fully` | 42883 | M3, M9, M10 |
+| the row of the job needs a row of the budget | `the_job_goes_only_when_the_budget_has_a_row_left_for_it` | 42883 | M10 |
+| a call removes at most the jobs it is given; a bound under 1 removes nothing; a `NULL` bound answers nothing | `a_call_removes_at_most_the_jobs_it_is_given`, `a_bound_that_is_not_at_least_one_removes_nothing_and_a_call_without_a_bound_answers_nothing` | 42883; the second written after the first run | M12, M16 |
+| **the function holds its own ceilings** (1,000 jobs; 100,000 rows), called with `u32::MAX` twice | `a_call_that_asks_for_more_than_the_function_allows_gets_its_ceilings_and_no_more`, `a_call_that_asks_for_everything_removes_at_most_a_hundred_thousand_rows` | `left: BatchPurged { jobs: 1100, items: 0 }`; the second did not end under the old delete (stopped) | M17, M18, M19 |
+| **the time of a call is linear in its rows** (20,000 rows of one job within 20 s) | `a_call_over_one_large_job_takes_time_in_proportion_to_its_rows` | `took 49.64s` | M20 |
+| oldest window first, a job cut short finished before the next begun; **the orders a mutant could take all disagree with the window's, with fixed ids** | `jobs_go_oldest_window_first_and_a_job_cut_short_is_finished_before_the_next_is_begun` | rewritten: the old one could not tell these mutants apart (written with the three orders agreeing, which is what the review found) | M11, M11b, M11c, M11d, M11e, M9, M10 |
+| two tenants, two namespaces: only the four old finished jobs go; the same job id in two tenants | `only_the_old_finished_jobs_of_every_tenant_and_namespace_go_and_never_the_items_of_the_same_id_elsewhere` | 42883 | M2, M8b |
+| the chunk of a job is its own items when another tenant has a job of the same id | `the_chunk_of_a_job_is_its_own_items_when_another_tenant_has_a_job_of_the_same_id` | written after M8 survived the others (first round) | M8, M8b, M10 |
+| the runtime role may run the function and is refused a `DELETE` of either table, on paper and for real | `the_runtime_role_may_run_the_purge_and_may_not_delete_a_job_or_an_item_itself` | the function did not exist | M6 |
+| a job another transaction holds is skipped, not waited for | `a_job_another_transaction_holds_is_skipped_and_the_ones_behind_it_are_purged` | 42883 | M5, M14 |
+| a purge held in the middle does not block the read or the cancel of another job, nor the read of its own | `a_purge_in_flight_does_not_block_the_read_or_the_cancel_of_another_job` | the stage never saw a waiting purge | M13 |
+| two purges at once remove every row once, never fail or deadlock | `two_purges_at_the_same_time_remove_every_row_once_and_never_deadlock` | 42883 | M10 |
+| a job past its window not yet purged still reads; a purged one is not found (job, items, cancel, list) | `a_purged_job_reads_as_unknown_and_one_that_is_not_yet_purged_still_reads` | 42883 | M3, M4 |
+| over HTTP the read, the items and the cancel of a purged job answer what an id nobody has answers | `a_purged_job_answers_404_over_http_exactly_as_an_id_nobody_has_does` | written after the first run | M3, M4 |
+| **the one in-between state is pinned: a job a call cut short reads `200` with its own counters and the items it has left**, through the store and over HTTP | `a_job_a_call_cut_short_still_reads_with_the_items_it_has_left`, `…_over_http_with_the_items_it_has_left` | characterization, green at once | M3, M4 |
+| the list goes on across a purge, the cursor's own job included | `the_list_of_jobs_goes_on_across_the_purge` | 42883 | M3, M4 |
+| the limits of active jobs are not moved; **the refund is exactly what the three jobs charged, and the usage never goes below what it was** | `a_purge_leaves_the_limits_of_active_jobs_alone_and_gives_back_the_content_it_charged` | rewritten (it asserted `usage < charged`, which a double refund satisfies) | Q1, Q2, M2, M3, M4 |
+| the key of the request finds the job while both are kept and is a new request when both are gone; the comment now says it reads the default memory only | `a_replay_of_the_key_of_a_job_finds_the_job_while_it_is_kept_and_is_a_new_request_once_both_are_gone` | a failure of my own helper, fixed, then green | M7, H3 |
+| **one pass** removes 250 jobs without items (three calls) and finishes a job whose items were exactly one call | `one_pass_removes_two_hundred_and_fifty_jobs_that_have_no_items`, `one_pass_finishes_a_job_whose_items_were_exactly_one_call` | characterization, green at once | R4, R4b, R4c |
+| the housekeeping purges in rounds (12,003 rows) and counts by kind; labels are two closed words | `housekeeping_purges_what_is_over_in_rounds_and_counts_it_by_kind` | `left: (5, 12009)` against `(2, 6)` | R4, R5, R6, M2 |
+| the three series are on the page at zero | `the_series_of_the_purge_exist_at_zero_before_the_first_purge` | green at once (the registration was written with the pass) | R1 |
+| **a failure is counted once and logged by its SQLSTATE and its kind** (`P0001`, `internal`; the canary of the message in no log or metric), the housekeeping goes on; **an error with no SQLSTATE still says its kind** (`none`, `missing_reference`) | `a_failure_of_the_purge_is_counted_and_logged_by_its_sqlstate_and_kind_and_the_housekeeping_goes_on`, `a_failure_that_has_no_sqlstate_to_log_still_says_its_kind` | the first (without the kind) the log said `sqlstate="42883"`; the second written after the code | R2, R3, R8, R9, R10 |
+| privacy canary: a prefix and a reason made by the service are in `batch_jobs` before the purge and in no table, log, span or metric after; **the body of a `SIGNAL` job's payload is the one thing that stays, in `payloads`** | `the_prefix_and_the_reason_of_a_purged_job_reach_no_log_span_metric_or_audit_record_and_are_gone_afterwards` | a failure of the helper, fixed; the payload job added in this round | M15, F1 |
+| **the payload outlives the job and stays charged; what the job charged itself is refunded** | `the_payload_a_signal_job_holds_outlives_the_job_and_stays_charged` | characterization, green at once | F1 |
+| the rollback drops the function and the index, loses no job or item, is recorded and applies again | `the_rollback_drops_the_function_and_its_index_and_loses_no_job_and_applying_again_brings_the_purge_back`, `this_migration_is_the_one_the_rollback_of_this_file_starts_from` | `THIS names one forward migration`; the first assertion | M2, M12 |
+| **the index may be built first (not built again: the same oid) and an invalid leftover is refused with its message** | `the_index_may_be_built_first_and_an_invalid_leftover_is_refused` | `relation "batch_jobs_purge_idx" already exists` (42P07) | I1, I2 |
+| fault: the connection is killed after each of the 7 writing statements of a call (a job taken whole; a job a call cut short); the doc now says what these show (atomicity is PostgreSQL's) | `fault batch_purge::a_purge_that_dies_at_any_write_changes_nothing_and_made_again_removes_the_job`, `…_after_a_call_cut_short_the_job_…` | written with the function | M3, M10 |
+| **fault, the pass:** a pass whose second call dies leaves the job as the first call left it (finished, 1,000 items), counts the failure, and the next pass finishes it | `fault batch_purge::a_pass_whose_second_call_dies_leaves_the_job_as_the_first_call_left_it_and_the_next_pass_finishes_it` | written after the pass loop | R4, M3 |
+| unit: the pass goes on while a call used a bound, ends at 20 s and at 100 calls | `passes::batch_purge_pass::` 4 tests | `the_time_and_the_number_of_calls_end_the_pass_whatever_they_did` failed against the decision that read only the bounds | R4b, R4c, R4d, R4e |
+| unit: **the memory of a key is shorter than `MIN_RETENTION`**, on every pull request | `passes::batch_purge_pass::the_memory_of_a_key_is_shorter_than_the_least_a_job_is_kept` | green at once | H1b, H3 |
+| unit: **the SQL holds `interval '<MIN_RETENTION days> days'`**, on every pull request | `maintenance::tests::the_sql_of_the_purge_keeps_a_job_for_the_least_retention_the_service_stamps` | green at once | H1, H1b, H2, M7b |
+| unit: every kind of `StoreError` has one closed word and never its text | `error::tests::every_kind_of_error_has_one_closed_word_and_never_its_text` | `no method named kind` | R10 |
+| `promtool`: `SagatBatchPurgeFailing` fires on a failure and goes after the hour, stays up while it keeps failing, is silent while the purge works | `infra/observability/tests/batch_stalled_test.yaml`, 3 groups | `got: []` at 10 m and 90 m (the rule absent) | P1, P2, P3 |
+
+**Hand mutants** (each alone, the file restored byte for byte and compared with `cmp`, `mutate2.py` in the maintainer's scratchpad; the filter is `batch_purge::` of the integration suite, and of the fault suite or the unit tests where named; a run stopped by a
+hang is stopped at 1,500 s; NO mutation battery, OD-2026-11-06-2). **All the mutants of the first round were rerun on the new function** (M1 to M16, M2b, M7b, M8b, R1 to R8 and R7b, renamed where the text they mutate changed: R7 is H1, R4 is R4) and **53 mutants ran in all (50 of the code and 3 of the rule): 52 are killed and 1 survives (M2b, equivalent); two more survive one of the suites that were run for them and are killed by the others (R4, H1)**.
+
+| Id | Mutant | Result |
+| --- | --- | --- |
+| M1 | the window read a day early | killed (1) |
+| M2 | the state predicate dropped and the floor read from `created_at` | killed (7); the guard refuses the delete and the call fails |
+| M2b | the state predicate alone dropped | **survives, equivalent:** an unfinished job has no `finished_at` (`batch_jobs_finished_consistent`), so the test of its age keeps it out; the predicate is there so that the planner may use the partial index |
+| M3 | the items go and the job never does | killed (28 integration, 3 fault) |
+| M4 | the job deleted before its items | killed (23): the foreign key refuses |
+| M5, M14 | no `SKIP LOCKED`; no row lock at all | killed (1 each): `a_job_another_transaction_holds_…` |
+| M6 | `GRANT DELETE … TO sagat_app` | killed (1) |
+| M7, M7b | no floor after the end; a floor of 13 days | killed (2 and 1 integration, 1 and 1 infra-postgres unit) |
+| M8, M8b | the cut of the chunk, and the delete, by the id of the job alone | killed (1 and 2); M8 survived the first round and the test for it was written then |
+| M9 | the chunk not bounded (`OFFSET v_left + 1000000`) | killed (5) |
+| M10 | the job row deleted without a row of budget (`IF false`) | killed (10 integration, 2 fault) |
+| M11, M11b, M11c, M11d, M11e | order by `id DESC`, `finished_at`, `created_at`, the newest window first, `id` | killed (1 each); the old test would have let `finished_at`, `created_at` and `id` pass |
+| M12 | the bound on jobs ignored | killed (4) |
+| M13 | `LOCK TABLE batch_jobs` in the function | killed (1): `a_purge_in_flight_…` |
+| M15 | `RAISE WARNING` with the selector (the storage layer logs server notices) | killed (1) |
+| M16 | not `STRICT` | killed (1) |
+| M17, M18, M19 | no ceiling on jobs; none on rows; a ceiling of a million rows | killed (1 each) |
+| M20 | the delete joined to a list of the ordinals (quadratic) | killed (1): `took 49 s` |
+| Q1, Q2 | the purge refunds a byte too much; a byte too little | killed (3 and 1) |
+| F1 | the purge deletes the payloads nothing references | killed (2): the residue and the canary |
+| I1, I2 | a plain `CREATE INDEX`; an invalid index accepted | killed (1 each) |
+| R1 | the series not registered at zero | killed (1) |
+| R2 | the adapter reads the error with `store_error` | killed (1) |
+| R3 | a failure ends the housekeeping | killed (2) |
+| R4 | one call per pass | killed (3 integration, 1 fault); **survives the scheduler unit tests**, which see the decision and not the loop |
+| R4b, R4c | the jobs bound is not a reason to go on; `>` for `>=` on rows | killed (1 and 2 integration, 1 and 2 unit) |
+| R4d, R4e | no time limit; no cap on calls | killed (1 unit each) |
+| R5, R6, R8 | nothing counted; `kind="items"`; a failure not counted | killed (1, 1 and 2) |
+| R9, R10 | the log says no kind; the kind of `Internal` is another word | killed (2; 1 unit and 1 integration) |
+| H1 | `MIN_RETENTION` 13 days | killed (1 integration, 1 infra-postgres unit); **survives the scheduler unit test**, which holds the other side (the memory of a key stays below 13 days) |
+| H1b | `MIN_RETENTION` 7 days | killed (2, 1 and 1 unit) |
+| H2 | the SQL literal 13 days, unit only | killed (1) |
+| H3 | the memory of a key 15 days | killed (1 unit, 1 integration) |
+| R7b | the stamp clamped to one day again | killed (1) |
+| P1, P2, P3 | the alert on another series (`batch_purged_total`); a window of one minute; severity `critical` | killed: `promtool test rules` fails at 10 m and 90 m |
+
+**Gates of the second round** (each command in one process, its output kept; the last change to a Rust file was `cargo fmt` after the last edit of the tests; no run was repeated to get a green: the red runs are the first runs of the tests, the
+hand mutants above, and the errors of mine that are named in the table; the machine's load average was 3 to 14):
+
+| Command (as the owner unless it says `sagat_app`) | Result |
+| --- | --- |
+| `cargo fmt --check` | clean |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | exit 0 (one `assertions_on_constants` of my own test, fixed to a `const` assertion before the run that counts) |
+| `check-architecture.py`, `check-agent-config.py`, `check-upgrade-boundary.py` (matches `20270119000000`), `check-design-docs.py` (pull-request mode, base `develop`) | all four pass |
+| `promtool` as CI mounts it (`prom/prometheus:v3.15.0`, the image of `compose.observability.yaml`): `check config` (1 rule file), `check rules` (37 rules), `test rules` of `batch_stalled_test.yaml`, `instance_registry_test.yaml`, `trigger_schedules_test.yaml` | all five `SUCCESS` (36 rules before, 37 now) |
+| `cargo test -p sagat-application -p sagat-scheduler -p sagat-infra-postgres --locked --no-fail-fast` | 553 passed, 0 failed (32 result lines), 23 s |
+| `cargo test -p sagat-tests --locked --test integration_schedules_bulk_operations` | 794 passed, 0 failed, 3 ignored (757 before and the 37 of `batch_purge::`; the ignored are a child-process helper, a measurement and the measurement of the purge), 557 s |
+| the same with `SAGAT_TEST_AS_RUNTIME_ROLE=1` | 794 passed, 0 failed, 3 ignored, 542 s |
+| `… --test fault_schedules_bulk_operations`, owner and `sagat_app` | 134 passed each (131 and the 3 of `batch_purge::`), 186 s and 166 s |
+| `… --test integration_platform_foundation`, both roles (the privilege audit finds `batch_jobs_purge` executable by `sagat_app`) | 107 passed each, 61 s and 44 s |
+| `… --test integration_security_multitenancy`, both roles | 126 passed each, 99 s and 89 s |
+| `… --test contract_developer_experience --test contract_observability_operations --test contract_rest_security_multitenancy --test contract_schedules_bulk_operations` (`SagatBatchPurgeFailing` is in `SCHEDULE_RULES`; `errors.md` was edited) | 8, 11, 21 and 11 passed |
+
+**Not run, and why.** The released-upgrade profile (`release_upgrade*.rs` compile the genuine released producer): the three pinned oracles were moved to `20270119000000` and `check-upgrade-boundary.py` passes; the maintainer resolves the merge with
+`feature/018-schedules-default-on`, which moves them to `20270118000100`. `sdk_conformance`, the SDKs' own checks, the Studio, the quickstart (nothing of them read anything that changed: no contract, SDK or Studio file changed; the SDK specification does
+not describe a `404` on a job, so it has no sentence to change); the mutation battery (OD-2026-11-06-2). The workspace unit tests were not rerun (only the crates touched: the first round's 3,245 stand for the others, which this round did not touch).
+**Not shown by a test:** the first housekeeping pass after an upgrade draining a backlog of millions of rows on a real table (the largest tests are one job of 100,000 items and 12,003 rows through the pass), the cost of the vacuum that follows a large purge (not
+inside the call, so not in the measurement), and the length of the `SHARE` lock of an index build that is not made `CONCURRENTLY`.
+
+**Rerun by the maintainer on the merged tree, 2026-11-19** (`develop` at `171eaa9f` merged into this branch; `gates61.sh`, the private build dir kept warm, every output kept, one process per command, no `ENOSPC`, no `PoisonError`): `cargo fmt --check`, workspace clippy `-D warnings`, `check-architecture.py`, `check-agent-config.py`, `check-upgrade-boundary.py` (the oracles name `20270119000000`) and `check-design-docs.py` (pull-request mode) exit 0; the 394 Python tests of `scripts/tests` pass; the workspace unit tests (everything but `sagat-tests`) have no failure; the contract suites (schedules, developer experience, REST security, observability) pass; `integration_schedules_bulk_operations` 794 passed, 3 ignored in the owner role (537 s) and in `sagat_app` (533 s); `fault_schedules_bulk_operations` 134 in each role; `integration_platform_foundation` 107 in each role (the privilege audit); `integration_security_multitenancy` 126 in each role. `promtool` from `prom/prometheus:v3.15.0`, mounted as CI mounts it: `check rules` finds 37 rules, `test rules` passes for `batch_stalled_test.yaml` (with `SagatBatchPurgeFailing`), `instance_registry_test.yaml` and `trigger_schedules_test.yaml`. The merge with `develop` had one conflict, in the three `release_upgrade*.rs` oracles (develop moved them to `20270118000100`, this branch to its own newer migration): the newer one was kept and the boundary check passes. Pull request #226 moves the same three lines to `20270118000100` and will meet this one.
+
 ## Appendix: the 257 waits of step 6.8
 
 ```sh
