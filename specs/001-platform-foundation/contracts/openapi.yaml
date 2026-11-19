@@ -1020,12 +1020,14 @@ paths:
         included, and answers `204` with no body. The purge removes the rows. No route removes a script execution's log
         before its retention.
       parameters:
-        - {name: stream, in: query, required: false, schema: {type: string, format: uuid}}
+        - {name: stream, in: query, required: false, schema: {type: string, format: uuid}, description: 'One stream of this run (`StepLogStream.id`). Another stream, of this tenant or not, is `404`, as for `listRunLogs`.'}
       responses:
         '204': {description: 'Deleted', headers: {X-Trace-Id: {$ref: '#/components/headers/TraceId'}, X-Request-Id: {$ref: '#/components/headers/HttpRequestId'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
         default: {$ref: '#/components/responses/InternalError'}
@@ -7649,9 +7651,9 @@ components:
         status: {type: string, enum: [SUCCEEDED, FAILED]}
         failure: {type: string}
         exitCode: {type: integer}
-        log: {type: string, description: 'Feature 041 (FR-041-022): for an execution of a run, returned only to a caller who may read that run''s step logs (`run:logs:read` and the namespace''s PII reveal grant); anyone else gets an empty string, `logTruncated` false and `logWithheld` true. An execution with no run is unchanged.'}
+        log: {type: string, description: 'Planned by feature 041 (FR-041-022, T041-29; not served yet): for an execution of a run, returned only to a caller who may read that run''s step logs (`run:logs:read` and the namespace''s PII reveal grant); anyone else gets an empty string, `logTruncated` false and `logWithheld` true. An execution with no run is unchanged.'}
         logTruncated: {type: boolean}
-        logWithheld: {type: boolean, description: 'Feature 041: true when the log of a run''s execution is withheld from this caller (see `log`).'}
+        logWithheld: {type: boolean, description: 'Planned by feature 041 (T041-29; not served yet): true when the log of a run''s execution is withheld from this caller (see `log`).'}
         denied: {type: array, items: {type: string}}
         wallMs: {type: integer}
         startMs: {type: integer}
@@ -7662,7 +7664,7 @@ components:
     ScriptExecutionSummary:
       type: object
       required: [id, artifactDigest, status, logTruncated, denied, wallMs, startMs, createdAt, expiresAt]
-      description: 'An execution as a listing shows it: without its log, which `getScriptExecution` has. Feature 041: `logTruncated` is false for a caller who may not read the run''s step logs.'
+      description: 'An execution as a listing shows it: without its log, which `getScriptExecution` has. Planned by feature 041 (T041-29; not served yet): `logTruncated` is false for a caller who may not read the run''s step logs.'
       properties:
         id: {type: string, format: uuid}
         artifactDigest: {type: string}

@@ -297,3 +297,10 @@ The SDK rules of `sdks/SPEC.md` (design section 6) are, per answer of `AppendSte
 | `UNAUTHENTICATED`, `PERMISSION_DENIED` | stops for the session until the next successful registration | - |
 | `UNIMPLEMENTED` | stops for the attempt (an older API replica) | - |
 | any other | as `UNAVAILABLE` | yes |
+
+## Changes recorded after T041-3
+
+- 2026-11-19 (T041-3, security and correctness reviews of the build): `deleteRunLogs` declares `400` and `422` as
+  `listRunLogs` does, and its `stream` says that another stream is `404`; the descriptions of `ScriptExecution.log`,
+  `logWithheld` and `ScriptExecutionSummary.logTruncated` say they are planned by T041-29 and not served yet.
+

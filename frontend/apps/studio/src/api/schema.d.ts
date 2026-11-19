@@ -6104,10 +6104,10 @@ export interface components {
             status: "SUCCEEDED" | "FAILED";
             failure?: string;
             exitCode?: number;
-            /** @description Feature 041 (FR-041-022): for an execution of a run, returned only to a caller who may read that run's step logs (`run:logs:read` and the namespace's PII reveal grant); anyone else gets an empty string, `logTruncated` false and `logWithheld` true. An execution with no run is unchanged. */
+            /** @description Planned by feature 041 (FR-041-022, T041-29; not served yet): for an execution of a run, returned only to a caller who may read that run's step logs (`run:logs:read` and the namespace's PII reveal grant); anyone else gets an empty string, `logTruncated` false and `logWithheld` true. An execution with no run is unchanged. */
             log: string;
             logTruncated: boolean;
-            /** @description Feature 041: true when the log of a run's execution is withheld from this caller (see `log`). */
+            /** @description Planned by feature 041 (T041-29; not served yet): true when the log of a run's execution is withheld from this caller (see `log`). */
             logWithheld?: boolean;
             denied: string[];
             wallMs: number;
@@ -6119,7 +6119,7 @@ export interface components {
             /** Format: date-time */
             expiresAt: string;
         };
-        /** @description An execution as a listing shows it: without its log, which `getScriptExecution` has. Feature 041: `logTruncated` is false for a caller who may not read the run's step logs. */
+        /** @description An execution as a listing shows it: without its log, which `getScriptExecution` has. Planned by feature 041 (T041-29; not served yet): `logTruncated` is false for a caller who may not read the run's step logs. */
         ScriptExecutionSummary: {
             /** Format: uuid */
             id: string;
@@ -8382,6 +8382,7 @@ export interface operations {
     deleteRunLogs: {
         parameters: {
             query?: {
+                /** @description One stream of this run (`StepLogStream.id`). Another stream, of this tenant or not, is `404`, as for `listRunLogs`. */
                 stream?: string;
             };
             header?: never;
@@ -8401,9 +8402,11 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
             429: components["responses"]["TooManyRequests"];
             503: components["responses"]["Unavailable"];
             default: components["responses"]["InternalError"];
