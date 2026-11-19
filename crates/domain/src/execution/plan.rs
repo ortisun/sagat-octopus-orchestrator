@@ -302,9 +302,9 @@ pub fn plan(
         return drain(def, state, reason);
     }
     if state.is_paused() {
-        // feature 022: a step that the retry pass or an operator made ready while the run is paused waits for its
-        // gates and is decided in that commit (a pause keeps what a run holds, T022-025), never left undecided
-        // (invariant 11); a running run asks once everything else is planned, below
+        // feature 022: a step that the retry pass or an operator made ready while the run is paused is decided in that
+        // commit, so the journal says why it waits (invariant 11); a grant is then given back above, and the step asks
+        // again on resume (FR-022-046); a running run asks once everything else is planned, below
         if let Some(steps) = undecided_gates(state) {
             return Ok(Plan::Evaluate(Evaluation::Gates { steps }));
         }
@@ -367,6 +367,8 @@ fn node_of<'a>(
 /// What a step no longer needs is given back as soon as it no longer needs it (feature 022, FR-022-019, FR-022-046): the
 /// permit of an attempt that ended, and the permit and slot of a granted step that left `READY` without being leased.
 fn give_back_ended_gates(state: &RunState) -> Option<RunEvent> {
+    // a pause gives back what a granted, unleased step holds, and it waits to ask again on resume (FR-022-046, T29)
+    let pausing = state.is_paused() && state.stop_reason().is_none();
     for (instance, step) in state.instances() {
         let Some(node) = instance.path().is_root().then(|| instance.node().clone()) else {
             continue;
@@ -385,11 +387,15 @@ fn give_back_ended_gates(state: &RunState) -> Option<RunEvent> {
             let leased_this = step.attempt() >= slot.attempt();
             let left_ready_unleased =
                 !leased_this && step.status() != StepStatus::Ready && !waiting_on_gate;
+            let returned_on_pause =
+                pausing && !leased_this && (step.status() == StepStatus::Ready || waiting_on_gate);
             let due = match change {
                 super::GateChange::ConcurrencyReleased => {
-                    (leased_this && !step.status().is_leased()) || left_ready_unleased
+                    (leased_this && !step.status().is_leased())
+                        || left_ready_unleased
+                        || returned_on_pause
                 }
-                _ => left_ready_unleased,
+                _ => left_ready_unleased || returned_on_pause,
             };
             if due {
                 return Some(RunEvent::Gate(super::GateEvent {
@@ -418,7 +424,9 @@ pub fn undecided_gates(state: &RunState) -> Option<Vec<super::GateRequest>> {
             let next = step.attempt().saturating_add(1);
             (step.status() == StepStatus::Waiting
                 && matches!(step.waiting_on(), Some(WaitingOn::Gate))
-                && !step.gates().decided_all(declared, next))
+                && !step.gates().decided_all(declared, next)
+                // what a pause gave back is asked again on resume, not while paused (FR-022-046)
+                && !state.waits_for_resume(instance.node()))
             .then(|| super::GateRequest {
                 node: instance.node().clone(),
                 attempt: next,

@@ -2678,10 +2678,7 @@ where
                     RunOperation::Cancel => {
                         execution::stop_run(def, state, StopReason::Cancelled, None, now)?
                     }
-                    RunOperation::Pause => Progress {
-                        events: vec![execution::pause_run(state)?],
-                        pending: None,
-                    },
+                    RunOperation::Pause => execution::pause_run(def, state, now)?,
                     RunOperation::Resume => execution::resume_run(def, state, now)?,
                 };
                 Ok(((), progress))

@@ -37,6 +37,8 @@ An architectural rule that nothing checks is a wish. Each row is a rule and what
 | Review telemetry carries bounded codes only (037) | `crates/application/tests/telemetry_derive.rs` |
 | Design docs keep their sections, ids, evidence, owner gates and a consistent approval record; the constitution's principle hashes agree with its Sync Impact Report, and a changed constitution raises its version (ADR-0077) | `scripts/check-design-docs.py` (CI `architecture`), tests in `scripts/tests/test_check_design_docs.py` |
 | A review counts only if it ran with an accepted EGM plugin (ADR-0077) | `scripts/egm-tree-hash.py` against `docs/engineering/egm-accepted-hashes.json` (rule R2 of `check-design-docs.py`) |
+| A gated step that waits is never a claim candidate (ADR-0089 decision 1, feature 022) | `integration_claim_transition_efficiency::gated_window`, selected by every hot-path change (`scripts/select-test-targets.py`) |
+| A pause or a resume locks the keys it touches in the one sorted order, and a paused run holds no granted, unleased step (feature 022, D022-038, ADR-0096 proposed) | `integration_flow_control_step_policies::returns` |
 
 When you add a rule worth keeping, add its row and its check in the same change.
 

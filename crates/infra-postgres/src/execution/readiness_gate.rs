@@ -200,11 +200,20 @@ impl PgRunTx {
         // see it (a permit released and a successor decided on the same key in one commit) and no key row is locked
         // twice or out of order: semaphores before windows, each sorted (D022-038)
         let returns = self.pending_returns(pending_events).await?;
+        // a pause or a resume makes the keys of the run's queued steps due after this round: they are locked here, in
+        // the same sorted pass (correctness review M1 of 2026-11-20)
+        let rearmed = self.rearmed_keys(pending_events).await?;
         let returned = |table: KeyTable| -> Vec<ExistingKey> {
             returns
                 .iter()
                 .filter(|r| r.table == table)
                 .map(|r| r.key.clone())
+                .chain(
+                    rearmed
+                        .iter()
+                        .filter(|(t, _)| *t == table)
+                        .map(|(_, key)| key.clone()),
+                )
                 .collect()
         };
         let filed_semaphores = file_keys_with(
@@ -613,20 +622,79 @@ impl PgRunTx {
         events: &[RunEvent],
     ) -> Result<(), StoreError> {
         let returns = self.pending_returns(events).await?;
-        if returns.is_empty() {
+        let rearmed = self.rearmed_keys(events).await?;
+        if returns.is_empty() && rearmed.is_empty() {
             return Ok(());
         }
+        // the returns and the keys a pause or a resume makes due, in one sorted pass, before any of them is written
+        // (D022-038; correctness review M1 of 2026-11-20)
         for table in [KeyTable::Semaphores, KeyTable::Windows] {
             let rows: Vec<ExistingKey> = returns
                 .iter()
                 .filter(|r| r.table == table)
                 .map(|r| r.key.clone())
+                .chain(
+                    rearmed
+                        .iter()
+                        .filter(|(t, _)| *t == table)
+                        .map(|(_, key)| key.clone()),
+                )
                 .collect();
             if !rows.is_empty() {
                 lock_existing(&mut self.tx, table, &rows).await?;
             }
         }
-        self.apply_returns(returns).await
+        self.apply_returns(returns).await?;
+        if !rearmed.is_empty() {
+            self.rearm_queued_keys().await?;
+        }
+        Ok(())
+    }
+
+    /// The key rows of the run's queued steps when `events` pause or resume a run of a gated definition: what
+    /// [`Self::rearm_queued_keys`] makes due, to be locked with the transaction's other keys in the one order.
+    async fn rearmed_keys(
+        &mut self,
+        events: &[RunEvent],
+    ) -> Result<Vec<(KeyTable, ExistingKey)>, StoreError> {
+        let pausing = events
+            .iter()
+            .any(|event| matches!(event, RunEvent::RunPaused | RunEvent::RunResumed));
+        if !pausing || self.def.gated_nodes().next().is_none() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(String, String, String, Vec<u8>)> = sqlx::query_as(
+            "SELECT 'S', pool, group_name, key_digest FROM concurrency_waiters \
+              WHERE tenant_id = $1 AND run_id = $2 AND permit_scope = 'STEP' \
+             UNION \
+             SELECT 'W', pool, group_name, key_digest FROM rate_limit_waiters \
+              WHERE tenant_id = $1 AND run_id = $2 AND limit_scope = 'STEP'",
+        )
+        .bind(self.info.tenant_id.as_uuid())
+        .bind(self.info.run_id.as_uuid())
+        .fetch_all(&mut *self.tx)
+        .await
+        .map_err(store_error)?;
+        rows.into_iter()
+            .map(|(table, pool, group, digest)| {
+                Ok((
+                    if table == "S" {
+                        KeyTable::Semaphores
+                    } else {
+                        KeyTable::Windows
+                    },
+                    ExistingKey {
+                        tenant: self.info.tenant_id,
+                        namespace: self.info.namespace_id,
+                        pool: GatePool::parse(&pool).ok_or_else(|| corrupt("waiter pool"))?,
+                        level: GateLevel::Step,
+                        group: sagat_domain::workflow::ResolvedGroup::parse(&group)
+                            .map_err(|_| corrupt("waiter group"))?,
+                        digest: digest.try_into().map_err(|_| corrupt("waiter key"))?,
+                    },
+                ))
+            })
+            .collect()
     }
 
     /// The gate returns among `events` that have not been applied yet, each with the key row it is under.
@@ -929,12 +997,23 @@ pub(super) fn restore_gates(value: &serde_json::Value) -> Result<Gates, StoreErr
 }
 
 /// The `waiting_kind` of a step that waits for its gates: the first gate it still waits for, rate first (the
-/// precedence of FR-022-052, data-model "Steps and their gates"). A step that waits with no wait journaled is refused:
-/// a commit never leaves a gated step undecided (invariant 11).
-pub(super) fn gate_waiting_kind(step: &StepState) -> Result<&'static str, StoreError> {
-    match step.gates().waiting().next() {
-        Some((GateKind::RateLimit, _)) => Ok("RATE_LIMIT"),
-        Some((GateKind::Concurrency, _)) => Ok("CONCURRENCY"),
+/// precedence of FR-022-052, data-model "Steps and their gates"). A step that a pause gave its gates back waits to ask
+/// again on resume (FR-022-046): its first declared gate, rate first. Any other step that waits with no wait journaled
+/// is refused: a commit never leaves a gated step undecided (invariant 11).
+pub(super) fn gate_waiting_kind(
+    step: &StepState,
+    declared: Option<sagat_domain::execution::DeclaredGates>,
+    waits_for_resume: bool,
+) -> Result<&'static str, StoreError> {
+    let kind = match step.gates().waiting().next() {
+        Some((kind, _)) => Some(kind),
+        // `RunState::waits_for_resume`, the domain's one predicate (ADR-0096 proposed)
+        None if waits_for_resume => declared.and_then(|declared| declared.kinds().next()),
+        None => None,
+    };
+    match kind {
+        Some(GateKind::RateLimit) => Ok("RATE_LIMIT"),
+        Some(GateKind::Concurrency) => Ok("CONCURRENCY"),
         None => Err(StoreError::Internal {
             detail: "a gated step would be written waiting without a decision of its gates".into(),
         }),

@@ -615,6 +615,17 @@ taken after `git grep D022-04` on every `origin/*` branch.
   branches released in one commit) can add up to its own room, so the exact bound is in keys, not transactions (O1173).
   The bound is written in `docs/runbooks/flow-control.md`; the text of `contracts/errors.md` (`FLOW_CONTROL_LIMIT`) gains
   it when the approved texts are next revised with G1195.
+- **D022-048 — A pause gives back, a resume asks again (T022-100, T29; FR-022-040, FR-022-046; ADR-0096 proposed, O1175;
+  2026-11-20).** The pause settles the run (`execution::pause_run` now returns a `Progress`): the planner gives back the
+  permit and the slot of every gated root step granted for its next attempt and not leased, and the reducer makes it wait
+  again (`WAITING`, `Gate`) from those return events, so the journal alone reaches the same state. While the run is
+  paused that step is not asked (`RunState::waits_for_resume`, shared by the planner, invariant 11 and `persist`, whose
+  `waiting_kind` is its first declared gate, rate first). A step made ready while paused is still decided in its commit
+  (ADR-0094 decision 2); a grant is then given back at once. On resume, or on an operator's retry after a hold for
+  review, the step asks again for the same attempt: the reducer accepts a decision over a slot that attempt gave back
+  unleased (`ENDED`). A pause or resume locks the keys of its returns and of the run's waiters in one sorted pass before
+  it writes any (correctness review M1 of 2026-11-20). Hold for review, cancellation and run end gave back already (the
+  step leaves `READY`); T022-100 adds their tests. The exception to ADR-0094 decisions 2 and 3 is ADR-0096 (proposed).
 
 ## Gaps
 
@@ -657,6 +668,8 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G022-004 | `verify_run` does not check that a `wait_timed_out` comes at or after the deadline its `*.queued` journaled; the reservation counts an eligible waiter ahead without its own position (conservative). | Open |
 | G022-005 | An orphaned waiter (of a run that ended) is logged and counted (`outcome="orphan"`), not alerted; the runbook does not list the `gate_grant` and `gate_timeout` action kinds. | Open; T022-061, T022-082 |
 | G022-006 | The digest-key commands (activation, force, listing) are SQL functions with no audited API, CLI, span or metric (NFR-022-005, constitution VI; security review of 2026-11-20, finding 4); the force's history is append-only only for roles that may not drop its trigger, and a deployment where operators share the schema owner's login records whatever name they type and can retire a version by a direct `UPDATE` with no record (finding 5). The runbook tells operators to use their own login and never to edit the table by hand. | Open; T022-061, T022-082; a dedicated operator role |
+| G022-007 | FR-022-021 says "pausing a holder MUST NOT release its permit", and FR-022-019 counts a granted, unleased step as a holder, while FR-022-046 says a pause returns the permit and slot of a granted, unleased step: the approved texts disagree for that case; the build follows FR-022-046 (D022-048). T022-025's "pause keeps permit" holds for a leased step and a run holder. `data-model.md` ("Steps and their gates", invariant 11) does not say that a step a pause gave back waits with no waiter row. Revised when the approved texts are next re-approved. | Open; re-approval of the texts |
+| G022-008 | A step queued when its run pauses keeps its waiter row and its deadline, which runs during the pause: a long pause can fail it `CONCURRENCY_WAIT_TIMEOUT` or `RATE_LIMIT_WAIT_TIMEOUT` (the timeout routine does not look at the pause), while a step granted before the pause waits with no deadline (correctness review 4 and architecture M2 of 2026-11-20). Not introduced by T022-100. | Open; O1175 |
 | G1189 | Nothing in the database computes or checks `key_shard` and the waiter `shard`; two binaries that hashed differently would file one key under two shards. | Open; T022-097 |
 | G1190 | `flow_control_key_activate` records the operator as typed and keeps no history row with the database role, unlike the registry's activations. *Partly closed 2026-11-16 (D022-042): the version row records `activated_role` (`session_user`); a history of earlier activations of the same version is not kept, since a version is activated once. 2026-11-19 (D022-046): every force has an append-only history row with the database role and a reason; the runbook part is `docs/runbooks/flow-control.md`.* | Open; T022-061 (the rest of the runbook) |
 | G1191 | Untested: the down migrations' refusal when `run_events` holds a `concurrency.*` or `rate_limit.*` event; no contract test parses 018's reset-rule table against `RULES`. | Open |
@@ -797,6 +810,17 @@ the excess is then the holders at the force and falls as they finish; (c) the ol
 its own row. (b) is the exact reading of the words, at the cost of a design change; nothing waits on the answer except
 the wording of ADR-0093 decision 5.
 
+
+### O1175 — May a pause give back a granted, unleased step and ask again on resume (ADR-0096)?
+Asked 2026-11-20 (T022-100, D022-048; architecture review B1 of 2026-11-20). FR-022-046 (approved) says a pause returns
+the permit and slot of a granted, unleased step, makes it wait again, and the resume makes it ask again. ADR-0094
+(accepted 2026-11-19) says the planner asks every undecided gated step "running or paused" and `persist` refuses an
+undecided wait. Options: (a) **accept ADR-0096**: the build as described in D022-048 (a step a pause gave back waits
+undecided while paused; one made ready while paused is decided, and a grant is given back at once); (b) keep ADR-0094 as
+written: a paused run keeps its grants (against FR-022-046 and invariant 13 while it is paused); (c) (a), and also stop
+the deadline of a step queued before the pause while the run is paused (G022-008), which needs the timeout routine to
+skip paused runs and the deadline to move by the pause's length. **Recommended: (a)** now, and (c)'s deadline rule as a
+separate decision after measurement. T022-100 is not ticked until the owner answers.
 ## Owner decision of 2026-11-13: throughput control in release 0.3.0
 
 To be recorded on `develop` as **OD-2026-11-13-11** in `docs/owner-decisions.md` (not edited by this

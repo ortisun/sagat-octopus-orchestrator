@@ -1883,6 +1883,24 @@ impl RunState {
         self.gated.get(node).copied()
     }
 
+    /// Whether root step `node` waits, with no decision of its next attempt, only because a pause made it give back
+    /// what it was granted (FR-022-046, ADR-0096 proposed): it asks again on resume, and until then the planner does not
+    /// ask it, invariant 11 accepts it and `persist` writes it waiting for its first declared gate. The one predicate
+    /// the planner, [`Self::flow_control_breach`] and the adapter share.
+    #[must_use]
+    pub fn waits_for_resume(&self, node: &NodeId) -> bool {
+        self.paused
+            && self.stop.is_none()
+            && self
+                .steps
+                .get(&ExecutionInstanceId::root(node.clone()))
+                .is_some_and(|step| {
+                    step.status == StepStatus::Waiting
+                        && step.waiting == Some(WaitingOn::Gate)
+                        && step.gates.returned_unleased(step.attempt.saturating_add(1))
+                })
+    }
+
     /// The first breach of invariant 11 of feature 022 (`data-model.md`), if any: a step of a gated node that is `READY`
     /// or leased without a grant of each gate it declares for its attempt, or that waits for its gates without a
     /// decision (a grant or a wait) of each of them for the attempt it would start next.
@@ -1902,9 +1920,11 @@ impl RunState {
                 {
                     Some("a gated step was leased without a grant of each gate it declares")
                 }
+                // a pause gave its gates back: it asks again on resume (FR-022-046)
                 StepStatus::Waiting
                     if step.waiting == Some(WaitingOn::Gate)
-                        && !step.gates.decided_all(*declared, next) =>
+                        && !step.gates.decided_all(*declared, next)
+                        && !self.waits_for_resume(node) =>
                 {
                     Some("a gated step waits for its gates without a decision of each")
                 }
@@ -4886,6 +4906,8 @@ impl RunState {
             }
             GateTarget::Step { node, attempt } => {
                 let declared = self.gated.get(node).copied();
+                // a pause gives back what a granted, unleased step holds and makes it wait again (FR-022-046, T29)
+                let pausing = self.paused && self.stop.is_none();
                 if self
                     .steps
                     .contains_key(&ExecutionInstanceId::root(node.clone()))
@@ -4934,11 +4956,20 @@ impl RunState {
                 let leased_this = step.attempt >= *attempt;
                 let left_ready_unleased =
                     !leased_this && step.status != StepStatus::Ready && !waiting_on_gate;
+                let returned_on_pause = pausing
+                    && !leased_this
+                    && (step.status == StepStatus::Ready || waiting_on_gate);
+                let giving_back = matches!(
+                    event.change,
+                    GateChange::ConcurrencyReleased | GateChange::RateReturned
+                );
                 let giving_back_allowed = match event.change {
                     GateChange::ConcurrencyReleased => {
-                        (leased_this && !step.status.is_leased()) || left_ready_unleased
+                        (leased_this && !step.status.is_leased())
+                            || left_ready_unleased
+                            || returned_on_pause
                     }
-                    GateChange::RateReturned => left_ready_unleased,
+                    GateChange::RateReturned => left_ready_unleased || returned_on_pause,
                     _ => true,
                 };
                 if !giving_back_allowed {
@@ -4948,7 +4979,11 @@ impl RunState {
                 }
                 let fresh = step.status == StepStatus::Ready || waiting_on_gate;
                 step.gates.apply(event, *attempt, fresh)?;
-                if step.gates.is_waiting() {
+                if giving_back && returned_on_pause {
+                    // it waits again, to ask on resume
+                    step.status = StepStatus::Waiting;
+                    step.waiting = Some(WaitingOn::Gate);
+                } else if step.gates.is_waiting() {
                     if step.status == StepStatus::Ready {
                         step.status = StepStatus::Waiting;
                         step.waiting = Some(WaitingOn::Gate);

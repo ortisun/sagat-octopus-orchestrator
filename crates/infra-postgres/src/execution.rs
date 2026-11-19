@@ -5294,10 +5294,12 @@ impl RunTx for PgRunTx {
 
         // 0. Feature 022: what the events give back of a gate, before any usage row is locked (the keys come before
         // slot 8b, D022-038). Nothing for a transaction without a flow-control event.
-        if events
-            .iter()
-            .any(|event| matches!(event, RunEvent::Gate(_)))
-        {
+        if events.iter().any(|event| {
+            matches!(
+                event,
+                RunEvent::Gate(_) | RunEvent::RunPaused | RunEvent::RunResumed
+            )
+        }) {
             self.persist_gate_returns(events).await?;
         }
 
@@ -5535,12 +5537,8 @@ impl RunTx for PgRunTx {
                     }
                 }
                 RunEvent::StepCancelRequested { node } => self.release_child(node, false).await?,
-                // feature 022: a paused waiter is not granted nor counted ahead; its keys are due on pause and resume
-                RunEvent::RunPaused | RunEvent::RunResumed
-                    if self.def.gated_nodes().next().is_some() =>
-                {
-                    self.rearm_queued_keys().await?;
-                }
+                // feature 022: a paused waiter is not granted nor counted ahead; its keys were made due at step 0, under
+                // the one sorted lock of the transaction's keys
                 RunEvent::RunFinished { status } => self.outbox_run_finished(*status).await?,
                 _ => {}
             }
@@ -7509,7 +7507,15 @@ impl PgRunTx {
                 });
             }
             // feature 022: the first gate the step still waits for, rate first; a wait with no decision is refused
-            Some(WaitingOn::Gate) => (Some(readiness_gate::gate_waiting_kind(&step)?), None, None),
+            Some(WaitingOn::Gate) => (
+                Some(readiness_gate::gate_waiting_kind(
+                    &step,
+                    self.state.declared_gates(node),
+                    self.state.waits_for_resume(node),
+                )?),
+                None,
+                None,
+            ),
         };
         let gates = readiness_gate::gates_projection(&step)?;
         // How far back an event wait accepts events, beyond the moment it began waiting.

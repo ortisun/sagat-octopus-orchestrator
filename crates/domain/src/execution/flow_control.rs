@@ -443,6 +443,14 @@ impl Gates {
         })
     }
 
+    /// Whether a gate of attempt `attempt` was given back before that attempt was leased (a pause, a hold for review,
+    /// or any other exit from `READY` without a lease, FR-022-046): that attempt may be asked again.
+    #[must_use]
+    pub fn returned_unleased(&self, attempt: u32) -> bool {
+        self.slots()
+            .any(|slot| slot.attempt == attempt && slot.phase == GatePhase::Ended)
+    }
+
     /// Whether every gate in `declared` is decided for attempt `attempt` (granted, or waited for): what a commit that
     /// leaves a gated step waiting must hold (invariant 11).
     #[must_use]
@@ -465,7 +473,8 @@ impl Gates {
     /// Applies `event` to the gates of the run (`attempt` 0) or of a step's attempt.
     ///
     /// `fresh` says whether a gate with no state of this attempt may be decided at once (a run's admission, a step
-    /// that became ready in this transition); a gate already decided for this attempt never is again.
+    /// that became ready in this transition); a gate already decided for this attempt is decided again only after the
+    /// attempt gave it back unleased (`Ended`, a pause or a hold for review, FR-022-046).
     pub(super) fn apply(
         &mut self,
         event: &GateEvent,
@@ -526,6 +535,21 @@ impl Gates {
             (GateChange::ConcurrencyAcquired | GateChange::RateGranted { .. }, None) if fresh => {
                 GatePhase::Held
             }
+            // a slot this attempt gave back unleased (a pause, FR-022-046) is asked again, for the same attempt: an
+            // attempt that was leased ends its slot and the next decision is for the next attempt
+            (
+                GateChange::ConcurrencyQueued { queue_deadline_us }
+                | GateChange::RateQueued {
+                    queue_deadline_us, ..
+                },
+                Some((GatePhase::Ended, _)),
+            ) if fresh => GatePhase::Queued {
+                deadline_us: queue_deadline_us,
+            },
+            (
+                GateChange::ConcurrencyAcquired | GateChange::RateGranted { .. },
+                Some((GatePhase::Ended, _)),
+            ) if fresh => GatePhase::Held,
             (
                 GateChange::ConcurrencyAcquired | GateChange::RateGranted { .. },
                 Some((GatePhase::Queued { .. }, true)),

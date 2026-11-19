@@ -358,7 +358,11 @@ fn a_paused_run_releases_nothing_and_its_resume_asks_for_the_gates() {
     let mut journal = started.events;
     let (fence, leased) = execution::lease_step(&mut state, &sid("a")).expect("a leased");
     journal.push(leased);
-    journal.push(execution::pause_run(&mut state).expect("paused"));
+    journal.extend(
+        execution::pause_run(&def, &mut state, T0)
+            .expect("paused")
+            .events,
+    );
     let done = execution::complete_step(&def, &mut state, &sid("a"), fence, T0).expect("a done");
     journal.extend(done.events.iter().cloned());
     assert_eq!(
@@ -408,7 +412,11 @@ fn a_retry_due_in_a_paused_run_is_decided_in_its_commit() {
     )
     .expect("retry scheduled");
     journal.extend(failed.events.iter().cloned());
-    journal.push(execution::pause_run(&mut state).expect("paused"));
+    journal.extend(
+        execution::pause_run(&def, &mut state, T0)
+            .expect("paused")
+            .events,
+    );
     let due = execution::retry_due(&def, &mut state, &sid("b"), T0 + Duration::from_secs(1))
         .expect("due");
     journal.extend(due.events.iter().cloned());
@@ -778,4 +786,215 @@ fn a_timeout_before_the_deadline_or_of_an_undeclared_gate_is_refused() {
         matches!(lost, Err(ExecutionError::IllegalTransition { .. })),
         "{lost:?}"
     );
+}
+
+// ------------------------------------------------------------------------- T022-100: a pause gives back (T29)
+
+fn names(events: &[RunEvent]) -> Vec<&'static str> {
+    events.iter().map(RunEvent::name).collect()
+}
+
+/// FR-022-046, T29 of the plan: pausing a run gives back the permit and the slot of a gated step that is granted and
+/// not leased, and makes it wait again; nothing is asked while the run is paused; resuming asks again, for the same
+/// attempt, and the journal alone reaches the same state.
+#[test]
+fn a_pause_returns_the_gates_of_a_granted_unleased_step_and_its_resume_asks_again() {
+    let def = two_steps(true, true, activity("b"));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![
+            decision("b", 1, granted()),
+            decision("b", 1, GateChange::ConcurrencyAcquired),
+        ],
+        Vec::new(),
+    )
+    .expect("granted");
+    assert_eq!(
+        state.step(&sid("b")).expect("b").status(),
+        StepStatus::Ready
+    );
+
+    let paused = execution::pause_run(&def, &mut state, T0).expect("paused");
+    journal.extend(paused.events.iter().cloned());
+    assert_eq!(
+        names(&paused.events),
+        ["run.paused", "concurrency.released", "rate_limit.returned"]
+    );
+    assert_eq!(paused.pending, None, "nothing is asked while paused");
+    let b = state.step(&sid("b")).expect("b");
+    assert_eq!(b.status(), StepStatus::Waiting, "it waits again");
+    assert_eq!(b.waiting_on(), Some(&WaitingOn::Gate));
+    assert_eq!(b.attempt(), 0, "no attempt spent");
+    assert!(execution::lease_step(&mut state.clone(), &sid("b")).is_err());
+    assert_eq!(
+        execution::plan(&def, &state, T0).expect("plan"),
+        execution::Plan::Idle,
+        "a paused run does not ask again"
+    );
+    journal_alone_agrees(&def, &state, &journal);
+
+    let resumed = execution::resume_run(&def, &mut state, T0).expect("resumed");
+    journal.extend(resumed.events.iter().cloned());
+    assert_eq!(
+        resumed.pending,
+        Some(Evaluation::Gates {
+            steps: vec![GateRequest {
+                node: id("b"),
+                attempt: 1
+            }]
+        }),
+        "the resume asks again, for the same attempt"
+    );
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, rate_queued()), decision("b", 1, queued())],
+        Vec::new(),
+    )
+    .expect("queued behind whoever took the key meanwhile");
+    assert_eq!(
+        state.step(&sid("b")).expect("b").status(),
+        StepStatus::Waiting
+    );
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+/// A step that the retry pass makes ready in a paused run is decided in that commit (the journal says so); if it is
+/// granted, the pause gives the grant back at once, so a paused run holds no granted, unleased step (FR-022-046).
+#[test]
+fn a_step_granted_while_its_run_is_paused_gives_its_gates_back_in_that_commit() {
+    let def = two_steps(true, false, flaky("b", 3));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 1, GateChange::ConcurrencyAcquired)],
+        Vec::new(),
+    )
+    .expect("granted");
+    let (fence, leased) = execution::lease_step(&mut state, &sid("b")).expect("leased");
+    journal.push(leased);
+    let failed = execution::fail_step(
+        &def,
+        &mut state,
+        &sid("b"),
+        Failure {
+            fence,
+            code: FailureCode::worker_error(),
+            retryable: true,
+            jitter_sample: 0.0,
+        },
+        T0,
+    )
+    .expect("retry scheduled");
+    journal.extend(failed.events.iter().cloned());
+    let paused = execution::pause_run(&def, &mut state, T0).expect("paused");
+    journal.extend(paused.events.iter().cloned());
+    let due = execution::retry_due(&def, &mut state, &sid("b"), T0 + Duration::from_secs(1))
+        .expect("due");
+    journal.extend(due.events.iter().cloned());
+    let progress = resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 2, GateChange::ConcurrencyAcquired)],
+        Vec::new(),
+    )
+    .expect("granted while paused");
+    assert_eq!(
+        names(&progress.events),
+        ["concurrency.acquired", "concurrency.released"],
+        "given back in the same commit"
+    );
+    assert_eq!(progress.pending, None, "and not asked again while paused");
+    let b = state.step(&sid("b")).expect("b");
+    assert_eq!(
+        (b.status(), b.waiting_on()),
+        (StepStatus::Waiting, Some(&WaitingOn::Gate))
+    );
+    journal_alone_agrees(&def, &state, &journal);
+    let resumed = execution::resume_run(&def, &mut state, T0).expect("resumed");
+    journal.extend(resumed.events.iter().cloned());
+    assert!(
+        matches!(resumed.pending, Some(Evaluation::Gates { .. })),
+        "{:?}",
+        resumed.pending
+    );
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![decision("b", 2, GateChange::ConcurrencyAcquired)],
+        Vec::new(),
+    )
+    .expect("granted again on resume, for the same attempt");
+    assert_eq!(
+        state.step(&sid("b")).expect("b").status(),
+        StepStatus::Ready
+    );
+    let (_, leased) = execution::lease_step(&mut state, &sid("b")).expect("leased");
+    journal.push(leased);
+    journal_alone_agrees(&def, &state, &journal);
+}
+
+/// A hold for review takes a granted, unleased step out of `READY`: its permit and slot are given back; an operator's
+/// retry then asks again for the same attempt (the slot that attempt gave back is decided again), and the journal alone
+/// agrees (correctness review M2 of 2026-11-20).
+#[test]
+fn a_review_hold_gives_back_and_a_retry_asks_again_for_the_same_attempt() {
+    let def = two_steps(true, true, activity("b"));
+    let (mut state, mut journal, _) = after_a(&def);
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![
+            decision("b", 1, granted()),
+            decision("b", 1, GateChange::ConcurrencyAcquired),
+        ],
+        Vec::new(),
+    )
+    .expect("granted");
+    let held = execution::mark_for_review(&def, &mut state, &id("b"), T0).expect("held");
+    journal.extend(held.events.iter().cloned());
+    assert_eq!(
+        names(&held.events)
+            .into_iter()
+            .filter(|name| name.starts_with("concurrency.") || name.starts_with("rate_limit."))
+            .collect::<Vec<_>>(),
+        ["concurrency.released", "rate_limit.returned"]
+    );
+    let retried = execution::retry_review(&def, &mut state, &id("b"), T0).expect("retried");
+    journal.extend(retried.events.iter().cloned());
+    assert_eq!(
+        retried.pending,
+        Some(Evaluation::Gates {
+            steps: vec![GateRequest {
+                node: id("b"),
+                attempt: 1
+            }]
+        }),
+        "the same attempt asks again"
+    );
+    resolve(
+        &def,
+        &mut state,
+        &mut journal,
+        vec![
+            decision("b", 1, granted()),
+            decision("b", 1, GateChange::ConcurrencyAcquired),
+        ],
+        Vec::new(),
+    )
+    .expect("granted again");
+    assert_eq!(
+        state.step(&sid("b")).expect("b").status(),
+        StepStatus::Ready
+    );
+    journal_alone_agrees(&def, &state, &journal);
 }

@@ -2399,13 +2399,18 @@ pub fn stop_for_storage_quota(
     }
 }
 
-/// Pauses the run: nothing new is released or leased until it is resumed.
+/// Pauses the run and settles it: nothing new is released or leased until it is resumed, and a gated step that is
+/// granted and not leased gives back its permit and its slot and waits to ask again on resume (feature 022,
+/// FR-022-046, T29 of its plan, ADR-0096 proposed); nothing else changes.
 ///
 /// # Errors
 /// [`ExecutionError::AlreadyPaused`] / [`ExecutionError::AlreadyStopping`] / finished.
-pub fn pause_run(state: &mut RunState) -> Result<RunEvent, ExecutionError> {
-    state.apply(&RunEvent::RunPaused)?;
-    Ok(RunEvent::RunPaused)
+pub fn pause_run(
+    def: &WorkflowDefinition,
+    state: &mut RunState,
+    now: OffsetDateTime,
+) -> Result<Progress, ExecutionError> {
+    apply_then_settle(def, state, now, RunEvent::RunPaused)
 }
 
 /// Resumes a paused run and lets the planner catch up on what was held back.

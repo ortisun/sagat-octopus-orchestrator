@@ -480,6 +480,11 @@ fn concurrency_wait_timed_out_ends_the_run_failed_without_any_step_having_run() 
     .expect("timed out");
     assert_eq!(names(&timed_out.events), ["concurrency.wait_timed_out"]);
     assert_eq!(
+        state.run_gates().concurrency().map(|slot| slot.phase()),
+        Some(GatePhase::TimedOut),
+        "the wait ended by its timeout, not dequeued (T022-021)"
+    );
+    assert_eq!(
         state.status(),
         RunStatus::Waiting,
         "the entry stays held until the run is stopped"
@@ -526,6 +531,11 @@ fn concurrency_dequeued_by_a_cancellation_before_the_run_finishes() {
         ]
     );
     assert_eq!(state.status(), RunStatus::Cancelled);
+    assert_eq!(
+        state.run_gates().concurrency().map(|slot| slot.phase()),
+        Some(GatePhase::Dequeued),
+        "the wait left the queue without a permit (T022-021)"
+    );
     events.extend(cancelled.events);
     replays(&state, &events);
 }
