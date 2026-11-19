@@ -645,6 +645,19 @@ where the language can express one. The shared scenario is `collection-operators
   platform's envelope at all. (A `404` for a run that does not exist carries the envelope without that reason.)
 - **Older SDK, newer server.** Unknown fields are ignored; the worker is served at its own version.
 - Runtime matrix and package metadata: `sdks/README.md`.
+- **Register of worker-protocol minors.** A minor is taken by one feature, recorded here when its contract merges;
+  a feature whose draft names a minor that is taken uses the next free one (OD-2026-11-15-8).
+
+  | Minor | What it adds | Feature or source |
+  |---|---|---|
+  | 1.1 | The step identity on `Heartbeat` | `worker.proto` |
+  | 1.2 | `task_kind` (compensation, reconciliation) and `ResolveSecrets` | features 003 and 009 |
+  | 1.3 | Blobs (`WriteBlob`, `ReadBlob`, `input_blob_ref`) | FR-002-008 |
+  | 1.4 | Bounded task streams (`StreamTasks`) | ADR-0029 |
+  | 1.5 | Scoped execution identity | `ExecutionInstanceIdentity` |
+  | 1.6 | Managed database capabilities (`ResolveDatabase`) | feature 017, D600 |
+  | 1.7 | Step logs (`AppendStepLogs`, `StepLogPolicy`) | feature 041, OD-2026-11-15-8; served from its task T041-7 |
+  | next | Drafts 020, 021, 025 and 026 each name a minor; each takes the next free one when its contract merges | |
 
 ## 10. Observability and safety
 

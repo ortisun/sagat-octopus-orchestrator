@@ -160,3 +160,7 @@ All sources read on 2026-10-26. They inform the design; they do not prove any pl
 | O1280 | May `pii` values be sent to an external model provider, and who decides? | The provider revision MUST declare `maxPromptClassification` explicitly (no default); only `ai:manage` holders set it; `secret` is never allowed. Studio shows the choice as a data-processing decision. |
 | O1281 | Default role grants for the new permissions. | `admin`: `ai:manage`, `ai:use`, `mcp:expose`, `mcp:call`, `mcp:token:manage`; `developer`: `ai:use`, `mcp:call`, `mcp:token:manage` (own tokens, never above own permissions); `operator`: `mcp:call`; `viewer`: none; `ai:execute` only `agent-runner`. Transcripts need the reveal grant, which no role holds. |
 | O1282 | Build provider resources on feature 021 or ship a self-contained catalog first? | Build on 021 if it is accepted before T025-006 starts; otherwise ship the self-contained catalog behind the same API and migrate when 021 lands. |
+
+Note (2026-11-15, from feature 041): the owner gave worker-protocol minor 1.7 to feature 041 (step logs, OD-2026-11-15-8).
+Where this feature names 1.7 for its own addition, it takes the next free minor of the register in `sdks/SPEC.md` §9 when
+its contract merges.
