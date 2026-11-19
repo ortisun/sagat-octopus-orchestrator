@@ -1,0 +1,1151 @@
+//! The step-log ingest spike of design 041 (T041-31): the SQL of the ingest transaction (T1 to T10 of
+//! `specs/041-step-logs/data-model.md` §8) against a scratch schema `spike_041` that holds the tables of
+//! data-model.md §2, in the benchmark's own disposable database. Nothing here reaches a migration.
+//!
+//! The line table carries the two triggers ADR-0027 generates, charging its text columns to the
+//! existing `log` class, so that every commit takes the log policy fence and the tenant usage row as
+//! the `step_log` class will (the class itself does not exist before T041-5). The step-log quota
+//! resources do not exist before T041-4 either: their policy fences are taken by their keys and their
+//! defaults are used. A session is matched as T3 says except for the minor, which is not 1.7 yet.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use sagat_application::entropy::Token;
+use sagat_application::worker::ClaimedTask;
+use sqlx::{PgPool, Row};
+use tokio::sync::Semaphore;
+use uuid::Uuid;
+
+use crate::support::engine::Session;
+
+/// The application name an ingest transaction sets, so the sampler can tell its backends apart.
+pub const INGEST_APPLICATION: &str = "spike041";
+/// 2^62, the first server sequence (markers).
+const MARKER_SEQUENCE: i64 = 1 << 62;
+/// The defaults of data-model.md §6, since the resources do not exist yet.
+const ATTEMPT_RECORDS: i64 = 10_000;
+const ATTEMPT_BYTES: i64 = 1024 * 1024;
+const RETENTION_DAYS: i32 = 14;
+const RESOURCES: [&str; 3] = [
+    "step_log_attempt_records",
+    "step_log_attempt_bytes",
+    "step_log_retention_days",
+];
+
+/// The DDL of data-model.md §2 in the scratch schema, with the quota triggers on the line table.
+pub async fn install(pool: &PgPool) {
+    let statements = [
+        "DROP SCHEMA IF EXISTS spike_041 CASCADE",
+        "CREATE SCHEMA spike_041",
+        r"CREATE TABLE spike_041.step_log_streams (
+            tenant_id uuid NOT NULL,
+            stream_id bigint GENERATED ALWAYS AS IDENTITY,
+            public_id uuid NOT NULL,
+            namespace_id uuid NOT NULL,
+            run_id uuid NOT NULL,
+            step_id uuid,
+            node text NOT NULL,
+            instance_path_nodes text[],
+            instance_path_indices integer[],
+            attempt integer NOT NULL,
+            generation bigint,
+            source text NOT NULL DEFAULT 'worker',
+            records integer NOT NULL DEFAULT 0,
+            bytes bigint NOT NULL DEFAULT 0,
+            last_sequence bigint NOT NULL DEFAULT 0,
+            ceiling_sequence bigint,
+            next_marker_sequence bigint NOT NULL DEFAULT 4611686018427387904,
+            dropped_by_worker bigint NOT NULL DEFAULT 0,
+            dropped_by_server bigint NOT NULL DEFAULT 0,
+            ceiling_reason text,
+            truncated_records integer NOT NULL DEFAULT 0,
+            retention_days smallint NOT NULL,
+            final_at timestamptz,
+            first_at timestamptz,
+            last_at timestamptz NOT NULL,
+            expires_at timestamptz NOT NULL,
+            deleted_at timestamptz,
+            removed_at timestamptz,
+            purged_at timestamptz,
+            PRIMARY KEY (tenant_id, stream_id),
+            CONSTRAINT step_log_streams_public_uniq UNIQUE (tenant_id, public_id),
+            CONSTRAINT step_log_streams_attempt_uniq UNIQUE (tenant_id, run_id, step_id, attempt, generation, source),
+            CONSTRAINT step_log_streams_source_valid CHECK (source IN ('worker', 'script')),
+            CONSTRAINT step_log_streams_counters_valid CHECK (records >= 0 AND bytes >= 0 AND last_sequence >= 0
+                AND dropped_by_worker BETWEEN 0 AND 9007199254740992 AND dropped_by_server >= 0),
+            CONSTRAINT step_log_streams_path_valid CHECK (instance_path_nodes IS NULL
+                OR public.execution_instance_path_valid(instance_path_nodes, instance_path_indices)),
+            CONSTRAINT step_log_streams_retention_valid CHECK (retention_days BETWEEN 1 AND 365)
+        )",
+        "CREATE INDEX step_log_streams_run_idx ON spike_041.step_log_streams (tenant_id, run_id, stream_id)",
+        "CREATE INDEX step_log_streams_expiry_idx ON spike_041.step_log_streams (expires_at) WHERE removed_at IS NULL",
+        "CREATE INDEX step_log_streams_removal_idx ON spike_041.step_log_streams (tenant_id, stream_id) \
+           WHERE removed_at IS NOT NULL AND purged_at IS NULL",
+        r"CREATE FUNCTION spike_041.streams_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+            IF NEW.tenant_id <> OLD.tenant_id OR NEW.stream_id <> OLD.stream_id OR NEW.public_id <> OLD.public_id
+               OR NEW.run_id <> OLD.run_id OR NEW.attempt <> OLD.attempt
+               OR NEW.retention_days <> OLD.retention_days OR NEW.last_sequence < OLD.last_sequence
+               OR (OLD.final_at IS NOT NULL AND NEW.final_at IS NULL)
+               OR (OLD.removed_at IS NOT NULL AND NEW.removed_at IS NULL) THEN
+                RAISE EXCEPTION 'step log stream identity is immutable';
+            END IF;
+            RETURN NEW;
+        END $$",
+        "CREATE TRIGGER step_log_streams_guard BEFORE UPDATE ON spike_041.step_log_streams \
+           FOR EACH ROW EXECUTE FUNCTION spike_041.streams_guard()",
+        r"CREATE TABLE spike_041.step_log_lines (
+            tenant_id uuid NOT NULL,
+            stream_id bigint NOT NULL,
+            sequence bigint NOT NULL,
+            run_id uuid NOT NULL,
+            stored_xid xid8 NOT NULL DEFAULT pg_current_xact_id(),
+            stored_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            worker_time timestamptz,
+            level text NOT NULL,
+            kind text NOT NULL,
+            truncated boolean NOT NULL DEFAULT false,
+            message text,
+            exception text,
+            fields text,
+            marker_reason text,
+            script_execution_id uuid,
+            PRIMARY KEY (tenant_id, stream_id, sequence),
+            CONSTRAINT step_log_lines_stream_fk FOREIGN KEY (tenant_id, stream_id)
+                REFERENCES spike_041.step_log_streams (tenant_id, stream_id),
+            CONSTRAINT step_log_lines_level_valid CHECK (level IN ('trace', 'debug', 'info', 'warn', 'error')),
+            CONSTRAINT step_log_lines_sizes CHECK (octet_length(coalesce(message, '')) <= 8192
+                AND octet_length(coalesce(exception, '')) <= 8192 AND octet_length(coalesce(fields, '')) <= 2048)
+        )",
+        "CREATE INDEX step_log_lines_read_idx ON spike_041.step_log_lines (tenant_id, run_id, stored_xid, sequence)",
+        "CREATE INDEX step_log_lines_stream_idx ON spike_041.step_log_lines (tenant_id, stream_id, stored_xid, sequence)",
+        "CREATE TRIGGER step_log_lines_quota_delta AFTER INSERT OR UPDATE OR DELETE ON spike_041.step_log_lines \
+           FOR EACH ROW EXECUTE FUNCTION public.sagat_quota_row_delta(\
+             'log', 'octet_length_utf8', 'message', 'log', 'octet_length_utf8', 'exception', \
+             'log', 'octet_length_utf8', 'fields')",
+        "ALTER TABLE spike_041.step_log_lines ENABLE ALWAYS TRIGGER step_log_lines_quota_delta",
+        "CREATE CONSTRAINT TRIGGER step_log_lines_quota_flush AFTER INSERT OR UPDATE OR DELETE \
+           ON spike_041.step_log_lines DEFERRABLE INITIALLY DEFERRED FOR EACH ROW \
+           EXECUTE FUNCTION public.sagat_quota_flush_deltas()",
+        "ALTER TABLE spike_041.step_log_lines ENABLE ALWAYS TRIGGER step_log_lines_quota_flush",
+    ];
+    for statement in statements {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .unwrap_or_else(|error| panic!("spike schema: {error}"));
+    }
+}
+
+/// The admission of one replica: the Logs class cap and the tenant's tickets. No call waits for either.
+#[derive(Clone)]
+pub struct Admission {
+    class: Arc<Semaphore>,
+    tickets: Arc<Semaphore>,
+}
+
+impl Admission {
+    pub fn new(cap: usize, tickets: usize) -> Self {
+        Self {
+            class: Arc::new(Semaphore::new(cap.max(1))),
+            tickets: Arc::new(Semaphore::new(tickets.max(1))),
+        }
+    }
+}
+
+/// What a batch was answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Continue,
+    FinalOnly,
+    FinalRecorded,
+    Stop(&'static str),
+    /// No ticket or class slot was free: answered at once, no statement ran.
+    RetryTicket,
+    /// A lock timeout rolled the transaction back.
+    RetryLock,
+    /// The finalizer raised the tenant quota at commit.
+    RetryQuota,
+}
+
+impl Verdict {
+    pub const fn is_retry(self) -> bool {
+        matches!(self, Self::RetryTicket | Self::RetryLock | Self::RetryQuota)
+    }
+}
+
+/// One record of a batch: the worker's sequence and the message.
+pub struct Record {
+    pub sequence: i64,
+    pub message: String,
+}
+
+/// Counters of every answer, shared by the workers of a configuration.
+#[derive(Default)]
+pub struct Tally {
+    pub stored: AtomicU64,
+    pub final_only: AtomicU64,
+    pub final_recorded: AtomicU64,
+    pub stopped: AtomicU64,
+    pub retry_ticket: AtomicU64,
+    pub retry_ticket_final: AtomicU64,
+    pub retry_lock: AtomicU64,
+    pub retry_lock_final: AtomicU64,
+    pub retry_quota: AtomicU64,
+    pub calls: AtomicU64,
+    pub final_calls: AtomicU64,
+    pub flush_given_up: AtomicU64,
+}
+
+impl Tally {
+    fn count(&self, verdict: Verdict, final_batch: bool) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        if final_batch {
+            self.final_calls.fetch_add(1, Ordering::Relaxed);
+        }
+        let counter = match verdict {
+            Verdict::Continue => &self.stored,
+            Verdict::FinalOnly => &self.final_only,
+            Verdict::FinalRecorded => &self.final_recorded,
+            Verdict::Stop(_) => &self.stopped,
+            Verdict::RetryTicket if final_batch => &self.retry_ticket_final,
+            Verdict::RetryTicket => &self.retry_ticket,
+            Verdict::RetryLock if final_batch => &self.retry_lock_final,
+            Verdict::RetryLock => &self.retry_lock,
+            Verdict::RetryQuota => &self.retry_quota,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get(counter: &AtomicU64) -> u64 {
+        counter.load(Ordering::Relaxed)
+    }
+}
+
+/// The prototype ingest of one replica.
+#[derive(Clone)]
+pub struct Ingest {
+    pub pool: PgPool,
+    pub admission: Admission,
+    pub tally: Arc<Tally>,
+    /// Chunk rows (O041-021): one row per batch holding its records, instead of one row per line.
+    pub chunk: bool,
+}
+
+/// What the ingest learnt of the stream, for the plan of T5 and T6.
+struct StreamRow {
+    stream_id: i64,
+    records: i64,
+    bytes: i64,
+    last_sequence: i64,
+    final_recorded: bool,
+    removed: bool,
+}
+
+impl Ingest {
+    /// One batch through admission and the transaction. Returns the verdict and, when a transaction
+    /// ran to its end (committed or rolled back on a verdict), its service time.
+    pub async fn append(
+        &self,
+        session: &Session,
+        task: &ClaimedTask,
+        records: &[Record],
+        final_batch: bool,
+        highest: i64,
+    ) -> (Verdict, Option<Duration>) {
+        let Ok(_class) = self.admission.class.try_acquire() else {
+            self.tally.count(Verdict::RetryTicket, final_batch);
+            return (Verdict::RetryTicket, None);
+        };
+        let Ok(_ticket) = self.admission.tickets.try_acquire() else {
+            self.tally.count(Verdict::RetryTicket, final_batch);
+            return (Verdict::RetryTicket, None);
+        };
+        let started = Instant::now();
+        let verdict = match self
+            .transaction(session, task, records, final_batch, highest)
+            .await
+        {
+            Ok(verdict) => verdict,
+            Err(error) => match error.as_database_error() {
+                Some(db) if db.code().as_deref() == Some("55P03") => Verdict::RetryLock,
+                Some(db) if db.constraint() == Some("tenant_log_quota_exceeded") => {
+                    Verdict::RetryQuota
+                }
+                _ => panic!("spike ingest failed: {error}"),
+            },
+        };
+        let elapsed = started.elapsed();
+        self.tally.count(verdict, final_batch);
+        (verdict, (!verdict.is_retry()).then_some(elapsed))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn transaction(
+        &self,
+        session: &Session,
+        task: &ClaimedTask,
+        records: &[Record],
+        final_batch: bool,
+        highest: i64,
+    ) -> Result<Verdict, sqlx::Error> {
+        let tenant = session.principal.tenant_id().as_uuid();
+        let subject = session.principal.subject().as_str().to_owned();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "SELECT set_config('lock_timeout', '200ms', true), set_config('application_name', $1, true)",
+        )
+        .bind(INGEST_APPLICATION)
+        .execute(&mut *tx)
+        .await?;
+        // T1: the transaction's id before the lease is read.
+        let _xid: String = sqlx::query_scalar("SELECT pg_current_xact_id()::text")
+            .fetch_one(&mut *tx)
+            .await?;
+        // T2: the lease, without a lock, and the stop rule of the report.
+        let (nodes, indices): (Vec<String>, Vec<i32>) = task
+            .instance
+            .path()
+            .segments()
+            .iter()
+            .map(|segment| {
+                (
+                    segment.scope_node().as_str().to_owned(),
+                    i32::try_from(segment.iteration_index()).unwrap_or(i32::MAX),
+                )
+            })
+            .unzip();
+        let lease = sqlx::query(
+            "SELECT s.namespace_id, s.activity, s.cancel_requested, r.finished_at IS NOT NULL AS finished, \
+                    r.stop_reason IS NOT NULL AS stopping \
+               FROM steps s JOIN runs r ON r.tenant_id = s.tenant_id AND r.id = s.run_id \
+              WHERE s.tenant_id = $1 AND s.step_id = $2 AND s.run_id = $3 AND s.node = $4 \
+                AND s.instance_path_nodes = $5 AND s.instance_path_indices = $6 \
+                AND s.status IN ('LEASED', 'RUNNING') AND s.attempt = $7 AND s.generation = $8 \
+                AND s.lease_token_hash = $9 AND s.lease_expires_at > clock_timestamp()",
+        )
+        .bind(tenant)
+        .bind(task.step_id)
+        .bind(task.run_id.as_uuid())
+        .bind(task.instance.node().as_str())
+        .bind(&nodes)
+        .bind(&indices)
+        .bind(i32::try_from(task.fence.attempt).unwrap_or(i32::MAX))
+        .bind(i64::try_from(task.fence.generation).unwrap_or(i64::MAX))
+        .bind(Token::hash_of(task.lease_token.expose()))
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(lease) = lease else {
+            tx.rollback().await?;
+            return Ok(Verdict::Stop("lease"));
+        };
+        let namespace: Uuid = lease.try_get("namespace_id")?;
+        let activity: Option<String> = lease.try_get("activity")?;
+        let cancel: bool = lease.try_get("cancel_requested")?;
+        let finished: bool = lease.try_get("finished")?;
+        let stopping: bool = lease.try_get("stopping")?;
+        if cancel || finished || (stopping && !task.instance.node().is_derived()) {
+            tx.rollback().await?;
+            return Ok(Verdict::Stop("lease"));
+        }
+        // T3: the session, then the six policy fences in order, then the three values.
+        let session_ok: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM worker_sessions WHERE tenant_id = $1 AND id = $2 \
+               AND namespace_id = $3 AND subject = $4 AND token_hash = $5 \
+               AND expires_at > clock_timestamp() AND accepted_protocol_minor >= 0)",
+        )
+        .bind(tenant)
+        .bind(session.worker_id)
+        .bind(namespace)
+        .bind(&subject)
+        .bind(Token::hash_of(&session.token))
+        .fetch_one(&mut *tx)
+        .await?;
+        let keys: Vec<String> = RESOURCES
+            .iter()
+            .flat_map(|resource| {
+                [
+                    format!("quota-policy:{resource}:{tenant}"),
+                    format!("quota-policy:{resource}:{tenant}:{namespace}"),
+                ]
+            })
+            .collect();
+        sqlx::query(
+            "SELECT count(pg_advisory_xact_lock_shared(hashtextextended(k, 0))) \
+               FROM (SELECT k FROM unnest($1::text[]) WITH ORDINALITY AS f(k, n) ORDER BY n) ordered",
+        )
+        .bind(&keys)
+        .execute(&mut *tx)
+        .await?;
+        let stored: Vec<(String, Option<Uuid>, i64)> = sqlx::query_as(
+            "SELECT resource, namespace_id, max_value FROM quota_limits \
+              WHERE tenant_id = $1 AND resource = ANY($2) AND (namespace_id IS NULL OR namespace_id = $3) \
+             UNION ALL SELECT resource, NULL, max_value FROM quota_ceilings \
+              WHERE tenant_id = $1 AND resource = ANY($2)",
+        )
+        .bind(tenant)
+        .bind(RESOURCES.map(str::to_owned).to_vec())
+        .bind(namespace)
+        .fetch_all(&mut *tx)
+        .await?;
+        let (attempt_records, attempt_bytes) = (
+            value_of(&stored, RESOURCES[0], ATTEMPT_RECORDS),
+            value_of(&stored, RESOURCES[1], ATTEMPT_BYTES),
+        );
+        let retention = i32::try_from(value_of(&stored, RESOURCES[2], i64::from(RETENTION_DAYS)))
+            .unwrap_or(RETENTION_DAYS);
+        // T4: the stream row, created or locked to commit.
+        let row = sqlx::query(
+            "INSERT INTO spike_041.step_log_streams (tenant_id, public_id, namespace_id, run_id, step_id, node, \
+                 instance_path_nodes, instance_path_indices, attempt, generation, retention_days, last_at, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, clock_timestamp(), \
+                     clock_timestamp() + make_interval(days => $11)) \
+             ON CONFLICT (tenant_id, run_id, step_id, attempt, generation, source) \
+             DO UPDATE SET tenant_id = spike_041.step_log_streams.tenant_id \
+             RETURNING stream_id, records, bytes, last_sequence, final_at IS NOT NULL AS final_recorded, \
+                       (removed_at IS NOT NULL OR expires_at <= clock_timestamp()) AS removed",
+        )
+        .bind(tenant)
+        .bind(Uuid::new_v4())
+        .bind(namespace)
+        .bind(task.run_id.as_uuid())
+        .bind(task.step_id)
+        .bind(task.instance.node().as_str())
+        .bind(&nodes)
+        .bind(&indices)
+        .bind(i32::try_from(task.fence.attempt).unwrap_or(i32::MAX))
+        .bind(i64::try_from(task.fence.generation).unwrap_or(i64::MAX))
+        .bind(retention)
+        .fetch_one(&mut *tx)
+        .await?;
+        let stream = StreamRow {
+            stream_id: row.try_get("stream_id")?,
+            records: i64::from(row.try_get::<i32, _>("records")?),
+            bytes: row.try_get("bytes")?,
+            last_sequence: row.try_get("last_sequence")?,
+            final_recorded: row.try_get("final_recorded")?,
+            removed: row.try_get("removed")?,
+        };
+        let noted = if !session_ok {
+            Some(Verdict::Stop("session"))
+        } else if stream.removed {
+            Some(Verdict::Stop("removed"))
+        } else if stream.final_recorded {
+            Some(Verdict::FinalRecorded)
+        } else {
+            None
+        };
+        // T5 and T6: duplicates dropped, gaps counted, the attempt allowance from counters, then the
+        // tenant's from an unlocked read.
+        let fresh: Vec<&Record> = records
+            .iter()
+            .filter(|record| record.sequence > stream.last_sequence)
+            .collect();
+        let mut kept = Vec::new();
+        let (mut count, mut bytes, mut over) = (stream.records, stream.bytes, false);
+        for record in &fresh {
+            let size = i64::try_from(record.message.len()).unwrap_or(i64::MAX);
+            if over || count + 1 > attempt_records || bytes + size > attempt_bytes {
+                over = true;
+                continue;
+            }
+            count += 1;
+            bytes += size;
+            kept.push(*record);
+        }
+        let mark = fresh
+            .iter()
+            .map(|record| record.sequence)
+            .max()
+            .unwrap_or(0)
+            .max(if final_batch { highest } else { 0 })
+            .max(stream.last_sequence);
+        let sent = i64::try_from(fresh.len()).unwrap_or(i64::MAX);
+        let gap = (mark - stream.last_sequence - sent).max(0);
+        let _usage: Option<i64> =
+            sqlx::query_scalar("SELECT log_bytes FROM tenant_retained_usage WHERE tenant_id = $1")
+                .bind(tenant)
+                .fetch_optional(&mut *tx)
+                .await?;
+        // T7: the binding's patterns and the membership, without a lock.
+        let patterns: Vec<String> = sqlx::query_scalar(
+            "SELECT pattern FROM worker_bindings WHERE tenant_id = $1 AND namespace_id = $2 AND subject = $3",
+        )
+        .bind(tenant)
+        .bind(namespace)
+        .bind(&subject)
+        .fetch_all(&mut *tx)
+        .await?;
+        let role: Option<String> = sqlx::query_scalar(
+            "SELECT role FROM memberships WHERE tenant_id = $1 AND subject = $2",
+        )
+        .bind(tenant)
+        .bind(&subject)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let covered = activity.is_some() && !patterns.is_empty();
+        if !covered || role.is_none() {
+            tx.rollback().await?;
+            return Ok(Verdict::Stop("authority"));
+        }
+        if let Some(noted) = noted {
+            tx.rollback().await?;
+            return Ok(noted);
+        }
+        // T8: the kept records, at most once each.
+        let joined;
+        let (sequences, messages): (Vec<i64>, Vec<&str>) = if self.chunk && !kept.is_empty() {
+            joined = kept
+                .iter()
+                .map(|record| record.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            (vec![kept[0].sequence], vec![joined.as_str()])
+        } else {
+            (
+                kept.iter().map(|record| record.sequence).collect(),
+                kept.iter().map(|record| record.message.as_str()).collect(),
+            )
+        };
+        let inserted: Vec<i32> = sqlx::query_scalar(
+            "INSERT INTO spike_041.step_log_lines (tenant_id, stream_id, sequence, run_id, worker_time, level, kind, message) \
+             SELECT $1, $2, s, $3, clock_timestamp(), 'info', 'line', m FROM unnest($4::bigint[], $5::text[]) AS u(s, m) \
+             ON CONFLICT (tenant_id, stream_id, sequence) DO NOTHING RETURNING octet_length(message)",
+        )
+        .bind(tenant)
+        .bind(stream.stream_id)
+        .bind(task.run_id.as_uuid())
+        .bind(&sequences)
+        .bind(&messages)
+        .fetch_all(&mut *tx)
+        .await?;
+        let stored_bytes: i64 = inserted.iter().map(|n| i64::from(*n)).sum();
+        let stored_count = if self.chunk {
+            i32::try_from(kept.len()).unwrap_or(i32::MAX)
+        } else {
+            i32::try_from(inserted.len()).unwrap_or(i32::MAX)
+        };
+        let dropped_by_server = sent - i64::try_from(kept.len()).unwrap_or(i64::MAX);
+        // T9: the counters, from what the insert returned.
+        sqlx::query(
+            "UPDATE spike_041.step_log_streams SET last_sequence = GREATEST(last_sequence, $3), \
+                    records = records + $4, bytes = bytes + $5, \
+                    dropped_by_worker = LEAST(dropped_by_worker + $6, 9007199254740992), \
+                    dropped_by_server = dropped_by_server + $7, \
+                    ceiling_sequence = CASE WHEN $8 AND ceiling_sequence IS NULL THEN $3 ELSE ceiling_sequence END, \
+                    ceiling_reason = CASE WHEN $8 AND ceiling_reason IS NULL THEN 'attempt_bytes' ELSE ceiling_reason END, \
+                    first_at = coalesce(first_at, clock_timestamp()), last_at = clock_timestamp(), \
+                    expires_at = clock_timestamp() + make_interval(days => retention_days::integer), \
+                    final_at = CASE WHEN $9 THEN coalesce(final_at, clock_timestamp()) ELSE final_at END \
+              WHERE tenant_id = $1 AND stream_id = $2",
+        )
+        .bind(tenant)
+        .bind(stream.stream_id)
+        .bind(mark)
+        .bind(stored_count)
+        .bind(stored_bytes)
+        .bind(gap)
+        .bind(dropped_by_server)
+        .bind(over)
+        .bind(final_batch)
+        .execute(&mut *tx)
+        .await?;
+        // T10: the commit runs the finalizer (the log fence and the tenant usage row).
+        tx.commit().await?;
+        let _ = MARKER_SEQUENCE;
+        Ok(if over {
+            Verdict::FinalOnly
+        } else {
+            Verdict::Continue
+        })
+    }
+}
+
+fn value_of(stored: &[(String, Option<Uuid>, i64)], resource: &str, default: i64) -> i64 {
+    let scoped = stored
+        .iter()
+        .find(|(name, namespace, _)| name == resource && namespace.is_some());
+    let tenant = stored
+        .iter()
+        .find(|(name, namespace, _)| name == resource && namespace.is_none());
+    scoped.or(tenant).map_or(default, |(_, _, value)| *value)
+}
+
+/// `count` records of `bytes` bytes each, numbered from `from`.
+pub fn records(from: i64, count: usize, bytes: usize) -> Vec<Record> {
+    (0..count)
+        .map(|n| {
+            let sequence = from + i64::try_from(n).unwrap_or(0);
+            let head = format!("line {sequence} of the spike ");
+            let mut message = head.clone();
+            while message.len() < bytes {
+                message.push('x');
+            }
+            message.truncate(bytes.max(head.len()));
+            Record { sequence, message }
+        })
+        .collect()
+}
+
+/// Sends a batch as an SDK does inside its final flush: a refused batch is sent again after 200 ms
+/// until `deadline`; returns the last verdict and the service times of the transactions that ran.
+#[allow(clippy::too_many_arguments)] // the batch and its fence, as the RPC carries them
+pub async fn send_until(
+    ingest: &Ingest,
+    session: &Session,
+    task: &ClaimedTask,
+    records: &[Record],
+    final_batch: bool,
+    highest: i64,
+    deadline: Instant,
+    services: &mut Vec<Duration>,
+) -> Option<Verdict> {
+    loop {
+        let (verdict, service) = ingest
+            .append(session, task, records, final_batch, highest)
+            .await;
+        if let Some(service) = service {
+            services.push(service);
+        }
+        if !verdict.is_retry() {
+            return Some(verdict);
+        }
+        if Instant::now() + Duration::from_millis(200) >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+// ---------------------------------------------------------------------------------- the driver
+
+/// The workflow a configuration runs.
+#[derive(Clone, Copy)]
+pub enum Shape {
+    /// Runs of three chained activities, as `step_transitions_per_second`.
+    Chain,
+    /// Runs of one `forEach` over `items` whose body is one activity.
+    Fanout { items: usize },
+}
+
+/// One configuration of the spike.
+pub struct RowSpec {
+    pub label: &'static str,
+    pub api_replicas: usize,
+    pub workers: usize,
+    pub runs: usize,
+    pub shape: Shape,
+    /// `None`: the driver is off (the baseline); else the Logs class cap and the tenant tickets per replica.
+    pub admission: Option<(usize, usize)>,
+    /// Records per step and bytes per record in the first batch.
+    pub lines: (usize, usize),
+    /// Hold `BEGIN; SELECT pg_current_xact_id();` on another connection while the workers run.
+    pub hold: bool,
+    /// Send the lines in the final batch itself (one ingest per step), as an SDK does for a step
+    /// shorter than its one-second flush, instead of a batch and then an empty final batch.
+    pub single_final: bool,
+    /// Chunk rows instead of one row per line (O041-021).
+    pub chunk: bool,
+}
+
+pub struct RowResult {
+    pub transitions: usize,
+    pub per_second: f64,
+    pub completes: Vec<Duration>,
+    pub flushes: Vec<Duration>,
+    pub services: Vec<Duration>,
+    pub tally: Arc<Tally>,
+    /// 10 ms samples of a non-ingest backend waiting on a lock in `COMMIT`, and of those whose blocker
+    /// was an ingest backend.
+    pub commit_waits: (u64, u64),
+    pub deltas_bytes: (i64, i64),
+    pub held_for: Option<Duration>,
+}
+
+/// A 1 KiB output that differs per task, so every completion stores a payload not yet stored.
+fn output(task: &ClaimedTask) -> Vec<u8> {
+    let tag = task.task_id();
+    let pad = "o".repeat(1024usize.saturating_sub(tag.len() + 16));
+    serde_json::to_vec(&serde_json::json!({ "t": tag, "pad": pad })).expect("json")
+}
+
+async fn start(
+    w: &crate::support::engine::World,
+    wf: sagat_domain::definition::WorkflowId,
+    shape: Shape,
+    runs: usize,
+) {
+    use futures_util::StreamExt as _;
+    let mut apis = Vec::new();
+    for _ in 0..4 {
+        apis.push(Arc::new(w.replica_with_pool(16).await));
+    }
+    let tag = Uuid::new_v4().simple().to_string();
+    let started: Vec<()> = futures_util::stream::iter(0..runs)
+        .map(|i| {
+            let api = Arc::clone(&apis[i % apis.len()]);
+            let admin = w.admin.clone();
+            let tag = tag.clone();
+            async move {
+                let input = match shape {
+                    Shape::Chain => serde_json::json!({ "i": i }),
+                    Shape::Fanout { items } => {
+                        serde_json::json!({ "items": (0..items).collect::<Vec<_>>() })
+                    }
+                };
+                let input = serde_json::to_vec(&input).expect("json");
+                api.runs
+                    .start(
+                        &admin,
+                        &sagat_application::runs::StartRun {
+                            namespace: "payments",
+                            workflow: wf,
+                            version: None,
+                            input: &input,
+                            correlation_id: None,
+                            deadline: None,
+                            key: &format!("spike-{tag}-{i:08}"),
+                        },
+                        &crate::support::engine::ctx(),
+                    )
+                    .await
+                    .expect("start");
+            }
+        })
+        .buffer_unordered(64)
+        .collect()
+        .await;
+    assert_eq!(started.len(), runs);
+}
+
+/// Runs one configuration: workers poll, and for each task (driver on) send a batch of the
+/// configured lines and an empty final batch within a 2 s flush, then complete with a 1 KiB output.
+#[allow(clippy::too_many_lines)]
+pub async fn run_row(
+    w: &Arc<crate::support::engine::World>,
+    wf: sagat_domain::definition::WorkflowId,
+    spec: &RowSpec,
+    activities: &[&str],
+) -> RowResult {
+    let fanout = matches!(spec.shape, Shape::Fanout { .. });
+    let mut apis = Vec::new();
+    for _ in 0..spec.api_replicas {
+        let mut replica = w.replica_with_pool(crate::API_POOL).await;
+        if fanout {
+            // Steps inside a collection need the scoped claim and report path (protocol 1.5).
+            replica.store = replica.store.clone().with_scoped_worker_protocol();
+            replica.workers = sagat_application::worker::WorkerService::new(
+                replica.store.clone(),
+                sagat_application::clock::SystemClock,
+                sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+                sagat_application::entropy::SystemEntropy,
+                sagat_application::worker::WorkerSettings::default(),
+            );
+        }
+        apis.push(Arc::new(replica));
+    }
+    let tally = Arc::new(Tally::default());
+    let ingests: Vec<Option<Ingest>> = apis
+        .iter()
+        .map(|api| {
+            spec.admission.map(|(cap, tickets)| Ingest {
+                pool: api.execution_pool.clone(),
+                admission: Admission::new(cap, tickets),
+                tally: Arc::clone(&tally),
+                chunk: spec.chunk,
+            })
+        })
+        .collect();
+    start(w, wf, spec.shape, spec.runs).await;
+    let mut sessions = Vec::new();
+    let mut principal = w.worker.clone();
+    let tag = Uuid::new_v4().simple().to_string();
+    for n in 0..spec.workers {
+        if n % 32 == 0 {
+            principal = w
+                .member(
+                    &format!("spike-{tag}-{}", n / 32),
+                    sagat_domain::identity::Role::Worker,
+                )
+                .await;
+        }
+        if matches!(spec.shape, Shape::Fanout { .. }) {
+            // A step inside a collection is leased only to a scoped worker (protocol 1.5).
+            w.bind_everything(&principal).await;
+            let registered = apis[0]
+                .workers
+                .register(
+                    &principal,
+                    "payments",
+                    &format!("spike-scoped-{}", Uuid::new_v4().simple()),
+                    &sagat_application::worker::Capabilities {
+                        activities: activities.iter().map(|a| (*a).to_owned()).collect(),
+                        languages: vec!["rust".into()],
+                        pools: vec![],
+                        max_inflight: 100,
+                        protocol_version: "1.5".into(),
+                    },
+                )
+                .await
+                .expect("register a scoped worker");
+            if n == 0 {
+                eprintln!(
+                    "spike fan-out: scoped worker accepted at {}",
+                    registered.accepted_protocol_version
+                );
+            }
+            sessions.push(Session {
+                principal: principal.clone(),
+                worker_id: registered.worker_id,
+                token: registered.session_token.expose().to_owned(),
+            });
+        } else {
+            sessions.push(w.session_as(&principal, activities, 100).await);
+        }
+    }
+    // Iterations of a collection are opened by the scheduler's passes.
+    let scheduler = if fanout {
+        // Collections advance only under a placement that holds the shard fences.
+        let placement = sagat_scheduler::Placement::new(format!("spike-{tag}").as_str());
+        sagat_scheduler::Keeper::new(
+            apis[0].store.clone(),
+            placement.clone(),
+            sagat_scheduler::KeeperSettings {
+                ttl: Duration::from_secs(3_600),
+            },
+        )
+        .round()
+        .await
+        .expect("acquire the shard fences");
+        Some(Arc::new(
+            sagat_scheduler::Scheduler::new(
+                apis[0].store.clone(),
+                sagat_application::execution::Engine::new(sagat_infra_ir::JsonEvaluator),
+                sagat_application::entropy::SystemEntropy,
+                sagat_scheduler::SchedulerSettings::default(),
+            )
+            .with_children(w.cache.clone())
+            .with_placement(placement),
+        ))
+    } else {
+        None
+    };
+    let ticker = scheduler.map(|scheduler| {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let handle = tokio::spawn(async move {
+            let mut shown = 0;
+            while !flag.load(Ordering::Relaxed) {
+                let report = scheduler.tick().await;
+                if shown < 3 {
+                    eprintln!("spike fan-out tick: {report:?}");
+                    shown += 1;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        (stop, handle)
+    });
+    let deltas_before = deltas_size(&w.db.pool).await;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sampler = tokio::spawn({
+        let (pool, stop) = (w.db.pool.clone(), Arc::clone(&stop));
+        async move {
+            let (mut waits, mut by_ingest) = (0u64, 0u64);
+            while !stop.load(Ordering::Relaxed) {
+                let row: Result<(i64, i64), _> = sqlx::query_as(
+                    "SELECT count(*), count(*) FILTER (WHERE EXISTS ( \
+                         SELECT 1 FROM pg_stat_activity b WHERE b.pid = ANY (pg_blocking_pids(a.pid)) \
+                            AND b.application_name = $1)) \
+                       FROM pg_stat_activity a \
+                      WHERE a.wait_event_type = 'Lock' AND a.backend_type = 'client backend' \
+                        AND a.pid <> pg_backend_pid() AND a.application_name <> $1 AND a.query = 'COMMIT'",
+                )
+                .bind(INGEST_APPLICATION)
+                .fetch_one(&pool)
+                .await;
+                if let Ok((n, m)) = row {
+                    waits += u64::try_from(n).unwrap_or(0);
+                    by_ingest += u64::try_from(m).unwrap_or(0);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            (waits, by_ingest)
+        }
+    });
+    let holder = if spec.hold {
+        let mut conn = w.db.pool.acquire().await.expect("a connection to hold");
+        sqlx::query("BEGIN")
+            .execute(&mut *conn)
+            .await
+            .expect("begin");
+        sqlx::query("SELECT pg_current_xact_id()")
+            .execute(&mut *conn)
+            .await
+            .expect("an xid");
+        Some((conn, Instant::now()))
+    } else {
+        None
+    };
+    let started = Instant::now();
+    let results =
+        futures_util::future::join_all(sessions.iter().enumerate().map(|(n, session)| {
+            let api = Arc::clone(&apis[n % spec.api_replicas]);
+            let ingest = ingests[n % spec.api_replicas].clone();
+            let lines = spec.lines;
+            let single = spec.single_final;
+            let patience = if matches!(spec.shape, Shape::Fanout { .. }) {
+                50
+            } else {
+                3
+            };
+            async move {
+                let mut counters = crate::poll_client::PollCounters::default();
+                let (mut completes, mut flushes, mut services) =
+                    (Vec::new(), Vec::new(), Vec::new());
+                let mut last_done = Instant::now();
+                let mut empty = 0;
+                while empty < patience {
+                    let tasks = crate::poll_client::poll(&api, session, 16, &mut counters)
+                        .await
+                        .unwrap_or_else(|failure| panic!("poll: {:?}", failure.error))
+                        .tasks;
+                    if tasks.is_empty() {
+                        empty += 1;
+                        if patience > 3 {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                        continue;
+                    }
+                    empty = 0;
+                    for task in &tasks {
+                        if let Some(ingest) = &ingest {
+                            let flush = Instant::now();
+                            let deadline = flush + Duration::from_secs(2);
+                            let batch = records(1, lines.0, lines.1);
+                            let highest = i64::try_from(lines.0).unwrap_or(0);
+                            let first = if single {
+                                None
+                            } else {
+                                send_until(
+                                    ingest,
+                                    session,
+                                    task,
+                                    &batch,
+                                    false,
+                                    0,
+                                    deadline,
+                                    &mut services,
+                                )
+                                .await
+                            };
+                            let last = if single {
+                                send_until(
+                                    ingest,
+                                    session,
+                                    task,
+                                    &batch,
+                                    true,
+                                    highest,
+                                    deadline,
+                                    &mut services,
+                                )
+                                .await
+                            } else {
+                                match first {
+                                    Some(_) => {
+                                        send_until(
+                                            ingest,
+                                            session,
+                                            task,
+                                            &[],
+                                            true,
+                                            highest,
+                                            deadline,
+                                            &mut services,
+                                        )
+                                        .await
+                                    }
+                                    None => None,
+                                }
+                            };
+                            if last.is_none() {
+                                ingest.tally.flush_given_up.fetch_add(1, Ordering::Relaxed);
+                            }
+                            flushes.push(flush.elapsed());
+                        }
+                        let t = Instant::now();
+                        api.workers
+                            .complete(
+                                &session.principal,
+                                &crate::support::engine::task_ref(task),
+                                &output(task),
+                                &format!("done-{}", task.task_id()),
+                            )
+                            .await
+                            .unwrap_or_else(|error| panic!("complete: {error:?}"));
+                        completes.push(t.elapsed());
+                        last_done = Instant::now();
+                    }
+                }
+                (completes, flushes, services, last_done)
+            }
+        }))
+        .await;
+    stop.store(true, Ordering::Relaxed);
+    if let Some((flag, handle)) = ticker {
+        flag.store(true, Ordering::Relaxed);
+        handle.await.expect("the ticker");
+    }
+    let held_for = if let Some((mut conn, since)) = holder {
+        let held = since.elapsed();
+        sqlx::query("ROLLBACK")
+            .execute(&mut *conn)
+            .await
+            .expect("release the held transaction");
+        Some(held)
+    } else {
+        None
+    };
+    let commit_waits = sampler.await.expect("the sampler");
+    let deltas_after = deltas_size(&w.db.pool).await;
+    let (mut completes, mut flushes, mut services) = (Vec::new(), Vec::new(), Vec::new());
+    let mut finished = started;
+    for (c, f, s, last) in results {
+        completes.extend(c);
+        flushes.extend(f);
+        services.extend(s);
+        finished = finished.max(last);
+    }
+    completes.sort_unstable();
+    flushes.sort_unstable();
+    services.sort_unstable();
+    let transitions = completes.len();
+    if transitions == 0 {
+        let runs: Vec<(String, i64)> =
+            sqlx::query_as("SELECT status, count(*) FROM runs WHERE workflow_id = $1 GROUP BY 1")
+                .bind(wf.as_uuid())
+                .fetch_all(&w.db.pool)
+                .await
+                .unwrap_or_default();
+        let steps: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT s.node, s.status, count(*) FROM steps s JOIN runs r ON r.id = s.run_id \
+              WHERE r.workflow_id = $1 GROUP BY 1, 2",
+        )
+        .bind(wf.as_uuid())
+        .fetch_all(&w.db.pool)
+        .await
+        .unwrap_or_default();
+        eprintln!(
+            "spike {}: nothing completed; runs {runs:?}; steps {steps:?}",
+            spec.label
+        );
+    }
+    let expected = match spec.shape {
+        Shape::Chain => spec.runs * 3,
+        Shape::Fanout { items } => spec.runs * items,
+    };
+    assert_eq!(
+        transitions, expected,
+        "{}: every step completed",
+        spec.label
+    );
+    let elapsed = finished - started;
+    RowResult {
+        transitions,
+        per_second: transitions as f64 / elapsed.as_secs_f64().max(1e-9),
+        completes,
+        flushes,
+        services,
+        tally,
+        commit_waits,
+        deltas_bytes: (deltas_before, deltas_after),
+        held_for,
+    }
+}
+
+async fn deltas_size(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT pg_total_relation_size('public.quota_transaction_deltas')")
+        .fetch_one(pool)
+        .await
+        .expect("the size of quota_transaction_deltas")
+}
+
+/// Workload (b): `attempts` leased attempts of one tenant on one replica each send full batches of
+/// 500 records of `bytes` bytes until the attempt ceiling, at once. Returns the service times.
+pub async fn full_batches(
+    w: &Arc<crate::support::engine::World>,
+    wf: sagat_domain::definition::WorkflowId,
+    attempts: usize,
+    tickets: usize,
+    cap: usize,
+    rounds: usize,
+    bytes: usize,
+) -> (Vec<Duration>, Arc<Tally>) {
+    let api = Arc::new(w.replica_with_pool(crate::API_POOL).await);
+    let tally = Arc::new(Tally::default());
+    let ingest = Ingest {
+        pool: api.execution_pool.clone(),
+        admission: Admission::new(cap, tickets),
+        tally: Arc::clone(&tally),
+        chunk: false,
+    };
+    let session = w.session_as(&w.worker, &["act.big"], 1000).await;
+    let mut services = Vec::new();
+    for _ in 0..rounds {
+        start(w, wf, Shape::Chain, attempts).await;
+        let mut tasks = Vec::new();
+        while tasks.len() < attempts {
+            let mut counters = crate::poll_client::PollCounters::default();
+            let polled = crate::poll_client::poll(&api, &session, 64, &mut counters)
+                .await
+                .unwrap_or_else(|failure| panic!("poll: {:?}", failure.error))
+                .tasks;
+            tasks.extend(polled);
+        }
+        let per: Vec<Vec<Duration>> = futures_util::future::join_all(tasks.iter().map(|task| {
+            let (ingest, session) = (&ingest, &session);
+            async move {
+                let mut services = Vec::new();
+                let mut next = 1;
+                for _ in 0..16 {
+                    let batch = records(next, 500, bytes);
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    let verdict = send_until(
+                        ingest,
+                        session,
+                        task,
+                        &batch,
+                        false,
+                        0,
+                        deadline,
+                        &mut services,
+                    )
+                    .await;
+                    next += 500;
+                    if verdict != Some(Verdict::Continue) {
+                        break;
+                    }
+                }
+                services
+            }
+        }))
+        .await;
+        services.extend(per.into_iter().flatten());
+        for task in &tasks {
+            api.workers
+                .complete(
+                    &session.principal,
+                    &crate::support::engine::task_ref(task),
+                    b"{}",
+                    &format!("done-{}", task.task_id()),
+                )
+                .await
+                .expect("complete");
+        }
+    }
+    services.sort_unstable();
+    (services, tally)
+}

@@ -29,6 +29,7 @@ mod support;
 mod diagnostics;
 mod dr;
 mod poll_client;
+mod step_log_spike;
 #[cfg(test)]
 #[path = "transition_oracle_tests.rs"]
 mod transition_oracle_tests;
@@ -1637,4 +1638,442 @@ async fn step_transitions_per_second() {
         "\nThe load levels of the specification (FR-010-006), against the best closed-loop figure on this machine:\n\n{verdicts}\n`transitions/s` is measured from the start of the workers to the last completion. The workers, the API replicas and the database share the machine.\n"
     ));
     section("Step transitions per second (BL02, BL04)", &body);
+}
+
+// ---------------------------------------------------------------------------------- step logs (041)
+
+fn spike_row_line(label: &str, row: &step_log_spike::RowResult) -> String {
+    let line = spike_row_text(label, row);
+    eprint!("spike row: {line}");
+    line
+}
+
+fn spike_row_text(label: &str, row: &step_log_spike::RowResult) -> String {
+    use step_log_spike::Tally;
+    let t = &row.tally;
+    let calls = Tally::get(&t.calls).max(1);
+    let finals = Tally::get(&t.final_calls).max(1);
+    format!(
+        "| {label} | {} | {:.0} | {:.1} / {:.1} / {:.1} ms | {:.1} / {:.1} / {:.1} ms | {:.2} / {:.2} ms | {} | {:.2}% ({:.2}% of finals) | {:.2}% ({:.2}% of finals) | {} | {} | {} / {} |\n",
+        row.transitions,
+        row.per_second,
+        ms(percentile(&row.completes, 0.50)),
+        ms(percentile(&row.completes, 0.95)),
+        ms(percentile(&row.completes, 0.99)),
+        ms(percentile(&row.flushes, 0.50)),
+        ms(percentile(&row.flushes, 0.95)),
+        ms(percentile(&row.flushes, 0.99)),
+        ms(percentile(&row.services, 0.50)),
+        ms(percentile(&row.services, 0.99)),
+        Tally::get(&t.calls),
+        100.0 * (Tally::get(&t.retry_ticket) + Tally::get(&t.retry_ticket_final)) as f64
+            / calls as f64,
+        100.0 * Tally::get(&t.retry_ticket_final) as f64 / finals as f64,
+        100.0 * (Tally::get(&t.retry_lock) + Tally::get(&t.retry_lock_final)) as f64 / calls as f64,
+        100.0 * Tally::get(&t.retry_lock_final) as f64 / finals as f64,
+        Tally::get(&t.retry_quota),
+        Tally::get(&t.flush_given_up),
+        row.commit_waits.0,
+        row.commit_waits.1,
+    )
+}
+
+/// T041-31 (design 041): the step-log ingest spike. Runs only with `SAGAT_PERF_STEP_LOG_SPIKE=1`;
+/// `SAGAT_PERF_STEP_LOG_DRIVER=on|off` keeps one side of the comparison (both by default).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "benchmark: run on purpose with --ignored"]
+#[allow(clippy::too_many_lines)]
+async fn step_log_ingest_spike() {
+    use step_log_spike::{RowSpec, Shape};
+    if std::env::var("SAGAT_PERF_STEP_LOG_SPIKE").as_deref() != Ok("1") {
+        eprintln!("step_log_ingest_spike runs only with SAGAT_PERF_STEP_LOG_SPIKE=1");
+        return;
+    }
+    let driver = std::env::var("SAGAT_PERF_STEP_LOG_DRIVER").ok();
+    let (want_off, want_on) = match driver.as_deref() {
+        Some("on") => (false, true),
+        Some("off") => (true, false),
+        _ => (true, true),
+    };
+    let runs = env_usize("SAGAT_PERF_TRANSITION_RUNS", 3_000);
+    let w = Arc::new(world().await);
+    // The tenant's log quota stands in for tenant_step_log_bytes: as large as the catalogue allows,
+    // so no batch takes the over-quota path. Completions store content: the same.
+    for resource in [
+        QuotaResource::TenantLogBytes,
+        QuotaResource::TenantContentBytes,
+    ] {
+        let max = resource.maximum();
+        w.quotas
+            .grant_ceiling(w.admin.tenant_id(), resource, Some(max))
+            .await
+            .expect("grant the ceiling");
+        w.quotas
+            .set(&w.admin, None, resource, max, &ctx())
+            .await
+            .expect("set the tenant's limit");
+    }
+    // The fan-out's iterations need structured iteration capacity, disabled until a tenant sets it.
+    w.quotas
+        .set(
+            &w.admin,
+            None,
+            QuotaResource::IterationConcurrency,
+            1_024,
+            &ctx(),
+        )
+        .await
+        .expect("set iteration capacity");
+    step_log_spike::install(&w.db.pool).await;
+    let (chain, _) = w
+        .publish(document(
+            "spike-chain",
+            "a",
+            vec![
+                with(activity("a"), "next", json!("b")),
+                with(activity("b"), "next", json!("c")),
+                activity("c"),
+            ],
+        ))
+        .await;
+    let (big, _) = w
+        .publish(document("spike-big", "big", vec![activity("big")]))
+        .await;
+    let (fanout, _) = w
+        .publish(json!({
+            "apiVersion": "sagat-octopus-orchestrator.io/v1", "kind": "Workflow",
+            "metadata": {"name": "spike-fanout"}, "entrypoint": "items",
+            "limits": {"maxInstances": 512, "maxDepth": 1},
+            "bodies": {"line": {"entrypoint": "work", "nodes": [
+                {"id": "work", "type": "activity", "activity": "act.line", "next": "returned"},
+                {"id": "returned", "type": "return", "result": "steps.work.output.t"}
+            ]}},
+            "nodes": [
+                {"id": "items", "type": "forEach", "items": "input.items", "body": "line",
+                 "result": "bodyResult", "maxItems": 200, "maxConcurrency": 64, "next": "done"},
+                {"id": "done", "type": "end"}
+            ]
+        }))
+        .await;
+    let chain_activities = ["act.a", "act.b", "act.c"];
+    let half_pool = usize::try_from(API_POOL / 2).unwrap_or(10);
+    let default_cap = usize::try_from(API_POOL / 4).unwrap_or(5).max(1);
+    let mut body = format!("{}\n", environment(&w).await);
+    body.push_str(&format!(
+        "Design 041, T041-31: the ingest SQL of data-model.md §8 against the scratch schema `spike_041` (the DDL of data-model.md §2; the line table charges its text to the `log` class through the ADR-0027 triggers). {runs} runs of three chained activities per row unless said otherwise; every completion stores a 1 KiB output that differs per task. Driver on: each step sends one batch of ten 200-byte `info` lines and then an empty final batch, inside a final flush bounded at 2 s (a refused batch is sent again after 200 ms), and then completes. Admission per replica: a Logs class cap and per-tenant tickets, no call waits (`RETRY_LATER` at once). Completion and flush latencies are per call; S is the service time of one ingest transaction that ran to its end. Commit waits are 10 ms samples of a non-ingest backend waiting on a lock in `COMMIT` (the tenant usage row), and of those whose blocker was an ingest backend.\n\n"
+    ));
+    let header = "| Row | Transitions | Transitions/s | Complete p50 / p95 / p99 | Final flush p50 / p95 / p99 | S p50 / p99 | Batches | RETRY_LATER for a ticket | RETRY_LATER for a lock timeout | Quota retries | Flushes given up | Commit waits / by ingest |\n|---|---:|---:|---|---|---|---:|---:|---:|---:|---:|---|\n";
+    // Calibration: the most tickets the design allows (half the pool), to measure S and the rate.
+    let calibration = step_log_spike::run_row(
+        &w,
+        chain,
+        &RowSpec {
+            label: "calibration",
+            api_replicas: 1,
+            workers: 16,
+            runs,
+            shape: Shape::Chain,
+            admission: Some((half_pool, half_pool)),
+            lines: (10, 200),
+            hold: false,
+            single_final: false,
+            chunk: false,
+        },
+        &chain_activities,
+    )
+    .await;
+    let batch_rate = 2.0 * calibration.per_second;
+    let s99 = percentile(&calibration.services, 0.99);
+    let needed = (batch_rate * s99.as_secs_f64() / 0.7).ceil();
+    let tickets = (needed as usize).max(1);
+    let cap = tickets.max(default_cap);
+    eprintln!(
+        "spike calibration: batches/s {batch_rate:.0} S p50 {:.2} ms p99 {:.2} ms tickets {tickets} cap {cap}",
+        ms(percentile(&calibration.services, 0.50)),
+        ms(s99)
+    );
+    body.push_str(&format!(
+        "Calibration (1 replica, 16 workers, cap = tickets = {half_pool}): {:.0} batches/s, S p50 {:.2} ms, p99 {:.2} ms. Tickets needed for use under 70%: ceil({batch_rate:.0} × {:.4} s / 0.7) = {tickets} per tenant per replica (cap {cap}); half the pool is {half_pool}: **{}**.\n\n",
+        batch_rate,
+        ms(percentile(&calibration.services, 0.50)),
+        ms(s99),
+        s99.as_secs_f64(),
+        if tickets <= half_pool { "within" } else { "over: the design changes" },
+    ));
+    body.push_str(header);
+    body.push_str(&spike_row_line("calibration 1×16", &calibration));
+    let tickets = tickets.min(half_pool);
+    let cap = cap.min(half_pool.max(cap));
+    let mut verdict = String::new();
+    let only_fanout = std::env::var("SAGAT_PERF_STEP_LOG_ONLY").as_deref() == Ok("fanout");
+    let rows: &[(usize, usize)] = if only_fanout {
+        &[]
+    } else {
+        &[(1, 16), (8, 128)]
+    };
+    for &(replicas, workers) in rows {
+        let off = if want_off {
+            Some(
+                step_log_spike::run_row(
+                    &w,
+                    chain,
+                    &RowSpec {
+                        label: "off",
+                        api_replicas: replicas,
+                        workers,
+                        runs,
+                        shape: Shape::Chain,
+                        admission: None,
+                        lines: (10, 200),
+                        hold: false,
+                        single_final: false,
+                        chunk: false,
+                    },
+                    &chain_activities,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let on = if want_on {
+            Some(
+                step_log_spike::run_row(
+                    &w,
+                    chain,
+                    &RowSpec {
+                        label: "on",
+                        api_replicas: replicas,
+                        workers,
+                        runs,
+                        shape: Shape::Chain,
+                        admission: Some((cap, tickets)),
+                        lines: (10, 200),
+                        hold: false,
+                        single_final: false,
+                        chunk: false,
+                    },
+                    &chain_activities,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        if let Some(off) = &off {
+            body.push_str(&spike_row_line(
+                &format!("(a) {replicas}×{workers} off"),
+                off,
+            ));
+        }
+        if let Some(on) = &on {
+            body.push_str(&spike_row_line(&format!("(a) {replicas}×{workers} on"), on));
+        }
+        // (a') The ten lines in the final batch itself: one ingest per step, as the SDK sends a
+        // step shorter than its one-second flush. Recorded beside (a), with no threshold of its own.
+        let single = if want_on {
+            let row = step_log_spike::run_row(
+                &w,
+                chain,
+                &RowSpec {
+                    label: "single",
+                    api_replicas: replicas,
+                    workers,
+                    runs,
+                    shape: Shape::Chain,
+                    admission: Some((cap, tickets)),
+                    lines: (10, 200),
+                    hold: false,
+                    single_final: true,
+                    chunk: false,
+                },
+                &chain_activities,
+            )
+            .await;
+            body.push_str(&spike_row_line(
+                &format!("(a') {replicas}×{workers} on, lines in the final batch"),
+                &row,
+            ));
+            Some(row)
+        } else {
+            None
+        };
+        // (a) with chunk rows (O041-021): one row per batch.
+        let chunked = if want_on {
+            let row = step_log_spike::run_row(
+                &w,
+                chain,
+                &RowSpec {
+                    label: "chunk",
+                    api_replicas: replicas,
+                    workers,
+                    runs,
+                    shape: Shape::Chain,
+                    admission: Some((cap, tickets)),
+                    lines: (10, 200),
+                    hold: false,
+                    single_final: false,
+                    chunk: true,
+                },
+                &chain_activities,
+            )
+            .await;
+            body.push_str(&spike_row_line(
+                &format!("(a) {replicas}×{workers} on, chunk rows"),
+                &row,
+            ));
+            Some(row)
+        } else {
+            None
+        };
+        if let (Some(off), Some(chunked)) = (&off, &chunked) {
+            let _ = writeln!(
+                verdict,
+                "- (a) {replicas}×{workers} with chunk rows: rate on/off {:.1}%, completion p99 {:+.1}%.",
+                100.0 * chunked.per_second / off.per_second.max(1e-9),
+                100.0
+                    * (percentile(&chunked.completes, 0.99).as_secs_f64()
+                        / percentile(&off.completes, 0.99).as_secs_f64().max(1e-9)
+                        - 1.0),
+            );
+        }
+        if let (Some(off), Some(single)) = (&off, &single) {
+            let _ = writeln!(
+                verdict,
+                "- (a') {replicas}×{workers}, lines in the final batch: rate on/off {:.1}%, completion p99 {:+.1}%.",
+                100.0 * single.per_second / off.per_second.max(1e-9),
+                100.0
+                    * (percentile(&single.completes, 0.99).as_secs_f64()
+                        / percentile(&off.completes, 0.99).as_secs_f64().max(1e-9)
+                        - 1.0),
+            );
+        }
+        if let (Some(off), Some(on)) = (&off, &on) {
+            let rate = on.per_second / off.per_second.max(1e-9);
+            let p99_off = percentile(&off.completes, 0.99);
+            let p99_on = percentile(&on.completes, 0.99);
+            let excess = p99_on.as_secs_f64() / p99_off.as_secs_f64().max(1e-9) - 1.0;
+            let waits = on.commit_waits.1 as f64 * 10.0 / on.transitions.max(1) as f64;
+            let _ = writeln!(
+                verdict,
+                "- {replicas} replica(s), {workers} workers: rate on/off {:.1}% (criterion ≥ 90%: **{}**); completion p99 {:.1} ms on, {:.1} ms off, {:+.1}% (criterion ≤ +10%: **{}**); commit wait on an ingest ≈ {waits:.2} ms per completion (mean, from samples).",
+                100.0 * rate,
+                if rate >= 0.9 { "pass" } else { "fail" },
+                ms(p99_on),
+                ms(p99_off),
+                100.0 * excess,
+                if excess <= 0.10 { "pass" } else { "fail" },
+            );
+        }
+    }
+    if want_on {
+        // (b) Full batches of 500 records from tickets × R concurrent attempts of one tenant.
+        let (services, tally) = if only_fanout {
+            (Vec::new(), Arc::new(step_log_spike::Tally::default()))
+        } else {
+            step_log_spike::full_batches(&w, big, tickets, tickets, cap, 3, 200).await
+        };
+        let _ = writeln!(
+            verdict,
+            "- (b) {tickets} attempts at once, batches of 500 × 200-byte records until the 1 MiB attempt ceiling, 3 rounds: {} transactions, S p50 {:.1} ms, p95 {:.1} ms, p99 {:.1} ms; {} ticket refusals, {} lock timeouts.",
+            services.len(),
+            ms(percentile(&services, 0.50)),
+            ms(percentile(&services, 0.95)),
+            ms(percentile(&services, 0.99)),
+            step_log_spike::Tally::get(&tally.retry_ticket),
+            step_log_spike::Tally::get(&tally.retry_lock),
+        );
+        // (c) The fan-out.
+        let fan_runs = env_usize("SAGAT_PERF_STEP_LOG_FANOUT_RUNS", 10);
+        let fan = step_log_spike::run_row(
+            &w,
+            fanout,
+            &RowSpec {
+                label: "fanout",
+                api_replicas: 1,
+                workers: 64,
+                runs: fan_runs,
+                shape: Shape::Fanout { items: 200 },
+                admission: Some((cap, tickets)),
+                lines: (10, 200),
+                hold: false,
+                single_final: false,
+                chunk: false,
+            },
+            &["act.line"],
+        )
+        .await;
+        body.push_str(&spike_row_line(
+            &format!("(c) fan-out {fan_runs}×200, 1×64"),
+            &fan,
+        ));
+        let t = &fan.tally;
+        let lock_share = 100.0
+            * (step_log_spike::Tally::get(&t.retry_lock)
+                + step_log_spike::Tally::get(&t.retry_lock_final)) as f64
+            / step_log_spike::Tally::get(&t.calls).max(1) as f64;
+        let _ = writeln!(
+            verdict,
+            "- (c) fan-out: {lock_share:.2}% of batches answered RETRY_LATER for a lock timeout (criterion < 1%: **{}**).",
+            if lock_share < 1.0 { "pass" } else { "fail" }
+        );
+        // (d) A held transaction.
+        let held = step_log_spike::run_row(
+            &w,
+            chain,
+            &RowSpec {
+                label: "held",
+                api_replicas: 1,
+                workers: 16,
+                runs,
+                shape: Shape::Chain,
+                admission: Some((cap, tickets)),
+                lines: (10, 200),
+                hold: true,
+                single_final: false,
+                chunk: false,
+            },
+            &chain_activities,
+        )
+        .await;
+        body.push_str(&spike_row_line("(d) 1×16 on, a transaction held", &held));
+        let _ = writeln!(
+            verdict,
+            "- (d) a transaction held for {:.1} s: quota_transaction_deltas {} → {} bytes; completion p99 {:.1} ms.",
+            held.held_for.unwrap_or_default().as_secs_f64(),
+            held.deltas_bytes.0,
+            held.deltas_bytes.1,
+            ms(percentile(&held.completes, 0.99)),
+        );
+        // (e) Ingest sheds: one ticket and a cap of 1.
+        let shed = step_log_spike::run_row(
+            &w,
+            chain,
+            &RowSpec {
+                label: "shed",
+                api_replicas: 1,
+                workers: 16,
+                runs,
+                shape: Shape::Chain,
+                admission: Some((1, 1)),
+                lines: (10, 200),
+                hold: false,
+                single_final: false,
+                chunk: false,
+            },
+            &chain_activities,
+        )
+        .await;
+        body.push_str(&spike_row_line("(e) 1×16 on, cap 1, 1 ticket", &shed));
+        let _ = writeln!(
+            verdict,
+            "- (e) one ticket, cap 1: {:.0} transitions/s, completion p99 {:.1} ms, {} flushes given up at 2 s.",
+            shed.per_second,
+            ms(percentile(&shed.completes, 0.99)),
+            step_log_spike::Tally::get(&shed.tally.flush_given_up),
+        );
+    }
+    eprintln!("spike verdicts:\n{verdict}");
+    body.push_str(&format!("\nVerdicts:\n\n{verdict}"));
+    section("Step-log ingest spike (design 041, T041-31)", &body);
 }
