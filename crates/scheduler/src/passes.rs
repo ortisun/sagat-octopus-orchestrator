@@ -525,6 +525,8 @@ enum Granted {
     Orphan,
     Fenced,
     Failed,
+    /// This process has no digest key ring (G1198): it grants nothing.
+    Unsupported,
 }
 
 impl Granted {
@@ -535,6 +537,7 @@ impl Granted {
             Self::Orphan => "orphan",
             Self::Fenced => "fenced",
             Self::Failed => "failed",
+            Self::Unsupported => "unsupported",
         }
     }
 }
@@ -909,14 +912,16 @@ where
     }
 
     /// Feature 022: the grant routine alone (T26), as a tick runs it; public so that a test can hold it against the
-    /// timeout routine (T022-097, T022-098).
+    /// timeout routine (T022-097, T022-098). Not an operation of its own: a tick runs it.
+    #[doc(hidden)]
     pub async fn grant_gates(&self) -> Report {
         let mut report = Report::default();
         self.gate_grants(&self.view(), &mut report).await;
         report
     }
 
-    /// Feature 022: the timeout routine alone (T27), as a tick runs it.
+    /// Feature 022: the timeout routine alone (T27), as a tick runs it (a test hook, as [`Self::grant_gates`]).
+    #[doc(hidden)]
     pub async fn time_out_gates(&self) -> Report {
         let mut report = Report::default();
         self.gate_timeouts(&self.view(), &mut report).await;
@@ -5419,12 +5424,19 @@ where
                 return pass;
             }
         };
-        // whether a waiter this pass did not decide may be grantable now: then the key keeps its hint
-        let mut undecided =
-            u32::try_from(waiters.len()).unwrap_or(u32::MAX) >= GRANTS_PER_KEY_PER_PASS;
+        // whether a waiter this pass did not decide may be grantable now: then the key keeps its hint. A full listing in
+        // which nothing was granted rests the key (security review 3, 2026-11-19): its later waiters are younger and
+        // would be refused by the same counts, so a full key costs one pass, not one every tick
+        let truncated = u32::try_from(waiters.len()).unwrap_or(u32::MAX) >= GRANTS_PER_KEY_PER_PASS;
+        let mut undecided = false;
         for waiter in waiters {
             match self.grant_waiter(view, &hold, &waiter).await {
                 Granted::Yes => pass.granted += 1,
+                // a replica without the gate grants nothing of any key; it keeps the hint for one that has it
+                Granted::Unsupported => {
+                    pass.failed += 1;
+                    return pass;
+                }
                 Granted::Refused => {}
                 Granted::Busy => {
                     pass.skipped += 1;
@@ -5441,7 +5453,12 @@ where
                 }
             }
         }
-        if !undecided && let Err(error) = self.store.rest_gate_key(&key).await {
+        undecided |= truncated && pass.granted > 0;
+        let holder = match &hold {
+            Hold::Lease(lease) => Some((view.owner.as_str(), *lease)),
+            _ => None,
+        };
+        if !undecided && let Err(error) = self.store.rest_gate_key(&key, holder).await {
             tracing::warn!(%error, "a flow-control key's hint could not be cleared");
         }
         pass
@@ -5480,8 +5497,9 @@ where
                     return Ok(Granted::Orphan);
                 }
                 // a paused or stopping run's waiter is skipped, and is not counted ahead (ADR-0089 decision 4)
+                // (not listed while paused: its pause or resume makes the key due; a stop dequeues it)
                 if state.is_paused() || state.stop_reason().is_some() {
-                    return Ok(Granted::Busy);
+                    return Ok(Granted::Refused);
                 }
                 match state.step(&waiter.node) {
                     Some(step)
@@ -5532,9 +5550,15 @@ where
         }
         .await;
         let outcome = outcome.unwrap_or_else(|error| match error {
-            // the domain refused: the step moved since it was read (another commit won)
-            EngineError::Execution(error) if !matches!(error, ExecutionError::Invariant(_)) => {
-                Granted::Refused
+            // the step was read under the run's lock, so a domain refusal here is a defect, not a lost race (correctness
+            // review m4, 2026-11-19): it is a failure, the key keeps its hint
+            EngineError::Store(StoreError::FlowControl(
+                sagat_application::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
+            )) => {
+                tracing::warn!(
+                    "this process has no flow-control digest key ring: it grants no queued step"
+                );
+                Granted::Unsupported
             }
             error => {
                 tracing::error!(%error, run_id = %waiter.run_id, "a flow-control grant failed");

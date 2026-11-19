@@ -232,6 +232,6 @@ pub struct GateWaiter {
     pub node: sagat_domain::workflow::NodeId,
 }
 
-/// How many waiters of one key one pass tries (D022-015, ADR-0089 decision 3: bounded per pass, so a flood on one key
-/// does not hold back the keys behind it).
-pub const GRANTS_PER_KEY_PER_PASS: u32 = 32;
+/// How many waiters of one key one pass tries (D022-015, ADR-0089 decision 3, plan "grant pass": at most 256 grants per
+/// key, so a flood on one key does not hold back the keys behind it).
+pub const GRANTS_PER_KEY_PER_PASS: u32 = 256;

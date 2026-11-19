@@ -16,6 +16,17 @@ use super::readiness_gate::GateOutcome;
 use super::*;
 use crate::flow_control::{ExistingKey, KeyTable, lock_existing};
 
+/// A waiter row as read: kind, group, digest, limit, period, enqueued and deadline instants.
+type QueuedRow = (
+    String,
+    String,
+    Vec<u8>,
+    i32,
+    i32,
+    OffsetDateTime,
+    OffsetDateTime,
+);
+
 /// One waiter row of the step, as stored.
 struct Queued {
     kind: GateKind,
@@ -43,15 +54,16 @@ impl PgRunTx {
         &mut self,
         node: &NodeId,
         attempt: u32,
+        lock: bool,
     ) -> Result<(Vec<Queued>, OffsetDateTime), StoreError> {
-        if self.flow_control_keys.is_none() {
+        if lock && self.flow_control_keys.is_none() {
             // a process that does not run the gate decides nothing (fail closed, D022-037)
             return Err(StoreError::FlowControl(
                 sagat_application::flow_control::FlowControlRefusal::BinaryCapabilityMissing,
             ));
         }
         let attempt_column = i32::try_from(attempt).map_err(|_| corrupt("attempt"))?;
-        let rows: Vec<(String, String, Vec<u8>, i32, i32, OffsetDateTime, OffsetDateTime)> =
+        let rows: Vec<QueuedRow> =
             sqlx::query_as(
                 "SELECT 'RATE', group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at \
                    FROM rate_limit_waiters \
@@ -95,6 +107,9 @@ impl PgRunTx {
             return Err(corrupt("the waiter rows of a queued step"));
         }
         for table in [KeyTable::Semaphores, KeyTable::Windows] {
+            if !lock {
+                break;
+            }
             let keys: Vec<ExistingKey> = queued
                 .iter()
                 .filter(|q| q.table() == table)
@@ -126,14 +141,14 @@ impl PgRunTx {
                 "WITH taken AS (SELECT holders::bigint AS n FROM concurrency_semaphores \
                                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = 'STEP' \
                                    AND group_name = $4 AND key_digest = $5) \
-                 SELECT taken.n, (SELECT count(*) FROM concurrency_waiters w \
+                 SELECT taken.n, (SELECT count(*) FROM (SELECT 1 FROM concurrency_waiters w \
                                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                     AND w.permit_scope = 'STEP' AND w.group_name = $4 AND w.key_digest = $5 \
                                     AND (w.enqueued_at, w.run_id, w.node) < ($6, $7, $8) \
                                     AND w.deadline_at > clock_timestamp() \
                                     AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
-                                    AND w.declared_limit > taken.n AND $9::bigint >= 0) \
+                                    AND w.declared_limit > taken.n AND $9::bigint >= 0 LIMIT $10) ahead) \
                    FROM taken"
             }
             // a step's grant counts while it is unleased and for its window after its lease (data-model, Rate limits)
@@ -143,14 +158,14 @@ impl PgRunTx {
                                    AND g.limit_scope = 'STEP' AND g.group_name = $4 AND g.key_digest = $5 \
                                    AND (g.leased_at IS NULL \
                                         OR g.leased_at > clock_timestamp() - make_interval(secs => $9::bigint / 1000.0))) \
-                 SELECT taken.n, (SELECT count(*) FROM rate_limit_waiters w \
+                 SELECT taken.n, (SELECT count(*) FROM (SELECT 1 FROM rate_limit_waiters w \
                                    JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
                                   WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = $3 \
                                     AND w.limit_scope = 'STEP' AND w.group_name = $4 AND w.key_digest = $5 \
                                     AND (w.enqueued_at, w.run_id, w.node) < ($6, $7, $8) \
                                     AND w.deadline_at > clock_timestamp() \
                                     AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
-                                    AND w.declared_limit > taken.n) \
+                                    AND w.declared_limit > taken.n LIMIT $10) ahead) \
                    FROM taken"
             }
         };
@@ -164,6 +179,8 @@ impl PgRunTx {
             .bind(self.info.run_id.as_uuid())
             .bind(node.as_str())
             .bind(i64::from(queued.period_ms))
+            // no more of the queue ahead is read than can matter: the waiter's own limit
+            .bind(i64::from(queued.limit))
             .fetch_one(&mut *self.tx)
             .await
             .map_err(store_error)?;
@@ -176,7 +193,7 @@ impl PgRunTx {
         node: &NodeId,
         attempt: u32,
     ) -> Result<Option<Vec<GateEvent>>, StoreError> {
-        let (queued, now) = self.locked_queue(node, attempt).await?;
+        let (queued, now) = self.locked_queue(node, attempt, true).await?;
         if queued.iter().any(|q| q.deadline_at <= now) {
             return Ok(None);
         }
@@ -278,7 +295,10 @@ impl PgRunTx {
         node: &NodeId,
         attempt: u32,
     ) -> Result<GateKind, StoreError> {
-        let (queued, _) = self.locked_queue(node, attempt).await?;
+        // read without the keys' locks (correctness review M2, 2026-11-19): the rows go with the events, under the one
+        // sorted lock of the round or of `persist`, so a gated failure route cannot lock a key out of order; the gate
+        // named is the one that refused at the read (rate first, FR-022-052), which a concurrent commit may change
+        let (queued, _) = self.locked_queue(node, attempt, false).await?;
         // rate first (FR-022-052): the first gate that refuses it now, else the first it waits for
         for q in &queued {
             if !self.admits(q, node).await? {

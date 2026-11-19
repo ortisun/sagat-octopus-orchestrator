@@ -177,16 +177,20 @@ impl MaintenanceStore for PgRunStore {
     ) -> Result<Vec<sagat_application::flow_control::GateWaiter>, StoreError> {
         let statement = match key.kind {
             sagat_domain::workflow::GateKind::Concurrency => {
-                "SELECT tenant_id, run_id, node FROM concurrency_waiters \
-                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND permit_scope = 'STEP' \
-                    AND group_name = $3 AND key_digest = $4 \
-                  ORDER BY enqueued_at, run_id, node LIMIT $5"
+                "SELECT w.tenant_id, w.run_id, w.node FROM concurrency_waiters w \
+                   JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.permit_scope = 'STEP' \
+                    AND w.group_name = $3 AND w.key_digest = $4 AND w.deadline_at > now() \
+                    AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                  ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $5"
             }
             sagat_domain::workflow::GateKind::RateLimit => {
-                "SELECT tenant_id, run_id, node FROM rate_limit_waiters \
-                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND limit_scope = 'STEP' \
-                    AND group_name = $3 AND key_digest = $4 \
-                  ORDER BY enqueued_at, run_id, node LIMIT $5"
+                "SELECT w.tenant_id, w.run_id, w.node FROM rate_limit_waiters w \
+                   JOIN runs r ON r.tenant_id = w.tenant_id AND r.id = w.run_id \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = 'STEP' \
+                    AND w.group_name = $3 AND w.key_digest = $4 AND w.deadline_at > now() \
+                    AND r.status IN ('RUNNING', 'WAITING') AND NOT r.paused \
+                  ORDER BY w.enqueued_at, w.run_id, w.node LIMIT $5"
             }
         };
         sqlx::query(statement)
@@ -206,26 +210,44 @@ impl MaintenanceStore for PgRunStore {
     async fn rest_gate_key(
         &self,
         key: &sagat_application::flow_control::GateKey,
+        holder: Option<(&str, sagat_application::shards::Lease)>,
     ) -> Result<(), StoreError> {
         let statement = match key.kind {
             sagat_domain::workflow::GateKind::Concurrency => {
                 "UPDATE concurrency_semaphores SET next_eligible_at = NULL, updated_at = clock_timestamp() \
                   WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND permit_scope = 'STEP' \
-                    AND group_name = $3 AND key_digest = $4 AND next_eligible_at = $5"
+                    AND group_name = $3 AND key_digest = $4 AND next_eligible_at = $5 \
+                    AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM scheduler_shards s WHERE s.shard = $7 \
+                         AND s.owner = $6 AND s.generation = $8 AND s.expires_at > clock_timestamp()))"
             }
             sagat_domain::workflow::GateKind::RateLimit => {
-                "UPDATE rate_limit_windows SET next_eligible_at = NULL, updated_at = clock_timestamp() \
-                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = 'ORDINARY' AND limit_scope = 'STEP' \
-                    AND group_name = $3 AND key_digest = $4 AND next_eligible_at = $5"
+                "UPDATE rate_limit_windows w \
+                    SET next_eligible_at = (SELECT min(g.leased_at + make_interval(secs => g.period_ms / 1000.0)) \
+                                              FROM rate_limit_grants g \
+                                             WHERE g.tenant_id = w.tenant_id AND g.namespace_id = w.namespace_id \
+                                               AND g.pool = w.pool AND g.limit_scope = w.limit_scope \
+                                               AND g.group_name = w.group_name AND g.key_digest = w.key_digest \
+                                               AND g.leased_at IS NOT NULL \
+                                               AND g.leased_at + make_interval(secs => g.period_ms / 1000.0) \
+                                                   > clock_timestamp()), \
+                        updated_at = clock_timestamp() \
+                  WHERE w.tenant_id = $1 AND w.namespace_id = $2 AND w.pool = 'ORDINARY' AND w.limit_scope = 'STEP' \
+                    AND w.group_name = $3 AND w.key_digest = $4 AND w.next_eligible_at = $5 \
+                    AND ($6::text IS NULL OR EXISTS (SELECT 1 FROM scheduler_shards s WHERE s.shard = $7 \
+                         AND s.owner = $6 AND s.generation = $8 AND s.expires_at > clock_timestamp()))"
             }
         };
-        // the update re-reads the hint under the row's lock: a release that moved it since is kept (never late)
+        // the update re-reads the hint under the row's lock: a release that moved it since is kept (never late); a window
+        // rests until its oldest counted leased grant ages out; only the holder of the key's home shard rests it
         sqlx::query(statement)
             .bind(key.tenant_id.as_uuid())
             .bind(key.namespace_id.as_uuid())
             .bind(key.group.as_str())
             .bind(key.digest.as_slice())
             .bind(key.hint)
+            .bind(holder.map(|(owner, _)| owner))
+            .bind(holder.map(|(_, lease)| i16::from(lease.shard.index())))
+            .bind(holder.and_then(|(_, lease)| i64::try_from(lease.generation).ok()))
             .execute(self.pool())
             .await
             .map_err(store_error)?;

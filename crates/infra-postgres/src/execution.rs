@@ -5535,6 +5535,12 @@ impl RunTx for PgRunTx {
                     }
                 }
                 RunEvent::StepCancelRequested { node } => self.release_child(node, false).await?,
+                // feature 022: a paused waiter is not granted nor counted ahead; its keys are due on pause and resume
+                RunEvent::RunPaused | RunEvent::RunResumed
+                    if self.def.gated_nodes().next().is_some() =>
+                {
+                    self.rearm_queued_keys().await?;
+                }
                 RunEvent::RunFinished { status } => self.outbox_run_finished(*status).await?,
                 _ => {}
             }

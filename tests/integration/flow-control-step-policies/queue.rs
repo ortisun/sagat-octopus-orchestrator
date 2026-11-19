@@ -206,8 +206,18 @@ async fn a_dual_gated_head_is_not_starved_by_a_younger_waiter() {
     queued(&w, younger, "s", (true, false)).await;
 
     // the slot frees (its unleased holder is cancelled and returns it): the head is granted, then the younger one
+    // the keys one at a time, so that neither key's pass finds the head's run held by the other's (correctness review m1)
     w.operate_run(slot_holder, RunOperation::Cancel).await;
-    let report = w.scheduler.tick().await;
+    let report = scheduler(
+        &w,
+        SchedulerSettings {
+            concurrency: 1,
+            ..SchedulerSettings::default()
+        },
+        None,
+    )
+    .tick()
+    .await;
     assert_eq!(report.gates_granted, 2, "{report:?}");
     granted(&w, head, "d", (true, true)).await;
     granted(&w, younger, "s", (true, false)).await;
@@ -539,20 +549,19 @@ async fn a_timeout_and_a_grant_of_one_waiter_are_decided_by_the_first_commit() {
                 assert_eq!(g.gates_granted, 0, "a due waiter is never granted: {g:?}");
                 assert_eq!(t.gate_waits_timed_out, 1, "{t:?}");
             }
-            // the timeout takes the run and waits for the key; the grant skips the locked run
+            // the timeout takes the run and waits for the key; the grant pass does not list a due waiter, and may only
+            // rest the key behind the same lock
             1 => {
                 age_gate_deadline(&w, waiter, "g").await;
                 let key = hold_key().await;
-                let timeouts = other();
+                let (grants, timeouts) = (other(), other());
                 let timeout = tokio::spawn(async move { timeouts.time_out_gates().await });
                 lock_waiters(&w, 1).await;
-                let report = w.scheduler.grant_gates().await;
-                assert_eq!(
-                    report.gates_granted, 0,
-                    "the run is the timeout's: {report:?}"
-                );
+                let grant = tokio::spawn(async move { grants.grant_gates().await });
+                lock_waiters(&w, 2).await;
                 key.rollback().await.expect("released");
-                let t = timeout.await.expect("timeout");
+                let (g, t) = (grant.await.expect("grant"), timeout.await.expect("timeout"));
+                assert_eq!(g.gates_granted, 0, "the run is the timeout's: {g:?}");
                 assert_eq!(t.gate_waits_timed_out, 1, "{t:?}");
             }
             // the grant commits before the deadline: nothing is due afterwards
@@ -677,4 +686,127 @@ async fn a_timeout_and_a_signal_on_one_run_both_land_once_in_either_order() {
         assert_eq!(journal_has(&w, run, "wait.satisfied").await, 1);
         w.assert_consistent(run).await;
     }
+}
+
+// ------------------------------------------------------------------------------------- the reviews of 2026-11-19
+
+/// Security 2, architecture 2, correctness M4 (2026-11-19): paused runs at the head of a key, more than one pass reads,
+/// do not hold back an eligible waiter behind them, and do not pin the key; a resume makes the key due again.
+#[tokio::test]
+async fn paused_heads_do_not_hold_back_the_waiters_behind_them_and_a_resume_rearms_the_key() {
+    let w = gated_world().await;
+    let workflow = publish(
+        &w,
+        document("paused-heads", "g", vec![serial(activity("g"))]),
+    )
+    .await;
+    let session = w.session(&["act.g"]).await;
+    let account = json!({"accountId": "acct-1"});
+    let holder = w.start(workflow, &account).await;
+    let heads = sagat_application::flow_control::GRANTS_PER_KEY_PER_PASS + 1;
+    let mut paused = Vec::new();
+    for _ in 0..heads {
+        let run = w.start(workflow, &account).await;
+        w.operate_run(run, RunOperation::Pause).await;
+        paused.push(run);
+    }
+    let eligible = w.start(workflow, &account).await;
+    let task = w.one_task(&session).await;
+    assert_eq!(task.run_id, holder);
+    w.complete(&session, &task, &json!({})).await.expect("done");
+    let report = w.scheduler.tick().await;
+    assert_eq!(report.gates_granted, 1, "{report:?}");
+    granted(&w, eligible, "g", (true, false)).await;
+    let task = w.one_task(&session).await;
+    w.complete(&session, &task, &json!({})).await.expect("done");
+    let report = w.scheduler.tick().await;
+    assert_eq!(report.gates_granted, 0, "only paused waiters: {report:?}");
+    let hint: Option<time::OffsetDateTime> = sqlx::query_scalar(
+        "SELECT next_eligible_at FROM concurrency_semaphores WHERE tenant_id = $1",
+    )
+    .bind(w.admin.tenant_id().as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("semaphore");
+    assert!(hint.is_none(), "a key of paused waiters rests");
+    w.operate_run(paused[0], RunOperation::Resume).await;
+    let report = w.scheduler.tick().await;
+    assert_eq!(
+        report.gates_granted, 1,
+        "the resume made the key due: {report:?}"
+    );
+    granted(&w, paused[0], "g", (true, false)).await;
+}
+
+/// Correctness M1 (2026-11-19): a waiter the readiness gate queues behind waiters that cannot be granted (an older one
+/// refused by its own lower limit) is granted by the next pass, with no release in between: queueing makes the key due.
+#[tokio::test]
+async fn a_waiter_queued_behind_an_ineligible_one_is_granted_without_a_release() {
+    let w = gated_world().await;
+    let wide = publish(
+        &w,
+        document(
+            "limit-five",
+            "g",
+            vec![permit(activity("g"), "acct-mixed", 5)],
+        ),
+    )
+    .await;
+    let narrow = publish(
+        &w,
+        document(
+            "limit-one",
+            "g",
+            vec![permit(activity("g"), "acct-mixed", 1)],
+        ),
+    )
+    .await;
+    let middle = publish(
+        &w,
+        document(
+            "limit-two",
+            "g",
+            vec![permit(activity("g"), "acct-mixed", 2)],
+        ),
+    )
+    .await;
+    let account = json!({"accountId": "acct-1"});
+    let holder = w.start(wide, &account).await;
+    granted(&w, holder, "g", (true, false)).await;
+    let refused_by_its_own_limit = w.start(narrow, &account).await;
+    queued(&w, refused_by_its_own_limit, "g", (true, false)).await;
+    let report = w.scheduler.tick().await;
+    assert_eq!(report.gates_granted, 0, "{report:?}");
+    let behind = w.start(middle, &account).await;
+    queued(&w, behind, "g", (true, false)).await;
+    let report = w.scheduler.tick().await;
+    assert_eq!(report.gates_granted, 1, "{report:?}");
+    granted(&w, behind, "g", (true, false)).await;
+    queued(&w, refused_by_its_own_limit, "g", (true, false)).await;
+}
+
+/// Correctness M2 (2026-11-19): a timed-out step whose failure route is itself gated: the route is decided in the same
+/// commit, and nothing is locked out of the one order.
+#[tokio::test]
+async fn a_timeout_whose_route_is_gated_decides_the_route_in_its_commit() {
+    let w = gated_world().await;
+    let workflow = publish(
+        &w,
+        document(
+            "gated-route",
+            "g",
+            vec![
+                with(permit(activity("g"), "b-first", 1), "onError", json!("r")),
+                permit(activity("r"), "a-route", 1),
+            ],
+        ),
+    )
+    .await;
+    let _holder = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    let run = w.start(workflow, &json!({"accountId": "acct-1"})).await;
+    queued(&w, run, "g", (true, false)).await;
+    age_gate_deadline(&w, run, "g").await;
+    let report = w.scheduler.tick().await;
+    assert_eq!(report.gate_waits_timed_out, 1, "{report:?}");
+    granted(&w, run, "r", (true, false)).await;
 }

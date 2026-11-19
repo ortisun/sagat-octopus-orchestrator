@@ -129,11 +129,13 @@ pub trait MaintenanceStore: Send + Sync {
         limit: u32,
     ) -> impl Future<Output = Result<Vec<crate::flow_control::GateWaiter>, StoreError>> + Send;
 
-    /// Clears the next-eligible hint of `key` when it is still the one the pass read: a pass that could grant none of
-    /// its waiters leaves the key to the next release, which sets the hint again (early, never late).
+    /// Clears the next-eligible hint of `key` when it is still the one the pass read and `holder` (when given) still holds
+    /// the key's home shard: a pass that could grant none of its waiters leaves the key to the next release, queue, pause
+    /// or resume, which sets the hint again (early, never late); a window rests until its oldest counted grant ages out.
     fn rest_gate_key(
         &self,
         key: &crate::flow_control::GateKey,
+        holder: Option<(&str, crate::shards::Lease)>,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// Feature 022 (T27): queued steps whose queue deadline passed, on the run shards of `window`, earliest first.

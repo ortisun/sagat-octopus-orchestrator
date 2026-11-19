@@ -402,6 +402,45 @@ def key_row_insert_errors(src):
     return errors
 
 
+# --- the rows of a gate decision are written only by the gate (feature 022, the architecture review of 2026-11-19) --------
+# A holder, waiter or grant row is written under its key's lock, taken in the one sorted pass of the transaction (D022-038):
+# only the readiness gate and the queue's grant routine write them, so a third writer cannot skip that lock.
+GATE_ROW_WRITE = re.compile(
+    r"\b(?:INSERT\s+INTO|DELETE\s+FROM|UPDATE)\s+(concurrency_holders|concurrency_waiters|rate_limit_grants|rate_limit_waiters)\b",
+    re.IGNORECASE,
+)
+GATE_ROW_WRITERS = ("execution/readiness_gate.rs", "execution/gate_queue.rs")
+
+
+def gate_row_write_errors(src):
+    """The errors of the gate-row-writer rule over the PostgreSQL adapter's source directory `src`."""
+    errors = []
+    root = pathlib.Path(src)
+    found = 0
+    for path in sorted(root.rglob("*.rs")):
+        text = path.read_text()
+        _, literals = rust_literals(text)
+        rel = path.relative_to(root).as_posix()
+        for offset, sql in literals:
+            match = GATE_ROW_WRITE.search(sql)
+            if not match:
+                continue
+            if rel in GATE_ROW_WRITERS:
+                found += 1
+                continue
+            errors.append(
+                f"crates/infra-postgres/src/{rel}:{text.count(chr(10), 0, offset) + 1}: a statement writes "
+                f"`{match.group(1)}` outside {' and '.join(GATE_ROW_WRITERS)}: a holder, waiter or grant row is written "
+                f"only under its key's lock, in the one sorted pass of the gate (D022-038, ADR-0089)"
+            )
+    if found == 0:
+        errors.append(
+            f"no gate-row write was found in {' or '.join(GATE_ROW_WRITERS)} of {src}: the gate-row-writer rule would "
+            f"check nothing (is the statement spelled otherwise?)"
+        )
+    return errors
+
+
 # --- the run-input validator is the platform's own (design 043, D043-074) -----------------------------------------------------
 # `jsonschema` is the oracle of the validator's property test and the compiler of the scripts' schemas; on the path of a run input it
 # would bring back what four reviews could not bound. Any mention of it in the code of the module (comments and strings aside) fails.
@@ -786,6 +825,7 @@ def main(argv):
     errors.extend(run_finished_errors(postgres_src))
     errors.extend(run_insert_errors(postgres_src))
     errors.extend(key_row_insert_errors(postgres_src))
+    errors.extend(gate_row_write_errors(postgres_src))
     errors.extend(run_input_errors(run_input_src))
     errors.extend(application_runtime_errors(pkgs))
     errors.extend(run_creator_errors(rust_root))
@@ -824,7 +864,7 @@ def main(argv):
         return 1
     print(f"architecture check passed ({len(graph)} workspace crates, layers respected, no cycles, the lease row is a leaf lock, every run.finished body says its schedule, "
           f"no jsonschema in the run-input validator, the application's runtime confined to one file, every creator given the gate, every run created with a checked input, "
-          f"runs are inserted only at the admission point, key rows are filed only by file_keys)")
+          f"runs are inserted only at the admission point, key rows are filed only by file_keys, gate rows are written only by the gate)")
     return 0
 
 

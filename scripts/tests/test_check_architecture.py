@@ -265,6 +265,9 @@ KEY_FILER = (
 )
 
 
+GATE_WRITER = 'async fn grant() { sqlx::query("INSERT INTO concurrency_holders (k) VALUES ($1)"); }'
+
+
 def tree(keeper=KEEPER, execution=FENCE + ADMISSION, schedules=CHECK_FENCE, **more):
     """A valid tree: the lease row as the rule wants it and one `run.finished` writer that says its schedule."""
     return {
@@ -274,6 +277,7 @@ def tree(keeper=KEEPER, execution=FENCE + ADMISSION, schedules=CHECK_FENCE, **mo
         "outbound.rs": ORIGIN,
         "writer.rs": WRITER,
         "flow_control.rs": KEY_FILER,
+        "execution/readiness_gate.rs": GATE_WRITER,
         **more,
     }
 
@@ -475,13 +479,46 @@ class KeyRowsAreFiledOnlyByFileKeys(unittest.TestCase):
             'async fn hold() { sqlx::query("INSERT INTO concurrency_holders (k) VALUES ($1)"); }\n'
             'async fn grant() { sqlx::query("INSERT INTO rate_limit_grants (k) VALUES ($1)"); }\n'
         )
-        code, out = run_lease_check(tree(**{"noise.rs": noise}))
+        code, out = run_lease_check(tree(**{"execution/gate_queue.rs": noise}))
         self.assertEqual(code, 0, out)
 
     def test_a_rule_that_finds_no_filer_is_an_error_and_not_a_pass(self):
         code, out = run_lease_check(tree(**{"flow_control.rs": "fn nothing() {}"}))
         self.assertEqual(code, 1, out)
         self.assertIn("no key-row insert was found in flow_control.rs", out)
+
+
+
+class GateRowsAreWrittenOnlyByTheGate(unittest.TestCase):
+    """The architecture review of 2026-11-19 (feature 022): a holder, waiter or grant row is written only by the readiness
+    gate and the queue's grant routine, under its key's lock."""
+
+    def test_the_adapter_of_this_repository_passes(self):
+        result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("gate rows are written only by the gate", result.stdout)
+
+    def test_another_writer_of_a_gate_row_is_refused_and_named(self):
+        for statement in (
+            "insert into concurrency_waiters (k) values ($1)",
+            "DELETE FROM rate_limit_grants WHERE k = $1",
+            "UPDATE concurrency_holders SET k = $1",
+        ):
+            bypass = f'async fn sneak() {{\n    sqlx::query(\n        "{statement}",\n    );\n}}'
+            code, out = run_lease_check(tree(**{"workers.rs": bypass}))
+            self.assertEqual(code, 1, out)
+            self.assertIn("workers.rs:3", out)
+            self.assertIn("outside execution/readiness_gate.rs and execution/gate_queue.rs", out)
+
+    def test_a_read_of_a_gate_row_is_not_a_write(self):
+        read = 'async fn count() { sqlx::query("SELECT count(*) FROM concurrency_holders WHERE k = $1"); }'
+        code, out = run_lease_check(tree(**{"quotas.rs": read}))
+        self.assertEqual(code, 0, out)
+
+    def test_a_rule_that_finds_no_writer_is_an_error_and_not_a_pass(self):
+        code, out = run_lease_check(tree(**{"execution/readiness_gate.rs": "fn nothing() {}"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("no gate-row write was found", out)
 
 
 if __name__ == "__main__":

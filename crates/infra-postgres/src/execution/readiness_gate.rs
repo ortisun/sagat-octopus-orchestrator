@@ -539,6 +539,7 @@ impl PgRunTx {
         let deadline_us = unix_micros(deadline)?;
         match (gate.kind, gate.per) {
             (GateKind::Concurrency, _) => {
+                self.key_is_due(KeyTable::Semaphores, gate, filed).await?;
                 sqlx::query(
                     "INSERT INTO concurrency_waiters (tenant_id, namespace_id, run_id, node, permit_scope, attempt, pool, \
                      group_name, key_digest, declared_limit, enqueued_at, deadline_at, shard) \
@@ -563,6 +564,7 @@ impl PgRunTx {
                 })
             }
             (GateKind::RateLimit, Some(per)) => {
+                self.key_is_due(KeyTable::Windows, gate, filed).await?;
                 sqlx::query(
                     "INSERT INTO rate_limit_waiters (tenant_id, namespace_id, run_id, node, attempt, pool, limit_scope, \
                      group_name, key_digest, declared_limit, period_ms, enqueued_at, deadline_at, shard) \
@@ -744,6 +746,67 @@ impl PgRunTx {
 }
 
 impl PgRunTx {
+    /// A key gains a waiter: unless it is due already, it is due now (correctness review M1, 2026-11-19). The readiness
+    /// gate counts every waiter of the key and the grant routine only the eligible ones, so a new waiter behind ineligible
+    /// ones may be grantable at once; the next pass decides, and rests the key if not (early, never late).
+    async fn key_is_due(
+        &mut self,
+        table: KeyTable,
+        gate: &Pending,
+        filed: &FiledKey,
+    ) -> Result<(), StoreError> {
+        let statement = match table {
+            KeyTable::Semaphores => {
+                "UPDATE concurrency_semaphores SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND permit_scope = 'STEP' \
+                    AND group_name = $4 AND key_digest = $5 AND next_eligible_at IS NULL"
+            }
+            KeyTable::Windows => {
+                "UPDATE rate_limit_windows SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
+                  WHERE tenant_id = $1 AND namespace_id = $2 AND pool = $3 AND limit_scope = 'STEP' \
+                    AND group_name = $4 AND key_digest = $5 AND next_eligible_at IS NULL"
+            }
+        };
+        sqlx::query(statement)
+            .bind(self.info.tenant_id.as_uuid())
+            .bind(self.info.namespace_id.as_uuid())
+            .bind(GatePool::Ordinary.as_str())
+            .bind(gate.group.as_str())
+            .bind(filed.digest.as_slice())
+            .execute(&mut *self.tx)
+            .await
+            .map_err(store_error)?;
+        Ok(())
+    }
+
+    /// A run paused or resumed: the keys of its queued steps are due now, since a paused waiter is neither granted nor
+    /// counted ahead (ADR-0089 decision 4): its pause may let the waiters behind it through, and its resume makes it
+    /// grantable again (security review 2, correctness M1 and M4, 2026-11-19).
+    pub(super) async fn rearm_queued_keys(&mut self) -> Result<(), StoreError> {
+        for statement in [
+            "UPDATE concurrency_semaphores s SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
+               FROM concurrency_waiters w \
+              WHERE w.tenant_id = $1 AND w.run_id = $2 AND w.permit_scope = 'STEP' \
+                AND s.tenant_id = w.tenant_id AND s.namespace_id = w.namespace_id AND s.pool = w.pool \
+                AND s.permit_scope = w.permit_scope AND s.group_name = w.group_name AND s.key_digest = w.key_digest \
+                AND s.next_eligible_at IS NULL",
+            "UPDATE rate_limit_windows s SET next_eligible_at = clock_timestamp(), updated_at = clock_timestamp() \
+               FROM rate_limit_waiters w \
+              WHERE w.tenant_id = $1 AND w.run_id = $2 AND w.limit_scope = 'STEP' \
+                AND s.tenant_id = w.tenant_id AND s.namespace_id = w.namespace_id AND s.pool = w.pool \
+                AND s.limit_scope = w.limit_scope AND s.group_name = w.group_name AND s.key_digest = w.key_digest \
+                AND s.next_eligible_at IS NULL",
+        ] {
+            sqlx::query(statement)
+                .bind(self.info.tenant_id.as_uuid())
+                .bind(self.info.run_id.as_uuid())
+                .execute(&mut *self.tx)
+                .await
+                .map_err(store_error)?;
+        }
+        Ok(())
+    }
+
     /// Sets the next-eligible hint of a step key that has waiters to now (early, never late, ADR-0089).
     async fn key_is_eligible(
         &mut self,

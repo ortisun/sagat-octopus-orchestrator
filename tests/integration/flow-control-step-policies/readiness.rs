@@ -468,14 +468,21 @@ async fn a_cancelled_run_takes_its_queued_step_out_of_every_queue() {
     };
     assert!(at("rate_limit.dequeued") < at("concurrency.dequeued"));
     assert!(at("concurrency.dequeued") < at("step.cancelled"));
-    let hint: Option<time::OffsetDateTime> = sqlx::query_scalar(
-        "SELECT next_eligible_at FROM concurrency_semaphores WHERE tenant_id = $1",
-    )
-    .bind(w.admin.tenant_id().as_uuid())
-    .fetch_one(&w.db.pool)
-    .await
-    .expect("semaphore");
-    assert!(hint.is_none(), "no waiter is left, so no hint is set");
+    // the key keeps the hint its waiter set when it was queued (D022-045: early, never late), but with no waiter left it
+    // is not due: the grant pass finds nothing
+    let waiters: i32 =
+        sqlx::query_scalar("SELECT waiters FROM concurrency_semaphores WHERE tenant_id = $1")
+            .bind(w.admin.tenant_id().as_uuid())
+            .fetch_one(&w.db.pool)
+            .await
+            .expect("semaphore");
+    assert_eq!(waiters, 0, "no waiter is left");
+    let report = w.scheduler.grant_gates().await;
+    assert_eq!(
+        report.gates_granted + report.skipped + report.failed,
+        0,
+        "{report:?}"
+    );
     w.assert_consistent(run).await;
 }
 
