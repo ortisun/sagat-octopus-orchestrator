@@ -80,8 +80,23 @@ US7 rate limits and the release 0.3.0 slice (OD-2026-11-13-11) are in [Release 0
   pause, review, cancellation and run end (T022-100's `returns::*`); SC-022-024 is T022-099's `gated_window`. Rerun 2026-11-20:
   `integration_flow_control_step_policies` 97 passed and `integration_claim_transition_efficiency` 22 passed, owner and
   `SAGAT_TEST_AS_RUNTIME_ROLE=1`.
-- [ ] T022-025 [US2] Cancellation and run-deadline dequeue, pause keeps permit, paused waiters skipped, lowered limits, same-key child and limit-mismatch warnings, active-run accounting and the namespace `queued_runs` ceiling. FR-022-021. Evidence: one integration test per item.
+- [x] T022-025 [US2] Cancellation and run-deadline dequeue, pause keeps permit, paused waiters skipped, lowered limits, same-key child and limit-mismatch warnings, active-run accounting and the namespace `queued_runs` ceiling. FR-022-021. Evidence: one integration test per item.
   - *Note 2026-11-20 (D022-048, G022-007):* "pause keeps permit" holds for a leased step and for a run holder; a granted, unleased step gives its permit back on pause (FR-022-046, T022-100).
+  *Done 2026-11-20 (0.3.0 slice; run permits of US02, step permits as T022-024 and T022-100 built them).* One integration
+  test per item: cancellation dequeue `run_admission::a_cancellation_dequeues_a_queued_start_and_frees_a_held_permit`;
+  run-deadline dequeue `lifecycle::a_run_deadline_dequeues_a_queued_start` (new); pause keeps a run holder's permit
+  `lifecycle::a_paused_run_keeps_the_permit_of_its_start` (new; a granted, unleased step gives it back, G022-007,
+  `returns::*`); paused waiters skipped `queue::paused_heads_do_not_hold_back_the_waiters_behind_them_and_a_resume_rearms_the_key`;
+  lowered limits `lifecycle::a_lowered_limit_revokes_nothing_and_applies_to_the_next_start` (new); same-key child warning
+  `cargo test -p sagat-domain --test flow_control a_child_of_the_same_workflow_under_a_run_permit_is_warned_about` and
+  `contract_flow_control_step_policies::ir`; limit-mismatch warning
+  `publication::a_group_declared_elsewhere_with_another_limit_is_warned_and_nothing_else_is`; active-run accounting
+  `lifecycle::a_queued_run_counts_as_an_active_run` (new); `queued_runs` ceiling
+  `run_admission::{a_start_beyond_a_queue_ceiling_is_refused_and_nothing_of_it_exists,
+  two_starts_at_the_queued_runs_ceiling_are_decided_one_after_the_other}`. `lifecycle` 4 passed, owner and
+  `SAGAT_TEST_AS_RUNTIME_ROLE=1`. Hand mutations caught: the namespace limit ignored (the lowered-limit test, red after its
+  first version was found too weak: declared 2 with two holders could not tell), a stopped start never dequeued (the
+  deadline test). The pause and active-run tests pin behaviour this change does not write (no code to mutate).
 - [ ] T022-026 [US2] `Run.concurrency` in new `crates/api-http/src/dto_flow_control.rs`; `GET .../concurrency-keys` in new `crates/api-http/src/routes/concurrency.rs`. FR-022-022. Evidence: REST tests; raw-key canary absent.
 - [ ] T022-027 [US2] Invariants 1–2 of `data-model.md` in `verify_run` (`crates/infra-postgres/src/execution.rs`) and `assert_consistent` (`tests/support/engine.rs`). FR-022-020. Evidence: fails on seeded inconsistency, passes after every fault case.
   - *Amended 2026-11-13 after review* (D022-033): reduced to the consistency assertion in `tests/support/engine.rs` and the seeded-failure tests; the `verify_run` checks land with T022-022.

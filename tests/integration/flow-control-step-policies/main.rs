@@ -9,6 +9,7 @@ mod support;
 
 mod admission;
 mod ceilings;
+mod lifecycle;
 mod migrations;
 mod publication;
 mod queue;
