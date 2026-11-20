@@ -13,6 +13,7 @@ medians, against +10%; `specs/041-step-logs/validation-report.md`). The assistan
 | ID | Decision | Decided by | Status | Covers |
 |---|---|---|---|---|
 | OD-2026-11-20-1 | O041-039, "Cortar custo, depois limite absoluto" ("cut the cost, then an absolute limit"): (a) cut the carry's cost (its statements in one round trip, and the step-log quota charged once per transaction instead of per row, an amendment of ADR-0027's Amendment whose wording is put to the owner as O041-040) and run the spike again; (b) if it still misses +10%, the p99 criterion for completions that carry records is the capture-off p99 plus 2 ms, at both sizes, fixed before the rounds, the other gates unchanged | owner | Decided | docs/designs/041-step-logs.md T041-5, T041-35, T041-36 |
+| OD-2026-11-20-5 | "Confirmo" ("I confirm"), before any round of the second carry spike: the coordinator's reading of OD-2026-11-20-1 (D041-101) holds; per size, a carrying completion's p99 must be at most the capture-off p99 plus the larger of 10% of it and 2 ms, and the report says which allowance decided each size | owner | Decided | docs/designs/041-step-logs.md T041-35 |
 
 ## 2026-11-19 — Design 041 (step logs): the redesign of the transport after the ingest spike
 

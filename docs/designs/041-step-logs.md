@@ -1049,8 +1049,9 @@ next step whose short step carries ten records (51 statements, 1 transaction, 11
 lines), a mark-only carry (51, 1, 11; 1 stream, 0 lines) and capture off in the namespace (51, 1, 11; none); and the
 completion that ends the run in the same three cases (48, 1, 9 each, with the same step-log rows). A third measure keeps
 the function's own cost from growing unseen: in the carrying cases the test sets `pg_stat_statements.track = 'all'` for
-its server (`ALTER SYSTEM` and `pg_reload_conf()` before the measured pool opens, so that the report's own connection
-counts them) and asserts, as an equality, the nested statements (`toplevel = false`) that the call ran and their rows,
+nothing: the test support already starts its PostgreSQL with `pg_stat_statements.track=all` (`tests/support/mod.rs:158-165`);
+the carrying cases first assert `current_setting('pg_stat_statements.track') = 'all'` and fail with a message naming the
+setting when a server given by `SAGAT_TEST_DATABASE_URL` is configured otherwise, and change no server setting) and asserts, as an equality, the nested statements (`toplevel = false`) that the call ran and their rows,
 recorded by T041-36 for each case (for ten records kept: the fence and stream-lock tries, the policy read, the
 allowance, the stream insert, the lines insert with its statement trigger's delta, the counter update); and a
 source-text check of the migration that creates the function fails if its body names `tenant_retained_usage` (FR-041-008:
@@ -1105,7 +1106,9 @@ accounting (data-model.md §3) and creates the triggers the manifest generates o
 with accounted columns.
 
 **Grants** are those of data-model.md §4: no `UPDATE` on lines, no grant on `namespaces`, no `TRUNCATE`, and no
-`SECURITY DEFINER` function beyond the accessor `sagat_quota_step_log_allowance` of ADR-0027's Amendment, revoked from
+`SECURITY DEFINER` function beyond the accessor `sagat_quota_step_log_allowance` of ADR-0027's Amendment and the
+statement-level quota trigger function of its proposed amendment (executable by neither `PUBLIC` nor `sagat_app`); the
+carry function `sagat_step_log_carry` is `SECURITY INVOKER`, `EXECUTE` to `sagat_app` only; the accessor is revoked from
 `PUBLIC`; the functions the migration replaces keep their `SECURITY DEFINER`, pinned `search_path` and grants, tested
 in T041-5. The runtime
 privilege audit covers the new statements. There is no row-level security in this database; the tenant boundary is the
@@ -1901,8 +1904,7 @@ Slice A, decisions, contracts and the spike:
     rules are those of the first run. Gates (1), (3) and (4) are unchanged. Gate (2) becomes (2b), judged per size: the
     completion p99 of (a) is at most off-1K's p99 + max(10% of it, 2 ms) at that size ("Cortar custo, depois limite
     absoluto": the absolute allowance relaxes +10% where the capture-off p99 is under 20 ms, here at 1 × 16, and leaves
-    +10% where it is larger, here at 8 × 128; D041-101: the coordinator's reading of OD-2026-11-20-1, pending the owner's
-    confirmation). A size passes when the median of three valid rounds meets it and
+    +10% where it is larger, here at 8 × 128; D041-101, confirmed by the owner before any round, OD-2026-11-20-5). A size passes when the median of three valid rounds meets it and
     two quiet rounds meet it; a round that is not quiet is never the deciding vote for a pass. The second run passes when
     gates (1), (2b), (3) and (4) pass at both sizes with three valid rounds; the report says, for each size, whether +10%
     or +2 ms was the allowance. Recorded besides: the function call's time per completion (p50, p99), and the completion
@@ -2222,7 +2224,8 @@ Slice B, the server stores:
   - the six equalities of section 2a in `work_budget.rs`, counted as the existing three are and beside them, through a
     carrying `World::complete_carrying` in `tests/support/engine.rs`, the existing three passing with their constants
     unmodified, and the second and third measures of section 2a (the step-log rows a report transaction wrote, counted
-    from the step-log tables; the call's nested statements and their rows, with `pg_stat_statements.track = 'all'`)
+    from the step-log tables; the call's nested statements and their rows, asserting first that the server tracks
+    nested statements, `pg_stat_statements.track = 'all'`, as the test support starts it)
     asserted with each, the test's comment saying why what a function does is counted apart; and the source-text check
     that the function's body never names `tenant_retained_usage`; and, at every other call site (a root `FailStep`, a scoped completion and a scoped failure,
     `reject_secret_output`, each content fallback, and a long step's carry onto an existing stream), the cost with a carry

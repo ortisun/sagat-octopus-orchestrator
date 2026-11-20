@@ -97,3 +97,17 @@ step and six for a long one; the six equalities are 55/1/23, 54/1/13, 52/1/11 an
 
 No Blocker and no Major is open after the targeted re-reads; the design stays `Draft` until a complete approval run
 (all five `egm-review` stages and the three repository reviewers) on the revised text, after T041-35.
+
+## Answers to the targeted re-reads after OD-2026-11-20-1 (ceb0ad42, 7d5c2737, d8d1400a)
+
+- Correctness on ceb0ad42: two Majors (the function's plan not equal to `plan_batch`; the budget blind inside the
+  function), fixed in 7d5c2737 (exact T5/T6, the mark-only reason, drops by reason; a nested-statement measure);
+  re-read of 7d5c2737: closed, no new Blocker or Major; its three Nits fixed in 0da45229.
+- Architecture on ceb0ad42: A-M10 to A-M12, fixed in 7d5c2737; re-read of d8d1400a: closed. Its new A-M13 (gate (2b)
+  resting on the coordinator's reading) is closed by the owner's confirmation before any round, "Confirmo"
+  (OD-2026-11-20-5). Its Nits fixed: the test asserts the fixture's `pg_stat_statements.track=all` instead of changing a
+  server setting; section 3's grants name the two new functions; research's O041-040 lists the README exception.
+- Design critic on ceb0ad42: K-15 (gate (2b) across sizes), fixed per size (D041-101); re-read of d8d1400a: closed, no
+  new Blocker or Major; its Nits: the owner's confirmation (OD-2026-11-20-5) and the tracking setting (fixed as above).
+
+No Blocker and no Major is open.
