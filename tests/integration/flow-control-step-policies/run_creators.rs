@@ -799,6 +799,18 @@ async fn start_delayed(w: &World, workflow: WorkflowId, account: Option<&str>) -
         )
         .await
         .expect("a delayed start");
+    // The delay's end is this process's clock plus a millisecond, and the release pass compares it with the database's
+    // `now()`: a database clock behind this host's (the test VM's drifted 85 ms on 2026-11-20) would leave it not due on
+    // the next tick. The tests mean "the delay has ended": wait until the database's clock is past it (a bounded
+    // condition on the clock the pass decides with; the row's delay is fixed by a trigger).
+    let until: i64 = sqlx::query_scalar(
+        "SELECT (extract(epoch FROM start_delayed_until) * 1000000)::bigint FROM runs WHERE id = $1",
+    )
+    .bind(started.run.info.run_id.as_uuid())
+    .fetch_one(&w.db.pool)
+    .await
+    .expect("the delay's end");
+    crate::support::flow_control::until_past(&w.db.pool, until).await;
     started.run.info.run_id
 }
 
