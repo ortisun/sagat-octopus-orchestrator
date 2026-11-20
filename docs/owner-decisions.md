@@ -13,6 +13,7 @@ de simplicidade. Quero que o código seja altamente flexível, coeso, adaptável
 | ID | Decision | Decided by | Status | Covers |
 |---|---|---|---|---|
 | OD-2026-11-20-6 | The open product, scope and design questions of release 0.3.0 are delegated to the coordinating session. Each is weighed over every option and decided for the most architectural and business advantage, never for simplicity alone. Each is recorded as "delegate (OD-2026-11-20-6)" with its reasoning where the question lives, and reported to the owner afterwards. Not covered: acts that need the owner's own hands or credentials, and acts outside this repository that cannot be undone | owner | Decided | every open O-question of the 0.3.0 features; AGENTS.md "Only the owner decides" |
+| OD-2026-11-20-7 | "Yes, merge #254" (owner, 2026-11-20, asked because this narrows the owner's OD-2026-11-06-2 and amends the constitution, which the delegation does not cover). Proposed on architecture review finding m7 of design 022: a pull request that changes only a contract file (`specs/<feature>/contracts/`) selected no suite, so a contract regression could merge untested. A contract change is a change: it now selects the contract suites (`tests/contract/`) and the workspace packages whose Rust sources read that file (and the packages that depend on them), derived by `scripts/select-test-targets.py` from the sources, never from a hand list. Weighed: every reader including the integration and e2e suites (an OpenAPI change would run twenty suites, five of them integration or e2e, against the delivery time OD-2026-11-04-1 protects); a hand table (rots when a suite is added); nothing (the hole stays). This narrows OD-2026-11-06-2 for contract files only; every other shared input still selects no suite. Reversible by a later amendment; to be reported to the owner | owner | Decided | docs/constitution.md 4.6.0, docs/governance/constitution-4.6.0-sync-impact.md, scripts/select-test-targets.py, docs/test-strategy.md |
 
 ## 2026-11-20 — Feature 022: the pause's returns, the live-keys bound in keys and the force's bound
 
@@ -247,6 +248,16 @@ recommendation. The owner chose the recommended answer of each.
 | OD-2026-11-13-4 | "Aceitar os três": ADR-0081 (the cancel source of a reset is switched on per process, engine first, until the capability registry exists), ADR-0082 (the instance registry: only the schema owner records requirements, a refused process stays up with a closed gate) and ADR-0083 (the cron triggers are handed to the schedule pass once, and only when they have converged) are accepted | owner | Decided | docs/adr/ADR-0081-*.md, docs/adr/ADR-0082-*.md, docs/adr/ADR-0083-*.md |
 | OD-2026-11-13-5 | "Aceitar como está": the `business_id.conflict` record of a person's refused start is written in a transaction of its own after the start rolls back. It is best effort, and a lost write is counted by `audit_write_failures_total{action}`. Identical repeats within 300 s collapse into one record, like `database.denied`. Conflicts the platform decides (a schedule, a batch item, a reset completion) are recorded in the decision's own transaction. This accepts D2221 as the reading of FR-018-044 | owner | Decided | specs/018-schedules-bulk-operations/research.md D2221 |
 
+## 2026-11-13 — OCSF as the standard for security and audit events (feature 040)
+
+The owner asked in the Claude session for one more specification. The assistant opened feature 040 as a Draft design
+and read the request as: the security and audit events the platform hands out take the OCSF shape, as a projection of
+the native record. That reading and the open questions O040-001 to O040-007 are the owner's to confirm.
+
+| ID | Decision | Decided by | Status | Covers |
+|---|---|---|---|---|
+| OD-2026-11-13-6 | "Adicione mais uma especificacao de ter o https://schema.ocsf.io/ como padrao": a specification that adopts OCSF as the standard is added as feature 040 | owner | Decided; Draft design, not built | docs/designs/040-ocsf-event-standard.md |
+
 ## 2026-11-13 — Release 0.3.0 ships with the fallback ceilings
 
 The assistant reported that the T014-042 acceptance method (OD-2026-11-04-7: release build, runtime role, a separate
@@ -411,7 +422,7 @@ which would have started a run on `develop`. The assistant recorded it; the rule
 |---|---|---|---|---|
 | OD-2026-11-05-1 | "Desativar o ci para merges na develop. Deixar o ci somente para merges de release" | owner | Decided | docs/constitution.md, .github/workflows/ci.yml |
 | OD-2026-11-06-1 | "O que deve ter é execucao de testes do que foi alterado ou modificado e seus dependentes, e integração também só do que foi alterado" | owner | Decided | docs/constitution.md (4.3.0), scripts/select-test-targets.py |
-| OD-2026-11-06-2 | "Sim. Rodar os testes somente dos arquivos alterados e suas dependencias." (the answer to: should a shared input, that is a contract, `tests/support`, `tests/fixtures`, `runners/`, a dependency of `tests/Cargo.toml`, select no suite in a pull request and leave all to the release?) | owner | Decided | scripts/select-test-targets.py, docs/test-strategy.md, tests/AGENTS.md |
+| OD-2026-11-06-2 | "Sim. Rodar os testes somente dos arquivos alterados e suas dependencias." (the answer to: should a shared input, that is a contract, `tests/support`, `tests/fixtures`, `runners/`, a dependency of `tests/Cargo.toml`, select no suite in a pull request and leave all to the release?) | owner | Decided; narrowed for contract files by OD-2026-11-20-7 | scripts/select-test-targets.py, docs/test-strategy.md, tests/AGENTS.md |
 
 Read as the owner wrote it: the CI that a *merge* into `develop` starts (the `push` event) is turned off. The CI of a *pull
 request* is not a merge and keeps the rule of 4.1.0 (the tests of what it changes; the whole stack for a pull request into
