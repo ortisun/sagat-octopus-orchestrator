@@ -96,8 +96,9 @@ the rate-limited activity a second, and that a grant said it came from the queue
 
 A scenario may name, under `deferred`, a check of its contract it cannot make yet, with the reason and the task it waits
 for (D022-097). The harness prints each one as not made on every run; it never turns a failure into a pass. The
-registry test requires every reason to name a task or a gap. `flow-rate-limit` defers the run resource's
-`rateLimit.state=WAITING` with its `position` until task T022-078 serves it and task T022-120 reads it in the six SDKs.
+registry test requires every reason to name a task or a gap. `flow-rate-limit` deferred the run resource's
+`rateLimit.state=WAITING` with its `position` until task T022-078 served it and task T022-120 read it in the six SDKs; it
+now observes it through each SDK and defers nothing.
 
 `loop-builders.json` checks additive v1 `while` and `repeatUntil` authoring in the five SDKs.
 It is build-only while durable loop execution remains disabled. The reviewed fixture covers pre-test

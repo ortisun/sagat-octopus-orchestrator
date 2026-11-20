@@ -1210,7 +1210,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
   per minute, not per second: five REST starts on a loaded machine can take more than a second, which would let run 3
   be granted without waiting and change the golden; a minute keeps which runs wait fixed, and the assertions are the
   contract's (no window of `per` holds more than two run grants of P, nor more than one lease of the activity per
-  second). The cost is about a minute per language. The worker of `flow-rate-limit` starts only after every start is decided: a step's slot granted and not yet leased counts without end, so each step that becomes ready while the activity's slot is taken waits whatever the machine's speed, and the step-level events of the golden do not depend on how fast the starts were made (first run of 2026-11-20: with the worker running from the beginning, whether the second run's step waited depended on its start coming less than a second after the first lease). The golden holds no instant: the windows and the order are checked
+  second). The cost is about a minute per language. The worker of `flow-rate-limit` starts only after every start is decided: a step's slot granted and not yet leased counts without end, so each step that becomes ready while the activity's slot is taken waits whatever the machine's speed, and the step-level events of the golden do not depend on how fast the starts were made (first run of 2026-11-20: with the worker running from the beginning, whether the second run's step waited depended on its start coming less than a second after the first lease). The same holds a minute later: p3 and p4 are granted when p1's and p2's grants leave the window, so a second between those two starts would let p4's step go unqueued (seen in a rerun of 2026-11-20 in one language). So the first worker stops once q1 has completed, and a second worker starts only after p4's step has been decided: p3's step is then granted and not leased, and p4's step waits behind it whatever the machine's speed. The golden holds no instant: the windows and the order are checked
   by the harness from the journals (`flow_control.rs`), the shape the contract asks for.
 - **D022-094 — A runtime scenario written before its server is `pending`, never green (2026-11-20).** Delegate
   (OD-2026-11-20-6). A scenario carries `"pending": "<why, with the task or gap>"`; the harness still checks its
@@ -1254,6 +1254,16 @@ taken after `git grep D022-04` on every `origin/*` branch.
   missing check stays visible in every run's output and in the scenario file, and adding it later is the removal of
   one entry plus the observation it describes. A `deferred` check never turns a failure into a pass: it only lists an
   assertion the scenario does not make.
+
+- **D022-098 — How the six SDKs read a run's rate-limit slot (task T022-120, rate part; 2026-11-20).** Delegate
+  (OD-2026-11-20-6). `Run.rateLimit` follows the canonical `RunRateLimit` and D022-096: `state`, `pool`, `group`, `per`,
+  `since` and `limit` are required, `limit` at least 1 and `position` (when present) at least 1, else the SDK's
+  `PROTOCOL` error; `state`, `pool` and `per` stay strings, a value the SDK does not know included (over the builders'
+  closed `RatePeriod`: a read must not fail on a window a newer server adds, while a write may only name the windows the
+  IR has); `keyLabel`, `queueDeadline`, `position` and `estimatedGrantAt` are optional, so `listRuns` (no position, no
+  estimate), a granted slot and a caller without the reveal grant read the same shape. The conformance observation
+  keeps the position as it came (the queue's order is the contract) and writes a present estimate as an instant, which
+  the normalization replaces. With it the deferred check of `flow-rate-limit` (D022-097) is made and removed.
 
 ## Gaps
 
@@ -1319,6 +1329,7 @@ taken after `git grep D022-04` on every `origin/*` branch.
 | G1183 | A database clock that moves backwards under-delivers until it catches up (NFR-022-008); no alert tells the operator why grants paused beyond `rate_limit_grant_lagging`. | Accepted; runbook |
 | G022-090 | The runtime scenarios `flow-concurrency` and `flow-rate-limit` cannot be played: a production build refuses every gated start (`BINARY_CAPABILITY_MISSING`, D022-037) until the capability listing and the deployment's digest key ring land (G1198), and the control plane of `tests/support` (`Options`) has no flow-control switch, so the suite's platform cannot even publish a gated workflow (`CAPABILITY_DISABLED`). Both scenarios are written with their independent assertions and marked `pending` (D022-094). *Partly closed 2026-11-20: with G1198 the harness boots the concurrency gate (`Options::flow_control`, `flow_control::process_env`) and `flow-concurrency` passes in six languages (T022-053). Closed for the rate gate the same day: every process with the digest key ring lists the rate capability (D022-062), and `flow-rate-limit` plays with one check deferred (D022-097).* | Closed; the deferred check is G022-091 |
 | G022-091 | The SDKs' `Run` types do not carry the run resource's `concurrency` and `rateLimit` (state, position, estimate; FR-022-022, FR-022-048): the canonical OpenAPI does not have them yet (T022-026). `flow-rate-limit` observes a buffered run's `WAITING` status through the SDK (`get`); the contract's `rateLimit.state=WAITING` with a `position` is asserted once T022-120 adds the field to the six SDKs. | Open for `rateLimit` (T022-078, T022-120). *Partly closed 2026-11-20: the six `Run` types carry `concurrency` (D022-096) and `flow-concurrency` observes it through each SDK.* |
+| G022-092 | In one of eight plays of `flow-rate-limit` by the C# worker (2026-11-20, the second rerun after the golden was blessed), the step of run q1 was granted its slot from the queue and recorded `step.leased` (attempt 1), but the C# worker host never ran the handler (its deliveries list p1, p2, p3 and p4 only); `waitForCompletion` of q1 timed out after 60 seconds and the attempt ended `step.needs_review` (an ambiguous outcome of a declared activity, `command.rs`). The other five languages and the other seven C# plays delivered every task. Either the engine leased a task no worker received, or the C# host claimed one and never dispatched it; the journal alone cannot tell which. Not worked around: reported to the coordinator with the runner's output. | Open; reported 2026-11-20 |
 
 ## Owner questions
 
