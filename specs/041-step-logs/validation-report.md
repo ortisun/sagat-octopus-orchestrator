@@ -786,3 +786,19 @@ the lease tests run, and the file restored:
 
 The fast path's budget line moved from 27 to 26 nested statements: D041-117 removed the carry's no-wait setting (seen
 failing at 26 against the 27 left unchanged, then derived as the function's four statements).
+
+Then, for decision D041-119 (the ensure before a report, the fallback refill bounded by 200 ms, the busy answer), on
+commit `fffc8446`, each mutation applied by hand, the lease tests run (30), and the file restored:
+
+| Mutation | Tests that failed |
+|---|---|
+| Mutation 9: the carry's block lets a refill past its budget fail the report | `a_refill_past_its_budget_answers_busy_and_the_report_lands` |
+| Mutation 10: the grant takes F / (*A* + 1) | `room_held_by_open_writers_is_bounded_by_the_grant`, `room_held_by_open_writers_is_bounded_from_the_free_room`, `the_last_bytes_of_the_limit_…` |
+| Mutation 11: the idle reclaim takes no fence | `a_limit_change_waits_for_an_open_idle_reclaim_instead_of_failing` |
+| Mutation 12: the refill reads a session setting for its budget | `a_refill_past_its_budget_answers_busy_and_the_report_lands` (the stage did not finish within its bound) |
+| Mutation 13: the refill does not restore the caller's `lock_timeout` | `a_refill_restores_the_callers_lock_timeout` |
+| Mutation 14: the ensure refills even with room | `the_ensure_before_a_report_gives_the_carry_its_fast_path` |
+| Mutation 15: a busy answer is recorded as `tenant_quota` | `a_refill_past_its_budget_answers_busy_and_the_report_lands` |
+
+These tests were written with the prototype's change in the same sitting, not before it; each is shown to bite by its
+mutation above. The whole performance test binary passes (46 tests, 10 ignored benchmarks).
