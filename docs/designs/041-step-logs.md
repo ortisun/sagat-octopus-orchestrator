@@ -2097,6 +2097,9 @@ Slice A, decisions, contracts and the spike:
     *A preview* of the third shape, not a gate (`perf/041-diag-*`, the `third` set: off-1K, (a), off-{}, (f) and (g) at
     1 × 16 in paired blocks), is recorded with the run: its first attempt (run 44753470534) stopped on the prototype's
     lease pick (`query returned more than one row`, fixed by D041-112).
+    *Recorded* (run 44766210424): not decided, no valid round, the carries answered other than `written` voiding every
+    round (D041-116, G041-025). The `split` set of the diagnosis (`perf/041-diag-split`, not a gate) counts each carry by
+    path and cause at both sizes before the refill is changed.
   Refs: NFR-041-PERF, SC-041-001, SC-041-007
   Owner-gate: OD-2026-11-19-1, OD-2026-11-20-1
   Files: modify `tests/performance/scalability-ha/{main.rs,step_log_spike.rs}`, `tests/Cargo.toml` (the opt-in feature),

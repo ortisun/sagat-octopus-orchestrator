@@ -614,3 +614,102 @@ prototype's lease pick (`query returned more than one row`).
 Against the second run's shape in run 44730444900 ((a) / off-1K 0.906, (f) / off-{} 0.893, (g) / off-1K 0.786): no gain at
 1 × 16, as T041-35's third-run text expected, with every carry paying a subtransaction here. (g)'s batch service time p99
 was 24.2 ms (median of rows) and its commits no longer waited on the usage row for their step-log charge.
+
+## 2026-11-20 — T041-35 third run, four hosted runners: not decided (no valid round)
+
+**Result: not decided. None of the twelve rounds is valid: every round answered more than 0.1% of the carries of at least
+one workload with something other than `written`, which voids it by the validity rule fixed before the first job. The
+gate values are recorded below as measured; they decide nothing.** T041-35 stays unticked; ADR-0097, ADR-0095 and
+O041-038/O041-040 stay as they are. The unwritten carries are not noise: the coordinating session classes them as a
+product defect to diagnose (D041-116, G041-025).
+
+Run 44766210424 of `.github/workflows/perf-spike.yml` at `8afb710f` (`SAGAT_PERF_STEP_LOG_CARRY_RUN=3`, the third shape of
+T041-35's text): four GitHub-hosted `ubuntu-latest` runners in parallel, three rounds each, then the `judge` over the
+twelve in the fixed order (shard *s*, round *r* is round 3(*s* − 1) + *r*). Each runner: 4 logical cores, 16 GiB, release
+build; shard 1 on Intel Xeon 6975P-C, shard 2 on AMD EPYC 7763, shard 3 on AMD EPYC 9V45, shard 4 on AMD EPYC 9V74 (four
+CPU models, against two in the second run); PostgreSQL 18.7 in rounds 1 to 6 and 18.6 in rounds 7 to 12. Every round is
+quiet by the declared environment (D041-102). Every round ran to its end (no `complete: Unavailable`, no
+`spike-failure-json` line); the server's log of each round is kept in the shard's artifact.
+
+| Round | Shard / round | CPU | off-1K drift 1 × 16 / 8 × 128 | off-{} drift 1 × 16 / 8 × 128 | Valid | Why |
+|---|---|---|---|---|---|---|
+| 1 | 1 / 1 | Xeon 6975P-C | 0.0% / 1.9% | 1.9% / 1.3% | no | carries not written (all eight workloads) |
+| 2 | 1 / 2 | Xeon 6975P-C | 2.7% / 0.4% | 1.5% / 8.1% | no | carries not written (all eight) |
+| 3 | 1 / 3 | Xeon 6975P-C | 3.0% / 0.3% | 3.3% / 5.4% | no | carries not written (all eight) |
+| 4 | 2 / 1 | 7763 | 2.0% / 2.7% | 3.2% / 2.5% | no | carries not written (seven; (f) at 8 × 128 0.06%) |
+| 5 | 2 / 2 | 7763 | 3.0% / 3.3% | 3.1% / 0.2% | no | carries not written (seven; (f) at 8 × 128 0.09%) |
+| 6 | 2 / 3 | 7763 | 1.6% / 1.4% | 1.9% / 4.9% | no | carries not written (six; (f) at both sizes 0.08%) |
+| 7 | 3 / 1 | 9V45 | 4.6% / 6.0% | 2.1% / 5.9% | no | carries not written (six; none in (h) and (d)) |
+| 8 | 3 / 2 | 9V45 | 0.0% / 11.8% | 6.0% / 16.3% | no | off-1K at 8 × 128 drifted 11.8%, off-{} 16.3%; carries not written |
+| 9 | 3 / 3 | 9V45 | 4.2% / 2.0% | 5.2% / 20.6% | no | off-{} at 8 × 128 drifted 20.6%; carries not written |
+| 10 | 4 / 1 | 9V74 | 14.2% / 6.8% | 8.3% / 1.6% | no | off-1K at 1 × 16 drifted 14.2%; carries not written |
+| 11 | 4 / 2 | 9V74 | 22.2% / 3.8% | 15.5% / 1.2% | no | off-1K at 1 × 16 drifted 22.2%, off-{} 15.5%; carries not written |
+| 12 | 4 / 3 | 9V74 | 1.1% / 0.1% | 7.0% / 2.3% | no | carries not written (all eight) |
+
+Ten rounds are within the drift rule; all twelve are void by the carries. Carries answered other than `written`, of 9,000
+a workload (the harness of `8afb710f` counts a mark-only answer, `mark_only`, in `neither`; no carry was `contended`):
+
+| Round | (a) 1 × 16 | (a) 8 × 128 | (f) 1 × 16 | (f) 8 × 128 | (g) 1 × 16 | (g) 8 × 128 | (h) | (d) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 66 (0.73%) | 75 (0.83%) | 30 (0.33%) | 23 (0.26%) | 62 (0.69%) | 15 (0.17%) | 393 (4.37%) | 99 (1.10%) |
+| 2 | 109 (1.21%) | 90 (1.00%) | 24 (0.27%) | 12 (0.13%) | 37 (0.41%) | 27 (0.30%) | 346 (3.84%) | 102 (1.13%) |
+| 3 | 57 (0.63%) | 67 (0.74%) | 15 (0.17%) | 12 (0.13%) | 42 (0.47%) | 24 (0.27%) | 374 (4.16%) | 247 (2.74%) |
+| 4 | 43 (0.48%) | 51 (0.57%) | 14 (0.16%) | 5 (0.06%) | 20 (0.22%) | 30 (0.33%) | 225 (2.50%) | 95 (1.06%) |
+| 5 | 53 (0.59%) | 64 (0.71%) | 13 (0.14%) | 8 (0.09%) | 26 (0.29%) | 15 (0.17%) | 161 (1.79%) | 74 (0.82%) |
+| 6 | 55 (0.61%) | 59 (0.66%) | 7 (0.08%) | 7 (0.08%) | 23 (0.26%) | 14 (0.16%) | 198 (2.20%) | 48 (0.53%) |
+| 7 | 132 (1.47%) | 180 (2.00%) | 26 (0.29%) | 81 (0.90%) | 74 (0.82%) | 349 (3.88%) | 0 | 0 |
+| 8 | 175 (1.94%) | 133 (1.48%) | 42 (0.47%) | 124 (1.38%) | 82 (0.91%) | 236 (2.62%) | 36 (0.40%) | 96 (1.07%) |
+| 9 | 133 (1.48%) | 180 (2.00%) | 48 (0.53%) | 93 (1.03%) | 62 (0.69%) | 168 (1.87%) | 187 (2.08%) | 215 (2.39%) |
+| 10 | 535 (5.94%) | 864 (9.60%) | 49 (0.54%) | 323 (3.59%) | 113 (1.26%) | 69 (0.77%) | 543 (6.03%) | 534 (5.93%) |
+| 11 | 331 (3.68%) | 810 (9.00%) | 48 (0.53%) | 251 (2.79%) | 132 (1.47%) | 165 (1.83%) | 550 (6.11%) | 733 (8.14%) |
+| 12 | 778 (8.64%) | 1,905 (21.17%) | 43 (0.48%) | 247 (2.74%) | 153 (1.70%) | 173 (1.92%) | 274 (3.04%) | 204 (2.27%) |
+
+The scenario grants the tenant the maximum `tenant_step_log_bytes`, so no carry can be refused by the limit, and with
+`p_records` 10,000 against at most 64 records no carry meets an attempt ceiling: the answers are the slow path's
+mark-only (`tenant_step_log_quota_held`, or the refill's `NOWAIT` on a held usage row, `55P03`), and possibly `neither` for a
+stream found final, which the harness cannot tell apart. G041-023 expected about 0.08% of `busy` mark-only answers; the
+measured rate is 0.06% to 21.17%. The ingests of (g) also met the usage row: the server logs show 30 `lock timeout`
+cancellations (the batch's 200 ms `lock_timeout`) in the refill's `FOR UPDATE` of `tenant_retained_usage` (rounds 7, 11
+and 12), answered as ticket refusals (0 to 6 a row).
+
+### Gate values as measured (not a verdict)
+
+| Gate | 1 × 16, rounds 1 to 12 | median of 12 | 8 × 128, rounds 1 to 12 | median of 12 |
+|---|---|---|---|---|
+| (1) rate of (a) / off-1K, ≥ 90% | 82.7, 79.7, 82.9, 90.4, 91.0, 90.7, 84.3, 80.4, 81.8, 75.5, 83.7, 76.7% | 82.8% | 90.5, 91.3, 91.9, 92.1, 92.6, 93.8, 94.8, 92.7, 86.5, 89.0, 96.5, 92.5% | 92.3% |
+| (2b) p99 of (a) over off-1K + max(10%, 2 ms), ≤ 0 | +12.8, +16.1, +18.0, +9.9, +7.9, +9.4, +3.1, +15.5, +37.9, +95.3, +90.3, +43.4 ms | +15.8 ms | +61.0, +12.0, +31.4, −3.0, −87.6, +6.1, −7.4, +8.3, +13.3, +234.8, +236.9, +273.7 ms | +12.7 ms |
+| (3) rate of (f) / off-{}, ≥ 90% | 86.4, 87.4, 85.7, 91.9, 94.3, 90.4, 86.2, 87.4, 92.0, 92.3, 81.3, 78.5% | 87.4% | 91.2, 98.8, 94.2, 92.2, 97.2, 91.3, 86.3, 78.2, 92.5, 93.8, 95.9, 93.3% | 92.9% |
+| (4) tickets for (g) ≤ 10, refusals < 1% | 7, 7, 7, 7, 6, 6, 10, 12, 8, 17, 32, 22 (refusals ≤ 0.07%) | 7.5 | 5, 5, 5, 5, 4, 4, 16, 6, 5, 5, 6, 7 (refusals ≤ 0.06%) | 5 |
+
+The allowance of (2b) was 3.7 to 17.1 ms at 1 × 16 (median 6.0) and 47.1 to 80.7 ms at 8 × 128 (median 61.5). Over the ten
+rounds within the drift rule the medians are, at 1 × 16, (1) 82.8%, (2b) +14.2 ms, (3) 87.4%, (4) 7, and at 8 × 128
+(1) 92.3%, (2b) +21.7 ms, (3) 93.5%, (4) 5. Read as a gate on the medians of all twelve, 1 × 16 would fail (1),
+(2b) and (3) and pass (4) (7.5 tickets, against 29/16/44 in the second run); 8 × 128 would pass (1), (3) and (4) and fail
+(2b), which it passed in the second run.
+
+Medians of the twelve rounds (rate; completion p50 / p99; the carry function's p50 / p99; commit-wait samples):
+
+| Row | 1 × 16 | 8 × 128 |
+|---|---|---|
+| off-1K | 299/s; 25.2 / 59.6 ms; waits 304 | 116/s; 230.4 / 615.3 ms; waits 596 |
+| (a) | 236/s; 32.5 / 78.2 ms; carry 2.48 / 6.93 ms; waits 482 | 102/s; 276.4 / 694.0 ms; carry 9.52 / 44.03 ms; waits 669 |
+| off-{} | 277/s; 25.9 / 52.4 ms; waits 0 | 113/s; 233.7 / 598.2 ms; waits 0 |
+| (f) | 253/s; 30.5 / 73.1 ms; carry 2.02 / 5.73 ms; waits 0 | 101/s; 273.1 / 711.3 ms; carry 9.45 / 44.30 ms; waits 0 |
+| (g) | 214/s; 32.6 / 84.3 ms; S p99 25.5 ms; waits 562 | 93/s; 273.4 / 798.1 ms; S p99 284.2 ms; waits 1,718 |
+| (h), 64 records | 203/s; 37.7 / 95.3 ms | — |
+| (d), a transaction held | 190/s; 42.5 / 92.6 ms | — |
+
+Against the second run (run 44717007853, all its rounds, not only the three it used): at 1 × 16 the commit waits of (a)
+fell from a median of 3,208 samples to 482 and (g)'s S p99 from 42.5 to 125.7 ms in its three used rounds to a median of 25.5 ms; the carry
+function's p50 / p99 rose from 2.19 / 6.28 to 2.48 / 6.93 ms at 1 × 16 and from 7.86 / 31.71 to 9.52 / 44.03 ms at
+8 × 128; (a) − off-1K completion p99 went from a median of +19.7 ms [−82, +204] to +20.6 ms [+11, +105] at 1 × 16 and from
++56.3 ms [−221, +712] (eleven rounds) to +73.4 ms [−7, +354] at 8 × 128. Why 8 × 128 moved is analysed in the following
+section, not here.
+
+### Reading
+
+Not decided, by the rule. What the run shows besides: the hot row is gone from the carry's commits (D041-106's cause), and
+gate (4) at 1 × 16 is within its threshold in eight of twelve rounds; the leases' slow path answers a share of carries
+with a mark-only final mark while the tenant is far from its limit, a share that grows with load and was badly
+underestimated by G041-023; 8 × 128's (2b) is positive in nine of twelve rounds. The validity rule and the gates are
+unchanged (D041-116).
